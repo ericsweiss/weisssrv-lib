@@ -39,9 +39,14 @@ spec:
         # shellcheck disable=SC2086  # intentional word-split of the package list
         apt-get update -qq && apt-get install -y -qq --no-install-recommends $PKGS
       fi
-    - pip install --quiet "pytest==$[[ inputs.pytest_version ]]" "pyyaml==$[[ inputs.pyyaml_version ]]"
+    # `--user` + `python -m pytest`: the shared NON-ROOT tenant runner can't
+    # write system site-packages, so pip installs to ~/.local (whose bin/ is NOT
+    # on the default PATH of python:*-slim images) — calling the `pytest` console
+    # script directly would fail "command not found". `python -m pytest` runs the
+    # module regardless of PATH (and puts the CWD on sys.path for test imports).
+    - pip install --user --quiet "pytest==$[[ inputs.pytest_version ]]" "pyyaml==$[[ inputs.pyyaml_version ]]"
   script:
-    - pytest $[[ inputs.test_dir ]] -v --junitxml=report.xml
+    - python -m pytest $[[ inputs.test_dir ]] -v --junitxml=report.xml
   artifacts:
     when: always
     reports:

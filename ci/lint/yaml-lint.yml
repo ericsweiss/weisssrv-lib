@@ -44,8 +44,12 @@ spec:
   image: $[[ inputs.image ]]
   tags: $[[ inputs.tags ]]
   before_script:
-    # Keep the yamllint pin in step with the CI image.
-    - pip install --quiet "yamllint==$[[ inputs.yamllint_version ]]"
+    # Keep the yamllint pin in step with the CI image. `--user` + `python -m`:
+    # the shared NON-ROOT tenant runner can't write system site-packages, so pip
+    # installs to ~/.local (whose bin/ is NOT on the default PATH of python:*-slim
+    # images) — invoking the console script directly would fail "command not
+    # found". `python -m yamllint` runs the module regardless of PATH.
+    - pip install --user --quiet "yamllint==$[[ inputs.yamllint_version ]]"
   script:
     - |
       set -e
@@ -54,8 +58,8 @@ spec:
       # `yamllint -d relaxed ansible/`, `... kubernetes/`, etc. as separate
       # lines — this reproduces those exact invocations).
       for target in $[[ inputs.targets ]]; do
-        echo "yamllint $[[ inputs.config ]] $target"
-        yamllint $[[ inputs.config ]] "$target"
+        echo "python -m yamllint $[[ inputs.config ]] $target"
+        python -m yamllint $[[ inputs.config ]] "$target"
       done
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
