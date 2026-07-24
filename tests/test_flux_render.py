@@ -78,6 +78,16 @@ class TestExportVersions:
         r = _run(["export-versions", str(p)])
         assert r.returncode != 0
 
+    def test_invalid_shell_key_fails(self, tmp_path: Path):
+        # A data key that isn't a valid shell identifier would break the
+        # caller's `eval "$VARS"` — the script must refuse to emit it.
+        p = tmp_path / "bad-key.yaml"
+        p.write_text('data:\n  "bad-key": v1.0.0\n')
+        r = _run(["export-versions", str(p)])
+        assert r.returncode != 0
+        assert "invalid shell variable name" in r.stderr
+        assert "export bad-key=" not in r.stdout
+
 
 class TestK8sVersion:
     def test_derives_major_minor_zero(self, cm: Path):
