@@ -1,0 +1,82 @@
+---
+# CI for weisssrv-lib itself. Deliberately TAG-LESS so it lands on the shared
+# non-privileged runner (this library carries no image build — that needs a
+# privileged runner and stays in the consumers). Every job is non-root safe:
+# `pip install --user`, `python -m`, no apt, no /usr/local/bin writes.
+#
+# NOTE: the CI templates under ci/ are `spec:inputs` files — not standalone
+# pipelines — so they cannot be `glab ci lint`'d in isolation; the
+# ci-templates-parse job below is a YAML/spec smoke. Full render validation
+# happens in the consumers, which include them at a pinned tag with inputs.
+stages:
+  - lint
+  - test
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+variables:
+  YAMLLINT_VERSION: "1.38.0"
+  PYTEST_VERSION: "9.1.1"
+  PYYAML_VERSION: "6.0.2"
+  RUAMEL_VERSION: "0.18.10"
+
+yaml-lint:
+  stage: lint
+  image: python:3.13-slim
+  needs: []
+  before_script:
+    - pip install --user --quiet "yamllint==${YAMLLINT_VERSION}"
+  script:
+    - python -m yamllint -c .yamllint ci/ lint/ taskfiles/ .gitlab-ci.yml
+
+shellcheck:
+  stage: lint
+  image: koalaman/shellcheck-alpine:v0.10.0
+  needs: []
+  script:
+    - shellcheck --severity=warning --exclude=SC1091,SC2034 scripts/*.sh
+
+ci-templates-parse:
+  # Smoke: every CI template must be valid multi-document YAML (a spec header +
+  # config). Catches a malformed template before a consumer includes it.
+  stage: lint
+  image: python:3.13-slim
+  needs: []
+  before_script:
+    - pip install --user --quiet "pyyaml==${PYYAML_VERSION}"
+  script:
+    - |
+      python - <<'PY'
+      import glob, sys, yaml
+      bad = 0
+      for f in sorted(glob.glob("ci/**/*.yml", recursive=True)):
+          try:
+              list(yaml.safe_load_all(open(f)))
+              print("ok  ", f)
+          except Exception as e:  # noqa: BLE001
+              bad = 1
+              print("FAIL", f, e)
+      sys.exit(bad)
+      PY
+
+python-tests:
+  # scripts/ helper tests + the CLI's own suite (rename/prune/wire/verify).
+  stage: test
+  image: python:3.13-slim
+  needs: []
+  before_script:
+    # git is used by test_check_taskfile.py's throwaway repos; the slim image
+    # omits it. kustomize is intentionally absent — verify's build check is
+    # advisory and the CLI tests exercise it via a monkeypatched branch.
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git
+    - pip install --user --quiet "pytest==${PYTEST_VERSION}" "pyyaml==${PYYAML_VERSION}" "ruamel.yaml==${RUAMEL_VERSION}"
+  script:
+    - python -m pytest tests cli/tests -q --junitxml=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
