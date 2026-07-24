@@ -44,12 +44,14 @@ spec:
   image: $[[ inputs.image ]]
   tags: $[[ inputs.tags ]]
   before_script:
-    # Keep the yamllint pin in step with the CI image. `--user` + `python -m`:
-    # the shared NON-ROOT tenant runner can't write system site-packages, so pip
-    # installs to ~/.local (whose bin/ is NOT on the default PATH of python:*-slim
-    # images) — invoking the console script directly would fail "command not
-    # found". `python -m yamllint` runs the module regardless of PATH.
+    # Keep the yamllint pin in step with the CI image. `--user`: the shared
+    # NON-ROOT tenant runner can't write system site-packages, so pip installs to
+    # ~/.local. Invoke the console script by its ABSOLUTE user-base path — NOT
+    # `python -m yamllint`, which would import a repo-local `yamllint.py`/`yamllint/`
+    # from the checkout CWD before the installed package and could false-pass; and
+    # NOT the bare `yamllint`, whose ~/.local/bin is off PATH on python:*-slim.
     - pip install --user --quiet "yamllint==$[[ inputs.yamllint_version ]]"
+    - YAMLLINT_BIN="$(python -m site --user-base)/bin/yamllint"
   script:
     - |
       set -e
@@ -58,8 +60,8 @@ spec:
       # `yamllint -d relaxed ansible/`, `... kubernetes/`, etc. as separate
       # lines — this reproduces those exact invocations).
       for target in $[[ inputs.targets ]]; do
-        echo "python -m yamllint $[[ inputs.config ]] $target"
-        python -m yamllint $[[ inputs.config ]] "$target"
+        echo "$YAMLLINT_BIN $[[ inputs.config ]] $target"
+        "$YAMLLINT_BIN" $[[ inputs.config ]] "$target"
       done
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
