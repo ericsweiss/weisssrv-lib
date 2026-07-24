@@ -112,8 +112,9 @@ Conventions shared by every template:
 
 - **Reproduces:** weisssrv `secret_detection`; template `secret_detection`.
 - **Includes** GitLab's `Jobs/Secret-Detection.gitlab-ci.yml` and overrides the
-  job. **Inputs:** `stage` (security), `cpu_selector` (`esweiss.com/cpu=modern`),
-  `historic_scan` (false), `allow_failure` (true).
+  job. **Inputs:** `stage` (security), `tags` (["infrastructure"], set on the
+  override job), `cpu_selector` (`esweiss.com/cpu=modern`), `historic_scan`
+  (false), `allow_failure` (true).
 - **Parity:** rules (MR/main/schedule) + the node-selector pin are identical to
   both consumers. `allow_failure` defaults to `true` — the managed template's
   (and weisssrv's) effective value — so findings only warn; weisssrv gets its

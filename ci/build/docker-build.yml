@@ -26,7 +26,11 @@ spec:
       default: "e6b53725a73763ab3f988c73f8772eaed429754c1a579db5ff11f21990fd1817"
     registry:
       default: "$CI_REGISTRY_IMAGE"
-      description: Registry image base. Login uses CI_REGISTRY_USER/PASSWORD.
+      description: >-
+        Registry image base used only for TAGGING the built image. The docker
+        login target is the registry HOST `$CI_REGISTRY` (with
+        CI_REGISTRY_USER/PASSWORD) — deliberately separate from this
+        image-ref base, so overriding `registry` does not change the login.
     image_name:
       default: ""
       description: >-
