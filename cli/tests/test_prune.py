@@ -103,11 +103,39 @@ class TestGenericAndErrors:
         with pytest.raises(prune.PruneError):
             prune.prune(scaffold, ["bogus"])
 
-    def test_idempotent(self, scaffold):
-        prune.prune(scaffold, ["secrets"])
-        second = prune.prune(scaffold, ["secrets"])
+    def test_manifest_empty_name_raises(self, scaffold):
+        with pytest.raises(prune.PruneError):
+            prune.prune(scaffold, ["manifest:"])
+
+    @pytest.mark.parametrize("feature", ["secrets", "metrics", "pdb", "single-replica", "hpa"])
+    def test_idempotent(self, scaffold, feature):
+        prune.prune(scaffold, [feature])
+        second = prune.prune(scaffold, [feature])
         assert second == []
 
     def test_hpa_file_removed(self, scaffold):
         prune.prune(scaffold, ["hpa"])
         assert not _flux(scaffold, "hpa.yaml").exists()
+
+    def test_image_build_removes_root_files(self, scaffold):
+        (scaffold / "Dockerfile").write_text("FROM scratch\n")
+        (scaffold / ".dockerignore").write_text("*\n")
+        prune.prune(scaffold, ["image-build"])
+        assert not (scaffold / "Dockerfile").exists()
+        assert not (scaffold / ".dockerignore").exists()
+
+
+class TestUpFrontValidation:
+    def test_bad_name_after_valid_does_not_mutate(self, scaffold):
+        # A typo AFTER a valid feature must raise before touching any file.
+        with pytest.raises(prune.PruneError):
+            prune.prune(scaffold, ["secrets", "bogus"])
+        assert _flux(scaffold, "externalsecret.yaml").exists()
+        assert "externalsecret.yaml" in kz.list_resources(_kustomization(scaffold))
+
+    def test_external_ingress_guard_refuses_before_earlier_feature(self, scaffold):
+        # metrics is valid, but external-ingress would empty a file on the fresh
+        # scaffold — the whole request must refuse without pruning metrics.
+        with pytest.raises(prune.PruneError):
+            prune.prune(scaffold, ["metrics", "external-ingress"])
+        assert _flux(scaffold, "servicemonitor.yaml").exists()

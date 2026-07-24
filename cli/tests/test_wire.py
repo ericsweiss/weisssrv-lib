@@ -69,9 +69,38 @@ class TestErrors:
         with pytest.raises(wire.WireError):
             wire.wire(scaffold, ["bogus"])
 
+    def test_bad_name_after_valid_does_not_mutate(self, scaffold):
+        # A typo AFTER a valid feature must raise before touching any file.
+        k_before = _flux(scaffold, "kustomization.yaml").read_text()
+        with pytest.raises(wire.WireError):
+            wire.wire(scaffold, ["hpa", "bogus"])
+        assert _flux(scaffold, "kustomization.yaml").read_text() == k_before
+        assert "hpa.yaml" not in kz.list_resources(k_before)
+
+
+class TestIdempotency:
     def test_hpa_idempotent_kustomization(self, scaffold):
         wire.wire(scaffold, ["hpa"])
         wire.wire(scaffold, ["hpa"])
         # hpa.yaml listed exactly once.
         k = _flux(scaffold, "kustomization.yaml").read_text()
         assert kz.list_resources(k).count("hpa.yaml") == 1
+
+    def test_hpa_doc_count_after_double_wire(self, scaffold):
+        wire.wire(scaffold, ["hpa"])
+        wire.wire(scaffold, ["hpa"])
+        assert len(_docs(scaffold, "hpa.yaml")) == 1
+
+    def test_internal_ingress_idempotent(self, scaffold):
+        wire.wire(scaffold, ["internal-ingress"])
+        wire.wire(scaffold, ["internal-ingress"])
+        # Still exactly the public + internal variant, not a doubled block.
+        assert len(_docs(scaffold, "ingressroute.yaml")) == 2
+        assert len(_docs(scaffold, "certificate.yaml")) == 2
+
+    def test_sso_idempotent(self, scaffold):
+        wire.wire(scaffold, ["sso"])
+        wire.wire(scaffold, ["sso"])
+        route = _docs(scaffold, "ingressroute.yaml")[0]
+        names = [m["name"] for m in route["spec"]["routes"][0]["middlewares"]]
+        assert names.count("authentik-auth") == 1

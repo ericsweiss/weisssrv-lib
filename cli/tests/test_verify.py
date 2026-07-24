@@ -54,3 +54,32 @@ class TestKustomizeNote:
         ok, problems = verify.verify(scaffold, run_kustomize=True)
         assert ok
         assert any(p.startswith("NOTE:") for p in problems)
+
+    def test_kustomize_build_failure_is_a_hard_problem(self, scaffold, monkeypatch):
+        rename.rename(scaffold, "recipe-box", "eric")
+        monkeypatch.setattr(verify.shutil, "which", lambda _: "/usr/bin/kustomize")
+
+        class _Result:
+            returncode = 1
+            stderr = "Error: build failed\n"
+
+        monkeypatch.setattr(verify.subprocess, "run", lambda *a, **k: _Result())
+        ok, problems = verify.verify(scaffold, run_kustomize=True)
+        assert not ok
+        assert any("kustomize build failed" in p for p in problems)
+
+
+class TestBrokenScaffold:
+    def test_missing_flux_dir_early_returns(self, scaffold):
+        import shutil as _sh
+
+        _sh.rmtree(scaffold / "kubernetes" / "flux")
+        ok, problems = verify.verify(scaffold, run_kustomize=False)
+        assert not ok
+        assert any("missing directory" in p for p in problems)
+
+    def test_missing_kustomization_early_returns(self, scaffold):
+        _flux(scaffold, "kustomization.yaml").unlink()
+        ok, problems = verify.verify(scaffold, run_kustomize=False)
+        assert not ok
+        assert any("kustomization.yaml" in p and "missing" in p for p in problems)
