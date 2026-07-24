@@ -51,15 +51,24 @@ ci-templates-parse:
   script:
     - |
       python - <<'PY'
-      import glob, sys, yaml
+      import glob, os, sys, yaml
       bad = 0
-      for f in sorted(glob.glob("ci/**/*.yml", recursive=True)):
+      found = sorted(glob.glob("ci/**/*.yml", recursive=True))
+      for f in found:
           try:
               list(yaml.safe_load_all(open(f)))
               print("ok  ", f)
           except Exception as e:  # noqa: BLE001
               bad = 1
               print("FAIL", f, e)
+      # Regression guard: every documented template must actually be committed
+      # (a `.gitignore` pattern once hid ci/build/docker-build.yml — it was on
+      # disk but untracked, so a consumer's include resolved at no ref).
+      required = ["ci/build/docker-build.yml"]
+      for r in required:
+          if r not in found or not os.path.isfile(r):
+              bad = 1
+              print("FAIL", r, "is required but not present in the checkout")
       sys.exit(bad)
       PY
 

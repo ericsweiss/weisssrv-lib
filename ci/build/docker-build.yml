@@ -1,0 +1,152 @@
+spec:
+  inputs:
+    job_name:
+      default: build-image
+    stage:
+      default: build
+    image:
+      default: "python:3.11"
+      description: The job image the docker CLI runs in (needs curl + tar).
+    tags:
+      type: array
+      default: ["infrastructure"]
+      description: >-
+        Runner tag(s). MUST resolve to a PRIVILEGED runner — DinD needs
+        --privileged, which the shared non-privileged tenant runner cannot
+        provide. A consumer without one registers their own and retags here.
+    dind_service:
+      default: "docker:24.0-dind"
+      description: Docker-in-Docker service image (daemon-embedded BuildKit).
+    docker_cli_version:
+      default: "27.5.1"
+      description: Static docker CLI version (sha256-pinned per arch below).
+    docker_cli_sha256_amd64:
+      default: "4f798b3ee1e0140eab5bf30b0edc4e84f4cdb53255a429dc3bbae9524845d640"
+    docker_cli_sha256_arm64:
+      default: "e6b53725a73763ab3f988c73f8772eaed429754c1a579db5ff11f21990fd1817"
+    registry:
+      default: "$CI_REGISTRY_IMAGE"
+      description: Registry image base. Login uses CI_REGISTRY_USER/PASSWORD.
+    image_name:
+      default: ""
+      description: >-
+        Optional sub-path appended to the registry base (e.g. "molecule-ci" ->
+        $CI_REGISTRY_IMAGE/molecule-ci). Empty pushes to the registry base
+        itself ($CI_REGISTRY_IMAGE) — the usual single-image tenant case.
+    context:
+      default: "."
+      description: docker build context path.
+    dockerfile:
+      default: ""
+      description: Optional -f Dockerfile path (empty uses the context's Dockerfile).
+    extra_build_args:
+      default: ""
+      description: Extra `docker build` args (e.g. "--build-arg FOO=bar"), word-split.
+    publish_on_main:
+      type: boolean
+      default: true
+      description: >-
+        Push the :latest tag on main. The immutable :<short-sha> tag is ALWAYS
+        pushed (MR pipelines use it so they never overwrite :latest with an
+        unmerged image).
+    cpu_selector:
+      default: ""
+      description: Optional KUBERNETES_NODE_SELECTOR_CPU pin (e.g. esweiss.com/cpu=modern).
+---
+"$[[ inputs.job_name ]]":
+  # Pushes an image later jobs may consume; do not interrupt.
+  interruptible: false
+  # Infra-class retries only. NOT script_failure: a genuinely broken Dockerfile
+  # must fail fast, not burn three full builds — transient external-dep pulls
+  # are handled cheaply by the in-script build_and_push retry below (cached
+  # layers on re-attempt).
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - scheduler_failure
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.image ]]
+  tags: $[[ inputs.tags ]]
+  services:
+    - $[[ inputs.dind_service ]]
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    # Daemon-embedded BuildKit (dind) — no buildx CLI plugin needed (the static
+    # docker binary lacks it). Enables --cache-from + inline cache.
+    DOCKER_BUILDKIT: "1"
+    DOCKER_CLI_VERSION: "$[[ inputs.docker_cli_version ]]"
+    DOCKER_CLI_SHA256_AMD64: "$[[ inputs.docker_cli_sha256_amd64 ]]"
+    DOCKER_CLI_SHA256_ARM64: "$[[ inputs.docker_cli_sha256_arm64 ]]"
+    REGISTRY: "$[[ inputs.registry ]]"
+    IMAGE_NAME: "$[[ inputs.image_name ]]"
+    BUILD_CONTEXT: "$[[ inputs.context ]]"
+    DOCKERFILE: "$[[ inputs.dockerfile ]]"
+    EXTRA_BUILD_ARGS: "$[[ inputs.extra_build_args ]]"
+    PUBLISH_ON_MAIN: "$[[ inputs.publish_on_main ]]"
+    KUBERNETES_NODE_SELECTOR_CPU: "$[[ inputs.cpu_selector ]]"
+  before_script:
+    # Install the static docker CLI (NOT docker.io: some bases ship only the
+    # daemon, no CLI). Pinned version + sha256 to match the checksum discipline
+    # used for every downloaded binary.
+    - |
+      ARCH=$(dpkg --print-architecture)
+      case "$ARCH" in
+        amd64) DOCKER_ARCH=x86_64; DOCKER_SHA256="$DOCKER_CLI_SHA256_AMD64" ;;
+        arm64) DOCKER_ARCH=aarch64; DOCKER_SHA256="$DOCKER_CLI_SHA256_ARM64" ;;
+        *) echo "unsupported arch: $ARCH"; exit 1 ;;
+      esac
+      curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-${DOCKER_CLI_VERSION}.tgz" -o /tmp/docker.tgz
+      echo "${DOCKER_SHA256}  /tmp/docker.tgz" | sha256sum -c -
+      tar xz --strip-components=1 -C /usr/local/bin -f /tmp/docker.tgz docker/docker
+      rm /tmp/docker.tgz
+      docker --version
+      # Wait for the dind daemon to accept connections before building; it can
+      # lag the job start, otherwise `docker build` fails with "Cannot connect
+      # to the Docker daemon at tcp://docker:2375".
+      for i in $(seq 1 30); do docker info >/dev/null 2>&1 && break; echo "waiting for docker daemon ($i/30)..."; sleep 2; done
+      docker info >/dev/null 2>&1 || { echo "docker daemon did not become ready"; exit 1; }
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - |
+      # build_and_push: builds ${ref}:<short-sha>, pushes it (and :latest on main
+      # when publish_on_main). Seeds a registry layer cache from the previous
+      # :latest + embeds inline cache for the next run — EXCEPT on a schedule
+      # (rebuild from scratch to exercise fresh external deps). The build+push is
+      # wrapped in a bounded retry so a transient dep pull / registry blip
+      # re-attempts (cheap: cached layers) while a real build error still fails.
+      build_and_push() {
+        img="$1"
+        if [ -n "$img" ]; then ref="${REGISTRY}/${img}"; else ref="${REGISTRY}"; fi
+        cache_args=""
+        if [ "$CI_PIPELINE_SOURCE" != "schedule" ]; then
+          cache_args="--cache-from ${ref}:latest --build-arg BUILDKIT_INLINE_CACHE=1"
+        fi
+        df_arg=""
+        [ -n "$DOCKERFILE" ] && df_arg="-f $DOCKERFILE"
+        attempt=1; max=3
+        # shellcheck disable=SC2086  # word-split cache_args + df_arg + extra args
+        until docker build $cache_args $df_arg $EXTRA_BUILD_ARGS -t "${ref}:${CI_COMMIT_SHORT_SHA}" "$BUILD_CONTEXT" \
+              && docker push "${ref}:${CI_COMMIT_SHORT_SHA}"; do
+          attempt=$((attempt+1))
+          if [ "$attempt" -gt "$max" ]; then
+            echo "docker build/push of ${ref} failed after ${max} attempts"; return 1
+          fi
+          echo "build/push attempt $((attempt-1)) failed; retrying (${attempt}/${max})..."
+          sleep $(( (RANDOM % 20) + 10 ))
+        done
+        # :latest only on main — MR pipelines use SHA tags so they never
+        # overwrite :latest with an unmerged branch image.
+        if [ "$CI_COMMIT_BRANCH" = "main" ] && [ "$PUBLISH_ON_MAIN" = "true" ]; then
+          docker tag "${ref}:${CI_COMMIT_SHORT_SHA}" "${ref}:latest"
+          docker push "${ref}:latest"
+        fi
+      }
+  script:
+    - build_and_push "$IMAGE_NAME"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true

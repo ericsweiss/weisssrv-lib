@@ -4,7 +4,9 @@
 *.env
 .tmp/
 
-# Python
+# Python — anchor the build-artifact dirs to the repo root so they cannot match
+# real content like ci/build/ (an unanchored `build/` gitignored the DinD build
+# template `ci/build/docker-build.yml`).
 __pycache__/
 *.py[cod]
 .venv/
@@ -12,8 +14,8 @@ venv/
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
-build/
-dist/
+/build/
+/dist/
 
 # Editor / OS cruft
 .DS_Store
