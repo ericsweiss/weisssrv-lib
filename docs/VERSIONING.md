@@ -33,7 +33,8 @@ a published tag (a consumer that pinned it would silently get different CI).
 There is **no hosted Renovate** on this instance, so bumps are manual (mirroring
 weisssrv's `task maintenance:check-versions` discipline):
 
-1. Read this repo's `CHANGELOG`/release notes for the target tag.
+1. Read the target tag's GitLab release notes (or its annotated-tag message) for
+   what changed — this repo tracks per-tag changes there, not in a CHANGELOG file.
 2. In the consumer, bump every `ref:` to the new tag in one MR.
 3. If a template's inputs changed, update the consumer's `inputs:` accordingly.
 4. For weisssrv specifically, prove pipeline parity before merging (merged-YAML

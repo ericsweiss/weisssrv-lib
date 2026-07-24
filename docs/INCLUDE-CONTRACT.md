@@ -113,11 +113,15 @@ Conventions shared by every template:
 - **Reproduces:** weisssrv `secret_detection`; template `secret_detection`.
 - **Includes** GitLab's `Jobs/Secret-Detection.gitlab-ci.yml` and overrides the
   job. **Inputs:** `stage` (security), `cpu_selector` (`esweiss.com/cpu=modern`),
-  `historic_scan` (false).
+  `historic_scan` (false), `allow_failure` (true).
 - **Parity:** rules (MR/main/schedule) + the node-selector pin are identical to
-  both consumers. Pair with `lint/gitleaks.toml` +
-  `lint/secret-detection-ruleset.toml` (vendored as `.gitleaks.toml` and
-  `.gitlab/secret-detection-ruleset.toml`).
+  both consumers. `allow_failure` defaults to `true` — the managed template's
+  (and weisssrv's) effective value — so findings only warn; weisssrv gets its
+  hard block from `validation-gate` needing this job non-optionally. A tenant
+  without such a gate that wants findings to block a merge (e.g. a non-Ultimate
+  tier where the security report isn't enforced) passes `allow_failure: false`.
+  Pair with `lint/gitleaks.toml` + `lint/secret-detection-ruleset.toml` (vendored
+  as `.gitleaks.toml` and `.gitlab/secret-detection-ruleset.toml`).
 
 ## ci/build/docker-build.yml
 
