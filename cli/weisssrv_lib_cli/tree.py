@@ -35,6 +35,9 @@ GROUP_TOKEN = "changeme-group"
 
 # DNS-label app slug and GitLab namespace path, matching scripts/rename.sh.
 _SLUG_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+# The slug becomes a namespace / Flux Kustomization name and feeds DNS-facing
+# names, so it must fit a single DNS label (RFC 1035 max 63 octets).
+_SLUG_MAX_LEN = 63
 _GROUP_RE = re.compile(
     r"^[a-z0-9]([a-z0-9._-]*[a-z0-9])?(/[a-z0-9]([a-z0-9._-]*[a-z0-9])?)*$"
 )
@@ -44,7 +47,7 @@ _SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", ".terraform", "node_module
 
 
 def valid_slug(slug: str) -> bool:
-    return bool(_SLUG_RE.match(slug))
+    return bool(_SLUG_RE.match(slug)) and len(slug) <= _SLUG_MAX_LEN
 
 
 def valid_group(group: str) -> bool:

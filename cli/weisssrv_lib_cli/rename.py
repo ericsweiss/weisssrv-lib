@@ -24,7 +24,7 @@ def rename(root: Path, app: str, group: str) -> list[Path]:
     if not tree.valid_slug(app):
         raise RenameError(
             f"app slug '{app}' must be a valid DNS label "
-            "(lowercase letters, digits, hyphens)"
+            "(lowercase letters, digits, hyphens; max 63 characters)"
         )
     if not tree.valid_group(group):
         raise RenameError(

@@ -14,13 +14,21 @@ def _read(root: Path, rel: str) -> str:
 
 
 class TestValidation:
-    @pytest.mark.parametrize("slug", ["recipe-box", "app", "a1", "my-app-2"])
+    @pytest.mark.parametrize("slug", ["recipe-box", "app", "a1", "my-app-2", "a" * 63])
     def test_valid_slugs(self, slug):
         assert tree.valid_slug(slug)
 
-    @pytest.mark.parametrize("slug", ["Recipe", "-app", "app-", "a_b", "app.x", ""])
+    @pytest.mark.parametrize(
+        "slug", ["Recipe", "-app", "app-", "a_b", "app.x", "", "a" * 64]
+    )
     def test_invalid_slugs(self, slug):
         assert not tree.valid_slug(slug)
+
+    def test_overlong_slug_raises(self, scaffold):
+        # A 64-char slug is a valid DNS-label PATTERN but exceeds the 63-octet
+        # label limit; rename must refuse it (it becomes a namespace / DNS name).
+        with pytest.raises(rename.RenameError):
+            rename.rename(scaffold, "a" * 64, "eric")
 
     @pytest.mark.parametrize("group", ["eric", "eric/apps", "team.a/sub_group-1"])
     def test_valid_groups(self, group):
