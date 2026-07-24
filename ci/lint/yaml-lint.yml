@@ -1,0 +1,67 @@
+spec:
+  inputs:
+    job_name:
+      default: yaml-lint
+      description: Name of the generated job.
+    stage:
+      default: lint
+      description: Pipeline stage the job runs in.
+    image:
+      default: python:3.11-slim
+      description: Base image (must have pip). Default matches weisssrv.
+    tags:
+      type: array
+      default: ["infrastructure"]
+      description: >-
+        Runner tag(s). Default targets weisssrv's privileged runner; pass `[]`
+        for the shared tag-less tenant runner.
+    yamllint_version:
+      default: "1.38.0"
+      description: yamllint pip pin (kept in step with the CI image).
+    config:
+      default: "-d relaxed"
+      description: >-
+        yamllint config argument. `-d relaxed` (weisssrv baseline) or `-c
+        <path>` to load a config file (e.g. `-c .yamllint`).
+    targets:
+      default: "ansible/ kubernetes/ .gitlab-ci.yml .gitlab/ci/"
+      description: >-
+        Space-separated paths to lint; each is passed to a separate yamllint
+        invocation. Default reproduces weisssrv's four targets. Tenant repos
+        typically pass `.` (the whole tree, with `config: -c .yamllint`).
+    changes:
+      type: array
+      default:
+        - "ansible/**/*"
+        - "kubernetes/**/*"
+        - ".gitlab-ci.yml"
+        - ".gitlab/ci/**/*"
+      description: Path list for the MR/main `changes:` rules (weisssrv .paths-yaml-lint).
+---
+"$[[ inputs.job_name ]]":
+  needs: []
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.image ]]
+  tags: $[[ inputs.tags ]]
+  before_script:
+    # Keep the yamllint pin in step with the CI image.
+    - pip install --quiet "yamllint==$[[ inputs.yamllint_version ]]"
+  script:
+    - |
+      set -e
+      # shellcheck disable=SC2043,SC2086  # word-split the space-separated
+      # `targets` input into one yamllint invocation per path (weisssrv runs
+      # `yamllint -d relaxed ansible/`, `... kubernetes/`, etc. as separate
+      # lines — this reproduces those exact invocations).
+      for target in $[[ inputs.targets ]]; do
+        echo "yamllint $[[ inputs.config ]] $target"
+        yamllint $[[ inputs.config ]] "$target"
+      done
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: $[[ inputs.changes ]]
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: $[[ inputs.changes ]]
+    - if: '$CI_PIPELINE_SOURCE == "web"'

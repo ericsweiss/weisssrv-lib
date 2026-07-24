@@ -1,0 +1,74 @@
+spec:
+  inputs:
+    fmt_job_name:
+      default: terraform-fmt
+    validate_job_name:
+      default: terraform-validate
+    fmt_stage:
+      default: lint
+    validate_stage:
+      default: validate
+    image:
+      default: "hashicorp/terraform:1.15"
+      description: Terraform image (entrypoint cleared for shell scripts).
+    tags:
+      type: array
+      default: ["infrastructure"]
+      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+    fmt_dir:
+      default: "terraform/"
+      description: Directory `terraform fmt -check -recursive` runs against.
+    module_glob:
+      default: "terraform/*/"
+      description: >-
+        Glob of module dirs `terraform validate` loops over. Each module with a
+        versions.tf is `terraform init -backend=false && terraform validate`d.
+    changes:
+      type: array
+      default: ["terraform/**/*"]
+      description: Path list for the MR/main `changes:` rules (weisssrv .paths-terraform).
+---
+"$[[ inputs.fmt_job_name ]]":
+  needs: []
+  stage: $[[ inputs.fmt_stage ]]
+  tags: $[[ inputs.tags ]]
+  image:
+    name: $[[ inputs.image ]]
+    entrypoint: [""]
+  script:
+    # Cover every module under the fmt dir, not just one.
+    - terraform fmt -check -recursive $[[ inputs.fmt_dir ]]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: $[[ inputs.changes ]]
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: $[[ inputs.changes ]]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+"$[[ inputs.validate_job_name ]]":
+  needs: []
+  stage: $[[ inputs.validate_stage ]]
+  tags: $[[ inputs.tags ]]
+  image:
+    name: $[[ inputs.image ]]
+    entrypoint: [""]
+  script:
+    # Validate every module under the glob. Each needs its own init (different
+    # providers); -backend=false skips state/creds.
+    - |
+      set -eo pipefail
+      for mod in $[[ inputs.module_glob ]]; do
+        [ -f "${mod}versions.tf" ] || continue
+        echo "=== terraform validate ${mod} ==="
+        ( cd "$mod" && terraform init -backend=false && terraform validate )
+      done
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: $[[ inputs.changes ]]
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: $[[ inputs.changes ]]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
