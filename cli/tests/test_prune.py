@@ -38,6 +38,33 @@ class TestSecrets:
         container = loaded["spec"]["template"]["spec"]["containers"][0]
         assert "env" not in container
 
+    def test_keeps_unrelated_plain_env_var(self, scaffold):
+        # A consumer that customized the scaffold with an extra plain env var
+        # (no secretKeyRef) must keep it: `prune secrets` removes ONLY the env
+        # entries bound to the pruned ExternalSecret's target Secret.
+        dep_path = _flux(scaffold, "deployment.yaml")
+        dep_path.write_text(
+            dep_path.read_text(encoding="utf-8").replace(
+                "          env:\n            - name: API_KEY\n",
+                "          env:\n"
+                "            - name: LOG_LEVEL\n"
+                "              value: info\n"
+                "            - name: API_KEY\n",
+            ),
+            encoding="utf-8",
+        )
+        prune.prune(scaffold, ["secrets"])
+        dep = dep_path.read_text()
+        # The secretKeyRef-backed entry is gone.
+        assert "secretKeyRef" not in dep
+        assert "changeme-app-secrets" not in dep
+        assert "API_KEY" not in dep
+        # The user's plain env var survives.
+        container = yaml.safe_load(dep)["spec"]["template"]["spec"]["containers"][0]
+        env = container["env"]
+        assert [e["name"] for e in env] == ["LOG_LEVEL"]
+        assert env[0]["value"] == "info"
+
 
 class TestMetrics:
     def test_removes_servicemonitor(self, scaffold):

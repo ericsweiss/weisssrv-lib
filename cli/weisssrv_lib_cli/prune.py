@@ -151,29 +151,91 @@ def _drop_resource(root: Path, name: str, changed: list[Path]) -> None:
             changed.append(kpath)
 
 
+def _externalsecret_target_name(root: Path) -> str | None:
+    """The target Secret name the scaffold's ExternalSecret produces.
+
+    Reads `spec.target.name` from the (active) ExternalSecret document, falling
+    back to `metadata.name` (ESO's default when `target.name` is omitted).
+    Returns None when the manifest is absent or unparseable — the caller then
+    prunes conservatively (any secretKeyRef env, never plain-value env).
+    """
+    es = tree.flux_file(root, "externalsecret.yaml")
+    if not es.exists():
+        return None
+    try:
+        docs = tree._safe_load_all(es.read_text(encoding="utf-8"))
+    except tree.YAMLError:
+        return None
+    for doc in docs:
+        if isinstance(doc, dict) and doc.get("kind") == "ExternalSecret":
+            spec = doc.get("spec") or {}
+            target = spec.get("target") or {}
+            name = target.get("name") or (doc.get("metadata") or {}).get("name")
+            return name or None
+    return None
+
+
+def _is_secret_env(entry, secret_name: str | None) -> bool:
+    """Whether a deployment env entry references the pruned Secret.
+
+    When `secret_name` is known, only entries whose `valueFrom.secretKeyRef.name`
+    equals it are pruned. When it is None (target name unresolvable), any entry
+    carrying a `secretKeyRef` is pruned. Plain-value env vars (and configMapKeyRef
+    / fieldRef entries) are never touched.
+    """
+    if not isinstance(entry, dict):
+        return False
+    value_from = entry.get("valueFrom")
+    if not isinstance(value_from, dict):
+        return False
+    skr = value_from.get("secretKeyRef")
+    if not isinstance(skr, dict):
+        return False
+    if secret_name is None:
+        return True
+    return skr.get("name") == secret_name
+
+
 def _prune_secrets(root: Path, changed: list[Path]) -> None:
+    # Resolve the target Secret name BEFORE deleting the manifest, so we remove
+    # only the deployment env entries bound to THIS secret and leave any
+    # user-added env vars (plain values or other secretKeyRefs) intact.
+    secret_name = _externalsecret_target_name(root)
     _delete_manifest(root, "externalsecret.yaml", changed)
-    # Drop the secret env block from the first container.
     dep = tree.flux_file(root, tree.DEPLOYMENT)
-    if dep.exists():
-        data = tree.load_yaml(dep)
-        try:
-            container = data["spec"]["template"]["spec"]["containers"][0]
-        except (KeyError, IndexError, TypeError):
-            container = None
-        if container is not None and "env" in container:
-            del container["env"]
-            tree.dump_yaml(data, dep)
-            if dep not in changed:
-                changed.append(dep)
-        elif container is None:
-            # externalsecret.yaml is already gone; flag the orphaned env ref
-            # rather than reporting silent success.
-            print(
-                f"warning: could not locate the container env block in "
-                f"{tree.DEPLOYMENT}; review it for a stale secret env reference",
-                file=sys.stderr,
-            )
+    if not dep.exists():
+        return
+    data = tree.load_yaml(dep)
+    try:
+        container = data["spec"]["template"]["spec"]["containers"][0]
+    except (KeyError, IndexError, TypeError):
+        container = None
+    if container is None:
+        # Could not locate the workload container; flag the orphaned env ref
+        # rather than reporting silent success.
+        print(
+            f"warning: could not locate the container env block in "
+            f"{tree.DEPLOYMENT}; review it for a stale secret env reference",
+            file=sys.stderr,
+        )
+        return
+    env = container.get("env")
+    if not isinstance(env, list):
+        return
+    # Remove matching entries in place (reverse index) so ruamel keeps the
+    # comments/formatting of the surviving env vars.
+    removed_any = False
+    for i in range(len(env) - 1, -1, -1):
+        if _is_secret_env(env[i], secret_name):
+            del env[i]
+            removed_any = True
+    if not removed_any:
+        return
+    if len(env) == 0:
+        del container["env"]
+    tree.dump_yaml(data, dep)
+    if dep not in changed:
+        changed.append(dep)
 
 
 def _prune_metrics(root: Path, changed: list[Path]) -> None:
