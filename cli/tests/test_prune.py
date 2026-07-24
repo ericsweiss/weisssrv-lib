@@ -107,6 +107,32 @@ class TestGenericAndErrors:
         with pytest.raises(prune.PruneError):
             prune.prune(scaffold, ["manifest:"])
 
+    @pytest.mark.parametrize(
+        "evil",
+        [
+            "manifest:../evil",
+            "manifest:../../evil",
+            "manifest:/etc/passwd",
+            "manifest:sub/evil",
+            "manifest:..",
+        ],
+    )
+    def test_manifest_path_traversal_rejected(self, scaffold, evil):
+        # A `manifest:` value that escapes kubernetes/flux/ must be refused with
+        # NO deletion. Plant a victim one level up (kubernetes/) that the naive
+        # `../victim` path would resolve to, and assert it survives.
+        victim = scaffold / "kubernetes" / "victim.yaml"
+        victim.write_text("i must survive\n")
+        with pytest.raises(prune.PruneError):
+            prune.prune(scaffold, [evil])
+        assert victim.exists()
+        # A valid feature after the evil one must also not have run (up-front
+        # validation refuses the whole request before touching anything).
+        with pytest.raises(prune.PruneError):
+            prune.prune(scaffold, ["secrets", evil])
+        assert _flux(scaffold, "externalsecret.yaml").exists()
+        assert victim.exists()
+
     @pytest.mark.parametrize("feature", ["secrets", "metrics", "pdb", "single-replica", "hpa"])
     def test_idempotent(self, scaffold, feature):
         prune.prune(scaffold, [feature])

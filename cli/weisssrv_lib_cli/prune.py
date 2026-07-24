@@ -7,6 +7,7 @@ feature is a no-op.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -65,16 +66,51 @@ def _external_ingress_would_empty(root: Path) -> list[str]:
     return offenders
 
 
+def _safe_manifest_name(root: Path, raw: str) -> str:
+    """Validate a `manifest:<file>` argument and return its `.yaml` filename.
+
+    The `manifest:` feature deletes `kubernetes/flux/<file>`, so an untrusted
+    `<file>` must never be able to escape that directory. Reject absolute paths,
+    `..`, and any embedded path separator (the Flux dir is flat — a plain
+    filename is the only legitimate form), then resolve the final path and
+    assert containment as a belt-and-suspenders guard.
+    """
+    if not raw:
+        raise PruneError(
+            "manifest: requires a file name (e.g. manifest:servicemonitor)"
+        )
+    if os.path.isabs(raw):
+        raise PruneError(
+            f"manifest: file name must be a plain filename, not an absolute "
+            f"path: '{raw}'"
+        )
+    seps = {"/", os.sep}
+    if os.altsep:
+        seps.add(os.altsep)
+    if raw in (".", "..") or any(sep in raw for sep in seps):
+        raise PruneError(
+            f"manifest: file name must be a plain filename with no path "
+            f"separators or '..': '{raw}'"
+        )
+    fname = raw if raw.endswith(".yaml") else raw + ".yaml"
+    flux_real = os.path.realpath(tree.flux_dir(root))
+    target_real = os.path.realpath(tree.flux_file(root, fname))
+    if os.path.commonpath([flux_real, target_real]) != flux_real:
+        raise PruneError(
+            f"manifest: refusing to operate outside {tree.FLUX_DIR}: '{raw}'"
+        )
+    return fname
+
+
 def _validate_features(root: Path, features: list[str]) -> None:
     """Reject the whole request BEFORE mutating anything, so a bad feature name
     (or an external-ingress prune that would empty a file) never leaves a
     half-mutated repo."""
     for feat in features:
         if feat.startswith("manifest:"):
-            if not feat.split(":", 1)[1]:
-                raise PruneError(
-                    "manifest: requires a file name (e.g. manifest:servicemonitor)"
-                )
+            # Validates the file name (incl. path-traversal rejection); raises
+            # PruneError up front so a bad `manifest:` never deletes anything.
+            _safe_manifest_name(root, feat.split(":", 1)[1])
             continue
         if feat not in FEATURES:
             raise PruneError(
@@ -204,9 +240,8 @@ def prune(root: Path, features: list[str]) -> list[Path]:
     changed: list[Path] = []
     for feat in features:
         if feat.startswith("manifest:"):
-            name = feat.split(":", 1)[1]
-            if not name.endswith(".yaml"):
-                name += ".yaml"
+            # Re-validate (defence in depth) and normalise to a safe .yaml name.
+            name = _safe_manifest_name(root, feat.split(":", 1)[1])
             _delete_manifest(root, name, changed)
             continue
         if feat == "secrets":
