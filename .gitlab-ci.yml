@@ -11,6 +11,7 @@
 stages:
   - lint
   - test
+  - ai-review
 
 workflow:
   rules:
@@ -75,13 +76,15 @@ ci-templates-parse:
 python-tests:
   # scripts/ helper tests + the CLI's own suite (rename/prune/wire/verify).
   stage: test
-  image: python:3.13-slim
+  # The FULL python image (not -slim) ships git — needed by the check-taskfile /
+  # tree.py tests that init throwaway repos. The shared runner is NON-ROOT, so
+  # apt-installing git is impossible (it fails with a lock permission error);
+  # baking it into the image is the only option. kustomize is intentionally
+  # absent — verify's build check is advisory and the CLI tests exercise it via
+  # a monkeypatched branch.
+  image: python:3.13
   needs: []
   before_script:
-    # git is used by test_check_taskfile.py's throwaway repos; the slim image
-    # omits it. kustomize is intentionally absent — verify's build check is
-    # advisory and the CLI tests exercise it via a monkeypatched branch.
-    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git
     - pip install --user --quiet "pytest==${PYTEST_VERSION}" "pyyaml==${PYYAML_VERSION}" "ruamel.yaml==${RUAMEL_VERSION}"
   script:
     - python -m pytest tests cli/tests -q --junitxml=report.xml
@@ -89,3 +92,56 @@ python-tests:
     when: always
     reports:
       junit: report.xml
+
+# AI code review — the SAME reviewer weisssrv runs (codiumai/pr-agent 0.34,
+# gpt-5.5, high reasoning, review + improve, identical instructions). Difference
+# from weisssrv is only secret plumbing: this library's shared runner is
+# non-root and cannot apt-install the 1Password CLI, so the two secrets come
+# from masked CI/CD variables (OPENAI__KEY, GITLAB__PERSONAL_ACCESS_TOKEN) that
+# pr-agent reads directly from the env — exactly the pattern
+# ci/templates/install-1password.yml documents for the non-privileged runner.
+# The `&& $OPENAI__KEY` rule guard means the job is simply not created until the
+# variables are set (an absent AI review is expected, not a failure — same as
+# weisssrv's $OP_SERVICE_ACCOUNT_TOKEN guard). allow_failure so it never blocks.
+pr-agent-review:
+  stage: ai-review
+  needs:
+    - job: yaml-lint
+      optional: true
+    - job: shellcheck
+      optional: true
+    - job: ci-templates-parse
+      optional: true
+    - job: python-tests
+      optional: true
+  # Pinned by digest (matches weisssrv) — this job handles a GitLab PAT and an
+  # OpenAI key, so no floating tag.
+  image: codiumai/pr-agent:0.34@sha256:1c1743e93bf6627cd14528cd4defe82465f17860e8f20e6c0ac6558971f61c61
+  variables:
+    CONFIG__GIT_PROVIDER: "gitlab"
+    GITLAB__URL: "https://git.ericsweiss.com"
+    CONFIG__MODEL: "gpt-5.5"
+    CONFIG__MAX_MODEL_TOKENS: "900000"
+    CONFIG__CUSTOM_MODEL_MAX_TOKENS: "1050000"
+    CONFIG__REASONING_EFFORT: "high"
+    CONFIG__AI_TIMEOUT: "600"
+    PR_REVIEWER__NUM_CODE_SUGGESTIONS: "6"
+    PR_REVIEWER__EXTRA_INSTRUCTIONS: "Be thorough. Review every file. Flag all bugs, security issues, and documentation drift."
+    PR_CODE_SUGGESTIONS__NUM_CODE_SUGGESTIONS: "6"
+  script:
+    - |
+      echo "Running AI code review on MR !${CI_MERGE_REQUEST_IID}..."
+      echo "Model: gpt-5.5 (high reasoning, 900k context, 600s call timeout)"
+      python -m pr_agent.cli \
+        --pr_url="https://git.ericsweiss.com/eric/weisssrv-lib/-/merge_requests/${CI_MERGE_REQUEST_IID}" \
+        review
+      python -m pr_agent.cli \
+        --pr_url="https://git.ericsweiss.com/eric/weisssrv-lib/-/merge_requests/${CI_MERGE_REQUEST_IID}" \
+        improve
+      echo "AI review complete"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OPENAI__KEY'
+  allow_failure: true
+  timeout: 45m
