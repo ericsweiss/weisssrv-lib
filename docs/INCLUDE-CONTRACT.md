@@ -18,8 +18,13 @@ Conventions shared by every template:
 - **`tags` (array)** — runner tag(s). Default `["infrastructure"]` (weisssrv's
   privileged runner). Tenants pass `tags: []` for the shared tag-less runner.
 - **`changes` (array)** — the `changes:` path list used in the MR + main rules.
-  Defaults reproduce weisssrv's `.paths-*` anchor for that job, so weisssrv gets
-  byte-identical rules; tenants pass their own list.
+  For most templates (yaml-lint, shellcheck, terraform, flux-lint) the defaults
+  are byte-identical to weisssrv's `.paths-*` anchor, so weisssrv gets identical
+  rules with default inputs. **Two anchors reach into ansible paths that are
+  deliberately out of library scope** (`docs-link-check`, `python-tests`); their
+  defaults cover only the generic subset, so on adoption weisssrv passes its own
+  full `.paths-docs-links` / `.paths-python-tests` via the `changes` input (see
+  each template's Parity note). Tenants pass whatever list fits their repo.
 - The rules shape for lint/validate/test jobs is fixed:
   `schedule → never`, `merge_request_event → changes`, `main → changes`, `web`.
 
@@ -55,8 +60,13 @@ Conventions shared by every template:
 - **Inputs:** `script_path` (`scripts/check-doc-links.py`), `roots` (empty →
   checker default of docs/ + top-level READMEs), `changes`.
 - **Parity:** weisssrv runs its repo-local `scripts/check-doc-links.py` (byte
-  identical). Tenants vendor the stdlib-only checker from this library's
-  `scripts/check-doc-links.py` (no network, no deps).
+  identical). The default `changes` covers the generic subset of weisssrv's
+  `.paths-docs-links` (docs/, READMEs, `scripts/check-doc-links.py`,
+  `scripts/test_check_doc_links.py`) but **not** `ansible/TESTING.md` — an
+  ansible path out of library scope. **Weisssrv adopts by passing its full
+  `.paths-docs-links` as `changes`** (or the ansible-only trigger is lost);
+  defaults are NOT byte-identical for this job. Tenants vendor the stdlib-only
+  checker from this library's `scripts/check-doc-links.py` (no network, no deps).
 - **Tenant:** `inputs: { tags: [] }` (after vendoring the script).
 
 ## ci/validate/flux-lint.yml
@@ -132,7 +142,14 @@ Conventions shared by every template:
 - **Reproduces:** weisssrv `python-tests`.
 - **Inputs:** `test_dir` (`scripts/`), `pytest_version` (9.1.1), `pyyaml_version`
   (6.0.2), `apt_packages` (`git jq`), `changes`.
-- **Parity:** junit report + before_script (apt + pinned pip) + rules verbatim.
+- **Parity:** junit report + before_script (apt + pinned pip) + rules are
+  verbatim. The default `changes` is the generic subset (`scripts/**/*`,
+  `.gitlab-ci.yml`); weisssrv's `.paths-python-tests` additionally guards four
+  ansible paths (`all.yml`, `adguard_home/tasks/api_base_config.yml`,
+  `ansible/roles/**/molecule/**/*`, `ansible/integration-tests/**/*`) whose
+  pytest suite validates ansible tree files — out of library scope. **Weisssrv
+  adopts by passing its full `.paths-python-tests` as `changes`**; defaults are
+  NOT byte-identical for this job.
 
 ---
 

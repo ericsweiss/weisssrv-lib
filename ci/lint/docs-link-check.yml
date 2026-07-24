@@ -29,7 +29,12 @@ spec:
         - "README.md"
         - "CLAUDE.md"
         - "scripts/check-doc-links.py"
-      description: Path list for the MR/main `changes:` rules (weisssrv .paths-docs-links).
+        - "scripts/test_check_doc_links.py"
+      description: >-
+        Path list for the MR/main `changes:` rules. Covers the generic subset of
+        weisssrv's `.paths-docs-links`; weisssrv also guards `ansible/TESTING.md`
+        (ansible, out of library scope) so it passes its own full list on
+        adoption — see docs/INCLUDE-CONTRACT.md.
 ---
 "$[[ inputs.job_name ]]":
   needs: []
