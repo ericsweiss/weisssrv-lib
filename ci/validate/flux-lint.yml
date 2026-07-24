@@ -150,12 +150,16 @@ spec:
   script:
     - |
       set -eo pipefail
-      export PATH="$CI_PROJECT_DIR/.bin:$PATH"
       FAILED=0
       CATALOG='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
 
       if [ "$SUBSTITUTE" != "true" ]; then
         # --- Simple mode (tenant): render one literal-pinned path, validate it. ---
+        # The non-root tools were extracted to .bin in before_script; prepend it
+        # here too. This is ONLY done in simple mode: in substitute (root) mode
+        # the sha256-verified kustomize/kubeconform live in /usr/local/bin, and a
+        # repo-controlled .bin/kustomize on PATH must not be able to shadow them.
+        export PATH="$CI_PROJECT_DIR/.bin:$PATH"
         K8S_VER="${K8S_VERSION_INPUT:-1.36.0}"
         echo "=== kustomize build $KUSTOMIZE_PATH ==="
         kustomize build "$KUSTOMIZE_PATH" > /tmp/rendered.yaml
