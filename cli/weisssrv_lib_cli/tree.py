@@ -20,7 +20,7 @@ import io
 import re
 from pathlib import Path
 
-from ruamel.yaml import YAML
+from ruamel.yaml import YAML, YAMLError
 
 FLUX_DIR = "kubernetes/flux"
 KUSTOMIZATION = "kustomization.yaml"
@@ -59,6 +59,20 @@ def rt_yaml() -> YAML:
     y.indent(mapping=2, sequence=4, offset=2)
     y.width = 4096  # never fold long lines
     return y
+
+
+def _safe_load(text: str):
+    """Plain-Python load of a single YAML document (ruamel's safe loader).
+
+    Kept on ruamel — the CLI's only runtime dependency — so no PyYAML is needed
+    at runtime. Returns None for empty/comment-only input.
+    """
+    return YAML(typ="safe", pure=True).load(io.StringIO(text))
+
+
+def _safe_load_all(text: str) -> list:
+    """Plain-Python load of every document in a multi-doc YAML string."""
+    return list(YAML(typ="safe", pure=True).load_all(io.StringIO(text)))
 
 
 def load_yaml(path: Path):
@@ -131,13 +145,10 @@ def _git_tracked(root: Path) -> list[Path] | None:
 
 def read_document_names(path: Path) -> list[str]:
     """metadata.name of every YAML document in a (possibly multi-doc) file."""
-    import yaml
-
     names: list[str] = []
-    with path.open(encoding="utf-8") as fh:
-        for doc in yaml.safe_load_all(fh):
-            if isinstance(doc, dict):
-                names.append((doc.get("metadata") or {}).get("name", ""))
+    for doc in _safe_load_all(path.read_text(encoding="utf-8")):
+        if isinstance(doc, dict):
+            names.append((doc.get("metadata") or {}).get("name", ""))
     return names
 
 
@@ -149,8 +160,6 @@ def remove_documents(text: str, predicate) -> tuple[str, int]:
     Commented-out blocks yaml-parse to None and are always kept. Returns
     (new_text, num_removed).
     """
-    import yaml
-
     lines = text.splitlines(keepends=True)
     chunks: list[list[str]] = []
     current: list[str] = []
@@ -169,8 +178,8 @@ def remove_documents(text: str, predicate) -> tuple[str, int]:
     for chunk in chunks:
         body = "".join(chunk)
         try:
-            doc = yaml.safe_load(body)
-        except yaml.YAMLError:
+            doc = _safe_load(body)
+        except YAMLError:
             doc = None
         if isinstance(doc, dict) and predicate(doc):
             removed += 1

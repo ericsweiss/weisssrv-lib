@@ -3,8 +3,9 @@
 The scaffolding CLI for weisssrv cluster tenant repos. It turns a fresh copy of
 [weisssrv-project-template](https://git.ericsweiss.com/eric/weisssrv-project-template)
 into a configured project. Offline and dependency-light — the only runtime
-dependency is `ruamel.yaml` (round-trip YAML editing that preserves the
-scaffold's comments).
+dependency is `ruamel.yaml`, which handles both the round-trip edits that
+preserve the scaffold's comments and the plain safe-loads used to inspect
+documents. No PyYAML is needed at runtime (it is a test-only extra).
 
 ## Install / run
 

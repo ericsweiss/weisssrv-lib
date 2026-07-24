@@ -11,12 +11,16 @@ requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Eric S. Weiss" }]
 dependencies = [
-  # Round-trip YAML editing that preserves the scaffold's comments. The only
-  # runtime dependency — the CLI is otherwise stdlib-only and offline.
+  # ruamel.yaml is the ONLY runtime dependency: it does both the round-trip
+  # edits that preserve the scaffold's comments AND the plain safe-loads used to
+  # inspect documents (tree._safe_load / _safe_load_all). The CLI is otherwise
+  # stdlib-only and offline. No PyYAML at runtime.
   "ruamel.yaml>=0.17",
 ]
 
 [project.optional-dependencies]
+# pyyaml is TEST-ONLY — the test suite reads manifests back with yaml.safe_load;
+# it is never imported by the weisssrv_lib_cli package at runtime.
 test = ["pytest>=7", "pyyaml>=6"]
 
 [project.scripts]
