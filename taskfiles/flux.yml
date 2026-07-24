@@ -1,0 +1,33 @@
+---
+# go-task include fragment: local Flux/kustomize validation that mirrors the
+# tenant flux-lint CI template (ci/validate/flux-lint.yml, substitute=false).
+# Consume from a project Taskfile:
+#
+#   includes:
+#     flux:
+#       taskfile: .weisssrv-lib/taskfiles/flux.yml   # vendored at your pinned tag
+#
+# then `task flux:lint` / `task flux:render`. Requires kustomize + kubeconform
+# on PATH (same pinned versions the CI template downloads).
+version: "3"
+
+vars:
+  FLUX_PATH: '{{.FLUX_PATH | default "kubernetes/flux"}}'
+  K8S_VERSION: '{{.K8S_VERSION | default "1.36.0"}}'
+  CRD_CATALOG: 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{`{{.Group}}`}}/{{`{{.ResourceKind}}`}}_{{`{{.ResourceAPIVersion}}`}}.json'
+
+tasks:
+  lint:
+    desc: kustomize build the flux dir, then kubeconform schema validation.
+    cmds:
+      - kustomize build {{.FLUX_PATH}} > /tmp/flux-rendered.yaml
+      - >-
+        kubeconform -strict -ignore-missing-schemas -kubernetes-version {{.K8S_VERSION}}
+        -schema-location default
+        -schema-location '{{.CRD_CATALOG}}'
+        -summary /tmp/flux-rendered.yaml
+
+  render:
+    desc: Print the rendered manifests kustomize will hand to Flux.
+    cmds:
+      - kustomize build {{.FLUX_PATH}}

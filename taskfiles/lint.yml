@@ -1,0 +1,44 @@
+---
+# go-task include fragment: local lint tasks that mirror the library's lint CI
+# templates (ci/lint/*.yml), so `task lint` on a workstation reproduces what CI
+# runs. Consume from a project Taskfile:
+#
+#   includes:
+#     lint:
+#       taskfile: .weisssrv-lib/taskfiles/lint.yml   # vendored at your pinned tag
+#       flatten: true                                # optional: expose top-level
+#
+# then `task lint`, `task yamllint`, etc. Requires yamllint + shellcheck on PATH.
+version: "3"
+
+vars:
+  # Whole-tree yaml lint using the repo's .yamllint (matches the tenant
+  # yaml-lint CI job: `yamllint -c .yamllint .`).
+  YAMLLINT_ARGS: '-c .yamllint .'
+  # Files/globs shellcheck covers (matches ci/lint/shellcheck.yml direct_globs
+  # for a scripts-only repo). Override in the consumer Taskfile if needed.
+  SHELLCHECK_GLOBS: 'scripts/*.sh'
+  DOC_LINK_SCRIPT: 'scripts/check-doc-links.py'
+
+tasks:
+  default:
+    desc: Run every local lint (yamllint + shellcheck + doc links).
+    cmds:
+      - task: yamllint
+      - task: shellcheck
+      - task: doc-links
+
+  yamllint:
+    desc: Lint YAML with the repo's .yamllint config.
+    cmds:
+      - yamllint {{.YAMLLINT_ARGS}}
+
+  shellcheck:
+    desc: ShellCheck the repo's shell scripts (warning severity, SC1091/SC2034 excluded).
+    cmds:
+      - 'shellcheck --severity=warning --exclude=SC1091,SC2034 {{.SHELLCHECK_GLOBS}}'
+
+  doc-links:
+    desc: Resolve relative Markdown cross-links offline (no-op if the script is absent).
+    cmds:
+      - '[ -f {{.DOC_LINK_SCRIPT}} ] && python3 {{.DOC_LINK_SCRIPT}} || echo "no {{.DOC_LINK_SCRIPT}} — skipping"'
