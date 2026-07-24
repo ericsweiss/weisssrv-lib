@@ -1,0 +1,22 @@
+---
+# Shared pip + ansible-galaxy cache fragment. Defines the hidden `.dep-cache`
+# job; a consumer `include:`s this file and `extends: .dep-cache` (or references
+# its keys) so the pip download cache + galaxy collections persist across jobs
+# instead of re-fetching the same pinned artifacts every run. The cache key
+# includes the pin files so a dependency bump busts it. No-op (just no cache
+# hits) when the runner has no distributed cache backend — safe either way.
+#
+# This is a plain fragment (no spec:inputs): it carries no parameterizable
+# values. Extracted verbatim from weisssrv's `.dep-cache`.
+.dep-cache:
+  variables:
+    PIP_CACHE_DIR: "${CI_PROJECT_DIR}/.cache/pip"
+    ANSIBLE_COLLECTIONS_PATH: "${CI_PROJECT_DIR}/.cache/ansible-collections"
+  cache:
+    key:
+      files:
+        - requirements.txt
+        - ansible/requirements.yml
+    paths:
+      - .cache/pip
+      - .cache/ansible-collections

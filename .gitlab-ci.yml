@@ -1,0 +1,147 @@
+---
+# CI for weisssrv-lib itself. Deliberately TAG-LESS so it lands on the shared
+# non-privileged runner (this library carries no image build — that needs a
+# privileged runner and stays in the consumers). Every job is non-root safe:
+# `pip install --user`, `python -m`, no apt, no /usr/local/bin writes.
+#
+# NOTE: the CI templates under ci/ are `spec:inputs` files — not standalone
+# pipelines — so they cannot be `glab ci lint`'d in isolation; the
+# ci-templates-parse job below is a YAML/spec smoke. Full render validation
+# happens in the consumers, which include them at a pinned tag with inputs.
+stages:
+  - lint
+  - test
+  - ai-review
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+variables:
+  YAMLLINT_VERSION: "1.38.0"
+  PYTEST_VERSION: "9.1.1"
+  PYYAML_VERSION: "6.0.2"
+  RUAMEL_VERSION: "0.18.10"
+
+yaml-lint:
+  stage: lint
+  image: python:3.13-slim
+  needs: []
+  before_script:
+    - pip install --user --quiet "yamllint==${YAMLLINT_VERSION}"
+  script:
+    - python -m yamllint -c .yamllint ci/ lint/ taskfiles/ .gitlab-ci.yml
+
+shellcheck:
+  stage: lint
+  image: koalaman/shellcheck-alpine:v0.10.0
+  needs: []
+  script:
+    - shellcheck --severity=warning --exclude=SC1091,SC2034 scripts/*.sh
+
+ci-templates-parse:
+  # Smoke: every CI template must be valid multi-document YAML (a spec header +
+  # config). Catches a malformed template before a consumer includes it.
+  stage: lint
+  image: python:3.13-slim
+  needs: []
+  before_script:
+    - pip install --user --quiet "pyyaml==${PYYAML_VERSION}"
+  script:
+    - |
+      python - <<'PY'
+      import glob, os, sys, yaml
+      bad = 0
+      found = sorted(glob.glob("ci/**/*.yml", recursive=True))
+      for f in found:
+          try:
+              list(yaml.safe_load_all(open(f)))
+              print("ok  ", f)
+          except Exception as e:  # noqa: BLE001
+              bad = 1
+              print("FAIL", f, e)
+      # Regression guard: every documented template must actually be committed
+      # (a `.gitignore` pattern once hid ci/build/docker-build.yml — it was on
+      # disk but untracked, so a consumer's include resolved at no ref).
+      required = ["ci/build/docker-build.yml"]
+      for r in required:
+          if r not in found or not os.path.isfile(r):
+              bad = 1
+              print("FAIL", r, "is required but not present in the checkout")
+      sys.exit(bad)
+      PY
+
+python-tests:
+  # scripts/ helper tests + the CLI's own suite (rename/prune/wire/verify).
+  stage: test
+  # The FULL python image (not -slim) ships git — needed by the check-taskfile /
+  # tree.py tests that init throwaway repos. The shared runner is NON-ROOT, so
+  # apt-installing git is impossible (it fails with a lock permission error);
+  # baking it into the image is the only option. kustomize is intentionally
+  # absent — verify's build check is advisory and the CLI tests exercise it via
+  # a monkeypatched branch.
+  image: python:3.13
+  needs: []
+  before_script:
+    - pip install --user --quiet "pytest==${PYTEST_VERSION}" "pyyaml==${PYYAML_VERSION}" "ruamel.yaml==${RUAMEL_VERSION}"
+  script:
+    - python -m pytest tests cli/tests -q --junitxml=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
+
+# AI code review — the SAME reviewer weisssrv runs (codiumai/pr-agent 0.34,
+# gpt-5.5, high reasoning, review + improve, identical instructions). Difference
+# from weisssrv is only secret plumbing: this library's shared runner is
+# non-root and cannot apt-install the 1Password CLI, so the two secrets come
+# from masked CI/CD variables (OPENAI__KEY, GITLAB__PERSONAL_ACCESS_TOKEN) that
+# pr-agent reads directly from the env — exactly the pattern
+# ci/templates/install-1password.yml documents for the non-privileged runner.
+# The `&& $OPENAI__KEY` rule guard means the job is simply not created until the
+# variables are set (an absent AI review is expected, not a failure — same as
+# weisssrv's $OP_SERVICE_ACCOUNT_TOKEN guard). allow_failure so it never blocks.
+pr-agent-review:
+  stage: ai-review
+  needs:
+    - job: yaml-lint
+      optional: true
+    - job: shellcheck
+      optional: true
+    - job: ci-templates-parse
+      optional: true
+    - job: python-tests
+      optional: true
+  # Pinned by digest (matches weisssrv) — this job handles a GitLab PAT and an
+  # OpenAI key, so no floating tag.
+  image: codiumai/pr-agent:0.34@sha256:1c1743e93bf6627cd14528cd4defe82465f17860e8f20e6c0ac6558971f61c61
+  variables:
+    CONFIG__GIT_PROVIDER: "gitlab"
+    GITLAB__URL: "https://git.ericsweiss.com"
+    CONFIG__MODEL: "gpt-5.5"
+    CONFIG__MAX_MODEL_TOKENS: "900000"
+    CONFIG__CUSTOM_MODEL_MAX_TOKENS: "1050000"
+    CONFIG__REASONING_EFFORT: "high"
+    CONFIG__AI_TIMEOUT: "600"
+    PR_REVIEWER__NUM_CODE_SUGGESTIONS: "6"
+    PR_REVIEWER__EXTRA_INSTRUCTIONS: "Be thorough. Review every file. Flag all bugs, security issues, and documentation drift."
+    PR_CODE_SUGGESTIONS__NUM_CODE_SUGGESTIONS: "6"
+  script:
+    - |
+      echo "Running AI code review on MR !${CI_MERGE_REQUEST_IID}..."
+      echo "Model: gpt-5.5 (high reasoning, 900k context, 600s call timeout)"
+      python -m pr_agent.cli \
+        --pr_url="https://git.ericsweiss.com/eric/weisssrv-lib/-/merge_requests/${CI_MERGE_REQUEST_IID}" \
+        review
+      python -m pr_agent.cli \
+        --pr_url="https://git.ericsweiss.com/eric/weisssrv-lib/-/merge_requests/${CI_MERGE_REQUEST_IID}" \
+        improve
+      echo "AI review complete"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OPENAI__KEY'
+  allow_failure: true
+  timeout: 45m

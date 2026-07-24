@@ -1,0 +1,54 @@
+spec:
+  inputs:
+    job_name:
+      default: docs-link-check
+    stage:
+      default: lint
+    image:
+      default: python:3.11-slim
+    tags:
+      type: array
+      default: ["infrastructure"]
+      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+    script_path:
+      default: "scripts/check-doc-links.py"
+      description: >-
+        Path to the offline link checker in the CONSUMER repo. weisssrv ships it
+        at this path (byte-equivalent to its current job). Tenant repos vendor
+        the stdlib-only checker from this library's scripts/check-doc-links.py
+        (no network, no extra deps).
+    roots:
+      default: ""
+      description: >-
+        Optional space-separated repo roots to scan; empty uses the checker's
+        default (docs/ + top-level README.md/CLAUDE.md).
+    changes:
+      type: array
+      default:
+        - "docs/**/*"
+        - "README.md"
+        - "CLAUDE.md"
+        - "scripts/check-doc-links.py"
+        - "scripts/test_check_doc_links.py"
+      description: >-
+        Path list for the MR/main `changes:` rules. Covers the generic subset of
+        weisssrv's `.paths-docs-links`; weisssrv also guards `ansible/TESTING.md`
+        (ansible, out of library scope) so it passes its own full list on
+        adoption — see docs/INCLUDE-CONTRACT.md.
+---
+"$[[ inputs.job_name ]]":
+  needs: []
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.image ]]
+  tags: $[[ inputs.tags ]]
+  script:
+    # shellcheck disable=SC2086  # intentional word-split of the roots input
+    - python3 "$[[ inputs.script_path ]]" $[[ inputs.roots ]]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: $[[ inputs.changes ]]
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: $[[ inputs.changes ]]
+    - if: '$CI_PIPELINE_SOURCE == "web"'

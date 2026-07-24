@@ -1,0 +1,277 @@
+spec:
+  inputs:
+    job_name:
+      default: flux-lint
+    stage:
+      default: lint
+    image:
+      default: python:3.11-slim
+    tags:
+      type: array
+      default: ["infrastructure"]
+      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+    substitute:
+      type: boolean
+      default: true
+      description: >-
+        true (weisssrv): extract postBuild vars from a cluster-versions
+        ConfigMap, envsubst every rendered Kustomization, iterate the cluster
+        dir. Needs a ROOT runner (apt install gettext-base). false (tenant):
+        render one literal-pinned path and kubeconform it — non-root safe,
+        stdlib-only tool download.
+    kubeconform_version:
+      default: "0.6.7"
+    kubeconform_sha256:
+      default: "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73"
+    kustomize_version:
+      default: "5.4.3"
+    kustomize_sha256:
+      default: "3669470b454d865c8184d6bce78df05e977c9aea31c30df3c669317d43bcc7a7"
+    helm_version:
+      default: "3.18.4"
+      description: Only installed in substitute mode (schema-validating HelmRelease values).
+    helm_sha256:
+      default: "f8180838c23d7c7d797b208861fecb591d9ce1690d8704ed1e4cb8e2add966c1"
+    pyyaml_version:
+      default: "6.0.2"
+      description: >-
+        (substitute=true) pinned PyYAML for the inline spec.path parser, matching
+        weisssrv's PYYAML_VERSION. An unpinned floating install would drift the
+        before_script from weisssrv's and let a breaking release change behavior.
+    k8s_version:
+      default: ""
+      description: >-
+        kubeconform target k8s version. Empty in substitute mode derives it from
+        the ConfigMap's k3s_version; tenants pass a literal (e.g. "1.36.0").
+    kustomize_path:
+      default: "kubernetes/flux"
+      description: (substitute=false) directory kustomize builds.
+    cluster_dir:
+      default: "kubernetes/clusters/weisssrv"
+      description: (substitute=true) dir of Flux Kustomizations to iterate.
+    versions_configmap:
+      default: "kubernetes/infrastructure/sources/versions-configmap.yaml"
+      description: (substitute=true) the cluster-versions ConfigMap.
+    flux_render_script:
+      default: "scripts/flux-render.sh"
+      description: (substitute=true) repo-local copy of the shared render helper.
+    skipped_script:
+      default: "scripts/kubeconform-skipped.py"
+      description: (substitute=true) repo-local copy of the unvalidated-kind tracker.
+    extra_validation:
+      default: ""
+      description: >-
+        (substitute=true) extra shell injected after the render loop, with
+        $RENDER_ALL / $K8S_VER / $FAILED in scope. weisssrv passes its HPA/VPA
+        invariant + helm-values checks here (those reference weisssrv-local
+        scripts that stay in weisssrv).
+    changes:
+      type: array
+      default:
+        - "kubernetes/**/*"
+        - "ansible/inventories/prod/group_vars/all.yml"
+      description: Path list for the MR/main `changes:` rules (weisssrv .paths-flux-lint).
+---
+"$[[ inputs.job_name ]]":
+  needs: []
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.image ]]
+  tags: $[[ inputs.tags ]]
+  # Cache the pinned lint binaries across runs (substitute mode), keyed on the
+  # consumer's .gitlab-ci.yml (where the version inputs live) so a bump busts it.
+  # No-op without a runner cache backend.
+  cache:
+    key:
+      prefix: flux-lint
+      files:
+        - .gitlab-ci.yml
+    paths:
+      - .cache/flux-lint-tools
+  variables:
+    SUBSTITUTE: "$[[ inputs.substitute ]]"
+    KUBECONFORM_VERSION: "$[[ inputs.kubeconform_version ]]"
+    KUBECONFORM_SHA256: "$[[ inputs.kubeconform_sha256 ]]"
+    KUSTOMIZE_VERSION: "$[[ inputs.kustomize_version ]]"
+    KUSTOMIZE_SHA256: "$[[ inputs.kustomize_sha256 ]]"
+    HELM_VERSION: "$[[ inputs.helm_version ]]"
+    HELM_SHA256: "$[[ inputs.helm_sha256 ]]"
+    PYYAML_VERSION: "$[[ inputs.pyyaml_version ]]"
+    K8S_VERSION_INPUT: "$[[ inputs.k8s_version ]]"
+    KUSTOMIZE_PATH: "$[[ inputs.kustomize_path ]]"
+    CLUSTER_DIR: "$[[ inputs.cluster_dir ]]"
+    VERSIONS_CONFIGMAP: "$[[ inputs.versions_configmap ]]"
+    FLUX_RENDER_SCRIPT: "$[[ inputs.flux_render_script ]]"
+    SKIPPED_SCRIPT: "$[[ inputs.skipped_script ]]"
+  before_script:
+    - |
+      set -eo pipefail
+      KC_URL="https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+      KZ_URL="https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+      if [ "$SUBSTITUTE" = "true" ]; then
+        # --- ROOT path (weisssrv privileged runner). apt + /usr/local/bin +
+        # a VERIFIED-TARBALL cache: every run re-checks each tarball against its
+        # pinned sha256 and re-extracts, so a mutated runner cache can never
+        # smuggle an unverified binary onto PATH. ---
+        apt-get update -qq && apt-get install -y -qq curl gettext-base
+        pip install --quiet "pyyaml==$PYYAML_VERSION"
+        TOOLS_CACHE="${CI_PROJECT_DIR}/.cache/flux-lint-tools"
+        TOOLS_BIN=/usr/local/bin
+        mkdir -p "$TOOLS_CACHE"
+        fetch_verified() { # <file> <url> <sha256>
+          if ! echo "$3  $TOOLS_CACHE/$1" | sha256sum -c - >/dev/null 2>&1; then
+            curl -fsSL -o "$TOOLS_CACHE/$1" "$2"
+            echo "$3  $TOOLS_CACHE/$1" | sha256sum -c -
+          fi
+        }
+        fetch_verified kubeconform.tar.gz "$KC_URL" "$KUBECONFORM_SHA256"
+        tar xzf "$TOOLS_CACHE/kubeconform.tar.gz" -C "$TOOLS_BIN" kubeconform
+        fetch_verified kustomize.tar.gz "$KZ_URL" "$KUSTOMIZE_SHA256"
+        tar xzf "$TOOLS_CACHE/kustomize.tar.gz" -C "$TOOLS_BIN" kustomize
+        fetch_verified helm.tar.gz "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz" "$HELM_SHA256"
+        tar xzf "$TOOLS_CACHE/helm.tar.gz" -C "$TOOLS_BIN" --strip-components=1 linux-amd64/helm
+        kubeconform -v && kustomize version && helm version --short && envsubst --version | head -1
+      else
+        # --- NON-ROOT path (shared tenant runner). No apt, no /usr/local/bin:
+        # download with Python stdlib, verify sha256, extract into a workspace
+        # bin on PATH. before_script + script share one shell, so PATH carries. ---
+        export TOOLS_BIN="$CI_PROJECT_DIR/.bin"
+        mkdir -p "$TOOLS_BIN"
+        fetch_verified() { # <file> <url> <sha256>
+          python -c "import urllib.request,sys; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" "$2" "/tmp/$1"
+          echo "$3  /tmp/$1" | sha256sum -c -
+        }
+        fetch_verified kubeconform.tar.gz "$KC_URL" "$KUBECONFORM_SHA256"
+        tar xzf /tmp/kubeconform.tar.gz -C "$TOOLS_BIN" kubeconform
+        fetch_verified kustomize.tar.gz "$KZ_URL" "$KUSTOMIZE_SHA256"
+        tar xzf /tmp/kustomize.tar.gz -C "$TOOLS_BIN" kustomize
+        export PATH="$TOOLS_BIN:$PATH"
+        kubeconform -v && kustomize version
+      fi
+  script:
+    - |
+      set -eo pipefail
+      FAILED=0
+      CATALOG='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+
+      if [ "$SUBSTITUTE" != "true" ]; then
+        # --- Simple mode (tenant): render one literal-pinned path, validate it. ---
+        # The non-root tools were extracted to .bin in before_script; prepend it
+        # here too. This is ONLY done in simple mode: in substitute (root) mode
+        # the sha256-verified kustomize/kubeconform live in /usr/local/bin, and a
+        # repo-controlled .bin/kustomize on PATH must not be able to shadow them.
+        export PATH="$CI_PROJECT_DIR/.bin:$PATH"
+        K8S_VER="${K8S_VERSION_INPUT:-1.36.0}"
+        echo "=== kustomize build $KUSTOMIZE_PATH ==="
+        kustomize build "$KUSTOMIZE_PATH" > /tmp/rendered.yaml
+        echo "=== kubeconform (k8s $K8S_VER) ==="
+        # -ignore-missing-schemas lets platform CRDs validate against the
+        # datreeio catalog; core kinds validate against the bundled schemas.
+        kubeconform -strict -ignore-missing-schemas \
+          -kubernetes-version "$K8S_VER" \
+          -schema-location default \
+          -schema-location "$CATALOG" \
+          -summary /tmp/rendered.yaml
+        exit 0
+      fi
+
+      # --- Substitute mode (weisssrv): mirror the kustomize-controller postBuild
+      # step, then kubeconform every rendered top-level Kustomization. ---
+      VARS=$(bash "$FLUX_RENDER_SCRIPT" export-versions "$VERSIONS_CONFIGMAP") \
+        || { echo "ERROR: failed to extract version keys from $VERSIONS_CONFIGMAP"; exit 1; }
+      eval "$VARS"
+
+      RENDER_ALL=$(mktemp)
+      trap 'rm -f "$RENDER_ALL"' EXIT
+
+      if [ -n "$K8S_VERSION_INPUT" ]; then
+        K8S_VER="$K8S_VERSION_INPUT"
+      else
+        K8S_VER=$(bash "$FLUX_RENDER_SCRIPT" k8s-version "$VERSIONS_CONFIGMAP")
+      fi
+      echo "kubeconform -kubernetes-version: $K8S_VER (from versions-configmap k3s_version)"
+
+      for ks in "$CLUSTER_DIR"/*.yaml; do
+        [ -f "$ks" ] || continue
+        NAME=$(basename "$ks" .yaml)
+        [ "$NAME" = "kustomization" ] && continue
+        if ! SRCPATH=$(python3 -c '
+      import yaml, sys
+      with open(sys.argv[1]) as f:
+          doc = yaml.safe_load(f)
+      print(doc.get("spec", {}).get("path", "") or "")
+      ' "$ks"); then
+          echo "ERROR: failed to parse $ks"
+          FAILED=1
+          continue
+        fi
+        [ -z "$SRCPATH" ] && continue
+        SRCPATH="${SRCPATH#./}"
+        echo "=== Building + validating $ks (path $SRCPATH) ==="
+        if ! RAW=$(kustomize build "$SRCPATH" 2>&1); then
+          echo "ERROR: kustomize build failed for $SRCPATH:"
+          echo "$RAW"
+          FAILED=1
+          continue
+        fi
+        # Every ${var} reference in the pre-substitution output must be a known
+        # ConfigMap key. envsubst renders unknown vars as empty (Flux does too),
+        # so post-substitution grep would miss typos — check pre-substitution.
+        MISSING=""
+        for ref in $(echo "$RAW" | grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' | sort -u); do
+          varname=${ref#\$\{}
+          varname=${varname%\}}
+          if [ -z "${!varname+x}" ]; then
+            MISSING="$MISSING $varname"
+          fi
+        done
+        MISSING=$(echo "$MISSING" | tr ' ' '\n' | grep -v '^$' | sort -u || true)
+        if [ -n "$MISSING" ]; then
+          echo "ERROR: placeholders in $SRCPATH reference keys not in versions-configmap:"
+          echo "$MISSING" | sed 's/^/  - /'
+          FAILED=1
+          continue
+        fi
+        # printf '%s\n' (NOT echo): rendered manifests carry dashboard JSON with
+        # thousands of literal \n inside block scalars; echo would expand them.
+        RENDERED=$(printf '%s\n' "$RAW" | envsubst "$FLUX_ENVSUBST_VARS")
+        printf '%s\n---\n' "$RENDERED" >> "$RENDER_ALL"
+        if ! printf '%s\n' "$RENDERED" | kubeconform -strict -ignore-missing-schemas \
+            -kubernetes-version "$K8S_VER" \
+            -schema-location default \
+            -schema-location "$CATALOG" \
+            -summary; then
+          FAILED=1
+        fi
+      done
+
+      # [informational] Track which rendered kinds kubeconform could NOT
+      # schema-validate (-ignore-missing-schemas skipped them). Never fails the
+      # gate (|| true) — the per-Kustomization passes above are the gate.
+      echo "=== kubeconform unvalidated-kind tracking (informational) ==="
+      kubeconform -verbose -ignore-missing-schemas -kubernetes-version "$K8S_VER" \
+        -schema-location default \
+        -schema-location "$CATALOG" \
+        -output json < "$RENDER_ALL" 2>/dev/null | python3 "$SKIPPED_SCRIPT" || true
+
+      # Build the cluster root to catch a malformed top-level kustomization.yaml
+      # (the loop validates target paths, not the root itself).
+      echo "=== Building cluster root $CLUSTER_DIR ==="
+      if ! kustomize build "$CLUSTER_DIR" >/dev/null; then
+        echo "ERROR: cluster root kustomization failed to build"
+        FAILED=1
+      fi
+
+      # Consumer-injected extra validation (weisssrv: HPA/VPA invariant + helm
+      # values). Runs with $RENDER_ALL / $K8S_VER / $FAILED in scope; no-op by
+      # default. These reference consumer-local scripts, not this library.
+      $[[ inputs.extra_validation ]]
+
+      exit $FAILED
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: $[[ inputs.changes ]]
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: $[[ inputs.changes ]]
+    - if: '$CI_PIPELINE_SOURCE == "web"'

@@ -1,0 +1,61 @@
+spec:
+  inputs:
+    job_name:
+      default: python-tests
+    stage:
+      default: test
+    image:
+      default: python:3.11-slim
+    tags:
+      type: array
+      default: ["infrastructure"]
+      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+    test_dir:
+      default: "scripts/"
+      description: Directory pytest runs against (test_*.py live next to code).
+    pytest_version:
+      default: "9.1.1"
+    pyyaml_version:
+      default: "6.0.2"
+    apt_packages:
+      default: "git jq"
+      description: >-
+        Extra apt packages installed before the run (git is needed by tests that
+        build throwaway git repos; jq by tests that parse JSON). Pass "" for none.
+    changes:
+      type: array
+      default: ["scripts/**/*", ".gitlab-ci.yml"]
+      description: Path list for the MR/main `changes:` rules.
+---
+"$[[ inputs.job_name ]]":
+  stage: $[[ inputs.stage ]]
+  needs: []  # run in parallel with the lint stage
+  image: $[[ inputs.image ]]
+  tags: $[[ inputs.tags ]]
+  before_script:
+    - |
+      PKGS="$[[ inputs.apt_packages ]]"
+      if [ -n "$PKGS" ]; then
+        # shellcheck disable=SC2086  # intentional word-split of the package list
+        apt-get update -qq && apt-get install -y -qq --no-install-recommends $PKGS
+      fi
+    # `--user` + `python -m pytest`: the shared NON-ROOT tenant runner can't
+    # write system site-packages, so pip installs to ~/.local (whose bin/ is NOT
+    # on the default PATH of python:*-slim images) — calling the `pytest` console
+    # script directly would fail "command not found". `python -m pytest` runs the
+    # module regardless of PATH (and puts the CWD on sys.path for test imports).
+    - pip install --user --quiet "pytest==$[[ inputs.pytest_version ]]" "pyyaml==$[[ inputs.pyyaml_version ]]"
+  script:
+    - python -m pytest $[[ inputs.test_dir ]] -v --junitxml=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: $[[ inputs.changes ]]
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: $[[ inputs.changes ]]
+    - if: '$CI_PIPELINE_SOURCE == "web"'

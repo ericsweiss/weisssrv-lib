@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "weisssrv-lib-cli"
+version = "0.1.0"
+description = "Scaffold a weisssrv cluster tenant repo (rename / prune / wire / verify)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Eric S. Weiss" }]
+dependencies = [
+  # ruamel.yaml is the ONLY runtime dependency: it does both the round-trip
+  # edits that preserve the scaffold's comments AND the plain safe-loads used to
+  # inspect documents (tree._safe_load / _safe_load_all). The CLI is otherwise
+  # stdlib-only and offline. No PyYAML at runtime.
+  "ruamel.yaml>=0.17",
+]
+
+[project.optional-dependencies]
+# pyyaml is TEST-ONLY — the test suite reads manifests back with yaml.safe_load;
+# it is never imported by the weisssrv_lib_cli package at runtime.
+test = ["pytest>=7", "pyyaml>=6"]
+
+[project.scripts]
+weisssrv-new-project = "weisssrv_lib_cli.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["weisssrv_lib_cli*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

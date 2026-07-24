@@ -1,0 +1,15 @@
+---
+# Relaxed yamllint profile — the baseline syntax check the yaml-lint CI job runs
+# across a whole tree. `relaxed` keeps line-length/comment rules as warnings;
+# line-length is disabled outright because inline documentation comments run
+# long. This is the profile weisssrv's yaml-lint job applies (`yamllint -d
+# relaxed`) and the profile template-derived tenant repos use (`yamllint -c
+# .yamllint .`). Copy it into a consumer repo as `.yamllint`, or point the
+# yaml-lint CI job's `config` input at this file when it is vendored.
+extends: relaxed
+
+rules:
+  line-length: disable
+  document-start:
+    present: true
+    level: warning

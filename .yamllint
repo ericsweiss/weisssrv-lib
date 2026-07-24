@@ -1,0 +1,12 @@
+---
+# yamllint config for the library's OWN YAML (CI templates, taskfiles, configs).
+# `relaxed` with line-length disabled, matching the baseline the yaml-lint CI
+# job applies to consumer trees — the CI templates carry long inline docs.
+extends: relaxed
+
+rules:
+  line-length: disable
+  # GitLab CI spec:inputs templates under ci/ must begin with `spec:` (the
+  # first YAML document is the input header) — a leading `---` is not part of
+  # GitLab's documented form — so document-start is disabled repo-wide here.
+  document-start: disable
