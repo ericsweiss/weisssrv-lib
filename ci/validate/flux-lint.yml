@@ -32,6 +32,12 @@ spec:
       description: Only installed in substitute mode (schema-validating HelmRelease values).
     helm_sha256:
       default: "f8180838c23d7c7d797b208861fecb591d9ce1690d8704ed1e4cb8e2add966c1"
+    pyyaml_version:
+      default: "6.0.2"
+      description: >-
+        (substitute=true) pinned PyYAML for the inline spec.path parser, matching
+        weisssrv's PYYAML_VERSION. An unpinned floating install would drift the
+        before_script from weisssrv's and let a breaking release change behavior.
     k8s_version:
       default: ""
       description: >-
@@ -89,6 +95,7 @@ spec:
     KUSTOMIZE_SHA256: "$[[ inputs.kustomize_sha256 ]]"
     HELM_VERSION: "$[[ inputs.helm_version ]]"
     HELM_SHA256: "$[[ inputs.helm_sha256 ]]"
+    PYYAML_VERSION: "$[[ inputs.pyyaml_version ]]"
     K8S_VERSION_INPUT: "$[[ inputs.k8s_version ]]"
     KUSTOMIZE_PATH: "$[[ inputs.kustomize_path ]]"
     CLUSTER_DIR: "$[[ inputs.cluster_dir ]]"
@@ -106,7 +113,7 @@ spec:
         # pinned sha256 and re-extracts, so a mutated runner cache can never
         # smuggle an unverified binary onto PATH. ---
         apt-get update -qq && apt-get install -y -qq curl gettext-base
-        pip install --quiet pyyaml
+        pip install --quiet "pyyaml==$PYYAML_VERSION"
         TOOLS_CACHE="${CI_PROJECT_DIR}/.cache/flux-lint-tools"
         TOOLS_BIN=/usr/local/bin
         mkdir -p "$TOOLS_CACHE"

@@ -76,7 +76,9 @@ Conventions shared by every template:
 - **Substitute-mode inputs:** `cluster_dir`
   (`kubernetes/clusters/weisssrv`), `versions_configmap`, `flux_render_script`
   (`scripts/flux-render.sh`), `skipped_script` (`scripts/kubeconform-skipped.py`),
-  `k8s_version` (empty → derived from k3s_version), `extra_validation` (empty).
+  `k8s_version` (empty → derived from k3s_version), `pyyaml_version` (6.0.2 —
+  pins the inline spec.path parser to match weisssrv's `PYYAML_VERSION`),
+  `extra_validation` (empty).
 - **Simple-mode inputs:** `kustomize_path` (`kubernetes/flux`), `k8s_version`.
 - **Parity:** the render loop, missing-placeholder check, envsubst allowlist, and
   informational skip tracker are extracted from weisssrv. **Full weisssrv parity
