@@ -11,12 +11,40 @@ import re
 
 _ACTIVE_RE = re.compile(r"^(?P<indent>\s*)-\s+(?P<name>[\w.\-/]+)\s*$")
 _COMMENTED_RE_T = r"^(?P<indent>\s*)#\s*-\s+{name}\b.*$"
+# A zero-indent mapping key (`resources:`, `namespace: x`, `kind: …`). Used to
+# scope list edits to the `resources:` block so a sibling list (`components:`,
+# `patchesStrategicMerge:`, …) is never miscounted or mangled.
+_TOP_KEY_RE = re.compile(r"^(?P<key>[A-Za-z0-9_.\-]+):")
+
+
+def _in_resources_flags(lines) -> list[bool]:
+    """For each line, whether it sits inside the top-level `resources:` block.
+
+    Accepts lines with or without trailing newlines. The `resources:` header
+    line itself is flagged False (it is not an item); a following zero-indent
+    mapping key ends the block.
+    """
+    flags: list[bool] = []
+    in_res = False
+    for raw in lines:
+        line = raw.rstrip("\n")
+        if line[:1] and not line[0].isspace() and not line.lstrip().startswith("#"):
+            m = _TOP_KEY_RE.match(line)
+            if m:
+                in_res = m.group("key") == "resources"
+                flags.append(False)
+                continue
+        flags.append(in_res)
+    return flags
 
 
 def list_resources(text: str) -> list[str]:
-    """Active (uncommented) resource entries, in order."""
+    """Active (uncommented) entries in the `resources:` block, in order."""
+    lines = text.splitlines()
     out: list[str] = []
-    for line in text.splitlines():
+    for line, in_res in zip(lines, _in_resources_flags(lines)):
+        if not in_res:
+            continue
         m = _ACTIVE_RE.match(line)
         if m:
             out.append(m.group("name"))
@@ -28,11 +56,13 @@ def has_resource(text: str, name: str) -> bool:
 
 
 def remove_resource(text: str, name: str) -> tuple[str, bool]:
-    """Drop the active `- <name>` line. Returns (text, changed)."""
+    """Drop the active `- <name>` line in the `resources:` block. Returns
+    (text, changed)."""
     pat = re.compile(rf"^\s*-\s+{re.escape(name)}\s*$")
+    lines = text.splitlines(keepends=True)
     kept, changed = [], False
-    for line in text.splitlines(keepends=True):
-        if pat.match(line.rstrip("\n")):
+    for line, in_res in zip(lines, _in_resources_flags(lines)):
+        if in_res and pat.match(line.rstrip("\n")):
             changed = True
             continue
         kept.append(line)
@@ -40,7 +70,8 @@ def remove_resource(text: str, name: str) -> tuple[str, bool]:
 
 
 def uncomment_resource(text: str, name: str) -> tuple[str, bool]:
-    """Turn the first `  # - <name>   # note` into `  - <name>`.
+    """Turn the first `  # - <name>   # note` in the `resources:` block into
+    `  - <name>`.
 
     No-op if the resource is already active (avoids a duplicate entry). Returns
     (text, changed).
@@ -48,10 +79,11 @@ def uncomment_resource(text: str, name: str) -> tuple[str, bool]:
     if has_resource(text, name):
         return text, False
     pat = re.compile(_COMMENTED_RE_T.format(name=re.escape(name)))
+    lines = text.splitlines(keepends=True)
     out, changed = [], False
-    for line in text.splitlines(keepends=True):
+    for line, in_res in zip(lines, _in_resources_flags(lines)):
         m = pat.match(line.rstrip("\n"))
-        if m and not changed:
+        if in_res and m and not changed:
             out.append(f"{m.group('indent')}- {name}\n")
             changed = True
         else:
@@ -60,7 +92,7 @@ def uncomment_resource(text: str, name: str) -> tuple[str, bool]:
 
 
 def add_resource(text: str, name: str) -> tuple[str, bool]:
-    """Ensure `- <name>` is an active resource.
+    """Ensure `- <name>` is an active entry in the `resources:` block.
 
     Prefers uncommenting an existing `# - <name>` opt-in line; otherwise appends
     `  - <name>` after the last active resource, matching its indentation.
@@ -73,8 +105,11 @@ def add_resource(text: str, name: str) -> tuple[str, bool]:
         return text2, True
 
     lines = text.splitlines(keepends=True)
+    flags = _in_resources_flags(lines)
     last_idx, indent = None, "  "
-    for i, line in enumerate(lines):
+    for i, (line, in_res) in enumerate(zip(lines, flags)):
+        if not in_res:
+            continue
         m = _ACTIVE_RE.match(line.rstrip("\n"))
         if m:
             last_idx, indent = i, m.group("indent")
