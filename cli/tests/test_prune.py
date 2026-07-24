@@ -68,12 +68,17 @@ class TestReplicas:
 
 
 class TestExternalIngress:
-    def test_fresh_scaffold_drops_active_public(self, scaffold):
+    def test_fresh_scaffold_refuses_and_leaves_files_intact(self, scaffold):
         # On a fresh scaffold the only ACTIVE documents are the public route +
-        # cert; pruning external-ingress leaves no active documents.
-        prune.prune(scaffold, ["external-ingress"])
-        assert _docs(scaffold, "ingressroute.yaml") == []
-        assert _docs(scaffold, "certificate.yaml") == []
+        # cert; dropping them would empty both files while they stay listed in
+        # the kustomization. prune must REFUSE and touch nothing.
+        before_ir = _flux(scaffold, "ingressroute.yaml").read_text()
+        before_cert = _flux(scaffold, "certificate.yaml").read_text()
+        with pytest.raises(prune.PruneError) as exc:
+            prune.prune(scaffold, ["external-ingress"])
+        assert "wire internal-ingress" in str(exc.value)
+        assert _flux(scaffold, "ingressroute.yaml").read_text() == before_ir
+        assert _flux(scaffold, "certificate.yaml").read_text() == before_cert
 
     def test_internal_only_workflow(self, scaffold):
         # The meaningful path: wire internal first, then drop the public docs —

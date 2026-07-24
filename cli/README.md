@@ -46,9 +46,14 @@ kustomization entry, and cleans cross-references):
 | `image-build`      | delete a repo-root Dockerfile / .dockerignore |
 | `manifest:<file>`  | delete kubernetes/flux/&lt;file&gt;.yaml + its kustomization entry |
 
+All requested features are validated up front — an unknown feature name (or an
+`external-ingress` prune that would empty a file because no internal variant is
+active) raises before any file is touched, so a typo never half-mutates the repo.
+
 ```bash
 weisssrv-new-project prune metrics single-replica
 # internal-only: wire the internal route first, then drop the public one
+# (prune external-ingress refuses if the internal variant isn't active yet)
 weisssrv-new-project wire internal-ingress && weisssrv-new-project prune external-ingress
 ```
 

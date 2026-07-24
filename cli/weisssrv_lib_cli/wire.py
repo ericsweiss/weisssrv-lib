@@ -131,8 +131,23 @@ def _wire_hpa(root: Path, changed: list[Path]) -> None:
                 changed.append(vpath)
 
 
+def _validate_features(features: list[str]) -> None:
+    """Reject the whole request BEFORE mutating anything, so a bad feature name
+    never leaves a half-wired repo."""
+    for feat in features:
+        if feat not in FEATURES:
+            raise WireError(
+                f"unknown wire feature '{feat}' (known: {', '.join(FEATURES)})"
+            )
+
+
 def wire(root: Path, features: list[str]) -> list[Path]:
-    """Apply each named wire feature. Returns the files changed."""
+    """Apply each named wire feature. Returns the files changed.
+
+    Every requested feature is validated up front; an invalid request raises
+    before any file is touched.
+    """
+    _validate_features(features)
     changed: list[Path] = []
     for feat in features:
         if feat == "hpa":
@@ -141,8 +156,4 @@ def wire(root: Path, features: list[str]) -> list[Path]:
             _wire_internal_ingress(root, changed)
         elif feat == "sso":
             _wire_sso(root, changed)
-        else:
-            raise WireError(
-                f"unknown wire feature '{feat}' (known: {', '.join(FEATURES)})"
-            )
     return changed

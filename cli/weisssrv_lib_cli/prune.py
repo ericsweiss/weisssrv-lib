@@ -7,6 +7,7 @@ feature is a no-op.
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from . import tree
@@ -25,6 +26,72 @@ FEATURES = (
 
 class PruneError(ValueError):
     pass
+
+
+def _is_public_ingress(doc: dict) -> bool:
+    """An IngressRoute/Certificate whose name is NOT an `-internal` variant."""
+    if doc.get("kind") not in ("IngressRoute", "Certificate"):
+        return False
+    return not tree._doc_name(doc).endswith("-internal")
+
+
+def _has_active_content(text: str) -> bool:
+    """True if any line is an actual YAML node (not blank / `---` / a comment)."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped == "---" or stripped.startswith("#"):
+            continue
+        return True
+    return False
+
+
+def _external_ingress_would_empty(root: Path) -> list[str]:
+    """Files `prune external-ingress` would truncate to no active document.
+
+    Happens on an un-wired scaffold: the only active documents are the public
+    IngressRoute/Certificate, and the internal variants are still commented out,
+    so dropping the public ones leaves an empty file that is still referenced by
+    the kustomization. Returns the offending filenames (empty = safe).
+    """
+    offenders: list[str] = []
+    for fname in ("ingressroute.yaml", "certificate.yaml"):
+        path = tree.flux_file(root, fname)
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        new, removed = tree.remove_documents(text, _is_public_ingress)
+        if removed and not _has_active_content(new):
+            offenders.append(fname)
+    return offenders
+
+
+def _validate_features(root: Path, features: list[str]) -> None:
+    """Reject the whole request BEFORE mutating anything, so a bad feature name
+    (or an external-ingress prune that would empty a file) never leaves a
+    half-mutated repo."""
+    for feat in features:
+        if feat.startswith("manifest:"):
+            if not feat.split(":", 1)[1]:
+                raise PruneError(
+                    "manifest: requires a file name (e.g. manifest:servicemonitor)"
+                )
+            continue
+        if feat not in FEATURES:
+            raise PruneError(
+                f"unknown prune feature '{feat}' "
+                f"(known: {', '.join(FEATURES)}, or manifest:<file>)"
+            )
+    if "external-ingress" in features:
+        offenders = _external_ingress_would_empty(root)
+        if offenders:
+            raise PruneError(
+                "prune external-ingress would empty "
+                + " and ".join(offenders)
+                + " (no internal variant is active) while it stays listed in the "
+                "kustomization. Run `wire internal-ingress` first, then prune — "
+                "or use `prune manifest:<file>` to delete the file and its "
+                "kustomization entry."
+            )
 
 
 def _delete_manifest(root: Path, name: str, changed: list[Path]) -> None:
@@ -63,6 +130,14 @@ def _prune_secrets(root: Path, changed: list[Path]) -> None:
             tree.dump_yaml(data, dep)
             if dep not in changed:
                 changed.append(dep)
+        elif container is None:
+            # externalsecret.yaml is already gone; flag the orphaned env ref
+            # rather than reporting silent success.
+            print(
+                f"warning: could not locate the container env block in "
+                f"{tree.DEPLOYMENT}; review it for a stale secret env reference",
+                file=sys.stderr,
+            )
 
 
 def _prune_metrics(root: Path, changed: list[Path]) -> None:
@@ -96,19 +171,15 @@ def _prune_external_ingress(root: Path, changed: list[Path]) -> None:
 
     For a clean internal-only result, run `wire internal-ingress` FIRST so the
     internal variants are active documents (a real `---` separates them from the
-    public ones); this prune then drops only the public documents.
+    public ones); this prune then drops only the public documents. `prune`
+    refuses up front (see `_validate_features`) if this would empty a file.
     """
-    def is_public(doc: dict) -> bool:
-        if doc.get("kind") not in ("IngressRoute", "Certificate"):
-            return False
-        return not tree._doc_name(doc).endswith("-internal")
-
     for fname in ("ingressroute.yaml", "certificate.yaml"):
         path = tree.flux_file(root, fname)
         if not path.exists():
             continue
         text = path.read_text(encoding="utf-8")
-        new, removed = tree.remove_documents(text, is_public)
+        new, removed = tree.remove_documents(text, _is_public_ingress)
         if removed:
             path.write_text(new, encoding="utf-8")
             if path not in changed:
@@ -124,7 +195,12 @@ def _prune_image_build(root: Path, changed: list[Path]) -> None:
 
 
 def prune(root: Path, features: list[str]) -> list[Path]:
-    """Apply each named prune feature. Returns the files changed/removed."""
+    """Apply each named prune feature. Returns the files changed/removed.
+
+    Every requested feature is validated up front (`_validate_features`); an
+    invalid request raises before any file is touched.
+    """
+    _validate_features(root, features)
     changed: list[Path] = []
     for feat in features:
         if feat.startswith("manifest:"):
