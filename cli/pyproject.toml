@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "weisssrv-lib-cli"
+version = "0.1.0"
+description = "Scaffold a weisssrv cluster tenant repo (rename / prune / wire / verify)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Eric S. Weiss" }]
+dependencies = [
+  # Round-trip YAML editing that preserves the scaffold's comments. The only
+  # runtime dependency — the CLI is otherwise stdlib-only and offline.
+  "ruamel.yaml>=0.17",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7", "pyyaml>=6"]
+
+[project.scripts]
+weisssrv-new-project = "weisssrv_lib_cli.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["weisssrv_lib_cli*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
