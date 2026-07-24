@@ -69,3 +69,59 @@ class TestAppendBranch:
         new, changed = kz.add_resource(text, "deployment.yaml")
         assert not changed
         assert new == text
+
+
+class TestEmptyOrAbsentResourcesBlock:
+    """The `last_active_idx is None` path must keep the new item INSIDE
+    `resources:` (never at EOF past a sibling key) and create the block when the
+    file has none."""
+
+    def test_commented_only_block_before_another_top_key(self):
+        # resources: holds only an opt-in comment, and a components: key follows.
+        # A naive EOF append would land the item under components:.
+        text = (
+            "resources:\n"
+            "  # - hpa.yaml   # opt-in\n"
+            "components:\n"
+            "  - ../base/common.yaml\n"
+        )
+        new, changed = kz.add_resource(text, "service.yaml")
+        assert changed
+        assert kz.list_resources(new) == ["service.yaml"]
+        head, tail = new.split("components:")
+        assert "- service.yaml" in head  # under resources:, before components:
+        assert "- service.yaml" not in tail  # NOT appended at EOF
+        # The pre-existing opt-in comment and the components list survive intact.
+        assert "# - hpa.yaml" in head
+        assert "- ../base/common.yaml" in tail
+
+    def test_truly_empty_block_before_another_top_key(self):
+        # resources: with no entries at all, immediately followed by components:.
+        text = "resources:\ncomponents:\n  - ../base/common.yaml\n"
+        new, changed = kz.add_resource(text, "service.yaml")
+        assert changed
+        assert kz.list_resources(new) == ["service.yaml"]
+        head, tail = new.split("components:")
+        assert "- service.yaml" in head
+        assert "- service.yaml" not in tail
+
+    def test_creates_block_when_no_resources_key(self):
+        # No `resources:` key at all — the block must be created, not orphaned.
+        text = (
+            "apiVersion: kustomize.config.k8s.io/v1beta1\n"
+            "kind: Kustomization\n"
+        )
+        new, changed = kz.add_resource(text, "service.yaml")
+        assert changed
+        assert kz.has_resource(new, "service.yaml")
+        assert kz.list_resources(new) == ["service.yaml"]
+        assert "resources:\n  - service.yaml\n" in new
+        # Existing top-level keys are preserved.
+        assert "kind: Kustomization" in new
+
+    def test_creates_block_when_no_trailing_newline(self):
+        text = "kind: Kustomization"  # no resources:, no trailing newline
+        new, changed = kz.add_resource(text, "service.yaml")
+        assert changed
+        assert kz.list_resources(new) == ["service.yaml"]
+        assert new == "kind: Kustomization\nresources:\n  - service.yaml\n"

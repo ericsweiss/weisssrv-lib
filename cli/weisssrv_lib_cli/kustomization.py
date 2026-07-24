@@ -91,12 +91,35 @@ def uncomment_resource(text: str, name: str) -> tuple[str, bool]:
     return "".join(out), changed
 
 
+def _insert_after(lines: list[str], idx: int, new_line: str) -> str:
+    """Insert `new_line` right after `lines[idx]`, healing a missing newline on
+    the anchor line first."""
+    if not lines[idx].endswith("\n"):
+        lines[idx] += "\n"
+    lines.insert(idx + 1, new_line)
+    return "".join(lines)
+
+
+def _resources_header_idx(lines) -> int | None:
+    """Index of the top-level `resources:` key line, or None if absent."""
+    for i, raw in enumerate(lines):
+        line = raw.rstrip("\n")
+        if line[:1] and not line[0].isspace() and not line.lstrip().startswith("#"):
+            m = _TOP_KEY_RE.match(line)
+            if m and m.group("key") == "resources":
+                return i
+    return None
+
+
 def add_resource(text: str, name: str) -> tuple[str, bool]:
     """Ensure `- <name>` is an active entry in the `resources:` block.
 
-    Prefers uncommenting an existing `# - <name>` opt-in line; otherwise appends
-    `  - <name>` after the last active resource, matching its indentation.
-    Returns (text, changed). No-op (changed=False) if already active.
+    Prefers uncommenting an existing `# - <name>` opt-in line; otherwise inserts
+    `  - <name>` at the END of the `resources:` block, matching its indentation.
+    When the block has no active anchor line the insert still lands inside the
+    block (after its last comment, or the `resources:` header itself) rather than
+    at EOF past a sibling top-level key; when the file has no `resources:` key at
+    all the block is created. Returns (text, changed). No-op if already active.
     """
     if has_resource(text, name):
         return text, False
@@ -106,19 +129,34 @@ def add_resource(text: str, name: str) -> tuple[str, bool]:
 
     lines = text.splitlines(keepends=True)
     flags = _in_resources_flags(lines)
-    last_idx, indent = None, "  "
+
+    # Prefer anchoring after the last ACTIVE resource, matching its indentation.
+    last_active_idx, indent = None, "  "
     for i, (line, in_res) in enumerate(zip(lines, flags)):
         if not in_res:
             continue
         m = _ACTIVE_RE.match(line.rstrip("\n"))
         if m:
-            last_idx, indent = i, m.group("indent")
-    new_line = f"{indent}- {name}\n"
-    if last_idx is None:
-        lines.append(new_line)
-    else:
-        # Preserve a missing trailing newline on the anchor line.
-        if not lines[last_idx].endswith("\n"):
-            lines[last_idx] += "\n"
-        lines.insert(last_idx + 1, new_line)
-    return "".join(lines), True
+            last_active_idx, indent = i, m.group("indent")
+    if last_active_idx is not None:
+        return _insert_after(lines, last_active_idx, f"{indent}- {name}\n"), True
+
+    # No active entry to anchor on. Create the block if the file has none...
+    header_idx = _resources_header_idx(lines)
+    if header_idx is None:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines.append("resources:\n")
+        lines.append(f"  - {name}\n")
+        return "".join(lines), True
+
+    # ...otherwise insert at the end of the (empty/commented-only) block: after
+    # its last in-block line, or the header itself when the block is empty. This
+    # keeps the new item inside `resources:`, before any following top-level key.
+    anchor_idx = header_idx
+    for i in range(header_idx + 1, len(lines)):
+        if flags[i]:
+            anchor_idx = i
+        else:
+            break
+    return _insert_after(lines, anchor_idx, f"  - {name}\n"), True
