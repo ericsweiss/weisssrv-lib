@@ -1,0 +1,44 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git fetch:*)",
+      "Bash(git remote:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git ls-files:*)",
+      "Bash(python3 -m pytest:*)",
+      "Bash(pytest:*)",
+      "Bash(python3 -m py_compile:*)",
+      "Bash(python3 -m yamllint:*)",
+      "Bash(yamllint:*)",
+      "Bash(shellcheck:*)",
+      "Bash(kustomize build:*)",
+      "Bash(kubeconform:*)",
+      "Bash(ruff:*)",
+      "Bash(task:*)",
+      "Bash(jq:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(find:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:docs.gitlab.com)"
+    ],
+    "deny": [
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)"
+    ],
+    "ask": [
+      "Bash(git push:*)",
+      "Bash(git commit:*)",
+      "Bash(git tag:*)"
+    ]
+  }
+}

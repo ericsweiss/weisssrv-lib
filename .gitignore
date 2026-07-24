@@ -1,0 +1,23 @@
+# Secrets / local env — never commit these
+.env
+.env.*
+*.env
+.tmp/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Editor / OS cruft
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

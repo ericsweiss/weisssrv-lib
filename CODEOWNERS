@@ -1,0 +1,7 @@
+# Code ownership for merge-request review routing.
+* @eric
+
+# The include contract and CLI are the load-bearing surfaces — every consumer
+# pins a tag of these, so changes here ripple into weisssrv + every tenant repo.
+/ci/   @eric
+/cli/  @eric
