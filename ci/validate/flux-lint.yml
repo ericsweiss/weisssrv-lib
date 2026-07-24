@@ -190,12 +190,12 @@ spec:
         [ -f "$ks" ] || continue
         NAME=$(basename "$ks" .yaml)
         [ "$NAME" = "kustomization" ] && continue
-        if ! SRCPATH=$(python3 -c "
+        if ! SRCPATH=$(python3 -c '
       import yaml, sys
-      with open('$ks') as f:
+      with open(sys.argv[1]) as f:
           doc = yaml.safe_load(f)
-      print(doc.get('spec', {}).get('path', '') or '')
-      "); then
+      print(doc.get("spec", {}).get("path", "") or "")
+      ' "$ks"); then
           echo "ERROR: failed to parse $ks"
           FAILED=1
           continue
