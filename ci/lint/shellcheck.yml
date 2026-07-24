@@ -47,9 +47,24 @@ spec:
   tags: $[[ inputs.tags ]]
   script:
     - echo "Running ShellCheck..."
-    # Direct files/globs (scripts/ + any repo-root helper scripts).
-    # shellcheck disable=SC2086  # intentional word-split of direct_globs
-    - shellcheck --severity=$[[ inputs.severity ]] --exclude=$[[ inputs.exclude ]] $[[ inputs.direct_globs ]]
+    - |
+      # Direct files/globs (scripts/ + any repo-root helper scripts). Iterate
+      # the globs and lint only files that actually exist: a tenant whose tree
+      # lacks a glob's files (e.g. no `ansible/*.sh`) is SKIPPED with a note
+      # instead of failing — passing an UNMATCHED glob literally to shellcheck
+      # would error "No such file". In POSIX sh an unmatched glob stays literal,
+      # so `[ -e ]` distinguishes a real file from a non-matching pattern.
+      # weisssrv's default globs all match, so it scans the same files as before.
+      rc=0
+      # word-split + glob-expand direct_globs on purpose (SC2086).
+      for f in $[[ inputs.direct_globs ]]; do
+        if [ -e "$f" ]; then
+          shellcheck --severity=$[[ inputs.severity ]] --exclude=$[[ inputs.exclude ]] "$f" || rc=1
+        else
+          echo "no files match '$f' — skipping"
+        fi
+      done
+      [ "$rc" -eq 0 ] || { echo "ShellCheck failed on one or more direct files"; exit "$rc"; }
     - |
       FIND_DIR="$[[ inputs.find_dir ]]"
       [ -n "$FIND_DIR" ] || { echo "no find_dir set — skipping role shell + template checks"; exit 0; }
