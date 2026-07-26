@@ -296,6 +296,30 @@ python-tests:
     # vanish the moment the last release falls outside the clone depth — i.e.
     # exactly when the release is largest. Same reason the release job sets it.
     GIT_DEPTH: "0"
+  # Fan-out shaping (see .retry-runner-contention below): the quota admits 7
+  # concurrent 5Gi job pods and this pipeline creates 12 tag-less jobs, so the
+  # templates' needs:[] would burst 5 past the quota — deterministically, at
+  # pod-creation time, for the length of the first wave. These overrides put
+  # the 5 overflow jobs behind first-wave jobs (optional: a changes-skipped
+  # dep just unblocks immediately), capping the burst at exactly quota width.
+  needs:
+    - job: python-lint
+      optional: true
+
+ansible-lint:
+  needs:
+    - job: yaml-lint
+      optional: true
+
+secret_detection:
+  needs:
+    - job: shellcheck
+      optional: true
+
+molecule-plan:
+  needs:
+    - job: docs-link-check
+      optional: true
 
 # Quota contention on the shared runner surfaces as runner_system_failure at
 # pod creation when a pipeline's fan-out bursts past the namespace quota;
@@ -342,6 +366,9 @@ ci-templates-parse:
 
 collection-checks:
   <<: *retry-runner-contention
+  needs:
+    - job: ci-templates-parse
+      optional: true
   # Two invariants over ansible_collections/weisssrv/infra that nothing else
   # covers:
   #   - the molecule matrix below must list every scenario dir on disk. The
@@ -356,7 +383,6 @@ collection-checks:
   stage: lint
   image: python:3.13-slim
   tags: []
-  needs: []
   variables:
     CI_FILE: .gitlab-ci.yml
     ROLES_DIR: ansible_collections/weisssrv/infra/roles
