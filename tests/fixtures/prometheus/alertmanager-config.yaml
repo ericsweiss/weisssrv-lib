@@ -1,0 +1,19 @@
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: alertmanager-config
+  namespace: monitoring
+spec:
+  target:
+    template:
+      data:
+        alertmanager.yaml: |
+          global:
+            smtp_auth_password: {{ .smtpPassword | quote }}
+          route:
+            receiver: chat
+          receivers:
+            - name: chat
+              webhook_configs:
+                - url: {{ .chatWebhookUrl | quote }}

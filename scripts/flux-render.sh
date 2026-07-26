@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 # Shared Flux render helpers: extract the postBuild substitution variables from
 # the cluster-versions ConfigMap and derive the kubeconform schema version.
-# The byte-identical extraction block previously lived in four places
-# (Taskfile flux:lint + flux:dev-apply, .gitlab-ci.yml flux-lint + deploy-verify)
-# and had already drifted; this keeps it in one place.
 #
 # Callers eval the output so the exports land in the caller's shell (works the
 # same under bash and go-task's mvdan/sh interpreter):
@@ -18,9 +15,7 @@
 # `k8s-version <configmap>` prints MAJOR.MINOR.0 from k3s_version (default 1.36.0).
 #
 # NOTE: this intentionally does NOT own the per-Kustomization `kustomize build`
-# + placeholder-check + kubeconform loop — that loop-body dedup is the deferred
-# item in docs/16-next-steps.md ("CI render-loop dedup"); only the shared
-# extraction is consolidated here.
+# + placeholder-check + kubeconform loop; only the shared extraction lives here.
 set -euo pipefail
 
 die() {

@@ -1,0 +1,17 @@
+---
+# Policy data for scripts/check-hpa-vpa-invariant.py (--policy-config) and, for
+# the shared CPU-limit allowlist, scripts/validate-helm-values.py.
+#
+# chart_native_hpa_targets: workloads whose HPA lives inside a HelmRelease and is
+# therefore absent from the kustomize corpus. Each must have a mutating VPA that
+# excludes cpu, asserted with --require-chart-native-vpas. Keep in step with the
+# HelmReleases that enable autoscaling.
+chart_native_hpa_targets:
+  - namespace: traefik
+    kind: Deployment
+    name: traefik
+    source: traefik chart autoscaling.enabled
+
+# cpu_limit_allowlist: "namespace/Kind/name" workloads intentionally permitted a
+# CPU limit. Empty by design — add an entry only with an inline rationale.
+cpu_limit_allowlist: []
