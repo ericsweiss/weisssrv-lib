@@ -11,6 +11,7 @@ Run with pytest:
     python3 -m pytest tests/test_lint_prometheus_config.py -v
 """
 
+import os
 import shutil
 import subprocess
 import sys
@@ -107,6 +108,15 @@ def run(tmp_path):
             cwd=str(tmp_path),
             env={
                 "PATH": str(bin_dir),
+                # The script's python3 heredoc imports yaml; in CI PyYAML is
+                # user-site-installed, and user-site resolution needs HOME
+                # (the runner uid has no passwd entry to fall back to).
+                "HOME": os.environ.get("HOME", str(tmp_path)),
+                **(
+                    {"PYTHONPATH": os.environ["PYTHONPATH"]}
+                    if "PYTHONPATH" in os.environ
+                    else {}
+                ),
                 "TRACE": str(trace),
                 "STRIPPED": str(stripped),
                 "EXTRACT_SCRIPT": str(extract),
