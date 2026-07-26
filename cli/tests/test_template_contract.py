@@ -59,7 +59,12 @@ def _template_root() -> Path | None:
     env = os.environ.get("WEISSSRV_TEMPLATE_ROOT")
     if env:
         cand = Path(env).expanduser().resolve()
-        return cand if _is_template(cand) else None
+        if not _is_template(cand):
+            # An explicit pointer must never degrade to a silent skip.
+            raise RuntimeError(
+                f"WEISSSRV_TEMPLATE_ROOT={env} is not a template checkout"
+            )
+        return cand
     for name in ("weisssrv-app-template", "weisssrv-project-template"):
         cand = _LIB_ROOT.parent / name
         if _is_template(cand):
@@ -68,6 +73,11 @@ def _template_root() -> Path | None:
 
 
 _TEMPLATE = _template_root()
+if _TEMPLATE is None and os.environ.get("WEISSSRV_TEMPLATE_REQUIRED"):
+    # CI sets this so the cross-repo half can never silently skip there.
+    raise RuntimeError(
+        "WEISSSRV_TEMPLATE_REQUIRED is set but no template checkout was found"
+    )
 _needs_template = pytest.mark.skipif(
     _TEMPLATE is None,
     reason="no template checkout (set WEISSSRV_TEMPLATE_ROOT)",

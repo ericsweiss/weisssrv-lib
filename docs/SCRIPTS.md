@@ -51,6 +51,77 @@ created), and posts/updates an MR comment when there are actionable
 
 ---
 
+## Release automation
+
+Both are vendored by the consumer (the templates' `script_path` input points at
+the copy in the consumer repo) and are stdlib-only.
+
+### `semantic-release.py`
+
+Cuts the tag + GitLab Release from the conventional commits since the last
+version tag: `feat` → minor, `fix`/`perf`/`refactor` → patch, `!` or a
+`BREAKING CHANGE:` trailer → major (demoted to minor while the version is `0.x`
+unless `--major-on-zero`). Tag and Release are created in ONE Releases API call —
+that endpoint creates the tag from `ref`, which is the only tag write a
+`CI_JOB_TOKEN` can perform. No releasable commit → exit 0, nothing created.
+
+```
+semantic-release.py [--repo-dir DIR] [--tag-prefix v] [--initial-version 0.1.0]
+    [--major-on-zero] [--ref SHA] [--api-url URL] [--project-id ID]
+    [--token-env RELEASE_TOKEN] [--token-header JOB-TOKEN|PRIVATE-TOKEN]
+    [--output release.json] [--dry-run]
+```
+
+- **Env:** the `--token-env` variable (default `RELEASE_TOKEN`), `CI_API_V4_URL`,
+  `CI_PROJECT_ID`, `CI_COMMIT_SHA` (default `--ref`), `CI_PROJECT_URL` (compare
+  link in the notes).
+- **Artifact** (`--output`): the outcome, not the intention — `released` is true
+  only after the API call succeeded, `dry_run` marks a computed-only run, and a
+  failure carries an `error` field. Publish it `when: always`.
+- **Crash recovery:** a run that dies between the tag and the Release halves
+  leaves a tag with no Release, and the next run would compute an empty range
+  forever. When the last tag sits on HEAD without a Release, the missing Release
+  is created instead.
+- **Exit codes:** 0 released / nothing to release / dry run; 1 missing
+  credentials, an API failure, a git failure (its stderr is printed) or an
+  unreachable API.
+- Requires full history + tags (`GIT_DEPTH: 0`).
+- Wired by `ci/release/semantic-release.yml`.
+
+### `version-bump-mr.py`
+
+Keeps exactly ONE open bot MR in sync with the version pins a consumer-supplied
+check command just rewrote. Three idempotent outcomes: bumps with changed
+content → force-push the bot branch and create/refresh the MR; bumps with
+identical content → nothing (no push, no re-notification); no bumps with an open
+bot MR → close it. It never merges.
+
+```
+version-bump-mr.py [--repo-dir DIR] [--branch bot/version-bumps]
+    [--target-branch main] [--title T] [--commit-message M] [--paths "a/ b/"]
+    [--labels a,b] [--report-path FILE] [--git-user-name N] [--git-user-email E]
+    [--remote-url URL] [--api-url URL] [--project-id ID] [--token-env BOT_TOKEN]
+    [--dry-run]
+```
+
+- **Env:** the `--token-env` variable (default `BOT_TOKEN`; needs `api` +
+  `write_repository` — a job token cannot do this), `CI_API_V4_URL`,
+  `CI_PROJECT_ID`, `CI_SERVER_HOST` + `CI_PROJECT_PATH` (default `--remote-url`),
+  `CI_DEFAULT_BRANCH` (default `--target-branch`), `CI_PIPELINE_URL`.
+- **Only tracked changes are committed** (`git add --update`), so report
+  artifacts the check command drops stay untracked and out of the MR.
+- **`--report-path` content is untrusted:** it is fenced with a fence longer than
+  any backtick run it contains, lines starting with `/` are indented so GitLab
+  cannot read them as quick actions, and truncation cuts on a line boundary.
+- A fetch failure is not read as "branch absent" — it fails loudly rather than
+  force-pushing and re-notifying.
+- **Exit codes:** 0 for every decision above; 1 on missing credentials, an API
+  failure, a fetch/push failure (stderr is printed with the token redacted).
+- Requires full history (`GIT_DEPTH: 0`) to push.
+- Wired by `ci/maintenance/version-bump-bot.yml`.
+
+---
+
 ## Generators with a drift gate
 
 Both are idempotent: regenerate in CI and fail if the committed output differs.
@@ -189,10 +260,13 @@ generate-molecule-pipeline.py [BASE_SHA | --diff-base SHA | --changed-files-from
   collection layout). `MOLECULE_JOBS_INCLUDE` — the file the generated child
   `include: local:`s. `MOLECULE_GLOBAL_TRIGGERS` — extra global-trigger paths
   (space-separated; a trailing `/` makes it a prefix).
-- The galaxy requirements file that forces a full matrix follows `ROLES_DIR`
-  (its parent), as do `CI_FILE` and `MOLECULE_JOBS_INCLUDE`. A repo with no
-  integration suite just omits the `integration-tests` job from `CI_FILE`; a job
-  that IS present with a broken matrix still fails loudly.
+- The collection-root paths that force a full matrix follow `ROLES_DIR` (its
+  parent): `requirements.yml`, `galaxy.yml`, `meta/`, `plugins/` and
+  `molecule-shared/` — none of them is a role or scenario path, so without this a
+  collection-wide change would select nothing and report green. `CI_FILE` and
+  `MOLECULE_JOBS_INCLUDE` are triggers too. A repo with no integration suite just
+  omits the `integration-tests` job from `CI_FILE`; a job that IS present with a
+  broken matrix still fails loudly.
 - Wired by `ci/internal/molecule-matrix.gitlab-ci.yml`.
 
 ### `molecule-retry.sh`

@@ -64,7 +64,11 @@ would silently get different CI).
 Merging to `main` runs `ci/release/semantic-release.yml`
 (`scripts/semantic-release.py`): it reads the conventional commits since the
 last tag, decides the bump, and creates the tag **and** the GitLab Release with
-generated notes in one Releases-API call.
+generated notes in one Releases-API call. This library wires that template into
+its own pipeline — `.gitlab-ci.yml` declares `release` as the LAST stage and
+self-includes the template with `tags: []` — so the tag every consumer pins is
+cut by the merge that earns it, and the template is exercised by the MR that
+changes it. A consumer that wants the same behaviour wires it the same way.
 
 | commit subject | bump |
 |---|---|
@@ -88,7 +92,12 @@ template's `major_on_zero: true` input for the release that means 1.0.0.
 
 There is **no hosted Renovate** on this instance, so consumer bumps are manual
 (mirroring weisssrv's `task maintenance:check-versions` discipline) — or driven
-by `ci/maintenance/version-bump-bot.yml`, which opens one MR and never merges it:
+by `ci/maintenance/version-bump-bot.yml`, which opens one MR and never merges it.
+That template is wired **by the consumer**, not here: it runs the consumer's own
+version-check command against the consumer's own tracked-version config, and
+this library tracks no upstream versions, so its pipeline does not include it
+(it is the one template with no library-side workload besides `flux-lint` and
+the `ci/templates/` fragments).
 
 1. Read the target tag's GitLab release notes for what changed — the release job
    generates them per tag; this repo keeps no CHANGELOG file.

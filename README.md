@@ -157,7 +157,12 @@ gitleaks detect --no-git --config lint/gitleaks.toml   # what CI's secret_detect
 
 The library's own pipeline (`.gitlab-ci.yml`) runs those by **including its own
 templates** (`include: local:`), so every template is rendered and executed by
-the MR that changes it, plus a YAML-parse smoke over every CI template.
+the MR that changes it, plus a YAML-parse smoke over every CI template. Three
+templates have no library-side workload and are still first rendered in a
+consumer — `ci/validate/flux-lint.yml`, the `ci/templates/` fragments, and
+`ci/maintenance/version-bump-bot.yml`; the header comment in `.gitlab-ci.yml`
+carries the reason for each. Merging to `main` runs
+`ci/release/semantic-release.yml`, which cuts the tag consumers pin.
 
 ## Scope
 
@@ -175,7 +180,9 @@ live in the cluster template so a cluster is self-contained, with no remote
 kustomize bases), and weisssrv's own pipeline glue (`validation-gate`, the
 deploy/maintenance job matrix, `repo-sync`/`repo-policy` checks). There is **no
 Renovate** anywhere — version bumps come from
-`ci/maintenance/version-bump-bot.yml`.
+`ci/maintenance/version-bump-bot.yml`, which each CONSUMER schedules against its
+own version-check command and config. This library ships the template but does
+not run it on itself: it tracks no upstream versions of its own.
 
 Full per-item detail, including which weisssrv job each template reproduces, is
 in [docs/INCLUDE-CONTRACT.md](docs/INCLUDE-CONTRACT.md).
