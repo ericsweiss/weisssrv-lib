@@ -122,15 +122,20 @@ for entry in matrix_entries(MOLECULE_JOB):
 # molecule.yml is the authoritative marker of a runnable scenario).
 disk_molecule = set()
 roles_dir = repo / ROLES_DIR
-if roles_dir.is_dir():
-    for scenario_dir in sorted(roles_dir.glob("*/molecule/*")):
-        if not scenario_dir.is_dir():
-            continue
-        if not (scenario_dir / "molecule.yml").is_file():
-            continue
-        role = scenario_dir.parent.parent.name
-        scenario = scenario_dir.name
-        disk_molecule.add((role, scenario))
+# Fail closed: a mistyped ROLES_DIR yields an empty on-disk set, which every
+# coverage comparison below then passes trivially — silently disabling the
+# gate. An absent roles dir is a configuration error, not "nothing to check".
+if not roles_dir.is_dir():
+    sys.stderr.write(f"ERROR: roles directory {ROLES_DIR!r} does not exist\n")
+    sys.exit(2)
+for scenario_dir in sorted(roles_dir.glob("*/molecule/*")):
+    if not scenario_dir.is_dir():
+        continue
+    if not (scenario_dir / "molecule.yml").is_file():
+        continue
+    role = scenario_dir.parent.parent.name
+    scenario = scenario_dir.name
+    disk_molecule.add((role, scenario))
 
 # Roles with NO runnable molecule scenario at all: a new role committed without
 # molecule/ would never appear in disk_molecule, so the matrix diff alone can't

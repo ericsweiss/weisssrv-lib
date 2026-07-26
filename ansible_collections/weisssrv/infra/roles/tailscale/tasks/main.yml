@@ -39,11 +39,12 @@
     - name: Verify Tailscale GPG key fingerprint (primary key must match exactly)
       ansible.builtin.shell: |
         set -o pipefail
-        # Extract the primary key fingerprint (first fpr record after first pub)
-        # and verify it matches the expected value exactly (full-line match).
-        primary_fpr=$(gpg --show-keys --with-colons {{ tailscale_gpg_staging.path | quote }} 2>/dev/null \
-            | awk -F: '/^pub/{p=1; next} p && /^fpr/{print $10; exit}')
-        [ "$primary_fpr" = {{ tailscale_gpg_fingerprint | quote }} ]
+        # The whole file is installed as trusted, so bind the FULL set of
+        # primary keys — matching only the first lets a bundle carrying the
+        # pinned key plus an appended primary key pass. Subkey fprs are ignored.
+        primary_fprs=$(gpg --show-keys --with-colons {{ tailscale_gpg_staging.path | quote }} 2>/dev/null \
+            | awk -F: '/^pub:/{p=1; next} p && /^fpr:/{print $10; p=0}')
+        [ "$primary_fprs" = {{ tailscale_gpg_fingerprint | quote }} ]
       args:
         executable: /bin/bash
       changed_when: false

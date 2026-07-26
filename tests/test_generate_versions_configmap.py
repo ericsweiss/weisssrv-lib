@@ -56,12 +56,16 @@ class TestTypeSafety:
     """flatten() must reject surprise types that would silently corrupt the
     ConfigMap. bool is the obvious one (bool is int subclass in Python)."""
 
-    def test_bool_at_top_level_silently_skipped(self):
-        # We intentionally skip top-level bools instead of raising so a
-        # mis-quoted value like `some_version: yes` doesn't block the
-        # entire sync — but it gets dropped, which the "no flat keys"
-        # check surfaces if every key drops.
-        assert gen.flatten({"flag_version": True}) == {}
+    def test_bool_at_top_level_raises(self):
+        # Fail closed, like the nested branch: skipping one mis-quoted
+        # `some_version: yes` leaves an unresolved ${some_version} at
+        # reconcile, and the "no flat keys" guard only catches a total drop.
+        with pytest.raises(ValueError, match="bool"):
+            gen.flatten({"flag_version": True})
+
+    def test_non_scalar_at_top_level_raises(self):
+        with pytest.raises(ValueError, match="non-scalar"):
+            gen.flatten({"list_version": ["a"]})
 
     def test_bool_inside_nested_helm_chart_raises(self):
         with pytest.raises(ValueError, match="bool"):
