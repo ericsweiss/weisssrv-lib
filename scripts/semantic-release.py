@@ -8,9 +8,10 @@ when `tag_name` does not exist yet, which is the only tag-write a CI_JOB_TOKEN
 can perform (the Tags API is read-only for job tokens).
 
 No releasable commit -> no release, exit 0. Re-running on an already-released
-commit is therefore a no-op — EXCEPT when the last tag sits on HEAD with no
-Release behind it (a run that died between the two halves of that one call):
-that half-finished state is detected and the missing Release is created.
+commit is therefore a no-op — EXCEPT when the last version tag carries no
+Release (a run that died between the two halves of that one call): that
+half-finished state is detected wherever the orphan tag sits, and the missing
+Release is backfilled from the tag's own commit range before any new tag is cut.
 
 Stdlib only. The decision path is `plan_release(tags, log_output, ...)`: it takes
 raw `git` output and returns the plan, so it is testable without a repo or a
@@ -342,11 +343,19 @@ def git(args: Sequence[str], repo_dir: str = ".") -> str:
     return result.stdout
 
 
-def write_plan(path: str, plan: Plan, released: bool, dry_run: bool = False, error: str = "") -> None:
+def write_plan(
+    path: str,
+    plan: Plan,
+    released: bool,
+    dry_run: bool = False,
+    error: str = "",
+    recovered: str = "",
+) -> None:
     """Serialise the outcome. `released` is what actually happened, not the plan.
 
     The artifact is published `when: always`, so it must never claim a tag that
     the API call did not create; a failed run carries the reason instead.
+    `recovered` names an earlier tag whose missing Release this run backfilled.
     """
     if not path:
         return
@@ -361,6 +370,8 @@ def write_plan(path: str, plan: Plan, released: bool, dry_run: bool = False, err
     }
     if error:
         payload["error"] = error
+    if recovered:
+        payload["recovered"] = recovered
     with open(path, "w") as handle:
         json.dump(payload, handle, indent=2)
 
@@ -413,21 +424,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Crash recovery: the Releases API creates the TAG before the Release, so a
     # run that died in between leaves the tag with no Release — and every later
     # run then computes an empty range and reports "nothing to release", green
-    # forever. When the last tag sits on HEAD and carries no Release, re-plan it
-    # from its own commit range and create the missing Release.
-    if not plan.released and previous and not args.dry_run and have_api:
-        tagged = git(["rev-list", "-n", "1", previous], args.repo_dir).strip()
-        if tagged == ref and get_release(
-            args.api_url, args.project_id, token, previous, args.token_header
-        ) is None:
-            print("Tag %s exists with no Release (a previous run half-failed) — creating it." % previous)
-            plan = plan_existing_tag(
-                tags,
-                previous,
-                lambda rng: git(["log", "--no-merges", "--format=" + LOG_FORMAT, rng], args.repo_dir),
-                args.tag_prefix,
-                compare_template,
-            )
+    # forever. The orphan is looked up WHEREVER it sits, not just while it is
+    # still on HEAD: gating on that lost the tag permanently the moment one more
+    # commit landed on the release branch, which is the common case.
+    recovery = None
+    if previous and have_api and not args.dry_run and get_release(
+        args.api_url, args.project_id, token, previous, args.token_header
+    ) is None:
+        print("Tag %s exists with no Release (a previous run half-failed) — creating it." % previous)
+        recovery = plan_existing_tag(
+            tags,
+            previous,
+            lambda rng: git(["log", "--no-merges", "--format=" + LOG_FORMAT, rng], args.repo_dir),
+            args.tag_prefix,
+            compare_template,
+        )
+        if not plan.released:
+            # Nothing new on top: the orphan IS this run's release.
+            plan, recovery = recovery, None
 
     if not plan.released:
         write_plan(args.output, plan, released=False)
@@ -449,6 +463,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 1
     try:
+        if recovery is not None:
+            # New work landed on top of the orphan: backfill its Release from its
+            # own commit range first, so those commits appear in exactly one set
+            # of notes, then cut the new tag below. The tag already exists, so
+            # the API ignores `ref`; pass the tag itself as the truthful value.
+            create_release(
+                args.api_url, args.project_id, token, recovery, recovery.tag, args.token_header
+            )
         release = create_release(
             args.api_url, args.project_id, token, plan, ref, args.token_header
         )
@@ -457,7 +479,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         write_plan(args.output, plan, released=False, error="HTTP %s: %s" % (exc.code, detail))
         print("ERROR: release creation failed (HTTP %s): %s" % (exc.code, detail), file=sys.stderr)
         return 1
-    write_plan(args.output, plan, released=True)
+    write_plan(
+        args.output, plan, released=True, recovered=recovery.tag if recovery else ""
+    )
     print("Created release %s" % release.get("_links", {}).get("self", plan.tag))
     return 0
 

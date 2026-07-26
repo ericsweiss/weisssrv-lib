@@ -303,10 +303,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     git(["config", "user.name", args.git_user_name], repo)
     git(["config", "user.email", args.git_user_email], repo)
     git(["checkout", "-B", args.branch], repo)
-    # --update: tracked modifications/deletions only. A plain `git add -- <path>`
-    # would also stage the report artifacts a check command drops, which the
-    # documented contract (and the MR's file list) says are ignored.
-    git(["add", "--update", "--"] + paths, repo)
+    # Stage the DETECTED paths, not the raw --paths pathspecs: `git add` aborts
+    # rc 128 on a pathspec matching no tracked file ("did not match any file(s)
+    # known to git"), which a --paths entry holding only generated artifacts
+    # does — `git status` tolerates it, so the run reached here and then died.
+    # Detection and staging now share one code path, and `changed` is non-empty
+    # by the check above. --update keeps it to tracked modifications/deletions,
+    # so the report artifacts a check command drops stay out of the commit, as
+    # the documented contract (and the MR's file list) says.
+    git(["add", "--update", "--"] + changed, repo)
     git(["commit", "--quiet", "-m", args.commit_message], repo)
 
     branch_is_current = (

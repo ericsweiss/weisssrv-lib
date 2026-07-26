@@ -18,6 +18,33 @@ assert _spec and _spec.loader
 bot = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bot)
 
+# GitLab injects these into every job and main()'s argparse defaults read them at
+# call time (--target-branch from $CI_DEFAULT_BRANCH, --api-url, --project-id,
+# the remote URL from $CI_SERVER_HOST/$CI_PROJECT_PATH, the description's
+# pipeline link). Scrub them so the suite behaves identically in and out of a
+# pipeline; a test that wants one sets it explicitly.
+CI_ENV = (
+    "CI",
+    "GITLAB_CI",
+    "CI_COMMIT_SHA",
+    "CI_COMMIT_REF_NAME",
+    "CI_API_V4_URL",
+    "CI_PROJECT_ID",
+    "CI_PROJECT_URL",
+    "CI_PIPELINE_URL",
+    "CI_SERVER_HOST",
+    "CI_PROJECT_PATH",
+    "CI_DEFAULT_BRANCH",
+    "RELEASE_TOKEN",
+    "BOT_TOKEN",
+)
+
+
+@pytest.fixture(autouse=True)
+def _scrub_ci_env(monkeypatch):
+    for name in CI_ENV:
+        monkeypatch.delenv(name, raising=False)
+
 
 def test_changed_paths_ignores_untracked_by_default():
     porcelain = " M ansible/all.yml\nM  kubernetes/x.yaml\n?? version-report.json\n"
@@ -237,18 +264,21 @@ def _bump(work):
     (work / "pins.yml").write_text("sonarr: 4.0.2\n")
 
 
-def _run_main(repo, monkeypatch, open_mrs=()):
+def _run_main(repo, monkeypatch, open_mrs=(), paths=None):
     work, remote = repo
     monkeypatch.setenv("BOT_TOKEN", "glpat-tok")
     client = FakeClient(open_mrs)
     monkeypatch.setattr(bot, "GitLabClient", lambda *a, **kw: client)
-    rc = bot.main([
+    argv = [
         "--repo-dir", str(work),
         "--remote-url", str(remote),
         "--target-branch", "main",
         "--api-url", "https://git.example/api/v4",
         "--project-id", "42",
-    ])
+    ]
+    if paths is not None:
+        argv += ["--paths", paths]
+    rc = bot.main(argv)
     return rc, client
 
 
@@ -267,6 +297,23 @@ def test_main_commits_tracked_pins_only(repo, monkeypatch):
     payload = [c for c in client.calls if c[0] == "create"][0][1]
     assert "version-report.json" not in payload["description"]
     assert "pins.yml" in payload["description"]
+
+
+def test_main_stages_bumps_when_a_paths_entry_has_no_tracked_files(repo, monkeypatch):
+    """`git add -- reports/` aborts rc 128 on a pathspec matching no TRACKED file,
+    while `git status --` tolerates it — so a --paths list mixing a real tree with
+    an artifact-only directory detected the bumps and then died before committing."""
+    work, _ = repo
+    _bump(work)
+    (work / "reports").mkdir()
+    (work / "reports" / "version-report.json").write_text("{}\n")
+
+    rc, client = _run_main(repo, monkeypatch, paths="pins.yml reports/")
+
+    assert rc == 0
+    committed = bot.git(["show", "--name-only", "--format=", "HEAD"], str(work)).split()
+    assert committed == ["pins.yml"]
+    assert [c[0] for c in client.calls] == ["list", "create"]
 
 
 def test_main_closes_the_stale_mr_when_there_are_no_bumps(repo, monkeypatch):

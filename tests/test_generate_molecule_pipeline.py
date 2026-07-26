@@ -247,6 +247,14 @@ class TestGlobalTriggers:
         for prefix in gmp.GLOBAL_TRIGGER_PREFIXES:
             assert sel([prefix + "x.yml"]).full, f"{prefix} must trigger the full matrix"
 
+    def test_the_ci_images_pip_pins_trigger_the_full_matrix(self, sel):
+        """The pins both suites run on live in the image build context, which is
+        also in the template's `changes` default — so the trigger can actually
+        fire. A bare repo-root `requirements.txt` is NOT one: `changes` does not
+        list it, so molecule-plan would never be created to act on it."""
+        assert sel(["docker/molecule-ci/requirements.txt"]).full
+        assert not gmp.is_global_trigger("requirements.txt")
+
     def test_global_trigger_wins_over_unknown_role(self, sel):
         """A global trigger short-circuits before the unknown-role coverage check."""
         s = sel([".gitlab-ci.yml", "ansible/roles/ghost/tasks/main.yml"])

@@ -313,6 +313,12 @@ confirmation required; a bad lifecycle rule can expire the only offsite copy).
 | `find-pve-host-for-vm.sh` | prints which Proxmox host runs a VMID (ha-manager → `pvesh /cluster/resources` → per-host `qm status`) |
 | `resolve-tool.sh` | prints how to invoke a Python dev tool (`PATH` → `python3 -m <module>` → validated pyenv glob) |
 
+`find-pve-host-for-vm.sh` env: `PVE_NODE_PREFIX` (default `pve-`) — the prefix
+this site's SSH targets carry that the node names `pvesh get /cluster/resources`
+returns do not. Set it to `""` when the two already agree; leaving it at the
+default on a site whose nodes are named otherwise returns a hostname that does
+not resolve.
+
 Plus the pre-existing `check-doc-links.py`, `check-taskfile.sh`,
 `flux-render.sh`, `kubeconform-skipped.py`.
 
@@ -323,4 +329,7 @@ Plus the pre-existing `check-doc-links.py`, `check-taskfile.sh`,
 Every script above has a suite in `tests/`, run by the library's `python-tests`
 job (`python3 -m pytest tests cli/tests`). The suites are consumer-tree
 independent: they build throwaway git repos / fixture trees under
-`tests/fixtures/` rather than asserting against a real cluster repo.
+`tests/fixtures/` rather than asserting against a real cluster repo, and the
+shell scripts are driven through `subprocess` against stub `ssh` / `promtool` /
+`amtool` / `molecule` binaries on a controlled `PATH`, so no cluster, no SSH
+target and no Prometheus tooling is needed to run them.

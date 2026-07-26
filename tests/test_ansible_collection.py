@@ -101,6 +101,48 @@ class TestDependencyParity:
             assert "<" in spec, f"{name} pin {spec!r} has no upper bound"
 
 
+def require_previous_tag(sr, tags) -> str:
+    """The tag semantic-release would compute the next version from, or stop.
+
+    A clone fetched without tags cannot compute the lineage. Locally that is a
+    legitimate checkout shape and skipping is right; under $CI it means the only
+    gate binding the declared version to the tag semantic-release will cut has
+    silently disappeared — and it disappears exactly when the release line has
+    grown past the job's clone depth, i.e. when the release is largest. Fail
+    there instead of going green having asserted nothing.
+    """
+    previous = sr.latest_version_tag(tags)
+    if previous is not None:
+        return previous
+    if os.environ.get("CI"):
+        pytest.fail(
+            "no version tag in this checkout — the release-lineage gate cannot "
+            'run. The job needs the tags: set GIT_DEPTH: "0" on it (the release '
+            "job already does), or fetch them explicitly."
+        )
+    pytest.skip("no version tag in this checkout")
+
+
+class _NoTags:
+    """Stand-in for the semantic-release module in a tag-less checkout."""
+
+    @staticmethod
+    def latest_version_tag(tags):
+        return None
+
+
+def test_release_lineage_gate_fails_rather_than_skips_in_ci(monkeypatch):
+    monkeypatch.setenv("CI", "true")
+    with pytest.raises(pytest.fail.Exception, match="GIT_DEPTH"):
+        require_previous_tag(_NoTags, [])
+
+
+def test_release_lineage_gate_still_skips_outside_ci(monkeypatch):
+    monkeypatch.delenv("CI", raising=False)
+    with pytest.raises(pytest.skip.Exception):
+        require_previous_tag(_NoTags, [])
+
+
 class TestReleaseLineage:
     """Bind the declared version to the tag semantic-release would actually cut.
 
@@ -129,11 +171,7 @@ class TestReleaseLineage:
         if shutil.which("git") is None or not (REPO / ".git").exists():
             pytest.skip("not a git checkout")
         tags = self._git("tag", "--list").split()
-        previous = sr.latest_version_tag(tags)
-        if previous is None:
-            # A clone fetched without tags cannot compute the lineage; the
-            # release job itself sets GIT_DEPTH: 0 for the same reason.
-            pytest.skip("no version tag in this checkout")
+        previous = require_previous_tag(sr, tags)
         log_output = self._git(
             "log", "--no-merges", "--format=" + sr.LOG_FORMAT, "%s..HEAD" % previous
         )

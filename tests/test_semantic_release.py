@@ -27,6 +27,33 @@ _spec.loader.exec_module(sr)
 RS = sr.RECORD_SEP
 FS = sr.FIELD_SEP
 
+# GitLab injects these into every job, and main()'s argparse defaults read them
+# at call time: an unscrubbed CI_COMMIT_SHA silently overrides the fake HEAD the
+# main() tests pin, so the release-creation and crash-recovery assertions fail in
+# the pipeline and pass locally. Scrub the whole set so the suite behaves
+# identically in and out of CI; a test that wants one sets it explicitly.
+CI_ENV = (
+    "CI",
+    "GITLAB_CI",
+    "CI_COMMIT_SHA",
+    "CI_COMMIT_REF_NAME",
+    "CI_API_V4_URL",
+    "CI_PROJECT_ID",
+    "CI_PROJECT_URL",
+    "CI_PIPELINE_URL",
+    "CI_SERVER_HOST",
+    "CI_PROJECT_PATH",
+    "CI_DEFAULT_BRANCH",
+    "RELEASE_TOKEN",
+    "BOT_TOKEN",
+)
+
+
+@pytest.fixture(autouse=True)
+def _scrub_ci_env(monkeypatch):
+    for name in CI_ENV:
+        monkeypatch.delenv(name, raising=False)
+
 
 def log(*records):
     """Build `git log --format=%H%x1f%B%x1e` output from (sha, message) pairs."""
@@ -343,8 +370,11 @@ def test_get_release_escapes_the_tag_in_the_url():
 
 # --- main(): the release-creation half ----------------------------------------
 
-def fake_git(tags, logs, head="deadbeef", tagged=None):
-    """Stub for sr.git covering the four commands main() runs."""
+def fake_git(tags, logs, head="deadbeef"):
+    """Stub for sr.git covering the three commands main() runs.
+
+    Deliberately no `rev-list`: recovery no longer asks whether the orphan tag is
+    on HEAD, so a surviving call would fail here rather than pass silently."""
 
     def _git(args, repo_dir="."):
         if args[0] == "tag":
@@ -353,8 +383,6 @@ def fake_git(tags, logs, head="deadbeef", tagged=None):
             return logs.get(args[-1], "")
         if args[0] == "rev-parse":
             return head + "\n"
-        if args[0] == "rev-list":
-            return (head if tagged is None else tagged) + "\n"
         raise AssertionError("unexpected git call: %r" % (args,))
 
     return _git
@@ -363,9 +391,15 @@ def fake_git(tags, logs, head="deadbeef", tagged=None):
 API = ["--api-url", "https://git.example/api/v4", "--project-id", "42"]
 
 
+def released_tag(*_a, **_kw):
+    """get_release stub for the normal case: the previous tag has its Release."""
+    return {"tag_name": "v0.1.1"}
+
+
 def test_main_creates_the_release_and_only_then_reports_it(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("RELEASE_TOKEN", "tok")
     monkeypatch.setattr(sr, "git", fake_git(["v0.1.1"], {"v0.1.1..HEAD": log(("a" * 8, "feat: x"))}))
+    monkeypatch.setattr(sr, "get_release", released_tag)
     captured = {}
 
     def fake_create(api_url, project_id, token, plan, ref, token_header="JOB-TOKEN"):
@@ -384,6 +418,7 @@ def test_main_creates_the_release_and_only_then_reports_it(tmp_path, monkeypatch
 def test_main_failed_release_never_claims_the_tag_exists(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("RELEASE_TOKEN", "tok")
     monkeypatch.setattr(sr, "git", fake_git(["v0.1.1"], {"v0.1.1..HEAD": log(("a" * 8, "feat: x"))}))
+    monkeypatch.setattr(sr, "get_release", released_tag)
 
     def boom(*a, **kw):
         raise _http_error(403, b"insufficient scope")
@@ -416,6 +451,18 @@ def test_main_without_credentials_fails_and_records_why(tmp_path, monkeypatch, c
     assert "need $RELEASE_TOKEN" in capsys.readouterr().err
 
 
+def recording_create(monkeypatch):
+    """Replace create_release with a recorder; returns the list of calls."""
+    calls = []
+
+    def fake_create(api_url, project_id, token, plan, ref, token_header="JOB-TOKEN"):
+        calls.append({"tag": plan.tag, "version": plan.version, "notes": plan.notes, "ref": ref})
+        return {}
+
+    monkeypatch.setattr(sr, "create_release", fake_create)
+    return calls
+
+
 def test_main_recovers_a_tag_that_has_no_release(tmp_path, monkeypatch, capsys):
     """A run that died between the tag and the Release halves of the one API call
     leaves an empty commit range — which would read as "nothing to release" forever."""
@@ -429,19 +476,48 @@ def test_main_recovers_a_tag_that_has_no_release(tmp_path, monkeypatch, capsys):
         ),
     )
     monkeypatch.setattr(sr, "get_release", lambda *a, **kw: None)
-    captured = {}
-
-    def fake_create(api_url, project_id, token, plan, ref, token_header="JOB-TOKEN"):
-        captured.update(tag=plan.tag, version=plan.version, notes=plan.notes)
-        return {}
-
-    monkeypatch.setattr(sr, "create_release", fake_create)
+    calls = recording_create(monkeypatch)
     out = tmp_path / "release.json"
     assert sr.main(["--output", str(out), *API]) == 0
-    assert captured["tag"] == "v0.2.0"
-    assert captured["version"] == "0.2.0"
-    assert "### Features" in captured["notes"]
+    assert [c["tag"] for c in calls] == ["v0.2.0"]
+    assert calls[0]["version"] == "0.2.0"
+    assert "### Features" in calls[0]["notes"]
     assert json.loads(out.read_text())["released"] is True
+    assert "exists with no Release" in capsys.readouterr().out
+
+
+def test_main_recovers_an_orphan_tag_that_no_longer_sits_on_head(tmp_path, monkeypatch, capsys):
+    """One commit landing after the half-failed run used to orphan the tag forever:
+    the range was non-empty again, so the recovery branch was skipped and the next
+    tag was cut over commits that appear in no release notes at all."""
+    monkeypatch.setenv("RELEASE_TOKEN", "tok")
+    monkeypatch.setattr(
+        sr,
+        "git",
+        fake_git(
+            ["v0.1.1", "v0.2.0"],
+            {
+                "v0.2.0..HEAD": log(("b" * 8, "fix: later work")),
+                "v0.1.1..v0.2.0": log(("a" * 8, "feat: the orphaned work")),
+            },
+        ),
+    )
+    monkeypatch.setattr(sr, "get_release", lambda *a, **kw: None)
+    calls = recording_create(monkeypatch)
+    out = tmp_path / "release.json"
+    assert sr.main(["--output", str(out), *API]) == 0
+
+    # The backfill goes first, from the tag's OWN range, and is created from the
+    # tag rather than HEAD; only then is the new tag cut from HEAD.
+    assert [c["tag"] for c in calls] == ["v0.2.0", "v0.2.1"]
+    assert calls[0]["ref"] == "v0.2.0"
+    assert "the orphaned work" in calls[0]["notes"]
+    assert "the orphaned work" not in calls[1]["notes"]
+    assert calls[1]["ref"] == "deadbeef"
+    assert "later work" in calls[1]["notes"]
+
+    payload = json.loads(out.read_text())
+    assert (payload["released"], payload["tag"], payload["recovered"]) == (True, "v0.2.1", "v0.2.0")
     assert "exists with no Release" in capsys.readouterr().out
 
 
@@ -454,14 +530,20 @@ def test_main_does_not_recreate_a_release_that_exists(monkeypatch, capsys):
     assert "nothing to release" in capsys.readouterr().out
 
 
-def test_main_does_not_recover_a_tag_that_is_not_on_head(monkeypatch):
+def test_main_does_not_backfill_when_the_previous_tag_has_its_release(tmp_path, monkeypatch, capsys):
+    """The no-op half of the widened lookup: a healthy previous tag must still cut
+    exactly one release, not a duplicate of itself."""
     monkeypatch.setenv("RELEASE_TOKEN", "tok")
     monkeypatch.setattr(
-        sr, "git", fake_git(["v0.2.0"], {"v0.2.0..HEAD": ""}, head="deadbeef", tagged="0ldc0mmit")
+        sr, "git", fake_git(["v0.1.1", "v0.2.0"], {"v0.2.0..HEAD": log(("b" * 8, "fix: later work"))})
     )
-    monkeypatch.setattr(sr, "get_release", lambda *a, **kw: pytest.fail("looked up an old tag"))
-    monkeypatch.setattr(sr, "create_release", lambda *a, **kw: pytest.fail("re-released"))
-    assert sr.main(API) == 0
+    monkeypatch.setattr(sr, "get_release", lambda *a, **kw: {"tag_name": "v0.2.0"})
+    calls = recording_create(monkeypatch)
+    out = tmp_path / "release.json"
+    assert sr.main(["--output", str(out), *API]) == 0
+    assert [c["tag"] for c in calls] == ["v0.2.1"]
+    assert "recovered" not in json.loads(out.read_text())
+    assert "exists with no Release" not in capsys.readouterr().out
 
 
 def test_plan_existing_tag_reuses_the_tags_own_range():
@@ -489,6 +571,7 @@ def test_run_cli_reports_git_stderr(monkeypatch, capsys):
 def test_run_cli_reports_an_unreachable_api(monkeypatch, capsys):
     monkeypatch.setenv("RELEASE_TOKEN", "tok")
     monkeypatch.setattr(sr, "git", fake_git(["v0.1.1"], {"v0.1.1..HEAD": log(("a" * 8, "feat: x"))}))
+    monkeypatch.setattr(sr, "get_release", released_tag)
 
     def boom(*a, **kw):
         raise urllib.error.URLError("name or service not known")

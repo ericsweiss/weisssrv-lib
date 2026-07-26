@@ -125,11 +125,17 @@ _ROLES_ROOT = PurePosixPath(ROLES_PREFIX).parent
 # contexts, the CI file that defines the matrix, the shared in-job retry wrapper,
 # and this generator itself (its selection logic changing means the narrowing
 # can't be trusted — run everything).
+#
+# A trigger only bites if the plan job was CREATED, i.e. if the path is also in
+# the `changes` list gating molecule-plan (ci/internal/molecule-matrix's
+# `changes` input). The pip pins that bake into the molecule CI image live in
+# that image's build context, so the `docker/molecule-ci/` prefix below covers
+# them on both sides; a consumer keeping pins at the repo root adds
+# `requirements.txt` to $MOLECULE_GLOBAL_TRIGGERS *and* to `changes` — listing
+# it here alone would promise a full fan-out the plan job never runs to deliver.
 GLOBAL_TRIGGER_FILES = frozenset({
     str(_ROLES_ROOT / "requirements.yml"),
     str(_ROLES_ROOT / "galaxy.yml"),
-    # Top-level pip pins bake into the molecule CI image both suites run in.
-    "requirements.txt",
     CI_FILE_NAME,
     # The shared job templates every molecule/integration job extends — a
     # template-only change must re-run everything, not emit a no-op child.
@@ -147,6 +153,7 @@ GLOBAL_TRIGGER_PREFIXES = (
     # can't rot the narrowing — over-select on rare edits instead.
     "ansible/playbooks/maintenance/",
     "docker/molecule-test/",
+    # Includes the CI image's requirements.txt — the pip pins both suites run on.
     "docker/molecule-ci/",
 )
 

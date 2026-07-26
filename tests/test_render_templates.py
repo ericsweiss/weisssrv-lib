@@ -23,7 +23,10 @@ import yaml
 _LIB_ROOT = Path(__file__).resolve().parents[1]
 _TEMPLATES = sorted((_LIB_ROOT / "ci").rglob("*.yml"))
 _INPUT_RE = re.compile(r"\$\[\[\s*inputs\.([a-zA-Z0-9_]+)\s*\]\]")
-_SHELL_META = re.compile(r"[<>|;&]")
+# Redirection/list operators, plus the two command-substitution forms: a default
+# carrying `$(id)` or a backtick run parses clean under `bash -n` and reads as
+# valid YAML, yet EXECUTES at job time exactly like `black<26.5.0` redirected.
+_SHELL_META = re.compile(r"[<>|;&`]|\$\(")
 
 
 def _split_docs(text: str) -> tuple[dict | None, str]:
@@ -83,6 +86,29 @@ def test_template_renders(path: Path) -> None:
             ["bash", "-n"], input=script, capture_output=True, text=True
         )
         assert proc.returncode == 0, f"rendered script does not parse:\n{proc.stderr}"
+
+
+@pytest.mark.parametrize(
+    "default",
+    [
+        "black<26.5.0",           # the redirect that started this
+        "out > /tmp/x",
+        "a | b",
+        "a; b",
+        "a && b",
+        "$(id -u)",               # command substitution
+        "`id -u`",
+    ],
+)
+def test_shell_meta_covers_every_way_a_default_reaches_the_shell_live(default: str) -> None:
+    assert _SHELL_META.search(default), f"{default!r} must be treated as risky"
+
+
+@pytest.mark.parametrize("default", ["black", "3.11", "git jq", "$CI_COMMIT_SHA", "--check --diff"])
+def test_shell_meta_does_not_flag_inert_defaults(default: str) -> None:
+    """A bare `$VAR` is expanded, not re-scanned for operators — interpolating it
+    is the normal, safe form, so flagging it would make the gate unusable."""
+    assert not _SHELL_META.search(default)
 
 
 @pytest.mark.parametrize("path", _TEMPLATES, ids=lambda p: str(p.relative_to(_LIB_ROOT)))

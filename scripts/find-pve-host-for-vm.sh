@@ -5,6 +5,11 @@
 # Usage: find-pve-host-for-vm.sh <vmid> <host1> [host2 ...]
 # Exit 0 with host on stdout if found; exit 1 with diagnostics on stderr.
 #
+# Environment:
+#   PVE_NODE_PREFIX  prefix this site's SSH targets carry that `pvesh` node
+#                    names do not (default "pve-"). Set to "" for a site whose
+#                    node names need no rewrite.
+#
 # Resolution strategy (HA-resilient):
 #   1. Find the first reachable host from the provided list.
 #   2. Try ha-manager status on that host (for HA-managed services).
@@ -25,6 +30,13 @@ fi
 VMID="$1"
 shift
 HOSTS=("$@")
+
+# `pvesh get /cluster/resources` returns the bare Proxmox node name, which on
+# the reference cluster is the SSH target minus a `pve-` prefix. Normalizing to
+# a hardcoded prefix would hand the caller an unresolvable hostname on a site
+# whose nodes are named otherwise, so the prefix is a knob. `${x-y}` (not
+# `${x:-y}`) so an explicitly empty value disables the rewrite entirely.
+PVE_NODE_PREFIX="${PVE_NODE_PREFIX-pve-}"
 
 # VMID is interpolated into a remote shell command (`grep "service vm:${VMID}"`)
 # and an inline Python snippet (`if x.get('vmid') == ${VMID}`) below. Pin it to
@@ -71,9 +83,9 @@ if [ -z "$NODE" ]; then
         "sudo pvesh get /cluster/resources --type vm --output-format json 2>/dev/null" 2>/dev/null \
         | python3 -c "import sys, json; d = json.load(sys.stdin); v = [x for x in d if x.get('vmid') == ${VMID}]; print(v[0]['node'] if v else '')" 2>/dev/null \
         || true)
-    if [ -n "$NODE" ]; then
-        # Normalize: ensure pve- prefix
-        NODE="pve-${NODE#pve-}"
+    if [ -n "$NODE" ] && [ -n "$PVE_NODE_PREFIX" ]; then
+        # Normalize: ensure exactly one $PVE_NODE_PREFIX on the front.
+        NODE="${PVE_NODE_PREFIX}${NODE#"$PVE_NODE_PREFIX"}"
     fi
 fi
 
