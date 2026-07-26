@@ -245,11 +245,12 @@ Conventions shared by every template:
   passes its own value.
 - **Tenant (with own privileged runner):** `inputs: { tags: [their-runner],
   context: ".", dockerfile: "Dockerfile", cpu_selector: "<their pin>" }`.
-- **`:latest` bootstrap:** `:latest` is a default-branch publish, but a repo
-  whose default branch has never built the image has no `:latest` at all —
-  and anything falling back to it (a molecule child pipeline's job image)
-  cannot start. The job seeds `:latest` from the first MR build when the tag
-  is absent; the default-branch push owns it from then on.
+- **`:latest` is default-branch-only, deliberately.** An MR build never writes
+  it — privileged CI jobs consume that tag, so unreviewed code must not be
+  able to populate it. A repo whose default branch has never built the image
+  therefore has no `:latest`: bootstrap it with one default-branch pipeline.
+  MR pipelines do not need it — they resolve the image they just built through
+  `digest_dotenv_var` or the immutable `:<short-sha>` tag.
 
 ## ci/test/python-tests.yml
 

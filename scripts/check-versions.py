@@ -703,7 +703,8 @@ def fetch_apt_repo_version(svc: dict) -> str:
     GitHub would advertise versions that `apt-get install` can't satisfy.
 
     Required keys in `svc`:
-      apt_index_url: URL to the (typically gzipped) Packages file, e.g.
+      apt_url:       URL to the (typically gzipped) Packages file (alias:
+                     apt_index_url), e.g.
                      https://pkgs.tailscale.com/stable/debian/dists/trixie/main/binary-amd64/Packages.gz
                      Detect gzip from the response payload header rather
                      than the URL suffix — apt mirrors often serve the
@@ -711,7 +712,9 @@ def fetch_apt_repo_version(svc: dict) -> str:
                      stripped in the final URL.
       apt_package:   Binary package name (e.g. "tailscale").
     """
-    url = svc["apt_index_url"]
+    # `apt_url` is the name the published schema and the shipped example use;
+    # `apt_index_url` is the older spelling this function was written against.
+    url = svc.get("apt_url") or svc["apt_index_url"]
     pkg = svc["apt_package"]
     req = urllib.request.Request(url, headers={"User-Agent": "weisssrv-lib-version-check/1.0"})
     # Bounded retry on transient failures (see _urlopen_with_retry).

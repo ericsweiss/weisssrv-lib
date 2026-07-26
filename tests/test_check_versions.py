@@ -60,6 +60,27 @@ SERVICE_REGISTRY = check_versions.SERVICE_REGISTRY
 
 
 
+
+class TestAptRepoKeyNames:
+    """The published schema and the shipped example use `apt_url`; the
+    function was written against `apt_index_url`. Both must work."""
+
+    def _index(self, monkeypatch):
+        monkeypatch.setattr(
+            check_versions, "_urlopen_with_retry",
+            lambda req, timeout=30: b"Package: tailscale\nVersion: 1.80.0\n\n")
+
+    def test_apt_url_is_accepted(self, monkeypatch):
+        self._index(monkeypatch)
+        svc = {"apt_url": "https://x/Packages.gz", "apt_package": "tailscale"}
+        assert check_versions.fetch_apt_repo_version(svc) == "1.80.0"
+
+    def test_apt_index_url_still_accepted(self, monkeypatch):
+        self._index(monkeypatch)
+        svc = {"apt_index_url": "https://x/Packages.gz", "apt_package": "tailscale"}
+        assert check_versions.fetch_apt_repo_version(svc) == "1.80.0"
+
+
 class TestTagRegexWithoutCaptureGroup:
     r"""The shipped example configs use capture-group-less regexes like
     r"^\d+\.\d+\.\d+$"; group(1) on those raises IndexError."""
