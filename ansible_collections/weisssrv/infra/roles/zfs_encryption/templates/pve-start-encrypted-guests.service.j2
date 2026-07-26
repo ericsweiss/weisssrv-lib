@@ -1,0 +1,36 @@
+# {{ ansible_managed }}
+#
+# Starts the guests in the encrypted-storage cohort (zfs_encryption_guest_vmids
+# / _ctids) after zfs-mount-encrypted.service. It does NOT touch
+# pve-guests.service, so an unlisted guest still starts early on its normal
+# onboot path and cluster quorum never waits on this host's unlock.
+#
+# WantedBy=multi-user.target and never Before any boot target, so a slow unlock
+# delays these guests but can never hang boot.
+#
+# Deliberately UN-sandboxed, matching stock pve-guests.service: qm/pct fork
+# qemu/lxc, which need setuid helpers (qemu-bridge-helper) and broad /etc/pve
+# access, and NoNewPrivileges would propagate into the guest and break its
+# networking.
+
+[Unit]
+Description=Start Proxmox guests on encrypted ZFS storage after unlock
+Wants=zfs-mount-encrypted.service
+After=zfs-mount-encrypted.service pve-guests.service
+ConditionPathExists=/usr/local/sbin/zfs-start-encrypted-guests.sh
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/zfs-start-encrypted-guests.sh
+# Type=oneshot defaults to TimeoutStartSec=infinity, so a hung `qm start` /
+# `pct start` (e.g. a storage stall) would leave this unit "activating" forever
+# and Restart=on-failure would never fire. Bound it so a wedged guest start
+# fails and is retried.
+TimeoutStartSec=5min
+Restart=on-failure
+RestartSec=30s
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,28 @@
+---
+# Deploys the kernel-TLS handshake daemon (tlshd from ktls-utils), which NFSv4
+# `xprtsec=tls`/`mtls` needs to encrypt its RPC stream. Floors: kernel 6.5+ and
+# nfs-utils 2.6.3+. OPT-IN, and BOTH ends need it — servers and clients.
+# Rollout order (exports, then mount options): README.
+
+nfs_tls_enabled: false
+
+# Is this host an NFS *server* (terminates the server-side TLS handshake)?
+# When true, tlshd.conf gets an [authenticate.server] block with the host's
+# cert + key. Client-only hosts leave it false.
+nfs_tls_is_server: false
+
+# Does the CLIENT need to present a certificate? Only required for xprtsec=mtls.
+# With xprtsec=tls (server-only auth) this stays false and the client block
+# omits the private key — see README "Private-key least privilege". Set true
+# only when migrating an export to xprtsec=mtls.
+nfs_tls_client_cert: false
+
+# Cert + key paths. Defaults match the filenames weisssrv.infra.acme_certs
+# distributes (fullchain.pem + privkey.pem under /etc/ssl/private/) to the NFS
+# server only. Override if a host uses a different cert delivery path.
+nfs_tls_cert_path: /etc/ssl/private/fullchain.pem
+nfs_tls_key_path: /etc/ssl/private/privkey.pem
+
+# Truststore for validation: the system CA bundle, so a publicly-issued cert
+# validates as-is. Override when using an internal CA.
+nfs_tls_truststore: /etc/ssl/certs/ca-certificates.crt

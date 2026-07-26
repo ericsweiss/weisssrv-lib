@@ -1,0 +1,333 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Check if NFS server is installed
+      ansible.builtin.package:
+        name: nfs-kernel-server
+        state: present
+      check_mode: true
+      register: nfs_installed
+      failed_when: nfs_installed.changed
+
+    - name: Check if exports file exists
+      ansible.builtin.stat:
+        path: /etc/exports
+      register: exports_file
+      failed_when: not exports_file.stat.exists
+
+    - name: Verify exports file contains expected exports
+      ansible.builtin.command: grep -q "/tank/media/unified" /etc/exports
+      register: exports_check
+      failed_when: exports_check.rc != 0
+      changed_when: false
+
+    # exports.j2 xprtsec precedence (the per-client override that keeps a
+    # plaintext client on a mixed export whose other clients require TLS —
+    # the HAOS .154 lockout-class regression guard). Exports require TLS
+    # (xprtsec=tls), so this guards that no xprtsec at all leaks onto the .154
+    # line. grep each rendered client line directly; client lines are
+    # backslash-continued so each client spec lands on its own physical line,
+    # which is exactly what we match.
+
+    - name: Assert plaintext export has no xprtsec on its client line
+      ansible.builtin.command: >-
+        grep -F '192.168.0.0/24(ro,sync,no_subtree_check)' /etc/exports
+      register: plain_grep
+      changed_when: false
+      failed_when: plain_grep.rc != 0 or 'xprtsec' in plain_grep.stdout
+
+    - name: Assert export-level xprtsec=tls reaches the first client line
+      ansible.builtin.command: >-
+        grep -F '/tank/appdata/tls 192.168.0.200/29(rw,sync,no_subtree_check,fsid=91,xprtsec=tls)' /etc/exports
+      register: tls_first
+      changed_when: false
+      failed_when: tls_first.rc != 0
+
+    - name: Assert export-level xprtsec=tls reaches the continued client line
+      ansible.builtin.command: >-
+        grep -F '192.168.0.220/29(rw,sync,no_subtree_check,fsid=91,xprtsec=tls)' /etc/exports
+      register: tls_cont
+      changed_when: false
+      failed_when: tls_cont.rc != 0
+
+    - name: Assert mixed export requires TLS (xprtsec=tls) on the opted-in k3s client
+      ansible.builtin.command: >-
+        grep -F '/tank/media/mixed 192.168.0.200/29(rw,sync,no_subtree_check,fsid=92,xprtsec=tls)' /etc/exports
+      register: mixed_tls
+      changed_when: false
+      failed_when: mixed_tls.rc != 0
+
+    - name: Assert mixed export leaves the .154 client plaintext (no xprtsec)
+      ansible.builtin.command: >-
+        grep -F '192.168.0.154/32(ro,sync,no_subtree_check,fsid=92)' /etc/exports
+      register: mixed_plain
+      changed_when: false
+      # rc 0 = the exact plaintext spec is present; if xprtsec had leaked onto
+      # the .154 line the option string would differ and this grep would miss.
+      failed_when: mixed_plain.rc != 0 or 'xprtsec' in mixed_plain.stdout
+
+    # _zfs_anchor selection (nfs.yml): an encrypted bind source must order on
+    # the LATE zfs-mount-encrypted.service, a plaintext one on the early
+    # zfs-mount.service — the wrong anchor re-creates the empty-mountpoint
+    # capture incident the anchor logic guards against.
+    - name: Read the /export/appdata bind fstab entry (encrypted source)
+      ansible.builtin.command: >-
+        grep -E '^/mnt/ssd/appdata[[:space:]]+/export/appdata[[:space:]]' /etc/fstab
+      register: enc_bind_line
+      changed_when: false
+      failed_when: >-
+        enc_bind_line.rc != 0
+        or 'x-systemd.requires=zfs-mount-encrypted.service' not in enc_bind_line.stdout
+        or 'x-systemd.after=zfs-mount-encrypted.service' not in enc_bind_line.stdout
+        or 'nofail' not in enc_bind_line.stdout
+
+    - name: Read the /export/share bind fstab entry (plaintext source)
+      ansible.builtin.command: >-
+        grep -E '^/mnt/tank/share[[:space:]]+/export/share[[:space:]]' /etc/fstab
+      register: plain_bind_line
+      changed_when: false
+      failed_when: >-
+        plain_bind_line.rc != 0
+        or 'x-systemd.requires=zfs-mount.service' not in plain_bind_line.stdout
+        or 'zfs-mount-encrypted' in plain_bind_line.stdout
+
+    - name: Read the nfs-server ordering drop-in
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/nfs-server.service.d/zfs-encrypted.conf
+      register: nfs_dropin
+
+    - name: Assert the drop-in gates nfsd on the encrypted export only
+      ansible.builtin.assert:
+        that:
+          - "'After=zfs-mount-encrypted.service' in (nfs_dropin.content | b64decode)"
+          - "'RequiresMountsFor=/export/appdata' in (nfs_dropin.content | b64decode)"
+          - "'RequiresMountsFor=/export/share' not in (nfs_dropin.content | b64decode)"
+        fail_msg: >-
+          nfs-server drop-in must order after zfs-mount-encrypted.service and
+          RequiresMountsFor exactly the encrypted exports (never the plaintext
+          ones).
+
+    # Media mover: script + timer render and the timer is enabled.
+    - name: Stat media-mover script
+      ansible.builtin.stat:
+        path: /usr/local/sbin/media-mover.sh
+      register: media_mover_script
+      failed_when: not media_mover_script.stat.exists or media_mover_script.stat.mode != '0755'
+
+    - name: Verify media-mover script renders src/dst from host vars
+      ansible.builtin.command: grep -q 'SRC="/mnt/nvme/media/library"' /usr/local/sbin/media-mover.sh
+      register: media_mover_src_check
+      changed_when: false
+      failed_when: media_mover_src_check.rc != 0
+
+    # The `${sval}` emit carries the preserved timestamp on failure: dropping
+    # it made every failed run also trip MediaMoverStale's absent() arm.
+    # (Behavior is executed by files/archive-metrics-behavior.sh; this pin
+    # catches a wholesale removal.)
+    - name: Verify media-mover failure path preserves the last-success timestamp
+      ansible.builtin.command: grep -qF 'media_mover_last_success_timestamp_seconds ${sval}' /usr/local/sbin/media-mover.sh
+      register: media_mover_prev_check
+      changed_when: false
+      failed_when: media_mover_prev_check.rc != 0
+
+    - name: Check media-mover timer enabled state  # noqa command-instead-of-module
+      ansible.builtin.command: systemctl is-enabled media-mover.timer
+      register: media_mover_timer
+      changed_when: false
+      failed_when: media_mover_timer.stdout | trim != 'enabled'
+
+    # swap-clean: script + timer render (nas_storage_swap_clean_enabled: true in
+    # molecule.yml) and the timer is enabled. This is the memory-safety mechanism
+    # that can gracefully stop production guests, so pin its rendered output.
+    - name: Stat swap-clean script
+      ansible.builtin.stat:
+        path: /usr/local/sbin/swap-clean.sh
+      register: swap_clean_script
+      failed_when: not swap_clean_script.stat.exists or swap_clean_script.stat.mode != '0755'
+
+    - name: Verify swap-clean rendered the stop-guest candidate list from host vars
+      ansible.builtin.command: grep -qF '999:test-guest:60' /usr/local/sbin/swap-clean.sh
+      register: swap_clean_stop_guests_check
+      changed_when: false
+      failed_when: swap_clean_stop_guests_check.rc != 0
+
+    # The failure/abort path must preserve the last-success timestamp (same
+    # contract as media-mover) so a staleness alert measures time-since-success,
+    # not time-since-attempt; a wholesale removal of the metric block trips this.
+    - name: Verify swap-clean failure path preserves the last-success timestamp
+      ansible.builtin.command: grep -qF 'swap_clean_last_success_timestamp_seconds ${sval}' /usr/local/sbin/swap-clean.sh
+      register: swap_clean_prev_check
+      changed_when: false
+      failed_when: swap_clean_prev_check.rc != 0
+
+    # Exact metric-name contract: the guest-restart-failure alert (kube-prometheus
+    # -stack) matches this series by name, so a rename must fail here. Behavior is
+    # executed by files/archive-metrics-behavior.sh (cleanup demotion arm).
+    - name: Verify swap-clean emits the guest-restart-failure gauge
+      ansible.builtin.command: grep -qF 'swap_clean_guest_restart_failures ${restart_failed}' /usr/local/sbin/swap-clean.sh
+      register: swap_clean_restart_gauge
+      changed_when: false
+      failed_when: swap_clean_restart_gauge.rc != 0
+
+    - name: Check swap-clean timer enabled state  # noqa command-instead-of-module
+      ansible.builtin.command: systemctl is-enabled swap-clean.timer
+      register: swap_clean_timer
+      changed_when: false
+      failed_when: swap_clean_timer.stdout | trim != 'enabled'
+
+    # Per-app appdata subdirectories (finding 204): created after the
+    # mounted-dataset guard, owned 1000:2000 so the all_squashed appdata export
+    # is writable by the floating k3s apps (Grafana + downloads/recipes).
+    - name: Stat the grafana appdata subdirectory
+      ansible.builtin.stat:
+        path: /mnt/ssd/appdata/grafana
+      register: appdata_grafana
+      failed_when: >-
+        not appdata_grafana.stat.exists
+        or not appdata_grafana.stat.isdir
+        or appdata_grafana.stat.uid != 1000
+        or appdata_grafana.stat.gid != 2000
+
+    # backups-apps: per-app exports each scoped to a single writer (cross-app
+    # isolation). authentik = k3s require-TLS; gitlab = VM require-TLS (now on the
+    # wire); home-assistant = the one plaintext appliance exception. The plaintext
+    # HA line's trailing `)` right after fsid=98 anchors that no xprtsec leaked in.
+    - name: Read /etc/exports for the per-app backups-apps assertions
+      ansible.builtin.slurp:
+        src: /etc/exports
+      register: backups_apps_exports
+
+    - name: Assert per-app backups-apps export isolation + per-app TLS scoping
+      ansible.builtin.assert:
+        that:
+          - >-
+            '/export/backups-apps/authentik 192.168.0.200/29(rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=96,xprtsec=tls)'
+            in (backups_apps_exports.content | b64decode)
+          - >-
+            '/export/backups-apps/gitlab 192.168.0.153/32(rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=97,xprtsec=tls)'
+            in (backups_apps_exports.content | b64decode)
+          - >-
+            '/export/backups-apps/home-assistant 192.168.0.154/32(rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=98)'
+            in (backups_apps_exports.content | b64decode)
+        fail_msg: "per-app backups-apps exports not scoped/TLS-set as expected (authentik+gitlab TLS, HAOS plaintext)"
+        success_msg: "backups-apps split into per-app exports: authentik/gitlab require TLS, HAOS stays plaintext"
+
+    # bind_source_check: each per-app subdir bind anchors on the encrypted mount
+    # (its bind_source is in nas_storage_encrypted_bind_sources).
+    - name: Read the /export/backups-apps/authentik bind fstab entry (subdir of an encrypted dataset)
+      ansible.builtin.command: >-
+        grep -E '^/mnt/tank/backups/apps/authentik[[:space:]]+/export/backups-apps/authentik[[:space:]]' /etc/fstab
+      register: backups_apps_bind
+      changed_when: false
+      failed_when: >-
+        backups_apps_bind.rc != 0
+        or 'x-systemd.requires=zfs-mount-encrypted.service' not in backups_apps_bind.stdout
+
+    - name: Stat a backups-apps per-app subdirectory (created + owned as a bind source)
+      ansible.builtin.stat:
+        path: /mnt/tank/backups/apps/authentik
+      register: backups_apps_authentik
+      failed_when: >-
+        not backups_apps_authentik.stat.exists
+        or not backups_apps_authentik.stat.isdir
+        or backups_apps_authentik.stat.uid != 1000
+        or backups_apps_authentik.stat.gid != 2000
+
+    - name: Stat the backup-artifact mtime collector script
+      ansible.builtin.stat:
+        path: /usr/local/sbin/backup-artifact-mtime-collector.sh
+      register: backup_artifact_collector
+      failed_when: >-
+        not backup_artifact_collector.stat.exists
+        or backup_artifact_collector.stat.mode != '0755'
+
+    - name: Check backup-artifact collector timer enabled  # noqa command-instead-of-module
+      ansible.builtin.command: systemctl is-enabled backup-artifact-mtime-collector.timer
+      register: backup_artifact_timer
+      changed_when: false
+      failed_when: backup_artifact_timer.stdout | trim != 'enabled'
+
+    - name: Check if Samba is installed
+      ansible.builtin.package:
+        name: samba
+        state: present
+      check_mode: true
+      register: samba_installed
+      failed_when: samba_installed.changed
+
+    - name: Check if smb.conf exists
+      ansible.builtin.stat:
+        path: /etc/samba/smb.conf
+      register: smb_conf
+      failed_when: not smb_conf.stat.exists
+
+    - name: Verify smb.conf contains expected shares
+      ansible.builtin.command: grep -q "\[media\]" /etc/samba/smb.conf
+      register: smb_check
+      failed_when: smb_check.rc != 0
+      changed_when: false
+
+    - name: Check if NFS service exists
+      ansible.builtin.systemd:
+        name: nfs-kernel-server
+      register: nfs_service
+      failed_when: nfs_service.status.LoadState != 'loaded'
+
+    - name: Check if Samba service exists
+      ansible.builtin.systemd:
+        name: smbd
+      register: smb_service
+      failed_when: smb_service.status.LoadState != 'loaded'
+
+    # archive-backupctl contract. MAP/RMAP, the lock list, and the restore
+    # targets are all derived from SRC_LIST inside the script, so the
+    # assertions in files/archive-contract-assert.sh (a real *.sh: shellcheck
+    # lints it, and its embedded quotes don't trip Ansible's arg splitter the
+    # way an inline `shell:` block would) pin what derivation can't protect:
+    # SRC_LIST membership, the root-is-a-filesystem allow-list, basename
+    # uniqueness. It also bash -n's the REAL render and pins the zvol-vs-
+    # filesystem type->arm coupling so an inversion is caught.
+    - name: Assert the archive-backupctl contract (restorable, lock-listed, type-coupled)
+      ansible.builtin.script: files/archive-contract-assert.sh
+      changed_when: false
+
+    # The archive-backup unit must chain the offsite B2 backup on success. Dropping
+    # OnSuccess= would silently break the restic-offsite trigger (it would then run
+    # only on its fallback timer, a day-scale delay behind the fresh snapshot).
+    - name: Read the archive-backup service unit
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/archive-backup.service
+      register: archive_backup_unit
+
+    - name: Assert archive-backup chains restic-offsite on success
+      ansible.builtin.assert:
+        that:
+          - "'OnSuccess=restic-offsite.service' in (archive_backup_unit.content | b64decode)"
+        fail_msg: "archive-backup.service is missing OnSuccess=restic-offsite.service (offsite trigger broken)"
+        success_msg: "archive-backup.service chains OnSuccess=restic-offsite.service"
+
+    # Executes the ZFS-free metric helpers (deferral accounting, timestamp
+    # preservation, swap-clean's write_prom_metrics + cleanup restart-failure
+    # demotion) instead of only grep-pinning them.
+    - name: Assert archive/media-mover/swap-clean metric behavior (executed, not grepped)
+      ansible.builtin.script: files/archive-metrics-behavior.sh
+      changed_when: false
+
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "✓ NFS server installed"
+          - "✓ /etc/exports configured"
+          - "✓ Exports file contains expected paths"
+          - "✓ Bind mounts anchored per encryption state (fstab + nfs-server drop-in)"
+          - "✓ Media-mover script + timer deployed and enabled"
+          - "✓ Swap-clean script + timer deployed, enabled, metrics rendered"
+          - "✓ Samba installed"
+          - "✓ smb.conf configured"
+          - "✓ smb.conf contains expected shares"
+          - "✓ NFS service loaded"
+          - "✓ Samba service loaded"
+          - "✓ archive-backupctl contract (SRC_LIST-derived + type-coupled)"

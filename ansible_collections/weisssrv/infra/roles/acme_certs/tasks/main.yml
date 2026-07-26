@@ -1,0 +1,412 @@
+---
+# ACME certificate management with acme.sh: issue on the authority host
+# (acme_certs_enabled) and distribute to acme_certs_distribution_targets over
+# SSH as acme_certs_ssh_user.
+
+- name: Validate the required acme.sh inputs
+  ansible.builtin.assert:
+    that:
+      - acme_certs_ssh_private_key is defined
+      - acme_certs_ssh_private_key | length > 0
+      - acme_certs_ssh_public_key is defined
+      - acme_certs_ssh_public_key | length > 0
+      - acme_certs_email is defined
+      - acme_certs_email | length > 0
+      - acme_certs_domain is defined
+      - acme_certs_domain | length > 0
+    fail_msg: >-
+      acme_certs_{domain,email,ssh_private_key,ssh_public_key} are all required
+      on the cert authority host — the key pair signs the distribution pushes,
+      so supply it from the site's secret store.
+    success_msg: "Required acme.sh variables are present"
+  when: acme_certs_enabled | bool
+  # Deliberately NOT tags: always — that makes every unrelated tag-limited run
+  # against this host fail the secrets assert and abort its remaining plays.
+  tags: [acme_certs, validation]
+
+- name: Ensure the distribution key directory exists
+  ansible.builtin.file:
+    path: "{{ acme_certs_ssh_key_dir }}"
+    state: directory
+    owner: "{{ acme_certs_ssh_user }}"
+    group: "{{ acme_certs_ssh_user }}"
+    mode: "0700"
+  when: acme_certs_enabled | bool
+
+- name: Deploy the cert-distribution SSH private key
+  ansible.builtin.copy:
+    content: "{{ acme_certs_ssh_private_key }}\n"
+    dest: "{{ acme_certs_ssh_key_path }}"
+    owner: "{{ acme_certs_ssh_user }}"
+    group: "{{ acme_certs_ssh_user }}"
+    mode: "0600"
+  when:
+    - acme_certs_enabled | bool
+    - acme_certs_ssh_private_key is defined
+    - acme_certs_ssh_private_key != ''
+  no_log: true
+
+- name: Deploy the cert-distribution SSH public key
+  ansible.builtin.copy:
+    content: "{{ acme_certs_ssh_public_key }}\n"
+    dest: "{{ acme_certs_ssh_key_path }}.pub"
+    owner: "{{ acme_certs_ssh_user }}"
+    group: "{{ acme_certs_ssh_user }}"
+    mode: "0644"
+  when:
+    - acme_certs_enabled | bool
+    - acme_certs_ssh_public_key is defined
+    - acme_certs_ssh_public_key != ''
+
+# Seed each distribution target with the receiver, its sudoers rule and the
+# pinned pubkey. delegate_to reaches targets outside the play's host scope, so
+# adding a host to acme_certs_distribution_targets is enough.
+#
+# A looped INCLUDE around single delegated tasks, never a looped delegate: one
+# unreachable delegate makes the connection plugin mark the loop's AGGREGATE
+# result unreachable for the executing host, and the strategy then drops that
+# host from the play — silently ending distribution to every REACHABLE target,
+# the known_hosts pinning, and everything after. Probing first keeps one dead
+# target from taking the run down with it.
+#
+# ssh_no_sudo targets are skipped: Ansible does not manage their
+# authorized_keys, so the operator installs the pubkey out of band.
+- name: Reset the cert-distribution reachability results
+  ansible.builtin.set_fact:
+    acme_certs_unreachable_targets: []
+  when: acme_certs_enabled | bool
+
+- name: Seed the cert-distribution targets
+  ansible.builtin.include_tasks: seed-target.yml
+  loop: "{{ acme_certs_distribution_targets | default([]) }}"
+  loop_control:
+    loop_var: acme_certs_target
+    label: "{{ acme_certs_target.host }}"
+  when:
+    - acme_certs_enabled | bool
+    - not (acme_certs_target.ssh_no_sudo | default(false))
+    - acme_certs_ssh_public_key | default('') | length > 0
+    # Molecule overrides acme_certs_distribution_targets to exercise template
+    # rendering, but those targets are not molecule platforms — delegating to
+    # them would try to SSH to a real LAN IP. Setting this false short-circuits
+    # the seeding while leaving the rendering tasks covered.
+    - acme_certs_distribute_pubkeys | default(true)
+
+- name: Report cert-distribution targets that could not be seeded
+  ansible.builtin.debug:
+    msg: >-
+      Unreachable, left unseeded: {{ acme_certs_unreachable_targets | join(', ') }}.
+      Their next cert push will fail until they are back and this role re-runs.
+  when:
+    - acme_certs_enabled | bool
+    - acme_certs_unreachable_targets | default([]) | length > 0
+
+# cron is required by acme.sh --install / --install-cronjob (renewals are
+# cron-driven); a minimal image without crontab would otherwise leave
+# renewals silently unscheduled.
+- name: Install acme.sh dependencies
+  ansible.builtin.apt:
+    name:
+      - cron
+      - curl
+      - openssl
+    state: present
+  when:
+    - acme_certs_enabled | bool
+    - ansible_facts['os_family'] == "Debian"
+
+- name: Check if acme.sh is installed
+  ansible.builtin.stat:
+    path: /root/.acme.sh/acme.sh
+  register: acme_certs_installed
+  when: acme_certs_enabled | bool
+
+# The pinned release tarball — NOT the single raw acme.sh file. The
+# installer copies dnsapi/ (and deploy/, notify/) into /root/.acme.sh only
+# when those directories exist next to it, and a hook missing at install
+# time is never fetched later (acme.sh has no network fallback for hooks).
+# A single-file install lacks dnsapi/dns_cf.sh, so a fresh host could neither
+# issue nor renew via the Cloudflare DNS-01 hook.
+- name: Download acme.sh release tarball
+  ansible.builtin.get_url:
+    url: "https://github.com/acmesh-official/acme.sh/archive/refs/tags/{{ acme_certs_sh_version }}.tar.gz"
+    dest: "/tmp/acme.sh-{{ acme_certs_sh_version }}.tar.gz"
+    checksum: "sha256:{{ acme_certs_sh_tarball_sha256 }}"
+    mode: '0644'
+  when:
+    - acme_certs_enabled | bool
+    - not acme_certs_installed.stat.exists
+
+- name: Extract acme.sh release tarball
+  ansible.builtin.unarchive:
+    src: "/tmp/acme.sh-{{ acme_certs_sh_version }}.tar.gz"
+    dest: /tmp
+    remote_src: true
+  when:
+    - acme_certs_enabled | bool
+    - not acme_certs_installed.stat.exists
+
+# acme.sh 3.x defaults to ZeroSSL when no --server is passed. A CAA record that
+# authorises only letsencrypt.org would then refuse the issuance outright.
+# Pin Let's Encrypt as the default CA at install time so subsequent
+# `acme.sh --issue` invocations without --server still hit LE.
+# bash (not sh/dash): the installer trips dash incompatibilities in
+# containers, and the cronjob task below already assumes /bin/bash.
+- name: Install acme.sh (default CA pinned to Let's Encrypt)
+  ansible.builtin.shell: |
+    cd /tmp/acme.sh-{{ acme_certs_sh_version }} && \
+    bash acme.sh --install --email {{ acme_certs_email }} \
+      --server letsencrypt
+  args:
+    creates: /root/.acme.sh/acme.sh
+  when:
+    - acme_certs_enabled | bool
+    - not acme_certs_installed.stat.exists
+
+- name: Check the dns_cf hook is installed
+  ansible.builtin.stat:
+    path: /root/.acme.sh/dnsapi/dns_cf.sh
+  register: acme_certs_dnsapi_hook
+  when: acme_certs_enabled | bool
+
+- name: Assert acme.sh has the dnsapi hooks
+  ansible.builtin.assert:
+    that:
+      - acme_certs_dnsapi_hook.stat.exists
+    fail_msg: >-
+      /root/.acme.sh/dnsapi/dns_cf.sh is missing — this acme.sh install has
+      no DNS hooks, so Cloudflare DNS-01 issuance/renewal cannot work.
+      Remove /root/.acme.sh and re-run this role to reinstall from the
+      pinned release tarball (which ships dnsapi/).
+    success_msg: "acme.sh dnsapi hooks are present (dns_cf)"
+  when:
+    - acme_certs_enabled | bool
+    # In check mode on a fresh host the install above is skipped, so only
+    # assert when acme.sh was already installed — same gate as the
+    # default-CA task below.
+    - acme_certs_installed.stat.exists or (not ansible_check_mode)
+
+# acme.sh's installer manages its own renewal cron. Earlier role versions
+# passed --nocron, leaving renewals unscheduled on fresh installs; ensure
+# the job exists regardless of install vintage. The && ties the task's rc
+# to --install-cronjob, so an install failure fails the task instead of
+# being masked by the echo.
+- name: Ensure acme.sh renewal cronjob exists
+  ansible.builtin.shell: |
+    set -o pipefail
+    if ! crontab -l 2>/dev/null | grep -q '\.acme\.sh.*--cron'; then
+      /root/.acme.sh/acme.sh --install-cronjob && echo CHANGED
+    fi
+  args:
+    executable: /bin/bash
+  register: acme_certs_cron_ensure
+  changed_when: "'CHANGED' in (acme_certs_cron_ensure.stdout | default(''))"
+  when:
+    - acme_certs_enabled | bool
+    - not ansible_check_mode
+
+# Defensive: even on hosts where acme.sh was installed BEFORE this pin
+# was added, set the default CA so the next renewal uses Let's Encrypt.
+# `--set-default-ca --server letsencrypt` is idempotent.
+- name: Ensure acme.sh default CA is Let's Encrypt
+  ansible.builtin.shell: |
+    /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when:
+    - acme_certs_enabled | bool
+    - acme_certs_installed.stat.exists or (not ansible_check_mode)
+
+- name: Remove acme.sh installer artifacts
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/tmp/acme.sh-{{ acme_certs_sh_version }}.tar.gz"
+    - "/tmp/acme.sh-{{ acme_certs_sh_version }}"
+  when:
+    - acme_certs_enabled | bool
+    - not acme_certs_installed.stat.exists
+
+- name: Deploy homelab-cert-reload script
+  ansible.builtin.template:
+    src: homelab-cert-reload.sh.j2
+    dest: /usr/local/sbin/homelab-cert-reload.sh
+    owner: root
+    group: root
+    mode: "0700"
+  when: acme_certs_enabled | bool
+
+# Pin SSH host keys for cert distribution targets. The cert-reload
+# script runs as root (cron, post-renewal) with BatchMode and
+# StrictHostKeyChecking=yes — wildcard private keys are pushed over this
+# channel, so opportunistic trust (accept-new + keyscan refresh) is too weak.
+# host_key is required per target and the deploy fails loudly when one is
+# missing. Rotation is the same workflow after a target is rebuilt.
+- name: Pin cert distribution target host keys
+  when:
+    - acme_certs_enabled | bool
+    - acme_certs_distribution_targets is defined
+  block:
+    - name: Assert every cert distribution target has a pinned host_key
+      ansible.builtin.assert:
+        that:
+          - item.host_key is defined
+          - item.host_key | length > 0
+        fail_msg: |
+          The acme_certs_distribution_targets entry for "{{ item.host }}"
+          ({{ item.ip }}) has no host_key. Capture it with
+              ssh-keyscan -p <port> <ip>
+          paste the value into the entry, then re-run.
+      loop: "{{ acme_certs_distribution_targets }}"
+      loop_control:
+        label: "{{ item.host }}"
+
+    - name: Ensure root .ssh directory exists
+      ansible.builtin.file:
+        path: /root/.ssh
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Deploy pinned host keys to root known_hosts
+      ansible.builtin.known_hosts:
+        path: /root/.ssh/known_hosts
+        # A non-standard port must be wrapped as
+        # `[ip]:port` in known_hosts — that's what ssh looks up for a
+        # `ssh -p <port>` connection. Bare IP entries only match
+        # connections to port 22.
+        name: >-
+          {{ '[' ~ item.ip ~ ']:' ~ (item.ssh_port | int)
+             if (item.ssh_port | default(22) | int) != 22
+             else item.ip }}
+        key: >-
+          {{ '[' ~ item.ip ~ ']:' ~ (item.ssh_port | int) ~ ' ' ~ item.host_key
+             if (item.ssh_port | default(22) | int) != 22
+             else item.ip ~ ' ' ~ item.host_key }}
+        state: present
+      loop: "{{ acme_certs_distribution_targets }}"
+      loop_control:
+        label: "{{ item.host }} ({{ item.ip }})"
+
+# Automatic certificate installation if certs exist in acme.sh but not in acme_certs_local_cert_dir
+# This handles the case where certs were manually issued but never installed to the target directory
+- name: Check if certificates exist in acme.sh
+  ansible.builtin.stat:
+    path: "/root/.acme.sh/{{ acme_certs_domain }}_ecc/fullchain.cer"
+  register: acme_certs_cert_exists
+  when: acme_certs_enabled | bool
+
+- name: Check if certificates are already installed locally
+  ansible.builtin.stat:
+    path: "{{ acme_certs_local_cert_dir }}/fullchain.pem"
+  register: acme_certs_local_cert_exists
+  when: acme_certs_enabled | bool
+
+- name: Install certificates to local directory (if acme.sh has certs but local dir is empty)
+  ansible.builtin.command:
+    # --ecc: the cert is issued ec-256 and stored under <domain>_ecc/; without it
+    # acme.sh looks in the non-existent RSA <domain>/ dir and the install fails.
+    # Matches the _ecc stat-check above and the ec-256 issuance instructions below.
+    cmd: >
+      /root/.acme.sh/acme.sh --install-cert -d "{{ acme_certs_domain }}" --ecc
+      --cert-file {{ acme_certs_local_cert_dir }}/cert.pem
+      --key-file {{ acme_certs_local_cert_dir }}/privkey.pem
+      --fullchain-file {{ acme_certs_local_cert_dir }}/fullchain.pem
+      --reloadcmd "/usr/local/sbin/homelab-cert-reload.sh"
+  when:
+    - acme_certs_enabled | bool
+    - acme_certs_cert_exists.stat.exists | default(false)
+    - not (acme_certs_local_cert_exists.stat.exists | default(false))
+  register: acme_certs_install_result
+  changed_when: acme_certs_install_result.rc == 0
+
+- name: Set proper ownership on installed certificates
+  ansible.builtin.file:
+    path: "{{ acme_certs_local_cert_dir }}/{{ item.name }}"
+    owner: root
+    group: "{{ acme_certs_local_cert_group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { name: "fullchain.pem", mode: "0644" }
+    - { name: "privkey.pem", mode: "0640" }
+    - { name: "cert.pem", mode: "0644" }
+  when:
+    - acme_certs_enabled | bool
+    - acme_certs_install_result.changed | default(false)
+
+- name: Display acme.sh setup instructions (only if no certs exist yet)
+  ansible.builtin.debug:
+    msg: |
+      ACME.sh is installed but no certificates have been issued yet.
+
+      To issue certificates manually:
+
+      1. Export the DNS provider credentials the acme.sh hook expects
+         (CF_Token / CF_Account_ID for the Cloudflare dns_cf hook).
+
+      2. Issue the wildcard certificate. --keylength ec-256 issues ECC,
+         stored under {{ acme_certs_domain }}_ecc/ — the directory the
+         stat-check and --install-cert (--ecc) expect. --server is passed
+         explicitly even though the install pinned the default CA:
+         /root/.acme.sh/acme.sh --issue --dns dns_cf --server letsencrypt \
+           --keylength ec-256 \
+           -d "{{ acme_certs_domain }}" \
+           -d "*.{{ acme_certs_domain }}"
+
+      Then re-run this role: it installs and distributes the certs.
+  when:
+    - acme_certs_enabled | bool
+    - not (acme_certs_cert_exists.stat.exists | default(false))
+
+- name: Display certificate installation status
+  ansible.builtin.debug:
+    msg: "Certificates are installed at {{ acme_certs_local_cert_dir }} and configured for automatic renewal with distribution."
+  when:
+    - acme_certs_enabled | bool
+    - acme_certs_cert_exists.stat.exists | default(false)
+    - acme_certs_local_cert_exists.stat.exists | default(false) or (acme_certs_install_result.changed | default(false))
+
+# Proactive certificate distribution to ensure remote hosts have certs
+# This runs every time Ansible deploys if local certs exist, handling cases where:
+# - Certs were manually installed but never distributed
+# - A target host was rebuilt and lost its certs
+# - Distribution failed during a previous renewal
+- name: Check if local certificates exist for distribution
+  ansible.builtin.stat:
+    path: "{{ acme_certs_local_cert_dir }}/fullchain.pem"
+  register: acme_certs_local_certs_for_dist
+  when: acme_certs_enabled | bool
+
+- name: Distribute certificates to remote hosts
+  ansible.builtin.command:
+    cmd: /usr/local/sbin/homelab-cert-reload.sh
+  when:
+    - acme_certs_enabled | bool
+    - acme_certs_local_certs_for_dist.stat.exists | default(false)
+    - acme_certs_distribution_targets is defined
+    - acme_certs_distribution_targets | length > 0
+    - not ansible_check_mode
+    - not (acme_certs_skip_distribution | default(false))
+    # On a fresh issue the "Install certificates to local directory" task above
+    # already ran the same distribution script via --reloadcmd, so skip the
+    # explicit second run to avoid distributing twice in one play.
+    - not (acme_certs_install_result.changed | default(false))
+  register: acme_certs_distribution_result
+  # The script prints "OK: <host>" only when it actually pushed+reloaded a target
+  # and "unchanged: <host>" when it skipped (cert already applied), so report
+  # changed only on a real push — an all-unchanged run now converges to ok.
+  changed_when: "'OK:' in (acme_certs_distribution_result.stdout | default(''))"
+  # The script tries every target before exiting and uses distinct exit
+  # codes — rc=1 hard local error (cert files unreadable etc.), rc=2 one
+  # or more targets unreachable but the script delivered to all reachable
+  # targets first. Either way we fail the play: cert renewal is
+  # infrequent enough (~6× per cert per year via the acme.sh post-renew
+  # hook) that a red Ansible run is the right signal to look at the
+  # per-target Prometheus metrics in
+  # /var/lib/node_exporter/acme_certs_distribution_targets.prom
+  # (cert_distribution_target_last_run_success{host=...}) and either
+  # bring the offending target back or fix the cert path on it.
+  failed_when: acme_certs_distribution_result.rc != 0

@@ -1,0 +1,9 @@
+---
+# Stable device-path prefix the disk's SCSI slot is appended to. The default is
+# the QEMU/KVM SCSI id (/dev/sdX is not deterministic across reboots); another
+# hypervisor exposes a different by-id scheme.
+zvol_mount_device_id_prefix: "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi"
+
+# Whether to detect and fix disks mounted at wrong locations
+# Enabled by default - handles non-deterministic /dev/sdX naming after reboot
+zvol_mount_fix_wrong_locations: true

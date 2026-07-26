@@ -1,0 +1,70 @@
+---
+# Skips exactly two real-Proxmox-only tasks — the `pveam download` template
+# fetch and the final `wait_for` SSH probe — so the storage-selection and
+# pool-validation logic can run against stub `pct`/`pvesh` shims.
+#
+# It does NOT bypass `pct create`/`pct exec`, idmap edits, or the
+# /etc/pve/lxc/<id>.conf writes: those gate on `proxmox_lxc_exists.rc != 0`, so
+# stubbing `pvesh` to report the container as existing is the supported way to
+# no-op them in a test rig.
+proxmox_lxc_skip_create: false
+
+# IP address handed to the role's pct-create + SSH-wait logic. Defaults to
+# ansible_host because production inventory routes traffic to each container
+# via that field. Molecule scenarios override this so they can keep
+# ansible_host pointing at the docker container (= connection target) while
+# still feeding a realistic per-container IP into the pct create --net0 line.
+proxmox_lxc_target_ip: "{{ ansible_host }}"
+
+# Container resource defaults
+proxmox_lxc_cores: 2
+proxmox_lxc_memory: 2048
+proxmox_lxc_swap: 512
+proxmox_lxc_disk_size: 8G
+# proxmox_lxc_storage is intentionally NOT defined: the role auto-selects from
+# the Proxmox host's `proxmox_role` via proxmox_storage_defaults. Set it in
+# host_vars to pin one container.
+proxmox_lxc_bridge: vmbr0
+proxmox_lxc_unprivileged: true
+
+# Template settings. Proxmox rotates appliance builds out of the pveam index;
+# the tasks probe the storage cache first, so an already-downloaded older build
+# keeps working for recreation — but NEW hosts need a name the index actually
+# serves. Check `pveam available | grep debian-13` when this 404s and bump.
+proxmox_lxc_template: "debian-13-standard_13.6-1_amd64.tar.zst"
+proxmox_lxc_template_storage: local
+
+# Network. proxmox_lxc_gateway has no generic default and is REQUIRED on the
+# create path — see README.
+proxmox_lxc_nameserver: "{{ dns_servers | join(' ') }}"
+proxmox_lxc_searchdomain: "{{ internal_domain }}"
+
+# Bind mounts and GPU passthrough (both create-time only).
+proxmox_lxc_bind_mounts: []
+proxmox_lxc_gpu_passthrough: false
+
+# Unprivileged-container id shift. One uid and one gid are mapped through 1:1
+# so bind-mounted host files stay accessible from inside the container; the GPU
+# variant additionally maps the host's video/render gids through.
+proxmox_lxc_idmap_uid: 1000
+proxmox_lxc_idmap_gid: 2000
+proxmox_lxc_idmap_base: 100000
+proxmox_lxc_idmap_range: 65536
+
+# User created inside the container with sudo + SSH key access.
+proxmox_lxc_admin_user: "{{ admin_user }}"
+proxmox_lxc_ssh_public_keys: "{{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY', default='') }}"
+
+# Startup configuration
+proxmox_lxc_onboot: true
+proxmox_lxc_startup_order: 100
+proxmox_lxc_startup_delay: 0
+
+# Features
+proxmox_lxc_nesting: false
+proxmox_lxc_keyctl: false
+
+# Public resolver appended to the container's resolv.conf ONLY to complete the
+# bootstrap `apt-get update` when internal DNS is not answering; the internal
+# nameservers are restored immediately afterwards.
+proxmox_lxc_bootstrap_fallback_dns: "1.1.1.1"

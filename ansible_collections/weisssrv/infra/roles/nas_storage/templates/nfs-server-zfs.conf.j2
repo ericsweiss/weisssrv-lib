@@ -1,0 +1,27 @@
+# {{ ansible_managed }}
+#
+# Drop-in: gate nfsd on the encrypted ZFS datasets being unlocked + mounted.
+#
+# Exporting an encrypted dataset before it is mounted serves the empty/locked
+# mountpoint and wedges the NFS-over-TLS data path for NEW client mounts
+# (observed 2026-06-21, when nfsd was force-started ahead of the mounts with
+# `systemctl start --job-mode=ignore-dependencies`).
+#
+# RequiresMountsFor is SCOPED to encrypted exports only: a hard
+# RequiresMountsFor on the mergerfs /media mount (no nofail) would block nfsd,
+# and plaintext bind mounts aren't gated on the unlock anyway.
+#
+# Accepted trade-off: nfsd is a SINGLE daemon, so the daemon-wide
+# After=zfs-mount-encrypted delays ALL exports — plaintext included — until the
+# encrypted pools mount. Seconds on a normal boot; until the operator unlocks
+# on a Connect-down cold boot. Per-export independence isn't possible with one
+# nfsd, and serving encrypted exports off empty bind targets is worse.
+{% set _enc_exports = nas_storage_exports | selectattr('bind_source', 'defined') | selectattr('bind_source', 'in', nas_storage_encrypted_bind_sources | default([])) | list %}
+[Unit]
+{% if _enc_exports | length > 0 %}
+Wants=zfs-mount-encrypted.service
+After=zfs-mount-encrypted.service
+{% for export in _enc_exports %}
+RequiresMountsFor={{ export.path }}
+{% endfor %}
+{% endif %}

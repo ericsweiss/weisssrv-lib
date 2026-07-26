@@ -1,0 +1,57 @@
+---
+proxmox_firewall_enabled: true
+
+# host.fw inbound drop logging. policy_in is DROP, so flipping this to "info"
+# (per host_vars or globally) makes dropped-inbound packets visible in the
+# kernel log for triage — pve-firewall rate-limits its own logging
+# (log_ratelimit), so "info" is safe to leave on during an incident.
+proxmox_firewall_log_level_in: nolog
+
+# Host-originated egress filtering (default-deny OUT on the node itself, NOT
+# guests). OFF by default because a missing allowlist entry breaks the host
+# (and possibly remote access). When enabled, host.fw applies the sg-host-egress
+# allowlist (cluster.fw.j2) and appends an explicit `OUT DROP -log info` rule —
+# pve-firewall ignores the host-level policy_out option, so the trailing DROP
+# rule (not a policy setting) is what enforces default-deny. ENABLE PER HOST AND
+# VERIFY with `pve-firewall compile` — see the role README "Egress filtering"
+# section. Override per-host in host_vars to roll out gradually (one node first).
+proxmox_firewall_egress_filtering: false
+
+# Filesystem paths for the Proxmox firewall config. Defaults match the real
+# clustered FUSE filesystem; molecule scenarios override these to redirect
+# template writes to a stub directory.
+proxmox_firewall_config_dir: /etc/pve/firewall
+proxmox_firewall_node_dir: /etc/pve/nodes
+# Staging directory on the node's NORMAL root filesystem (never /etc/pve). The
+# .fw configs are rendered here first, then published into pmxcfs with a plain
+# `cp` — pmxcfs rejects the metadata syscalls (utime/chmod/chown) that
+# template/copy's atomic_move performs, so a direct template write to /etc/pve
+# false-fails on first create. See tasks/deploy-pmxcfs-config.yml.
+proxmox_firewall_staging_dir: /var/lib/pve-firewall-ansible
+# When true, skip pveum / pve-firewall systemd tasks so the role can run in
+# a container without the real Proxmox CLI.
+proxmox_firewall_skip_pveum: false
+
+# Inventory group holding the Proxmox nodes.
+proxmox_firewall_host_group: proxmox
+
+# Address sets are derived from inventory: each host's `firewall_ipsets` list,
+# plus `firewall_ipset_special_entries` for addresses that are not inventory
+# hosts (VIPs). [ALIASES] works the same way — a host sets `firewall_alias`
+# (and optionally `firewall_alias_comment`).
+#
+# proxmox_firewall_admin_lan_cidrs is REQUIRED and deliberately has no default:
+# an empty admin set locks :22 and :8006 out on every node, so the render must
+# fail loudly rather than quietly produce that.
+proxmox_firewall_admin_ts_cidrs:
+  - 100.64.0.0/10  # Tailscale CGNAT range
+proxmox_firewall_smb_client_cidrs: "{{ proxmox_firewall_admin_lan_cidrs }}"
+
+# Aliases for addresses that are not inventory hosts. An entry here overrides a
+# derived alias of the same name. Each item: {name, cidr, comment?}.
+proxmox_firewall_extra_aliases: []
+
+# Sources admitted to the authless Immich ML inference port (sg-immich-ml).
+proxmox_firewall_immich_ml_clients: []
+# Load-balancer VIPs the WAN WireGuard endpoint is scoped to (sg-k3s-ingress-pub).
+proxmox_firewall_wan_wireguard_vips: []

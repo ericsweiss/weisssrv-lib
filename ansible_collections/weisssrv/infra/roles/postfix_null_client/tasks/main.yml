@@ -1,0 +1,110 @@
+---
+# Postfix null client: forwards all local mail to a central SMTP relay.
+
+- name: Validate the required relay inputs are present
+  ansible.builtin.assert:
+    that:
+      - postfix_null_client_relay_host | default('') | length > 0
+      - postfix_null_client_mail_domain | default('') | length > 0
+    fail_msg: >-
+      postfix_null_client_relay_host and postfix_null_client_mail_domain are
+      required (the relay to authenticate to, and the domain appended to
+      inventory_hostname for myhostname/mailname).
+
+# Separate from the input assert above so the credential check can carry
+# no_log without hiding the actionable message of the other one.
+- name: Validate SMTP relay credentials are present
+  ansible.builtin.assert:
+    that:
+      - postfix_null_client_sasl_user | default('') | length > 0
+      - postfix_null_client_sasl_password | default('') | length > 0
+    fail_msg: >-
+      postfix_null_client_sasl_user / postfix_null_client_sasl_password are not
+      set — supply them from the site's secret store.
+    success_msg: "SMTP relay credentials validated"
+  no_log: true
+
+- name: Install postfix and dependencies
+  ansible.builtin.apt:
+    name:
+      - postfix
+      - libsasl2-modules
+      - mailutils
+    state: present
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Configure mailname
+  ansible.builtin.copy:
+    content: "{{ postfix_null_client_config.myhostname }}\n"
+    dest: /etc/mailname
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload postfix
+
+- name: Deploy postfix main.cf
+  ansible.builtin.template:
+    src: main.cf.j2
+    dest: /etc/postfix/main.cf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload postfix
+
+- name: Deploy SASL password file
+  ansible.builtin.template:
+    src: sasl_passwd.j2
+    dest: /etc/postfix/sasl_passwd
+    owner: root
+    group: root
+    mode: "0600"
+  notify:
+    - Postmap sasl_passwd
+    - Reload postfix
+  no_log: true
+
+- name: Ensure SASL password database exists
+  ansible.builtin.command: postmap /etc/postfix/sasl_passwd
+  args:
+    creates: /etc/postfix/sasl_passwd.db
+  no_log: true
+
+- name: Deploy virtual aliases
+  ansible.builtin.template:
+    src: virtual.j2
+    dest: /etc/postfix/virtual
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Postmap virtual
+    - Reload postfix
+  when: postfix_null_client_virtual_aliases is defined
+
+# main.cf.j2 drops virtual_alias_maps under the same guard, so when the var is
+# removed the table is no longer referenced — clean up the orphaned files rather
+# than leaving unmanaged state a future re-add could silently reuse.
+- name: Remove orphaned virtual alias table when no aliases are configured
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/postfix/virtual
+    - /etc/postfix/virtual.db
+  when: postfix_null_client_virtual_aliases is not defined
+  notify: Reload postfix
+
+- name: Configure mail aliases
+  ansible.builtin.template:
+    src: aliases.j2
+    dest: /etc/aliases
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Newaliases
+
+- name: Ensure postfix is enabled and running
+  ansible.builtin.service:
+    name: postfix
+    state: started
+    enabled: true

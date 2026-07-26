@@ -1,0 +1,92 @@
+---
+smtp_relay_tls_cert_dir: /etc/postfix/tls
+
+# Identity + smarthost of the relay. These feed the DEFAULT smtp_relay_config
+# below; a deployment that overrides that dict wholesale sets them there.
+# An empty upstream means postfix delivers directly instead of via a smarthost.
+smtp_relay_hostname: "smtp-relay.{{ internal_domain }}"
+smtp_relay_origin: "{{ internal_domain }}"
+smtp_relay_upstream: ""
+
+# Where the queue-depth collector drops its .prom file — the same directory
+# node_exporter scrapes on this host, so it tracks that role's variable rather
+# than duplicating the path.
+smtp_relay_textfile_dir: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
+
+smtp_relay_config:
+  myhostname: "{{ smtp_relay_hostname }}"
+  myorigin: "{{ smtp_relay_origin }}"
+  mydestination: "$myhostname, localhost.$mydomain, localhost"
+  inet_interfaces: all
+  inet_protocols: ipv4
+  # Least-privilege default: trust only loopback for unauthenticated relay and
+  # require SASL on port 25 (smtpd_relay_restrictions drops permit_mynetworks).
+  # Senders normally relay via SASL on 587, so the port-25 permit_mynetworks
+  # path is unused by default. A deployment that must trust a host LAN for
+  # unauthenticated relay opts in explicitly by overriding mynetworks +
+  # smtpd_relay_restrictions, and should bound :25 at the firewall.
+  mynetworks: "127.0.0.0/8"
+  relayhost: "{{ smtp_relay_upstream }}"
+  smtpd_relay_restrictions: "permit_sasl_authenticated, reject_unauth_destination"
+
+  # TLS for incoming connections (from null clients). The acme_certs
+  # cert-reload script deploys fullchain.pem + privkey.pem into smtp_relay_tls_cert_dir
+  # (default /etc/postfix/tls), so the defaults must point at those names to be
+  # usable standalone — a partial smtp_relay_config override should not be
+  # required just to get working TLS paths.
+  smtpd_tls_cert_file: "{{ smtp_relay_tls_cert_dir }}/fullchain.pem"
+  smtpd_tls_key_file: "{{ smtp_relay_tls_cert_dir }}/privkey.pem"
+  smtpd_tls_security_level: "may"
+  smtpd_tls_loglevel: 1
+  smtpd_tls_received_header: "yes"
+  smtpd_tls_protocols: "!SSLv2, !SSLv3, !TLSv1, !TLSv1.1"
+  smtpd_tls_mandatory_protocols: "!SSLv2, !SSLv3, !TLSv1, !TLSv1.1"
+
+  # TLS for outgoing connections. "secure" = encrypt AND verify the server
+  # certificate against CAfile (encrypt alone accepts any cert).
+  smtp_tls_security_level: "secure"
+  smtp_tls_CAfile: "/etc/ssl/certs/ca-certificates.crt"
+  smtp_tls_protocols: "!SSLv2, !SSLv3, !TLSv1, !TLSv1.1"
+
+  # SASL authentication for the upstream smarthost (outgoing)
+  smtp_sasl_auth_enable: "yes"
+  smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
+  smtp_sasl_security_options: "noanonymous"
+  smtp_sasl_tls_security_options: "noanonymous"
+
+  # SASL authentication for null clients (incoming). Disabled on the
+  # chrooted port-25 smtpd (where it would permit cleartext AUTH and the
+  # chroot breaks the saslauthd socket anyway); the submission service
+  # re-enables it per-service in master.cf behind mandatory TLS.
+  smtpd_sasl_type: "cyrus"
+  smtpd_sasl_path: "smtpd"
+  smtpd_sasl_auth_enable: "no"
+  smtpd_tls_auth_only: "yes"
+  smtpd_sasl_security_options: "noanonymous"
+  smtpd_sasl_local_domain: "$myhostname"
+  broken_sasl_auth_clients: "yes"
+
+# Local aliases; root mail is forwarded to admin_email (all.yml defines the
+# same map for the null clients — keep the shapes in sync).
+smtp_relay_aliases:
+  postmaster: root
+  nobody: root
+  hostmaster: root
+  webmaster: root
+  root: "{{ admin_email }}"
+
+# Submission (587) service in master.cf. Declared here so the role carries its
+# own contract instead of depending on an inventory-only variable.
+smtp_relay_submission_enabled: true
+smtp_relay_submission_config:
+  syslog_name: "postfix/submission"
+  smtpd_tls_security_level: "encrypt"
+  smtpd_sasl_auth_enable: "yes"
+  smtpd_recipient_restrictions: "permit_sasl_authenticated,reject"
+  milter_macro_daemon_name: "ORIGINATING"
+
+# Required credentials (no defaults, so a missing one fails loudly):
+# - smtp_relay_upstream_user / smtp_relay_upstream_password: auth for the
+#   outbound smarthost.
+# - smtp_relay_sasl_user / smtp_relay_sasl_password: inbound null-client relay
+#   auth held in the local sasldb.

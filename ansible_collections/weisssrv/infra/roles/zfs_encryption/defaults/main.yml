@@ -1,0 +1,49 @@
+---
+# Boot-time unlock of ZFS-native encrypted pools on bare-metal Proxmox hosts,
+# fetching each pool's passphrase from a 1Password Connect instance. If Connect
+# is unreachable the per-pool units retry forever; the operator fallback is
+# `sudo zfs load-key <pool>` (README "Cold-cluster boot").
+
+# Connect access point. Must be reachable from the host at boot, before any
+# encrypted pool is mounted.
+zfs_encryption_connect_url: "https://connect.{{ internal_domain }}"
+
+# Vault holding the passphrase items.
+zfs_encryption_connect_vault: "Homelab"
+
+# Connect access token, injected by the caller from 1Password (preferably a
+# group_vars op:// reference run through `op run --`). Required on any host with
+# a non-empty zfs_encryption_pools.
+zfs_encryption_connect_token: ""
+
+# Per-host list of encrypted pools and their 1Password items.
+# Format:
+#   - name: tank          # ZFS pool name
+#     item: "ZFS Pool tank Passphrase"   # 1P item title in vault above
+#     field: passphrase   # field on the item that holds the passphrase
+# Empty list = deploy the script + unit template only (no token, no
+# per-pool services enabled) — used for hosts whose pools are not yet
+# encrypted, or that are intentionally plaintext (compute).
+# Every pool left out of this list is unencrypted at rest — including any pool
+# holding VM root disks and any swap device that is not itself a crypt device.
+# That is a deliberate, documented residual under a physical-theft model; a
+# drive-wipe SOP is the compensating control.
+zfs_encryption_pools: []
+
+# Proxmox guests (on THIS host) whose disks live on an encrypted pool and
+# must start only AFTER zfs-mount-encrypted.service has unlocked + mounted
+# it. Consumed by pve-start-encrypted-guests.service. Empty on hosts with no
+# such guests (the start unit is then a no-op and is not enabled). Leave out
+# any guest that must start early on its normal onboot path — a control-plane
+# member whose quorum must never wait on this host's unlock, for instance.
+zfs_encryption_guest_vmids: []
+zfs_encryption_guest_ctids: []
+
+# How long the boot-time fetch retries before giving up. The unit will
+# also be retried by systemd on Restart=on-failure, so total wait can
+# exceed this; this controls how long ONE invocation tries before
+# returning failure.
+zfs_encryption_fetch_timeout_seconds: 120
+
+# Sleep between Connect retries within a single fetch attempt.
+zfs_encryption_fetch_retry_seconds: 5

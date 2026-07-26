@@ -1,0 +1,798 @@
+---
+# Proxmox LXC container provisioning
+
+# Mirror proxmox_vm: an explicit inventory vmid wins; fall back to the
+# IP last octet.
+- name: Set container ID
+  ansible.builtin.set_fact:
+    proxmox_lxc_id: "{{ vmid | default(proxmox_lxc_target_ip.split('.')[-1]) }}"
+
+# Storage selection logic: auto-select based on Proxmox host role if not specified
+- name: Determine Proxmox host role
+  ansible.builtin.set_fact:
+    _proxmox_lxc_host_role: "{{ hostvars[proxmox_host]['proxmox_role'] | default('compute') }}"
+  when: proxmox_host is defined
+
+- name: Auto-select storage based on Proxmox host role
+  ansible.builtin.set_fact:
+    _proxmox_lxc_effective_storage: >-
+      {{
+        proxmox_lxc_storage |
+        default(proxmox_storage_defaults[_proxmox_lxc_host_role] | default('local-ssd'))
+      }}
+  when: proxmox_host is defined
+
+- name: Use explicitly defined storage when proxmox_host not set
+  ansible.builtin.set_fact:
+    _proxmox_lxc_effective_storage: "{{ proxmox_lxc_storage | default('local-lvm') }}"
+  when: proxmox_host is not defined
+
+- name: Display storage selection
+  vars:
+    _host_info: "{% if proxmox_host is defined %} (host: {{ proxmox_host }}, role: {{ _proxmox_lxc_host_role }}){% endif %}"
+  ansible.builtin.debug:
+    msg: "Container {{ inventory_hostname }} will use storage: {{ _proxmox_lxc_effective_storage }}{{ _host_info }}"
+
+- name: Check if container already exists
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    set -o errexit -o nounset -o pipefail
+    # Check cluster-wide — containers may be HA-migrated to a different node.
+    resources_json="$(pvesh get /cluster/resources --type vm --output-format json)"
+    python3 -c "import sys,json; vmids=[r['vmid'] for r in json.loads(sys.argv[1])]; sys.exit(0 if {{ proxmox_lxc_id | int }} in vmids else 1)" "$resources_json"
+  args:
+    executable: /bin/bash
+  register: proxmox_lxc_exists
+  changed_when: false
+  failed_when: proxmox_lxc_exists.rc not in [0, 1]
+  check_mode: false
+
+# An existing container may have HA-migrated off the inventory proxmox_host, so
+# reconcile tasks (pct config/set/exec against a live container) must run on its
+# ACTUAL node. Look it up cluster-wide; a not-yet-created container falls back to
+# proxmox_host, where the create path below places it.
+- name: Look up the existing container's current node
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.command:
+    cmd: pvesh get /cluster/resources --type vm --output-format json
+  register: proxmox_lxc_cluster_resources
+  changed_when: false
+  check_mode: false
+  when: proxmox_lxc_exists.rc == 0
+
+- name: Resolve the node to delegate container reconcile tasks to
+  ansible.builtin.set_fact:
+    # For an existing container, resolve its CURRENT node with NO proxmox_host
+    # fallback: silently defaulting to proxmox_host could reconcile against the
+    # wrong node if the lookup ever returned nothing. The assert below fails loud
+    # instead. A not-yet-created container uses proxmox_host (create path).
+    proxmox_lxc_reconcile_host: >-
+      {{ (proxmox_lxc_cluster_resources.stdout | from_json
+          | selectattr('vmid', 'equalto', proxmox_lxc_id | int)
+          | map(attribute='node') | first | default(''))
+         if proxmox_lxc_exists.rc == 0 else proxmox_host }}
+
+- name: Fail loud if an existing container's current node could not be resolved
+  ansible.builtin.assert:
+    that:
+      - proxmox_lxc_reconcile_host | length > 0
+    fail_msg: >-
+      Could not resolve the current node for existing container {{ proxmox_lxc_id }}
+      from /cluster/resources; refusing to fall back to the inventory proxmox_host
+      ({{ proxmox_host }}), which may not hold the container.
+  when: proxmox_lxc_exists.rc == 0
+
+# Verify storage pool exists on target host before proceeding
+# Only check when creating a new container - existing containers may be on different storage during migrations
+- name: Get available storage pools on target host
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.command: pvesm status
+  register: proxmox_lxc_storage_list
+  changed_when: false
+  check_mode: false
+  when:
+    - proxmox_host is defined
+    - proxmox_lxc_exists.rc != 0
+
+- name: Check if required storage pool exists
+  ansible.builtin.set_fact:
+    _proxmox_lxc_storage_exists: "{{ proxmox_lxc_storage_list.stdout_lines | select('match', '^' + _proxmox_lxc_effective_storage + '\\s') | list | length > 0 }}"
+  when:
+    - proxmox_host is defined
+    - proxmox_lxc_exists.rc != 0
+
+- name: Fail if required storage pool does not exist
+  ansible.builtin.fail:
+    msg: |
+      Storage pool '{{ _proxmox_lxc_effective_storage }}' not found on {{ proxmox_host }}.
+
+      Create the pool on that node first (ZFS pools are never created by
+      Ansible) or set proxmox_lxc_storage / proxmox_storage_defaults.
+
+      Available storage pools on {{ proxmox_host }}:
+      {{ proxmox_lxc_storage_list.stdout | default('(unable to retrieve)') }}
+  when:
+    - proxmox_host is defined
+    - proxmox_lxc_exists.rc != 0
+    - not _proxmox_lxc_storage_exists | default(true)
+    - not ansible_check_mode
+
+# errexit: without it the task rc is `echo`'s, so a failed `pvesh create /pools`
+# reported a successful creation. The probe is exempt as an `if` condition.
+- name: Ensure standard resource pools exist
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      if ! pvesh get /pools/{{ item }} --output-format json 2>/dev/null; then
+        pvesh create /pools --poolid {{ item }}
+        echo "created"
+      else
+        echo "exists"
+      fi
+    executable: /bin/bash
+  loop: "{{ proxmox_resource_pools | default([]) }}"
+  register: proxmox_lxc_pool_creation_result
+  # Match the sentinel on its own line: the `pvesh get` JSON body can itself
+  # contain the substring "created".
+  changed_when: "'created' in (proxmox_lxc_pool_creation_result.stdout_lines | default([]))"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+    - proxmox_resource_pools is defined
+
+- name: Validate resource pool is in standard list
+  ansible.builtin.fail:
+    msg: |
+      Resource pool '{{ proxmox_resource_pool }}' is not in the standard pools list.
+
+      Standard pools: {{ proxmox_resource_pools | default([]) | join(', ') }}
+
+      Either use one of the standard pools or add '{{ proxmox_resource_pool }}'
+      to proxmox_resource_pools in group_vars/all.yml.
+  when:
+    - proxmox_lxc_exists.rc != 0
+    - proxmox_resource_pool is defined
+    - proxmox_resource_pools is defined
+    - proxmox_resource_pool not in proxmox_resource_pools
+
+# An empty key still creates the container, but the authorized_keys reconcile
+# below is gated on a non-empty key — it silently skips, yet the SSH wait still
+# passes (sshd is listening), leaving a container Ansible can never SSH into.
+# Mirror proxmox_vm and fail fast on the create path.
+- name: Assert SSH public key is available for the container
+  ansible.builtin.assert:
+    that:
+      - proxmox_lxc_ssh_public_keys | length > 0
+    fail_msg: >-
+      proxmox_lxc_ssh_public_keys is empty. Run via the task wrapper (op run) so the
+      container gets an authorized key.
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+    - not (proxmox_lxc_skip_create | default(false))
+
+# `pveam download` validates the name against the freshly-updated appliance
+# index BEFORE consulting the local cache, so a pinned template that has since
+# rotated upstream hard-fails "no such template" even though `pct create` from
+# the cached tarball works fine (observed 2026-07-19). Probing the cache first
+# keeps recreation working offline and across index rotations; a genuine cache
+# miss still fails loudly here rather than as a cryptic `pct create ... vztmpl`
+# error later.
+- name: Check for cached LXC template
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.command: pveam list {{ proxmox_lxc_template_storage }}
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+    - not (proxmox_lxc_skip_create | default(false))
+  register: proxmox_lxc_template_cache
+  changed_when: false
+
+# The `pveam update` index refresh is best-effort: it must not block a
+# from-scratch download during a transient mirror hiccup when the previous
+# index is still serviceable; `pveam download` decides.
+- name: Download LXC template if not present
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    set -o errexit -o pipefail
+    pveam update || echo "WARN: pveam update failed (offline or mirror down); proceeding with cached appliance index" >&2
+    pveam download {{ proxmox_lxc_template_storage }} {{ proxmox_lxc_template }}
+  args:
+    executable: /bin/bash
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+    - not (proxmox_lxc_skip_create | default(false))
+    - proxmox_lxc_template not in (proxmox_lxc_template_cache.stdout | default(''))
+  register: proxmox_lxc_template_download
+  changed_when: "'downloading' in (proxmox_lxc_template_download.stdout | default(''))"
+
+# Detect host video and render group GIDs for GPU passthrough
+- name: Get host video group GID
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    set -o pipefail
+    getent group video | cut -d: -f3
+  args:
+    executable: /bin/bash
+  register: proxmox_lxc_video_gid_result
+  changed_when: false
+  check_mode: false
+  when:
+    - proxmox_lxc_gpu_passthrough | default(false)
+
+- name: Get host render group GID
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    set -o pipefail
+    getent group render | cut -d: -f3
+  args:
+    executable: /bin/bash
+  register: proxmox_lxc_render_gid_result
+  changed_when: false
+  check_mode: false
+  when:
+    - proxmox_lxc_gpu_passthrough | default(false)
+
+- name: Set GPU group GID facts
+  ansible.builtin.set_fact:
+    proxmox_lxc_video_gid: "{{ proxmox_lxc_video_gid_result.stdout | int }}"
+    proxmox_lxc_render_gid: "{{ proxmox_lxc_render_gid_result.stdout | int }}"
+  when:
+    - proxmox_lxc_gpu_passthrough | default(false)
+    - proxmox_lxc_video_gid_result.stdout is defined
+    - proxmox_lxc_render_gid_result.stdout is defined
+
+# Configure host UID/GID passthrough for unprivileged containers
+# Runs on every deployment to reconcile drift
+- name: Configure subuid/subgid for container UID/GID passthrough
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    CHANGED=false
+
+    # The uid/gid mapped through 1:1 by the idmap tasks must also be delegated
+    # to root in subuid/subgid, or `pct start` rejects the mapping.
+    if ! grep -q "^root:{{ proxmox_lxc_idmap_uid }}:1" /etc/subuid; then
+      echo "root:{{ proxmox_lxc_idmap_uid }}:1" >> /etc/subuid
+      CHANGED=true
+    fi
+
+    if ! grep -q "^root:{{ proxmox_lxc_idmap_gid }}:1" /etc/subgid; then
+      echo "root:{{ proxmox_lxc_idmap_gid }}:1" >> /etc/subgid
+      CHANGED=true
+    fi
+
+    {% if proxmox_lxc_gpu_passthrough | default(false) %}
+    # GPU passthrough requires video and render groups (dynamically detected)
+    VIDEO_GID="{{ proxmox_lxc_video_gid }}"
+    RENDER_GID="{{ proxmox_lxc_render_gid }}"
+
+    if ! grep -q "^root:${VIDEO_GID}:1" /etc/subgid; then
+      echo "root:${VIDEO_GID}:1" >> /etc/subgid
+      CHANGED=true
+    fi
+    if ! grep -q "^root:${RENDER_GID}:1" /etc/subgid; then
+      echo "root:${RENDER_GID}:1" >> /etc/subgid
+      CHANGED=true
+    fi
+    {% endif %}
+
+    if [ "$CHANGED" = "true" ]; then echo "CHANGED"; fi
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_unprivileged | default(true)
+  register: proxmox_lxc_subuid_result
+  changed_when: "'CHANGED' in (proxmox_lxc_subuid_result.stdout | default(''))"
+
+- name: Set resource pool argument
+  ansible.builtin.set_fact:
+    _proxmox_lxc_pool_arg: "{{ ' --pool ' + proxmox_resource_pool if proxmox_resource_pool is defined else '' }}"
+  when: proxmox_lxc_exists.rc != 0
+
+- name: Create LXC container
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    pct create {{ proxmox_lxc_id }} \
+      {{ proxmox_lxc_template_storage }}:vztmpl/{{ proxmox_lxc_template }} \
+      --hostname {{ inventory_hostname }} \
+      --cores {{ proxmox_lxc_cores }} \
+      --memory {{ proxmox_lxc_memory }} \
+      --swap {{ proxmox_lxc_swap }} \
+      --rootfs {{ _proxmox_lxc_effective_storage }}:{{ proxmox_lxc_disk_size | regex_replace('[Gg]$', '') }} \
+      --net0 name=eth0,bridge={{ proxmox_lxc_bridge }},firewall=1,ip={{ proxmox_lxc_target_ip }}/24,gw={{ proxmox_lxc_gateway }} \
+      --nameserver "{{ proxmox_lxc_nameserver }}" \
+      --searchdomain "{{ proxmox_lxc_searchdomain }}" \
+      --unprivileged {{ proxmox_lxc_unprivileged | ternary(1, 0) }} \
+      --features nesting={{ proxmox_lxc_nesting | ternary(1, 0) }},keyctl={{ proxmox_lxc_keyctl | ternary(1, 0) }} \
+      --onboot {{ proxmox_autostart_enabled | default(proxmox_lxc_onboot) | ternary(1, 0) }} \
+      --startup order={{ proxmox_startup_order | default(proxmox_lxc_startup_order) }},up={{ proxmox_startup_delay | default(proxmox_lxc_startup_delay) }}{{ _proxmox_lxc_pool_arg }}
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+  changed_when: true
+  register: proxmox_lxc_create_result
+
+# Per-guest .fw rules are only enforced when the NIC carries firewall=1;
+# reconcile containers created before the flag was added to pct create.
+- name: Ensure LXC NIC has the guest firewall flag
+  delegate_to: "{{ proxmox_lxc_reconcile_host }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    current=$(pct config {{ proxmox_lxc_id }} | sed -n 's/^net0: //p')
+    if [ -n "$current" ] && ! printf '%s' "$current" | grep -Eq '(^|,)firewall=1($|,)'; then
+      # Strip any existing firewall=<v> (e.g. firewall=0) first so the
+      # repair cannot produce a duplicate key in the net0 string.
+      cleaned=$(printf '%s' "$current" | sed -E 's/(^|,)firewall=[^,]*//g' | sed -E 's/^,//')
+      pct set {{ proxmox_lxc_id }} --net0 "${cleaned},firewall=1"
+      echo CHANGED
+    fi
+  args:
+    executable: /bin/bash
+  register: proxmox_lxc_net0_firewall
+  changed_when: "'CHANGED' in (proxmox_lxc_net0_firewall.stdout | default(''))"
+  when: not ansible_check_mode
+
+# Reconcile onboot/startup on EXISTING containers too. Like the VM role, these
+# are metadata-only knobs (applied by Proxmox at the next boot, never disrupting
+# a running container), so converging inventory drift here is safe. startup is
+# normalized to a canonical order=/up=/down= form on BOTH sides before comparing,
+# because Proxmox drops default fields (e.g. up=0) from the stored string — a raw
+# compare would see false drift and re-`pct set` every run. (idmap, bind mounts,
+# and GPU passthrough below stay create-time only — see the NOTE there.)
+- name: Reconcile LXC autostart and boot order on existing container
+  delegate_to: "{{ proxmox_lxc_reconcile_host }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    want_onboot="{{ proxmox_autostart_enabled | default(proxmox_lxc_onboot) | ternary(1, 0) }}"
+    # Canonicalize a Proxmox startup property-string to "order=O,up=U,down=D"
+    # with absent fields defaulting to 0, so desired and stored compare equal
+    # regardless of which default fields Proxmox omits.
+    norm_startup() {
+      local s="$1" order=0 up=0 down=0 kv k v
+      local IFS=','
+      for kv in $s; do
+        k=${kv%%=*}; v=${kv#*=}
+        case "$k" in order) order=$v ;; up) up=$v ;; down) down=$v ;; esac
+      done
+      echo "order=${order},up=${up},down=${down}"
+    }
+    desired_startup="order={{ proxmox_startup_order | default(proxmox_lxc_startup_order) }},up={{ proxmox_startup_delay | default(proxmox_lxc_startup_delay) }}"
+    want_startup=$(norm_startup "$desired_startup")
+    cfg=$(pct config {{ proxmox_lxc_id }})
+    # Default onboot when the key is absent from pct config is 0 (Proxmox default).
+    cur_onboot=$(printf '%s\n' "$cfg" | sed -n 's/^onboot: //p'); cur_onboot=${cur_onboot:-0}
+    cur_startup=$(norm_startup "$(printf '%s\n' "$cfg" | sed -n 's/^startup: //p')")
+    changed=0
+    [ "$cur_onboot" != "$want_onboot" ] && changed=1
+    [ "$cur_startup" != "$want_startup" ] && changed=1
+    if [ "$changed" = 1 ]; then
+      pct set {{ proxmox_lxc_id }} --onboot "$want_onboot" --startup "$desired_startup"
+      echo CHANGED
+    fi
+  args:
+    executable: /bin/bash
+  register: proxmox_lxc_startup_reconcile
+  changed_when: "'CHANGED' in (proxmox_lxc_startup_reconcile.stdout | default(''))"
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc == 0
+
+# NOTE: create-time only. Everything from here through "Configure GPU
+# passthrough" below — bind mounts (mp* lines), the lxc.idmap UID/GID maps,
+# and the GPU /dev/dri passthrough — is guarded on `proxmox_lxc_exists.rc != 0`
+# and therefore applies ONLY when the container is first created. Changing any
+# of these in inventory for an EXISTING container is a silent no-op here: the
+# role does not reconcile them onto a running container (live idmap/mount
+# changes are risky and deliberately out of scope). To apply such a change,
+# either recreate the container (destroy + re-run this role), or edit
+# /etc/pve/lxc/<id>.conf on the Proxmox host by hand and `pct restart <id>`.
+# (onboot/startup ARE reconciled above; only idmap/mounts/GPU are create-only.)
+
+# Configure bind mounts for containers that need host storage access
+# This must be done before starting the container
+- name: Configure bind mounts
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    pct set {{ proxmox_lxc_id }} --mp{{ idx }} {{ item.host_path }},{{ item.options }}
+  loop: "{{ proxmox_lxc_bind_mounts | default([]) }}"
+  loop_control:
+    index_var: idx
+    label: "{{ item.container_path }}"
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+    - proxmox_lxc_bind_mounts is defined
+    - proxmox_lxc_bind_mounts | length > 0
+  changed_when: true
+
+# An unprivileged container shifts every id by proxmox_lxc_idmap_base; one uid
+# and one gid are mapped through 1:1 so bind-mounted host files stay accessible.
+#
+# The rewrite is guarded: the previous `grep -v … > "$CONF_FILE".tmp || true; mv`
+# ran without errexit, so a missing/unreadable config left an EMPTY .tmp that the
+# mv then published — replacing the whole container config with just the idmap
+# lines. Staging happens off pmxcfs (/etc/pve rejects the metadata syscalls a
+# rename needs) and the result is validated before it is published with `cp`.
+- name: Configure UID/GID mapping (standard)
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      CONF_FILE="/etc/pve/lxc/{{ proxmox_lxc_id }}.conf"
+      UID_PT={{ proxmox_lxc_idmap_uid | int }}
+      GID_PT={{ proxmox_lxc_idmap_gid | int }}
+      BASE={{ proxmox_lxc_idmap_base | int }}
+      RANGE={{ proxmox_lxc_idmap_range | int }}
+
+      [ -f "$CONF_FILE" ] && [ -r "$CONF_FILE" ] || {
+        echo "ERROR: $CONF_FILE is missing or unreadable; refusing to rewrite it." >&2
+        exit 1
+      }
+
+      STAGE=$(mktemp /tmp/lxc-idmap-{{ proxmox_lxc_id }}.XXXXXX)
+      trap 'rm -f "$STAGE"' EXIT
+
+      # grep exits 1 when EVERY line was an idmap line; that is a valid (if
+      # unexpected) input, so tolerate it and let the sanity check below decide.
+      grep -v "^lxc.idmap" "$CONF_FILE" > "$STAGE" || true
+      grep -Eq '^(arch|hostname|ostype|rootfs|memory|cores|swap|net[0-9]+):' "$STAGE" || {
+        echo "ERROR: $CONF_FILE has no recognizable LXC config keys after"        >&2
+        echo "       stripping lxc.idmap; refusing to publish a gutted config."   >&2
+        exit 1
+      }
+
+      {
+        echo "lxc.idmap: u 0 ${BASE} ${UID_PT}"
+        echo "lxc.idmap: u ${UID_PT} ${UID_PT} 1"
+        echo "lxc.idmap: u $((UID_PT + 1)) $((BASE + UID_PT + 1)) $((RANGE - UID_PT - 1))"
+        echo "lxc.idmap: g 0 ${BASE} ${GID_PT}"
+        echo "lxc.idmap: g ${GID_PT} ${GID_PT} 1"
+        echo "lxc.idmap: g $((GID_PT + 1)) $((BASE + GID_PT + 1)) $((RANGE - GID_PT - 1))"
+      } >> "$STAGE"
+
+      cp -- "$STAGE" "$CONF_FILE"
+    executable: /bin/bash
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+    - proxmox_lxc_bind_mounts is defined
+    - proxmox_lxc_bind_mounts | length > 0
+    - proxmox_lxc_unprivileged | default(true)
+    - not (proxmox_lxc_gpu_passthrough | default(false))
+  changed_when: true
+
+# Runs for EVERY unprivileged GPU container, bind mounts or not: the video/
+# render GID passthrough is what lets in-container processes open the 0660
+# root:video/render /dev/dri nodes (an unprivileged container's root is not
+# host root, so CAP_DAC_OVERRIDE cannot bypass the device perms — the group
+# match is the only access path). Gating this on bind mounts would leave a
+# mount-less GPU guest (immich-ml) with the Proxmox default idmap and an
+# unopenable GPU.
+- name: Configure UID/GID mapping (with GPU)
+  delegate_to: "{{ proxmox_host }}"
+  vars:
+    video_gid: "{{ proxmox_lxc_video_gid }}"
+    render_gid: "{{ proxmox_lxc_render_gid }}"
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      CONF_FILE="/etc/pve/lxc/{{ proxmox_lxc_id }}.conf"
+      UID_PT={{ proxmox_lxc_idmap_uid | int }}
+      GID_PT={{ proxmox_lxc_idmap_gid | int }}
+      BASE={{ proxmox_lxc_idmap_base | int }}
+      RANGE={{ proxmox_lxc_idmap_range | int }}
+      VIDEO_GID={{ video_gid }}
+      RENDER_GID={{ render_gid }}
+
+      [ -f "$CONF_FILE" ] && [ -r "$CONF_FILE" ] || {
+        echo "ERROR: $CONF_FILE is missing or unreadable; refusing to rewrite it." >&2
+        exit 1
+      }
+
+      STAGE=$(mktemp /tmp/lxc-idmap-{{ proxmox_lxc_id }}.XXXXXX)
+      trap 'rm -f "$STAGE"' EXIT
+
+      grep -v "^lxc.idmap" "$CONF_FILE" > "$STAGE" || true
+      grep -Eq '^(arch|hostname|ostype|rootfs|memory|cores|swap|net[0-9]+):' "$STAGE" || {
+        echo "ERROR: $CONF_FILE has no recognizable LXC config keys after"        >&2
+        echo "       stripping lxc.idmap; refusing to publish a gutted config."   >&2
+        exit 1
+      }
+
+      {
+        echo "lxc.idmap: u 0 ${BASE} ${UID_PT}"
+        echo "lxc.idmap: u ${UID_PT} ${UID_PT} 1"
+        echo "lxc.idmap: u $((UID_PT + 1)) $((BASE + UID_PT + 1)) $((RANGE - UID_PT - 1))"
+
+        if [ "$VIDEO_GID" -lt "$RENDER_GID" ]; then
+          FIRST_GPU_GID="$VIDEO_GID"
+          SECOND_GPU_GID="$RENDER_GID"
+        else
+          FIRST_GPU_GID="$RENDER_GID"
+          SECOND_GPU_GID="$VIDEO_GID"
+        fi
+
+        echo "lxc.idmap: g 0 ${BASE} ${FIRST_GPU_GID}"
+        echo "lxc.idmap: g ${FIRST_GPU_GID} ${FIRST_GPU_GID} 1"
+
+        NEXT_GID=$((FIRST_GPU_GID + 1))
+        GAP=$((SECOND_GPU_GID - NEXT_GID))
+        if [ "$GAP" -gt 0 ]; then
+          echo "lxc.idmap: g ${NEXT_GID} $((BASE + NEXT_GID)) ${GAP}"
+        fi
+
+        echo "lxc.idmap: g ${SECOND_GPU_GID} ${SECOND_GPU_GID} 1"
+
+        NEXT_GID=$((SECOND_GPU_GID + 1))
+        if [ "$NEXT_GID" -lt "$GID_PT" ]; then
+          echo "lxc.idmap: g ${NEXT_GID} $((BASE + NEXT_GID)) $((GID_PT - NEXT_GID))"
+        fi
+
+        echo "lxc.idmap: g ${GID_PT} ${GID_PT} 1"
+        echo "lxc.idmap: g $((GID_PT + 1)) $((BASE + GID_PT + 1)) $((RANGE - GID_PT - 1))"
+      } >> "$STAGE"
+
+      cp -- "$STAGE" "$CONF_FILE"
+    executable: /bin/bash
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+    - proxmox_lxc_unprivileged | default(true)
+    - proxmox_lxc_gpu_passthrough | default(false)
+  changed_when: true
+
+# Configure GPU passthrough for hardware transcoding
+# Pass through /dev/dri devices for Intel/AMD GPU access
+- name: Configure GPU passthrough
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    CONF_FILE="/etc/pve/lxc/{{ proxmox_lxc_id }}.conf"
+
+    # Check if GPU passthrough is already configured
+    if ! grep -q "lxc.cgroup2.devices.allow" "$CONF_FILE"; then
+      # Allow access to DRI devices (GPU)
+      echo "lxc.cgroup2.devices.allow: c 226:* rwm" >> "$CONF_FILE"
+      # Mount /dev/dri into container
+      echo "lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir" >> "$CONF_FILE"
+    fi
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+    - proxmox_lxc_gpu_passthrough | default(false)
+  changed_when: true
+
+- name: Start LXC container
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    pct start {{ proxmox_lxc_id }}
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+  changed_when: true
+  register: proxmox_lxc_start_result
+
+- name: Wait for container to initialize
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.pause:
+    seconds: 5
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+
+# Bootstrap the admin user for Ansible access.
+
+- name: Wait for container network connectivity
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    set -o pipefail
+    # Use bash /dev/tcp to test connectivity (works without iputils-ping on minimal Debian)
+    for i in $(seq 1 30); do
+      # Test TCP connection to gateway on common ports (SSH or HTTP) or use /proc/net/route
+      # First check if we have an IP assigned and a default route
+      route_check='ip route show default 2>/dev/null | grep -q "via {{ proxmox_lxc_gateway }}"'
+      if pct exec {{ proxmox_lxc_id }} -- bash -c "$route_check"; then
+        # Gateway is in routing table, verify we can reach it via TCP on port 22 (SSH is common)
+        # Fall back to checking if the interface is up with an IP
+        tcp_check='timeout 2 bash -c "</dev/tcp/{{ proxmox_lxc_gateway }}/22" 2>/dev/null'
+        ip_check='ip addr show eth0 2>/dev/null | grep -q "inet "'
+        if pct exec {{ proxmox_lxc_id }} -- bash -c "$tcp_check || $ip_check"; then
+          echo "Gateway reachable"
+          exit 0
+        fi
+      fi
+      sleep 2
+    done
+    echo "Gateway unreachable after 60 seconds"
+    exit 1
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+  changed_when: false
+
+- name: Verify DNS resolution in container
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    # First check what nameservers are configured
+    echo "Current resolv.conf:"
+    pct exec {{ proxmox_lxc_id }} -- cat /etc/resolv.conf
+    # Try apt-get update to test DNS (most reliable test)
+    echo "Testing DNS with apt-get update..."
+    if pct exec {{ proxmox_lxc_id }} -- apt-get update >/dev/null 2>&1; then
+      echo "DNS working"
+      exit 0
+    fi
+    # If DNS fails, APPEND public DNS (keep the configured internal servers as
+    # primary) only to complete bootstrap apt-get. The restore task below resets
+    # resolv.conf to internal-only so the container doesn't persist on public
+    # DNS, which can't resolve split-horizon internal names.
+    echo "WARNING: internal DNS not answering apt-get; appending public DNS to complete bootstrap"
+    echo "FALLBACK_DNS_APPLIED"
+    pct exec {{ proxmox_lxc_id }} -- bash -c 'echo "nameserver {{ proxmox_lxc_bootstrap_fallback_dns }}" >> /etc/resolv.conf'
+    if pct exec {{ proxmox_lxc_id }} -- apt-get update >/dev/null 2>&1; then
+      echo "DNS working with public fallback"
+      exit 0
+    fi
+    echo "DNS resolution failed even with public DNS"
+    exit 1
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+  register: proxmox_lxc_dns_check
+  changed_when: false
+
+- name: Install required packages in container
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    pct exec {{ proxmox_lxc_id }} -- bash -c 'apt-get update && apt-get install -y openssh-server sudo'
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+  changed_when: true
+
+# The public-DNS fallback above is only a bootstrap crutch. Now that apt-get is
+# done, restore the configured internal nameservers so the container doesn't
+# persist resolving through public DNS (which can't see split-horizon internal
+# names and bypasses the site's filtering resolver). No further task here needs
+# DNS, so this is safe even when internal DNS is still down.
+- name: Restore configured nameservers after public-DNS bootstrap fallback
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    pct exec {{ proxmox_lxc_id }} -- bash -c '
+      printf "search %s\n" "{{ proxmox_lxc_searchdomain }}" > /etc/resolv.conf
+      for ns in {{ proxmox_lxc_nameserver }}; do
+        printf "nameserver %s\n" "$ns" >> /etc/resolv.conf
+      done
+    '
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+    # Machine-readable marker, not a log phrase: editing the message text must
+    # not silently leave the container on public DNS.
+    - "'FALLBACK_DNS_APPLIED' in (proxmox_lxc_dns_check.stdout_lines | default([]))"
+  changed_when: true
+
+- name: Create the admin user with sudo group
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    pct exec {{ proxmox_lxc_id }} -- bash -c 'id {{ proxmox_lxc_admin_user }} &>/dev/null || useradd -m -s /bin/bash -G sudo {{ proxmox_lxc_admin_user }}'
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+  changed_when: true
+
+- name: Create SSH directory for the admin user
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    pct exec {{ proxmox_lxc_id }} -- bash -c 'mkdir -p /home/{{ proxmox_lxc_admin_user }}/.ssh && chmod 700 /home/{{ proxmox_lxc_admin_user }}/.ssh'
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+  changed_when: true
+
+# Reconcile the admin authorized_keys on EVERY run (not just create) so a rotated
+# SSH key propagates as part of routine config management. The key is delivered
+# atomically: written to a temp file inside the container, compared against the
+# live authorized_keys, and moved into place only on difference (so the task is
+# idempotent and reports changed exactly when the key set actually changes). The
+# key material is base64-encoded before templating into the inner `pct exec`
+# script: base64 output is shell-safe (only [A-Za-z0-9+/=]), so it cannot break
+# the command line, and it is decoded back to the original key bytes inside the
+# container. `pct exec` does not forward host env vars, so the value is embedded.
+- name: Reconcile SSH authorized keys for the admin user
+  delegate_to: "{{ proxmox_lxc_reconcile_host }}"
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      pct exec {{ proxmox_lxc_id }} -- bash -c '
+        set -euo pipefail
+        auth_dir="/home/{{ proxmox_lxc_admin_user }}/.ssh"
+        auth_file="${auth_dir}/authorized_keys"
+        desired="$(printf "%s" "{{ proxmox_lxc_ssh_public_keys | b64encode }}" | base64 -d)"
+        install -d -m 700 -o {{ proxmox_lxc_admin_user }} -g {{ proxmox_lxc_admin_user }} "$auth_dir"
+        tmp="$(mktemp "${auth_file}.XXXXXX")"
+        printf "%s\n" "$desired" > "$tmp"
+        chmod 600 "$tmp"
+        # mktemp creates root-owned; sshd rejects authorized_keys not owned by the
+        # user, so always chown before the move (whether or not content changed).
+        chown {{ proxmox_lxc_admin_user }}:{{ proxmox_lxc_admin_user }} "$tmp"
+        if [ -f "$auth_file" ] && cmp -s "$tmp" "$auth_file"; then
+          rm -f "$tmp"
+        else
+          mv "$tmp" "$auth_file"
+          echo CHANGED
+        fi
+      '
+  args:
+    executable: /bin/bash
+  register: proxmox_lxc_authkeys_reconcile
+  changed_when: "'CHANGED' in (proxmox_lxc_authkeys_reconcile.stdout | default(''))"
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_ssh_public_keys | length > 0
+    # Reconcile existing containers (rc == 0) and freshly-created ones (creation
+    # not skipped). If creation is intentionally skipped and the CT is absent,
+    # don't pct exec a non-existent container (skip-create / molecule-stub runs).
+    - proxmox_lxc_exists.rc == 0 or not (proxmox_lxc_skip_create | default(false))
+
+- name: Set ownership on authorized_keys and home directory
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    pct exec {{ proxmox_lxc_id }} -- bash -c '
+      chmod 600 /home/{{ proxmox_lxc_admin_user }}/.ssh/authorized_keys &&
+      chown -R {{ proxmox_lxc_admin_user }}:{{ proxmox_lxc_admin_user }} /home/{{ proxmox_lxc_admin_user }}
+    '
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+    - proxmox_lxc_ssh_public_keys | length > 0
+  changed_when: true
+
+- name: Configure passwordless sudo for the admin user
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    pct exec {{ proxmox_lxc_id }} -- bash -c '
+      echo "{{ proxmox_lxc_admin_user }} ALL=(ALL) NOPASSWD: ALL" \
+        > /etc/sudoers.d/{{ proxmox_lxc_admin_user }} &&
+      chmod 440 /etc/sudoers.d/{{ proxmox_lxc_admin_user }}
+    '
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+  changed_when: true
+
+- name: Enable and start SSH service
+  delegate_to: "{{ proxmox_host }}"
+  ansible.builtin.shell: |
+    pct exec {{ proxmox_lxc_id }} -- bash -c 'systemctl enable ssh && systemctl start ssh'
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+  changed_when: true
+
+- name: Wait for container to be reachable via SSH
+  ansible.builtin.wait_for:
+    host: "{{ proxmox_lxc_target_ip }}"
+    port: 22
+    delay: 5
+    timeout: 120
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc != 0
+    - not (proxmox_lxc_skip_create | default(false))
+
+- name: Display container creation status
+  vars:
+    proxmox_lxc_status_msg: >-
+      Container {{ inventory_hostname }} (ID {{ proxmox_lxc_id }})
+      {% if ansible_check_mode and proxmox_lxc_exists.rc != 0 %}
+      would be created (check mode - no changes made)
+      {% elif proxmox_lxc_exists.rc != 0 %}
+      created and started with user {{ proxmox_lxc_admin_user }}
+      {% else %}
+      already exists
+      {% endif %}
+  ansible.builtin.debug:
+    msg: "{{ proxmox_lxc_status_msg }}"

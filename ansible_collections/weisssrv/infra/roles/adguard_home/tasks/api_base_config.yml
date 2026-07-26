@@ -1,0 +1,286 @@
+---
+# AdGuard Home base configuration via API
+# Manages upstream DNS, TLS, and other core settings
+#
+# NOTE: API tasks are skipped in check mode since we cannot query/modify
+# the running AdGuard Home instance during dry-run
+
+- name: Skip API base configuration in check mode
+  ansible.builtin.debug:
+    msg: "Skipping AdGuard Home API base configuration in check mode (cannot query live API)"
+  when: ansible_check_mode
+
+- name: Validate AdGuard admin password is set for API calls
+  ansible.builtin.assert:
+    that:
+      - adguard_home_admin_password is defined
+      - adguard_home_admin_password | length > 0
+    fail_msg: "adguard_home_admin_password is not set — the API calls below cannot authenticate."
+    success_msg: "AdGuard admin password is set"
+  when: not ansible_check_mode
+
+- name: Get current DNS configuration
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ adguard_home_http_port }}/control/dns_info"
+    method: GET
+    user: "{{ adguard_home_admin_user }}"
+    password: "{{ adguard_home_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: adguard_home_current_dns_config
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Update DNS configuration
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ adguard_home_http_port }}/control/dns_config"
+    method: POST
+    user: "{{ adguard_home_admin_user }}"
+    password: "{{ adguard_home_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    # jinja2_native is off (ansible-core default), so a *filtered* quoted
+    # template like "{{ x | int }}" renders to a JSON string ("20"), which
+    # AdGuard rejects with HTTP 400 ("cannot unmarshal string into ... uint32").
+    # Bare variable references preserve the source type (these vars are typed
+    # int/bool/list in group_vars), so the body serializes as native JSON
+    # numbers/booleans. Do NOT re-add | int / | bool filters here.
+    body:
+      protection_enabled: "{{ adguard_home_protection_enabled }}"
+      upstream_dns: "{{ adguard_home_upstream_dns }}"
+      upstream_mode: "{{ adguard_home_upstream_mode }}"
+      fallback_dns: "{{ adguard_home_fallback_dns }}"
+      dnssec_enabled: "{{ adguard_home_enable_dnssec }}"
+      resolve_clients: "{{ adguard_home_resolve_clients }}"
+      use_private_ptr_resolvers: "{{ adguard_home_use_private_ptr_resolvers }}"
+      disable_ipv6: "{{ adguard_home_disable_ipv6 }}"
+      ratelimit: "{{ adguard_home_ratelimit }}"
+      ratelimit_whitelist: "{{ adguard_home_ratelimit_whitelist }}"
+      cache_enabled: "{{ adguard_home_cache_enabled }}"
+      cache_size: "{{ adguard_home_cache_size }}"
+      cache_ttl_min: "{{ adguard_home_cache_ttl_min }}"
+      cache_ttl_max: "{{ adguard_home_cache_ttl_max }}"
+      cache_optimistic: "{{ adguard_home_cache_optimistic }}"
+    status_code: 200
+  when:
+    - not ansible_check_mode
+    # Check ALL fields that are being sent to detect any drift. AdGuard
+    # serializes the default load-balance mode back as "" (a deprecated alias)
+    # on GET, so an empty live upstream_mode is treated as load_balance to stay
+    # idempotent rather than POSTing on every run. (No "#" comments inside the
+    # folded ">" scalar below — they would be folded into the expression.)
+    - >
+      (adguard_home_current_dns_config.json.protection_enabled | default(true) != adguard_home_protection_enabled) or
+      (adguard_home_current_dns_config.json.upstream_dns | default([]) != adguard_home_upstream_dns) or
+      (((adguard_home_current_dns_config.json.upstream_mode | default('')) or 'load_balance') != adguard_home_upstream_mode) or
+      (adguard_home_current_dns_config.json.fallback_dns | default([]) != adguard_home_fallback_dns) or
+      (adguard_home_current_dns_config.json.dnssec_enabled | default(false) != adguard_home_enable_dnssec) or
+      (adguard_home_current_dns_config.json.resolve_clients | default(true) != adguard_home_resolve_clients) or
+      (adguard_home_current_dns_config.json.use_private_ptr_resolvers | default(true) != adguard_home_use_private_ptr_resolvers) or
+      (adguard_home_current_dns_config.json.disable_ipv6 | default(false) != adguard_home_disable_ipv6) or
+      (adguard_home_current_dns_config.json.ratelimit | default(0) != adguard_home_ratelimit) or
+      (adguard_home_current_dns_config.json.ratelimit_whitelist | default([]) != adguard_home_ratelimit_whitelist) or
+      (adguard_home_current_dns_config.json.cache_enabled | default(true) != adguard_home_cache_enabled) or
+      (adguard_home_current_dns_config.json.cache_size | default(0) != adguard_home_cache_size) or
+      (adguard_home_current_dns_config.json.cache_ttl_min | default(0) != adguard_home_cache_ttl_min) or
+      (adguard_home_current_dns_config.json.cache_ttl_max | default(0) != adguard_home_cache_ttl_max) or
+      (adguard_home_current_dns_config.json.cache_optimistic | default(false) != adguard_home_cache_optimistic)
+  # no_log protects the basic-auth credentials in the request; failed_when is
+  # disabled so the credential-free assert below can surface the real HTTP
+  # status and response body instead of a censored "no_log" failure.
+  no_log: true
+  failed_when: false
+  register: adguard_home_dns_config_updated
+  # The native-typed body above is what makes this succeed; retries are only
+  # cheap insurance against a genuinely transient hiccup right after an AdGuard
+  # restart. The assert below still surfaces a persistent non-200 with the real
+  # status/body (a type error would never become 200, so it fails fast there).
+  until: (adguard_home_dns_config_updated.status | default(0)) == 200
+  retries: 3
+  delay: 2
+
+- name: Assert AdGuard DNS configuration update succeeded
+  ansible.builtin.assert:
+    that:
+      - adguard_home_dns_config_updated is skipped or (adguard_home_dns_config_updated.status | default(0)) == 200
+    fail_msg: >-
+      AdGuard /control/dns_config update failed (HTTP {{ adguard_home_dns_config_updated.status | default('n/a') }}):
+      {{ adguard_home_dns_config_updated.json | default(adguard_home_dns_config_updated.content | default(adguard_home_dns_config_updated.msg | default('no response body'))) }}
+    success_msg: "AdGuard DNS configuration applied"
+  when: not ansible_check_mode
+
+# Check if TLS certificates exist before attempting TLS configuration
+# Certificates are deployed by acme_certs role which runs AFTER adguard_home
+# On first deployment, skip TLS config; it will be configured on subsequent runs
+- name: Check if TLS certificate exists
+  ansible.builtin.stat:
+    path: "{{ adguard_home_cert_path }}/fullchain.pem"
+  register: adguard_home_tls_cert_exists
+  when:
+    - not ansible_check_mode
+    - adguard_home_tls_enabled
+
+- name: Check if TLS private key exists
+  ansible.builtin.stat:
+    path: "{{ adguard_home_cert_path }}/privkey.pem"
+  register: adguard_home_tls_key_exists
+  when:
+    - not ansible_check_mode
+    - adguard_home_tls_enabled
+
+- name: Skip TLS configuration if certificates not yet deployed
+  ansible.builtin.debug:
+    msg: "TLS certificates not yet deployed (will be configured by acme_certs role) - skipping TLS configuration"
+  when:
+    - not ansible_check_mode
+    - adguard_home_tls_enabled
+    - adguard_home_tls_cert_exists is defined
+    - adguard_home_tls_key_exists is defined
+    - not (adguard_home_tls_cert_exists.stat.exists | default(false) and adguard_home_tls_key_exists.stat.exists | default(false))
+
+- name: Get current TLS configuration
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ adguard_home_http_port }}/control/tls/status"
+    method: GET
+    user: "{{ adguard_home_admin_user }}"
+    password: "{{ adguard_home_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: adguard_home_current_tls_config
+  no_log: true
+  when:
+    - not ansible_check_mode
+    - adguard_home_tls_enabled
+    - adguard_home_tls_cert_exists is defined
+    - adguard_home_tls_key_exists is defined
+    - adguard_home_tls_cert_exists.stat.exists | default(false)
+    - adguard_home_tls_key_exists.stat.exists | default(false)
+
+- name: Update TLS configuration
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ adguard_home_http_port }}/control/tls/configure"
+    method: POST
+    user: "{{ adguard_home_admin_user }}"
+    password: "{{ adguard_home_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    # Bare refs preserve native int/bool types (see dns_config body above):
+    # a filtered "{{ x | int }}" would serialize as a string and AdGuard would
+    # reject it with HTTP 400. Do NOT re-add | int / | bool filters here.
+    body:
+      enabled: "{{ adguard_home_tls_enabled }}"
+      server_name: "{{ adguard_home_tls_server_name }}"
+      # Keep force_https FALSE: this role reconciles AdGuard over the plaintext
+      # localhost API (incl. the split-horizon rewrites in api_config.yml). A
+      # global HTTP->HTTPS redirect would 301 those to :443 and fail TLS
+      # verification (the cert covers the service hostname, not 127.0.0.1),
+      # breaking reconciliation. Firewall the HTTP admin port to trusted
+      # networks instead, and use the :443 endpoint by hostname elsewhere.
+      force_https: false
+      port_https: "{{ adguard_home_https_port }}"
+      port_dns_over_tls: "{{ adguard_home_dot_port }}"
+      port_dns_over_quic: "{{ adguard_home_doq_port }}"
+      # Use certificate_path/private_key_path (file paths) instead of
+      # certificate_chain/private_key (which expect actual PEM content)
+      certificate_path: "{{ adguard_home_cert_path }}/fullchain.pem"
+      private_key_path: "{{ adguard_home_cert_path }}/privkey.pem"
+    status_code: 200
+  when:
+    - not ansible_check_mode
+    - adguard_home_tls_enabled
+    - adguard_home_tls_cert_exists is defined
+    - adguard_home_tls_key_exists is defined
+    - adguard_home_tls_cert_exists.stat.exists | default(false)
+    - adguard_home_tls_key_exists.stat.exists | default(false)
+    # Check ALL fields that are being sent to detect any drift
+    - >
+      (adguard_home_current_tls_config.json.enabled | default(false)) != adguard_home_tls_enabled or
+      (adguard_home_current_tls_config.json.server_name | default('')) != adguard_home_tls_server_name or
+      (adguard_home_current_tls_config.json.force_https | default(false) | bool) or
+      (adguard_home_current_tls_config.json.port_https | default(0)) != adguard_home_https_port or
+      (adguard_home_current_tls_config.json.port_dns_over_tls | default(0)) != adguard_home_dot_port or
+      (adguard_home_current_tls_config.json.port_dns_over_quic | default(0)) != adguard_home_doq_port or
+      (adguard_home_current_tls_config.json.certificate_path | default('')) != (adguard_home_cert_path + '/fullchain.pem') or
+      (adguard_home_current_tls_config.json.private_key_path | default('')) != (adguard_home_cert_path + '/privkey.pem')
+  no_log: true
+  failed_when: false
+  register: adguard_home_tls_config_updated
+  until: (adguard_home_tls_config_updated.status | default(0)) == 200
+  retries: 3
+  delay: 2
+
+- name: Assert AdGuard TLS configuration update succeeded
+  ansible.builtin.assert:
+    that:
+      - adguard_home_tls_config_updated is skipped or (adguard_home_tls_config_updated.status | default(0)) == 200
+    fail_msg: >-
+      AdGuard /control/tls/configure update failed (HTTP {{ adguard_home_tls_config_updated.status | default('n/a') }}):
+      {{ adguard_home_tls_config_updated.json | default(adguard_home_tls_config_updated.content | default(adguard_home_tls_config_updated.msg | default('no response body'))) }}
+    success_msg: "AdGuard TLS configuration applied"
+  when: not ansible_check_mode
+
+- name: Get current DHCP configuration
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ adguard_home_http_port }}/control/dhcp/status"
+    method: GET
+    user: "{{ adguard_home_admin_user }}"
+    password: "{{ adguard_home_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: adguard_home_current_dhcp_config
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Disable DHCP server (router handles DHCP)
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ adguard_home_http_port }}/control/dhcp/set_config"
+    method: POST
+    user: "{{ adguard_home_admin_user }}"
+    password: "{{ adguard_home_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      enabled: false
+    status_code: 200
+  when:
+    - not ansible_check_mode
+    - not adguard_home_dhcp_enabled
+    - adguard_home_current_dhcp_config.json.enabled | default(false)
+  no_log: true
+  failed_when: false
+  register: adguard_home_dhcp_config_updated
+  until: (adguard_home_dhcp_config_updated.status | default(0)) == 200
+  retries: 3
+  delay: 2
+
+- name: Assert AdGuard DHCP configuration update succeeded
+  ansible.builtin.assert:
+    that:
+      - adguard_home_dhcp_config_updated is skipped or (adguard_home_dhcp_config_updated.status | default(0)) == 200
+    fail_msg: >-
+      AdGuard /control/dhcp/set_config update failed (HTTP {{ adguard_home_dhcp_config_updated.status | default('n/a') }}):
+      {{ adguard_home_dhcp_config_updated.json | default(adguard_home_dhcp_config_updated.content | default(adguard_home_dhcp_config_updated.msg | default('no response body'))) }}
+    success_msg: "AdGuard DHCP configuration applied"
+  when: not ansible_check_mode
+
+- name: Set TLS certificates status
+  ansible.builtin.set_fact:
+    adguard_home_tls_certs_present: "{{ (adguard_home_tls_cert_exists.stat.exists | default(false)) and (adguard_home_tls_key_exists.stat.exists | default(false)) }}"
+  when:
+    - not ansible_check_mode
+    - adguard_home_tls_cert_exists is defined
+    - adguard_home_tls_key_exists is defined
+
+- name: Display configuration update summary
+  ansible.builtin.debug:
+    msg:
+      - "DNS config updated: {{ (adguard_home_dns_config_updated | default({})).changed | default(false) }}"
+      - "TLS certs present: {{ adguard_home_tls_certs_present | default('N/A') }}"
+      - "TLS config updated: {{ (adguard_home_tls_config_updated | default({})).changed | default(false) }}"
+      - "DHCP config updated: {{ (adguard_home_dhcp_config_updated | default({})).changed | default(false) }}"
+  when: not ansible_check_mode
+
+- name: Display check mode notice
+  ansible.builtin.debug:
+    msg: "Running in check mode - API configuration skipped"
+  when: ansible_check_mode

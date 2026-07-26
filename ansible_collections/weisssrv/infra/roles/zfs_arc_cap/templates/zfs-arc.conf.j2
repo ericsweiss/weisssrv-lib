@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# zfs_arc_max (bytes) from zfs_arc_cap_max_bytes. LOAD-TIME parameter, so this
+# file alone only binds at the next module load — see the role's Rebuild
+# initramfs handler and the live sysfs write that cover the other two cases.
+options zfs zfs_arc_max={{ zfs_arc_cap_max_bytes }}

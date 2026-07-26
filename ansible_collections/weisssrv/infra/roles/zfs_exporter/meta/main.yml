@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: zfs_exporter
+  namespace: weisssrv
+  author: Eric Weiss
+  description: Prometheus exporter for ZFS pools and datasets (prometheus_exporter wrapper)
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+
+dependencies: []

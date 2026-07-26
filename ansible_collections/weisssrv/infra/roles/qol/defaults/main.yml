@@ -1,0 +1,50 @@
+---
+# User whose shell/editor config this role owns. Aliased to the conventional
+# inventory-wide `admin_user`; set `qol_admin_user` directly to decouple.
+# `root` makes every user-scoped task self-skip (packages still install).
+qol_admin_user: "{{ admin_user }}"
+
+# Packages installed by the QoL role (override per host/group as needed).
+qol_packages:
+  - zsh
+  - neovim  # also in base common_packages; kept so `--tags qol` works standalone
+  - fzf
+  - ripgrep
+  - fd-find
+
+# Oh My Zsh pinned commit — the framework clone is checked out at this commit
+# (no release tags upstream; pin for reproducibility).
+# Update by checking: https://github.com/ohmyzsh/ohmyzsh/commits/master
+qol_omz_commit: "061f773dd356df52a8bccd5e73377c012f97ef14"
+
+qol_omz_theme: risto
+# Only OMZ-bundled plugins are supported: the role templates the plugins=()
+# array but never clones external plugins.
+qol_omz_plugins:
+  - 1password
+  - ansible
+  - command-not-found
+  - docker
+  - docker-compose
+  - dotenv
+  - fzf
+  - git
+  - golang
+  - kubectl
+  - rsync
+  - systemd
+  - terraform
+  - tmux
+  - vscode
+
+qol_vundle_version: v0.10.2
+
+qol_nvim_plugins:
+  - tpope/vim-fugitive
+  - sheerun/vim-polyglot
+  - joshdick/onedark.vim
+
+# Must be provided by one of qol_nvim_plugins (or be a built-in scheme). Applied
+# with `silent!` so overriding qol_nvim_plugins without the matching colorscheme
+# plugin degrades to the default look instead of erroring at every start.
+qol_nvim_colorscheme: onedark

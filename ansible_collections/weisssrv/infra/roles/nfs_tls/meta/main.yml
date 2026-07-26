@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: nfs_tls
+  namespace: weisssrv
+  author: Eric Weiss
+  description: tlshd (ktls-utils) for NFSv4 transport-layer security (xprtsec=tls/mtls)
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+
+dependencies: []

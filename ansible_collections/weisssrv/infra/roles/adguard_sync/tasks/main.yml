@@ -1,0 +1,109 @@
+---
+# adguardhome-sync: pushes the primary AdGuard Home's config to the replica on a
+# timer. Runs on the primary only — adguard_sync_enabled gates the whole role, so
+# it is a no-op everywhere else.
+
+- name: Configure AdGuard Home Sync on the primary
+  when: adguard_sync_enabled | bool
+  block:
+    - name: Validate the required sync inputs are present
+      ansible.builtin.assert:
+        that:
+          - adguard_sync_version | default('') | length > 0
+          - adguard_sync_origin | default('') | length > 0
+          - adguard_sync_replica | default('') | length > 0
+          - adguard_sync_admin_user | default('') | length > 0
+          - adguard_sync_admin_password | default('') | length > 0
+        fail_msg: >-
+          adguard_sync_{version,origin,replica,admin_user,admin_password} are
+          all required — the pinned release plus the two AdGuard API endpoints
+          and the credentials shared by both.
+        quiet: true
+
+    - name: Install adguardhome-sync via shared pipeline
+      ansible.builtin.include_role:
+        name: weisssrv.infra.prometheus_exporter
+        tasks_from: install
+      vars:
+        _as_base: "https://github.com/bakito/adguardhome-sync/releases/download"
+        _as_file: "adguardhome-sync_{{ adguard_sync_version }}_linux_amd64.tar.gz"
+        prometheus_exporter_name: adguardhome-sync
+        prometheus_exporter_version: "{{ adguard_sync_version }}"
+        prometheus_exporter_artifact_type: tarball
+        # The upstream filename is kept so get_url's checksum lookup matches an
+        # entry in checksums.txt.
+        prometheus_exporter_download_url: "{{ _as_base }}/v{{ adguard_sync_version }}/{{ _as_file }}"
+        prometheus_exporter_checksum: "sha256:{{ _as_base }}/v{{ adguard_sync_version }}/checksums.txt"
+        prometheus_exporter_binary_path: /usr/local/bin/adguardhome-sync
+        prometheus_exporter_archive_member: adguardhome-sync
+        # `adguardhome-sync --version` prints "adguardhome-sync version X.Y.Z"
+        # (GoReleaser strips the tag's v prefix); pull the bare semver to
+        # compare against the pin.
+        prometheus_exporter_version_check_cmd: |
+          set -o pipefail
+          /usr/local/bin/adguardhome-sync --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
+        # Not a long-running exporter: point the shared restart handler at the
+        # timer — its next tick runs the oneshot on the freshly installed binary.
+        prometheus_exporter_service_name: adguardhome-sync.timer
+
+    - name: Check sync state directory
+      ansible.builtin.stat:
+        path: /var/lib/adguardhome-sync
+      register: adguard_sync_state_dir_stat
+
+    # StateDirectory= + DynamicUser=yes manage /var/lib/adguardhome-sync as a
+    # symlink into /var/lib/private; a plain root-owned directory left by older
+    # deploys blocks unit startup. Its contents are disposable sync state.
+    - name: Remove legacy root-owned sync home directory
+      ansible.builtin.file:
+        path: /var/lib/adguardhome-sync
+        state: absent
+      when:
+        - adguard_sync_state_dir_stat.stat.exists
+        - not adguard_sync_state_dir_stat.stat.islnk
+
+    - name: Deploy adguardhome-sync configuration
+      ansible.builtin.template:
+        src: adguardhome-sync.yaml.j2
+        dest: /etc/adguardhome-sync.yaml
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    # Failure signal: the unit's api.port is 0 (metrics disabled), so a silent
+    # sync break would otherwise go unnoticed. The unit's ExecStopPost writes
+    # this .prom on every run for a *Failed/Stale alert (matches the repo's
+    # timer-metric pattern).
+    - name: Install adguardhome-sync metrics writer
+      ansible.builtin.template:
+        src: adguardhome-sync-metrics.sh.j2
+        dest: /usr/local/bin/adguardhome-sync-metrics.sh
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Deploy adguardhome-sync systemd service
+      ansible.builtin.template:
+        src: adguardhome-sync.service.j2
+        dest: /etc/systemd/system/adguardhome-sync.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload systemd
+
+    - name: Deploy adguardhome-sync systemd timer
+      ansible.builtin.template:
+        src: adguardhome-sync.timer.j2
+        dest: /etc/systemd/system/adguardhome-sync.timer
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload systemd
+
+    - name: Enable adguardhome-sync timer
+      ansible.builtin.systemd:
+        name: adguardhome-sync.timer
+        enabled: true
+        state: started
+        daemon_reload: true

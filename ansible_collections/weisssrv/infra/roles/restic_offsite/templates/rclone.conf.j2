@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+# rclone remote for the restic B2 backend. Rendered 0600 root:root with no_log.
+# hard_delete is left unset (default false) => rclone deletes by HIDING, and the
+# B2 bucket lifecycle rule expires hidden versions. This lets a
+# capability-restricted key (no deleteFiles) still prune.
+#
+# NOT sufficient on its own: restic's rclone backend spawns rclone with
+# built-in default args that include --b2-hard-delete, and the command line
+# beats this file. restic-offsitectl strips it via -o rclone.args on every
+# restic invocation — keep the two in sync.
+[b2]
+type = b2
+account = {{ restic_offsite_b2_key_id }}
+key = {{ restic_offsite_b2_application_key }}

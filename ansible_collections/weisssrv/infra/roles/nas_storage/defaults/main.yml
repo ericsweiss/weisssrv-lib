@@ -1,0 +1,72 @@
+---
+# nas_storage role defaults.
+
+# ZFS ARC cap (module parameter)
+# When set to a byte count, rendered into /etc/modprobe.d/zfs.conf as
+# `options zfs zfs_arc_max=<bytes>` and baked into the initramfs (an
+# update-initramfs handler runs so the cap applies at EARLY boot, before the
+# pools import and the ARC would grow to the ~half-RAM default). Empty (the
+# default) leaves ARC at the ZFS default and does not manage the file at all.
+# Aliased to the conventional inventory-wide `zfs_arc_max_bytes`, which
+# weisssrv.infra.zfs_arc_cap (the compute-host counterpart of the same knob)
+# also reads; set nas_storage_zfs_arc_max_bytes directly to decouple.
+nas_storage_zfs_arc_max_bytes: "{{ zfs_arc_max_bytes | default('') }}"
+
+# Media-mover load-shaping
+# The hot-tier -> bulk-tier mover runs in the nightly window alongside backups,
+# scrub and smartd, so it is deliberately deferential — it yields CPU and disk
+# under contention rather than adding to the load spike. Nice + ionice set absolute
+# priority; the cgroup-v2 CPUWeight/IOWeight (below the 100 default)
+# proportionally deprioritize it only when something else competes (a no-op on
+# an idle NAS). nas_storage_media_mover_bwlimit is an optional hard rsync throughput cap
+# (empty = unlimited); nas_storage_media_mover_schedule (timer) is set per host.
+nas_storage_media_mover_nice: 10
+nas_storage_media_mover_io_class: best-effort
+nas_storage_media_mover_io_priority: 7
+nas_storage_media_mover_cpu_weight: 20
+nas_storage_media_mover_io_weight: 20
+nas_storage_media_mover_bwlimit: ""
+
+# Per-app appdata directories (NFS export /export/appdata -> /mnt/ssd/appdata)
+# Apps that persist config on the appdata NFS export need their subdirectory to
+# exist and be writable before their first write. The export squashes every
+# client write to nas_storage_appdata_owner:group regardless of the in-container
+# UID, so the directory must be owned by that pair. nfs.yml creates these AFTER
+# the mounted-dataset guard, so a locked or unmounted pool can never have them
+# mkdir'd onto its bare mountpoint. An app whose data lives on its own block
+# device does NOT belong here — that is a separate filesystem mount.
+nas_storage_appdata_base: /mnt/ssd/appdata
+nas_storage_appdata_owner: 1000
+nas_storage_appdata_group: 2000
+nas_storage_appdata_mode: "0775"
+# CONSTRAINT: no database-dump directories here. Logical dumps belong on the
+# offsite-eligible landing zone below, so they ride the archive file walk into
+# the offsite copy; the appdata export carries live config only.
+nas_storage_appdata_dirs: []
+
+# Offsite-eligible logical-dump landing zone
+# Every app on a raw block device lands a compact logical dump under
+# <base>/<app> so it rides the archive file walk into the offsite copy — a file
+# walk cannot see inside a live zvol. Give each app its own per-app NFS export
+# in nas_storage_exports, scoped to that app's writer (cross-app isolation):
+# each subdir is then a bind_source that nfs.yml creates and owns through the
+# generic bind-source handling, so no subdir list is needed here. This base path
+# is what the backup-artifact collector walks for freshness.
+nas_storage_backup_apps_base: /mnt/tank/backups/apps
+
+# Backup-artifact mtime collector (independent NAS-side freshness signal)
+# Each app's own backup wrapper emits <app>_backup_last_* metrics, but those go
+# green even when the dump never REACHED the landing zone (broken mount, wrong
+# path). This NAS-side collector stats the newest file under each <base>/<app>
+# and emits backup_artifact_last_mtime_seconds{app=...} — the independent "the
+# dump landed offsite-eligible" signal.
+nas_storage_backup_artifact_metrics_enabled: true
+nas_storage_backup_artifact_apps: []
+
+# Skip enabling/starting smartd (a container has no SMART-capable devices).
+nas_storage_skip_smartd_service: false
+
+# Component gates, declared so a typo cannot silently disable one.
+nas_storage_skip_zfs_operations: false  # pool/dataset/property work (needs real ZFS)
+nas_storage_skip_mergerfs: false        # mergerfs mount management
+nas_storage_skip_nfs_reload: false      # exportfs reload after an exports change

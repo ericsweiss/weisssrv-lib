@@ -1,0 +1,15 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Daily NAS swap reset
+
+[Timer]
+# Default 07:00 so an un-overridden enable runs AFTER the NAS overnight jobs
+# (the nightly backup window and its post-run slice clearing;
+# media-mover 06:00; archive-backup 06:30) and reclaims the swap they caused —
+# never inside the backup window; pin it per host if the window differs.
+OnCalendar={{ nas_storage_swap_clean_schedule | default('*-*-* 07:00:00') }}
+RandomizedDelaySec={{ nas_storage_swap_clean_random_delay | default(1800) }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

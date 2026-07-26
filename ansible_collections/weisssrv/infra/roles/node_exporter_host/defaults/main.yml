@@ -1,0 +1,13 @@
+---
+# 9101, not 9100: the in-cluster node-exporter DaemonSet owns 9100 on the k3s
+# nodes, and both run on the same box in a converged deployment.
+node_exporter_host_port: 9101
+
+# Textfile collector directory for custom script metrics
+node_exporter_host_textfile_dir: /var/lib/node_exporter
+
+# Is this a bare-metal Proxmox host? Gates smartmontools, the drivetemp module
+# and the corosync/zpool/SMART/vzdump collectors — all of which are meaningless
+# (and the modprobe fails) in an unprivileged LXC or a guest VM. Set it from the
+# site's hypervisor group.
+node_exporter_host_proxmox: false

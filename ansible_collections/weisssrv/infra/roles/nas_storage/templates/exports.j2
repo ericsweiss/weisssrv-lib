@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+# NFS exports configuration - see exports(5)
+#
+# Opt-in transport encryption (NFSv4 + tlshd) at two scopes: `export.xprtsec`
+# covers every client line, `client.xprtsec` overrides it per client — including
+# a falsy value to opt one client OUT, so a shared export can carry require-TLS
+# clients alongside an appliance that cannot speak xprtsec. A line with no
+# xprtsec leaves the server at its default (none:tls:mtls), which ACCEPTS
+# plaintext.
+#
+# The wire is only encrypted when the client MOUNTS with xprtsec=tls, by
+# hostname — a wildcard cert has no IP SAN. Requires weisssrv.infra.nfs_tls on
+# the server and on every TLS client.
+
+{% for export in nas_storage_exports %}
+{% set export_xprtsec = export.xprtsec | default('') %}
+# {{ export.path }}{{ ' (xprtsec=' ~ export_xprtsec ~ ')' if export_xprtsec else '' }}
+{{ export.path }} {% for client in export.clients %}{% if not loop.first %} \
+        {% endif %}{% set client_xprtsec = client.xprtsec | default(export_xprtsec) %}{{ client.spec }}({{ client.options }}{% if client_xprtsec %},xprtsec={{ client_xprtsec }}{% endif %}){% endfor %}
+
+{% endfor %}

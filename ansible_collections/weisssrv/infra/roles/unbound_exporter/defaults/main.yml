@@ -1,0 +1,7 @@
+---
+unbound_exporter_port: 9167
+
+# Upstream release pin + checksum. Upstream publishes no checksum file, so this
+# is our own sha256 of the release .deb; bump the pair together.
+unbound_exporter_version: "0.6.0"
+unbound_exporter_checksum: "sha256:4f61876a292b49f918baf6b6b57d17dcf94f97513787282b0dadb88b95084890"

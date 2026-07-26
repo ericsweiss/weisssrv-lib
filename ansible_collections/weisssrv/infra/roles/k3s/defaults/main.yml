@@ -1,0 +1,144 @@
+---
+# K3s installation defaults
+
+# /etc/hosts pins on every node, as [{name, ip}]. Two uses:
+#
+#   k3s_registry_host_pins — a registry whose PUBLIC name resolves through an
+#   upstream path that flakes; pinning it to the internal ingress VIP skips the
+#   DNS query entirely. TLS is unaffected: the pin overrides only the A record,
+#   SNI and validation still use the hostname.
+#
+#   k3s_storage_host_pins — the NFS server name the PVs mount by (a wildcard
+#   cert has no IP SAN, so the mount MUST use a name). Pinning keeps the
+#   cluster's own DNS off the storage-mount critical path: a remount or pod
+#   reschedule during a DNS outage would otherwise fail to resolve the server.
+#
+# Verify per node after a change: `getent hosts <name>` -> the pinned IP.
+k3s_registry_host_pins: []
+k3s_storage_host_pins: []
+
+# Raise the per-UID inotify ceilings on every k3s node. The kernel default
+# fs.inotify.max_user_instances=128 is per-UID, and since pods share the host
+# user namespace it is drawn HOST-GLOBAL by every uid-0 container (kubelet,
+# containerd, Flux, Prometheus, Alloy, every pod's root process). A
+# container-dense node exhausts the pool and the next systemd-in-Docker
+# container's PID 1 dies at boot with "Failed to allocate manager object: Too
+# many open files" — surfacing as an unretried molecule script_failure.
+# Set k3s_inotify_tuning false to remove the drop-in entirely.
+k3s_inotify_tuning: true
+k3s_inotify_max_user_instances: 8192
+k3s_inotify_max_user_watches: 1048576
+
+# Fallback pin; a site should set this alongside its other version pins.
+k3s_version: "v1.36.2+k3s1"
+
+# Molecule/check-mode escape hatch: render the config without installing k3s.
+k3s_skip_install: false
+
+# Agent (worker) join token, used for agent installs and the server config's
+# `agent-token`. Defaults to the server token so the role is self-contained;
+# override with a dedicated lower-privilege token in production.
+k3s_agent_token: "{{ k3s_token }}"
+
+# Pin to a specific k3s release tag instead of the mutable get.k3s.io redirect.
+# This fixes the installer URL path (not the bytes) per version. The script is
+# downloaded to a local file and executed separately (no `curl | sh`), so its
+# integrity can optionally be pinned via k3s_install_script_checksum below.
+k3s_install_script_url: "https://raw.githubusercontent.com/k3s-io/k3s/{{ k3s_version }}/install.sh"
+# Optional sha256 pin for the install.sh fetched above. Empty by default => the
+# get_url checksum: param is omitted. Set in all.yml alongside k3s_version
+# (e.g. "sha256:<hex>") to verify the root-run installer script before exec,
+# mirroring zfs_exporter_checksum. install.sh itself already verifies the k3s
+# binary's sha256 against the GitHub release; this closes the gap on the script.
+k3s_install_script_checksum: ""
+
+# Inventory group holding the server (control-plane) nodes. Agents delegate
+# their post-join kubectl calls to its first member.
+k3s_server_group: k3s_servers
+
+# Role configuration
+k3s_role: agent  # or 'server'
+k3s_is_first_server: false
+
+# Network configuration. k3s_api_vip is the kube-vip API address every node
+# joins through — required (asserted in server.yml/agent.yml), no default.
+k3s_api_vip: ""
+k3s_api_port: 6443
+k3s_cluster_cidr: "10.42.0.0/16"
+k3s_service_cidr: "10.43.0.0/16"
+
+# Components to disable
+k3s_disable:
+  - servicelb
+  - traefik
+
+# Flannel CNI backend. Default to wireguard-native so cross-node pod traffic
+# is encrypted out of the box; a standalone consumer of this role (or a dropped
+# group_var) gets the secure backend rather than plaintext vxlan. Set to vxlan
+# to roll back (see group_vars/k3s.yml for the full rationale and caveats).
+k3s_flannel_backend: "wireguard-native"
+
+# Node configuration
+k3s_labels: {}
+k3s_taints: []
+
+# NVIDIA GPU node. When true, agent.yml includes tasks/gpu.yml, which installs
+# the NVIDIA driver + nvidia-container-toolkit so k3s auto-detects the `nvidia`
+# container runtime (no containerd template edit).
+k3s_gpu_node: false
+
+# Molecule/check-mode escape hatch for the GPU path: render the repo/component
+# config but skip the driver/toolkit apt installs + nvidia-smi probe. Mirrors
+# k3s_skip_install.
+k3s_skip_gpu_install: false
+
+# The deb822 Debian sources file whose Components line gpu.yml enables non-free
+# on. Overridable so the molecule agent scenario can point it at a scratch file
+# (leaving the container's real apt sources — and thus `apt update` — untouched).
+k3s_gpu_debian_sources_path: /etc/apt/sources.list.d/debian.sources
+
+# kube-vip. Keep this default in step with the site's own pin so a standalone
+# run or a dropped group_var cannot silently regress the API VIP.
+k3s_kube_vip_version: "v1.2.1"
+k3s_kube_vip_interface: "eth0"
+
+# Off-node etcd snapshot copy (see README.md)
+# k3s writes scheduled etcd snapshots to k3s_etcd_snapshot_dir on each server's
+# LOCAL disk only; losing the servers (or the hypervisors under them) loses
+# etcd. When enabled, a systemd timer on the server nodes mounts an NFS export
+# and copies the newest snapshot there, writing an
+# etcd_snapshot_last_copy_timestamp_seconds textfile metric for a staleness
+# alert.
+#
+# OFF BY DEFAULT: it needs companion changes outside this role — the NFS export
+# itself (clients = the server IPs, xprtsec=tls), weisssrv.infra.node_exporter_host
+# on the servers to scrape the metric, the firewall path for :2049, and
+# weisssrv.infra.nfs_tls on the servers (an xprtsec=tls mount hangs without the
+# kernel TLS handshake daemon; TLS-only clients need no cert of their own).
+k3s_etcd_snapshot_offnode_enabled: false
+
+# Local directory k3s writes its scheduled/on-demand etcd snapshots to.
+k3s_etcd_snapshot_dir: /var/lib/rancher/k3s/server/db/snapshots
+
+# NFS mount for the off-node copies. Mount BY HOSTNAME so the server cert
+# verifies under xprtsec=tls (a wildcard cert has no IP SAN). The client dirpath
+# is PSEUDO-ROOT-RELATIVE: with an fsid=0 export at /export on the server,
+# NFSv4 clients resolve '/k3s-etcd', not '/export/k3s-etcd'.
+k3s_etcd_snapshot_nfs_server: ""
+k3s_etcd_snapshot_nfs_export: /k3s-etcd
+k3s_etcd_snapshot_mountpoint: /mnt/etcd-snapshots
+# xprtsec=tls (require TLS). noauto+nofail keep this backup-only mount off the
+# boot path entirely: it is started on demand by k3s-etcd-snapshot-copy.service
+# (RequiresMountsFor=) on each timer fire, so a NAS-down boot never blocks or
+# degrades remote-fs.target. _netdev orders it after the network when it does
+# mount. Mirrors the k3s NFS PV mount options.
+k3s_etcd_snapshot_nfs_options: "vers=4.2,xprtsec=tls,_netdev,noauto,nofail"
+
+# node_exporter textfile dir (shared with node_exporter_host, which must run on
+# the servers for the metric to be scraped).
+k3s_etcd_snapshot_textfile_dir: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
+
+# How often the copy timer fires and how many copies to retain per server on the
+# export (matches k3s's own snapshot retention of 5).
+k3s_etcd_snapshot_copy_oncalendar: "hourly"
+k3s_etcd_snapshot_retention: 5

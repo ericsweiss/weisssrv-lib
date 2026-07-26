@@ -1,0 +1,104 @@
+---
+# Skips the cloud-image download, the Windows media checks, the cloud-init
+# `qm set`, the create-time autostart `qm set`, and the final SSH-reachability
+# wait_for — the tasks that need real network or a real guest. It does NOT skip
+# `qm create` itself; molecule runs the create path against stub qm/pvesh shims.
+proxmox_vm_skip_create: false
+
+# Host the post-create SSH-reachability wait_for is delegated to. Defaults to
+# localhost (the controller), which works from a LAN-attached runner. Set to
+# the Proxmox host (which always shares the VM's bridge) when running from an
+# off-LAN controller where the VM's address is unroutable.
+proxmox_vm_ssh_wait_delegate: localhost
+
+# IP address handed to the role's cloud-init + SSH-wait logic. Defaults to
+# ansible_host because production inventory routes traffic to each VM via
+# that field. Molecule scenarios override this so they can keep ansible_host
+# pointing at the docker container (= connection target) while still feeding
+# a realistic per-VM IP into the role's cloud-init render.
+proxmox_vm_target_ip: "{{ ansible_host }}"
+
+# VM resource defaults
+proxmox_vm_cores: 2
+proxmox_vm_memory: 2048
+proxmox_vm_disk_size: 32G
+proxmox_vm_bridge: vmbr0
+proxmox_vm_ostype: l26
+proxmox_vm_agent_enabled: true
+
+# PCI passthrough (VFIO). A list of Proxmox `hostpci` device specs — each entry
+# becomes `--hostpci<index> <entry>` on the create-time `qm set` (Linux guests
+# only). Empty by default (no passthrough). CREATE-TIME ONLY: PCI attach needs
+# the guest stopped, so this is realized when the VM is first provisioned; an
+# already-existing guest is attached by hand in a maintenance window. The entry
+# is passed verbatim, so it may include Proxmox options, e.g.:
+#   proxmox_vm_hostpci:
+#     - "0000:01:00"            # whole multifunction device on i440fx (no pcie=1)
+#     - "0000:01:00,pcie=1"     # PCIe passthrough on q35
+# A passthrough guest cannot live-migrate and its RAM is host-pinned/mlock'd, so
+# it must also be pinned (proxmox_vm_cpu_type: host) and non-ballooned.
+proxmox_vm_hostpci: []
+
+# Conservative live-migration baseline (SSE3/SSSE3/SSE4.1, no SSE4.2/AVX) so a
+# guest can migrate across heterogeneous hosts. Override to `host` for any guest
+# pinned to one node — that exposes the full host CPU (AVX/AVX2).
+proxmox_vm_cpu_type: Penryn
+
+# Memory-ballooning floor, applied at create AND reconciled live on an existing
+# guest. Leave undefined for guests that must keep their full --memory (a
+# kubelet accounts for the whole node RAM).
+# proxmox_vm_balloon: 2048
+
+# Cloud image. The checksum URL is a variable because the stock one points at a
+# moving `latest/` directory: hosts provisioned at different times can hold
+# different point releases under the same filename, and an already-staged image
+# is never re-verified. Pin both to a point release to close that.
+proxmox_vm_cloud_image_url: "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2"
+proxmox_vm_cloud_image_name: "debian-13-generic-amd64.qcow2"
+proxmox_vm_cloud_image_checksum: "sha512:https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS"
+proxmox_vm_cloud_image_dir: /var/lib/vz/template/iso
+
+# Cloud-init. proxmox_vm_cloudinit_gateway has no generic default and is
+# REQUIRED on the Linux create path — see README.
+proxmox_vm_cloudinit_user: "{{ admin_user }}"
+proxmox_vm_cloudinit_dns: "{{ dns_servers }}"
+proxmox_vm_cloudinit_prefix_len: 24
+
+# Guest type
+# 'linux'  (default) — the cloud-init Debian path above.
+# 'windows' — a full-spec Win11 guest: q35 + OVMF/UEFI + pre-enrolled Secure
+#          Boot keys + TPM 2.0 + VirtIO disk/NIC + install & driver CDROMs.
+#          The cloud image download/import, cloud-init drive, SSH-key assert,
+#          and post-create SSH wait are all skipped. The VM is created STOPPED —
+#          the operator installs Windows interactively.
+proxmox_vm_guest_type: linux
+
+# Windows guest knobs (ignored unless proxmox_vm_guest_type == 'windows').
+proxmox_vm_windows_machine: q35
+proxmox_vm_windows_ostype: win11
+# std VGA is the most install-compatible: virtio-gpu needs its driver loaded,
+# which isn't available at Windows' first boot. Switch to virtio post-install.
+proxmox_vm_windows_vga: std
+
+# ISO store used for the install + VirtIO CDROMs, and its on-host path.
+# `local` is Proxmox's stock ISO store; point this at a shared storage whose
+# content list includes `iso` to serve media cluster-wide.
+proxmox_vm_iso_storage: local
+proxmox_vm_iso_storage_path: >-
+  {{ '/var/lib/vz/template/iso' if proxmox_vm_iso_storage == 'local'
+     else '/mnt/pve/' ~ proxmox_vm_iso_storage ~ '/template/iso' }}
+
+# Windows 11 install media — downloaded MANUALLY from Microsoft to the ISO
+# store (it cannot be redistributed). REQUIRED when the guest type is windows;
+# the role asserts it is set. Value is the ISO's filename.
+proxmox_vm_install_iso: ""
+
+# VirtIO driver ISO — DOWNLOADED + checksum-verified by the role (idempotent)
+# from the pinned Fedora archive URL.
+proxmox_vm_virtio_win_version: "0.1.285"
+proxmox_vm_virtio_win_checksum: "sha256:e14cf2b94492c3e925f0070ba7fdfedeb2048c91eea9c5a5afb30232a3976331"
+proxmox_vm_virtio_iso: "virtio-win-{{ proxmox_vm_virtio_win_version }}.iso"
+# Double-quoted YAML `\<newline>` is an escaped line-continuation that inserts
+# NO character (and trims the next line's leading space), so this wraps cleanly.
+proxmox_vm_virtio_win_url: "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-\
+  {{ proxmox_vm_virtio_win_version }}-1/virtio-win-{{ proxmox_vm_virtio_win_version }}.iso"

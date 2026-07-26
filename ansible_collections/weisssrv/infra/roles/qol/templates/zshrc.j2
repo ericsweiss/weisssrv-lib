@@ -1,0 +1,22 @@
+source ~/.zprofile
+source ~/.alias.zsh
+source ~/.local.zsh
+
+# Path to your Oh My Zsh installation.
+export ZSH="$HOME/.oh-my-zsh"
+
+# Theme configuration
+ZSH_THEME="{{ qol_omz_theme | default('risto') }}"
+
+# Plugins configuration
+plugins=(
+{% for plugin in qol_omz_plugins | default(['git']) %}
+	{{ plugin }}
+{% endfor %}
+)
+
+# The install is pinned to a commit by Ansible (qol role, qol_omz_commit);
+# disable self-update so hosts don't drift from the pin.
+zstyle ':omz:update' mode disabled
+
+source $ZSH/oh-my-zsh.sh

@@ -1,0 +1,42 @@
+---
+# NAS storage role: ZFS, NFS, MergerFS, Samba, media-mover
+
+- name: Include ZFS tasks
+  ansible.builtin.include_tasks: zfs.yml
+  when:
+    - nas_storage_zfs_pools is defined
+    - not (nas_storage_skip_zfs_operations | default(false))
+
+- name: Include MergerFS tasks
+  ansible.builtin.include_tasks: mergerfs.yml
+  when:
+    - nas_storage_mergerfs_mounts is defined
+    - not (nas_storage_skip_mergerfs | default(false))
+
+- name: Include NFS tasks
+  ansible.builtin.include_tasks: nfs.yml
+  when: nas_storage_exports is defined
+
+- name: Include Samba tasks
+  ansible.builtin.include_tasks: samba.yml
+  when: nas_storage_samba_shares is defined
+
+- name: Include media-mover tasks
+  ansible.builtin.include_tasks: media_mover.yml
+  when: nas_storage_media_mover_enabled | default(false)
+
+- name: Include swap-clean tasks
+  ansible.builtin.include_tasks: swap_clean.yml
+  when: nas_storage_swap_clean_enabled | default(false)
+
+- name: Include SMART monitoring tasks
+  ansible.builtin.include_tasks: smartd.yml
+  when: nas_storage_smartd_enabled | default(true)
+
+- name: Include archive backup tasks
+  ansible.builtin.include_tasks: archive_backup.yml
+  when: nas_storage_archive_backup_enabled | default(true)
+
+- name: Include backup-artifact metrics tasks
+  ansible.builtin.include_tasks: backup_metrics.yml
+  when: nas_storage_backup_artifact_metrics_enabled | default(false)

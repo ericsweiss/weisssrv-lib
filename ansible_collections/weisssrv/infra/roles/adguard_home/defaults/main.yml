@@ -1,0 +1,74 @@
+---
+# Required inputs (no default):
+#   adguard_home_version         — pinned AdGuard Home release
+#   adguard_home_admin_password  — admin password; supply from the secret store
+#   adguard_home_tls_server_name — when adguard_home_tls_enabled
+
+adguard_home_user: adguard
+adguard_home_group: adguard
+adguard_home_install_path: /opt/AdGuardHome
+adguard_home_http_port: 3000
+adguard_home_dns_port: 53
+adguard_home_dot_port: 853
+adguard_home_https_port: 443
+adguard_home_admin_user: admin
+
+# Reconcile rewrites + filtering rules here. Exactly ONE instance may do so:
+# the replicas receive them through weisssrv.infra.adguard_sync, and a second
+# reconciler would fight that sync.
+adguard_home_is_primary: false
+
+# Skip API configuration (useful for integration tests)
+adguard_home_skip_api_config: false
+
+# Skip pointing the host's own resolver at this instance (the role otherwise
+# rewrites /etc/resolv.conf to 127.0.0.1 via weisssrv.infra.resolv_conf).
+adguard_home_skip_resolv_conf_update: false
+
+# Use PrivateTmp in systemd service (disable for Docker containers)
+# Docker containers may have issues with PrivateTmp causing container crashes
+adguard_home_use_private_tmp: true
+
+# Use ProtectSystem=strict in systemd service (disable for Docker containers)
+# Docker containers may crash when systemd creates private mounts over system directories
+adguard_home_use_protect_system: true
+
+# DoT/DoH/DoQ. The server name must match the cert distributed to
+# adguard_home_cert_path, so it has no default.
+adguard_home_tls_enabled: true
+adguard_home_tls_server_name: ""
+adguard_home_cert_path: "{{ adguard_home_install_path }}/certs"
+adguard_home_doq_port: 853
+
+# Upstream resolver — a local recursive resolver (weisssrv.infra.unbound) by
+# default; point it at a public resolver to drop that dependency.
+adguard_home_upstream_dns:
+  - "127.0.0.1:5335"
+
+# API-managed base settings (api_base_config.yml).
+adguard_home_protection_enabled: true
+adguard_home_upstream_mode: "load_balance"
+adguard_home_fallback_dns: []
+adguard_home_enable_dnssec: true
+adguard_home_resolve_clients: true
+adguard_home_use_private_ptr_resolvers: false
+adguard_home_disable_ipv6: false
+
+# Cache configuration
+adguard_home_cache_enabled: true
+adguard_home_cache_size: 8388608
+adguard_home_cache_ttl_min: 0
+adguard_home_cache_ttl_max: 0
+adguard_home_cache_optimistic: false
+
+# Rate limiting
+adguard_home_ratelimit: 20
+adguard_home_ratelimit_whitelist: []
+
+# DHCP (disabled - the router handles DHCP)
+adguard_home_dhcp_enabled: false
+
+# Reconciled on the primary only (adguard_home_is_primary). Empty lists mean
+# "manage none" — the role never deletes what it was not given.
+adguard_home_rewrites: []
+adguard_home_user_rules: []

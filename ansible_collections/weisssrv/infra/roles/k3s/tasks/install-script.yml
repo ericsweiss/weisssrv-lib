@@ -1,0 +1,47 @@
+---
+# Shared k3s version detection + install-script staging.
+# Included by both server.yml and agent.yml; only the final install command
+# (server vs agent, plus K3S_URL for agents) differs and stays in those files.
+# Exports k3s_needs_install (the single install/upgrade gate) for the callers.
+
+- name: Check current k3s version
+  ansible.builtin.command: k3s --version
+  register: k3s_current_version
+  changed_when: false
+  failed_when: false
+
+- name: Parse current k3s version
+  ansible.builtin.set_fact:
+    k3s_installed_version: "{{ k3s_current_version.stdout | regex_search('v[0-9]+\\.[0-9]+\\.[0-9]+\\+k3s[0-9]+') | default('') }}"
+  when: k3s_current_version.rc == 0
+
+- name: Compute the install/upgrade gate
+  ansible.builtin.set_fact:
+    k3s_needs_install: "{{ k3s_current_version.rc != 0 or (k3s_installed_version | default('')) != k3s_version }}"
+
+- name: Debug k3s version info
+  ansible.builtin.debug:
+    msg:
+      - "Installed version: {{ k3s_installed_version | default('not installed') }}"
+      - "Target version: {{ k3s_version }}"
+      - "Needs install/upgrade: {{ k3s_needs_install }}"
+  tags: [debug]
+
+- name: Download k3s install script
+  ansible.builtin.get_url:
+    # Download and execute are separate tasks (never `curl | sh`) so the
+    # root-run installer can be integrity-checked first; /root 0700 keeps /tmp
+    # symlink abuse out, and force: true keeps upgrades on the current upstream
+    # installer. The optional per-version `checksum` protects the installer
+    # SCRIPT (force-pushed tag, compromised CDN, MITM) — install.sh separately
+    # verifies the k3s binary it downloads. Empty default => get_url omits it.
+    url: "{{ k3s_install_script_url }}"
+    dest: /root/k3s-install.sh
+    owner: root
+    group: root
+    mode: "0700"
+    force: true
+    checksum: "{{ k3s_install_script_checksum | default(omit, true) }}"
+  when:
+    - k3s_needs_install | bool
+    - not (k3s_skip_install | default(false))

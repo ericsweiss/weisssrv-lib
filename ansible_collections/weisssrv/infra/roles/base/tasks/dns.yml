@@ -1,0 +1,44 @@
+---
+# Configure /etc/resolv.conf.
+
+# A host that RUNS the resolver (base_is_resolver_host) is a chicken-and-egg
+# case on first deploy: the resolver roles run later, and only then does
+# 127.0.0.1 answer. So use external bootstrap DNS until it does, and keep
+# 127.0.0.1 once it does — otherwise a standalone base re-run would point a
+# healthy resolver host at external DNS (and make it immutable) until the
+# resolver play next runs, breaking internal name resolution meanwhile.
+- name: Probe the local resolver
+  ansible.builtin.command:
+    cmd: dig +short +time=2 +tries=1 @127.0.0.1 {{ base_resolver_probe_name }} A
+  register: base_local_resolver_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: base_is_resolver_host | bool
+
+- name: Set DNS servers for a resolver host
+  ansible.builtin.set_fact:
+    base_host_dns_servers: >-
+      {{ ['127.0.0.1']
+         if (base_local_resolver_probe.rc | default(1) == 0
+             and base_local_resolver_probe.stdout | default('') | trim | length > 0)
+         else base_bootstrap_dns_servers }}
+  when: base_is_resolver_host | bool
+
+- name: Set DNS servers for all other hosts
+  ansible.builtin.set_fact:
+    base_host_dns_servers: "{{ base_dns_servers }}"
+  when: not (base_is_resolver_host | bool)
+
+# The immutable-flag (chattr) handling lives in the resolv_conf role.
+# resolv.conf changes take effect immediately; no networking restart is needed.
+- name: Configure /etc/resolv.conf with DNS servers
+  ansible.builtin.include_role:
+    name: weisssrv.infra.resolv_conf
+    apply:
+      tags: [dns, networking, base]
+  vars:
+    resolv_conf_immutable: true
+    # resolv_conf's template consumes host_dns_servers; pass the role-local
+    # value in rather than setting that name as a fact.
+    host_dns_servers: "{{ base_host_dns_servers }}"

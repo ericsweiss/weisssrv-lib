@@ -1,0 +1,49 @@
+---
+unbound_port: 5335
+
+# Filename of the role-managed drop-in under /etc/unbound/unbound.conf.d/.
+# Renaming this leaves the previous file in place — unbound merges every
+# drop-in, so remove the old one when you change it.
+unbound_managed_conf_name: managed.conf
+unbound_interface: 127.0.0.1
+
+unbound_access_control:
+  - "127.0.0.0/8 allow"
+  - "::1 allow"
+
+# Performance tuning
+unbound_num_threads: 2
+unbound_msg_cache_size: 16m
+unbound_rrset_cache_size: 32m
+unbound_outgoing_range: 8192
+unbound_num_queries_per_thread: 4096
+unbound_so_reuseport: true
+
+# Advanced features
+unbound_serve_expired: true
+unbound_serve_expired_ttl: 86400
+unbound_aggressive_nsec: true
+unbound_edns_buffer_size: 1232
+# 0x20 DNS-name randomization; redundant behind DoT and a known SERVFAIL source
+# against upstreams that normalize case.
+unbound_use_caps_for_id: true
+
+unbound_forwarders:
+  - addr: "1.1.1.1"
+    port: 853
+    name: "cloudflare-dns.com"
+  - addr: "1.0.0.1"
+    port: 853
+    name: "cloudflare-dns.com"
+  - addr: "9.9.9.9"
+    port: 853
+    name: "dns.quad9.net"
+  - addr: "149.112.112.112"
+    port: 853
+    name: "dns.quad9.net"
+  - addr: "8.8.8.8"
+    port: 853
+    name: "dns.google"
+  - addr: "8.8.4.4"
+    port: 853
+    name: "dns.google"

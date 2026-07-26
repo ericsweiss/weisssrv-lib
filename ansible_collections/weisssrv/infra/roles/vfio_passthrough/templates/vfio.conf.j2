@@ -1,0 +1,15 @@
+# {{ ansible_managed }}
+# Bind the listed PCI functions to vfio-pci and keep the host driver(s) off them
+# so the device can pass through to a guest. The modprobe.d twin of the primary
+# `vfio-pci.ids=` cmdline bind; baked into the initramfs by the role's
+# Rebuild-initramfs handler. Full mechanism: vfio_passthrough/tasks/main.yml.
+options vfio-pci ids={{ vfio_passthrough_pci_ids | join(',') }}
+{% for mod in vfio_passthrough_blacklist_modules %}
+# {{ mod }}: hard-blacklisted (never loads) — vfio-pci claims its function via ids=.
+blacklist {{ mod }}
+{% endfor %}
+{% for mod in vfio_passthrough_softdep_modules %}
+# {{ mod }} loads at boot for other host devices; make vfio-pci win the race for
+# the passed-through function by loading it first.
+softdep {{ mod }} pre: vfio-pci
+{% endfor %}
