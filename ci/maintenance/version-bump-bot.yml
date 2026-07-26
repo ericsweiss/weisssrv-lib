@@ -1,0 +1,93 @@
+spec:
+  inputs:
+    job_name:
+      default: version-bump-bot
+    stage:
+      default: maintenance
+    image:
+      # The full python image ships git; python:*-slim does not, and the shared
+      # non-root runner cannot apt-install it.
+      default: python:3.13
+    tags:
+      type: array
+      default: ["infrastructure"]
+      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+    script_path:
+      default: "scripts/version-bump-mr.py"
+      description: >-
+        Path to the MR manager IN THE CONSUMER repo (vendored from this library's
+        scripts/version-bump-mr.py — stdlib only, no extra deps).
+    setup_command:
+      default: "true"
+      description: Shell command run before the check (tool install); default is a no-op.
+    check_command:
+      description: >-
+        REQUIRED. Shell command that rewrites the repo's version pins in place
+        (e.g. `task maintenance:update-all-versions`). Anything it leaves
+        untracked is ignored; only tracked changes under `paths` are committed.
+        It must exit 0 — a checker that signals "updates found" with rc=1 needs
+        an explicit `|| true`, or the bot never runs.
+    paths:
+      default: "."
+      description: Space-separated paths the bot stages and diffs.
+    branch:
+      default: "bot/version-bumps"
+      description: Bot branch; force-pushed on every run with bumps (history is disposable).
+    target_branch:
+      default: "main"
+    title:
+      default: "chore(deps): version bumps"
+    commit_message:
+      default: "chore(deps): update pinned versions"
+    labels:
+      default: ""
+      description: Comma-separated labels applied when the MR is created.
+    report_path:
+      default: ""
+      description: Optional file whose contents are embedded in the MR description.
+    git_user_name:
+      default: "version-bump-bot"
+    git_user_email:
+      default: "version-bump-bot@noreply.invalid"
+    bot_token:
+      default: "$VERSION_BUMP_BOT_TOKEN"
+      description: >-
+        Variable REFERENCE for a PAT with `api` + `write_repository`. CI_JOB_TOKEN
+        CANNOT do this job (it cannot push, and the Merge requests API is
+        read-only for job tokens). Mask the variable — the token appears in the
+        push URL.
+---
+"$[[ inputs.job_name ]]":
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.image ]]
+  tags: $[[ inputs.tags ]]
+  needs: []
+  variables:
+    # Full clone: pushing a branch built on a shallow checkout is rejected as a
+    # "shallow update".
+    GIT_DEPTH: "0"
+    BOT_TOKEN: "$[[ inputs.bot_token ]]"
+  script:
+    # Block scalars, not bare interpolation: an unquoted `true` (the
+    # setup_command default) would parse as a YAML boolean and be rejected.
+    - |
+      $[[ inputs.setup_command ]]
+    - |
+      $[[ inputs.check_command ]]
+    - |
+      python3 "$[[ inputs.script_path ]]" \
+        --branch "$[[ inputs.branch ]]" \
+        --target-branch "$[[ inputs.target_branch ]]" \
+        --title "$[[ inputs.title ]]" \
+        --commit-message "$[[ inputs.commit_message ]]" \
+        --paths "$[[ inputs.paths ]]" \
+        --labels "$[[ inputs.labels ]]" \
+        --report-path "$[[ inputs.report_path ]]" \
+        --git-user-name "$[[ inputs.git_user_name ]]" \
+        --git-user-email "$[[ inputs.git_user_email ]]"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      # Without this a web pipeline stays "blocked" until the job is played.
+      allow_failure: true
