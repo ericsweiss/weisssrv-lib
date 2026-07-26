@@ -6,9 +6,10 @@
 # Exit 0 with host on stdout if found; exit 1 with diagnostics on stderr.
 #
 # Environment:
-#   PVE_NODE_PREFIX  prefix this site's SSH targets carry that `pvesh` node
-#                    names do not (default "pve-"). Set to "" for a site whose
-#                    node names need no rewrite.
+#   PVE_NODE_PREFIX  prefix this site's SSH targets carry that the Proxmox node
+#                    names do not (default "pve-"). Applied to both API-derived
+#                    answers (steps 2 and 3); step 4 already yields an SSH
+#                    target. Set to "" for a site whose names need no rewrite.
 #
 # Resolution strategy (HA-resilient):
 #   1. Find the first reachable host from the provided list.
@@ -31,11 +32,12 @@ VMID="$1"
 shift
 HOSTS=("$@")
 
-# `pvesh get /cluster/resources` returns the bare Proxmox node name, which on
-# the reference cluster is the SSH target minus a `pve-` prefix. Normalizing to
-# a hardcoded prefix would hand the caller an unresolvable hostname on a site
-# whose nodes are named otherwise, so the prefix is a knob. `${x-y}` (not
-# `${x:-y}`) so an explicitly empty value disables the rewrite entirely.
+# `ha-manager status` and `pvesh get /cluster/resources` both report the bare
+# Proxmox node name, which on the reference cluster is the SSH target minus a
+# `pve-` prefix. Normalizing to a hardcoded prefix would hand the caller an
+# unresolvable hostname on a site whose nodes are named otherwise, so the prefix
+# is a knob. `${x-y}` (not `${x:-y}`) so an explicitly empty value disables the
+# rewrite entirely.
 PVE_NODE_PREFIX="${PVE_NODE_PREFIX-pve-}"
 
 # VMID is interpolated into a remote shell command (`grep "service vm:${VMID}"`)
@@ -83,10 +85,17 @@ if [ -z "$NODE" ]; then
         "sudo pvesh get /cluster/resources --type vm --output-format json 2>/dev/null" 2>/dev/null \
         | python3 -c "import sys, json; d = json.load(sys.stdin); v = [x for x in d if x.get('vmid') == ${VMID}]; print(v[0]['node'] if v else '')" 2>/dev/null \
         || true)
-    if [ -n "$NODE" ] && [ -n "$PVE_NODE_PREFIX" ]; then
-        # Normalize: ensure exactly one $PVE_NODE_PREFIX on the front.
-        NODE="${PVE_NODE_PREFIX}${NODE#"$PVE_NODE_PREFIX"}"
-    fi
+fi
+
+# Single normalization for BOTH API-derived branches: ensure exactly one
+# $PVE_NODE_PREFIX on the front. Steps 2 and 3 answer the same question with the
+# same bare node identifier, so a rewrite living inside one of them silently
+# returns an unresolvable hostname whenever the other wins — and step 2, which
+# covers the HA-managed guests this helper mostly exists for, wins first.
+# Deliberately placed BEFORE step 4 and not after: that branch sets NODE from
+# the caller's own SSH-target list, which is already the name to connect to.
+if [ -n "$NODE" ] && [ -n "$PVE_NODE_PREFIX" ]; then
+    NODE="${PVE_NODE_PREFIX}${NODE#"$PVE_NODE_PREFIX"}"
 fi
 
 # Step 4: per-host scan (fallback when cluster API unavailable)

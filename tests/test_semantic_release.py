@@ -521,6 +521,142 @@ def test_main_recovers_an_orphan_tag_that_no_longer_sits_on_head(tmp_path, monke
     assert "exists with no Release" in capsys.readouterr().out
 
 
+def orphan_git(monkeypatch):
+    """The half-failed state with new work on top: v0.2.0 is tagged but has no
+    Release, and a fix landed after it."""
+    monkeypatch.setattr(
+        sr,
+        "git",
+        fake_git(
+            ["v0.1.1", "v0.2.0"],
+            {
+                "v0.2.0..HEAD": log(("b" * 8, "fix: later work")),
+                "v0.1.1..v0.2.0": log(("a" * 8, "feat: the orphaned work")),
+            },
+        ),
+    )
+    monkeypatch.setattr(sr, "get_release", lambda *a, **kw: None)
+
+
+def failing_create(monkeypatch, fail_tag, code=403, body=b"denied"):
+    """create_release that records every tag it is asked for and raises for one."""
+    calls = []
+
+    def fake_create(api_url, project_id, token, plan, ref, token_header="JOB-TOKEN"):
+        calls.append(plan.tag)
+        if plan.tag == fail_tag:
+            raise _http_error(code, body)
+        return {}
+
+    monkeypatch.setattr(sr, "create_release", fake_create)
+    return calls
+
+
+def test_main_attributes_a_failed_backfill_to_the_tag_that_failed(tmp_path, monkeypatch, capsys):
+    """The backfill POST and the new tag's POST are different calls about
+    different tags: an artifact that blames the new tag for the OLD tag's failure
+    sends whoever reads it (published `when: always`) to the wrong tag."""
+    monkeypatch.setenv("RELEASE_TOKEN", "tok")
+    orphan_git(monkeypatch)
+    calls = failing_create(monkeypatch, "v0.2.0", body=b"tag is protected")
+    out = tmp_path / "release.json"
+
+    assert sr.main(["--output", str(out), *API]) == 1
+
+    # The new tag was never attempted — the run stops at the repair.
+    assert calls == ["v0.2.0"]
+    payload = json.loads(out.read_text())
+    assert payload["released"] is False
+    assert payload["tag"] == "v0.2.1"
+    assert "backfill of v0.2.0 failed" in payload["error"]
+    assert "tag is protected" in payload["error"]
+    assert "recovered" not in payload
+    err = capsys.readouterr().err
+    assert "backfilling the missing Release for v0.2.0 failed" in err
+    assert "the new tag v0.2.1 was NOT cut" in err
+
+
+def test_main_records_a_backfill_that_succeeded_before_the_new_tag_failed(
+    tmp_path, monkeypatch, capsys
+):
+    """A Release for the orphan WAS published; the artifact has to say so even
+    though the run failed afterwards, or the next run re-derives the repair from
+    a state that no longer needs it."""
+    monkeypatch.setenv("RELEASE_TOKEN", "tok")
+    orphan_git(monkeypatch)
+    calls = failing_create(monkeypatch, "v0.2.1", body=b"insufficient scope")
+    out = tmp_path / "release.json"
+
+    assert sr.main(["--output", str(out), *API]) == 1
+
+    assert calls == ["v0.2.0", "v0.2.1"]
+    payload = json.loads(out.read_text())
+    assert payload["released"] is False
+    assert payload["recovered"] == "v0.2.0"
+    assert "insufficient scope" in payload["error"]
+    assert "backfill" not in payload["error"]
+    out_text, err = capsys.readouterr()
+    assert "Backfilled the missing Release for v0.2.0." in out_text
+    assert "release creation failed (HTTP 403)" in err
+
+
+def test_main_announces_the_backfill_only_after_it_succeeded(tmp_path, monkeypatch, capsys):
+    """The announcement used to be printed at PLAN time ("… — creating it."), so a
+    run that then died at the backfill left that claim in the log unqualified.
+    A failed repair may state what it found, never what it did."""
+    monkeypatch.setenv("RELEASE_TOKEN", "tok")
+    orphan_git(monkeypatch)
+    failing_create(monkeypatch, "v0.2.0")
+    assert sr.main(["--output", str(tmp_path / "release.json"), *API]) == 1
+    out_text = capsys.readouterr().out
+    assert "exists with no Release" in out_text  # the finding, which is true
+    assert "Backfilled" not in out_text and "creating it" not in out_text
+
+
+def test_main_still_releases_when_the_recovery_probe_itself_fails(tmp_path, monkeypatch, capsys):
+    """The probe is a repair CHECK, not a precondition: a 502 on it must not cost
+    a release the POST would have created."""
+    monkeypatch.setenv("RELEASE_TOKEN", "tok")
+    monkeypatch.setattr(sr, "git", fake_git(["v0.1.1"], {"v0.1.1..HEAD": log(("a" * 8, "feat: x"))}))
+
+    def boom(*a, **kw):
+        raise _http_error(502, b"bad gateway")
+
+    monkeypatch.setattr(sr, "get_release", boom)
+    calls = recording_create(monkeypatch)
+    out = tmp_path / "release.json"
+
+    assert sr.main(["--output", str(out), *API]) == 0
+
+    assert [c["tag"] for c in calls] == ["v0.2.0"]
+    payload = json.loads(out.read_text())
+    assert payload["released"] is True
+    # The skipped repair is in the artifact, not only in the job log.
+    assert payload["recovery_check"] == "failed"
+    assert "recovered" not in payload
+    err = capsys.readouterr().err
+    assert "could not check whether v0.1.1 has a Release" in err
+    assert "re-run this job" in err
+
+
+def test_main_survives_an_unreachable_api_on_the_recovery_probe(tmp_path, monkeypatch):
+    """URLError/timeouts arrive by a different route than HTTPError and must be
+    treated the same — the probe is best-effort in every failure mode."""
+    monkeypatch.setenv("RELEASE_TOKEN", "tok")
+    monkeypatch.setattr(sr, "git", fake_git(["v0.1.1"], {"v0.1.1..HEAD": log(("a" * 8, "feat: x"))}))
+
+    def boom(*a, **kw):
+        raise urllib.error.URLError("name or service not known")
+
+    monkeypatch.setattr(sr, "get_release", boom)
+    calls = recording_create(monkeypatch)
+    out = tmp_path / "release.json"
+
+    assert sr.main(["--output", str(out), *API]) == 0
+    assert [c["tag"] for c in calls] == ["v0.2.0"]
+    assert json.loads(out.read_text())["recovery_check"] == "failed"
+
+
 def test_main_does_not_recreate_a_release_that_exists(monkeypatch, capsys):
     monkeypatch.setenv("RELEASE_TOKEN", "tok")
     monkeypatch.setattr(sr, "git", fake_git(["v0.2.0"], {"v0.2.0..HEAD": ""}))

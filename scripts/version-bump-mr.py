@@ -35,17 +35,31 @@ from typing import Callable, Dict, List, Optional, Sequence
 
 
 def changed_paths(porcelain: str, include_untracked: bool = False) -> List[str]:
-    """Tracked paths modified in `git status --porcelain` output (renames -> new path)."""
+    """Tracked paths modified in `git status --porcelain -z` output (renames -> new path).
+
+    `-z` (not the default line format) because these paths are STAGED, not just
+    displayed: the default format C-quotes any path holding non-ASCII, a quote, a
+    backslash or a control character (`"ansible/r\\303\\264le/main.yml"`), and a
+    parser that only strips the quotes hands `git add` an undecoded literal that
+    matches nothing — rc 128, mid-run, on a repo that is otherwise fine. `-z`
+    emits the raw bytes NUL-terminated and never quotes, so no decoding step can
+    be wrong. A rename record is two fields, `<new>\\0<old>\\0` (`-z` drops the
+    `->` and reverses the pair), so the second one is consumed, not parsed.
+    """
+    fields = [field for field in porcelain.split("\0") if field]
     paths = []
-    for line in porcelain.splitlines():
-        if len(line) < 4:
+    index = 0
+    while index < len(fields):
+        entry = fields[index]
+        index += 1
+        if len(entry) < 4:
             continue
-        status, entry = line[:2], line[3:]
+        status, path = entry[:2], entry[3:]
+        if status[0] in ("R", "C"):
+            index += 1  # the origin path of a rename/copy; never a change of its own
         if status == "??" and not include_untracked:
             continue
-        if " -> " in entry:
-            entry = entry.split(" -> ", 1)[1]
-        paths.append(entry.strip().strip('"'))
+        paths.append(path)
     return sorted(set(paths))
 
 
@@ -252,7 +266,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     repo = args.repo_dir
     paths = args.paths.split() or ["."]
-    changed = changed_paths(git(["status", "--porcelain", "--"] + paths, repo))
+    changed = changed_paths(git(["status", "--porcelain", "-z", "--"] + paths, repo))
     token = os.environ.get(args.token_env, "")
     _SECRETS.append(token)
 
@@ -311,7 +325,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # by the check above. --update keeps it to tracked modifications/deletions,
     # so the report artifacts a check command drops stay out of the commit, as
     # the documented contract (and the MR's file list) says.
-    git(["add", "--update", "--"] + changed, repo)
+    #
+    # `:(top)` anchors each pathspec to the repo root, which is the base
+    # `git status --porcelain` always answers in — `git add` would otherwise
+    # resolve them against the CWD and match nothing whenever --repo-dir points
+    # at a SUBDIRECTORY of the repo rather than its root.
+    git(["add", "--update", "--"] + [":(top)" + path for path in changed], repo)
     git(["commit", "--quiet", "-m", args.commit_message], repo)
 
     branch_is_current = (

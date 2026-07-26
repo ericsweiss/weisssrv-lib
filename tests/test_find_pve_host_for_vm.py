@@ -75,12 +75,15 @@ def run(tmp_path):
         stub.chmod(0o755)
 
     def _run(*args, up=ALL_UP, **env):
+        # A CLOSED env, like the sibling shell suites: the script reads
+        # $PVE_NODE_PREFIX, so an ambient one would quietly change what the
+        # prefix-blind cases below assert. Only the real PATH tail is kept, so
+        # the stubs can still reach bash/sed/grep/python3.
         return subprocess.run(
             [BASH, str(SCRIPT), *args],
             capture_output=True,
             text=True,
             env={
-                **os.environ,
                 "PATH": "%s:%s" % (bin_dir, os.environ["PATH"]),
                 "UP": up,
                 **{k: str(v) for k, v in env.items()},
@@ -115,6 +118,63 @@ def test_an_unparseable_ha_status_line_falls_through_instead_of_being_echoed(run
     proc = run("154", *HOSTS, HA_STATUS="service vm:154 is in an odd state\n", QM_HOSTS="pve-opt-02")
     assert proc.returncode == 0
     assert proc.stdout.strip() == "pve-opt-02"
+
+
+def test_the_ha_manager_branch_applies_the_default_prefix(run):
+    """`ha-manager status` reports the same BARE node name `pvesh` does, so the
+    branch that runs FIRST needs the same rewrite — without it the caller SSHes
+    to `opt-01`, which does not resolve, and the failure surfaces a layer up with
+    no pointer back here."""
+    proc = run("154", *HOSTS, HA_STATUS="service vm:154 (opt-01, started)\n")
+    assert proc.returncode == 0
+    assert proc.stdout.strip() == "pve-opt-01"
+
+
+def test_the_ha_manager_branch_normalizes_a_configured_prefix_too(run):
+    proc = run(
+        "154",
+        "node-a",
+        "node-b",
+        up="node-a node-b",
+        HA_STATUS="service vm:154 (b, started)\n",
+        PVE_NODE_PREFIX="node-",
+    )
+    assert proc.returncode == 0
+    assert proc.stdout.strip() == "node-b"
+
+
+def test_the_ha_manager_branch_does_not_double_the_prefix(run):
+    proc = run("154", *HOSTS, HA_STATUS="service vm:154 (pve-opt-01, started)\n")
+    assert proc.returncode == 0
+    assert proc.stdout.strip() == "pve-opt-01"
+
+
+def test_an_empty_prefix_leaves_the_ha_manager_node_verbatim(run):
+    proc = run(
+        "154",
+        "alpha",
+        "beta",
+        up="alpha beta",
+        HA_STATUS="service vm:154 (beta, started)\n",
+        PVE_NODE_PREFIX="",
+    )
+    assert proc.returncode == 0
+    assert proc.stdout.strip() == "beta"
+
+
+def test_the_per_host_scan_is_exempt_from_the_prefix_rewrite(run):
+    """Step 4 returns the caller's OWN SSH target, so prefixing it would corrupt
+    a name that is already correct."""
+    proc = run(
+        "154",
+        "node-a",
+        "node-b",
+        up="node-a node-b",
+        QM_HOSTS="node-b",
+        PVE_NODE_PREFIX="pve-",
+    )
+    assert proc.returncode == 0
+    assert proc.stdout.strip() == "node-b"
 
 
 def test_cluster_resources_covers_a_non_ha_vm(run):

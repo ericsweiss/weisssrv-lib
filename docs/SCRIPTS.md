@@ -77,11 +77,18 @@ semantic-release.py [--repo-dir DIR] [--tag-prefix v] [--initial-version 0.1.0]
   link in the notes).
 - **Artifact** (`--output`): the outcome, not the intention — `released` is true
   only after the API call succeeded, `dry_run` marks a computed-only run, and a
-  failure carries an `error` field. Publish it `when: always`.
+  failure carries an `error` field. `recovered` names a tag whose missing
+  Release this run backfilled (set even when the new tag then failed), and
+  `recovery_check: "failed"` records that the repair check could not run.
+  Publish it `when: always`.
 - **Crash recovery:** a run that dies between the tag and the Release halves
   leaves a tag with no Release, and the next run would compute an empty range
-  forever. When the last tag sits on HEAD without a Release, the missing Release
-  is created instead.
+  forever. The previous tag is checked for a Release wherever it sits; a missing
+  one is backfilled from its own commit range before the new tag is cut, so the
+  orphaned commits appear in exactly one set of notes. A backfill that fails
+  stops the run and says so against ITS tag — the new tag is not cut. The check
+  itself is best-effort: an API failure on it is warned about and skipped rather
+  than allowed to veto an otherwise-healthy release.
 - **Exit codes:** 0 released / nothing to release / dry run; 1 missing
   credentials, an API failure, a git failure (its stderr is printed) or an
   unreachable API.
@@ -109,7 +116,10 @@ version-bump-mr.py [--repo-dir DIR] [--branch bot/version-bumps]
   `CI_PROJECT_ID`, `CI_SERVER_HOST` + `CI_PROJECT_PATH` (default `--remote-url`),
   `CI_DEFAULT_BRANCH` (default `--target-branch`), `CI_PIPELINE_URL`.
 - **Only tracked changes are committed** (`git add --update`), so report
-  artifacts the check command drops stay untracked and out of the MR.
+  artifacts the check command drops stay untracked and out of the MR. Detection
+  and staging share one list, read from `git status --porcelain -z` (raw,
+  never-quoted paths) and staged with `:(top)`-anchored pathspecs, so a path
+  holding non-ASCII characters and a `--repo-dir` below the repo root both work.
 - **`--report-path` content is untrusted:** it is fenced with a fence longer than
   any backtick run it contains, lines starting with `/` are indented so GitLab
   cannot read them as quick actions, and truncation cuts on a line boundary.
@@ -314,8 +324,11 @@ confirmation required; a bad lifecycle rule can expire the only offsite copy).
 | `resolve-tool.sh` | prints how to invoke a Python dev tool (`PATH` → `python3 -m <module>` → validated pyenv glob) |
 
 `find-pve-host-for-vm.sh` env: `PVE_NODE_PREFIX` (default `pve-`) — the prefix
-this site's SSH targets carry that the node names `pvesh get /cluster/resources`
-returns do not. Set it to `""` when the two already agree; leaving it at the
+this site's SSH targets carry that the node names the Proxmox API reports do
+not. It is applied once to BOTH API-derived answers (`ha-manager status` and
+`pvesh get /cluster/resources` report the same bare node identifier); the
+per-host `qm status` scan is exempt, since that branch returns a target from the
+caller's own list. Set it to `""` when the two already agree; leaving it at the
 default on a site whose nodes are named otherwise returns a hostname that does
 not resolve.
 
@@ -331,5 +344,12 @@ job (`python3 -m pytest tests cli/tests`). The suites are consumer-tree
 independent: they build throwaway git repos / fixture trees under
 `tests/fixtures/` rather than asserting against a real cluster repo, and the
 shell scripts are driven through `subprocess` against stub `ssh` / `promtool` /
-`amtool` / `molecule` binaries on a controlled `PATH`, so no cluster, no SSH
-target and no Prometheus tooling is needed to run them.
+`amtool` / `molecule` binaries on a controlled `PATH` and a closed environment,
+so no cluster, no SSH target and no Prometheus tooling is needed to run them —
+and nothing the ambient environment sets can change what they assert.
+
+That sentence is itself gated by `tests/test_scripts_have_tests.py`: it walks
+`scripts/` recursively for every executable (plus every `.py`/`.sh`, since two
+scripts are vendored rather than run in place) and requires each one to have a
+suite that names it, defines tests, and to be mentioned on this page. Opting a
+file out means naming it in that file's `EXEMPT` map, with a reason.

@@ -350,12 +350,16 @@ def write_plan(
     dry_run: bool = False,
     error: str = "",
     recovered: str = "",
+    recovery_check: str = "",
 ) -> None:
     """Serialise the outcome. `released` is what actually happened, not the plan.
 
     The artifact is published `when: always`, so it must never claim a tag that
     the API call did not create; a failed run carries the reason instead.
-    `recovered` names an earlier tag whose missing Release this run backfilled.
+    `recovered` names an earlier tag whose missing Release this run backfilled;
+    `recovery_check` is "failed" when the run could not determine whether there
+    was anything to back-fill, so a skipped repair is visible to whoever reads
+    the artifact rather than only to whoever scrolls the job log.
     """
     if not path:
         return
@@ -372,6 +376,8 @@ def write_plan(
         payload["error"] = error
     if recovered:
         payload["recovered"] = recovered
+    if recovery_check:
+        payload["recovery_check"] = recovery_check
     with open(path, "w") as handle:
         json.dump(payload, handle, indent=2)
 
@@ -428,23 +434,37 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # still on HEAD: gating on that lost the tag permanently the moment one more
     # commit landed on the release branch, which is the common case.
     recovery = None
-    if previous and have_api and not args.dry_run and get_release(
-        args.api_url, args.project_id, token, previous, args.token_header
-    ) is None:
-        print("Tag %s exists with no Release (a previous run half-failed) — creating it." % previous)
-        recovery = plan_existing_tag(
-            tags,
-            previous,
-            lambda rng: git(["log", "--no-merges", "--format=" + LOG_FORMAT, rng], args.repo_dir),
-            args.tag_prefix,
-            compare_template,
-        )
-        if not plan.released:
-            # Nothing new on top: the orphan IS this run's release.
-            plan, recovery = recovery, None
+    recovery_check = ""
+    if previous and have_api and not args.dry_run:
+        try:
+            existing = get_release(args.api_url, args.project_id, token, previous, args.token_header)
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+            # The probe is a REPAIR check, not a precondition for the release it
+            # precedes: a 429/502/timeout here must not cost a healthy release
+            # that the POST below would have created. Unknown -> assume healthy.
+            existing = {}
+            recovery_check = "failed"
+            print(
+                "WARNING: could not check whether %s has a Release (%s); skipping crash "
+                "recovery this run. If %s is missing its Release, re-run this job."
+                % (previous, exc, previous),
+                file=sys.stderr,
+            )
+        if existing is None:
+            print("Tag %s exists with no Release (a previous run half-failed)." % previous)
+            recovery = plan_existing_tag(
+                tags,
+                previous,
+                lambda rng: git(["log", "--no-merges", "--format=" + LOG_FORMAT, rng], args.repo_dir),
+                args.tag_prefix,
+                compare_template,
+            )
+            if not plan.released:
+                # Nothing new on top: the orphan IS this run's release.
+                plan, recovery = recovery, None
 
     if not plan.released:
-        write_plan(args.output, plan, released=False)
+        write_plan(args.output, plan, released=False, recovery_check=recovery_check)
         print("No releasable commits since %s — nothing to release." % (plan.previous_tag or "the start of history"))
         return 0
 
@@ -462,25 +482,61 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             file=sys.stderr,
         )
         return 1
-    try:
-        if recovery is not None:
-            # New work landed on top of the orphan: backfill its Release from its
-            # own commit range first, so those commits appear in exactly one set
-            # of notes, then cut the new tag below. The tag already exists, so
-            # the API ignores `ref`; pass the tag itself as the truthful value.
+    # The backfill carries its OWN handler and its own record. Sharing one with
+    # the new tag's POST below misattributes every outcome: a failure reads as
+    # the new tag failing (wrong tag in the artifact, wrong tag in the log), and
+    # a success followed by a failed cut is lost entirely.
+    recovered_tag = ""
+    if recovery is not None:
+        # New work landed on top of the orphan: backfill its Release from its own
+        # commit range first, so those commits appear in exactly one set of
+        # notes, then cut the new tag below. The tag already exists, so the API
+        # ignores `ref`; pass the tag itself as the truthful value.
+        try:
             create_release(
                 args.api_url, args.project_id, token, recovery, recovery.tag, args.token_header
             )
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")
+            write_plan(
+                args.output,
+                plan,
+                released=False,
+                error="backfill of %s failed: HTTP %s: %s" % (recovery.tag, exc.code, detail),
+                recovery_check=recovery_check,
+            )
+            print(
+                "ERROR: backfilling the missing Release for %s failed (HTTP %s): %s — the new "
+                "tag %s was NOT cut. Fix or delete %s, then re-run."
+                % (recovery.tag, exc.code, detail, plan.tag, recovery.tag),
+                file=sys.stderr,
+            )
+            return 1
+        recovered_tag = recovery.tag
+        print("Backfilled the missing Release for %s." % recovery.tag)
+
+    try:
         release = create_release(
             args.api_url, args.project_id, token, plan, ref, args.token_header
         )
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace")
-        write_plan(args.output, plan, released=False, error="HTTP %s: %s" % (exc.code, detail))
+        write_plan(
+            args.output,
+            plan,
+            released=False,
+            error="HTTP %s: %s" % (exc.code, detail),
+            recovered=recovered_tag,
+            recovery_check=recovery_check,
+        )
         print("ERROR: release creation failed (HTTP %s): %s" % (exc.code, detail), file=sys.stderr)
         return 1
     write_plan(
-        args.output, plan, released=True, recovered=recovery.tag if recovery else ""
+        args.output,
+        plan,
+        released=True,
+        recovered=recovered_tag,
+        recovery_check=recovery_check,
     )
     print("Created release %s" % release.get("_links", {}).get("self", plan.tag))
     return 0

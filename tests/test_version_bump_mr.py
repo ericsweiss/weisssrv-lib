@@ -47,18 +47,31 @@ def _scrub_ci_env(monkeypatch):
 
 
 def test_changed_paths_ignores_untracked_by_default():
-    porcelain = " M ansible/all.yml\nM  kubernetes/x.yaml\n?? version-report.json\n"
+    porcelain = " M ansible/all.yml\0M  kubernetes/x.yaml\0?? version-report.json\0"
     assert bot.changed_paths(porcelain) == ["ansible/all.yml", "kubernetes/x.yaml"]
     assert "version-report.json" in bot.changed_paths(porcelain, include_untracked=True)
 
 
 def test_changed_paths_takes_the_new_name_of_a_rename():
-    assert bot.changed_paths("R  old/a.yml -> new/a.yml\n") == ["new/a.yml"]
+    """`-z` drops the ` -> ` and reverses the pair: the record's own field is the
+    NEW path and the next field is the origin, which is not a change of its own."""
+    assert bot.changed_paths("R  new/a.yml\0old/a.yml\0 M z.yml\0") == ["new/a.yml", "z.yml"]
 
 
-def test_changed_paths_dedupes_sorts_and_unquotes():
-    porcelain = ' M b.yml\n M a.yml\nMM b.yml\n M "with space.yml"\n'
-    assert bot.changed_paths(porcelain) == ["a.yml", "b.yml", "with space.yml"]
+def test_changed_paths_dedupes_and_sorts():
+    porcelain = " M b.yml\0 M a.yml\0MM b.yml\0"
+    assert bot.changed_paths(porcelain) == ["a.yml", "b.yml"]
+
+
+def test_changed_paths_keeps_special_characters_verbatim():
+    """`-z` never quotes, so nothing has to be un-quoted — the path is handed to
+    `git add` exactly as git spelled it."""
+    porcelain = ' M with space.yml\0 M ansible/rôle/main.yml\0 M has"quote.yml\0'
+    assert bot.changed_paths(porcelain) == [
+        "ansible/rôle/main.yml",
+        'has"quote.yml',
+        "with space.yml",
+    ]
 
 
 def test_changed_paths_empty():
@@ -264,13 +277,13 @@ def _bump(work):
     (work / "pins.yml").write_text("sonarr: 4.0.2\n")
 
 
-def _run_main(repo, monkeypatch, open_mrs=(), paths=None):
+def _run_main(repo, monkeypatch, open_mrs=(), paths=None, repo_dir=None):
     work, remote = repo
     monkeypatch.setenv("BOT_TOKEN", "glpat-tok")
     client = FakeClient(open_mrs)
     monkeypatch.setattr(bot, "GitLabClient", lambda *a, **kw: client)
     argv = [
-        "--repo-dir", str(work),
+        "--repo-dir", str(repo_dir or work),
         "--remote-url", str(remote),
         "--target-branch", "main",
         "--api-url", "https://git.example/api/v4",
@@ -280,6 +293,16 @@ def _run_main(repo, monkeypatch, open_mrs=(), paths=None):
         argv += ["--paths", paths]
     rc = bot.main(argv)
     return rc, client
+
+
+def _committed(work):
+    """Paths in HEAD's commit, read NUL-terminated so `core.quotepath` cannot
+    re-quote what the staging path had to keep raw."""
+    return [
+        name
+        for name in bot.git(["show", "--name-only", "--format=", "-z", "HEAD"], str(work)).split("\0")
+        if name
+    ]
 
 
 def test_main_commits_tracked_pins_only(repo, monkeypatch):
@@ -313,6 +336,46 @@ def test_main_stages_bumps_when_a_paths_entry_has_no_tracked_files(repo, monkeyp
     assert rc == 0
     committed = bot.git(["show", "--name-only", "--format=", "HEAD"], str(work)).split()
     assert committed == ["pins.yml"]
+    assert [c[0] for c in client.calls] == ["list", "create"]
+
+
+def test_main_stages_a_pin_whose_path_git_would_c_quote(repo, monkeypatch):
+    """`git status --porcelain` C-quotes any path with a non-ASCII byte
+    (`"ansible/r\\303\\264le/pins.yml"`); stripping the quotes without decoding the
+    escapes hands `git add` a literal that matches nothing — rc 128, the same
+    abort the detected-list staging was written to remove. `-z` never quotes."""
+    work, _ = repo
+    role = work / "rôle"
+    role.mkdir()
+    (role / "pins.yml").write_text("sonarr: 4.0.1\n")
+    bot.git(["add", "-A"], str(work))
+    bot.git(["commit", "--quiet", "-m", "add the non-ascii pin"], str(work))
+    (role / "pins.yml").write_text("sonarr: 4.0.2\n")
+
+    rc, client = _run_main(repo, monkeypatch, paths="rôle")
+
+    assert rc == 0
+    assert _committed(work) == ["rôle/pins.yml"]
+    assert [c[0] for c in client.calls] == ["list", "create"]
+
+
+def test_main_handles_a_repo_dir_below_the_repo_root(repo, monkeypatch):
+    """`git status --porcelain` always answers in repo-root-relative paths while
+    `git add` resolves pathspecs against the CWD, so staging the detected list
+    from a subdirectory --repo-dir needs the `:(top)` anchor to match at all."""
+    work, _ = repo
+    sub = work / "sub"
+    sub.mkdir()
+    (sub / "pins.yml").write_text("sonarr: 4.0.1\n")
+    bot.git(["add", "-A"], str(work))
+    bot.git(["commit", "--quiet", "-m", "add the nested pin"], str(work))
+    (sub / "pins.yml").write_text("sonarr: 4.0.2\n")
+
+    rc, client = _run_main(repo, monkeypatch, paths="pins.yml", repo_dir=sub)
+
+    assert rc == 0
+    # The root pins.yml is untouched: --paths is still resolved from --repo-dir.
+    assert _committed(work) == ["sub/pins.yml"]
     assert [c[0] for c in client.calls] == ["list", "create"]
 
 

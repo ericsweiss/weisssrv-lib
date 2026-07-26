@@ -50,11 +50,15 @@ def run(tmp_path):
     trace.write_text("")
 
     def _run(*args, up=""):
+        # A CLOSED env, like the sibling shell suites: nothing the script or its
+        # stub reads may arrive from the ambient environment, or the suite passes
+        # and fails by where it runs. Only the real PATH tail is kept so the stub
+        # can still reach bash.
         proc = subprocess.run(
             [BASH, str(SCRIPT), *args],
             capture_output=True,
             text=True,
-            env={**os.environ, "PATH": "%s:%s" % (bin_dir, os.environ["PATH"]),
+            env={"PATH": "%s:%s" % (bin_dir, os.environ["PATH"]),
                  "TRACE": str(trace), "UP": up},
         )
         return proc, trace.read_text().split()
