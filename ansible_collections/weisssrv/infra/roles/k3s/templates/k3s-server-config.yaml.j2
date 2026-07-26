@@ -18,7 +18,9 @@ disable:
 
 tls-san:
   - "{{ k3s_api_vip }}"
-  - "k3s.{{ internal_domain }}"
+{% for san in k3s_tls_sans | default([]) %}
+  - "{{ san }}"
+{% endfor %}
   - "{{ inventory_hostname }}"
   - "{{ ansible_host }}"
 

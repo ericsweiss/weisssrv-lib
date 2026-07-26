@@ -5,8 +5,11 @@
 # `sudo zfs load-key <pool>` (README "Cold-cluster boot").
 
 # Connect access point. Must be reachable from the host at boot, before any
-# encrypted pool is mounted.
-zfs_encryption_connect_url: "https://connect.{{ internal_domain }}"
+# encrypted pool is mounted. Derived from zfs_encryption_internal_domain, which
+# aliases the conventional inventory-wide `internal_domain`; set the URL
+# directly to decouple. Asserted non-empty on any host with pools.
+zfs_encryption_internal_domain: "{{ internal_domain | default('') }}"
+zfs_encryption_connect_url: "{{ ('https://connect.' ~ zfs_encryption_internal_domain) if zfs_encryption_internal_domain else '' }}"
 
 # Vault holding the passphrase items.
 zfs_encryption_connect_vault: "Homelab"

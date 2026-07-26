@@ -23,5 +23,12 @@ resolv_conf_unsafe_writes: false
 # badly with the default ndots:5 to amplify cluster-internal lookups
 # (each one is suffixed and probed against AdGuard before the literal
 # is tried).
-resolv_conf_search_domains:
-  - "{{ internal_domain }}"
+#
+# resolv_conf_internal_domain aliases the conventional inventory-wide
+# `internal_domain`; unset, the search list is empty and no line is written.
+resolv_conf_internal_domain: "{{ internal_domain | default('') }}"
+resolv_conf_search_domains: "{{ [resolv_conf_internal_domain] if resolv_conf_internal_domain else [] }}"
+
+# Nameservers written to the file. Aliases `host_dns_servers`, the neutral name
+# the calling role (base, adguard_home) passes in. Required — asserted below.
+resolv_conf_nameservers: "{{ host_dns_servers | default([]) }}"

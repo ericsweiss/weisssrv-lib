@@ -63,6 +63,24 @@ nas_storage_backup_apps_base: /mnt/tank/backups/apps
 nas_storage_backup_artifact_metrics_enabled: true
 nas_storage_backup_artifact_apps: []
 
+# Nightly ZFS replication to a detachable archive pool (archive-backupctl +
+# its service/timer). OFF by default: the control script sets pool-root
+# properties (including `mountpoint=none`) on nas_storage_archive_backup_pool
+# and destroys its own snapshots there, so it must never run against a pool a
+# site did not nominate. Enabling it requires the pool and the source list —
+# tasks/main.yml asserts both.
+nas_storage_archive_backup_enabled: false
+# Destination pool. Its root properties are rewritten by the script.
+nas_storage_archive_backup_pool: ""
+# Datasets replicated recursively, each landing at <pool>/<basename>. Leave out
+# anything already captured indirectly (VM disks ride along in the vzdump
+# target below). Every ROOT entry must be a filesystem, not a zvol.
+nas_storage_archive_backup_sources: []
+# The one dataset receiving cluster-wide vzdump writes over NFS, if any. It is
+# snapshotted only once writes under its mountpoint have quiesced, so a
+# half-written .vma is never captured. Empty disables the guard.
+nas_storage_archive_backup_vzdump_target: ""
+
 # Skip enabling/starting smartd (a container has no SMART-capable devices).
 nas_storage_skip_smartd_service: false
 

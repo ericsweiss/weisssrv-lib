@@ -2,7 +2,7 @@
 # User whose shell/editor config this role owns. Aliased to the conventional
 # inventory-wide `admin_user`; set `qol_admin_user` directly to decouple.
 # `root` makes every user-scoped task self-skip (packages still install).
-qol_admin_user: "{{ admin_user }}"
+qol_admin_user: "{{ admin_user | default('root') }}"
 
 # Packages installed by the QoL role (override per host/group as needed).
 qol_packages:

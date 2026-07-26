@@ -31,6 +31,15 @@
 # pools to unlock. Without the token the per-pool services silently exit
 # 1 at boot with a misleading "missing token file"; this assert
 # short-circuits with a clear pointer.
+- name: Validate the Connect access point is set
+  ansible.builtin.assert:
+    that: zfs_encryption_connect_url | default('') | length > 0
+    fail_msg: >-
+      zfs_encryption_connect_url is empty — set it, or set
+      zfs_encryption_internal_domain (alias: internal_domain) that it derives
+      from. Without it every per-pool unlock unit curls an empty URL forever.
+  when: zfs_encryption_pools | default([]) | length > 0
+
 - name: Validate Connect token is present
   ansible.builtin.assert:
     that: zfs_encryption_connect_token | length > 0

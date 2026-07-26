@@ -27,13 +27,13 @@ homepage: https://git.ericsweiss.com/eric/weisssrv-lib
 documentation: https://git.ericsweiss.com/eric/weisssrv-lib/-/blob/main/ansible_collections/weisssrv/infra/README.md
 issues: https://git.ericsweiss.com/eric/weisssrv-lib/-/issues
 
-# Runtime contract for consumers. Kept in step with requirements.yml (what
-# molecule installs into a test env) by tests/test_ansible_collection.py.
+# Runtime contract for consumers: exactly the collections the roles' own
+# tasks/handlers/templates address by FQCN. requirements.yml is the superset the
+# TEST environment installs; tests/test_ansible_collection.py checks that this
+# set is contained in it, with matching pins.
 dependencies:
   ansible.posix: ">=2.1.0,<3.0.0"
   community.general: ">=12.2.0,<13.0.0"
-  community.crypto: ">=3.1.0,<4.0.0"
-  community.docker: ">=4.3.0,<5.0.0"
 
 # Test scaffolding is repo content, not artifact content: it only resolves
 # inside this checkout (molecule-shared/ is reached by relative path) and would

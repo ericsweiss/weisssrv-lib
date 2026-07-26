@@ -64,6 +64,19 @@ k3s_is_first_server: false
 # joins through — required (asserted in server.yml/agent.yml), no default.
 k3s_api_vip: ""
 k3s_api_port: 6443
+
+# Extra SANs baked into the apiserver certificate, on top of the three the
+# server config always emits (k3s_api_vip, inventory_hostname, ansible_host).
+# The default is the conventional `k3s.<internal_domain>` name, dropped when
+# k3s_internal_domain (alias: the inventory-wide `internal_domain`) is unset.
+# Changing this needs the existing serving cert removed so k3s regenerates it.
+k3s_internal_domain: "{{ internal_domain | default('') }}"
+k3s_tls_sans: "{{ ['k3s.' ~ k3s_internal_domain] if k3s_internal_domain else [] }}"
+
+# Persistent disks attached to the node's VM (by weisssrv.infra.proxmox_vm),
+# handed to weisssrv.infra.zvol_mount. Aliases the conventional inventory-wide
+# `vm_additional_disks` that proxmox_vm's own inputs are derived from.
+k3s_additional_disks: "{{ vm_additional_disks | default([]) }}"
 k3s_cluster_cidr: "10.42.0.0/16"
 k3s_service_cidr: "10.43.0.0/16"
 

@@ -118,8 +118,20 @@ See `defaults/main.yml`. Key ones:
 |----------|----------|-------|
 | `zfs_encryption_connect_token` | yes (host with pools) | Provide via `op read` at runtime |
 | `zfs_encryption_pools` | yes | List of `{name, item, field}` per pool |
-| `zfs_encryption_connect_url` | no | Defaults to `https://connect.{{ internal_domain }}` |
+| `zfs_encryption_connect_url` | yes (host with pools) | Derived from `zfs_encryption_internal_domain` as `https://connect.<domain>`; asserted non-empty |
+| `zfs_encryption_internal_domain` | no | Aliases the inventory-wide `internal_domain` |
 | `zfs_encryption_connect_vault` | no | Defaults to `Homelab` |
+
+### Deliberate changes from the pre-collection role
+
+- `zfs-load-key.sh` clears its `/dev/shm` response file from a single
+  `EXIT`/`INT`/`TERM` trap instead of per call site, so an errexit abort or a
+  signal between `mktemp` and `rm` cannot leave the passphrase in tmpfs.
+- `zfs-mount-encrypted.service` renders `ExecStart=/bin/true` when
+  `zfs_encryption_pools` is empty. The mount script exits 1 on its usage guard
+  with no arguments, and `TimeoutStartSec=0` would make the `until` loop spin
+  forever — a manual `systemctl start` on such a host is now a clean no-op.
+  Hosts with pools render exactly as before.
 
 ## Required 1Password items
 

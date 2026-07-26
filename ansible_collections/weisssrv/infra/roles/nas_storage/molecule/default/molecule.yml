@@ -101,6 +101,21 @@ provisioner:
           - /mnt/tank/backups/apps/home-assistant
         nas_storage_backup_apps_base: /mnt/tank/backups/apps
         nas_storage_backup_artifact_metrics_enabled: true
+        # A realistic multi-pool source set: files/archive-contract-assert.sh
+        # pins the derivations (MAP/RMAP, lock list, restore targets, the
+        # root-is-a-filesystem allow-list) against exactly these entries.
+        nas_storage_archive_backup_enabled: true
+        nas_storage_archive_backup_pool: archive
+        nas_storage_archive_backup_vzdump_target: tank/proxmox
+        nas_storage_archive_backup_sources:
+          - tank/share
+          - tank/backups
+          - tank/nextcloud-data
+          - tank/proxmox
+          - tank/immich-data
+          - ssd/appdata
+          - ssd/databases
+          - ssd/k3s-etcd
         nas_storage_media_mover_enabled: true
         nas_storage_media_mover_src: /mnt/nvme/media/library
         nas_storage_media_mover_dst: /mnt/tank/media/library

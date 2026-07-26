@@ -42,8 +42,8 @@ Manages Proxmox VE firewall at cluster, host, and guest levels. Configures IPSet
 
 ## Configuration
 
-There is no `security_groups` variable and no dict-style `firewall_ipsets`
-map — groups live in the template, and IPSet membership is declared per host:
+There is no dict-style `firewall_ipsets` map — IPSet membership is declared per
+host:
 
 ```yaml
 # In hosts.yml — per-HOST membership list: each named IPSet gains this
@@ -88,7 +88,29 @@ and admit nothing when left empty: `proxmox_firewall_immich_ml_clients`
 `proxmox_firewall_wan_wireguard_vips` (sg-k3s-ingress-pub, `-dest`-scoped so
 the node's own :51820/udp — flannel wireguard-native — stays off the WAN).
 
-To add or change a **security group**, edit `templates/cluster.fw.j2`.
+### Security groups
+
+The role owns the **infrastructure** groups in `templates/cluster.fw.j2`
+(sg-dns, sg-host-admin, sg-vm-admin, sg-k3s-core, sg-k3s-ingress-int,
+sg-k3s-ingress-pub, sg-nfs-server, sg-metrics, sg-pve-cluster, sg-smb-server,
+sg-smtp-relay, sg-host-egress).
+
+**Per-application** groups are site data in `proxmox_firewall_security_groups`
+— that is the extension point, so adding, replacing or dropping a group needs
+no template fork:
+
+```yaml
+proxmox_firewall_security_groups:
+  - name: sg-myapp
+    rules:                      # raw cluster.fw lines, comments included,
+      - "# web"                 # emitted verbatim and in order
+      - "IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog"
+```
+
+The shipped default is an **example set** (GitLab, Nextcloud, Immich,
+Immich-ML, Home Assistant, Plex, a Windows guest) for applications this
+collection does not otherwise contain — replace it with the site's own.
+Reference a group from a guest via its `guest_security_groups` list.
 
 `proxmox_firewall_host_group` (default `proxmox`) names the inventory group
 holding the nodes.

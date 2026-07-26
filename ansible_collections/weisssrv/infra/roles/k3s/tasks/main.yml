@@ -102,8 +102,8 @@
   ansible.builtin.include_role:
     name: weisssrv.infra.zvol_mount
   vars:
-    zvol_mount_disks: "{{ vm_additional_disks | default([]) }}"
-  when: vm_additional_disks is defined and vm_additional_disks | length > 0
+    zvol_mount_disks: "{{ k3s_additional_disks }}"
+  when: k3s_additional_disks | length > 0
 
 - name: Include server tasks
   ansible.builtin.include_tasks: server.yml

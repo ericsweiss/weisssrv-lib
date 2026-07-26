@@ -7,9 +7,9 @@ base_admin_user: "{{ admin_user | default('root') }}"
 base_admin_email: "{{ admin_email | default('root@localhost', true) }}"
 
 base_ssh_port: "{{ ssh_port | default(22) }}"
-base_ssh_permit_root_login: "no"
-base_ssh_password_authentication: false
-base_ssh_pubkey_authentication: true
+base_ssh_permit_root_login: "{{ ssh_permit_root_login | default('no') }}"
+base_ssh_password_authentication: "{{ ssh_password_authentication | default(false) }}"
+base_ssh_pubkey_authentication: "{{ ssh_pubkey_authentication | default(true) }}"
 base_ssh_service_name: ssh
 base_ssh_authorized_keys: "{{ ssh_authorized_keys | default([]) }}"
 

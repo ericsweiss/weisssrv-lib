@@ -35,9 +35,12 @@ proxmox_lxc_template: "debian-13-standard_13.6-1_amd64.tar.zst"
 proxmox_lxc_template_storage: local
 
 # Network. proxmox_lxc_gateway has no generic default and is REQUIRED on the
-# create path — see README.
-proxmox_lxc_nameserver: "{{ dns_servers | join(' ') }}"
-proxmox_lxc_searchdomain: "{{ internal_domain }}"
+# create path — tasks/main.yml asserts it before `pct create`.
+# The two below alias the conventional inventory-wide names; set the prefixed
+# form directly to decouple.
+proxmox_lxc_nameserver: "{{ dns_servers | default([]) | join(' ') }}"
+proxmox_lxc_internal_domain: "{{ internal_domain | default('') }}"
+proxmox_lxc_searchdomain: "{{ proxmox_lxc_internal_domain }}"
 
 # Bind mounts and GPU passthrough (both create-time only).
 proxmox_lxc_bind_mounts: []
@@ -51,8 +54,9 @@ proxmox_lxc_idmap_gid: 2000
 proxmox_lxc_idmap_base: 100000
 proxmox_lxc_idmap_range: 65536
 
-# User created inside the container with sudo + SSH key access.
-proxmox_lxc_admin_user: "{{ admin_user }}"
+# User created inside the container with sudo + SSH key access. Aliased to the
+# conventional inventory-wide `admin_user`.
+proxmox_lxc_admin_user: "{{ admin_user | default('root') }}"
 proxmox_lxc_ssh_public_keys: "{{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY', default='') }}"
 
 # Startup configuration

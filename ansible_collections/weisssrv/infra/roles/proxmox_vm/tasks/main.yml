@@ -13,6 +13,21 @@
   ansible.builtin.set_fact:
     _proxmox_vm_is_windows: "{{ (proxmox_vm_guest_type | default('linux')) == 'windows' }}"
 
+# Named here rather than as an undefined-variable error from inside the `qm
+# create` shell command, where the failure points at the wrong thing. Windows
+# guests take no cloud-init drive, so the gateway is Linux-only.
+- name: Assert the required cloud-init inputs are set
+  ansible.builtin.assert:
+    that:
+      - proxmox_vm_cloudinit_gateway | default('') | length > 0
+      - proxmox_vm_cloudinit_dns | default([]) | length > 0
+    fail_msg: >-
+      proxmox_vm_cloudinit_gateway (the VM's default gateway — no generic
+      default) and proxmox_vm_cloudinit_dns (alias: dns_servers) are required
+      on the Linux create path.
+    quiet: true
+  when: not _proxmox_vm_is_windows
+
 # Storage selection logic: auto-select based on Proxmox host role if not specified
 - name: Determine Proxmox host role
   ansible.builtin.set_fact:

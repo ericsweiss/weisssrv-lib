@@ -27,9 +27,11 @@ collections:
 ansible-galaxy collection install -r ansible/requirements.yml
 ```
 
-`galaxy.yml` declares the collections the roles use (`ansible.posix`,
-`community.general`, `community.crypto`, `community.docker`), so the install
-pulls them too. `meta/runtime.yml` declares the ansible-core floor: **2.18**,
+`galaxy.yml` declares the collections the roles actually address by FQCN
+(`ansible.posix`, `community.general`), so the install pulls them too;
+`requirements.yml` adds the test-only ones (`community.crypto`,
+`community.docker`) that molecule needs and consumers do not.
+`meta/runtime.yml` declares the ansible-core floor: **2.18**,
 the line `ansible==11.6.0` ships, which is what CI tests against.
 
 ## Use
@@ -50,13 +52,32 @@ genuinely generic.
 
 Where a value is conventionally inventory-wide and read by several roles, the
 prefixed variable is **aliased** to the conventional name, so a site can set
-either one:
+either one. Every alias carries a `default()`, so setting only the prefixed name
+never trips an undefined-variable error on the alias:
 
 ```yaml
-qol_admin_user: "{{ admin_user }}"
+qol_admin_user: "{{ admin_user | default('root') }}"
 base_admin_user: "{{ admin_user | default('root') }}"
 nas_storage_zfs_arc_max_bytes: "{{ zfs_arc_max_bytes | default('') }}"
 ```
+
+The conventional names, and the roles that alias them:
+
+| Inventory-wide name | Aliased by |
+| --- | --- |
+| `admin_user` | base, qol, proxmox_vm, proxmox_lxc |
+| `admin_email` | base, smtp_relay |
+| `ssh_port`, `ssh_permit_root_login`, `ssh_password_authentication`, `ssh_pubkey_authentication`, `ssh_authorized_keys` | base |
+| `timezone` | base |
+| `dns_servers` | base, proxmox_vm, proxmox_lxc |
+| `internal_domain` | k3s, resolv_conf, smtp_relay, proxmox_lxc, zfs_encryption |
+| `zfs_arc_max_bytes` | nas_storage, zfs_arc_cap |
+| `host_dns_servers` | resolv_conf (set by base / adguard_home, not the site) |
+| `vm_additional_disks` | k3s (passed through to zvol_mount) |
+
+A value with no safe generic default is a **required input**: the consuming role
+asserts it by name at entry rather than failing inside a template or shell
+command. Each role README lists its own.
 
 ## Developing against an unmerged checkout
 

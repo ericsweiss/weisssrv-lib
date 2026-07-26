@@ -11,17 +11,19 @@ instance via `127.0.0.1`.
 
 Required:
 
-- `host_dns_servers` — list of nameserver IPs. Set by the calling role, which
-  is why it keeps a neutral (unprefixed) name: it is the shared contract
-  between `base`/`adguard_home` and this helper.
-- `internal_domain` — used only as the default first entry of
-  `resolv_conf_search_domains`; not required if you override the search
-  list explicitly.
+- `resolv_conf_nameservers` — list of nameserver IPs; the role asserts it is
+  non-empty. Defaults to `host_dns_servers`, the neutral (unprefixed) name that
+  is the shared contract between `base`/`adguard_home` and this helper, so a
+  caller can keep setting either.
 
 Optional:
 
+- `resolv_conf_internal_domain` — defaults to the inventory-wide
+  `internal_domain` (empty if unset). Used only as the first entry of
+  `resolv_conf_search_domains`.
 - `resolv_conf_search_domains` — list of search-suffix domains. Defaults
-  to `[internal_domain]`; explicitly set to `[]` to omit BOTH the
+  to `[resolv_conf_internal_domain]` (empty when that is unset);
+  explicitly set to `[]` to omit BOTH the
   `domain` and `search` lines. (`domain` is functionally a 1-element
   search list, so suppressing only `search` would still apply
   search-suffix behavior via `domain`.) Set `[]` on a Kubernetes node:

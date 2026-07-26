@@ -54,6 +54,14 @@ k3s_token: "<server/cluster join token>"
 k3s_agent_token: "<lower-privilege agent join token>"
 k3s_server_group: k3s_servers      # inventory group holding the servers
 
+# Extra apiserver-certificate SANs, on top of k3s_api_vip, inventory_hostname
+# and ansible_host. Defaults to ["k3s.<k3s_internal_domain>"], and
+# k3s_internal_domain defaults to the inventory-wide `internal_domain` (unset =
+# no extra SAN). Changing this needs the existing serving cert removed so k3s
+# regenerates it.
+k3s_internal_domain: example.com
+k3s_tls_sans: ["k3s.example.com"]
+
 # Server-specific
 k3s_role: server
 k3s_is_first_server: true          # exactly one

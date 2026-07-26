@@ -3,15 +3,19 @@
 
 Three things drift silently and break consumers long after the commit that
 caused them: the galaxy dependency set vs the copies molecule and the CI image
-install, the collection version vs the library tag, and the relative depths the
-shared molecule base config resolves against.
+install, the collection version vs the library tag semantic-release will cut,
+and the relative depths the shared molecule base config resolves against.
 
 Run with pytest:
     python3 -m pytest tests/test_ansible_collection.py -v
 """
 
+import importlib.util
 import os
 import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -69,17 +73,90 @@ class TestGalaxyMetadata:
 
 
 class TestDependencyParity:
-    """galaxy.yml is the consumer contract; the two requirements.yml are copies."""
+    """galaxy.yml is the consumer contract: exactly what role code addresses.
 
-    def test_test_requirements_match_galaxy_dependencies(self, galaxy):
-        assert _requirement_pins(REQUIREMENTS) == galaxy["dependencies"]
+    The two requirements.yml are TEST-environment supersets (they add the
+    molecule driver's collections), so the invariant is containment with
+    matching pins, not equality — a runtime dependency missing from either, or
+    the same collection pinned two ways, is the drift that breaks a consumer.
+    """
 
-    def test_ci_image_requirements_match_galaxy_dependencies(self, galaxy):
-        assert _requirement_pins(IMAGE_REQUIREMENTS) == galaxy["dependencies"]
+    def _assert_contains(self, path, dependencies):
+        pins = _requirement_pins(path)
+        for name, spec in dependencies.items():
+            assert name in pins, f"{path.name} is missing the runtime dependency {name}"
+            assert pins[name] == spec, f"{path.name} pins {name} as {pins[name]!r}, galaxy.yml as {spec!r}"
+
+    def test_test_requirements_contain_galaxy_dependencies(self, galaxy):
+        self._assert_contains(REQUIREMENTS, galaxy["dependencies"])
+
+    def test_ci_image_requirements_contain_galaxy_dependencies(self, galaxy):
+        self._assert_contains(IMAGE_REQUIREMENTS, galaxy["dependencies"])
+
+    def test_test_and_ci_image_requirements_agree(self):
+        assert _requirement_pins(REQUIREMENTS) == _requirement_pins(IMAGE_REQUIREMENTS)
 
     def test_pins_carry_an_upper_bound(self, galaxy):
         for name, spec in galaxy["dependencies"].items():
             assert "<" in spec, f"{name} pin {spec!r} has no upper bound"
+
+
+class TestReleaseLineage:
+    """Bind the declared version to the tag semantic-release would actually cut.
+
+    galaxy.yml and cli/pyproject.toml are bumped by hand in the release MR
+    (docs/VERSIONING.md), so without this a mistyped `feat!:` subject cuts
+    v0.3.0 while the shipped collection and `--version` still say 0.2.0.
+    """
+
+    @staticmethod
+    def _git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(REPO), *args], check=True, capture_output=True, text=True
+        ).stdout
+
+    @pytest.fixture(scope="class")
+    def sr(self):
+        script = REPO / "scripts" / "semantic-release.py"
+        spec = importlib.util.spec_from_file_location("semantic_release_lineage", script)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    @pytest.fixture(scope="class")
+    def plan(self, sr):
+        if shutil.which("git") is None or not (REPO / ".git").exists():
+            pytest.skip("not a git checkout")
+        tags = self._git("tag", "--list").split()
+        previous = sr.latest_version_tag(tags)
+        if previous is None:
+            # A clone fetched without tags cannot compute the lineage; the
+            # release job itself sets GIT_DEPTH: 0 for the same reason.
+            pytest.skip("no version tag in this checkout")
+        log_output = self._git(
+            "log", "--no-merges", "--format=" + sr.LOG_FORMAT, "%s..HEAD" % previous
+        )
+        return sr.plan_release(tags, log_output)
+
+    def test_declared_version_is_the_one_that_will_be_tagged(self, galaxy, plan):
+        expected = plan.version if plan.released else plan.previous_tag[1:]
+        assert str(galaxy["version"]) == expected, (
+            "galaxy.yml declares %s but semantic-release would cut %s from the commits "
+            "since %s — bump galaxy.yml AND cli/pyproject.toml in this MR (or fix the "
+            "commit subject that demands the bump)."
+            % (galaxy["version"], expected, plan.previous_tag)
+        )
+
+    def test_cli_version_is_the_one_that_will_be_tagged(self, plan):
+        match = re.search(r'(?m)^version = "([^"]+)"', CLI_PYPROJECT.read_text())
+        expected = plan.version if plan.released else plan.previous_tag[1:]
+        assert match and match.group(1) == expected
+
+    def test_declared_version_is_never_behind_a_released_tag(self, galaxy, plan):
+        declared = tuple(int(p) for p in str(galaxy["version"]).split("."))
+        released = tuple(int(p) for p in plan.previous_tag[1:].split("."))
+        assert declared >= released
 
 
 class TestMoleculeBasePaths:

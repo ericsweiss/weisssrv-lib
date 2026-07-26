@@ -59,9 +59,10 @@ proxmox_vm_cloud_image_checksum: "sha512:https://cloud.debian.org/images/cloud/t
 proxmox_vm_cloud_image_dir: /var/lib/vz/template/iso
 
 # Cloud-init. proxmox_vm_cloudinit_gateway has no generic default and is
-# REQUIRED on the Linux create path — see README.
-proxmox_vm_cloudinit_user: "{{ admin_user }}"
-proxmox_vm_cloudinit_dns: "{{ dns_servers }}"
+# REQUIRED on the Linux create path — tasks/main.yml asserts it. The two below
+# alias the conventional inventory-wide names; set the prefixed form to decouple.
+proxmox_vm_cloudinit_user: "{{ admin_user | default('root') }}"
+proxmox_vm_cloudinit_dns: "{{ dns_servers | default([]) }}"
 proxmox_vm_cloudinit_prefix_len: 24
 
 # Guest type

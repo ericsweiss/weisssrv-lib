@@ -20,9 +20,9 @@ provisioner:
         # `admin_user`, not qol_admin_user: the meta dependency on base means
         # both roles must agree on the user, and qol_admin_user defaults to it.
         admin_user: testuser
-        skip_ssh_config: true
-        skip_dns_config: true
-        skip_timezone_config: true
+        base_skip_ssh_config: true
+        base_skip_dns_config: true
+        base_skip_timezone_config: true
         ssh_authorized_keys: []
         qol_packages:
           - zsh

@@ -2,9 +2,14 @@
 unbound_port: 5335
 
 # Filename of the role-managed drop-in under /etc/unbound/unbound.conf.d/.
-# Renaming this leaves the previous file in place — unbound merges every
-# drop-in, so remove the old one when you change it.
-unbound_managed_conf_name: managed.conf
+unbound_dropin_name: managed.conf
+
+# Drop-ins this role previously owned, removed on every run (the current
+# unbound_dropin_name is never removed). unbound merges the drop-in dir with a
+# SORTED glob, so a leftover file that sorts after the managed one silently wins
+# every duplicated server: scalar; list any name the role has ever written here.
+unbound_legacy_dropins:
+  - weisssrv.conf
 unbound_interface: 127.0.0.1
 
 unbound_access_control:

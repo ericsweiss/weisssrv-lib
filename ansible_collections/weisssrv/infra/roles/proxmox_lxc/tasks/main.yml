@@ -1,6 +1,19 @@
 ---
 # Proxmox LXC container provisioning
 
+# Named up front rather than as an undefined-variable error from inside the
+# `pct create` shell command, where the failure points at the wrong thing.
+- name: Assert the required LXC network inputs are set
+  ansible.builtin.assert:
+    that:
+      - proxmox_lxc_gateway | default('') | length > 0
+      - proxmox_lxc_nameserver | default('') | length > 0
+    fail_msg: >-
+      proxmox_lxc_gateway (the container's default gateway — no generic
+      default) and proxmox_lxc_nameserver (alias: dns_servers) are required on
+      the create path.
+    quiet: true
+
 # Mirror proxmox_vm: an explicit inventory vmid wins; fall back to the
 # IP last octet.
 - name: Set container ID

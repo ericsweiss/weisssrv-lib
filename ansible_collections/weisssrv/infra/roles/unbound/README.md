@@ -29,6 +29,12 @@ Installs and configures Unbound as a forwarding DNS resolver with DNS-over-TLS (
 unbound_interface: "127.0.0.1"
 unbound_port: 5335  # Non-standard port (AdGuard uses 53)
 
+# Role-managed drop-in filename, and the drop-ins the role removes on every run
+# so a renamed file cannot linger and win the sorted include glob.
+unbound_dropin_name: managed.conf
+unbound_legacy_dropins:
+  - weisssrv.conf
+
 # DoT upstreams (forward-tls-upstream is always enabled in the template)
 unbound_forwarders:
   # Cloudflare
@@ -84,13 +90,14 @@ AdGuard Home (port 53)
 
 ```
 1. Install unbound and dns-root-data packages
-2. Deploy the managed drop-in (unbound_managed_conf_name)
+2. Remove superseded role-owned drop-ins (unbound_legacy_dropins)
+3. Deploy the managed drop-in (unbound_dropin_name)
    ├─ Server settings (interface, port, cache)
    ├─ Forward zone (DoT upstreams)
    └─ Access control (localhost only)
-3. Deploy remote-control configuration
-4. Restart Unbound service
-5. Verify Unbound is listening on 127.0.0.1:5335
+4. Deploy remote-control configuration
+5. Restart Unbound service
+6. Verify Unbound is listening on 127.0.0.1:5335
 ```
 
 ## Files

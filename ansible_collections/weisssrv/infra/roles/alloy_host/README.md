@@ -40,6 +40,12 @@ rules a second time after the metadata is gone, which sets `unit`, `priority`
 and `hostname` to `""` — i.e. deletes them, and every `unit=` dashboard query
 silently returns nothing.
 
+**Deliberate change from the pre-collection role**, which did route the source
+through `loki.relabel.journal` and so shipped every host journal stream without
+those labels. Adopting this role restores them, which is a visible change to
+live log labels: dashboards and alert rules that worked around the missing
+labels need re-checking.
+
 ## Files
 
 - `tasks/main.yml` — adds the Grafana apt repo (fingerprint-verified, via

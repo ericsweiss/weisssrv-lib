@@ -2,6 +2,24 @@
 # SMTP relay server configuration
 # Central postfix relay that forwards to Gmail
 
+# Assert the EFFECTIVE config, so a deployment that overrides smtp_relay_config
+# wholesale is checked too. An empty relayhost renders `relayhost = ` (postfix
+# falls back to direct MX delivery from this host) and makes sasl_passwd.j2 emit
+# a leading-whitespace line, which postmap reads as a continuation rather than a
+# smarthost entry — both silent.
+- name: Validate the relay identity and smarthost are set
+  ansible.builtin.assert:
+    that:
+      - smtp_relay_config.relayhost | default('') | length > 0
+      - smtp_relay_config.myhostname | default('') | length > 0
+      - smtp_relay_config.myorigin | default('') | length > 0
+    fail_msg: >-
+      smtp_relay_config needs a non-empty relayhost, myhostname and myorigin.
+      On the default config these come from smtp_relay_upstream and
+      smtp_relay_hostname/_origin (which derive from smtp_relay_internal_domain,
+      alias: internal_domain).
+    success_msg: "SMTP relay identity and smarthost are set"
+
 - name: Validate required SMTP Gmail credentials are set
   ansible.builtin.assert:
     that:

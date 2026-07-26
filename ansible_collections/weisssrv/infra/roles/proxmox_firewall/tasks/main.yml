@@ -2,6 +2,20 @@
 # Proxmox VE firewall configuration
 # Manages cluster.fw, ipsets, security groups, and per-node host.fw
 
+# An empty admin_lan IPSet locks :22 and :8006 out of every node, so name the
+# variable here rather than letting cluster.fw.j2 raise an undefined-variable
+# error mid-render.
+- name: Assert the admin LAN address set is supplied
+  ansible.builtin.assert:
+    that:
+      - proxmox_firewall_admin_lan_cidrs | default([]) | length > 0
+    fail_msg: >-
+      proxmox_firewall_admin_lan_cidrs is required and has no default — an
+      empty admin_lan IPSet would lock SSH (:22) and the Proxmox UI (:8006)
+      out of every node.
+    quiet: true
+  when: proxmox_firewall_enabled | bool
+
 - name: Ensure Proxmox firewall directory exists
   ansible.builtin.file:
     path: "{{ proxmox_firewall_config_dir }}"

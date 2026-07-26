@@ -70,6 +70,21 @@ Manages ZFS pool properties, NFS exports, Samba shares, mergerfs media directory
   `..._swap_cleared_bytes`, `..._guests_stopped_count`), so an unsafe-abort night
   or a guest-stop escalation is directly alertable. See the defaults.
 
+### Archive Backup (archive-backupctl)
+- Nightly ZFS replication of `nas_storage_archive_backup_sources` into
+  `nas_storage_archive_backup_pool`, each landing at `<pool>/<basename>`, plus
+  the plug/unplug/restore subcommands and the scrub-timer wiring.
+- **Off by default.** The control script rewrites the destination pool's root
+  properties (including `mountpoint=none`) and destroys its own snapshots
+  there, so it must never run against a pool the site did not nominate.
+  Setting `nas_storage_archive_backup_enabled: true` without both the pool and
+  a non-empty source list fails the role.
+- Every SRC_LIST **root** must be a filesystem, not a zvol (zvols are fine as
+  children). Basenames must be unique — they are the restore labels.
+- `nas_storage_archive_backup_vzdump_target` names the one dataset receiving
+  cluster-wide vzdump writes over NFS; it is snapshotted only after writes
+  under its mountpoint quiesce. Empty disables that guard.
+
 ### SMART Monitoring
 - Smartmontools configuration
 - Email alerts via SMTP relay
@@ -170,6 +185,13 @@ nas_storage_media_mover_cpu_weight: 20
 nas_storage_media_mover_io_weight: 20
 nas_storage_media_mover_bwlimit: ""               # rsync --bwlimit, e.g. "50m"; empty = unlimited
 
+# Archive backup (see Archive Backup above). Enabling it requires the pool and
+# a non-empty source list; the role asserts both.
+nas_storage_archive_backup_enabled: false
+nas_storage_archive_backup_pool: ""               # e.g. "archive"
+nas_storage_archive_backup_sources: []            # e.g. ["tank/share", "ssd/appdata"]
+nas_storage_archive_backup_vzdump_target: ""      # e.g. "tank/proxmox"; empty = no quiesce guard
+
 # Per-app appdata subdirectories on the /export/appdata bind source.
 # Zvol-backed datasets (authentik/mealie postgres, prometheus, loki) are NOT
 # here — those are separate ext4-on-zvol mounts, not NFS subdirectories.
@@ -209,7 +231,7 @@ the NAS host
 ├─ NFS: Exports to k3s nodes
 ├─ Samba: Shares to LAN
 ├─ Media Mover: nvme → tank (06:00 daily, load-shaped)
-├─ Archive backup: archive-backupctl → archive pool (06:30 nightly)
+├─ Archive backup: archive-backupctl → nas_storage_archive_backup_pool (06:30 nightly)
 ├─ Swap reset: swap-clean → ARC-shrink + optional graceful guest-stop (07:00 daily)
 └─ SMART: Monitoring + alerts
 ```

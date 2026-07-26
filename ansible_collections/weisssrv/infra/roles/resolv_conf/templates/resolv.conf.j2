@@ -1,6 +1,6 @@
 # {{ ansible_managed }}
 
-{% for nameserver in host_dns_servers %}
+{% for nameserver in resolv_conf_nameservers %}
 nameserver {{ nameserver }}
 {% endfor %}
 

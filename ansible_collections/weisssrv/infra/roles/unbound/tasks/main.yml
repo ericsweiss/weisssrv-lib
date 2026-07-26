@@ -13,10 +13,18 @@
     state: present
   when: ansible_facts['os_family'] == "Debian"
 
+- name: Remove superseded role-owned Unbound drop-ins
+  ansible.builtin.file:
+    path: "/etc/unbound/unbound.conf.d/{{ item }}"
+    state: absent
+  loop: "{{ unbound_legacy_dropins | default([]) }}"
+  when: item != unbound_dropin_name
+  notify: Restart unbound
+
 - name: Deploy Unbound main configuration
   ansible.builtin.template:
     src: unbound-managed.conf.j2
-    dest: "/etc/unbound/unbound.conf.d/{{ unbound_managed_conf_name }}"
+    dest: "/etc/unbound/unbound.conf.d/{{ unbound_dropin_name }}"
     owner: root
     group: root
     mode: "0644"

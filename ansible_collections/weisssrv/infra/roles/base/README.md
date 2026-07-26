@@ -94,6 +94,11 @@ dns_servers: [10.0.0.150, 10.0.0.160]
 timezone: Etc/UTC
 ```
 
+`tasks/ssh.yml` refuses to write the hardening drop-in when the combination
+would lock SSH out: `ssh_permit_root_login: "no"` **and** no managed admin user
+with a key (`admin_user` left at `root`, or `ssh_authorized_keys` empty). Either
+provision the account and key, or relax `ssh_permit_root_login`.
+
 Role-prefixed gates and the DNS bootstrap knobs:
 
 ```yaml
