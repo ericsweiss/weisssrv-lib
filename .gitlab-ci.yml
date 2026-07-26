@@ -289,6 +289,8 @@ include:
 # of skipping).
 python-tests:
   variables:
+    KUBERNETES_MEMORY_LIMIT: "2Gi"
+    KUBERNETES_MEMORY_REQUEST: "512Mi"
     WEISSSRV_TEMPLATE_ROOT: "/tmp/weisssrv-app-template"
     WEISSSRV_TEMPLATE_REQUIRED: "1"
     # Full clone: TestReleaseLineage binds galaxy.yml / cli/pyproject.toml to the
@@ -307,19 +309,61 @@ python-tests:
       optional: true
 
 ansible-lint:
+  variables:
+    KUBERNETES_MEMORY_LIMIT: "1Gi"
+    KUBERNETES_MEMORY_REQUEST: "256Mi"
   needs:
     - job: yaml-lint
       optional: true
 
 secret_detection:
+  variables:
+    KUBERNETES_MEMORY_LIMIT: "1Gi"
+    KUBERNETES_MEMORY_REQUEST: "256Mi"
   needs:
     - job: shellcheck
       optional: true
 
 molecule-plan:
+  variables:
+    KUBERNETES_MEMORY_LIMIT: "1Gi"
+    KUBERNETES_MEMORY_REQUEST: "256Mi"
   needs:
     - job: docs-link-check
       optional: true
+
+# Right-size the tag-less job pods (the runner allows overrides <= 6Gi):
+# these jobs use ~200Mi; declaring 1Gi keeps a full fan-out at ~12Gi of
+# quota instead of 60Gi, which is what made pipelines 929-934 fail.
+yaml-lint:
+  variables:
+    KUBERNETES_MEMORY_LIMIT: "1Gi"
+    KUBERNETES_MEMORY_REQUEST: "256Mi"
+
+shellcheck:
+  variables:
+    KUBERNETES_MEMORY_LIMIT: "1Gi"
+    KUBERNETES_MEMORY_REQUEST: "256Mi"
+
+python-lint:
+  variables:
+    KUBERNETES_MEMORY_LIMIT: "1Gi"
+    KUBERNETES_MEMORY_REQUEST: "256Mi"
+
+docs-link-check:
+  variables:
+    KUBERNETES_MEMORY_LIMIT: "1Gi"
+    KUBERNETES_MEMORY_REQUEST: "256Mi"
+
+terraform-fmt:
+  variables:
+    KUBERNETES_MEMORY_LIMIT: "1Gi"
+    KUBERNETES_MEMORY_REQUEST: "256Mi"
+
+terraform-validate:
+  variables:
+    KUBERNETES_MEMORY_LIMIT: "1Gi"
+    KUBERNETES_MEMORY_REQUEST: "256Mi"
 
 # Quota contention on the shared runner surfaces as runner_system_failure at
 # pod creation when a pipeline's fan-out bursts past the namespace quota;
@@ -333,6 +377,9 @@ molecule-plan:
 
 ci-templates-parse:
   <<: *retry-runner-contention
+  variables:
+    KUBERNETES_MEMORY_LIMIT: "1Gi"
+    KUBERNETES_MEMORY_REQUEST: "256Mi"
   # Smoke: every CI template must be valid multi-document YAML (a spec header +
   # config). Catches a malformed template before a consumer includes it.
   stage: lint
@@ -396,6 +443,8 @@ collection-checks:
     # environment") when neither exists.
     USER: gitlab-runner
     LOGNAME: gitlab-runner
+    KUBERNETES_MEMORY_LIMIT: "2Gi"
+    KUBERNETES_MEMORY_REQUEST: "512Mi"
   before_script:
     - pip install --user --quiet "pyyaml==${PYYAML_VERSION}" "ansible-core==${ANSIBLE_CORE_VERSION}"
   script:
