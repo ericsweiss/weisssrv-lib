@@ -13,6 +13,20 @@ base_ssh_pubkey_authentication: "{{ ssh_pubkey_authentication | default(true) }}
 base_ssh_service_name: ssh
 base_ssh_authorized_keys: "{{ ssh_authorized_keys | default([]) }}"
 
+# Lockout guard (asserted in tasks/ssh.yml). A login path survives when a managed
+# non-root account carries at least one key, or root login is still permitted, or
+# password authentication is left on — the last keeps every pre-existing account
+# reachable, which is the case for hosts whose keys are provisioned outside
+# Ansible by cloud-init or image baking.
+# It lives here, not inline in the assert, so the role and the accept/reject
+# matrix in molecule/default/verify.yml share ONE expression: the matrix loads
+# this file and re-resolves the var per case with the four inputs overridden, so
+# dropping or inverting a clause here fails the matrix.
+base_ssh_login_path_survives: >-
+  {{ (base_admin_user != 'root' and base_ssh_authorized_keys | default([]) | length > 0)
+     or (base_ssh_permit_root_login | string | lower != 'no')
+     or (base_ssh_password_authentication | bool) }}
+
 base_timezone: "{{ timezone | default('Etc/UTC') }}"
 
 base_common_packages:

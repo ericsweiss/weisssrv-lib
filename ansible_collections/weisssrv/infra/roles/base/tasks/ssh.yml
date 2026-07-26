@@ -9,18 +9,14 @@
 # base_admin_user == 'root' means "manage no admin user" — the user, sudoers and
 # authorized_keys tasks in main.yml all self-skip — so a defaults-only run would
 # disable root login while provisioning no replacement. Refuse to write it unless
-# a login path survives: a managed non-root account carrying at least one key,
-# root login still permitted, or password authentication left on (which keeps
-# every pre-existing account reachable — the case for hosts whose keys are
-# provisioned outside Ansible by cloud-init or image baking).
-# The accept/reject matrix is exercised in molecule/default/verify.yml.
+# a login path survives.
+# The condition itself is base_ssh_login_path_survives in defaults/main.yml — one
+# expression, asserted here and driven case-by-case by the accept/reject matrix
+# in molecule/default/verify.yml, which loads that same defaults file.
 - name: Assert the SSH hardening leaves a usable login path
   ansible.builtin.assert:
     that:
-      - >-
-        (base_admin_user != 'root' and base_ssh_authorized_keys | default([]) | length > 0)
-        or (base_ssh_permit_root_login | string | lower != 'no')
-        or (base_ssh_password_authentication | bool)
+      - base_ssh_login_path_survives | bool
     fail_msg: >-
       base_ssh_permit_root_login is "no", base_ssh_password_authentication is
       false, and no alternative login is provisioned (base_admin_user is

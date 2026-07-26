@@ -168,46 +168,9 @@
           50-cloud-init.conf conflict may have won over 00-hardening.conf
         success_msg: "SSH hardening effective (00-hardening.conf wins over 50-cloud-init.conf)"
 
-    # Accept/reject matrix for the lockout guard in tasks/ssh.yml. The converge
-    # only ever exercises the one combination the scenario sets, so the surviving
-    # login paths (managed non-root account with a key / root login permitted /
-    # password authentication left on) and the true lockout set are covered here.
-    # The expression below MIRRORS the assert in tasks/ssh.yml — keep them in step.
-    - name: Assert the SSH lockout guard's accept/reject matrix
-      vars:
-        lockout_matrix:
-          # Path 1: managed non-root account carrying a key.
-          - {admin_user: eric, ssh_keys: [k], permit_root: "no", password_auth: false, survives: true}
-          # Path 2: root login still permitted (either spelling).
-          - {admin_user: root, ssh_keys: [], permit_root: prohibit-password, password_auth: false, survives: true}
-          - {admin_user: root, ssh_keys: [], permit_root: "yes", password_auth: false, survives: true}
-          # Path 3: password authentication on — every pre-existing account stays
-          # reachable, including keys provisioned by cloud-init or image baking.
-          - {admin_user: root, ssh_keys: [], permit_root: "no", password_auth: true, survives: true}
-          - {admin_user: eric, ssh_keys: [], permit_root: "no", password_auth: true, survives: true}
-          # True lockout: root refused, no password, no managed account with a key.
-          - {admin_user: eric, ssh_keys: [], permit_root: "no", password_auth: false, survives: false}
-          - {admin_user: root, ssh_keys: [k], permit_root: "no", password_auth: false, survives: false}
-          - {admin_user: root, ssh_keys: [], permit_root: "no", password_auth: false, survives: false}
-          # Case-insensitive on permit_root, so "No" is still a refusal.
-          - {admin_user: root, ssh_keys: [], permit_root: "No", password_auth: false, survives: false}
-      ansible.builtin.assert:
-        that:
-          - >-
-            (
-              (item.admin_user != 'root' and item.ssh_keys | length > 0)
-              or (item.permit_root | string | lower != 'no')
-              or (item.password_auth | bool)
-            ) == item.survives
-        fail_msg: >-
-          Lockout guard verdict wrong for admin_user={{ item.admin_user }}
-          keys={{ item.ssh_keys | length }} permit_root={{ item.permit_root }}
-          password_auth={{ item.password_auth }} — expected
-          survives={{ item.survives }}.
-        quiet: true
-      loop: "{{ lockout_matrix }}"
-      loop_control:
-        label: "{{ item.admin_user }}/{{ item.permit_root }}/pw={{ item.password_auth }}"
+    # The lockout guard's accept/reject matrix runs in the second play below —
+    # it needs the role's own defaults loaded, which must not shadow this play's
+    # inventory values.
 
     - name: Check SSH service is running
       ansible.builtin.systemd:
@@ -351,3 +314,56 @@
       ansible.builtin.debug:
         msg: "{{ sshd_jail_status.stdout_lines | default(['sshd jail status not available']) }}"
       when: sshd_jail_status.rc == 0
+
+# Accept/reject matrix for the lockout guard tasks/ssh.yml asserts. The converge
+# only ever exercises the one combination the scenario sets, so the surviving
+# login paths (managed non-root account with a key / root login permitted /
+# password authentication left on) and the true lockout set are covered here.
+#
+# The verdict comes from base_ssh_login_path_survives — the SAME expression the
+# role asserts, loaded from the role's defaults rather than restated here, so
+# dropping or inverting a clause in defaults/main.yml fails this matrix instead
+# of leaving it green. Each case overrides the four inputs as TASK vars, which
+# outrank vars_files, and it is a separate play so the loaded defaults cannot
+# shadow the inventory values the first play verifies against.
+- name: Verify the SSH lockout guard against the role's own expression
+  hosts: all
+  gather_facts: false
+  vars_files:
+    - ../../defaults/main.yml
+  tasks:
+    - name: Assert the SSH lockout guard's accept/reject matrix
+      vars:
+        lockout_matrix:
+          # Path 1: managed non-root account carrying a key.
+          - {admin_user: eric, ssh_keys: [k], permit_root: "no", password_auth: false, survives: true}
+          # Path 2: root login still permitted (either spelling).
+          - {admin_user: root, ssh_keys: [], permit_root: prohibit-password, password_auth: false, survives: true}
+          - {admin_user: root, ssh_keys: [], permit_root: "yes", password_auth: false, survives: true}
+          # Path 3: password authentication on — every pre-existing account stays
+          # reachable, including keys provisioned by cloud-init or image baking.
+          - {admin_user: root, ssh_keys: [], permit_root: "no", password_auth: true, survives: true}
+          - {admin_user: eric, ssh_keys: [], permit_root: "no", password_auth: true, survives: true}
+          # True lockout: root refused, no password, no managed account with a key.
+          - {admin_user: eric, ssh_keys: [], permit_root: "no", password_auth: false, survives: false}
+          - {admin_user: root, ssh_keys: [k], permit_root: "no", password_auth: false, survives: false}
+          - {admin_user: root, ssh_keys: [], permit_root: "no", password_auth: false, survives: false}
+          # Case-insensitive on permit_root, so "No" is still a refusal.
+          - {admin_user: root, ssh_keys: [], permit_root: "No", password_auth: false, survives: false}
+        base_admin_user: "{{ item.admin_user }}"
+        base_ssh_authorized_keys: "{{ item.ssh_keys }}"
+        base_ssh_permit_root_login: "{{ item.permit_root }}"
+        base_ssh_password_authentication: "{{ item.password_auth }}"
+      ansible.builtin.assert:
+        that:
+          - (base_ssh_login_path_survives | bool) == item.survives
+        fail_msg: >-
+          Lockout guard verdict wrong for admin_user={{ item.admin_user }}
+          keys={{ item.ssh_keys | length }} permit_root={{ item.permit_root }}
+          password_auth={{ item.password_auth }} — expected
+          survives={{ item.survives }}. base_ssh_login_path_survives in
+          roles/base/defaults/main.yml no longer matches the documented contract.
+        quiet: true
+      loop: "{{ lockout_matrix }}"
+      loop_control:
+        label: "{{ item.admin_user }}/{{ item.permit_root }}/pw={{ item.password_auth }}"

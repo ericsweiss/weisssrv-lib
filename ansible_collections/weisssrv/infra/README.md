@@ -96,7 +96,8 @@ whole set in one table.
 Every role variable carries its role's prefix, and every alias and default is
 `| default(...)` — so a name left un-renamed does not error, it silently takes
 the role default. [MIGRATING.md](MIGRATING.md) is the complete old -> new map,
-per role, plus the aliased inventory-wide names that need no rename and the
+per role, plus the aliased inventory-wide names that need no rename, the
+externalized defaults (same name, site-specific value now empty) and the
 required-input asserts that fail loudly.
 
 ## Developing against an unmerged checkout

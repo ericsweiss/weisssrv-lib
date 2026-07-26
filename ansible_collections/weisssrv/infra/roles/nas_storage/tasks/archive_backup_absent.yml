@@ -13,15 +13,25 @@
     path: /etc/systemd/system/archive-backup.timer
   register: nas_storage_archive_timer_unit
 
-- name: Stop and disable the archive-backup timer and service
+- name: Stop and disable the archive-backup timer
   ansible.builtin.systemd:
-    name: "{{ item }}"
+    name: archive-backup.timer
     enabled: false
     state: stopped
     daemon_reload: true
-  loop:
-    - archive-backup.timer
-    - archive-backup.service
+  when: nas_storage_archive_timer_unit.stat.exists
+
+# Stop only — the service is deliberately NOT in the disable above.
+# archive-backup.service carries no [Install] section (the timer's
+# WantedBy=timers.target is what wires the schedule), so `systemctl is-enabled`
+# reports "static", which ansible.builtin.systemd maps to enabled=True: an
+# `enabled: false` here would report changed on every single run and shell out
+# to `systemctl disable` on a unit with no installation config. Removing the
+# unit file below is what de-provisions it.
+- name: Stop the archive-backup service
+  ansible.builtin.systemd:
+    name: archive-backup.service
+    state: stopped
   when: nas_storage_archive_timer_unit.stat.exists
 
 - name: Remove the archive-backup units and script

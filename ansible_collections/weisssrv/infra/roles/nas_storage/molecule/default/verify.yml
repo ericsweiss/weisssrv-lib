@@ -3,6 +3,13 @@
   hosts: all
   become: true
   gather_facts: true
+  # Mirrors the role's own handler: the de-provisioning tasks included at the end
+  # of this play notify it, and include_tasks (unlike include_role) does not
+  # bring the role's handlers into the play.
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
   tasks:
     - name: Check if NFS server is installed
       ansible.builtin.package:
@@ -316,6 +323,64 @@
       ansible.builtin.script: files/archive-metrics-behavior.sh
       changed_when: false
 
+    # De-provisioning path (nas_storage_archive_backup_enabled: false).
+    # molecule.yml opts IN, so converge only ever runs archive_backup.yml and
+    # archive_backup_absent.yml would otherwise be executed by no scenario at
+    # all — the opt-out is the moment an operator most needs the play to
+    # converge. It runs at the END of verify because it removes the units every
+    # assertion above inspects, and verify is the last state-touching step of
+    # the sequence (idempotence has already run).
+    - name: Check the archive-backup service is static (no [Install] section)  # noqa command-instead-of-module
+      # The premise of the stop-only de-provisioning below: the timer carries
+      # WantedBy=timers.target, the service carries nothing, so there is nothing
+      # to disable. If a future edit adds [Install] to the service template, this
+      # fails and archive_backup_absent.yml needs revisiting.
+      ansible.builtin.command: systemctl is-enabled archive-backup.service
+      register: archive_backup_service_enabled
+      changed_when: false
+      failed_when: archive_backup_service_enabled.stdout | trim != 'static'
+
+    # include_tasks, not include_role: include_role would also execute the
+    # role's meta dependency (weisssrv.infra.base) inside verify. The relative
+    # path resolves from this playbook's own directory.
+    - name: Run the archive-backup de-provisioning path
+      ansible.builtin.include_tasks: ../../tasks/archive_backup_absent.yml
+
+    - name: Flush handlers so the systemd daemon-reload lands before the checks
+      ansible.builtin.meta: flush_handlers
+
+    - name: Stat the de-provisioned archive-backup units and script
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: archive_backup_removed
+      loop:
+        - /etc/systemd/system/archive-backup.timer
+        - /etc/systemd/system/archive-backup.service
+        - /usr/local/sbin/archive-backupctl
+
+    - name: Check the archive-backup timer is no longer scheduled  # noqa command-instead-of-module
+      ansible.builtin.command: systemctl list-timers --all --no-legend
+      register: archive_backup_timers
+      changed_when: false
+
+    - name: Verify the opt-out removed the units, the script and the schedule
+      ansible.builtin.assert:
+        that:
+          - archive_backup_removed.results | map(attribute='stat.exists') | select | list | length == 0
+          - "'archive-backup' not in archive_backup_timers.stdout"
+        fail_msg: >-
+          nas_storage_archive_backup_enabled: false left artifacts behind:
+          {{ archive_backup_removed.results | selectattr('stat.exists')
+             | map(attribute='item') | list }}
+          / timers: {{ archive_backup_timers.stdout_lines | select('search', 'archive-backup') | list }}
+        success_msg: "archive-backup opt-out removed both units, the script and the timer schedule"
+
+    - name: Re-run the de-provisioning path on the now-clean host
+      # The stat gate must make this a no-op — a host that never had the feature
+      # (or a second converge after the opt-out) does no systemd work at all,
+      # which is also what keeps `systemctl stop` off a unit that no longer exists.
+      ansible.builtin.include_tasks: ../../tasks/archive_backup_absent.yml
+
     - name: Display test results
       ansible.builtin.debug:
         msg:
@@ -331,3 +396,4 @@
           - "✓ NFS service loaded"
           - "✓ Samba service loaded"
           - "✓ archive-backupctl contract (SRC_LIST-derived + type-coupled)"
+          - "✓ archive-backup opt-out de-provisions units, script and schedule"

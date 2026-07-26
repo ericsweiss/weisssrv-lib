@@ -103,6 +103,11 @@ keeps every pre-existing account reachable, which is how a host whose keys come
 from cloud-init or image baking stays reachable. Either provision the account
 and key, relax `ssh_permit_root_login`, or leave password auth on.
 
+The condition is `base_ssh_login_path_survives` in `defaults/main.yml` — one
+expression, asserted by `tasks/ssh.yml` and driven case-by-case by the
+accept/reject matrix in `molecule/default/verify.yml` (which loads that same
+defaults file), so the guard cannot drift from its tests.
+
 Role-prefixed gates and the DNS bootstrap knobs:
 
 ```yaml

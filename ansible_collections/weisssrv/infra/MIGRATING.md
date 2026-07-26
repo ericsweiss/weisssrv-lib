@@ -8,14 +8,16 @@ it quietly takes the role default. `adguard_tls_server_name` left behind in
 `group_vars` renders an empty DoT SNI on both resolvers, on every deploy, with a
 green play.
 
-This file is the complete old -> new map. It is mechanical on purpose: work
-through it once per adopted role rather than trusting a grep.
+This file is the complete old -> new map: every renamed variable, every
+externalized default (same name, weisssrv value now empty) and every required
+input. It is mechanical on purpose: work through it once per adopted role rather
+than trusting a grep.
 
 ## How to check a migration
 
 ```bash
 # 1. Every old name still set anywhere in your inventory:
-grep -rnE '^\s*(adguard_|fail2ban_|lxc_|vm_|pve_|ha_|smtp_|nas_|acme_|omz_|nvim_|media_mover_|smartd_|zfs_scrub_)' \
+grep -rnE '^\s*(adguard_|fail2ban_|lxc_|vm_|pve_|ha_|smtp_|nas_|acme_|dns01_|omz_|nvim_|media_mover_|smartd_|zfs_scrub_)' \
   ansible/inventories/
 
 # 2. Nothing in the collection reads it — prove the rename landed:
@@ -28,6 +30,12 @@ which is the loud half of the contract. The silent half — a renamed *tunable*
 that falls back to a role default — is only caught by diffing rendered config,
 so diff one host's rendered files (or `pve-firewall compile`, `sshd -T`,
 `unbound-checkconf`) before and after adoption.
+
+Neither step finds the third class: a variable whose **name is unchanged** but
+whose weisssrv-specific default is now empty. The grep has no old prefix to match
+and a defaults diff shows the key on both sides. Those are enumerated in
+[Externalized defaults](#externalized-defaults-name-unchanged-value-now-empty)
+below — work that table on its own.
 
 ## Names that do NOT need renaming
 
@@ -48,6 +56,123 @@ Two consequences worth stating explicitly:
 - `vm_additional_disks` is read by both `proxmox_vm` (creates and attaches the
   zvols) and `k3s` (mounts them), so one `host_vars` block drives both.
 
+## Externalized defaults (name unchanged, value now empty)
+
+The per-role tables below only record **renames**. This section records the other
+half: variables that kept their name while their *value* changed from a
+weisssrv-specific default to an empty one the site must now supply. Nothing looks
+renamed, so the grep recipe above returns nothing and a defaults diff shows the
+key on both sides — and most of these are not asserted, so the play stays green
+while the behaviour degrades quietly (an offsite backup with no paths, a
+root-equivalent key with no source pin, a `/etc/hosts` pin that never lands).
+
+The table is generated mechanically: for every role, each key present in **both**
+defaults files whose weisssrv value was non-empty and whose collection default is
+`""` or `[]`.
+
+| Role | Variable | New default | Asserted | Effect if left empty |
+|---|---|---|---|---|
+| `acme_certs` | `acme_certs_key_from` | `""` | no | no `from="…"` clause on the distribution key in each target's `authorized_keys` — the root-equivalent key becomes usable from any source address |
+| `alloy_host` | `alloy_host_loki_url` | `""` | yes | role fails at entry |
+| `alloy_host` | `alloy_host_loki_user` | `""` | `https://` only | push runs unauthenticated |
+| `alloy_host` | `alloy_host_loki_password` | `""` | `https://` only | push runs unauthenticated |
+| `compose_app` | `compose_app_nginx_self_signed_san` | `""` | no | the placeholder cert is generated with no `subjectAltName` |
+| `k3s` | `k3s_api_vip` | `""` | yes | role fails at entry |
+| `k3s` | `k3s_etcd_snapshot_nfs_server` | `""` | no | the off-node snapshot mount has no server half (read only when `k3s_etcd_snapshot_offnode_enabled`) |
+| `k3s` | `k3s_registry_host_pins` | `[]` | no | no `/etc/hosts` pin for the registry — image pulls fall back to cluster DNS |
+| `k3s` | `k3s_storage_host_pins` | `[]` | no | no `/etc/hosts` pin for the NFS server — PV mounts fall back to cluster DNS |
+| `restic_offsite` | `restic_offsite_repo` | `""` | yes | role fails at entry |
+| `restic_offsite` | `restic_offsite_sources` | `[]` | no | the nightly `restic backup` runs with an empty path set |
+| `restic_offsite` | `restic_offsite_zvol_sources` | `[]` | no | zvol-backed data (Immich, Nextcloud) is never clone-mounted, so it is never offsited |
+| `restic_offsite` | `restic_offsite_excludes` | `[]` | no | churn/cache paths (Prometheus, Loki, the Plex cache) ride into the repo |
+
+The weisssrv values, ready to move into inventory:
+
+```yaml
+# acme_certs — the dns-01 resolver the distribution key is pinned to
+acme_certs_key_from: 192.168.0.150
+
+# alloy_host — the credentials were env lookups in the role's defaults
+alloy_host_loki_url: https://loki.esweiss.com/loki/api/v1/push
+alloy_host_loki_user: "{{ lookup('ansible.builtin.env', 'LOKI_PUSH_USER') | default('', true) }}"
+alloy_host_loki_password: "{{ lookup('ansible.builtin.env', 'LOKI_PUSH_PASSWORD') | default('', true) }}"
+
+# compose_app
+compose_app_nginx_self_signed_san: DNS:*.esweiss.com
+
+# k3s
+k3s_api_vip: 192.168.0.161
+k3s_etcd_snapshot_nfs_server: "pve-nas-01.{{ internal_domain | default('esweiss.com') }}"
+k3s_registry_host_pins:
+  - name: "registry.git.{{ external_domain | default('ericsweiss.com') }}"
+    ip: 192.168.0.101
+k3s_storage_host_pins:
+  - name: "pve-nas-01.{{ internal_domain | default('esweiss.com') }}"
+    ip: 192.168.0.102
+
+# restic_offsite
+restic_offsite_repo: rclone:b2:weisssrv-backup/restic
+restic_offsite_sources:
+  - name: backups
+    mountpoint: /mnt/tank/backups
+  - name: share
+    mountpoint: /mnt/tank/share
+  - name: appdata
+    mountpoint: /mnt/ssd/appdata
+  - name: databases
+    mountpoint: /mnt/ssd/databases
+  - name: k3s-etcd
+    mountpoint: /mnt/ssd/k3s-etcd
+restic_offsite_zvol_sources:
+  - name: immich-data
+    zvol: tank/immich-data/disk
+    fstype: ext4
+    mount_opts: ro,noload
+  - name: nextcloud-data
+    zvol: tank/nextcloud-data/disk
+    fstype: ext4
+    mount_opts: ro,noload
+restic_offsite_excludes:
+  - /mnt/restic-src/appdata/prometheus/**
+  - /mnt/restic-src/appdata/loki/**
+  - /mnt/restic-src/appdata/authentik/postgres/**
+  - /mnt/restic-src/appdata/mealie/postgres/**
+  - /mnt/restic-src/appdata/gitlab/**
+  - /mnt/restic-src/appdata/immich/**
+  - /mnt/restic-src/appdata/nextcloud/**
+  - "/mnt/restic-src/appdata/plex/Library/Application Support/Plex Media Server/Cache/**"
+  - "/mnt/restic-src/appdata/plex/Library/Application Support/Plex Media Server/Metadata/**"
+  - "/mnt/restic-src/appdata/plex/Library/Application Support/Plex Media Server/Media/**"
+```
+
+### Same class, different name
+
+Four more values were externalized *and* renamed (or promoted out of a template),
+so they do appear in the tables below — they are listed here too because the
+migration step is identical: supply the value or lose the behaviour.
+
+- `nas_storage` **archive backup**: the dataset inventory was literal in
+  `archive-backupctl.sh.j2` (`SRC_LIST`, `POOL_DST`, `VZDUMP_TARGET`) and is now
+  `nas_storage_archive_backup_pool: archive`,
+  `nas_storage_archive_backup_vzdump_target: tank/proxmox` and
+  `nas_storage_archive_backup_sources: [tank/share, tank/backups,
+  tank/nextcloud-data, tank/proxmox, tank/immich-data, ssd/appdata,
+  ssd/databases, ssd/k3s-etcd]`, behind `nas_storage_archive_backup_enabled`
+  (default false). Pool and sources are asserted when the opt-in is on; leaving
+  the opt-in off on a host that already runs the timer **removes** the units and
+  the script rather than orphaning them.
+- `restic_offsite_cache_dir`: same name, but no longer a default at all — it is a
+  required input, asserted alongside `restic_offsite_repo`. weisssrv's value was
+  `/mnt/ssd/appdata/.restic-cache`.
+- `k3s_tls_sans`: the apiserver SAN list was hardcoded as
+  `k3s.{{ internal_domain }}`; it is now an input that defaults to
+  `['k3s.' ~ k3s_internal_domain]` and collapses to `[]` when neither
+  `k3s_internal_domain` nor the inventory-wide `internal_domain` is set. The VIP,
+  `inventory_hostname` and `ansible_host` are still added by the template.
+- `proxmox_firewall` address data: the CIDR lists and the seven per-application
+  `[group ...]` blocks were literal in the template and are now empty-by-default
+  inputs — see [proxmox_firewall](#proxmox_firewall) below for the full list.
+
 ## Per-role renames
 
 Rows marked (inv) were never role defaults — they are names a site set directly
@@ -64,6 +189,11 @@ in `group_vars`/`host_vars`, so they will not show up in a defaults diff.
 | `internal_domain` | `acme_certs_domain` (the cert's base domain — a dedicated required input, no longer the shared global) |
 | `local_cert_dir` | `acme_certs_local_cert_dir` |
 | `cert_distribution_targets` (inv) | `acme_certs_distribution_targets` |
+| `dns01_ssh_private_key` (inv) | `acme_certs_ssh_private_key` (asserted) |
+| `dns01_ssh_public_key` (inv) | `acme_certs_ssh_public_key` (asserted) |
+
+`acme_certs_key_from` keeps its name but is now empty by default — see
+[Externalized defaults](#externalized-defaults-name-unchanged-value-now-empty).
 
 ### adguard_home
 
@@ -128,7 +258,10 @@ No renames. Four values that used to default to site data are now **required
 inputs** with an empty default: `alloy_host_version`, `alloy_host_loki_url`,
 `alloy_host_loki_user`, `alloy_host_loki_password` (the last two only for an
 `https://` endpoint). The env lookups that used to sit in the role's defaults
-(`LOKI_PUSH_USER` / `LOKI_PUSH_PASSWORD`) move to the caller.
+(`LOKI_PUSH_USER` / `LOKI_PUSH_PASSWORD`) move to the caller. The three that were
+role defaults are listed with their weisssrv values under
+[Externalized defaults](#externalized-defaults-name-unchanged-value-now-empty);
+`alloy_host_version` was always inventory-supplied.
 
 ### base
 
@@ -189,6 +322,10 @@ the resolver-host knobs `base_is_resolver_host` / `base_resolver_probe_name` /
 | `kube_vip_version` | `k3s_kube_vip_version` |
 | `skip_k3s_gpu_install` | `k3s_skip_gpu_install` |
 
+`k3s_api_vip`, `k3s_registry_host_pins`, `k3s_storage_host_pins` and
+`k3s_etcd_snapshot_nfs_server` keep their names but are now empty by default —
+see [Externalized defaults](#externalized-defaults-name-unchanged-value-now-empty).
+
 New: `k3s_internal_domain` / `k3s_tls_sans` (the apiserver SAN list is now an
 input rather than a hardcoded `k3s.<internal_domain>`), `k3s_additional_disks`
 (aliases `vm_additional_disks`), `k3s_server_group`, `k3s_skip_install`, and the
@@ -239,7 +376,8 @@ The archive backup is now **opt-in and site-supplied**: it was an in-role datase
 inventory, and is now `nas_storage_archive_backup_enabled` (default false) plus
 the required `_pool` / `_sources` (and optional `_vzdump_target`). Leaving the
 opt-in unset on a host that already runs the timer **removes** the units and the
-script rather than orphaning them.
+script rather than orphaning them. weisssrv's literal values are under
+[Externalized defaults](#externalized-defaults-name-unchanged-value-now-empty).
 
 `samba_nas_password` is no longer a variable — the role reads the
 `SAMBA_NAS_PASSWORD` environment variable, and warns (does not fail) when unset.
@@ -267,6 +405,8 @@ New required input: `postfix_null_client_mail_domain` (appended to
 ### prometheus_exporter / textfile_collector / apt_signed_repo / compose_app / encrypted_swap / nfs_tls / nic_tuning / vfio_passthrough / zfs_arc_cap
 
 No renames — these roles were already prefixed or are new.
+`compose_app_nginx_self_signed_san` keeps its name but is now empty by default —
+see [Externalized defaults](#externalized-defaults-name-unchanged-value-now-empty).
 
 ### proxmox_backup
 
@@ -399,7 +539,10 @@ No renames. New: `resolv_conf_internal_domain` (aliases `internal_domain`) drive
 | `b2_application_key` / `restic_application_key` (inv) | `restic_offsite_b2_application_key` |
 
 `restic_offsite_cache_dir` keeps its name but is no longer a default: it is a
-required input, asserted alongside `restic_offsite_repo`.
+required input, asserted alongside `restic_offsite_repo`. `restic_offsite_repo`,
+`_sources`, `_zvol_sources` and `_excludes` also keep their names and are now
+empty — the weisssrv values are under
+[Externalized defaults](#externalized-defaults-name-unchanged-value-now-empty).
 
 ### smtp_relay
 
