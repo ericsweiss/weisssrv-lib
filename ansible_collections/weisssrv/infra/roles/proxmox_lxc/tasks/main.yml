@@ -13,6 +13,9 @@
       default) and proxmox_lxc_nameserver (alias: dns_servers) are required on
       the create path.
     quiet: true
+  # Same gate the create tasks carry: a run that only reconciles bind mounts or
+  # startup order on an existing container never reads either value.
+  when: not (proxmox_lxc_skip_create | default(false))
 
 # Mirror proxmox_vm: an explicit inventory vmid wins; fall back to the
 # IP last octet.

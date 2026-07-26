@@ -95,9 +95,13 @@ timezone: Etc/UTC
 ```
 
 `tasks/ssh.yml` refuses to write the hardening drop-in when the combination
-would lock SSH out: `ssh_permit_root_login: "no"` **and** no managed admin user
-with a key (`admin_user` left at `root`, or `ssh_authorized_keys` empty). Either
-provision the account and key, or relax `ssh_permit_root_login`.
+would lock SSH out: `ssh_permit_root_login: "no"` **and**
+`ssh_password_authentication: false` **and** no managed admin user with a key
+(`admin_user` left at `root`, or `ssh_authorized_keys` empty). Any one of those
+three is a surviving login path — password authentication counts because it
+keeps every pre-existing account reachable, which is how a host whose keys come
+from cloud-init or image baking stays reachable. Either provision the account
+and key, relax `ssh_permit_root_login`, or leave password auth on.
 
 Role-prefixed gates and the DNS bootstrap knobs:
 

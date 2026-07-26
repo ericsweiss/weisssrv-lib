@@ -39,6 +39,13 @@ proxmox_vm_agent_enabled: true
 # it must also be pinned (proxmox_vm_cpu_type: host) and non-ballooned.
 proxmox_vm_hostpci: []
 
+# Persistent ZFS zvols created on proxmox_host and attached to the guest. Each
+# entry pins an explicit, unique scsi_slot (>= 1); the role asserts that.
+# Aliases the conventional inventory-wide `vm_additional_disks`, which
+# weisssrv.infra.k3s reads through the same name for its zvol_mount pass —
+# one host_vars block therefore feeds both creation and mounting.
+proxmox_vm_additional_disks: "{{ vm_additional_disks | default([]) }}"
+
 # Conservative live-migration baseline (SSE3/SSSE3/SSE4.1, no SSE4.2/AVX) so a
 # guest can migrate across heterogeneous hosts. Override to `host` for any guest
 # pinned to one node — that exposes the full host CPU (AVX/AVX2).

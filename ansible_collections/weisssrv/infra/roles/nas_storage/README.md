@@ -79,6 +79,10 @@ Manages ZFS pool properties, NFS exports, Samba shares, mergerfs media directory
   there, so it must never run against a pool the site did not nominate.
   Setting `nas_storage_archive_backup_enabled: true` without both the pool and
   a non-empty source list fails the role.
+- Turning it back **off converges**: the run stops and disables
+  `archive-backup.timer`/`.service` and removes both units plus
+  `/usr/local/sbin/archive-backupctl`, so a host cannot be left firing a script
+  the role no longer manages. A host that never had the feature does no work.
 - Every SRC_LIST **root** must be a filesystem, not a zvol (zvols are fine as
   children). Basenames must be unique — they are the restore labels.
 - `nas_storage_archive_backup_vzdump_target` names the one dataset receiving
@@ -245,6 +249,7 @@ the NAS host
 - `tasks/mergerfs.yml` - Unified media directory
 - `tasks/media_mover.yml` - Automated file mover
 - `tasks/archive_backup.yml` - Nightly ZFS replication to the archive pool
+- `tasks/archive_backup_absent.yml` - De-provisioning path when the feature is off
 - `tasks/swap_clean.yml` - Nightly swap reset timer (`swap-clean.{sh,service,timer}.j2`)
 - `tasks/smartd.yml` - SMART monitoring
 - `templates/*` - Configuration templates

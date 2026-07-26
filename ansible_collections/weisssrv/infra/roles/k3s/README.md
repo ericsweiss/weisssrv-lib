@@ -84,7 +84,9 @@ k3s_registry_host_pins:
 k3s_storage_host_pins:
   - {name: nas.example.com, ip: 10.0.0.102}
 
-# Passthrough disks, mounted by UUID (weisssrv.infra.zvol_mount)
+# Passthrough disks, mounted by UUID (weisssrv.infra.zvol_mount). The same
+# conventional name weisssrv.infra.proxmox_vm aliases to CREATE and attach them,
+# so one host_vars block drives both. Set k3s_additional_disks to decouple.
 vm_additional_disks:
   - name: postgres-data
     size: 10G
@@ -96,6 +98,41 @@ vm_additional_disks:
 Both join tokens are secrets: supply them from the site's secret store.
 `k3s_agent_token` falls back to `k3s_token` when unset, which is convenient for
 a test run and wrong for production — an agent token cannot promote a node.
+
+## NVIDIA GPU agents (`k3s_gpu_node`)
+
+Setting `k3s_gpu_node: true` on an agent includes `tasks/gpu.yml`, which enables
+Debian `contrib`/`non-free`, adds NVIDIA's container-toolkit and CUDA apt repos
+(the CUDA one via the SHA256-verified `cuda-keyring` deb), installs the
+exact-pinned `nvidia-open` driver + `nvidia-container-toolkit`, and holds the
+stack. k3s then auto-detects the `nvidia` container runtime — no containerd
+template edit. A first install needs one VM reboot for the DKMS module.
+
+The four artifact pins have **no default** and are asserted at the top of
+`gpu.yml`; each aliases the conventional inventory-wide `nvidia_*` name, so one
+site-wide version block feeds every GPU agent:
+
+| Role variable | Aliases | Pins |
+|---|---|---|
+| `k3s_gpu_driver_version` | `nvidia_driver_version` | `nvidia-open=<version>` |
+| `k3s_gpu_container_toolkit_version` | `nvidia_container_toolkit_version` | `nvidia-container-toolkit=<version>` |
+| `k3s_gpu_cuda_keyring_version` | `nvidia_cuda_keyring_version` | the `cuda-keyring_<version>_all.deb` filename |
+| `k3s_gpu_cuda_keyring_sha256` | `nvidia_cuda_keyring_sha256` | that deb's checksum, verified before dpkg runs it |
+
+```yaml
+# host_vars/<gpu-agent>.yml
+k3s_gpu_node: true
+# group_vars/all.yml — one block for the fleet
+nvidia_driver_version: "610.43.02-1"
+nvidia_container_toolkit_version: "1.19.1-1"
+nvidia_cuda_keyring_version: "1.1-1"
+nvidia_cuda_keyring_sha256: "d0d4ef98…"
+```
+
+`k3s_skip_gpu_install: true` renders the repo/component config but skips every
+network/package task (and the assert above) — the escape hatch molecule and
+check-mode runs use. `k3s_gpu_debian_sources_path` retargets the deb822 sources
+file whose `Components:` line is normalized.
 
 ## Task Flow
 
@@ -121,6 +158,7 @@ a test run and wrong for production — an agent token cannot promote a node.
 - `tasks/server.yml` - Server installation
 - `tasks/agent.yml` - Agent installation (incl. agent-token migration)
 - `tasks/install-script.yml` - Shared version detection + installer staging
+- `tasks/gpu.yml` - NVIDIA driver/toolkit enablement (included when `k3s_gpu_node`)
 - `tasks/etcd-snapshot-offnode.yml` - Off-node etcd snapshot copy (opt-in)
 - `templates/k3s-server-config.yaml.j2` - Server configuration
 - `templates/k3s-agent-config.yaml.j2` - Agent configuration

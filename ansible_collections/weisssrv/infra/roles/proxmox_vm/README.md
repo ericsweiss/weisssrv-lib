@@ -47,12 +47,15 @@ ISO the role downloads + checksum-verifies), `proxmox_vm_iso_storage`
 |---|---|---|
 | `proxmox_host` | every path | which node provisions the guest |
 | `vmid` | every path | falls back to the last octet of `proxmox_vm_target_ip`, which is not a contract |
-| `proxmox_vm_cloudinit_gateway` | Linux create | no generic value; a wrong one silently strands the guest |
+| `proxmox_vm_cloudinit_gateway` | Linux create (`proxmox_vm_skip_create: false`) | no generic value; a wrong one silently strands the guest |
 | `proxmox_vm_install_iso` | Windows create | media cannot be redistributed; asserted |
 | `SSH_PUBLIC_KEY` (env) | Linux create | asserted before create — an empty key provisions an unreachable VM |
 
 `proxmox_vm_cloudinit_user` and `proxmox_vm_cloudinit_dns` default to the
-inventory-wide `admin_user` and `dns_servers`.
+inventory-wide `admin_user` and `dns_servers`. `proxmox_vm_additional_disks`
+defaults to the inventory-wide `vm_additional_disks`, the same name
+`weisssrv.infra.k3s` aliases for its `zvol_mount` pass — one host_vars block
+feeds both zvol creation (here) and mounting (there).
 
 The following are read straight from inventory and keep neutral names (they are
 the role's input contract, not role-owned tunables): `proxmox_host`, `vmid`,
@@ -81,7 +84,9 @@ k3s-agt-nas-01:
   proxmox_vm_cores: 4
   proxmox_vm_memory: 8192
   proxmox_vm_disk_size: 64G
-  proxmox_vm_additional_disks:
+  # Conventional inventory-wide name; weisssrv.infra.k3s reads the same block to
+  # mount what is created here. Set proxmox_vm_additional_disks to decouple.
+  vm_additional_disks:
     - name: postgres-data
       size: 10G
       zvol: ssd/appdata/authentik/postgres

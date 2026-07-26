@@ -53,6 +53,11 @@
     - name: Include archive backup tasks
       ansible.builtin.include_tasks: archive_backup.yml
 
+# Opt-out converges instead of orphaning: see archive_backup_absent.yml.
+- name: Remove a previously deployed archive backup
+  ansible.builtin.include_tasks: archive_backup_absent.yml
+  when: not (nas_storage_archive_backup_enabled | bool)
+
 - name: Include backup-artifact metrics tasks
   ansible.builtin.include_tasks: backup_metrics.yml
   when: nas_storage_backup_artifact_metrics_enabled | default(false)

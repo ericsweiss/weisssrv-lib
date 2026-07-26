@@ -15,6 +15,27 @@
 # scenario exercises the include + the network-free component-enable without a
 # real GPU.
 
+# Gated on the same condition every consumer below carries: with
+# k3s_skip_gpu_install the four pins are never interpolated, so a molecule /
+# check-mode run of the include needs none of them.
+- name: Validate required GPU artifact pins
+  ansible.builtin.assert:
+    that:
+      - k3s_gpu_cuda_keyring_version | length > 0
+      - k3s_gpu_cuda_keyring_sha256 | length > 0
+      - k3s_gpu_driver_version | length > 0
+      - k3s_gpu_container_toolkit_version | length > 0
+    fail_msg: >-
+      k3s_gpu_node is true, so k3s_gpu_cuda_keyring_version,
+      k3s_gpu_cuda_keyring_sha256, k3s_gpu_driver_version and
+      k3s_gpu_container_toolkit_version are all required (they alias the
+      inventory-wide nvidia_* names). The driver/toolkit pins are card- and
+      workload-specific and the keyring sha256 must be verified by the operator,
+      so this collection ships no default for any of them.
+    success_msg: "Required NVIDIA GPU pins are present"
+  when: not (k3s_skip_gpu_install | default(false))
+  tags: [validation, always]
+
 # Enable Debian non-free-firmware (GPU firmware; harmless)
 - name: Check for the deb822 Debian sources file
   ansible.builtin.stat:
@@ -76,9 +97,9 @@
 
 - name: Download the NVIDIA cuda-keyring package (SHA256 verified before install)
   ansible.builtin.get_url:
-    url: "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/cuda-keyring_{{ nvidia_cuda_keyring_version }}_all.deb"
-    dest: "/tmp/cuda-keyring_{{ nvidia_cuda_keyring_version }}_all.deb"
-    checksum: "sha256:{{ nvidia_cuda_keyring_sha256 }}"
+    url: "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/cuda-keyring_{{ k3s_gpu_cuda_keyring_version }}_all.deb"
+    dest: "/tmp/cuda-keyring_{{ k3s_gpu_cuda_keyring_version }}_all.deb"
+    checksum: "sha256:{{ k3s_gpu_cuda_keyring_sha256 }}"
     owner: root
     group: root
     mode: "0644"
@@ -86,7 +107,7 @@
 
 - name: Install the verified cuda-keyring package (repo + debian13 signing key)
   ansible.builtin.apt:
-    deb: "/tmp/cuda-keyring_{{ nvidia_cuda_keyring_version }}_all.deb"
+    deb: "/tmp/cuda-keyring_{{ k3s_gpu_cuda_keyring_version }}_all.deb"
   when: not (k3s_skip_gpu_install | default(false))
 
 - name: Refresh apt cache with the CUDA repo enabled
@@ -111,8 +132,8 @@
 - name: Install the NVIDIA driver (nvidia-open, CUDA repo) + container toolkit (pinned)
   ansible.builtin.apt:
     name:
-      - "nvidia-open={{ nvidia_driver_version }}"
-      - "nvidia-container-toolkit={{ nvidia_container_toolkit_version }}"
+      - "nvidia-open={{ k3s_gpu_driver_version }}"
+      - "nvidia-container-toolkit={{ k3s_gpu_container_toolkit_version }}"
     state: present
     update_cache: true
     cache_valid_time: 3600

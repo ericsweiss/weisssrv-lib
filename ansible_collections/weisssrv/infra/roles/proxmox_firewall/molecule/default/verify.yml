@@ -57,6 +57,78 @@
           - "'[group sg-vm-admin]' in cluster_fw_text"
           - "'[group sg-smtp-relay]' in cluster_fw_text"
 
+    # The groups above are literal in cluster.fw.j2; the ones below come from
+    # the proxmox_firewall_security_groups loop, whose sg-immich-ml entry
+    # supplies `rules` as a Jinja expression that must evaluate to a LIST — a
+    # string would iterate character-by-character into the file.
+    - name: Cluster.fw renders the default (example) security-group set
+      ansible.builtin.assert:
+        that:
+          - "'[group sg-gitlab]' in cluster_fw_text"
+          - "'[group sg-nextcloud]' in cluster_fw_text"
+          - "'[group sg-immich]' in cluster_fw_text"
+          - "'[group sg-immich-ml]' in cluster_fw_text"
+          - "'[group sg-haos]' in cluster_fw_text"
+          - "'[group sg-plex]' in cluster_fw_text"
+          - "'[group sg-windows]' in cluster_fw_text"
+          # Derived from proxmox_firewall_immich_ml_clients (molecule.yml).
+          - >-
+            'IN ACCEPT -source 192.168.0.157 -p tcp -dport 3003 -log nolog'
+            in cluster_fw_text
+        fail_msg: >-
+          proxmox_firewall_security_groups did not render its 7 example groups,
+          or sg-immich-ml's derived rules expression did not evaluate to a list
+          of rule lines.
+
+    # Override case: the same loop fed a site's own list must emit that group
+    # and NOTHING from the example set, while the role-owned literal groups
+    # (sg-dns et al.) are untouched. Rendered standalone because the converge
+    # already committed the default set to cluster.fw.
+    - name: Render cluster.fw with a site-supplied security-group list
+      vars:
+        # Role templates dir, derived without '../' (playbook_dir is
+        # <role>/molecule/default).
+        firewall_role_templates: "{{ playbook_dir | dirname | dirname }}/templates"
+        # verify.yml carries no roles:, so role defaults are out of scope.
+        proxmox_firewall_admin_ts_cidrs: ["100.64.0.0/10"]
+        proxmox_firewall_smb_client_cidrs: ["192.168.0.0/24"]
+        proxmox_firewall_cluster_rules: []
+        proxmox_firewall_security_groups:
+          - name: sg-custom-app
+            rules:
+              - "# site-owned group"
+              - "IN ACCEPT -source +dc/admin_lan -p tcp -dport 9999 -log nolog"
+      ansible.builtin.template:
+        src: "{{ firewall_role_templates }}/cluster.fw.j2"
+        dest: /tmp/cluster.fw.custom-groups
+        mode: "0644"
+
+    - name: Read the site-supplied render
+      ansible.builtin.slurp:
+        src: /tmp/cluster.fw.custom-groups
+      register: cluster_fw_custom
+
+    - name: Assert the site list replaces the example set wholesale
+      vars:
+        custom_text: "{{ cluster_fw_custom.content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - "'[group sg-custom-app]' in custom_text"
+          - >-
+            'IN ACCEPT -source +dc/admin_lan -p tcp -dport 9999 -log nolog'
+            in custom_text
+          - "'# site-owned group' in custom_text"
+          - "'[group sg-gitlab]' not in custom_text"
+          - "'[group sg-immich-ml]' not in custom_text"
+          - "'[group sg-plex]' not in custom_text"
+          # Role-owned literal groups survive the override.
+          - "'[group sg-dns]' in custom_text"
+          - "'[group sg-host-admin]' in custom_text"
+        fail_msg: >-
+          proxmox_firewall_security_groups is not the sole source of the
+          per-application groups — a site list must replace the shipped example
+          set entirely and leave the role-owned groups in place.
+
     - name: Dynamic IPSets include sample inventory IPs
       ansible.builtin.assert:
         that:

@@ -33,6 +33,11 @@ id; `local-ssd` is used when the role is unknown. Override per-container with
 | `internal_domain` | the search domain (`proxmox_lxc_searchdomain` defaults to it) |
 | `SSH_PUBLIC_KEY` (env) | asserted before create — an empty key provisions an unreachable container |
 
+`proxmox_lxc_gateway`/`proxmox_lxc_nameserver` are asserted only when
+`proxmox_lxc_skip_create` is false — the create tasks are the sole readers, so a
+run that just reconciles bind mounts or startup order on an existing container
+needs neither.
+
 `proxmox_lxc_nameserver` defaults to the inventory-wide `dns_servers`, and
 `proxmox_lxc_admin_user` to `admin_user`. `proxmox_host`, `vmid`,
 `proxmox_storage_defaults`, `proxmox_resource_pool(s)` and the

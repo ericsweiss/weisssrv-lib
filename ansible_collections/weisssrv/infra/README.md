@@ -6,9 +6,19 @@ storage, DNS/SMTP, guest lifecycle, exporters and node tuning for a Proxmox +
 ZFS + k3s homelab.
 
 Site data — domains, IPs, hostnames, pool names, credentials — is an **input**
-to these roles, never a default. That is the line between this collection and a
+to these roles, not a default. That is the line between this collection and a
 cluster instantiation: a second cluster consumes the same tag and passes its own
 values.
+
+Two documented exceptions ship a non-empty default anyway:
+
+| Default | Why |
+| --- | --- |
+| `proxmox_firewall_security_groups` | Marked `EXAMPLE SET / OVERRIDE ME` where it is declared. The template's per-application group loop needs a worked example to be legible, and the shipped list keeps the rendered `cluster.fw` unchanged for the first consumer while its own groups are still in flight. It is the extension point, not a contract: a site replaces the whole list, and the role's molecule scenario asserts that a site-supplied list emits **only** the site's groups. It becomes `[]` once that consumer's values land — the `nas_storage` archive inventory was emptied the same way. |
+| `nas_storage_appdata_base` (`/mnt/ssd/appdata`), `nas_storage_backup_apps_base` (`/mnt/tank/backups/apps`) | Conventional mount paths under conventional pool names, not site identity — a second cluster with the same pool layout wants exactly these. The datasets *under* them are inputs (`nas_storage_appdata_dirs`, `nas_storage_backup_artifact_apps`), and both default to empty. |
+
+Everything else with a site-shaped value (`*_domain`, CIDR lists, pool names,
+credentials) has no default and is asserted; see [MIGRATING.md](MIGRATING.md).
 
 ## Install
 
@@ -73,11 +83,21 @@ The conventional names, and the roles that alias them:
 | `internal_domain` | k3s, resolv_conf, smtp_relay, proxmox_lxc, zfs_encryption |
 | `zfs_arc_max_bytes` | nas_storage, zfs_arc_cap |
 | `host_dns_servers` | resolv_conf (set by base / adguard_home, not the site) |
-| `vm_additional_disks` | k3s (passed through to zvol_mount) |
+| `vm_additional_disks` | proxmox_vm (creates + attaches), k3s (passed through to zvol_mount) |
+| `nvidia_driver_version`, `nvidia_container_toolkit_version`, `nvidia_cuda_keyring_version`, `nvidia_cuda_keyring_sha256` | k3s (GPU agents; required when `k3s_gpu_node`) |
 
 A value with no safe generic default is a **required input**: the consuming role
 asserts it by name at entry rather than failing inside a template or shell
-command. Each role README lists its own.
+command. Each role README lists its own; [MIGRATING.md](MIGRATING.md) has the
+whole set in one table.
+
+## Migrating from un-prefixed in-tree roles
+
+Every role variable carries its role's prefix, and every alias and default is
+`| default(...)` — so a name left un-renamed does not error, it silently takes
+the role default. [MIGRATING.md](MIGRATING.md) is the complete old -> new map,
+per role, plus the aliased inventory-wide names that need no rename and the
+required-input asserts that fail loudly.
 
 ## Developing against an unmerged checkout
 
@@ -101,6 +121,7 @@ and is **removed in ansible-core 2.19** — use the singular form.
 
 ```
 galaxy.yml         collection metadata + runtime dependency contract
+MIGRATING.md       old -> new variable map for adopting the collection
 meta/runtime.yml   requires_ansible floor
 requirements.yml   galaxy deps for TEST environments (what molecule installs)
 roles/<role>/      one dir per role, each with its own README + molecule scenario

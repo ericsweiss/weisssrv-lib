@@ -41,4 +41,8 @@ dependencies:
 build_ignore:
   - molecule-shared
   - roles/*/molecule
+  # The TEST-environment superset. `dependencies:` above is the runtime
+  # contract; shipping this alongside it in the artifact invites a consumer to
+  # install the test-only collections too.
+  - requirements.yml
   - "*.tar.gz"

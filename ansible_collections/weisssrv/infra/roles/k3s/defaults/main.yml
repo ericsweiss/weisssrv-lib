@@ -75,7 +75,8 @@ k3s_tls_sans: "{{ ['k3s.' ~ k3s_internal_domain] if k3s_internal_domain else [] 
 
 # Persistent disks attached to the node's VM (by weisssrv.infra.proxmox_vm),
 # handed to weisssrv.infra.zvol_mount. Aliases the conventional inventory-wide
-# `vm_additional_disks` that proxmox_vm's own inputs are derived from.
+# `vm_additional_disks`, which weisssrv.infra.proxmox_vm aliases identically to
+# create and attach the same zvols.
 k3s_additional_disks: "{{ vm_additional_disks | default([]) }}"
 k3s_cluster_cidr: "10.42.0.0/16"
 k3s_service_cidr: "10.43.0.0/16"
@@ -109,6 +110,17 @@ k3s_skip_gpu_install: false
 # on. Overridable so the molecule agent scenario can point it at a scratch file
 # (leaving the container's real apt sources — and thus `apt update` — untouched).
 k3s_gpu_debian_sources_path: /etc/apt/sources.list.d/debian.sources
+
+# GPU artifact pins. All four are REQUIRED on the GPU install path (gpu.yml
+# asserts them) and deliberately have no default: the driver/toolkit pair is
+# card- and workload-specific, and the keyring sha256 must be the operator's own
+# verified value, not one this collection could rot. They alias the conventional
+# inventory-wide `nvidia_*` names so one site-wide version block feeds every GPU
+# agent; set the prefixed form to decouple a single node.
+k3s_gpu_cuda_keyring_version: "{{ nvidia_cuda_keyring_version | default('') }}"
+k3s_gpu_cuda_keyring_sha256: "{{ nvidia_cuda_keyring_sha256 | default('') }}"
+k3s_gpu_driver_version: "{{ nvidia_driver_version | default('') }}"
+k3s_gpu_container_toolkit_version: "{{ nvidia_container_toolkit_version | default('') }}"
 
 # kube-vip. Keep this default in step with the site's own pin so a standalone
 # run or a dropped group_var cannot silently regress the API VIP.

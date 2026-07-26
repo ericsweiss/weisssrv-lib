@@ -26,7 +26,11 @@
       default) and proxmox_vm_cloudinit_dns (alias: dns_servers) are required
       on the Linux create path.
     quiet: true
-  when: not _proxmox_vm_is_windows
+  when:
+    - not _proxmox_vm_is_windows
+    # Same gate the cloud-init tasks carry: a run that only reconciles disks,
+    # HA or pool membership on an existing guest never reads either value.
+    - not (proxmox_vm_skip_create | default(false))
 
 # Storage selection logic: auto-select based on Proxmox host role if not specified
 - name: Determine Proxmox host role
