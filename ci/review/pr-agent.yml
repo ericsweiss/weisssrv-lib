@@ -1,0 +1,144 @@
+spec:
+  inputs:
+    job_name:
+      default: pr-agent-review
+    stage:
+      default: ai-review
+    image:
+      # The `codiumai/` namespace is FROZEN at 0.34 (project donated to the
+      # community org); 0.40.0 ships from `pragent/`. Digest-pinned because the
+      # job handles a GitLab PAT and a model API key; this is the multi-arch
+      # INDEX digest, not the amd64 child manifest, so the pin stays portable.
+      default: pragent/pr-agent:0.40.0@sha256:08c42a2ba01a8d1ef5886e81ae5ac0a9acdf2fd35fc2d1d0bf9a1ffae7a5c690
+      description: Digest-pinned pr-agent image.
+    tags:
+      type: array
+      default: ["infrastructure"]
+      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+    needs:
+      type: array
+      default: []
+      description: >-
+        `needs:` entries (strings, or `{job, optional}` maps). Default `[]` starts
+        the review immediately. Wait on lint + secret detection only — AI review
+        does not depend on test results.
+    model:
+      default: "gpt-5.6"
+      description: Model alias; must be in the image's MAX_TOKENS table.
+    reasoning_effort:
+      default: "xhigh"
+      description: >-
+        low | medium | high | xhigh. `xhigh` is pr-agent's ceiling — an
+        unrecognised value (e.g. gpt-5.6's `max`) silently downgrades to medium.
+    max_model_tokens:
+      default: "900000"
+      description: >-
+        Operational input cap. get_max_tokens() returns the TOTAL context and
+        reserves nothing for output, so stay under the model's input limit.
+    ai_timeout:
+      default: "600"
+      description: Per-LLM-call timeout (seconds); the 120s default times out at xhigh.
+    dual_publishing_threshold:
+      default: "6"
+      description: >-
+        Suggestions scoring >= this post as committable INLINE discussions in the
+        Changes tab AND stay in the summary table. `-1` disables inline entirely.
+    commands:
+      default: "review improve"
+      description: >-
+        Space-separated pr_agent CLI commands, run in order. Pass "review" for a
+        summary-only reviewer.
+    extra_instructions:
+      default: "Be thorough. Review every file. Flag all bugs, security issues, and documentation drift."
+    gitlab_url:
+      default: "$CI_SERVER_URL"
+      description: GitLab base URL pr-agent posts back to.
+    timeout:
+      default: "45m"
+      description: Job timeout; xhigh across two commands can run long.
+    secrets_source:
+      default: "env"
+      options: ["env", "1password"]
+      description: >-
+        `env` — the two keys come from CI/CD variables (works on the non-root
+        shared runner). `1password` — they are read with `op` at job time, which
+        needs a root runner AND the consumer adding
+        `before_script: [!reference [.install-1password, before_script]]`
+        (this template defines no before_script, so that override is additive).
+    openai_key:
+      default: "$OPENAI__KEY"
+      description: >-
+        secrets_source=env only. A CI variable REFERENCE (not a value) holding
+        the model API key, e.g. `$AI_REVIEW_OPENAI_KEY`.
+    gitlab_token:
+      default: "$GITLAB__PERSONAL_ACCESS_TOKEN"
+      description: >-
+        secrets_source=env only. A CI variable REFERENCE holding the GitLab PAT
+        pr-agent posts with, e.g. `$GITLAB_REVIEW_TOKEN`.
+    op_openai_key_ref:
+      default: "op://Homelab/OpenAI API Key/api-key"
+      description: secrets_source=1password only.
+    op_gitlab_token_ref:
+      default: "op://Homelab/GitLab API Token/credential"
+      description: secrets_source=1password only.
+    gate:
+      default: "$OPENAI__KEY"
+      description: >-
+        Variable expression that must be non-empty for the job to be CREATED
+        (e.g. `$OP_SERVICE_ACCOUNT_TOKEN`, or `$A && $B`). A tokenless pipeline
+        (fork MR) then has no AI review, which is expected, not a failure.
+---
+"$[[ inputs.job_name ]]":
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.image ]]
+  tags: $[[ inputs.tags ]]
+  needs: $[[ inputs.needs ]]
+  variables:
+    CONFIG__GIT_PROVIDER: "gitlab"
+    GITLAB__URL: "$[[ inputs.gitlab_url ]]"
+    CONFIG__MODEL: "$[[ inputs.model ]]"
+    CONFIG__MAX_MODEL_TOKENS: "$[[ inputs.max_model_tokens ]]"
+    CONFIG__REASONING_EFFORT: "$[[ inputs.reasoning_effort ]]"
+    CONFIG__AI_TIMEOUT: "$[[ inputs.ai_timeout ]]"
+    # Fingerprints inline comments so a re-run on a revised MR does not repost
+    # suggestions it already made.
+    CONFIG__PERSISTENT_INLINE_COMMENTS: "true"
+    PR_CODE_SUGGESTIONS__DUAL_PUBLISHING_SCORE_THRESHOLD: "$[[ inputs.dual_publishing_threshold ]]"
+    PR_REVIEWER__EXTRA_INSTRUCTIONS: "$[[ inputs.extra_instructions ]]"
+  script:
+    - |
+      set -e
+      if [ "$[[ inputs.secrets_source ]]" = "1password" ]; then
+        if ! command -v op >/dev/null 2>&1; then
+          echo "secrets_source=1password needs the op CLI on PATH — add" >&2
+          echo "  before_script: [ !reference [.install-1password, before_script] ]" >&2
+          exit 1
+        fi
+        OPENAI__KEY="$(op read "$[[ inputs.op_openai_key_ref ]]")"
+        GITLAB__PERSONAL_ACCESS_TOKEN="$(op read "$[[ inputs.op_gitlab_token_ref ]]")"
+      else
+        OPENAI__KEY="$[[ inputs.openai_key ]]"
+        GITLAB__PERSONAL_ACCESS_TOKEN="$[[ inputs.gitlab_token ]]"
+      fi
+      export OPENAI__KEY GITLAB__PERSONAL_ACCESS_TOKEN
+      if [ -z "$OPENAI__KEY" ] || [ -z "$GITLAB__PERSONAL_ACCESS_TOKEN" ]; then
+        echo "ERROR: pr-agent needs both keys; check the secrets_source inputs and the rules gate." >&2
+        exit 1
+      fi
+    - |
+      set -e
+      MR_URL="${CI_MERGE_REQUEST_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID}"
+      echo "Reviewing $MR_URL with $[[ inputs.model ]] ($[[ inputs.reasoning_effort ]] reasoning)"
+      # word-split the space-separated commands input (SC2086), in order.
+      for cmd in $[[ inputs.commands ]]; do
+        echo "--- pr_agent $cmd"
+        python -m pr_agent.cli --pr_url="$MR_URL" "$cmd"
+      done
+  # Advisory: AI review must never block a merge. A consumer that wants it
+  # blocking overrides allow_failure on the job.
+  allow_failure: true
+  timeout: $[[ inputs.timeout ]]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $[[ inputs.gate ]]'
