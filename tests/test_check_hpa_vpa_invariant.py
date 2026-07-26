@@ -24,16 +24,6 @@ TARGETS = [
 ]
 
 
-@pytest.fixture(autouse=True)
-def _clean_policy():
-    """load_policy() mutates module globals; keep tests independent."""
-    mod.CHART_NATIVE_HPA_TARGETS.clear()
-    mod.CPU_LIMIT_ALLOWLIST.clear()
-    yield
-    mod.CHART_NATIVE_HPA_TARGETS.clear()
-    mod.CPU_LIMIT_ALLOWLIST.clear()
-
-
 @pytest.fixture()
 def policy_file(tmp_path) -> Path:
     import yaml
@@ -463,9 +453,8 @@ def test_cpu_limit_cronjob_flagged():
     assert mod._cpu_limit_violations(_docs(CRONJOB_WITH_CPU_LIMIT))
 
 
-def test_cpu_limit_allowlist_exempts(monkeypatch):
-    monkeypatch.setattr(mod, "CPU_LIMIT_ALLOWLIST", {"ns/Deployment/app"})
-    assert mod._cpu_limit_violations(_docs(DEPLOY_WITH_CPU_LIMIT)) == []
+def test_cpu_limit_allowlist_exempts():
+    assert mod._cpu_limit_violations(_docs(DEPLOY_WITH_CPU_LIMIT), {"ns/Deployment/app"}) == []
 
 
 def test_cpu_limit_integrated_fails_with_flag(monkeypatch, policy_file):
@@ -501,9 +490,9 @@ def test_policy_config_loads_both_keys(tmp_path):
             }
         )
     )
-    mod.load_policy(p)
-    assert mod.CHART_NATIVE_HPA_TARGETS[("ns", "Deployment", "app")] == "chart"
-    assert mod.CPU_LIMIT_ALLOWLIST == {"ns/Deployment/app"}
+    policy = mod.load_policy(p)
+    assert policy.chart_native_hpa_targets[("ns", "Deployment", "app")] == "chart"
+    assert policy.cpu_limit_allowlist == {"ns/Deployment/app"}
 
 
 def test_policy_config_incomplete_target_raises(tmp_path):
@@ -523,8 +512,36 @@ def test_policy_config_non_mapping_raises(tmp_path):
 def test_empty_policy_config_is_fine(tmp_path):
     p = tmp_path / "policy.yaml"
     p.write_text("")
-    mod.load_policy(p)
-    assert mod.CHART_NATIVE_HPA_TARGETS == {}
+    policy = mod.load_policy(p)
+    assert policy.chart_native_hpa_targets == {}
+    assert policy.cpu_limit_allowlist == set()
+
+
+def test_load_policy_does_not_accumulate_across_calls(tmp_path, policy_file):
+    """Two loads must not merge: validate-helm-values.py imports this module and
+    loads the same file, so accumulating globals leaked one caller into the other."""
+    import yaml
+
+    other = tmp_path / "other.yaml"
+    other.write_text(
+        yaml.safe_dump(
+            {
+                "chart_native_hpa_targets": [
+                    {"namespace": "other", "kind": "Deployment", "name": "b", "source": "chart"}
+                ],
+                "cpu_limit_allowlist": ["other/Deployment/b"],
+            }
+        )
+    )
+    first = mod.load_policy(policy_file)
+    second = mod.load_policy(other)
+    assert set(second.chart_native_hpa_targets) == {("other", "Deployment", "b")}
+    assert second.cpu_limit_allowlist == {"other/Deployment/b"}
+    # The first result is untouched by the second load.
+    assert len(first.chart_native_hpa_targets) == len(TARGETS)
+    assert first.cpu_limit_allowlist == set()
+    assert not hasattr(mod, "CHART_NATIVE_HPA_TARGETS")
+    assert not hasattr(mod, "CPU_LIMIT_ALLOWLIST")
 
 
 if __name__ == "__main__":

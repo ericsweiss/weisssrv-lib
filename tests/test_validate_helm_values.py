@@ -212,7 +212,7 @@ class TestRenderedCpuLimitPolicy:
     def test_shared_module_loaded(self):
         assert hasattr(vhv, "_hpa")
         assert callable(vhv._hpa._cpu_limit_violations)
-        assert isinstance(vhv._hpa.CPU_LIMIT_ALLOWLIST, set)
+        assert isinstance(vhv._hpa.Policy().cpu_limit_allowlist, set)
 
     def test_flags_rendered_cpu_limit(self):
         v = vhv._hpa._cpu_limit_violations(_deploy({"cpu": "500m"}))
@@ -223,9 +223,9 @@ class TestRenderedCpuLimitPolicy:
         assert vhv._hpa._cpu_limit_violations(_deploy({"memory": "256Mi"})) == []
         assert vhv._hpa._cpu_limit_violations(_deploy({"cpu": None})) == []
 
-    def test_allowlist_suppresses_violation(self, monkeypatch):
-        monkeypatch.setattr(vhv._hpa, "CPU_LIMIT_ALLOWLIST", {"ns/Deployment/app"})
-        assert vhv._hpa._cpu_limit_violations(_deploy({"cpu": "250m"})) == []
+    def test_allowlist_suppresses_violation(self):
+        allowlist = {"ns/Deployment/app"}
+        assert vhv._hpa._cpu_limit_violations(_deploy({"cpu": "250m"}), allowlist) == []
 
 
 if __name__ == "__main__":

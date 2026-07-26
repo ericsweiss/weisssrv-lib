@@ -8,7 +8,9 @@ when `tag_name` does not exist yet, which is the only tag-write a CI_JOB_TOKEN
 can perform (the Tags API is read-only for job tokens).
 
 No releasable commit -> no release, exit 0. Re-running on an already-released
-commit is therefore a no-op.
+commit is therefore a no-op — EXCEPT when the last tag sits on HEAD with no
+Release behind it (a run that died between the two halves of that one call):
+that half-finished state is detected and the missing Release is created.
 
 Stdlib only. The decision path is `plan_release(tags, log_output, ...)`: it takes
 raw `git` output and returns the plan, so it is testable without a repo or a
@@ -240,6 +242,31 @@ def plan_release(
     return Plan(True, level, previous, tag, version, render_notes(commits, compare_url), commits)
 
 
+def plan_existing_tag(
+    tags: Sequence[str],
+    tag: str,
+    log_reader: Callable[[str], str],
+    tag_prefix: str = "v",
+    compare_url_template: Optional[str] = None,
+) -> Plan:
+    """Plan that re-creates the Release for a tag that ALREADY exists.
+
+    Crash recovery only. The notes come from the tag's own commit range
+    (`<earlier tag>..<tag>`), so the recovered Release reads exactly like the one
+    the half-failed run would have published. `log_reader` takes a git range and
+    returns raw `git log` output, keeping this testable without a repo.
+    """
+    earlier = latest_version_tag([t for t in tags if t != tag], tag_prefix)
+    commits = parse_log(log_reader("%s..%s" % (earlier, tag) if earlier else tag))
+    compare_url = (
+        compare_url_template.format(previous=earlier, tag=tag)
+        if compare_url_template and earlier
+        else None
+    )
+    version = tag[len(tag_prefix):] if tag.startswith(tag_prefix) else tag
+    return Plan(True, bump_level(commits), earlier, tag, version, render_notes(commits, compare_url), commits)
+
+
 def api_request(
     url: str,
     token: str,
@@ -258,6 +285,31 @@ def api_request(
     return json.loads(body) if body else {}
 
 
+def _releases_url(api_url: str, project_id: str) -> str:
+    return "%s/projects/%s/releases" % (
+        api_url.rstrip("/"),
+        urllib.parse.quote(str(project_id), safe=""),
+    )
+
+
+def get_release(
+    api_url: str,
+    project_id: str,
+    token: str,
+    tag: str,
+    token_header: str = "JOB-TOKEN",
+    request: Callable = api_request,
+) -> Optional[dict]:
+    """The Release for `tag`, or None when the tag carries none (HTTP 404)."""
+    url = "%s/%s" % (_releases_url(api_url, project_id), urllib.parse.quote(str(tag), safe=""))
+    try:
+        return request(url, token, token_header, None)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+
+
 def create_release(
     api_url: str,
     project_id: str,
@@ -268,7 +320,7 @@ def create_release(
     request: Callable = api_request,
 ) -> dict:
     """Create the tag (from `ref`) and the GitLab Release in one call."""
-    url = "%s/projects/%s/releases" % (api_url.rstrip("/"), urllib.parse.quote(str(project_id), safe=""))
+    url = _releases_url(api_url, project_id)
     payload = {
         "tag_name": plan.tag,
         "ref": ref,
@@ -288,6 +340,29 @@ def git(args: Sequence[str], repo_dir: str = ".") -> str:
         universal_newlines=True,
     )
     return result.stdout
+
+
+def write_plan(path: str, plan: Plan, released: bool, dry_run: bool = False, error: str = "") -> None:
+    """Serialise the outcome. `released` is what actually happened, not the plan.
+
+    The artifact is published `when: always`, so it must never claim a tag that
+    the API call did not create; a failed run carries the reason instead.
+    """
+    if not path:
+        return
+    payload = {
+        "released": released,
+        "dry_run": dry_run,
+        "level": plan.level,
+        "previous_tag": plan.previous_tag,
+        "tag": plan.tag,
+        "version": plan.version,
+        "notes": plan.notes,
+    }
+    if error:
+        payload["error"] = error
+    with open(path, "w") as handle:
+        json.dump(payload, handle, indent=2)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -312,6 +387,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     project_url = os.environ.get("CI_PROJECT_URL", "")
+    compare_template = project_url + "/-/compare/{previous}...{tag}" if project_url else None
     tags = git(["tag", "--list"], args.repo_dir).split()
     previous = latest_version_tag(tags, args.tag_prefix)
     # A shallow clone can lack the previous tag's commit; the job sets GIT_DEPTH: 0.
@@ -321,54 +397,97 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         git(["log", "--no-merges", "--format=" + LOG_FORMAT, log_range], args.repo_dir),
         args.tag_prefix,
         args.initial_version,
-        project_url + "/-/compare/{previous}...{tag}" if project_url else None,
+        compare_template,
         args.major_on_zero,
     )
 
-    if args.output:
-        with open(args.output, "w") as handle:
-            json.dump(
-                {
-                    "released": plan.released,
-                    "level": plan.level,
-                    "previous_tag": plan.previous_tag,
-                    "tag": plan.tag,
-                    "version": plan.version,
-                    "notes": plan.notes,
-                },
-                handle,
-                indent=2,
+    token = os.environ.get(args.token_env, "")
+    have_api = bool(token and args.api_url and args.project_id)
+    # Only the two paths that talk to the API need HEAD.
+    ref = (
+        (args.ref or git(["rev-parse", "HEAD"], args.repo_dir).strip())
+        if have_api and not args.dry_run
+        else ""
+    )
+
+    # Crash recovery: the Releases API creates the TAG before the Release, so a
+    # run that died in between leaves the tag with no Release — and every later
+    # run then computes an empty range and reports "nothing to release", green
+    # forever. When the last tag sits on HEAD and carries no Release, re-plan it
+    # from its own commit range and create the missing Release.
+    if not plan.released and previous and not args.dry_run and have_api:
+        tagged = git(["rev-list", "-n", "1", previous], args.repo_dir).strip()
+        if tagged == ref and get_release(
+            args.api_url, args.project_id, token, previous, args.token_header
+        ) is None:
+            print("Tag %s exists with no Release (a previous run half-failed) — creating it." % previous)
+            plan = plan_existing_tag(
+                tags,
+                previous,
+                lambda rng: git(["log", "--no-merges", "--format=" + LOG_FORMAT, rng], args.repo_dir),
+                args.tag_prefix,
+                compare_template,
             )
 
     if not plan.released:
+        write_plan(args.output, plan, released=False)
         print("No releasable commits since %s — nothing to release." % (plan.previous_tag or "the start of history"))
         return 0
 
-    print("%s -> %s (%s bump)\n" % (plan.previous_tag or "(no tag)", plan.tag, plan.level))
+    print("%s -> %s (%s bump)\n" % (plan.previous_tag or "(no tag)", plan.tag, plan.level or "no"))
     print(plan.notes)
     if args.dry_run:
+        write_plan(args.output, plan, released=False, dry_run=True)
         print("--dry-run: no release created.")
         return 0
 
-    token = os.environ.get(args.token_env, "")
-    if not token or not args.api_url or not args.project_id:
+    if not have_api:
+        write_plan(args.output, plan, released=False, error="missing token / api url / project id")
         print(
             "ERROR: need $%s, $CI_API_V4_URL and $CI_PROJECT_ID to create the release." % args.token_env,
             file=sys.stderr,
         )
         return 1
-    ref = args.ref or git(["rev-parse", "HEAD"], args.repo_dir).strip()
     try:
         release = create_release(
             args.api_url, args.project_id, token, plan, ref, args.token_header
         )
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace")
+        write_plan(args.output, plan, released=False, error="HTTP %s: %s" % (exc.code, detail))
         print("ERROR: release creation failed (HTTP %s): %s" % (exc.code, detail), file=sys.stderr)
         return 1
+    write_plan(args.output, plan, released=True)
     print("Created release %s" % release.get("_links", {}).get("self", plan.tag))
     return 0
 
 
+def run_cli(argv: Optional[Sequence[str]] = None) -> int:
+    """main() with each failure mode reduced to one actionable line.
+
+    Mirrors version-bump-mr.py: a shallow clone (`fatal: bad revision`), an
+    unreachable API and a non-JSON body all surface as a message, not a traceback.
+    """
+    try:
+        return main(argv)
+    except subprocess.CalledProcessError as exc:
+        print(
+            "ERROR: %s failed: %s" % (" ".join(exc.cmd), (exc.stderr or "").strip()),
+            file=sys.stderr,
+        )
+    except urllib.error.HTTPError as exc:
+        print(
+            "ERROR: GitLab API call failed (HTTP %s): %s"
+            % (exc.code, exc.read().decode(errors="replace")),
+            file=sys.stderr,
+        )
+    except (urllib.error.URLError, OSError) as exc:
+        # URLError covers DNS/connection failures; socket timeouts arrive as OSError.
+        print("ERROR: %s: %s" % (type(exc).__name__, exc), file=sys.stderr)
+    except json.JSONDecodeError as exc:
+        print("ERROR: GitLab returned a non-JSON body: %s" % exc, file=sys.stderr)
+    return 1
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run_cli())

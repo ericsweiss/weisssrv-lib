@@ -8,6 +8,8 @@ import importlib.util
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parent.parent
 _SCRIPT = REPO / "scripts" / "version-bump-mr.py"
 
@@ -139,6 +141,15 @@ def test_remote_tree_is_empty_until_the_branch_is_pushed(tmp_path):
     assert bot.remote_tree(str(work), "bot/version-bumps", str(remote)) == tree
 
 
+def test_remote_tree_raises_when_the_fetch_itself_fails(tmp_path):
+    """A fetch blip must not read as "branch absent" — that force-pushes a
+    freshly-timestamped commit and re-notifies the MR on every transient failure."""
+    work = tmp_path / "work"
+    subprocess.run(["git", "init", "--quiet", "-b", "main", str(work)], check=True)
+    with pytest.raises(bot.GitRemoteError, match="git fetch of bot/version-bumps failed"):
+        bot.remote_tree(str(work), "bot/version-bumps", str(tmp_path / "not-a-remote.git"))
+
+
 def test_redact_replaces_every_known_secret():
     bot._SECRETS[:] = ["glpat-secret", ""]
     try:
@@ -147,3 +158,187 @@ def test_redact_replaces_every_known_secret():
         )
     finally:
         bot._SECRETS[:] = []
+
+
+# --- quick-action / fence neutralization --------------------------------------
+
+def test_build_description_neutralizes_quick_actions_in_the_report():
+    """Report text is third-party (registry names, upstream error bodies) and the
+    description is POSTed to a bot that must never merge."""
+    body = bot.build_description([], "", report="sonarr 4.0.1 -> 4.0.2\n/close\n/merge")
+    assert "\n/close" not in body and "\n/merge" not in body
+    assert " /close" in body and " /merge" in body
+
+
+def test_build_description_fence_outlives_backticks_in_the_report():
+    body = bot.build_description([], "", report="see ```\n/merge")
+    fence = "`" * 4
+    assert body.count(fence) == 2
+    assert " /merge" in body
+
+
+def test_build_description_truncates_on_a_line_boundary():
+    report = "\n".join("line %d" % i for i in range(50))
+    body = bot.build_description([], "", report=report, max_report_chars=20)
+    assert "truncated" in body
+    report_block = body.split("### Report\n\n", 1)[1]
+    for line in report_block.splitlines():
+        assert line == "```" or line.startswith(("line ", "…"))
+
+
+# --- main(): the orchestration nothing else covers ----------------------------
+
+class FakeClient:
+    """Stands in for GitLabClient inside main(); records every API call."""
+
+    def __init__(self, open_mrs=()):
+        self.open_mrs = list(open_mrs)
+        self.calls = []
+
+    def list_merge_requests(self, source_branch, target_branch):
+        self.calls.append(("list", source_branch, target_branch))
+        return self.open_mrs
+
+    def create_merge_request(self, payload):
+        self.calls.append(("create", payload))
+        return {"iid": 1, "web_url": "https://git.example/-/merge_requests/1"}
+
+    def update_merge_request(self, iid, payload):
+        self.calls.append(("update", iid, payload))
+        return {}
+
+
+OPEN_MR = {"iid": 5, "state": "opened", "source_branch": "bot/version-bumps", "target_branch": "main"}
+
+
+@pytest.fixture()
+def repo(tmp_path):
+    """A work tree with one committed pin plus the bare remote the bot pushes to."""
+    remote = tmp_path / "remote.git"
+    work = tmp_path / "work"
+    subprocess.run(["git", "init", "--bare", "--quiet", str(remote)], check=True)
+    subprocess.run(["git", "init", "--quiet", "-b", "main", str(work)], check=True)
+    bot.git(["config", "user.email", "bot@example.com"], str(work))
+    bot.git(["config", "user.name", "bot"], str(work))
+    (work / "pins.yml").write_text("sonarr: 4.0.1\n")
+    bot.git(["add", "-A"], str(work))
+    bot.git(["commit", "--quiet", "-m", "init"], str(work))
+    return work, remote
+
+
+@pytest.fixture(autouse=True)
+def _clean_secrets():
+    yield
+    bot._SECRETS[:] = []
+
+
+def _bump(work):
+    """What the consumer's check_command does: rewrite a tracked pin."""
+    (work / "pins.yml").write_text("sonarr: 4.0.2\n")
+
+
+def _run_main(repo, monkeypatch, open_mrs=()):
+    work, remote = repo
+    monkeypatch.setenv("BOT_TOKEN", "glpat-tok")
+    client = FakeClient(open_mrs)
+    monkeypatch.setattr(bot, "GitLabClient", lambda *a, **kw: client)
+    rc = bot.main([
+        "--repo-dir", str(work),
+        "--remote-url", str(remote),
+        "--target-branch", "main",
+        "--api-url", "https://git.example/api/v4",
+        "--project-id", "42",
+    ])
+    return rc, client
+
+
+def test_main_commits_tracked_pins_only(repo, monkeypatch):
+    """The documented contract: a report artifact the check command drops stays
+    untracked and out of the commit the bot pushes."""
+    work, _ = repo
+    _bump(work)
+    (work / "version-report.json").write_text("{}\n")
+
+    rc, client = _run_main(repo, monkeypatch)
+
+    assert rc == 0
+    committed = bot.git(["show", "--name-only", "--format=", "HEAD"], str(work)).split()
+    assert committed == ["pins.yml"]
+    payload = [c for c in client.calls if c[0] == "create"][0][1]
+    assert "version-report.json" not in payload["description"]
+    assert "pins.yml" in payload["description"]
+
+
+def test_main_closes_the_stale_mr_when_there_are_no_bumps(repo, monkeypatch):
+    rc, client = _run_main(repo, monkeypatch, open_mrs=[OPEN_MR])
+    assert rc == 0
+    assert ("update", 5, {"state_event": "close"}) in client.calls
+    assert not [c for c in client.calls if c[0] == "create"]
+
+
+def test_main_with_no_bumps_and_no_mr_does_nothing(repo, monkeypatch):
+    rc, client = _run_main(repo, monkeypatch)
+    assert rc == 0
+    assert [c[0] for c in client.calls] == ["list"]
+
+
+def test_main_opens_the_mr_when_a_prior_run_pushed_but_died(repo, monkeypatch):
+    """Crash recovery: the branch already carries these exact bumps but no MR was
+    created. Nothing to push — but the MR still has to be opened."""
+    work, _ = repo
+    _bump(work)
+    assert _run_main(repo, monkeypatch)[0] == 0
+
+    # A later scheduled run: fresh checkout of the target, same bumps re-applied.
+    bot.git(["checkout", "--quiet", "main"], str(work))
+    _bump(work)
+    pushes = []
+    monkeypatch.setattr(bot, "push_branch", lambda *a: pushes.append(a))
+    rc, client = _run_main(repo, monkeypatch)
+
+    assert rc == 0
+    assert pushes == []
+    assert [c[0] for c in client.calls] == ["list", "create"]
+
+
+def test_main_leaves_an_identical_branch_with_an_open_mr_untouched(repo, monkeypatch):
+    work, _ = repo
+    _bump(work)
+    assert _run_main(repo, monkeypatch)[0] == 0
+
+    bot.git(["checkout", "--quiet", "main"], str(work))
+    _bump(work)
+    pushes = []
+    monkeypatch.setattr(bot, "push_branch", lambda *a: pushes.append(a))
+    rc, client = _run_main(repo, monkeypatch, open_mrs=[OPEN_MR])
+
+    assert rc == 0
+    assert pushes == []
+    assert [c[0] for c in client.calls] == ["list"]
+
+
+def test_main_pushes_and_refreshes_when_the_bumps_changed(repo, monkeypatch):
+    work, remote = repo
+    _bump(work)
+    assert _run_main(repo, monkeypatch)[0] == 0
+
+    bot.git(["checkout", "--quiet", "main"], str(work))
+    (work / "pins.yml").write_text("sonarr: 4.0.3\n")
+    rc, client = _run_main(repo, monkeypatch, open_mrs=[OPEN_MR])
+
+    assert rc == 0
+    assert [c[0] for c in client.calls] == ["list", "update"]
+    assert client.calls[1][1] == 5
+    assert "sonarr" not in client.calls[1][2]["title"]
+    pushed = bot.git(["rev-parse", "HEAD^{tree}"], str(work)).strip()
+    assert bot.remote_tree(str(work), "bot/version-bumps", str(remote)) == pushed
+
+
+def test_main_dry_run_touches_no_remote(repo, monkeypatch):
+    work, remote = repo
+    _bump(work)
+    monkeypatch.delenv("BOT_TOKEN", raising=False)
+    monkeypatch.setattr(bot, "GitLabClient", lambda *a, **kw: pytest.fail("dry run built a client"))
+    rc = bot.main(["--repo-dir", str(work), "--remote-url", str(remote), "--dry-run"])
+    assert rc == 0
+    assert bot.remote_tree(str(work), "bot/version-bumps", str(remote)) == ""

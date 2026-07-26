@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.error
@@ -62,6 +63,28 @@ def select_open_mr(
     return sorted(matches, key=lambda mr: mr.get("iid", 0))[0] if matches else None
 
 
+def neutralize_quick_actions(text: str) -> str:
+    """Indent lines that start with `/` so GitLab cannot read them as commands.
+
+    The report is third-party text (upstream version names, registry error
+    bodies) embedded in a description the bot POSTs. GitLab executes a quick
+    action only on a line whose FIRST character is `/`, and only outside a code
+    fence — so this is the second layer behind `fence_for`: even if a fence is
+    ever broken, `/merge` in a report stays inert text.
+    """
+    return "\n".join(" " + line if line.startswith("/") else line for line in text.splitlines())
+
+
+def fence_for(text: str) -> str:
+    """A code fence longer than the longest backtick run in `text`.
+
+    A fixed ``` fence is closed early by a report that contains one, which puts
+    the rest of the report — quick actions included — back into markdown.
+    """
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    return "`" * max(3, longest + 1)
+
+
 def build_description(
     paths: Sequence[str],
     diffstat: str,
@@ -77,12 +100,18 @@ def build_description(
     if paths:
         blocks.append("### Files\n\n" + "\n".join("- `%s`" % p for p in paths))
     if diffstat.strip():
-        blocks.append("### Diffstat\n\n```\n%s\n```" % diffstat.strip())
+        fence = fence_for(diffstat)
+        blocks.append("### Diffstat\n\n%s\n%s\n%s" % (fence, diffstat.strip(), fence))
     if report.strip():
-        body = report.strip()
+        body = neutralize_quick_actions(report.strip())
         if len(body) > max_report_chars:
-            body = body[:max_report_chars] + "\n… truncated, see the job artifact."
-        blocks.append("### Report\n\n```\n%s\n```" % body)
+            # Cut on a line boundary so the closing fence is always emitted on
+            # its own line (a mid-line cut can leave a dangling backtick run).
+            head = body[:max_report_chars]
+            body = head.rsplit("\n", 1)[0] if "\n" in head else head
+            body += "\n… truncated, see the job artifact."
+        fence = fence_for(body)
+        blocks.append("### Report\n\n%s\n%s\n%s" % (fence, body, fence))
     if pipeline_url:
         blocks.append("Produced by %s" % pipeline_url)
     return "\n\n".join(blocks) + "\n"
@@ -165,8 +194,22 @@ def push_branch(repo_dir: str, branch: str, remote_url: str) -> None:
     git(["push", "--force", "--quiet", remote_url, "HEAD:refs/heads/%s" % branch], repo_dir)
 
 
+class GitRemoteError(RuntimeError):
+    """A fetch failed for a reason other than "the branch does not exist"."""
+
+
+# git's wording for an absent ref; anything else (auth, DNS, a down remote) is a
+# real failure. Matched case-insensitively — older git capitalizes "Couldn't".
+_MISSING_REF_MARKER = "couldn't find remote ref"
+
+
 def remote_tree(repo_dir: str, branch: str, remote_url: str) -> str:
-    """Tree hash of the remote bot branch, or "" when it does not exist."""
+    """Tree hash of the remote bot branch, or "" when it does not exist.
+
+    Only an absent ref returns "": degrading a transient fetch failure into
+    "branch does not exist" would force-push a freshly-timestamped commit and
+    re-notify the MR on every blip, which is exactly the churn this bot avoids.
+    """
     fetched = subprocess.run(
         ["git", "-C", repo_dir, "fetch", "--quiet", remote_url, "refs/heads/%s" % branch],
         stdout=subprocess.PIPE,
@@ -174,7 +217,13 @@ def remote_tree(repo_dir: str, branch: str, remote_url: str) -> str:
         universal_newlines=True,
     )
     if fetched.returncode != 0:
-        return ""
+        stderr = fetched.stderr or ""
+        if _MISSING_REF_MARKER in stderr.lower():
+            return ""
+        raise GitRemoteError(
+            "git fetch of %s failed (rc=%d): %s"
+            % (branch, fetched.returncode, redact(stderr.strip()) or "no stderr")
+        )
     return git(["rev-parse", "FETCH_HEAD^{tree}"], repo_dir, check=False).strip()
 
 
@@ -254,7 +303,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     git(["config", "user.name", args.git_user_name], repo)
     git(["config", "user.email", args.git_user_email], repo)
     git(["checkout", "-B", args.branch], repo)
-    git(["add", "--"] + paths, repo)
+    # --update: tracked modifications/deletions only. A plain `git add -- <path>`
+    # would also stage the report artifacts a check command drops, which the
+    # documented contract (and the MR's file list) says are ignored.
+    git(["add", "--update", "--"] + paths, repo)
     git(["commit", "--quiet", "-m", args.commit_message], repo)
 
     branch_is_current = (
@@ -288,16 +340,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return 0
 
 
-if __name__ == "__main__":
+def run_cli(argv: Optional[Sequence[str]] = None) -> int:
+    """main() with each failure mode reduced to one actionable, redacted line."""
     try:
-        sys.exit(main())
+        return main(argv)
     except urllib.error.HTTPError as exc:
         body = redact(exc.read().decode(errors="replace"))
         print("ERROR: GitLab API call failed (HTTP %s): %s" % (exc.code, body), file=sys.stderr)
-        sys.exit(1)
+    except (urllib.error.URLError, OSError) as exc:
+        # URLError covers DNS/connection failures; socket timeouts arrive as OSError.
+        print(
+            "ERROR: %s: %s" % (type(exc).__name__, redact(str(exc))),
+            file=sys.stderr,
+        )
+    except GitRemoteError as exc:
+        print("ERROR: %s" % exc, file=sys.stderr)
     except subprocess.CalledProcessError as exc:
         print(
             "ERROR: %s failed: %s" % (redact(" ".join(exc.cmd)), redact(exc.stderr or "")),
             file=sys.stderr,
         )
-        sys.exit(1)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(run_cli())

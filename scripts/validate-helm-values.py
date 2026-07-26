@@ -161,7 +161,7 @@ def extract_helmrelease(manifest_path: str) -> dict:
 
 
 def validate_release(rel: dict, versions: dict, repo_root: str, run_kubeconform: bool,
-                     kube_version: str) -> bool:
+                     kube_version: str, cpu_limit_allowlist: set | None = None) -> bool:
     """Template one release; return True on success."""
     manifest = os.path.join(repo_root, rel["manifest"])
     # Substitute ${placeholders} in the RAW manifest text first — exactly like
@@ -222,10 +222,10 @@ def validate_release(rel: dict, versions: dict, repo_root: str, run_kubeconform:
         # check-hpa-vpa-invariant.py can't see: it scans only the HelmRelease
         # `.spec.values`, never the chart's default pod specs, so a chart default
         # could introduce a CPU limit unnoticed. Reuse that script's scanner +
-        # allowlist (loaded above) so the two checks stay identical. Runs before
+        # the allowlist main() loaded so the two checks stay identical. Runs before
         # the optional kubeconform so the policy holds for `task flux:lint` too.
         rendered_docs = [d for d in yaml.safe_load_all(proc.stdout) if isinstance(d, dict)]
-        cpu_viol = _hpa._cpu_limit_violations(rendered_docs)
+        cpu_viol = _hpa._cpu_limit_violations(rendered_docs, cpu_limit_allowlist)
         if cpu_viol:
             print(
                 f"ERROR [{rel['name']}]: chart-rendered pods set a CPU limit "
@@ -294,8 +294,7 @@ def main() -> int:
     releases = load_releases(
         args.releases or os.path.join(args.repo_root, DEFAULT_RELEASES_FILE)
     )
-    if args.policy_config:
-        _hpa.load_policy(args.policy_config)
+    policy = _hpa.load_policy(args.policy_config) if args.policy_config else _hpa.Policy()
     versions = load_versions(args.repo_root, args.versions_configmap)
     kube_version = derive_kube_version(versions)
 
@@ -320,7 +319,8 @@ def main() -> int:
 
     failed = 0
     for rel in releases:
-        if not validate_release(rel, versions, args.repo_root, args.kubeconform, kube_version):
+        if not validate_release(rel, versions, args.repo_root, args.kubeconform, kube_version,
+                                policy.cpu_limit_allowlist):
             failed += 1
     if failed:
         print(f"\n{failed} release(s) failed helm-values validation")

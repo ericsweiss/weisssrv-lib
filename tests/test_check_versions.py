@@ -1371,6 +1371,39 @@ class TestCliArgumentValidation(unittest.TestCase):
         self.assertIn("Tracked services", res.stdout)
 
 
+class TestConsumerConfigFlags(unittest.TestCase):
+    """--config / --repo-root are the documented consumer entry point (SCRIPTS.md).
+    They are resolved before the argv loop, so the loop must consume them too —
+    it used to drop through to "unknown argument" on every non-early-exit path."""
+
+    def tearDown(self):
+        check_versions.load_config(FIXTURE_CONFIG, repo_root=FIXTURE_REPO)
+
+    def _main(self, *args):
+        with patch.object(check_versions.sys, "argv", ["check-versions.py", *args]), \
+             patch.object(check_versions, "check_all", return_value=[]):
+            with self.assertRaises(SystemExit) as cm:
+                check_versions.main()
+        return cm.exception.code
+
+    def test_config_and_repo_root_are_accepted(self):
+        code = self._main("--config", str(FIXTURE_CONFIG), "--repo-root", str(FIXTURE_REPO), "--json")
+        self.assertEqual(code, 0)
+
+    def test_config_combines_with_a_filter_flag(self):
+        code = self._main("--config", str(FIXTURE_CONFIG), "--service", "k3s", "--no-cache")
+        self.assertEqual(code, 0)
+
+    def test_config_still_requires_a_value(self):
+        import subprocess
+
+        res = subprocess.run(
+            [sys.executable, str(script_path), "--config"], capture_output=True, text=True,
+        )
+        self.assertEqual(res.returncode, 2)
+        self.assertIn("--config requires a value", res.stderr)
+
+
 class TestFetchGithubReleaseTagFilter(unittest.TestCase):
     """The tag_filter branch of fetch_github_release — the version-selection
     logic behind k3s/gluetun/mealie. It paginates, SKIPS drafts/prereleases,

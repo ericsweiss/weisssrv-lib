@@ -595,6 +595,28 @@ class TestEnvironmentOverrides:
         doc = self._run(repo, tmp_path, ".gitlab/ci/collection-molecule-jobs.yml", env)
         assert sorted(e["ROLE"] for e in doc["molecule-tests"]["parallel"]["matrix"]) == ["alpha", "beta"]
 
+    @pytest.mark.parametrize(
+        "changed",
+        [
+            f"{COLLECTION}/galaxy.yml",
+            f"{COLLECTION}/meta/runtime.yml",
+            f"{COLLECTION}/plugins/filter/x.py",
+            f"{COLLECTION}/molecule-shared/base.yml",
+        ],
+    )
+    def test_collection_root_paths_run_the_full_matrix(self, repo, tmp_path, changed):
+        """These are neither role paths nor scenario paths: without a derived
+        trigger they select NOTHING and the MR goes green having run no scenario."""
+        doc = self._run(repo, tmp_path, changed, self.ENV)
+        assert sorted(e["ROLE"] for e in doc["molecule-tests"]["parallel"]["matrix"]) == ["alpha", "beta"]
+
+    def test_collection_root_triggers_follow_roles_dir(self, repo, tmp_path):
+        """The derivation is from $ROLES_DIR's parent, so another collection's
+        galaxy.yml is NOT a trigger (it selects nothing, no full matrix)."""
+        doc = self._run(repo, tmp_path, "ansible_collections/other/coll/galaxy.yml", self.ENV)
+        assert "molecule-tests" not in doc
+        assert gmp.NOOP_JOB_NAME in doc
+
 
 class TestCli:
     def test_changed_files_from_writes_output(self, repo, tmp_path):
@@ -646,3 +668,49 @@ class TestCli:
         assert doc["molecule-tests"]["parallel"]["matrix"] == [
             {"ROLE": "leaf", "SCENARIO": "default"}
         ]
+
+
+class TestRealCollection:
+    """The synthetic fixtures prove the algorithm; this proves it against the
+    layout that actually ships, so a rename or a mistyped FQCN reference in
+    ansible_collections/ fails here instead of silently pruning an edge."""
+
+    REAL_ROLES = Path(__file__).resolve().parent.parent / COLLECTION / "roles"
+
+    @pytest.fixture(scope="class")
+    def graph(self):
+        return gmp.build_role_graph(self.REAL_ROLES)
+
+    def test_prefix_is_the_shipped_collection(self):
+        assert gmp.collection_role_prefix(self.REAL_ROLES) == FQCN_NS
+
+    def test_known_meta_dependency_edges(self, graph):
+        assert "base" in graph["qol"]
+        assert "base" in graph["nas_storage"]
+
+    def test_known_include_role_edges(self, graph):
+        assert "apt_signed_repo" in graph["docker_engine"]
+        assert "prometheus_exporter" in graph["zfs_exporter"]
+
+    def test_no_own_collection_reference_is_pruned_as_unknown(self):
+        """build_role_graph drops providers that aren't on disk, so a typo'd
+        `weisssrv.infra.apt_signed_repos` would vanish with no error."""
+        known = {p.name for p in self.REAL_ROLES.iterdir() if p.is_dir()}
+        unknown = {}
+        for role_dir in sorted(p for p in self.REAL_ROLES.iterdir() if p.is_dir()):
+            referenced: set[str] = set()
+            meta = role_dir / "meta" / "main.yml"
+            if meta.is_file():
+                referenced |= gmp._meta_dependencies(meta)
+            for yml in gmp._yaml_files(role_dir):
+                if "/molecule/" in yml.as_posix():
+                    continue
+                gmp._collect_include_role_names(gmp._load_yaml(yml), referenced)
+            missing = sorted(
+                name[len(FQCN_NS):]
+                for name in referenced
+                if name.startswith(FQCN_NS) and name[len(FQCN_NS):] not in known
+            )
+            if missing:
+                unknown[role_dir.name] = missing
+        assert unknown == {}

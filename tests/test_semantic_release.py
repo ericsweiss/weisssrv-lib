@@ -5,9 +5,14 @@ Run via `pytest tests` (the python-tests CI job runs this automatically).
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
+import subprocess
 import sys
+import urllib.error
 from pathlib import Path
+
+import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 _SCRIPT = REPO / "scripts" / "semantic-release.py"
@@ -216,3 +221,279 @@ def test_main_dry_run_creates_nothing(monkeypatch, capsys):
     monkeypatch.setattr(sr, "create_release", explode)
     assert sr.main(["--dry-run"]) == 0
     assert "v0.1.0 -> v0.2.0 (minor bump)" in capsys.readouterr().out
+
+
+# --- api_request: the only code that actually talks to GitLab -----------------
+
+class FakeResponse:
+    def __init__(self, body: bytes):
+        self.body = body
+
+    def read(self):
+        return self.body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def recording_opener(body: bytes = b"{}"):
+    """Fake urlopen: captures the Request it is handed, returns `body`."""
+    seen = {}
+
+    def opener(request, timeout=None):
+        seen["method"] = request.get_method()
+        seen["url"] = request.full_url
+        seen["data"] = request.data
+        seen["token"] = request.get_header("Job-token")
+        seen["content_type"] = request.get_header("Content-type")
+        seen["timeout"] = timeout
+        return FakeResponse(body)
+
+    return opener, seen
+
+
+def test_api_request_posts_json_with_the_token_header():
+    opener, seen = recording_opener(b'{"_links": {"self": "u"}}')
+    result = sr.api_request(
+        "https://git.example/api/v4/projects/42/releases", "tok", "JOB-TOKEN",
+        {"tag_name": "v0.2.0"}, opener=opener,
+    )
+    assert result == {"_links": {"self": "u"}}
+    assert seen["method"] == "POST"
+    assert seen["token"] == "tok"
+    assert seen["content_type"] == "application/json"
+    assert json.loads(seen["data"].decode()) == {"tag_name": "v0.2.0"}
+    assert seen["timeout"] == 60
+
+
+def test_api_request_gets_when_there_is_no_payload():
+    opener, seen = recording_opener(b'{"tag_name": "v0.2.0"}')
+    assert sr.api_request("https://git.example/x", "tok", "PRIVATE-TOKEN", None, opener=opener) == {
+        "tag_name": "v0.2.0"
+    }
+    assert seen["method"] == "GET"
+    assert seen["data"] is None
+    assert seen["content_type"] is None
+
+
+def test_api_request_empty_body_is_an_empty_dict():
+    opener, _ = recording_opener(b"")
+    assert sr.api_request("https://git.example/x", "t", "JOB-TOKEN", None, opener=opener) == {}
+
+
+def _http_error(code: int, body: bytes = b'{"message": "denied"}'):
+    return urllib.error.HTTPError("https://git.example/x", code, "err", {}, io.BytesIO(body))
+
+
+def test_api_request_propagates_http_error_with_its_body():
+    def opener(request, timeout=None):
+        raise _http_error(403)
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        sr.api_request("https://git.example/x", "t", "JOB-TOKEN", {"a": 1}, opener=opener)
+    assert exc.value.code == 403
+    assert b"denied" in exc.value.read()
+
+
+def test_api_request_propagates_url_error():
+    def opener(request, timeout=None):
+        raise urllib.error.URLError("name or service not known")
+
+    with pytest.raises(urllib.error.URLError):
+        sr.api_request("https://git.example/x", "t", "JOB-TOKEN", {"a": 1}, opener=opener)
+
+
+def test_api_request_propagates_a_timeout():
+    def opener(request, timeout=None):
+        raise TimeoutError("timed out")
+
+    with pytest.raises(OSError):
+        sr.api_request("https://git.example/x", "t", "JOB-TOKEN", {"a": 1}, opener=opener)
+
+
+def test_get_release_returns_none_on_404():
+    def request(url, token, token_header, payload):
+        assert payload is None
+        raise _http_error(404)
+
+    assert sr.get_release("https://git.example/api/v4", "42", "t", "v0.2.0", request=request) is None
+
+
+def test_get_release_reraises_other_http_errors():
+    def request(url, token, token_header, payload):
+        raise _http_error(500)
+
+    with pytest.raises(urllib.error.HTTPError):
+        sr.get_release("https://git.example/api/v4", "42", "t", "v0.2.0", request=request)
+
+
+def test_get_release_escapes_the_tag_in_the_url():
+    seen = {}
+
+    def request(url, token, token_header, payload):
+        seen["url"] = url
+        return {"tag_name": "v0.2.0"}
+
+    sr.get_release("https://git.example/api/v4/", "eric/lib", "t", "v0.2.0", request=request)
+    assert seen["url"] == "https://git.example/api/v4/projects/eric%2Flib/releases/v0.2.0"
+
+
+# --- main(): the release-creation half ----------------------------------------
+
+def fake_git(tags, logs, head="deadbeef", tagged=None):
+    """Stub for sr.git covering the four commands main() runs."""
+
+    def _git(args, repo_dir="."):
+        if args[0] == "tag":
+            return "\n".join(tags) + "\n"
+        if args[0] == "log":
+            return logs.get(args[-1], "")
+        if args[0] == "rev-parse":
+            return head + "\n"
+        if args[0] == "rev-list":
+            return (head if tagged is None else tagged) + "\n"
+        raise AssertionError("unexpected git call: %r" % (args,))
+
+    return _git
+
+
+API = ["--api-url", "https://git.example/api/v4", "--project-id", "42"]
+
+
+def test_main_creates_the_release_and_only_then_reports_it(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("RELEASE_TOKEN", "tok")
+    monkeypatch.setattr(sr, "git", fake_git(["v0.1.1"], {"v0.1.1..HEAD": log(("a" * 8, "feat: x"))}))
+    captured = {}
+
+    def fake_create(api_url, project_id, token, plan, ref, token_header="JOB-TOKEN"):
+        captured.update(tag=plan.tag, ref=ref, token=token, header=token_header)
+        return {"_links": {"self": "https://git.example/releases/v0.2.0"}}
+
+    monkeypatch.setattr(sr, "create_release", fake_create)
+    out = tmp_path / "release.json"
+    assert sr.main(["--output", str(out), *API]) == 0
+    assert captured == {"tag": "v0.2.0", "ref": "deadbeef", "token": "tok", "header": "JOB-TOKEN"}
+    payload = json.loads(out.read_text())
+    assert (payload["released"], payload["tag"], payload["dry_run"]) == (True, "v0.2.0", False)
+    assert "Created release" in capsys.readouterr().out
+
+
+def test_main_failed_release_never_claims_the_tag_exists(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("RELEASE_TOKEN", "tok")
+    monkeypatch.setattr(sr, "git", fake_git(["v0.1.1"], {"v0.1.1..HEAD": log(("a" * 8, "feat: x"))}))
+
+    def boom(*a, **kw):
+        raise _http_error(403, b"insufficient scope")
+
+    monkeypatch.setattr(sr, "create_release", boom)
+    out = tmp_path / "release.json"
+    assert sr.main(["--output", str(out), *API]) == 1
+    payload = json.loads(out.read_text())
+    # `artifacts: when: always` publishes this file even on failure.
+    assert payload["released"] is False
+    assert "403" in payload["error"]
+    assert "release creation failed (HTTP 403)" in capsys.readouterr().err
+
+
+def test_main_dry_run_artifact_is_marked_as_such(tmp_path, monkeypatch):
+    monkeypatch.setattr(sr, "git", fake_git(["v0.1.1"], {"v0.1.1..HEAD": log(("a" * 8, "feat: x"))}))
+    out = tmp_path / "release.json"
+    assert sr.main(["--output", str(out), "--dry-run"]) == 0
+    payload = json.loads(out.read_text())
+    assert (payload["released"], payload["dry_run"], payload["tag"]) == (False, True, "v0.2.0")
+
+
+def test_main_without_credentials_fails_and_records_why(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("RELEASE_TOKEN", raising=False)
+    monkeypatch.setattr(sr, "git", fake_git(["v0.1.1"], {"v0.1.1..HEAD": log(("a" * 8, "feat: x"))}))
+    out = tmp_path / "release.json"
+    assert sr.main(["--output", str(out), *API]) == 1
+    payload = json.loads(out.read_text())
+    assert payload["released"] is False and "missing token" in payload["error"]
+    assert "need $RELEASE_TOKEN" in capsys.readouterr().err
+
+
+def test_main_recovers_a_tag_that_has_no_release(tmp_path, monkeypatch, capsys):
+    """A run that died between the tag and the Release halves of the one API call
+    leaves an empty commit range — which would read as "nothing to release" forever."""
+    monkeypatch.setenv("RELEASE_TOKEN", "tok")
+    monkeypatch.setattr(
+        sr,
+        "git",
+        fake_git(
+            ["v0.1.1", "v0.2.0"],
+            {"v0.2.0..HEAD": "", "v0.1.1..v0.2.0": log(("a" * 8, "feat: x"))},
+        ),
+    )
+    monkeypatch.setattr(sr, "get_release", lambda *a, **kw: None)
+    captured = {}
+
+    def fake_create(api_url, project_id, token, plan, ref, token_header="JOB-TOKEN"):
+        captured.update(tag=plan.tag, version=plan.version, notes=plan.notes)
+        return {}
+
+    monkeypatch.setattr(sr, "create_release", fake_create)
+    out = tmp_path / "release.json"
+    assert sr.main(["--output", str(out), *API]) == 0
+    assert captured["tag"] == "v0.2.0"
+    assert captured["version"] == "0.2.0"
+    assert "### Features" in captured["notes"]
+    assert json.loads(out.read_text())["released"] is True
+    assert "exists with no Release" in capsys.readouterr().out
+
+
+def test_main_does_not_recreate_a_release_that_exists(monkeypatch, capsys):
+    monkeypatch.setenv("RELEASE_TOKEN", "tok")
+    monkeypatch.setattr(sr, "git", fake_git(["v0.2.0"], {"v0.2.0..HEAD": ""}))
+    monkeypatch.setattr(sr, "get_release", lambda *a, **kw: {"tag_name": "v0.2.0"})
+    monkeypatch.setattr(sr, "create_release", lambda *a, **kw: pytest.fail("re-released"))
+    assert sr.main(API) == 0
+    assert "nothing to release" in capsys.readouterr().out
+
+
+def test_main_does_not_recover_a_tag_that_is_not_on_head(monkeypatch):
+    monkeypatch.setenv("RELEASE_TOKEN", "tok")
+    monkeypatch.setattr(
+        sr, "git", fake_git(["v0.2.0"], {"v0.2.0..HEAD": ""}, head="deadbeef", tagged="0ldc0mmit")
+    )
+    monkeypatch.setattr(sr, "get_release", lambda *a, **kw: pytest.fail("looked up an old tag"))
+    monkeypatch.setattr(sr, "create_release", lambda *a, **kw: pytest.fail("re-released"))
+    assert sr.main(API) == 0
+
+
+def test_plan_existing_tag_reuses_the_tags_own_range():
+    plan = sr.plan_existing_tag(
+        ["v0.1.1", "v0.2.0"],
+        "v0.2.0",
+        lambda rng: log(("a" * 8, "feat: x")) if rng == "v0.1.1..v0.2.0" else "",
+        compare_url_template="https://git.example/-/compare/{previous}...{tag}",
+    )
+    assert (plan.released, plan.tag, plan.version, plan.previous_tag) == (True, "v0.2.0", "0.2.0", "v0.1.1")
+    assert "compare/v0.1.1...v0.2.0" in plan.notes
+
+
+# --- run_cli(): failures as one line, not a traceback -------------------------
+
+def test_run_cli_reports_git_stderr(monkeypatch, capsys):
+    def boom(args, repo_dir="."):
+        raise subprocess.CalledProcessError(128, ["git", "log"], stderr="fatal: bad revision\n")
+
+    monkeypatch.setattr(sr, "git", boom)
+    assert sr.run_cli([]) == 1
+    assert "fatal: bad revision" in capsys.readouterr().err
+
+
+def test_run_cli_reports_an_unreachable_api(monkeypatch, capsys):
+    monkeypatch.setenv("RELEASE_TOKEN", "tok")
+    monkeypatch.setattr(sr, "git", fake_git(["v0.1.1"], {"v0.1.1..HEAD": log(("a" * 8, "feat: x"))}))
+
+    def boom(*a, **kw):
+        raise urllib.error.URLError("name or service not known")
+
+    monkeypatch.setattr(sr, "create_release", boom)
+    assert sr.run_cli(API) == 1
+    err = capsys.readouterr().err
+    assert "URLError" in err and "Traceback" not in err

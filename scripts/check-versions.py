@@ -1957,6 +1957,9 @@ def main():
         elif args[i] in ("--json", "--no-cache"):
             # Boolean flags already consumed by the `in args` checks above.
             i += 1
+        elif args[i] in ("--config", "--repo-root"):
+            # Value flags already consumed by _flag_value() before load_config().
+            i += 2
         else:
             # Reject unknown flags loudly: a typo'd --category/--service would
             # otherwise silently run the full unfiltered check.

@@ -58,9 +58,24 @@ except ImportError:
 HPA_KIND = "HorizontalPodAutoscaler"
 VPA_KIND = "VerticalPodAutoscaler"
 
-# Populated from --policy-config; see the module docstring for the schema.
-# (namespace, target-kind, target-name) -> where the chart-native HPA comes from.
-CHART_NATIVE_HPA_TARGETS: dict[tuple[str, str, str], str] = {}
+
+class Policy:
+    """The consumer data from --policy-config; see the module docstring.
+
+    A value, not module state: validate-helm-values.py imports this module to
+    load the same file, and accumulating into globals made a second load add to
+    the first instead of replacing it. (A plain class, not a dataclass: this
+    module is loaded by path with importlib, where @dataclass cannot resolve its
+    own annotations.)
+    """
+
+    def __init__(self, chart_native_hpa_targets=None, cpu_limit_allowlist=None) -> None:
+        # (namespace, target-kind, target-name) -> where the chart-native HPA comes from.
+        self.chart_native_hpa_targets: dict[tuple[str, str, str], str] = dict(
+            chart_native_hpa_targets or {}
+        )
+        # "namespace/Kind/name" workloads intentionally permitted a CPU limit.
+        self.cpu_limit_allowlist: set[str] = set(cpu_limit_allowlist or ())
 
 
 def _target_key(ns: str, ref: dict) -> tuple[str, str, str]:
@@ -123,29 +138,28 @@ def _vpa_resources(spec: dict) -> set[str]:
 # --- "no CPU limits" policy ---------------------------------------------------
 POD_SPEC_KINDS = {"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "Pod"}
 
-# "namespace/Kind/name" workloads intentionally permitted a CPU limit, from
-# --policy-config. SHARED: validate-helm-values.py imports this set (and
-# _cpu_limit_violations) so the kustomize-side and helm-rendered-side checks
-# honor one allowlist.
-CPU_LIMIT_ALLOWLIST: set[str] = set()
 
+def load_policy(path) -> Policy:
+    """Read a --policy-config file and return it. Mutates nothing.
 
-def load_policy(path) -> None:
-    """Populate CHART_NATIVE_HPA_TARGETS + CPU_LIMIT_ALLOWLIST from a config file."""
+    SHARED: validate-helm-values.py imports this (and `_cpu_limit_violations`)
+    so the kustomize-side and helm-rendered-side checks honor one allowlist.
+    """
     with open(path) as f:
         doc = yaml.safe_load(f) or {}
     if not isinstance(doc, dict):
         raise ValueError(f"{path}: top-level must be a mapping")
-    targets = doc.get("chart_native_hpa_targets") or []
-    for entry in targets:
+    policy = Policy()
+    for entry in doc.get("chart_native_hpa_targets") or []:
         missing = [k for k in ("namespace", "kind", "name") if not entry.get(k)]
         if missing:
             raise ValueError(f"{path}: chart-native target {entry!r} is missing {missing}")
-        CHART_NATIVE_HPA_TARGETS[(entry["namespace"], entry["kind"], entry["name"])] = str(
+        policy.chart_native_hpa_targets[(entry["namespace"], entry["kind"], entry["name"])] = str(
             entry.get("source", "chart-native HPA")
         )
     for item in doc.get("cpu_limit_allowlist") or []:
-        CPU_LIMIT_ALLOWLIST.add(str(item))
+        policy.cpu_limit_allowlist.add(str(item))
+    return policy
 
 
 def _containers_of(doc: dict) -> list[dict]:
@@ -188,14 +202,15 @@ def _find_values_cpu_limits(node, path: str = "") -> list[str]:
     return hits
 
 
-def _cpu_limit_violations(docs: list[dict]) -> list[str]:
+def _cpu_limit_violations(docs: list[dict], allowlist: set[str] | None = None) -> list[str]:
     """Flag any pod-spec container or HelmRelease values that set a CPU limit."""
+    allowed = allowlist or set()
     out: list[str] = []
     for d in docs:
         kind = d.get("kind")
         meta = d.get("metadata") or {}
         wlkey = f"{meta.get('namespace', '')}/{kind}/{meta.get('name', '?')}"
-        if wlkey in CPU_LIMIT_ALLOWLIST:
+        if wlkey in allowed:
             continue
         if kind == "HelmRelease":
             values = (d.get("spec") or {}).get("values") or {}
@@ -217,9 +232,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--require-chart-native-vpas", action="store_true")
     parser.add_argument("--policy-config", help="YAML/JSON policy data (see module docstring)")
     args = parser.parse_args(argv)
+    policy = Policy()
     if args.policy_config:
         try:
-            load_policy(args.policy_config)
+            policy = load_policy(args.policy_config)
         except (OSError, ValueError, yaml.YAMLError) as exc:
             sys.exit(f"Failed to load --policy-config: {exc}")
 
@@ -293,7 +309,7 @@ def main(argv: list[str] | None = None) -> int:
     # Static check for chart-native HPAs (their HPA isn't in the corpus, but their
     # VPA is). Opt-in: only meaningful on the full rendered corpus flux:lint builds.
     if args.require_chart_native_vpas:
-        for key, source in sorted(CHART_NATIVE_HPA_TARGETS.items()):
+        for key, source in sorted(policy.chart_native_hpa_targets.items()):
             ns, tkind, tname = key
             # `not vpas.get(key)` (vs `key not in vpas`) also catches a mutating
             # VPA whose every containerPolicy is mode:Off — it registers with an
@@ -315,7 +331,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
     cpu_violations = (
-        _cpu_limit_violations(docs)
+        _cpu_limit_violations(docs, policy.cpu_limit_allowlist)
         if args.require_chart_native_vpas else []
     )
 
@@ -338,7 +354,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         f"HPA/VPA invariant OK ({len(hpas)} HPAs, {len(vpas)} VPAs checked"
-        + (f", {len(CHART_NATIVE_HPA_TARGETS)} chart-native targets asserted"
+        + (f", {len(policy.chart_native_hpa_targets)} chart-native targets asserted"
            ", CPU-limit policy OK"
            if args.require_chart_native_vpas else "")
         + ")"

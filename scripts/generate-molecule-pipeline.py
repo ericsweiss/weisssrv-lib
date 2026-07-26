@@ -53,8 +53,12 @@ Determinism + safety (a coverage bug must fail loud, never silently under-select
 
 Inventory / non-role ansible paths: the inventory-consumer map is derived by
 scanning scenarios for inventory-file references, so a group_vars file selects
-only the scenarios that actually load it. Extra global triggers can be added via
-$MOLECULE_GLOBAL_TRIGGERS (space-separated; a trailing "/" makes it a prefix).
+only the scenarios that actually load it. The root of the tree holding the roles
+($ROLES_DIR's parent — galaxy.yml, requirements.yml, meta/, plugins/,
+molecule-shared/) is a global trigger, derived rather than configured, so a
+collection-wide change can never emit the green no-op child. Extra global
+triggers can be added via $MOLECULE_GLOBAL_TRIGGERS (space-separated; a trailing
+"/" makes it a prefix).
 """
 from __future__ import annotations
 
@@ -107,14 +111,23 @@ NOOP_JOB_NAME = "molecule-none-affected"
 # Pinned image for the no-op job (matches test-aggregate's alpine pin).
 NOOP_IMAGE = "alpine:3.23"
 
+# Everything that sits at the ROOT of the tree holding the roles (the collection
+# root for a collection layout, `ansible/` for the classic one) — derived from
+# $ROLES_DIR so a consumer that retargets the roles dir never has to restate it.
+# These are neither role paths nor scenario paths, so without them a change to
+# e.g. galaxy.yml or meta/runtime.yml selects NOTHING and the MR goes green
+# having run no scenario at all.
+_ROLES_ROOT = PurePosixPath(ROLES_PREFIX).parent
+
 # Files/prefixes that force the FULL matrix (any change -> EVERYTHING): the
-# shared molecule base/prepare, the galaxy requirements both suites install, the
-# two molecule CI image contexts, the CI file that defines the matrix, the shared
-# in-job retry wrapper, and this generator itself (its selection logic changing
-# means the narrowing can't be trusted — run everything).
+# collection root (galaxy metadata, runtime/meta, plugins, the shared molecule
+# config, the galaxy requirements both suites install), the two molecule CI image
+# contexts, the CI file that defines the matrix, the shared in-job retry wrapper,
+# and this generator itself (its selection logic changing means the narrowing
+# can't be trusted — run everything).
 GLOBAL_TRIGGER_FILES = frozenset({
-    # Galaxy requirements sit next to the roles dir, so this follows $ROLES_DIR.
-    str(PurePosixPath(ROLES_PREFIX).parent / "requirements.yml"),
+    str(_ROLES_ROOT / "requirements.yml"),
+    str(_ROLES_ROOT / "galaxy.yml"),
     # Top-level pip pins bake into the molecule CI image both suites run in.
     "requirements.txt",
     CI_FILE_NAME,
@@ -125,6 +138,9 @@ GLOBAL_TRIGGER_FILES = frozenset({
     "scripts/generate-molecule-pipeline.py",
 })
 GLOBAL_TRIGGER_PREFIXES = (
+    str(_ROLES_ROOT / "meta") + "/",
+    str(_ROLES_ROOT / "plugins") + "/",
+    str(_ROLES_ROOT / "molecule-shared") + "/",
     "ansible/molecule/",
     # Playbooks a scenario's verify can include_tasks. Global rather than a
     # per-role map so a future scenario consuming another maintenance playbook
