@@ -42,4 +42,13 @@ paths = [
   # Generated cluster snapshots (gitignored, but never trip on a stray copy).
   '''CLUSTER_STATUS\.txt''',
   '''cluster-state-.*\.txt''',
+  # Vendored galaxy dependency collections (gitignored; installed into the
+  # tree by the ansible-lint flow) — third-party test fixtures are full of
+  # dummy keys and are not ours to scan.
+  '''\.ansible-home/''',
+  # Molecule fixture keys, synthetic by construction: the acme_certs scenario
+  # ships a throwaway OpenSSH keypair to exercise the forced-command cert
+  # receiver, and the nfs_tls prepare stub says so in its own PEM body.
+  '''ansible_collections/weisssrv/infra/roles/acme_certs/molecule/default/molecule\.yml''',
+  '''ansible_collections/weisssrv/infra/roles/nfs_tls/molecule/default/prepare\.yml''',
 ]

@@ -26,7 +26,9 @@ spec:
       description: >-
         Extra space-separated pip pins installed alongside ansible-lint. The
         default guards the broken black 26.5.x mypyc wheels (ansible-lint's
-        jinja rule imports black); lift once 26.5.x is fixed.
+        jinja rule imports black); lift once 26.5.x is fixed. Routed through a
+        job variable, so a version-ceiling pin (`<`) is safe here — see the
+        PIP_EXTRA note below.
     config:
       default: ""
       description: >-
@@ -66,11 +68,18 @@ spec:
     # Keep ansible's caches/tmp inside the build dir — the shared tenant
     # runner is non-root and $HOME may not be writable.
     ANSIBLE_HOME: "$CI_PROJECT_DIR/.ansible-home"
+    # pip_extra reaches the shell as a VARIABLE, never as interpolated text:
+    # $[[ inputs.* ]] is textual substitution into the YAML scalar, so a
+    # version-ceiling pin (`black<26.5.0` — the default) would render a literal
+    # `<` that the shell parses as an input redirection before any expansion
+    # happens. The result of a parameter expansion is word-split but never
+    # re-scanned for redirection operators, so this form is safe.
+    PIP_EXTRA: "$[[ inputs.pip_extra ]]"
   before_script:
     # `--user` + absolute user-base path: same non-root rationale as
     # python-lint (~/.local/bin is off PATH on python:*-slim).
-    # shellcheck disable=SC2086  # word-split pip_extra
-    - pip install --user --quiet "ansible-lint==$[[ inputs.ansible_lint_version ]]" $[[ inputs.pip_extra ]]
+    # shellcheck disable=SC2086  # word-split PIP_EXTRA
+    - pip install --user --quiet "ansible-lint==$[[ inputs.ansible_lint_version ]]" $PIP_EXTRA
     - ANSIBLE_LINT_BIN="$(python -m site --user-base)/bin/ansible-lint"
     - ANSIBLE_GALAXY_BIN="$(python -m site --user-base)/bin/ansible-galaxy"
   script:

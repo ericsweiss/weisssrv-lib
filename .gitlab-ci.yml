@@ -7,23 +7,38 @@
 #   - The two molecule image builds and the molecule matrix need privileged
 #     Docker-in-Docker and are tagged `infrastructure`.
 #
-# ADMIN PREREQUISITE: `infrastructure` is a PROJECT runner (not instance-wide).
-# It must be enabled for weisssrv-lib under Settings > CI/CD > Runners before any
-# tagged job here can be scheduled — until then those jobs sit pending with "no
-# runner matches". The tag-less jobs are unaffected.
+# ADMIN PREREQUISITES:
+#   1. `infrastructure` is a PROJECT runner (not instance-wide). It must be
+#      enabled for weisssrv-lib under Settings > CI/CD > Runners before any
+#      tagged job here can be scheduled — until then those jobs sit pending
+#      with "no runner matches". The tag-less jobs are unaffected.
+#   2. The app-template project must list weisssrv-lib on its CI/CD job-token
+#      allowlist, so python-tests can clone it for the cross-repo contract
+#      test.
 #
 # NOTE: the CI templates under ci/ are `spec:inputs` files — not standalone
 # pipelines — so they cannot be `glab ci lint`'d in isolation; the
 # ci-templates-parse job below is a YAML/spec smoke. This pipeline renders most
-# of them for real via the self-application `include:` block; flux-lint and the
-# ci/templates/ fragments have no library-side workload to run against and are
-# still first rendered in the consumers.
+# of them for real via the self-application `include:` block. Exactly three are
+# NOT rendered here and are still first exercised in a consumer:
+#
+#   - ci/validate/flux-lint.yml           — no Kubernetes tree in this repo
+#   - ci/templates/*.yml                  — hidden-job fragments with no
+#                                           library-side job to extend them
+#   - ci/maintenance/version-bump-bot.yml — needs a repo-local version-check
+#                                           command + config; this library
+#                                           tracks no upstream versions, so the
+#                                           bot is wired by each CONSUMER
+#
+# ci/release/semantic-release.yml IS wired (the `release` stage below): merging
+# to main cuts this library's own tag, which is what every consumer pins.
 stages:
   - build
   - lint
   - test
   - security
   - ai-review
+  - release
 
 workflow:
   # Aggressively cancel superseded MR pipelines. GitLab's default auto-cancel is
@@ -45,8 +60,17 @@ variables:
 # hand-rolling equivalent jobs, so every input, rendered script, and rules block
 # is exercised here by the MR that changes it. `local:` resolves against this
 # pipeline's commit (a `project:`+`ref:` self-include would resolve the ref, not
-# the branch under review). Tool pins are literal at each include site; keep the
-# pyyaml one in step with the `variables:` pin above.
+# the branch under review).
+#
+# Tool pins are literal at each include site — an `include:` is resolved before
+# `variables:` exist, so a pin there cannot reference $PYYAML_VERSION. PyYAML is
+# therefore pinned at THREE places that must move together:
+#
+#   1. the `variables:` block above — used by ci-templates-parse and
+#      collection-checks, the two jobs written inline in this file
+#   2. the `pyyaml_version` input passed to ci/test/python-tests.yml below
+#   3. the `pyyaml_version` DEFAULT in ci/internal/molecule-matrix.gitlab-ci.yml,
+#      taken as-is (not overridden at its include site below)
 include:
   # .molecule-base + the molecule job template stay in a LOCAL fragment (not a
   # ci/ template): the generated MR child pipeline (molecule-plan ->
@@ -54,8 +78,12 @@ include:
   # it must not carry the static matrix the child emits itself. Including it here
   # is what lets the static `molecule-tests` job below extend the same template.
   - local: /.gitlab/ci/molecule-jobs.gitlab-ci.yml
-  # The two molecule images. Separate jobs with DISJOINT inputs (see the rules
-  # overrides below), both on the privileged runner — DinD cannot run tag-less.
+  # The two molecule images, both on the privileged runner — DinD cannot run
+  # tag-less. Their `changes` are DISJOINT so each gates on only its own
+  # context: a pip pin bump must not rebuild molecule-test's ~40-package apt
+  # layer, and a molecule-test apt change must not rebuild molecule-ci's
+  # pip+galaxy layers. Deliberately NOT gated on .gitlab-ci.yml either — an
+  # unrelated CI edit must not trigger a multi-minute DinD rebuild and re-push.
   # build-molecule-ci additionally emits the digest dotenv that pins
   # MOLECULE_CI_IMAGE for the matrix and for the child pipeline's jobs.
   - local: /ci/build/docker-build.yml
@@ -66,6 +94,8 @@ include:
       tags: ["infrastructure"]
       digest_dotenv_var: MOLECULE_CI_IMAGE
       digest_dotenv_file: molecule-images.env
+      changes:
+        - "docker/molecule-ci/**/*"
   # No digest dotenv for the test image: the molecule jobs pull it by its
   # immutable `:<short-sha>` tag (see the fragment's before_script), which
   # already pins the test target per pipeline.
@@ -75,6 +105,8 @@ include:
       image_name: molecule-test
       context: docker/molecule-test
       tags: ["infrastructure"]
+      changes:
+        - "docker/molecule-test/**/*"
   # MR-targeted molecule child pipeline. Every other input already matches this
   # repo (roles_dir/ci_file/jobs_include/global_triggers/changes and the two
   # image jobs); integration_dir points at a dir that does not exist, which is
@@ -164,6 +196,15 @@ include:
       # copier: without it the CLI's new-cluster tests skip (it is an optional
       # extra of the package, not a runtime dependency).
       pip_packages: "ruamel.yaml==0.18.10 copier==9.17.0"
+      # Clone the app template so test_template_contract.py's cross-repo half
+      # RUNS here (WEISSSRV_TEMPLATE_REQUIRED below turns its skip into a
+      # failure). Needs weisssrv-lib on the template project's job-token
+      # allowlist (admin prerequisite, see header). The old project path keeps
+      # working through GitLab's rename redirect until the rename lands.
+      setup_command: >-
+        git clone --depth 1
+        "${CI_SERVER_PROTOCOL}://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/eric/weisssrv-project-template.git"
+        "$WEISSSRV_TEMPLATE_ROOT"
       changes:
         - "scripts/**/*"
         - "tests/**/*"
@@ -172,6 +213,9 @@ include:
         # test_ansible_collection.py asserts on the collection tree itself
         # (galaxy.yml deps vs requirements.yml, role metadata).
         - "ansible_collections/**/*"
+        # test_generate_hosts_env.py loads examples/hosts-env-map.example.yml
+        # at runtime, so the shipped example stays proven-loadable.
+        - "examples/**/*"
         - ".gitlab-ci.yml"
   # cpu_selector keeps its default: gitleaks SIGILLs on the legacy-CPU nodes and
   # the shared runner allowlists exactly that override. allow_failure keeps its
@@ -212,38 +256,27 @@ include:
           optional: true
         - job: python-tests
           optional: true
+  # Cuts this library's OWN tag from the conventional commits merged to main —
+  # the tag every consumer's `ref:` / `?ref=` / `version:` pins. Defaults
+  # elsewhere: `release` is declared LAST above and the job sets no `needs:`, so
+  # stage ordering gates the release on every earlier job passing; the template's
+  # rules are already main-only (schedule excluded) and `resource_group`
+  # serializes rapid merges. major_on_zero stays false — while the tag is 0.x, a
+  # `feat!:` bumps MINOR, and leaving initial development stays a deliberate
+  # call (flip the input for the release that means 1.0.0).
+  - local: /ci/release/semantic-release.yml
+    inputs:
+      tags: []
 
-# The two image builds have DISJOINT inputs, so each gates on only its own
-# context — a pip pin bump must not rebuild molecule-test's ~40-package apt
-# layer, and a molecule-test apt change must not rebuild molecule-ci's
-# pip+galaxy layers. Deliberately NOT gated on .gitlab-ci.yml either: an
-# unrelated CI edit must not trigger a multi-minute DinD rebuild and re-push.
-# docker-build.yml exposes no `changes` input (its rules are unconditional), so
-# the rules are overridden here — an included job merges key-by-key with a local
-# job of the same name, and `rules:` is replaced wholesale.
-build-molecule-ci:
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - "docker/molecule-ci/**/*"
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - "docker/molecule-ci/**/*"
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: manual
-      allow_failure: true
-
-build-molecule-test:
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - "docker/molecule-test/**/*"
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - "docker/molecule-test/**/*"
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: manual
-      allow_failure: true
+# Same-named override MERGES with the included python-tests job at the map
+# level: these variables land on it without touching its scripts. The env pair
+# makes the template-contract test's cross-repo half mandatory here (an
+# explicit-but-invalid root aborts collection; a missing checkout fails instead
+# of skipping).
+python-tests:
+  variables:
+    WEISSSRV_TEMPLATE_ROOT: "/tmp/weisssrv-app-template"
+    WEISSSRV_TEMPLATE_REQUIRED: "1"
 
 ci-templates-parse:
   # Smoke: every CI template must be valid multi-document YAML (a spec header +
@@ -276,6 +309,51 @@ ci-templates-parse:
               print("FAIL", r, "is required but not present in the checkout")
       sys.exit(bad)
       PY
+
+collection-checks:
+  # Two invariants over ansible_collections/weisssrv/infra that nothing else
+  # covers:
+  #   - the molecule matrix below must list every scenario dir on disk. The
+  #     generator's own CoverageError is ROLE-level, so a second scenario added
+  #     under an already-listed role runs in no job at all; this gate is the one
+  #     that names it. Same env-var contract the molecule-plan job uses.
+  #   - the collection must build, which is the only thing that exercises
+  #     galaxy.yml's `build_ignore` — a bad pattern either ships the molecule
+  #     scaffolding into every consumer's installed copy or drops real content,
+  #     and would otherwise surface first at a consumer's install.
+  stage: lint
+  image: python:3.13-slim
+  tags: []
+  needs: []
+  variables:
+    CI_FILE: .gitlab-ci.yml
+    ROLES_DIR: ansible_collections/weisssrv/infra/roles
+    INTEGRATION_DIR: ansible_collections/weisssrv/infra/integration-tests
+    # ansible 11.6.0 (docker/molecule-ci/requirements.txt) resolves
+    # ansible-core ~=2.18.6, which is also the collection's requires_ansible
+    # floor — build with the core the roles are tested on.
+    ANSIBLE_CORE_VERSION: "2.18.18"
+  before_script:
+    - pip install --user --quiet "pyyaml==${PYYAML_VERSION}" "ansible-core==${ANSIBLE_CORE_VERSION}"
+  script:
+    - bash scripts/check-molecule-matrix-coverage.sh
+    - |
+      "$(python -m site --user-base)/bin/ansible-galaxy" collection build \
+        --force --output-path /tmp ansible_collections/weisssrv/infra
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - "ansible_collections/**/*"
+        - "scripts/check-molecule-matrix-coverage.sh"
+        - ".gitlab-ci.yml"
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - "ansible_collections/**/*"
+        - "scripts/check-molecule-matrix-coverage.sh"
+        - ".gitlab-ci.yml"
+    - if: '$CI_PIPELINE_SOURCE == "web"'
 
 # Molecule unit tests — one parallel job per role/scenario, every scenario under
 # ansible_collections/weisssrv/infra/roles/*/molecule/. This full static matrix

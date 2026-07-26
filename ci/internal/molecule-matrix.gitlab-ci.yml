@@ -31,7 +31,11 @@ spec:
       description: Path to the generator in the consuming checkout.
     roles_dir:
       default: ansible_collections/weisssrv/infra/roles
-      description: Repo-relative roles dir ($ROLES_DIR). The galaxy requirements file the generator treats as a global trigger is derived from its parent.
+      description: >-
+        Repo-relative roles dir ($ROLES_DIR). The collection-root paths the
+        generator treats as global triggers (requirements.yml, galaxy.yml,
+        meta/, plugins/, molecule-shared/) are derived from its parent, so
+        retargeting this needs no matching global_triggers edit.
     integration_dir:
       default: ansible_collections/weisssrv/infra/integration-tests
       description: >-
@@ -51,12 +55,15 @@ spec:
         self-contained (a child pipeline includes ONLY this file) and must NOT
         also define the static matrix, which the child would then collide with.
     global_triggers:
-      default: "ansible_collections/weisssrv/infra/molecule-shared/ scripts/sanitize-junit-expected-failures.py"
+      default: "scripts/sanitize-junit-expected-failures.py"
       description: >-
         Extra paths that force the FULL matrix ($MOLECULE_GLOBAL_TRIGGERS,
         space-separated; a trailing `/` makes it a prefix). The generator
-        already covers the CI file, the jobs include, the galaxy requirements,
-        the two image contexts and its own sources.
+        already covers the CI file, the jobs include, the two image contexts,
+        its own sources, and everything at the root of `roles_dir`'s parent
+        (requirements.yml, galaxy.yml, meta/, plugins/, molecule-shared/) — all
+        derived, so overriding `roles_dir` needs no matching edit here. This
+        input is for genuine per-consumer extras only.
     child_file:
       default: molecule-child.yml
       description: Artifact the plan writes and the trigger runs.

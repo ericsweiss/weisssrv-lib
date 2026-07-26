@@ -29,7 +29,15 @@ spec:
       default: ""
       description: >-
         Extra pip requirement specs installed alongside pytest/pyyaml, e.g.
-        "ruamel.yaml==0.18.10". Word-split; pin every entry.
+        "ruamel.yaml==0.18.10". Word-split; pin every entry. Routed through a
+        job variable, so a version-ceiling pin (`<`) is safe here — see the
+        PIP_PACKAGES note below.
+    setup_command:
+      default: "true"
+      description: >-
+        Single shell command run FIRST in before_script (default no-op). For
+        setup the package inputs cannot express — e.g. cloning a sibling repo
+        that a cross-repo contract test asserts against.
     changes:
       type: array
       default: ["scripts/**/*", ".gitlab-ci.yml"]
@@ -40,20 +48,31 @@ spec:
   needs: []  # run in parallel with the lint stage
   image: $[[ inputs.image ]]
   tags: $[[ inputs.tags ]]
+  variables:
+    # Both package lists reach the shell as VARIABLES, never as interpolated
+    # text: $[[ inputs.* ]] is textual substitution into the YAML scalar, so a
+    # version-ceiling pin (`black<26.5.0`) would render a literal `<` that the
+    # shell parses as an input redirection before any expansion happens. The
+    # result of a parameter expansion is word-split but never re-scanned for
+    # redirection operators, so this form is safe.
+    APT_PACKAGES: "$[[ inputs.apt_packages ]]"
+    PIP_PACKAGES: "$[[ inputs.pip_packages ]]"
   before_script:
+    # Consumer setup hook (default no-op) — e.g. cloning a sibling repo a
+    # cross-repo test asserts against.
+    - $[[ inputs.setup_command ]]
     - |
-      PKGS="$[[ inputs.apt_packages ]]"
-      if [ -n "$PKGS" ]; then
+      if [ -n "$APT_PACKAGES" ]; then
         # shellcheck disable=SC2086  # intentional word-split of the package list
-        apt-get update -qq && apt-get install -y -qq --no-install-recommends $PKGS
+        apt-get update -qq && apt-get install -y -qq --no-install-recommends $APT_PACKAGES
       fi
     # `--user` + `python -m pytest`: the shared NON-ROOT tenant runner can't
     # write system site-packages, so pip installs to ~/.local (whose bin/ is NOT
     # on the default PATH of python:*-slim images) — calling the `pytest` console
     # script directly would fail "command not found". `python -m pytest` runs the
     # module regardless of PATH (and puts the CWD on sys.path for test imports).
-    # shellcheck disable=SC2086  # intentional word-split of pip_packages
-    - pip install --user --quiet "pytest==$[[ inputs.pytest_version ]]" "pyyaml==$[[ inputs.pyyaml_version ]]" $[[ inputs.pip_packages ]]
+    # shellcheck disable=SC2086  # intentional word-split of PIP_PACKAGES
+    - pip install --user --quiet "pytest==$[[ inputs.pytest_version ]]" "pyyaml==$[[ inputs.pyyaml_version ]]" $PIP_PACKAGES
   script:
     - python -m pytest $[[ inputs.test_dir ]] -v --junitxml=report.xml
   artifacts:

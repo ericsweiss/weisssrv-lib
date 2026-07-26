@@ -24,6 +24,17 @@ spec:
       default: "4f798b3ee1e0140eab5bf30b0edc4e84f4cdb53255a429dc3bbae9524845d640"
     docker_cli_sha256_arm64:
       default: "e6b53725a73763ab3f988c73f8772eaed429754c1a579db5ff11f21990fd1817"
+    buildx_version:
+      default: "v0.35.0"
+      description: >-
+        Static docker buildx CLI-plugin version (sha256-pinned per arch below).
+        The static docker CLI ships NO buildx plugin, so with DOCKER_BUILDKIT=1
+        the plugin is what makes `docker build` work at all. Bump the version
+        and both shas together.
+    buildx_sha256_amd64:
+      default: "d41ece72044243b4f58b343441ae37446d9c29a7d6b5e11c61847bbcf8f7dfda"
+    buildx_sha256_arm64:
+      default: "c4248d6cbc4a619a7e0b4609c11e509ad4ac0b475e1c64817c0ac20c5d90c766"
     registry:
       default: "$CI_REGISTRY_IMAGE"
       description: >-
@@ -46,13 +57,32 @@ spec:
     extra_build_args:
       default: ""
       description: Extra `docker build` args (e.g. "--build-arg FOO=bar"), word-split.
+    default_branch:
+      default: "main"
+      description: >-
+        The consumer's default branch. Gates BOTH the post-merge run (the
+        `rules:` clause) and the `:latest` publish. A consumer on
+        `master`/`trunk` that leaves this at `main` never runs the job
+        post-merge, so `:latest` is never pushed — SHA-tagged builds keep
+        succeeding while `--cache-from` and any `:latest` fallback pull silently
+        stop resolving. Pass `$CI_DEFAULT_BRANCH` to track the project setting.
     publish_on_main:
       type: boolean
       default: true
       description: >-
-        Push the :latest tag on main. The immutable :<short-sha> tag is ALWAYS
-        pushed (MR pipelines use it so they never overwrite :latest with an
-        unmerged image).
+        Push the :latest tag on `default_branch`. The immutable :<short-sha> tag
+        is ALWAYS pushed (MR pipelines use it so they never overwrite :latest
+        with an unmerged image).
+    changes:
+      type: array
+      default: ["**/*"]
+      description: >-
+        Path list for the MR/default-branch `changes:` rules. The default
+        `**/*` matches everything, i.e. the unconditional rules this template
+        had before the input existed — narrow it to the image's context (plus
+        anything baked into it) so an unrelated commit does not trigger a
+        multi-minute DinD rebuild and re-push. The `web` clause stays manual and
+        ungated.
     digest_dotenv_var:
       default: ""
       description: >-
@@ -108,11 +138,15 @@ spec:
     DOCKER_CLI_VERSION: "$[[ inputs.docker_cli_version ]]"
     DOCKER_CLI_SHA256_AMD64: "$[[ inputs.docker_cli_sha256_amd64 ]]"
     DOCKER_CLI_SHA256_ARM64: "$[[ inputs.docker_cli_sha256_arm64 ]]"
+    BUILDX_VERSION: "$[[ inputs.buildx_version ]]"
+    BUILDX_SHA256_AMD64: "$[[ inputs.buildx_sha256_amd64 ]]"
+    BUILDX_SHA256_ARM64: "$[[ inputs.buildx_sha256_arm64 ]]"
     REGISTRY: "$[[ inputs.registry ]]"
     IMAGE_NAME: "$[[ inputs.image_name ]]"
     BUILD_CONTEXT: "$[[ inputs.context ]]"
     DOCKERFILE: "$[[ inputs.dockerfile ]]"
     EXTRA_BUILD_ARGS: "$[[ inputs.extra_build_args ]]"
+    DEFAULT_BRANCH: "$[[ inputs.default_branch ]]"
     PUBLISH_ON_MAIN: "$[[ inputs.publish_on_main ]]"
     DIGEST_DOTENV_VAR: "$[[ inputs.digest_dotenv_var ]]"
     DIGEST_DOTENV_FILE: "$[[ inputs.digest_dotenv_file ]]"
@@ -138,12 +172,10 @@ spec:
       # buildx plugin, so with DOCKER_BUILDKIT=1 `docker build` fails with
       # "BuildKit is enabled but the buildx component is missing or broken";
       # installing the plugin routes the build through the dind daemon's embedded
-      # BuildKit (enables --cache-from + inline cache). Bump BUILDX_VERSION + both
-      # sha256s together.
-      BUILDX_VERSION=v0.35.0
+      # BuildKit (enables --cache-from + inline cache).
       case "$ARCH" in
-        amd64) BUILDX_SHA256=d41ece72044243b4f58b343441ae37446d9c29a7d6b5e11c61847bbcf8f7dfda ;;
-        arm64) BUILDX_SHA256=c4248d6cbc4a619a7e0b4609c11e509ad4ac0b475e1c64817c0ac20c5d90c766 ;;
+        amd64) BUILDX_SHA256="$BUILDX_SHA256_AMD64" ;;
+        arm64) BUILDX_SHA256="$BUILDX_SHA256_ARM64" ;;
       esac
       curl -fsSL "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-${ARCH}" -o /tmp/docker-buildx
       echo "${BUILDX_SHA256}  /tmp/docker-buildx" | sha256sum -c -
@@ -189,9 +221,9 @@ spec:
           echo "build/push attempt $((attempt-1)) failed; retrying (${attempt}/${max})..."
           sleep $(( (RANDOM % 20) + 10 ))
         done
-        # :latest only on main — MR pipelines use SHA tags so they never
-        # overwrite :latest with an unmerged branch image.
-        if [ "$CI_COMMIT_BRANCH" = "main" ] && [ "$PUBLISH_ON_MAIN" = "true" ]; then
+        # :latest only on the default branch — MR pipelines use SHA tags so they
+        # never overwrite :latest with an unmerged branch image.
+        if [ "$CI_COMMIT_BRANCH" = "$DEFAULT_BRANCH" ] && [ "$PUBLISH_ON_MAIN" = "true" ]; then
           docker tag "${ref}:${CI_COMMIT_SHORT_SHA}" "${ref}:latest"
           docker push "${ref}:latest"
         fi
@@ -217,7 +249,9 @@ spec:
     expire_in: 7 days
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: $[[ inputs.changes ]]
+    - if: '$CI_COMMIT_BRANCH == "$[[ inputs.default_branch ]]"'
+      changes: $[[ inputs.changes ]]
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
       allow_failure: true

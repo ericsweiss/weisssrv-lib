@@ -81,13 +81,29 @@ A bad ACL can sever tailnet and SSH access to every node. Apply it
 interactively, never with `-auto-approve`, and keep a non-tailnet path (console
 access or a LAN session) open until the post-apply checks pass.
 
-Two guardrails are hardcoded on the ACL resource:
+Two guardrails are hardcoded on the ACL resource, and neither is an input —
+`lifecycle` blocks cannot take variables, so unlike `cloudflare-zone`'s
+per-record `protected` flag there is no per-consumer switch to route:
 
 - `reset_acl_on_destroy = false` — destroying the resource must not revert the
   tailnet to the default allow-all policy. That is a silent security
   regression, not a rollback.
-- `lifecycle { prevent_destroy = true }` — tearing the ACL down is an explicit
-  break-glass step: remove the lifecycle block in a reviewed commit first.
+- `lifecycle { prevent_destroy = true }` — any plan that would destroy the ACL
+  resource errors out instead.
+
+Because the module is sourced at a pinned `?ref=`, a consumer **cannot** remove
+that block. To stop managing the ACL, drop it from state and then delete the
+module block:
+
+```bash
+terraform state rm 'module.<name>.tailscale_acl.this'
+```
+
+The live tailnet policy is left exactly as it is — `reset_acl_on_destroy =
+false` means a destroy would not have reverted it either, so this loses nothing
+but the state entry. Re-adopt it later with `terraform import`. The only other
+path is vendoring the module source into the consumer repo and editing it
+there.
 
 Removing an entry from `split_dns` *is* allowed to destroy that Split-DNS
 record; unlike the old gate, it can only happen from a deliberate code edit.

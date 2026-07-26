@@ -3,10 +3,14 @@ resource "tailscale_acl" "this" {
 
   # Do NOT revert the tailnet to the default allow-all ACL on destroy: once the
   # policy is tighter than allow-all that is a silent security regression, not a
-  # rollback. prevent_destroy makes tearing the ACL down an explicit break-glass
-  # step (remove the lifecycle block first).
+  # rollback.
   reset_acl_on_destroy = false
 
+  # Not an input — `lifecycle` blocks take no variables, so this is fixed for
+  # every consumer. Stop managing the ACL with
+  # `terraform state rm 'module.<name>.tailscale_acl.this'` (the live policy is
+  # untouched, since reset_acl_on_destroy is false), then drop the module block.
+  # See README.md "Apply is supervised".
   lifecycle {
     prevent_destroy = true
   }
