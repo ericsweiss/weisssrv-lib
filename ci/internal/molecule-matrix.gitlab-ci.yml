@@ -73,6 +73,12 @@ spec:
       description: >-
         Image-build job whose dotenv digest pin the trigger forwards, so the
         child resolves the exact rebuilt job image instead of a racy `:latest`.
+    digest_var:
+      default: MOLECULE_CI_IMAGE
+      description: >-
+        Variable `ci_image_job` writes its digest to (its `digest_dotenv_var`).
+        The trigger re-declares it as a yaml variable — dotenv values are not
+        forwarded to a child pipeline on their own.
     test_image_job:
       default: build-molecule-test
       description: >-
@@ -152,6 +158,12 @@ spec:
       artifacts: true
     - job: $[[ inputs.test_image_job ]]
       optional: true
+  variables:
+    # Re-declare the image-job's dotenv value as a YAML variable: a dotenv
+    # reaches THIS bridge through needs:artifacts, but only yaml_variables are
+    # forwarded downstream, so without this the child falls back to :latest
+    # and ignores the digest this pipeline just built.
+    $[[ inputs.digest_var ]]: $$[[ inputs.digest_var ]]
   trigger:
     include:
       - artifact: $[[ inputs.child_file ]]

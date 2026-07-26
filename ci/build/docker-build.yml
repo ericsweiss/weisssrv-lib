@@ -229,6 +229,14 @@ spec:
         if [ "$CI_COMMIT_BRANCH" = "$DEFAULT_BRANCH" ] && [ "$PUBLISH_ON_MAIN" = "true" ]; then
           docker tag "${ref}:${CI_COMMIT_SHORT_SHA}" "${ref}:latest"
           docker push "${ref}:latest"
+        elif [ "$PUBLISH_ON_MAIN" = "true" ] && ! docker manifest inspect "${ref}:latest" >/dev/null 2>&1; then
+          # Bootstrap: in a repo whose default branch has never built this
+          # image, :latest does not exist at all, and anything falling back to
+          # it (a molecule child pipeline's job image) cannot start. Seed it
+          # once from the MR build; the default-branch push above owns it from
+          # then on, so this branch never fires again.
+          docker tag "${ref}:${CI_COMMIT_SHORT_SHA}" "${ref}:latest"
+          docker push "${ref}:latest"
         fi
       }
   script:

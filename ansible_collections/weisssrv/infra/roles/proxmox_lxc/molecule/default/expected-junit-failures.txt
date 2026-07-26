@@ -1,6 +1,0 @@
-# Negative-path guards this scenario DELIBERATELY drives to failure; the junit
-# callback records the raw failure, and CI's sanitize-junit step downgrades
-# EXACTLY these names. Job status is the arbiter.
-ansible/roles/proxmox_lxc/molecule/default/expected-junit-failures.txt
-Validate resource pool is in standard list
-Fail if required storage pool does not exist

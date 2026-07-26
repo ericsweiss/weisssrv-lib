@@ -1,0 +1,3295 @@
+{
+ "files": [
+  {
+   "name": ".",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "plugins",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "plugins/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "5f4b43f3f7380d15d4f4323791321e15cc37bfe64ffa0e65567a4bfbb7dc654e",
+   "format": 1
+  },
+  {
+   "name": "meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "meta/runtime.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "690ecf9ae759b4aed2713958bd615a7b725c57cca68f1af018dafbfb1e696643",
+   "format": 1
+  },
+  {
+   "name": "roles",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/nic_tuning",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/nic_tuning/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/nic_tuning/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "5ef4ed7e6bbea7aeca4c53e4cfc6b65bef8640ad5d773e4267b69ce0b01a8c18",
+   "format": 1
+  },
+  {
+   "name": "roles/nic_tuning/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/nic_tuning/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "a02e0e85b464739fb069bcde49310f9f780f433f095f71c39e1259ab930e87e0",
+   "format": 1
+  },
+  {
+   "name": "roles/nic_tuning/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "14032d5740d9b6070c02a892221b241d43624371646d3a0a6daac23f1f8c174e",
+   "format": 1
+  },
+  {
+   "name": "roles/nic_tuning/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/nic_tuning/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "a37f55ecbac13bf31b5a020cb9b70bd75f4122ab92badebf67305ccfc2c927e1",
+   "format": 1
+  },
+  {
+   "name": "roles/nic_tuning/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/nic_tuning/templates/nic-ethtool.cfg.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "884e3c1d107157990bb25ea928832dcbb8200b527d47c6923f62256133afd420",
+   "format": 1
+  },
+  {
+   "name": "roles/nic_tuning/handlers",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/nic_tuning/handlers/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "b65e21f451dd64c993bebd611e435fd07327858d76eccf2c5ae63f0452880fda",
+   "format": 1
+  },
+  {
+   "name": "roles/docker_engine",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/docker_engine/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/docker_engine/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "00448441b5fb91d6b1ec30f943a08f9621d9ed7f5cb3f037229c475ae15dbcbc",
+   "format": 1
+  },
+  {
+   "name": "roles/docker_engine/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/docker_engine/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "ec96b394a30f519f91f7f156c643e47a385913cd8c3a1f5af92ed4a23594b415",
+   "format": 1
+  },
+  {
+   "name": "roles/docker_engine/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "3c9d8799a9306d4abc3ac7767fb41cbb7c39e13c6be420a5d9583439d543eccd",
+   "format": 1
+  },
+  {
+   "name": "roles/docker_engine/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/docker_engine/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "aea864a7ad78658149de3ff203cce5902bb354a988e593138f3fa8f0d9c0e5f0",
+   "format": 1
+  },
+  {
+   "name": "roles/docker_engine/handlers",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/docker_engine/handlers/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "fdc2d2fcd3a1eb0afadb4bebdeecafdc512f562ad35a918120f5320cd6081c23",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/tasks/zfs.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "83deb155b94d3c3fc527c086eabf45528158794b2dfdd510663df9d3dbfe1830",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/tasks/archive_backup.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "03e11d8e8fa07ea06755f404a2297d4668558c1a74a00484d8c61deefa0c7d5b",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/tasks/backup_metrics.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "558d2e6903a4f5c6b9bcfceab3d9d8202e43a25a38b49a77fdbdab2ecf372bf4",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/tasks/media_mover.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "d4964bc0e167b9f9c3d87d8aa28a4d57748b9e253becbfeaae7a3fb41630dfd9",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/tasks/archive_backup_absent.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "58bdea45ef8338c1be932bb2a7758bb34684070add8e4a612740a22438aab12b",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/tasks/swap_clean.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "cd76af5225af161e0695b5569a190141a928bcc874c17e84c1225fdacb7a670e",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/tasks/mergerfs.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "ea224bd55580aa3c13a48978f202ddc732f19a9777671ccc9896f72188d0f48c",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/tasks/smartd.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "0cb7bab9de0fa8d22a528803b50c975ddfaf854df98f63e4bc28e7a2999e1354",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/tasks/nfs.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "f83b5adc356f1444c11bed13422379aa864ea046a0b41ce4a246d20eca059415",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/tasks/samba.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "681316ae52758caa4798fec74533a49cef5ab510ccc937ffd9635d4c7ba16a4c",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "bceca71e28af092152710c8f8a3b68d730373380eff77118aab887e6540c4926",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "e7119a767dd712f9046c7488dedc1c1a1d0b1948da0a1024d5ee61ab55ad3eb8",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "1a8612eca86a9309327e4fb9f2704a84803411331c3ff7430a8f386c2b7d4edd",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "71418ca0fcc24c46fe308c1af75443cc868a819c48038a7087097af8be7e70ca",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/templates/media-mover.timer.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "7bb9e9f4a68ce61676b996604b8fa903077eec70d8ea9171df40d3e43e3588f8",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/templates/media-mover.sh.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "2f5fab36b544c53c2958cba0b9a6b5861b45d2f78648173337ab8f6891dda9b8",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/templates/mergerfs-remount.service.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "c5ceaf63abb7a6589deac09266c662de24264c088a43b15c6ead8b9409a24e23",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/templates/backup-artifact-mtime-collector.sh.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "2cc4cc41cb43ab111c35f51c810e53c4246c0b8b3d4d3bf444d14c8acea185c8",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/templates/smartd.conf.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "7480202ed84e12e7d7be074f7cbbb52c2f10cc0e613bbdbf5f30d13277e7daac",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/templates/swap-clean.sh.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "c150859802008a0f4f279bb66a83b861e4b63215bafbe65750beee14dfe44010",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/templates/archive-backup.timer.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "f88de91a13e62263baf02b750d7345fae89f155d89c94e8aba64c46a7043b50b",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/templates/smb.conf.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "c81f3f91c3e72eab8568cd77dd124c6b3e514b71e20333fc9ea4a098aa30a969",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/templates/archive-backup.service.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "275b4584f8dc2265b16c777355b5378e0399908c61a8118be9419d8438353f3b",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/templates/nfs-server-zfs.conf.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "73f49d5942004910db0ac0fd73e590d0aa638a3237917a24308d00cdc557eb97",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/templates/swap-clean.service.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "db5c33e46fd54f3ca8a75fca4f75c20155ff121b28d7f14776ec700d4f33a172",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/templates/zfs-modprobe.conf.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "880759cd03abcdfbba957f29608822297d3d6453145b3080a126eaf396689e18",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/templates/media-mover.service.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "5d731e414560d4b0a5959140de029164464b47b908197a317d2c88a7e48b3e10",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/templates/archive-backupctl.sh.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "d4399b085f7450bb80217cd97f0c3df8d0b69f1e6b7688cfd93a7e4a8951e344",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/templates/exports.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "9329923f1be3b3b6da45d5124e221b2d3304644960f0ebcd12a3d0c979d27e8c",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/templates/swap-clean.timer.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "a930d1b1d27dc59ae7188e7b00438625000a008e6ca8211f433749da488453fa",
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/handlers",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/nas_storage/handlers/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "be9c1f02c638fad36a55af4b820c00715ca347c9146464793dc86b53e30de135",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_firewall",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_firewall/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_firewall/tasks/probe-delegate.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "76e3a4fd9c41512b717acdb0a4f3ae8fe2aceb02c30b3882450f14ba2c12a7d7",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_firewall/tasks/deploy-pmxcfs-config.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "c7e77978e959f8cd93d56e7010cc61c86609543f201aaa9e71d64fd7722b19e3",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_firewall/tasks/guest.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "b35ffddf190b77a8bc2846f924128b60c6233a08239e83ab3c5233775051750e",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_firewall/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "76a4959964e928ac2450694826f352c07d40d7826c3321a6e75150982004cabd",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_firewall/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_firewall/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "deb85069e7bc85d229597f23e8027cd7c4810f8765f5f4b98a493eecb39745eb",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_firewall/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "d5e981e275761ba3ed7c10c5f048f6d3264a7e68e7168539c44b8735a97da5e5",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_firewall/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_firewall/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "36e3096b3a08ff9230b024b6250706c425ae44434f0e8ab3500773d91ea4218e",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_firewall/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_firewall/templates/cluster.fw.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "8d908b72f1f38522d1ddd0824bd5c7a934c13282babf3a67bf70ceda495951e8",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_firewall/templates/host.fw.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "5cfc4f9a146a7b02e1208b1868f51ee03461f42a8a35fc73828977d46b2f42c1",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_firewall/templates/guest.fw.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "44967074a6038d07cd4530955f6a8cd376c972bc9ae5f013eb87a4bf2906e04d",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_firewall/templates/ipsets.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "b295fc680c85576562bdaab54275986a7b19a970fecf5c456ebf919638f8c0eb",
+   "format": 1
+  },
+  {
+   "name": "roles/node_exporter_host",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/node_exporter_host/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/node_exporter_host/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "6b1d64e4520f4d013b6d41392c096da8ce532912908ef356c42e5de4107ea840",
+   "format": 1
+  },
+  {
+   "name": "roles/node_exporter_host/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/node_exporter_host/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "3cfd01faefd02175f3819f68e069243fc10d12e19d543eef69f40ec8f8231b4e",
+   "format": 1
+  },
+  {
+   "name": "roles/node_exporter_host/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "3df99f46b3d0ce61c7e1416e3838c57426b1adc42f114ed79590322f3cadc43b",
+   "format": 1
+  },
+  {
+   "name": "roles/node_exporter_host/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/node_exporter_host/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "95710b26ce3ed2e15a178f583399f5b1f9e4a5df57609324d72c9effacf4e8eb",
+   "format": 1
+  },
+  {
+   "name": "roles/node_exporter_host/files",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/node_exporter_host/files/zpool-status-collector.sh",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "d8d2d07fe2ec77d9ceec32552332da4939610f46ad9275ebcea952db68e77203",
+   "format": 1
+  },
+  {
+   "name": "roles/node_exporter_host/files/vzdump-metrics-hook.sh",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "b0abf34fdb06d4f8ee703548a9cfce829cd7ef6b4998b39ecc57aacb6eaf37eb",
+   "format": 1
+  },
+  {
+   "name": "roles/node_exporter_host/files/corosync-health-collector.sh",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "adc7f3a728f78b37b2174c347fe701fd3444907b6827e5a8144d3a0fa160001e",
+   "format": 1
+  },
+  {
+   "name": "roles/node_exporter_host/files/smartmon-collector.sh",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "fd91b0adf1fc3e0f662a49d284f33220efcd2b4de08c68828f6327c72542185d",
+   "format": 1
+  },
+  {
+   "name": "roles/node_exporter_host/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/node_exporter_host/templates/node-exporter-host.service.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "67e479c8e19caf839b4aa1045cb022382a0fd6c3091879894ebc4375ea96ab45",
+   "format": 1
+  },
+  {
+   "name": "roles/node_exporter_host/handlers",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/node_exporter_host/handlers/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "768c37d21ba31c91aeae9d1eb066f3a1bbe344f596defef1eff5396ca8ff1dd9",
+   "format": 1
+  },
+  {
+   "name": "roles/vfio_passthrough",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/vfio_passthrough/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/vfio_passthrough/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "580e8eeaa307a9b3b552242167055c274e5f6929e9df9cbc2b642b326dfc4d5f",
+   "format": 1
+  },
+  {
+   "name": "roles/vfio_passthrough/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/vfio_passthrough/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "6667218fcf24787da5d29c02576402f4cbfddb058d32609df619be4af7b96eac",
+   "format": 1
+  },
+  {
+   "name": "roles/vfio_passthrough/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "f46c9e228367fb436478687f7ae4d723a37c83a807bbbc31707ad49e3db1fb5d",
+   "format": 1
+  },
+  {
+   "name": "roles/vfio_passthrough/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/vfio_passthrough/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "1781288996ad0e2da43fcd9466f3f3cc2e0d50a9cf671f7a4dfa74ec215c9ea4",
+   "format": 1
+  },
+  {
+   "name": "roles/vfio_passthrough/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/vfio_passthrough/templates/vfio.conf.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "ac4d44542c1fa93e4a8ede134508e2b072cb3a6c48d06be91a1fcbfa61d84a58",
+   "format": 1
+  },
+  {
+   "name": "roles/vfio_passthrough/templates/modules-load-vfio.conf.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "a8dde96cba0289a86dfc92aa73f5f3e273f763b089de547a6f67e7d889dbd29a",
+   "format": 1
+  },
+  {
+   "name": "roles/vfio_passthrough/templates/grub-vfio.cfg.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "bcbb319c27720acaf3bc668f999095b5d07566208e103f59318762806b812f7e",
+   "format": 1
+  },
+  {
+   "name": "roles/vfio_passthrough/handlers",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/vfio_passthrough/handlers/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "81547267bb4ca6cedc1c53ddd0b0c4b8aaae3f011171df7db5a013e93842bbfc",
+   "format": 1
+  },
+  {
+   "name": "roles/smtp_relay",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/smtp_relay/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/smtp_relay/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "c3f30b2cb4983271c3ec889388989cfebc21ee593753d35d11f23e78410b4049",
+   "format": 1
+  },
+  {
+   "name": "roles/smtp_relay/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/smtp_relay/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "403eaf97d79d8255c060ceb305e1590da385bf7cb7b7fb4d190602ac942959af",
+   "format": 1
+  },
+  {
+   "name": "roles/smtp_relay/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "1c540dad88479ecaa41f73fd575521b4f68b87ada27d9cfa5ad0e5f303701ba0",
+   "format": 1
+  },
+  {
+   "name": "roles/smtp_relay/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/smtp_relay/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "42cd05bd9e95a63621e7776c228a5a2969cc0f526a4dac8f4e4f1f997610536c",
+   "format": 1
+  },
+  {
+   "name": "roles/smtp_relay/files",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/smtp_relay/files/postfix-queue-collector.sh",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "e2107a6ef4c05b4b59cb3b8041785cb02a81d804b0251e721bd1c453c3a4deee",
+   "format": 1
+  },
+  {
+   "name": "roles/smtp_relay/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/smtp_relay/templates/aliases.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "308c6b3dba7a1d062e2c429e70015206ac1978baf449f09d699bbc972f085ef7",
+   "format": 1
+  },
+  {
+   "name": "roles/smtp_relay/templates/sasl_passwd.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "4c32dba38fa56497ab643d6e46ffd85b006cfe1662e778af7eb8f7a06043b49b",
+   "format": 1
+  },
+  {
+   "name": "roles/smtp_relay/templates/main.cf.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "2252e2b2aae1357980dfc919ac3c9f8ed0d07bbe12ce511f934b3a6c35946bc1",
+   "format": 1
+  },
+  {
+   "name": "roles/smtp_relay/templates/master.cf.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "2587c3372629a91b1e36675f6d784f06907c4ca212ffbd26e8697b470bbc6976",
+   "format": 1
+  },
+  {
+   "name": "roles/smtp_relay/handlers",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/smtp_relay/handlers/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "3ae2b0a95191934358c3ecb11b1f260a272941181fa1cb16cf5b64766dab4666",
+   "format": 1
+  },
+  {
+   "name": "roles/textfile_collector",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/textfile_collector/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/textfile_collector/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "c6dc4c4639d460444827c3bcd6c1274be84821cee4f457082fce09a6a95c67b6",
+   "format": 1
+  },
+  {
+   "name": "roles/textfile_collector/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/textfile_collector/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "aceb245d5ced52a90f9ccb766465c565276d29c42d28189dd39e27d0e2ce3cb0",
+   "format": 1
+  },
+  {
+   "name": "roles/textfile_collector/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "064246a8bf6c70e554fa73b052c25fcb15e5c40a45dd3d17dad3b70e55a93248",
+   "format": 1
+  },
+  {
+   "name": "roles/textfile_collector/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/textfile_collector/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "604e3ecdea2f05ed3412677ed0ade07d6c234a75be1c7a9942cadd40b5eb5558",
+   "format": 1
+  },
+  {
+   "name": "roles/textfile_collector/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/textfile_collector/templates/collector.timer.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "54a0078c5eb4f919a7878bf68ad6461ef4079288d2928a2e1b5c024f9ec9e794",
+   "format": 1
+  },
+  {
+   "name": "roles/textfile_collector/templates/collector.service.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "49b1b86e2a31691d6033e4c9b88f3a35803ca5eefc128fb129093ee04199d615",
+   "format": 1
+  },
+  {
+   "name": "roles/.gitkeep",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_encryption",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_encryption/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_encryption/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "ca2bf29079c3c780cfc837079a77ceb2c36253abcacaad92000dc63514aa5851",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_encryption/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_encryption/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "61ff08ad9bfa570744b303bd67a258776aaee0f047616571ec2d3a1cef469537",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_encryption/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "a11928b4a9cdac8b990f281a3864ac78476cf4834e893eb8c0631134d2f9d43b",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_encryption/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_encryption/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "46af277b9175ca55f65886b852961c87b908dd8e9fe488025059ff636d2f39ff",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_encryption/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_encryption/templates/zfs-mount-encrypted.service.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "9512a24eb84f10d11b95da419c99e12cf84dac61a4055340445ed9d082786da0",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_encryption/templates/zfs-mount-encrypted.sh.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "4309c543b9740921a69ceb4d8ca6bd54eed242286b258cfb7ac187d0367d162f",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_encryption/templates/pve-start-encrypted-guests.service.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "372404bfe5d32e084f209b01bba8624270b04ed0b16cc755e251da68de104d4c",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_encryption/templates/zfs-load-key.sh.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "dacd21f67196703dbd9eb8b3784732e7313b40d1c3b808e98eb845309704abe9",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_encryption/templates/zfs-load-key@.service.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "d3cf159ca3626a63b9916b15dfd668864956384d3e5423776f2d443ccdc0334c",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_encryption/templates/zfs-start-encrypted-guests.sh.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "37d431c39c6b33e43d7b5a59f009fe464a74f9065f54adb10973fa1daa915dc8",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_encryption/handlers",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_encryption/handlers/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "bd4e46b30cefa49b56640c8602e061b5fbb4246ad7d09c32be1b6b4a8674c55f",
+   "format": 1
+  },
+  {
+   "name": "roles/alloy_host",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/alloy_host/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/alloy_host/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "34f7c3816eafe62d1d688a2aa5da32bbdfa7c7ed00a40070abefe057d3dcb424",
+   "format": 1
+  },
+  {
+   "name": "roles/alloy_host/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/alloy_host/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "269be53b91a82d63f8f57a97f2bef43f5fe4bc647b15d522ed642dd98dcac5ac",
+   "format": 1
+  },
+  {
+   "name": "roles/alloy_host/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "c125d91ac557981f39d11282e439df2c1db7f367fa90e838eac0ede42db33b4d",
+   "format": 1
+  },
+  {
+   "name": "roles/alloy_host/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/alloy_host/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "b0d9b9bd5ab36e225f3f7668667c525bda2634f7fd4548573a17755e62add80e",
+   "format": 1
+  },
+  {
+   "name": "roles/alloy_host/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/alloy_host/templates/config.alloy.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "8b4f3ab951633ea06d8b7076e4ff1a9b09165d160ee00c8fb6d71b66473f3cfc",
+   "format": 1
+  },
+  {
+   "name": "roles/alloy_host/handlers",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/alloy_host/handlers/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "9c0d5b4940f34e9583edd895c33bc909313d75db1bc5326765059af8d07bf2e1",
+   "format": 1
+  },
+  {
+   "name": "roles/unbound_exporter",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/unbound_exporter/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/unbound_exporter/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "37fd486098e87b845bb557f663ff97b33980ba78004a100872449609437c4682",
+   "format": 1
+  },
+  {
+   "name": "roles/unbound_exporter/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/unbound_exporter/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "11b8b875e9e71d279e14f5cc5435b3a77b4b025f6e7268e5c943843feaa86056",
+   "format": 1
+  },
+  {
+   "name": "roles/unbound_exporter/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "30f2ad7bdaaba7f169eee163649cacdee2105e1480ca3981c1474afe9707a564",
+   "format": 1
+  },
+  {
+   "name": "roles/unbound_exporter/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/unbound_exporter/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "e815a4d28786f4caa6e10253dcc6f6f58c6c5a875176676ea707b8255145bad0",
+   "format": 1
+  },
+  {
+   "name": "roles/unbound_exporter/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/unbound_exporter/templates/unbound-exporter.service.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "8954397fed0a055cf839f0ebb4d917e6de19857e763ef6de2c1aeaefa623f666",
+   "format": 1
+  },
+  {
+   "name": "roles/nfs_tls",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/nfs_tls/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/nfs_tls/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "05296bdd8450a4529b0dcf1d7104f11db16af66b70bc160099ac6bb2992d0e53",
+   "format": 1
+  },
+  {
+   "name": "roles/nfs_tls/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/nfs_tls/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "88cdc2f4006e72943c444f97c7590ef1789f76a9e809d74665871ad51b9f380d",
+   "format": 1
+  },
+  {
+   "name": "roles/nfs_tls/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "5f4ddb959cafd70ea3f0bd4e16602d0e41369229b31e203c140f02bec8a47c90",
+   "format": 1
+  },
+  {
+   "name": "roles/nfs_tls/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/nfs_tls/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "16642dd5a4c039bdc3a967bf96841653c808825372ac6cbae5e028b7b53cd8b2",
+   "format": 1
+  },
+  {
+   "name": "roles/nfs_tls/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/nfs_tls/templates/tlshd.conf.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "2a9976e68a533b0cbbf21ede24c7e35ea2d90c62ff08291949fc3fe1d939c9ec",
+   "format": 1
+  },
+  {
+   "name": "roles/nfs_tls/handlers",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/nfs_tls/handlers/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "b4c01ec2bf6108860791beb2a2ab782747829aa805b3e38783622314df9782c2",
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_sync",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_sync/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_sync/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "e82348eab2875e0cd9c6cf8a0a20eb5d6d7ff38747975e6467f002cd03daeab6",
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_sync/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_sync/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "c14a0c24dbff9fc244d52ae3b9c0e6dc4176f7a9ac333142815ce6ecab320bc2",
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_sync/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "e501d13f3f8f9be4af3fe3da46573d77d223a59f7259fda26cebd577014b0218",
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_sync/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_sync/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "28efdd0452ff098b51d5b99ccb1005275d846cada31c586911c9a90540ee8244",
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_sync/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_sync/templates/adguardhome-sync-metrics.sh.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "16f7ce00eebd3761b6c5377113b86e938894ef6c9e331668702962e7a1bc2c8d",
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_sync/templates/adguardhome-sync.service.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "18afcb4d391c139bb3401df2106b3a9825262bddc9b03d2cadb6758ee36944f9",
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_sync/templates/adguardhome-sync.yaml.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "0f2cf5841a947f057e7ab3e941fc1219ffa94dd74518e1a6932e4e0197311f3e",
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_sync/templates/adguardhome-sync.timer.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "3cfb7cb48599e36c64bdfcd5e8a3a9506dc5f1d7b72be1e6979e9573fb055b7d",
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_sync/handlers",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_sync/handlers/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "bd4e46b30cefa49b56640c8602e061b5fbb4246ad7d09c32be1b6b4a8674c55f",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_arc_cap",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_arc_cap/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_arc_cap/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "8f3a979a1f0a8060d5508a7cfb74a4dd82622c57b5416dd32b0a78b69bb2b4d1",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_arc_cap/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_arc_cap/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "cd75679f46896f90e7a96f552400497b147c23319c820258ef80783db30be995",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_arc_cap/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "8471ac24a567dbd0d2ddd8503612eed175d0ee9e42039d1c3dda3684198dae4d",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_arc_cap/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_arc_cap/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "d28f5a0e11e39965258335c17000527015dcb8d3b327b80a9b8cc739c7869f75",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_arc_cap/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_arc_cap/templates/zfs-arc.conf.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "921d8be029cd35f497647ab926aa9c9bb9b56f4b3ea87ac8b5d3d07409d89a58",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_arc_cap/handlers",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_arc_cap/handlers/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "6957768c1cb56ad6edebe20c9cae4b3e591faea1d775f1b3ee1793047b1263d7",
+   "format": 1
+  },
+  {
+   "name": "roles/compose_app",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/compose_app/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/compose_app/tasks/nginx.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "d0243874597eca2a268746714441c52475e252a3322bc6ff4cdd05e68992e904",
+   "format": 1
+  },
+  {
+   "name": "roles/compose_app/tasks/backup_lib.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "b61e0c7fe81667a82299f3390a9bc5bcc0c23dab7321defb10c0e7c0d492fa35",
+   "format": 1
+  },
+  {
+   "name": "roles/compose_app/tasks/docker.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "cdad05241319bc77304144170a1fdc589d84707b18e1ed30f68364cddf42c039",
+   "format": 1
+  },
+  {
+   "name": "roles/compose_app/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "c49bb982bc6545b11bc31e40ae38fbf6af230302e48b7349a1e427d18a7c3b1b",
+   "format": 1
+  },
+  {
+   "name": "roles/compose_app/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/compose_app/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "c3d7f71086a3aca49091d8eeb1a48d5b7b4fc596931ca47820e2e2eee3918aa1",
+   "format": 1
+  },
+  {
+   "name": "roles/compose_app/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "3a639b52028a8d79280a04d2813f531fb67ff29216c6a1a58063763981f21d47",
+   "format": 1
+  },
+  {
+   "name": "roles/compose_app/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/compose_app/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "c1565876f911c6fb9537b624127e17b4911fa33a3b51926f66f7647fb82edb32",
+   "format": 1
+  },
+  {
+   "name": "roles/compose_app/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/compose_app/templates/compose.service.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "722318d0f06ac58b920183fc2211b789cdc8d952616fb0e5010b8dd8a6213311",
+   "format": 1
+  },
+  {
+   "name": "roles/compose_app/templates/write_prom_metrics.sh.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "d2379a46707681eae5edaa08547caebdb39934690db6f6a1a2a3d15788981687",
+   "format": 1
+  },
+  {
+   "name": "roles/compose_app/handlers",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/compose_app/handlers/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "47f5f3157f78fcec6111a14ec051f361b9d454c3d8475735643c6f74f53f78ce",
+   "format": 1
+  },
+  {
+   "name": "roles/apt_signed_repo",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/apt_signed_repo/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/apt_signed_repo/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "c408e6f17b91e5e5ce7e6e60f5dda40d19afaa9540f074f8e1cd98f6370abea2",
+   "format": 1
+  },
+  {
+   "name": "roles/apt_signed_repo/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/apt_signed_repo/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "b5c569100b55784d39cb59e7a2706b02a67815c81ee28f250202f807e06a35e7",
+   "format": 1
+  },
+  {
+   "name": "roles/apt_signed_repo/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "6373fb3fde9f3e32f4d9ddefb6a0750a37bc80c153f1f76503a07146698c4155",
+   "format": 1
+  },
+  {
+   "name": "roles/apt_signed_repo/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/apt_signed_repo/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "87b9986346a192d992eae22818760f5dcd29a4a5d532e4b4df7979030818e412",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_ha",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_ha/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_ha/tasks/replication.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "9991c91c0bb760740efadeabc656df63385f888522a8ba4906ad762f14229a39",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_ha/tasks/resources.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "7321b59d90cef3217c82a9c0a5989896719591dc853db7826ebfe1f5fca3c421",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_ha/tasks/rules.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "0c1eaf3266f8d52a8b18d89725cc58781faab260aff4c2d6d97454124b4e5ab2",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_ha/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "b500c1352cb64a91066fb4c7a43fc6c8dc0a6d56bdaa60b5eb8400b77f171ee4",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_ha/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_ha/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "f05eb91194e33ca061745bfb38100a0ba9e5bbca0de1aed2d52f12ec42be6dea",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_ha/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "5fe03bc626527bf440f95144f673211216b0a693d2e334630774f485c994352c",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_ha/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_ha/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "56726225acdde3235fa3f038d5facf32ebe36831041cd0d461d3e7aca566691a",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_vm",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_vm/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_vm/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "f94284b789497ec7a52d076e05dd897dd2e8cd9377ec752729f39ae2eb38d12f",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_vm/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_vm/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "aab230fca2c4563e112c8b7d037878e793c551ea3a36cfc75dcf4427c5d95fc4",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_vm/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "a6a86161a20eae657af35e05ffddd0d8a708d5beffa52435b44567b84859ebc9",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_vm/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_vm/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "c1c8d546fc481f11abe196dd58b2b516113feea414653e072e739bc31be28745",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_exporter",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_exporter/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_exporter/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "1421779709ed1a547127d471f9ae5e7d7bac1f0be50976937b1f1f2cf4cc1c02",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_exporter/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_exporter/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "a264aac3ae509849bc2c1268c3777b54d60d0da254db17a4d868c500b9d25890",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_exporter/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "86a4dd6e6670b8e4520675ce9e93eef0dfe335ba7718703346961cefd7bfaf5b",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_exporter/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_exporter/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "7aa29abf2a98baa178b2f80abb27f0d68c66c6328a479d063ed3870068e4a950",
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_exporter/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zfs_exporter/templates/zfs-exporter.service.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "285f6069a2be9d40b0ea5b51e8adbc19ed15a992b3a5267aa1139739615d2154",
+   "format": 1
+  },
+  {
+   "name": "roles/tailscale",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/tailscale/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/tailscale/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "deab5be2e83636417e5d1035b1d00d0b4bb465bf97b7a915994b0bbd334907c8",
+   "format": 1
+  },
+  {
+   "name": "roles/tailscale/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/tailscale/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "cc293ca9f97caf780b68f4526c3064ad39c0789dd8e36d3032cef01a46b6a6fc",
+   "format": 1
+  },
+  {
+   "name": "roles/tailscale/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "e2d716f476528e693f0c562312fa91cafbc90346606ce7c9ac9d2d5502dd2cb2",
+   "format": 1
+  },
+  {
+   "name": "roles/tailscale/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/tailscale/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "75bfdd398b840f8e7eaa163bd100d77c62f5d5b883a959662c55b79e037e161a",
+   "format": 1
+  },
+  {
+   "name": "roles/tailscale/handlers",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/tailscale/handlers/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "1e8a55b327a802f6a90d875862566eccb9415b13d2da6f1c9def1da32f40e39c",
+   "format": 1
+  },
+  {
+   "name": "roles/k3s",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/tasks/etcd-snapshot-offnode.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "1f2243cdffa5a9b3b697a2914aa12a38c99cd8a4c9afeada53a226e59b454dcd",
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/tasks/install-script.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "6783e0fa0ccfb836a3e514724ea0b5dcbbf01cc3e55617fc7ea47f947181558e",
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/tasks/agent.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "ca048872d788228b5f4eeb9218074978b893092067dfdc2f45bd989ab5d04d13",
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/tasks/server.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "74e97376fb508b855d3124bf01dc76d55546191b6d0e2029164840e56ece1d92",
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "204e769728b0417788478edc421557d59382ae748986ff2eeff7c195a49b2f46",
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/tasks/gpu.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "6345ed6e06debda7115d0af2e7493ba8e16a5bf1c82902e2768cf29098398886",
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "fc48a28556ffd8068923ba4aa94d412481350bfd928c31b17a52feabcaf24f14",
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "95bb2edd26be9e6159b74507e91a0847dc53249ad97dc0bd05e81b61a21894b9",
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "c7b048eda040b084823d012743127852a23020ef0ca79a93c8c8fdb26fcf1ed4",
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/templates/k3s-agent-config.yaml.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "bef681280b3944754d7569be2063f5e72aa591f4c72da461d5a692e7b6c9aba2",
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/templates/k3s-server-config.yaml.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "4fae2c101a0b95a1f2dcef251397fca674abe5adee1ca061219fcaf5eb0ad886",
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/templates/kube-vip-manifest.yaml.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "aaa7676ab877859c3998c518784ef397a67d1666da8f780e9868e299c14c1697",
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/templates/k3s-etcd-snapshot-copy.service.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "caee43bae14c721433789e73e5544b533edd2d1d7c6f1f996c4a777728c0da5b",
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/templates/k3s-etcd-snapshot-copy.sh.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "4e14d7fb5f2ca3a0f8c9b37abe3305dccd683f58474b1b7596c658e149f4baa0",
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/templates/k3s-etcd-snapshot-copy.timer.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "c6b2efa569f8c1aefa9d01a4b9e04b1ea8410a101f36ac6925410d5c6f3b9a42",
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/handlers",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/k3s/handlers/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "47865f800a9591ea22235db887ba243ffd23df44aa952ae9b76256af4e169019",
+   "format": 1
+  },
+  {
+   "name": "roles/postfix_null_client",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/postfix_null_client/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/postfix_null_client/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "ecd58f1a37b0b0cbc7b87c60883464b08fc9260a84ae20c9f57eccbd1dc9758a",
+   "format": 1
+  },
+  {
+   "name": "roles/postfix_null_client/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/postfix_null_client/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "ac4095af32100e6ae37311f5b4c0fe6762769b6be924704104bf6d229cb32f2f",
+   "format": 1
+  },
+  {
+   "name": "roles/postfix_null_client/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "e9e2846d22456ad0a8ce1e35dd1b8efb207ab2f24fcaab64b68d60f50832137d",
+   "format": 1
+  },
+  {
+   "name": "roles/postfix_null_client/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/postfix_null_client/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "25ee17321e8cce9b74cec6f762a74cb7a3ae65c51b9f9880c45d6fbba4be3ca6",
+   "format": 1
+  },
+  {
+   "name": "roles/postfix_null_client/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/postfix_null_client/templates/aliases.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "780525b7bf7131fab042f62f27885743d9ec5327f73d43a6bc508a7393fdbe5c",
+   "format": 1
+  },
+  {
+   "name": "roles/postfix_null_client/templates/sasl_passwd.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "555c93cfe74659a30a153990d842c0dfd603e5a60d8dc53e0ba472031fe7d7d1",
+   "format": 1
+  },
+  {
+   "name": "roles/postfix_null_client/templates/main.cf.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "746bf398e72169d0bc599fb8f161485887ff15b5dc2b0d207cf702e492146843",
+   "format": 1
+  },
+  {
+   "name": "roles/postfix_null_client/templates/virtual.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "bc3239edcd11d8b239ca71a0bce3c8b387ca5320c772166e0ce293b1c7a1dccd",
+   "format": 1
+  },
+  {
+   "name": "roles/postfix_null_client/handlers",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/postfix_null_client/handlers/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "8cbffe47badc41dff5e31847e4652f26b1c53ece52ce6e982f83a8c99da035d4",
+   "format": 1
+  },
+  {
+   "name": "roles/acme_certs",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/acme_certs/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/acme_certs/tasks/seed-target.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "b7ba535b9ada513ba079d39520128abac56896356e1e675fb5249f7310a95ebe",
+   "format": 1
+  },
+  {
+   "name": "roles/acme_certs/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "25945b3080215eaa3df957bf57e6347157cf2a517e55b866b5f7693aceb851e1",
+   "format": 1
+  },
+  {
+   "name": "roles/acme_certs/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/acme_certs/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "30de590badababdc6ed93daaf3355a00bc804a2a5e0459270e1c8a964998554f",
+   "format": 1
+  },
+  {
+   "name": "roles/acme_certs/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "814eb6d89b9ec9b6a79d71b15bfd0d8d679c349356d2e3ec586fe4e2211908d0",
+   "format": 1
+  },
+  {
+   "name": "roles/acme_certs/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/acme_certs/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "cd2269e65df3f9065380a38f4157eaabcb99fb8bfa8cddc5cb7431a0e3b1bfc8",
+   "format": 1
+  },
+  {
+   "name": "roles/acme_certs/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/acme_certs/templates/homelab-cert-reload.sh.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "89ed640900e61de190a621b6b94f8324566d97a86ef95a30f395c4cc356fafd0",
+   "format": 1
+  },
+  {
+   "name": "roles/acme_certs/templates/cert-receive.sh.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "f6f2534469962b67e49c4e3a2c39a82a539cd4dee7fdc35277d7a67f0e14b16a",
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_home",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_home/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_home/tasks/api_base_config.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "44494fb671b5c365c55cf541ba3157e3b3f87d84bc106f223a1d1dabdfde6c6c",
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_home/tasks/api_config.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "9fe05544b55f07a0e6200a739e4fcd8a4193d32e526e81524ab97cc10ef90986",
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_home/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "ddf983178a3e80ab465bae1b636ad9a7bc0d7833b0f058fa806d10da2a4fb4e8",
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_home/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_home/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "302af66ce1a8b1b00273d044f09a9610ceb2354ec941095eb09f6b251f313cb4",
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_home/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "1299b26376f1b9fb3374bbd40fb9459383efaf19932a8551d596002a42ebe4c0",
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_home/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_home/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "70783bddd77dad9550834e279b08522644cc2a59d0eac72db5020efd762f8c9f",
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_home/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_home/templates/adguardhome.service.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "b5c40ef43da3b00e9ffbf17b7e9aa0def1a357f5a6b85b960857919e2bb4ac49",
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_home/handlers",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/adguard_home/handlers/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "ebe1b6a66ba295634051eb2cf4f529a6d208abbbda8f88524ba9cbe7454f40d3",
+   "format": 1
+  },
+  {
+   "name": "roles/restic_offsite",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/restic_offsite/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/restic_offsite/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "30c5436bed5c2a9b22b05bf309d398a37bd571c3f0bc35f8391a09a1872502d2",
+   "format": 1
+  },
+  {
+   "name": "roles/restic_offsite/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/restic_offsite/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "419c54ad7a29260588f02f1a32530b66e20b5e62eb0e413e9c455cd2afd10899",
+   "format": 1
+  },
+  {
+   "name": "roles/restic_offsite/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "e853745a64449ed5d2c2e666104305b284e439e548b85e8ea018b01ea93204cf",
+   "format": 1
+  },
+  {
+   "name": "roles/restic_offsite/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/restic_offsite/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "8833c2551a4dabad513f9271c0cb197937e35e26a9b07639fd11371cfbac1962",
+   "format": 1
+  },
+  {
+   "name": "roles/restic_offsite/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/restic_offsite/templates/restic-offsitectl.sh.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "32dd5279146033bdb4901823f51cdacd17e0f8f3ee2e3925d6ed576aa402ff3e",
+   "format": 1
+  },
+  {
+   "name": "roles/restic_offsite/templates/restic-offsite.service.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "bd093f9c03f4f220bd1d7c4f4fbef07de4d913430d26dcb5a979f0868024892f",
+   "format": 1
+  },
+  {
+   "name": "roles/restic_offsite/templates/restic-offsite-verify.service.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "a69d8b7435f35f5c1b19f8fcb7ac6186966da9edac3a9a6dade87e614eefd91f",
+   "format": 1
+  },
+  {
+   "name": "roles/restic_offsite/templates/restic-offsite.env.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "e4379eb0025a56f3c9fc8dfdbfe12866c6941bffe07fca01daa647d17e397d88",
+   "format": 1
+  },
+  {
+   "name": "roles/restic_offsite/templates/rclone.conf.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "3f779219070e415e55942f44510c111475868b14a582357443bc9498779f8fc0",
+   "format": 1
+  },
+  {
+   "name": "roles/restic_offsite/templates/restic-offsite-excludes.txt.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "46bc6d5dfa9038f8e3c05990b545b1dee296afb775f2d960029feeb976a81f6b",
+   "format": 1
+  },
+  {
+   "name": "roles/restic_offsite/templates/restic-offsite.timer.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "84b0cac20e0207e2cf278ecfa2afdef30774abc67d1f85dc22f29da21248e294",
+   "format": 1
+  },
+  {
+   "name": "roles/restic_offsite/templates/restic-offsite-verify.timer.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "247b9e21ce50b24611eeffaa20065a899204e9351bda1ffc06a912da3bf122ca",
+   "format": 1
+  },
+  {
+   "name": "roles/restic_offsite/handlers",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/restic_offsite/handlers/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "0ce09607cd3ec01ce696128edb008e6c7af55e96dddb54b06e3a1301f08a1901",
+   "format": 1
+  },
+  {
+   "name": "roles/qol",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/qol/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/qol/tasks/neovim.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "8753f9bcef8554ed010c701e5312a9924fed082cdab342c831d55e65aa210f63",
+   "format": 1
+  },
+  {
+   "name": "roles/qol/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "83d270c685c23999a3315fa338098e2756892bcfdb6b6e97d84d3db5f5a0a359",
+   "format": 1
+  },
+  {
+   "name": "roles/qol/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/qol/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "62563c7e3ef65e31bcb2a983c4b06e894c49512e89a2cc1a0a1ab86144ec9f40",
+   "format": 1
+  },
+  {
+   "name": "roles/qol/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "b689a06a7510e11c1da803179305e03042e763ba6f91a623b77df984453095fb",
+   "format": 1
+  },
+  {
+   "name": "roles/qol/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/qol/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "a55ed7f3f9fe2a49bf497acf5d301e65f94bcefcff3b1e5cdcd52f61bf7db60e",
+   "format": 1
+  },
+  {
+   "name": "roles/qol/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/qol/templates/alias.zsh.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "a5649dd369b391699d1a44332e18bd239446dbed6f28de91a7000f2c2ba9b5c6",
+   "format": 1
+  },
+  {
+   "name": "roles/qol/templates/init.vim.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "a34f585ba3df25d1c4654edc6e0e4e0421f1d3764e504bfd84b4823a219f820c",
+   "format": 1
+  },
+  {
+   "name": "roles/qol/templates/zshrc.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "b4b22fc8d02683f41ae1f00a157d6f5fc1c65e082aba86945b05f775df562f55",
+   "format": 1
+  },
+  {
+   "name": "roles/unbound",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/unbound/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/unbound/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "f92a9a4bec38f28afd7a0436cac49f27b34feac570d477e76fd58b6cd483cec8",
+   "format": 1
+  },
+  {
+   "name": "roles/unbound/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/unbound/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "3bb11636dad96fd365561ca83fda98c4ed9eb155bcd97f2281a3dcaef77c56e2",
+   "format": 1
+  },
+  {
+   "name": "roles/unbound/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "6134b26a400d74b77eba4f86535e7ac49f108131f4c38122114236c05046bb38",
+   "format": 1
+  },
+  {
+   "name": "roles/unbound/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/unbound/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "5391a76acde63d45d00b144d509273fcf5d5e066b2d1847a11a6924e98a5aabc",
+   "format": 1
+  },
+  {
+   "name": "roles/unbound/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/unbound/templates/unbound-managed.conf.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "7a20b93541a53b629d1e5d1c4800e9c6df3b19dd9af33436ea042058d545a925",
+   "format": 1
+  },
+  {
+   "name": "roles/unbound/handlers",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/unbound/handlers/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "96e658d029465f90a954239749559ed9f3199f8100f49eabcc9c1ecad568a458",
+   "format": 1
+  },
+  {
+   "name": "roles/zvol_mount",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zvol_mount/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zvol_mount/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "190c1c284a5c719dfc367eba1a36d939899592057ce6828acb97d86c726c27a4",
+   "format": 1
+  },
+  {
+   "name": "roles/zvol_mount/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zvol_mount/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "090b0fb8b09d9b32f87f3bc98c8c751d636b070dc9a8d71e709fd4e1d471f4ca",
+   "format": 1
+  },
+  {
+   "name": "roles/zvol_mount/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "7f70541ec022760692b5988eab357aea063383f7f487258220a0966ffca5eb8e",
+   "format": 1
+  },
+  {
+   "name": "roles/zvol_mount/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/zvol_mount/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "c76933e6202cbc761850d4d21f4852f465a58c6583cd705fa4b7edf76b2404d9",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_backup",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_backup/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_backup/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "11e84d23e031b3a43b0a82130e58c18890928b48115c4c6022e6c3de7b2372a9",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_backup/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_backup/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "a160a7ddac12c61d67bbe936da48e022a0e9a2af6ee00e10b7055a9846c29b66",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_backup/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "393d90f3580d11ee9b7d13c6d1a38fe530be34e5db8a7f1aeba81e99d167f47a",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_backup/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_backup/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "bf9c32f2b1465a27118ab73986b4314ecaa5bb98035a1e538b51e95c631936f2",
+   "format": 1
+  },
+  {
+   "name": "roles/resolv_conf",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/resolv_conf/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/resolv_conf/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "efac734bc4456139c7a63e3c6c6715982d269d891962b4a83c6b58f61f35adf1",
+   "format": 1
+  },
+  {
+   "name": "roles/resolv_conf/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/resolv_conf/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "06e4d282251f5938bfd9849505ee7c09221d5f0daf23d2f62178059a18da952a",
+   "format": 1
+  },
+  {
+   "name": "roles/resolv_conf/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "8911a987c740a5541e389ade5b5057035c71aaff6e725ce58700f6f0b06e10cc",
+   "format": 1
+  },
+  {
+   "name": "roles/resolv_conf/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/resolv_conf/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "52f6c5afc9bceebe88a57d3d52b7e09e5d7497ab1d9a58b31214677938ee2e66",
+   "format": 1
+  },
+  {
+   "name": "roles/resolv_conf/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/resolv_conf/templates/resolv.conf.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "7a511b8eceece99f313193e225b9fe9e03a79d02b3008f3fa9e05e504cc98924",
+   "format": 1
+  },
+  {
+   "name": "roles/encrypted_swap",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/encrypted_swap/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/encrypted_swap/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "13a202702dc04c6ec9c61dc567cb4cb8ca786b3d8a5e9dde9208a34a4122874a",
+   "format": 1
+  },
+  {
+   "name": "roles/encrypted_swap/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/encrypted_swap/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "fa9fea8f67ebd9f2c596022a95af97205da2aaa31f20436944431da57b0a66e4",
+   "format": 1
+  },
+  {
+   "name": "roles/encrypted_swap/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "6680624f2f78eefdc555e159181c4e2498252e2a9bcac6f3ad1144c1fedba391",
+   "format": 1
+  },
+  {
+   "name": "roles/encrypted_swap/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/encrypted_swap/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "f471d1b7ef4020e79cd8dc3086d2b65d49049a8204381ecc1bde6a1de1db1a01",
+   "format": 1
+  },
+  {
+   "name": "roles/encrypted_swap/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/encrypted_swap/templates/encrypted-swap-finalize.service.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "2e605e788e7dc3c0ffb3b402a2baa0d352c7916cc6b148f9da7c3585e805fc45",
+   "format": 1
+  },
+  {
+   "name": "roles/encrypted_swap/templates/encrypted-swap-finalize.sh.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "a35b4546889443544b99b6070ad4f037ccf41fbe39f286e8b057f7b25249c8f4",
+   "format": 1
+  },
+  {
+   "name": "roles/prometheus_exporter",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/prometheus_exporter/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/prometheus_exporter/tasks/service.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "b21127efb3d0b053fae5e21a3143e8ca718c75d39a4d9c8d5d74ecf5a7066617",
+   "format": 1
+  },
+  {
+   "name": "roles/prometheus_exporter/tasks/install.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "b31f0aeaa31b808a6cd8f2cb447627d618cd3ce8e922d7f01631e403809a0b7d",
+   "format": 1
+  },
+  {
+   "name": "roles/prometheus_exporter/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "1e43e96f6567beeade6d49ed756fbf9d8ad93753d1ba1b1f5726e99320e9a68c",
+   "format": 1
+  },
+  {
+   "name": "roles/prometheus_exporter/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/prometheus_exporter/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "a13b26d64e2d1947f4dcc282d0ed5c59e7ee93655f8bf7e2a6ed4f452e7ecbf6",
+   "format": 1
+  },
+  {
+   "name": "roles/prometheus_exporter/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "30ac781b022cff0c64a560c4ea5aaa04e88bf4badaa145b37e1011a4b695b640",
+   "format": 1
+  },
+  {
+   "name": "roles/prometheus_exporter/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/prometheus_exporter/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "c6317f759bdc70aeefa15cfa8ea2cadd79b8e85e4e24baf468b71158f1429b64",
+   "format": 1
+  },
+  {
+   "name": "roles/prometheus_exporter/handlers",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/prometheus_exporter/handlers/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "2ce02cddc98ec9344fa98865b953d4f7741ed81f7192d95b96d02957c6f955ea",
+   "format": 1
+  },
+  {
+   "name": "roles/base",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/base/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/base/tasks/fail2ban.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "29d641cbbb0b9e613b9c4834726418706180fc8e0f13c91e1d682ad8f4546503",
+   "format": 1
+  },
+  {
+   "name": "roles/base/tasks/ssh.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "2d5bceda3b9db7f498f548291b9d6fc01749abaf938f441a08e24d37464d5c5a",
+   "format": 1
+  },
+  {
+   "name": "roles/base/tasks/proxmox-repos.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "e4408edfd1a298cbab69f46db252f4c6aac4f633de57a4b8a6cf26e9d1230243",
+   "format": 1
+  },
+  {
+   "name": "roles/base/tasks/dns.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "ccd32ba1b54a85c568c24f837502eedef77a95735bc2e2b5e215e96249d14389",
+   "format": 1
+  },
+  {
+   "name": "roles/base/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "7c6929002cde22ee20b8da7ad4d3bc73df268d1b55a1d4a0102653ac16287268",
+   "format": 1
+  },
+  {
+   "name": "roles/base/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/base/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "f7c4f4603ff5c84addee771ee33813548510b55945fe66ebcdec670cf052ff46",
+   "format": 1
+  },
+  {
+   "name": "roles/base/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "a3db2e7cf09f9a1194f979a1419680388adaa170bfef7c24d0e12b67468f0b31",
+   "format": 1
+  },
+  {
+   "name": "roles/base/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/base/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "f2043bce85c3573cbdba5016c7f20e38c839b1b4e0f96eb1c4a470dc800bf98b",
+   "format": 1
+  },
+  {
+   "name": "roles/base/files",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/base/files/e1000e-tso-fix.sh",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "33819bffb864db7b3b0593f672e34ff5618a744c0e2ae7c2a9b71a6852b2db78",
+   "format": 1
+  },
+  {
+   "name": "roles/base/templates",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/base/templates/proxmox.conf.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "2b4565c7222602e70836a721e8e0c1b55f330192af9e0aaef09dac9f5b707d22",
+   "format": 1
+  },
+  {
+   "name": "roles/base/templates/sshd-hardening.conf.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "27d3d1d19bdd44cb314dfccad6f627e746e8ed72a35cb4b8f030cc68709ed7bf",
+   "format": 1
+  },
+  {
+   "name": "roles/base/templates/jail.local.j2",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "4653649cbe158c05fee793f6bafb509b787b5516fb5753498b8e77bfc4f1da5c",
+   "format": 1
+  },
+  {
+   "name": "roles/base/handlers",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/base/handlers/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "f32912ed23c55d362bfa21d9e0b3fe510fcb8f5d5e0f22aeb24922c081d7b6ed",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_lxc",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_lxc/tasks",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_lxc/tasks/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "92e990f38004f2dc96e2003dad00a6bd93a4619504b2d60d63f82664669e4f50",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_lxc/meta",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_lxc/meta/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "8de0dc598bcaca4dff2d0919b404d9a91ce3ec26a02f67eedc554a6c361d6f99",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_lxc/README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "df8db89188afa45bb55884057048c7c8b5792453199f2db83a2a3b1a64248950",
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_lxc/defaults",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "roles/proxmox_lxc/defaults/main.yml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "cf67472428f3b19e4c4e79770db2d6aac8f5d2ae4603342e62d38869caf276ea",
+   "format": 1
+  },
+  {
+   "name": "changelogs",
+   "ftype": "dir",
+   "chksum_type": null,
+   "chksum_sha256": null,
+   "format": 1
+  },
+  {
+   "name": "changelogs/changelog.yaml",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "bad9175edb7e6dd6185a7f38b976a8efbe3c66172f3b724f0daa9f77972e4580",
+   "format": 1
+  },
+  {
+   "name": "README.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "aa5f2c7bfd4e7011e03ad0d4ef025012851ae3e75ffe7e87dd57a6bfbe79252d",
+   "format": 1
+  },
+  {
+   "name": "MIGRATING.md",
+   "ftype": "file",
+   "chksum_type": "sha256",
+   "chksum_sha256": "5879856a052378dbabc77c2a26fd7a6a9f5cc780c647fcdfceb8ef7642e3c2f1",
+   "format": 1
+  }
+ ],
+ "format": 1
+}
