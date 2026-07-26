@@ -12,7 +12,7 @@
 
     - name: Check if Unbound service is running
       ansible.builtin.systemd:
-        name: weisssrv.infra.unbound
+        name: unbound
       register: unbound_service
       failed_when: unbound_service.status.ActiveState != 'active'
 

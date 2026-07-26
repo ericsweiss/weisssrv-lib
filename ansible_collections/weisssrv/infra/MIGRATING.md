@@ -70,6 +70,19 @@ The table is generated mechanically: for every role, each key present in **both*
 defaults files whose weisssrv value was non-empty and whose collection default is
 `""` or `[]`.
 
+A second, nastier variant is **renamed _and_ emptied**: the rename tables below
+tell you the new name, so the grep recipe finds it, but they say nothing about
+the value that disappeared with it. Both halves are required.
+
+| Role | Old (inventory) | New | weisssrv value to restore |
+|---|---|---|---|
+| `acme_certs` | `acme_email` | `acme_certs_email` | the ACME account address |
+| `acme_certs` | `internal_domain` | `acme_certs_domain` | the internal zone |
+| `adguard_home` | `adguard_tls_server_name` | `adguard_home_tls_server_name` | the DoT server name |
+| `nas_storage` | `nas_appdata_dirs` | `nas_storage_appdata_dirs` | the 11 per-app appdata subdirs |
+| `nas_storage` | `nas_backup_artifact_apps` | `nas_storage_backup_artifact_apps` | the 6 apps whose dumps are freshness-tracked |
+| `restic_offsite` | `rclone_version` | `restic_offsite_restic_version` | the pinned restic version |
+
 | Role | Variable | New default | Asserted | Effect if left empty |
 |---|---|---|---|---|
 | `acme_certs` | `acme_certs_key_from` | `""` | no | no `from="…"` clause on the distribution key in each target's `authorized_keys` — the root-equivalent key becomes usable from any source address |

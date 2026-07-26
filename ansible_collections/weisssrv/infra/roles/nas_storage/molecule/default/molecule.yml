@@ -101,6 +101,11 @@ provisioner:
           - /mnt/tank/backups/apps/home-assistant
         nas_storage_backup_apps_base: /mnt/tank/backups/apps
         nas_storage_backup_artifact_metrics_enabled: true
+        # Site data (default []), but verify.yml asserts the per-app dirs are
+        # created with the squash owner — the scenario supplies its own list.
+        nas_storage_appdata_dirs:
+          - grafana
+          - sonarr
         # A realistic multi-pool source set: files/archive-contract-assert.sh
         # pins the derivations (MAP/RMAP, lock list, restore targets, the
         # root-is-a-filesystem allow-list) against exactly these entries.
