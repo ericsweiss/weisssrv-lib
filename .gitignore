@@ -16,6 +16,22 @@ venv/
 *.egg-info/
 /build/
 /dist/
+# `pip install ./cli` builds here, and the anchored patterns above miss it.
+/cli/build/
+/cli/dist/
+
+# CI job artifacts — version-check-ci.py's default report (also produced by a
+# local run of the wrapper). Unanchored: no real content carries this name.
+version-report.json
+
+# Terraform — init/state artifacts. Reusable modules deliberately do NOT commit
+# a .terraform.lock.hcl: the lockfile belongs to the consuming root module.
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
 
 # Editor / OS cruft
 .DS_Store
@@ -23,3 +39,7 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# ansible caches (ansible-lint/molecule local runs; CI uses ANSIBLE_HOME=.ansible-home)
+.ansible/
+.ansible-home/

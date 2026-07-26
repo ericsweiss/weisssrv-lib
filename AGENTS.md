@@ -33,12 +33,17 @@ Start with [README.md](README.md), then
 
 ```bash
 python3 -m pytest tests cli/tests -q                       # scripts + CLI tests
-yamllint -c .yamllint ci/ lint/ taskfiles/
+yamllint -c .yamllint ci/ lint/ taskfiles/ .gitlab-ci.yml
 shellcheck --severity=warning --exclude=SC1091,SC2034 scripts/*.sh
+ruff check --config lint/ruff.toml scripts tests cli
+gitleaks detect --no-git --config lint/gitleaks.toml
 python3 -c "import glob,yaml; [list(yaml.safe_load_all(open(f))) for f in glob.glob('ci/**/*.yml',recursive=True)]"
 ```
 
-The library's own `.gitlab-ci.yml` runs the same set in CI.
+The library's own `.gitlab-ci.yml` runs the same set in CI, by including its own
+templates (`include: local:`) rather than hand-rolling equivalent jobs — so a
+template change is rendered and executed by the MR that makes it. Keep it that
+way: a new job here should be a new template plus an include, not an inline job.
 
 ## Editing CI templates
 
