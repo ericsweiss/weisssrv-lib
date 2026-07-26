@@ -1,0 +1,12 @@
+---
+# Miniature copier template — exists only so the new-cluster tests can render a
+# real template offline. It is NOT weisssrv-cluster-template.
+_answers_file: .copier-answers.yml
+
+cluster_name:
+  type: str
+  default: demo-cluster
+
+base_domain:
+  type: str
+  default: example.test

@@ -5,7 +5,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__, prune, rename, verify, wire
+from . import __version__, cluster, prune, rename, verify, wire
 
 
 def _root_arg(parser: argparse.ArgumentParser) -> None:
@@ -55,6 +55,48 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _root_arg(p_verify)
 
+    p_cluster = sub.add_parser(
+        "new-cluster",
+        help="[EXPERIMENTAL] render a cluster template with copier",
+        description=(
+            "[EXPERIMENTAL] Render a weisssrv cluster template with copier. "
+            "weisssrv-cluster-template is not published yet, so this command's "
+            "interface may still change. Needs the `cluster` extra "
+            "(pip install 'weisssrv-lib-cli[cluster]')."
+        ),
+    )
+    p_cluster.add_argument(
+        "source",
+        help=f"copier template: a VCS URL (e.g. {cluster.CLUSTER_TEMPLATE_URL}) "
+        "or a local template path",
+    )
+    p_cluster.add_argument(
+        "destination", type=Path, help="directory to render into (absent or empty)"
+    )
+    p_cluster.add_argument(
+        "--vcs-ref", help="template tag/branch/commit to render (git sources only)"
+    )
+    p_cluster.add_argument(
+        "--data",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="answer one template question non-interactively (repeatable)",
+    )
+    p_cluster.add_argument(
+        "--defaults",
+        action="store_true",
+        help="take the template default for every unanswered question",
+    )
+    p_cluster.add_argument(
+        "--pretend", action="store_true", help="render without writing anything"
+    )
+    p_cluster.add_argument(
+        "--trust",
+        action="store_true",
+        help="allow the template to run tasks/jinja extensions (copier --trust)",
+    )
+
     return p
 
 
@@ -70,8 +112,38 @@ def _report(action: str, changed: list[Path], root: Path) -> None:
         print(f"  {action} {shown}")
 
 
+def _new_cluster(args) -> int:
+    print(
+        "warning: `new-cluster` is EXPERIMENTAL — its flags may change before "
+        "weisssrv-cluster-template is published.",
+        file=sys.stderr,
+    )
+    try:
+        dest = cluster.render(
+            args.source,
+            args.destination,
+            vcs_ref=args.vcs_ref,
+            data=cluster.parse_data(args.data),
+            defaults=args.defaults,
+            pretend=args.pretend,
+            trust=args.trust,
+        )
+    except cluster.ClusterError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except cluster.RenderError as exc:
+        print(f"error: copier failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"{'would render' if args.pretend else 'rendered'} {args.source} -> {dest}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.command == "new-cluster":
+        return _new_cluster(args)
+
     root: Path = args.root
 
     if args.command == "rename":
