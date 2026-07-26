@@ -349,7 +349,7 @@ so no cluster, no SSH target and no Prometheus tooling is needed to run them —
 and nothing the ambient environment sets can change what they assert.
 
 That sentence is itself gated by `tests/test_scripts_have_tests.py`: it walks
-`scripts/` recursively for every executable (plus every `.py`/`.sh`, since two
-scripts are vendored rather than run in place) and requires each one to have a
+`scripts/` recursively for every executable (plus every `.py`/`.sh`, since
+three scripts are vendored rather than run in place) and requires each one to have a
 suite that names it, defines tests, and to be mentioned on this page. Opting a
 file out means naming it in that file's `EXEMPT` map, with a reason.

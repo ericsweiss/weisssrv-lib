@@ -438,10 +438,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if previous and have_api and not args.dry_run:
         try:
             existing = get_release(args.api_url, args.project_id, token, previous, args.token_header)
-        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+        except (
+            urllib.error.HTTPError,
+            urllib.error.URLError,
+            OSError,
+            json.JSONDecodeError,
+        ) as exc:
             # The probe is a REPAIR check, not a precondition for the release it
-            # precedes: a 429/502/timeout here must not cost a healthy release
-            # that the POST below would have created. Unknown -> assume healthy.
+            # precedes: a 429/502/timeout/garbled body here must not cost a
+            # healthy release that the POST below would have created.
+            # Unknown -> assume healthy.
             existing = {}
             recovery_check = "failed"
             print(

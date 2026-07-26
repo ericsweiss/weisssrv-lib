@@ -197,7 +197,10 @@ def git(args: Sequence[str], repo_dir: str = ".", check: bool = True) -> str:
         check=check,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        universal_newlines=True,
+        # surrogateescape: porcelain -z streams raw path bytes; a non-UTF-8
+        # filename must round-trip to the staging pathspec, not raise.
+        encoding="utf-8",
+        errors="surrogateescape",
     )
     return result.stdout
 

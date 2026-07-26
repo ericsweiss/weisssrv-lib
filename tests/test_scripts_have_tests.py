@@ -37,7 +37,7 @@ def collect(root: Path) -> List[Path]:
     shipped, and exactly as uncovered, as a `.py`. An extension filter made all
     of those invisible to the assertions below while docs/SCRIPTS.md kept
     claiming universal coverage. `.py`/`.sh` are kept alongside the executable
-    bit because two of this repo's own scripts are vendored, not run in place,
+    bit because three of this repo's own scripts are vendored, not run in place,
     and carry mode 644.
     """
     found = []
