@@ -1,0 +1,78 @@
+spec:
+  inputs:
+    job_name:
+      default: python-lint
+      description: Name of the generated job.
+    stage:
+      default: lint
+      description: Pipeline stage the job runs in.
+    image:
+      default: python:3.11-slim
+      description: Base image (must have pip).
+    tags:
+      type: array
+      default: ["infrastructure"]
+      description: >-
+        Runner tag(s). Default targets weisssrv's privileged runner; pass `[]`
+        for the shared tag-less tenant runner.
+    ruff_version:
+      default: "0.16.0"
+      description: ruff pip pin.
+    config:
+      default: ""
+      description: >-
+        Full ruff config argument, e.g. `--config lint/ruff.toml` (same shape as
+        yaml-lint's `config`). Empty uses ruff's own discovery (nearest
+        ruff.toml / pyproject.toml). This library ships a shared profile at
+        lint/ruff.toml; vendor it or point at it directly.
+    targets:
+      default: "."
+      description: Space-separated paths to check (word-split into one ruff run).
+    format_check:
+      type: boolean
+      default: false
+      description: >-
+        Also run `ruff format --check`. Off by default: the family has no
+        formatter, so enabling it on an unformatted tree fails on every file.
+    changes:
+      type: array
+      default:
+        - "**/*.py"
+        - "ruff.toml"
+        - "pyproject.toml"
+        - ".gitlab-ci.yml"
+      description: Path list for the MR/main `changes:` rules.
+---
+"$[[ inputs.job_name ]]":
+  needs: []
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.image ]]
+  tags: $[[ inputs.tags ]]
+  before_script:
+    # `--user`: the shared NON-ROOT tenant runner can't write system
+    # site-packages. Invoke the console script by its ABSOLUTE user-base path —
+    # ~/.local/bin is off PATH on python:*-slim, and `python -m ruff` would
+    # import a repo-local `ruff.py`/`ruff/` from the checkout CWD first.
+    - pip install --user --quiet "ruff==$[[ inputs.ruff_version ]]"
+    - RUFF_BIN="$(python -m site --user-base)/bin/ruff"
+  script:
+    - |
+      set -e
+      # shellcheck disable=SC2086  # word-split the config + targets inputs
+      "$RUFF_BIN" check --no-cache $[[ inputs.config ]] --output-format concise $[[ inputs.targets ]]
+    - |
+      set -e
+      if [ "$[[ inputs.format_check ]]" = "true" ]; then
+        # shellcheck disable=SC2086
+        "$RUFF_BIN" format --check --no-cache $[[ inputs.config ]] $[[ inputs.targets ]]
+      else
+        echo "format_check disabled — skipping ruff format --check"
+      fi
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: $[[ inputs.changes ]]
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: $[[ inputs.changes ]]
+    - if: '$CI_PIPELINE_SOURCE == "web"'

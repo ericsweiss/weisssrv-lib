@@ -61,7 +61,7 @@ class TestExportVersions:
         # Pipe the exports through a fresh shell and echo a resolved value.
         r = _run(["export-versions", str(cm)])
         check = subprocess.run(
-            ["bash", "-c", f'eval "$1"; echo "$traefik_version"', "_", r.stdout],
+            ["bash", "-c", 'eval "$1"; echo "$traefik_version"', "_", r.stdout],
             capture_output=True,
             text=True,
         )
