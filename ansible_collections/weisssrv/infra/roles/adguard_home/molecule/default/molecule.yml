@@ -1,0 +1,46 @@
+---
+platforms:
+  - name: adguard-test
+    image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    capabilities:
+      - NET_ADMIN
+      - NET_RAW
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        adguard_home_version: 0.107.77
+        adguard_home_user: adguard
+        adguard_home_group: adguard
+        adguard_home_install_path: /opt/AdGuardHome
+        adguard_home_cert_path: /opt/AdGuardHome/certs
+        adguard_home_http_port: 3000
+        adguard_home_dns_port: 53
+        adguard_home_admin_password: testpassword123
+        adguard_home_protection_enabled: true
+        adguard_home_upstream_dns:
+          - 127.0.0.1:5335
+        adguard_home_enable_dnssec: true
+        internal_domain: test.local
+        base_skip_ssh_config: true
+        base_skip_dns_config: true
+        # api_base_config.yml runs here (password management + /control/dns_config
+        # against the live instance; unbound converges as a meta dependency, so
+        # the 127.0.0.1:5335 upstream is real). TLS config still skips itself —
+        # no certs are deployed in the container; the cert-present TLS path is
+        # covered by the `tls` scenario. The primary-gated api_config.yml
+        # (rewrites) is only covered by the dns-stack integration scenario.
+        adguard_home_skip_resolv_conf_update: true
+        adguard_home_use_private_tmp: false
+        adguard_home_use_protect_system: false

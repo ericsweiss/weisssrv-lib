@@ -1,0 +1,14 @@
+---
+# Shared Molecule prepare playbook: initialize the container for reliable
+# testing. Wired as the default `provisioner.playbooks.prepare` in base.yml, so
+# every default scenario inherits it; a role needing extra prep ships its own
+# molecule/default/prepare.yml and re-points playbooks.prepare at it.
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Apply the shared systemd-wait + temp-dir prep
+      ansible.builtin.import_tasks: tasks/prepare-base.yml
+
+    - name: Disable apt background services
+      ansible.builtin.import_tasks: tasks/prepare-apt-disable.yml

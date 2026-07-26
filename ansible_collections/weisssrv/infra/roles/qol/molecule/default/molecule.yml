@@ -1,0 +1,39 @@
+---
+platforms:
+  - name: qol-test
+    image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        # `admin_user`, not qol_admin_user: the meta dependency on base means
+        # both roles must agree on the user, and qol_admin_user defaults to it.
+        admin_user: testuser
+        base_skip_ssh_config: true
+        base_skip_dns_config: true
+        base_skip_timezone_config: true
+        ssh_authorized_keys: []
+        qol_packages:
+          - zsh
+          - neovim
+          - fzf
+          - ripgrep
+          - htop
+          - tmux
+        qol_omz_plugins:
+          - git
+          - sudo
+          - history
+          - fzf
+          - docker

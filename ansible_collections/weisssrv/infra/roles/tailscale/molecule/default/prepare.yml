@@ -1,0 +1,15 @@
+---
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Apply the shared systemd-wait + temp-dir prep
+      ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/prepare-base.yml
+
+    - name: Disable apt background services
+      ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/prepare-apt-disable.yml
+
+    - name: Install prerequisites for HTTPS downloads
+      ansible.builtin.raw: |
+        apt-get update -qq && apt-get install -y -qq ca-certificates curl gnupg
+      changed_when: false

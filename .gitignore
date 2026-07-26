@@ -43,3 +43,8 @@ Thumbs.db
 # ansible caches (ansible-lint/molecule local runs; CI uses ANSIBLE_HOME=.ansible-home)
 .ansible/
 .ansible-home/
+
+# ansible-galaxy collection build writes these INTO the source dir when run
+# against it; they are packaging output, never repo content.
+ansible_collections/**/MANIFEST.json
+ansible_collections/**/FILES.json

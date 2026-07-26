@@ -1,0 +1,27 @@
+---
+# Galaxy dependencies for TEST environments: molecule-shared/base.yml points
+# both galaxy sub-dependencies (role install + collection install) at this one
+# file instead of a per-scenario copy. Consumers get the same set from
+# galaxy.yml's `dependencies` when they install the collection — the two are
+# kept in step by tests/test_ansible_collection.py.
+
+collections:
+  # Pin to the tested major line (upper bound) so `ansible-galaxy install -r`
+  # never silently pulls a new major with breaking changes. Bump deliberately.
+
+  # RUNTIME — addressed by FQCN in role code, so these are also galaxy.yml
+  # `dependencies` and every consumer gets them on install.
+  - name: ansible.posix
+    version: ">=2.1.0,<3.0.0"
+  - name: community.general
+    version: ">=12.2.0,<13.0.0"
+
+  # TEST ONLY — no role references them; they serve the molecule environment
+  # (docker driver, certificate helpers). Deliberately NOT in galaxy.yml, so a
+  # consumer install stays minimal.
+  - name: community.crypto
+    version: ">=3.1.0,<4.0.0"
+  - name: community.docker
+    version: ">=4.3.0,<5.0.0"
+
+roles: []
