@@ -27,6 +27,10 @@ Conventions shared by every template:
   each template's Parity note). Tenants pass whatever list fits their repo.
 - The rules shape for lint/validate/test jobs is fixed:
   `schedule → never`, `merge_request_event → changes`, `main → changes`, `web`.
+- **Every generated job retries on `runner_system_failure` / `scheduler_failure`
+  (max 2).** On a quota-capped shared runner a pipeline's fan-out can burst past
+  the namespace quota at pod-creation time; the retry turns that hard failure
+  into throttling. Bridge jobs carry no retry (GitLab rejects it there).
 
 ---
 

@@ -297,7 +297,18 @@ python-tests:
     # exactly when the release is largest. Same reason the release job sets it.
     GIT_DEPTH: "0"
 
+# Quota contention on the shared runner surfaces as runner_system_failure at
+# pod creation when a pipeline's fan-out bursts past the namespace quota;
+# retrying turns that into throttling. Every lib template bakes the same block.
+.retry-runner-contention: &retry-runner-contention
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - scheduler_failure
+
 ci-templates-parse:
+  <<: *retry-runner-contention
   # Smoke: every CI template must be valid multi-document YAML (a spec header +
   # config). Catches a malformed template before a consumer includes it.
   stage: lint
@@ -330,6 +341,7 @@ ci-templates-parse:
       PY
 
 collection-checks:
+  <<: *retry-runner-contention
   # Two invariants over ansible_collections/weisssrv/infra that nothing else
   # covers:
   #   - the molecule matrix below must list every scenario dir on disk. The

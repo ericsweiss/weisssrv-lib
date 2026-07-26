@@ -50,6 +50,11 @@ spec:
   needs: []  # run in parallel with the lint stage
   image: $[[ inputs.image ]]
   tags: $[[ inputs.tags ]]
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - scheduler_failure
   variables:
     # Both package lists reach the shell as VARIABLES, never as interpolated
     # text: $[[ inputs.* ]] is textual substitution into the YAML scalar, so a

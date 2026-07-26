@@ -45,6 +45,11 @@ spec:
   stage: $[[ inputs.stage ]]
   image: $[[ inputs.image ]]
   tags: $[[ inputs.tags ]]
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - scheduler_failure
   script:
     - echo "Running ShellCheck..."
     - |

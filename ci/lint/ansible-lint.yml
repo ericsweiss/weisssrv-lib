@@ -64,6 +64,11 @@ spec:
   stage: $[[ inputs.stage ]]
   image: $[[ inputs.image ]]
   tags: $[[ inputs.tags ]]
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - scheduler_failure
   variables:
     # Keep ansible's caches/tmp inside the build dir — the shared tenant
     # runner is non-root and $HOME may not be writable.
