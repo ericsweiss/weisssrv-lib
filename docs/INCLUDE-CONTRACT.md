@@ -199,11 +199,15 @@ Conventions shared by every template:
   docker CLI trio (VERSIONING.md's "tool pins are inputs" rule); bump all three
   together, or override them per-consumer for a different buildx.
 - **default_branch:** gates BOTH the post-merge `rules:` clause and the
-  `:latest` publish. A consumer on `master`/`trunk` that leaves it at `main`
+  `:latest` publish. It must be a **literal** branch name: the value is
+  interpolated inside a quoted `rules:if` string, and GitLab does not expand
+  variables inside quotes, so `$CI_DEFAULT_BRANCH` is compared as literal text
+  and never matches. A consumer on `master`/`trunk` that leaves it at `main`
   gets a job that never runs post-merge: SHA-tagged MR builds keep succeeding
   while `:latest` is never pushed, so `--cache-from` and any `:latest` fallback
-  pull silently stop resolving. Pass `$CI_DEFAULT_BRANCH` to track the project
-  setting.
+  pull silently stop resolving. `release_branch` in
+  [ci/release/semantic-release.yml](#cireleasesemantic-releaseyml) is literal
+  for the same reason.
 - **changes:** the default `["**/*"]` matches everything — i.e. the
   unconditional rules this template had before the input existed, so an
   existing consumer's resolved rules are unchanged. Narrow it to the image's
@@ -243,10 +247,11 @@ Conventions shared by every template:
 - **Reproduces:** weisssrv `python-tests`.
 - **Inputs:** `test_dir` (`scripts/`), `pytest_version` (9.1.1), `pyyaml_version`
   (6.0.2), `apt_packages` (`git jq`), `pip_packages` (empty — extra pinned pip
-  specs, added in v0.2.0), `setup_command` (`true` — single command run first
-  in before_script, e.g. cloning a sibling repo for a cross-repo contract
-  test; this library uses it to clone the app template so
-  `test_template_contract.py` cannot silently skip), `changes`.
+  specs, added in v0.2.0), `setup_command` (`true` — single command run in
+  before_script AFTER the apt install and before the pip install, so it may use
+  what `apt_packages` provides; e.g. cloning a sibling repo for a cross-repo
+  contract test, which needs git. This library uses it to clone the app template
+  so `test_template_contract.py` cannot silently skip), `changes`.
 - **Parity:** junit report + before_script (apt + pinned pip) + rules are
   verbatim. The default `changes` is the generic subset (`scripts/**/*`,
   `.gitlab-ci.yml`); weisssrv's `.paths-python-tests` additionally guards four
@@ -313,7 +318,9 @@ Conventions shared by every template:
   in [VERSIONING.md](VERSIONING.md).
 - **Inputs:** `job_name`, `stage` (release), `image` (python:3.13 — the full
   image ships git), `tags`, `script_path` (`scripts/semantic-release.py`),
-  `tag_prefix` (v), `initial_version` (0.1.0), `release_branch` (main),
+  `tag_prefix` (v), `initial_version` (0.1.0), `release_branch` (main — a
+  **literal** branch name; it lands in a quoted `rules:if`, which does not
+  expand variables),
   `release_token` (`$CI_JOB_TOKEN`), `token_header` (JOB-TOKEN),
   `major_on_zero` (false — a breaking change bumps MINOR while 0.x), `dry_run`.
 - **Token:** `CI_JOB_TOKEN` suffices — the Releases API accepts it and creates

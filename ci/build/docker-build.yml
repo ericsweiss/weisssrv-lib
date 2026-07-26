@@ -60,12 +60,15 @@ spec:
     default_branch:
       default: "main"
       description: >-
-        The consumer's default branch. Gates BOTH the post-merge run (the
-        `rules:` clause) and the `:latest` publish. A consumer on
-        `master`/`trunk` that leaves this at `main` never runs the job
-        post-merge, so `:latest` is never pushed — SHA-tagged builds keep
-        succeeding while `--cache-from` and any `:latest` fallback pull silently
-        stop resolving. Pass `$CI_DEFAULT_BRANCH` to track the project setting.
+        The consumer's default branch, as a LITERAL name (`main`, `master`,
+        `trunk`). Gates BOTH the post-merge run (the `rules:` clause) and the
+        `:latest` publish. It is NOT a place for `$CI_DEFAULT_BRANCH`: the value
+        lands inside a quoted `rules:if` string and GitLab does not expand
+        variables inside quotes, so the comparison would be against that literal
+        text and never match. A consumer on `master`/`trunk` that leaves this at
+        `main` never runs the job post-merge, so `:latest` is never pushed —
+        SHA-tagged builds keep succeeding while `--cache-from` and any `:latest`
+        fallback pull silently stop resolving.
     publish_on_main:
       type: boolean
       default: true

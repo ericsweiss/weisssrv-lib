@@ -28,6 +28,11 @@ spec:
       description: Version cut when the repo has no `<tag_prefix>X.Y.Z` tag yet.
     release_branch:
       default: "main"
+      description: >-
+        Branch the release is cut from, as a LITERAL name. It lands inside a
+        quoted `rules:if` string and GitLab does not expand variables inside
+        quotes, so `$CI_DEFAULT_BRANCH` would be compared as literal text and
+        never match — leaving a pipeline that silently never releases.
     release_token:
       default: "$CI_JOB_TOKEN"
       description: >-

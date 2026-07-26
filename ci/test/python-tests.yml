@@ -35,9 +35,11 @@ spec:
     setup_command:
       default: "true"
       description: >-
-        Single shell command run FIRST in before_script (default no-op). For
-        setup the package inputs cannot express — e.g. cloning a sibling repo
-        that a cross-repo contract test asserts against.
+        Single shell command run in before_script AFTER the apt install and
+        BEFORE the pip install (default no-op), so it may use anything
+        `apt_packages` provides. For setup the package inputs cannot express —
+        e.g. cloning a sibling repo that a cross-repo contract test asserts
+        against, which needs the default `git`.
     changes:
       type: array
       default: ["scripts/**/*", ".gitlab-ci.yml"]
@@ -58,14 +60,15 @@ spec:
     APT_PACKAGES: "$[[ inputs.apt_packages ]]"
     PIP_PACKAGES: "$[[ inputs.pip_packages ]]"
   before_script:
-    # Consumer setup hook (default no-op) — e.g. cloning a sibling repo a
-    # cross-repo test asserts against.
-    - $[[ inputs.setup_command ]]
     - |
       if [ -n "$APT_PACKAGES" ]; then
         # shellcheck disable=SC2086  # intentional word-split of the package list
         apt-get update -qq && apt-get install -y -qq --no-install-recommends $APT_PACKAGES
       fi
+    # Consumer setup hook (default no-op) — e.g. cloning a sibling repo a
+    # cross-repo test asserts against. AFTER the apt install, whose default
+    # `git jq` is exactly what such a hook needs on the slim default image.
+    - $[[ inputs.setup_command ]]
     # `--user` + `python -m pytest`: the shared NON-ROOT tenant runner can't
     # write system site-packages, so pip installs to ~/.local (whose bin/ is NOT
     # on the default PATH of python:*-slim images) — calling the `pytest` console

@@ -67,8 +67,10 @@ last tag, decides the bump, and creates the tag **and** the GitLab Release with
 generated notes in one Releases-API call. This library wires that template into
 its own pipeline — `.gitlab-ci.yml` declares `release` as the LAST stage and
 self-includes the template with `tags: []` — so the tag every consumer pins is
-cut by the merge that earns it, and the template is exercised by the MR that
-changes it. A consumer that wants the same behaviour wires it the same way.
+cut by the merge that earns it. An MR that changes the template renders it (an
+undeclared input or malformed render fails pipeline creation); the job itself is
+release-branch-only, so it first *runs* on the merge. A consumer that wants the
+same behaviour wires it the same way.
 
 | commit subject | bump |
 |---|---|

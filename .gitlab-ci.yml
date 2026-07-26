@@ -57,10 +57,17 @@ variables:
   PYYAML_VERSION: "6.0.2"
 
 # Self-application: the library consumes its OWN templates rather than
-# hand-rolling equivalent jobs, so every input, rendered script, and rules block
-# is exercised here by the MR that changes it. `local:` resolves against this
-# pipeline's commit (a `project:`+`ref:` self-include would resolve the ref, not
-# the branch under review).
+# hand-rolling equivalent jobs, so every input and rules block is RESOLVED here
+# by the MR that changes it — includes are expanded at pipeline creation
+# regardless of any job's `changes:`, so an undeclared input or a malformed
+# render fails the pipeline outright. EXECUTING a rendered script is separately
+# path-gated, so two include sites carry `ci/**/*` in their `changes` —
+# python-tests (which runs tests/test_render_templates.py over every ci/
+# template) and ansible-lint — and a template-only MR therefore always runs at
+# least those two for real; the remaining rendered scripts run when their own
+# paths move. `local:` resolves against this pipeline's commit (a
+# `project:`+`ref:` self-include would resolve the ref, not the branch under
+# review).
 #
 # Tool pins are literal at each include site — an `include:` is resolved before
 # `variables:` exist, so a pin there cannot reference $PYYAML_VERSION. PyYAML is
@@ -132,6 +139,9 @@ include:
         - ".ansible-lint"
         - ".ansible-lint-ignore"
         - ".gitlab-ci.yml"
+        # Self-application: a template-only MR must EXECUTE a rendered job, and
+        # this one's before_script is where the pip_extra variable-routing lives.
+        - "ci/**/*"
   - local: /ci/lint/yaml-lint.yml
     inputs:
       tags: []
@@ -216,6 +226,10 @@ include:
         # test_generate_hosts_env.py loads examples/hosts-env-map.example.yml
         # at runtime, so the shipped example stays proven-loadable.
         - "examples/**/*"
+        # test_render_templates.py renders every ci/ template and shell-parses
+        # the result: the gate has to fire on the files it guards, not only on
+        # the test that guards them.
+        - "ci/**/*"
         - ".gitlab-ci.yml"
   # cpu_selector keeps its default: gitleaks SIGILLs on the legacy-CPU nodes and
   # the shared runner allowlists exactly that override. allow_failure keeps its
@@ -277,6 +291,11 @@ python-tests:
   variables:
     WEISSSRV_TEMPLATE_ROOT: "/tmp/weisssrv-app-template"
     WEISSSRV_TEMPLATE_REQUIRED: "1"
+    # Full clone: TestReleaseLineage binds galaxy.yml / cli/pyproject.toml to the
+    # tag semantic-release will cut, and on the shallow default those assertions
+    # vanish the moment the last release falls outside the clone depth — i.e.
+    # exactly when the release is largest. Same reason the release job sets it.
+    GIT_DEPTH: "0"
 
 ci-templates-parse:
   # Smoke: every CI template must be valid multi-document YAML (a spec header +
@@ -317,10 +336,11 @@ collection-checks:
   #     generator's own CoverageError is ROLE-level, so a second scenario added
   #     under an already-listed role runs in no job at all; this gate is the one
   #     that names it. Same env-var contract the molecule-plan job uses.
-  #   - the collection must build, which is the only thing that exercises
-  #     galaxy.yml's `build_ignore` — a bad pattern either ships the molecule
-  #     scaffolding into every consumer's installed copy or drops real content,
-  #     and would otherwise surface first at a consumer's install.
+  #   - the collection must build AND the artifact must match `build_ignore` —
+  #     a bad pattern either ships the molecule scaffolding into every
+  #     consumer's installed copy or drops real content, and `ansible-galaxy
+  #     collection build` exits 0 either way, so the tarball itself is
+  #     inspected below. Otherwise it surfaces first at a consumer's install.
   stage: lint
   image: python:3.13-slim
   tags: []
@@ -340,6 +360,24 @@ collection-checks:
     - |
       "$(python -m site --user-base)/bin/ansible-galaxy" collection build \
         --force --output-path /tmp ansible_collections/weisssrv/infra
+    - |
+      set -e
+      tarball=$(ls -1 /tmp/weisssrv-infra-*.tar.gz)
+      entries=$(tar -tzf "$tarball")
+      # Nothing build_ignore excludes may ship: molecule-shared/ resolves only
+      # inside this checkout, and a role's molecule/ dir is test scaffolding.
+      leaked=$(echo "$entries" | grep -E '^molecule-shared/|^roles/[^/]+/molecule/' || true)
+      if [ -n "$leaked" ]; then
+        echo "build_ignore leaked test scaffolding into the artifact:"; echo "$leaked"; exit 1
+      fi
+      # ...and nothing real may be dropped: every role dir on disk must ship.
+      echo "$entries" | grep '^roles/' | cut -d/ -f2 | sort -u > /tmp/packed-roles
+      ls -1 "$ROLES_DIR" | sort > /tmp/disk-roles
+      missing=$(comm -23 /tmp/disk-roles /tmp/packed-roles)
+      if [ -n "$missing" ]; then
+        echo "build_ignore dropped roles from the artifact:"; echo "$missing"; exit 1
+      fi
+      echo "artifact ok: $(wc -l < /tmp/packed-roles) roles, no molecule scaffolding"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never

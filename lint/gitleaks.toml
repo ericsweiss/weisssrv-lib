@@ -36,6 +36,14 @@ regexes = [
   # to be reviewed alongside it rather than silently covering the new material.
   '''^3FEF9748469ADBE15DA7CA80AC2D62742012EA22$''',
   '''^0e88171d9f8b7630763f70cbf69f2a01b4ba8ea1d8e79487f59c162db255eb84$''',
+  # Molecule fixture key material, synthetic by construction. Matched by CONTENT
+  # (anchored on each fixture's own distinctive body), not by path: the two files
+  # stay in scope, so a real secret added to either is still caught. The
+  # acme_certs scenario's throwaway OpenSSH key — gitleaks reports it twice, raw
+  # and with its base64 partially decoded, hence the loose middle.
+  '''(?s)^-----BEGIN OPENSSH PRIVATE KEY-----\s+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\s.*bmx5LWRvbnQtdXNlAAAAC3Rlc3RAbW9sZWN1bGUBAgMEBQ==\s+-----END OPENSSH PRIVATE KEY-----$''',
+  # The nfs_tls prepare stub, which says what it is in its own PEM body.
+  '''(?s)^-----BEGIN PRIVATE KEY-----\s+synthetic-test-fixture-not-a-real-key\s+-----END PRIVATE KEY-----$''',
 ]
 
 paths = [
@@ -46,9 +54,4 @@ paths = [
   # tree by the ansible-lint flow) — third-party test fixtures are full of
   # dummy keys and are not ours to scan.
   '''\.ansible-home/''',
-  # Molecule fixture keys, synthetic by construction: the acme_certs scenario
-  # ships a throwaway OpenSSH keypair to exercise the forced-command cert
-  # receiver, and the nfs_tls prepare stub says so in its own PEM body.
-  '''ansible_collections/weisssrv/infra/roles/acme_certs/molecule/default/molecule\.yml''',
-  '''ansible_collections/weisssrv/infra/roles/nfs_tls/molecule/default/prepare\.yml''',
 ]

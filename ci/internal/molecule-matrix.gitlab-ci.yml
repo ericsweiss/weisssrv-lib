@@ -35,7 +35,8 @@ spec:
         Repo-relative roles dir ($ROLES_DIR). The collection-root paths the
         generator treats as global triggers (requirements.yml, galaxy.yml,
         meta/, plugins/, molecule-shared/) are derived from its parent, so
-        retargeting this needs no matching global_triggers edit.
+        retargeting this needs no matching global_triggers edit — but it DOES
+        need a matching `changes` edit, which is a static default (see it).
     integration_dir:
       default: ansible_collections/weisssrv/infra/integration-tests
       description: >-
@@ -90,9 +91,14 @@ spec:
         - ".gitlab-ci.yml"
       description: >-
         Union of every path that can affect a scenario. Keep `ci_file` in this
-        list — it defines the matrix. While that is `.gitlab-ci.yml`, any CI
-        edit costs a full fan-out; moving the matrix to a small dedicated file
-        and pointing `ci_file` at it is what buys that back.
+        list — it defines the matrix. RETARGET THIS ALONGSIDE `roles_dir`: a
+        spec default is static, so unlike the generator's global triggers the
+        role-tree entry here does not follow `roles_dir`, and a `roles_dir`
+        override that leaves this at the default gates the plan job on a path
+        the repo no longer has — no plan, no child, zero molecule coverage, and
+        nothing red. While `ci_file` is `.gitlab-ci.yml`, any CI edit costs a
+        full fan-out; moving the matrix to a small dedicated file and pointing
+        `ci_file` at it is what buys that back.
 ---
 # MR-targeted molecule child pipeline: instead of the full role matrix, run only
 # the scenarios the diff affects (role dirs -> their scenarios, provider roles ->
