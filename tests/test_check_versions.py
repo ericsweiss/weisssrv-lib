@@ -59,6 +59,26 @@ update_version_in_file = check_versions.update_version_in_file
 SERVICE_REGISTRY = check_versions.SERVICE_REGISTRY
 
 
+
+class TestTagRegexWithoutCaptureGroup:
+    r"""The shipped example configs use capture-group-less regexes like
+    r"^\d+\.\d+\.\d+$"; group(1) on those raises IndexError."""
+
+    def _pages(self, *tags):
+        return {"results": [{"name": t} for t in tags], "next": None}
+
+    def test_groupless_regex_selects_the_newest_tag(self, monkeypatch):
+        monkeypatch.setattr(check_versions, "_make_request", lambda url: self._pages(
+            "1.2.0", "1.10.0", "1.9.0", "latest"))
+        assert check_versions._dockerhub_best_tag("x/y", r"^\d+\.\d+\.\d+$") == "1.10.0"
+
+    def test_capture_group_regex_still_returns_the_captured_version(self, monkeypatch):
+        monkeypatch.setattr(check_versions, "_make_request", lambda url: self._pages(
+            "v1.2.0", "v1.10.0"))
+        assert check_versions._dockerhub_best_tag(
+            "x/y", r"^v(\d+\.\d+\.\d+)$") == "1.10.0"
+
+
 class TestPinnedImageVersionTracking(unittest.TestCase):
     """Digest-locked image pins that live outside the vars file."""
 

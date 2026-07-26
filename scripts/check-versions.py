@@ -876,8 +876,10 @@ def _dockerhub_best_tag(
             continue
         # Compare/filter on the CAPTURED version (group 1), not the raw tag: a
         # leading "v" (or a regex prefix before the digits) must not bypass the
-        # major pin or wrongly reject valid same-major tags.
-        extracted = match.group(1)
+        # major pin or wrongly reject valid same-major tags. A tag_regex with
+        # no capture group (the common shape, and what the shipped examples
+        # use) compares the whole tag instead of raising IndexError.
+        extracted = match.group(1) if match.lastindex else match.group(0)
         if major_filter:
             tag_major = re.match(r"^v?(\d+)", extracted)
             if not tag_major or tag_major.group(1) != major_filter:
@@ -895,7 +897,8 @@ def _dockerhub_best_tag(
 def fetch_dockerhub_version(svc: dict) -> str:
     """Fetch latest version from Docker Hub using tag_regex.
 
-    The tag_regex should have a capture group for the version portion.
+    tag_regex MAY carry a capture group for the version portion (the value is
+    then the captured text); with no group the whole matching tag is used.
     The highest matching version (by version tuple comparison) is returned as
     the full tag name (that is what the pins store).
 

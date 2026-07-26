@@ -8,7 +8,7 @@ advertised subnet routes, ACL tags) on every run.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `tailscale_enabled` | `true` | |
+| `tailscale_enabled` | `true` | Role switch — `false` skips every task (honored by the role itself). |
 | `tailscale_version` | pinned | installed exactly, then `dpkg` held — the upstream repo continuously serves newer builds |
 | `tailscale_gpg_fingerprint` | upstream primary key | the downloaded key is verified against this **before** it is trusted |
 | `tailscale_accept_routes` | `false` | keep `false` on a subnet router, or its own advertised routes loop back |
