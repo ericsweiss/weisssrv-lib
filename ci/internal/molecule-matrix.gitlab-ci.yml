@@ -1,0 +1,146 @@
+spec:
+  inputs:
+    plan_job_name:
+      default: molecule-plan
+      description: Job that generates the child pipeline YAML.
+    trigger_job_name:
+      default: molecule-trigger
+      description: Bridge job that runs the generated child pipeline.
+    stage:
+      default: test
+      description: Pipeline stage both jobs run in.
+    tags:
+      type: array
+      default: ["infrastructure"]
+      description: >-
+        Runner tag(s) for the PLAN job only — the trigger is a bridge (no
+        runner) and the child's jobs take their tags from `jobs_include`. The
+        plan job is non-root safe, so `[]` (shared runner) also works; the
+        privileged tag is the default because that runner is where the child's
+        DinD jobs must land.
+    image:
+      default: python:3.13
+      description: >-
+        Plan-job image. The FULL python image (not -slim) ships git, which the
+        MR diff needs — so no apt, and the job stays non-root safe.
+    pyyaml_version:
+      default: "6.0.2"
+      description: PyYAML pip pin for the generator.
+    generator:
+      default: scripts/generate-molecule-pipeline.py
+      description: Path to the generator in the consuming checkout.
+    roles_dir:
+      default: ansible_collections/weisssrv/infra/roles
+      description: Repo-relative roles dir ($ROLES_DIR). The galaxy requirements file the generator treats as a global trigger is derived from its parent.
+    integration_dir:
+      default: ansible_collections/weisssrv/infra/integration-tests
+      description: >-
+        Repo-relative integration-stack dir ($INTEGRATION_DIR). A repo with no
+        integration suite points this at a dir that does not exist and omits the
+        `integration-tests` job from `ci_file`.
+    ci_file:
+      default: .gitlab-ci.yml
+      description: >-
+        Repo-relative file holding the `molecule-tests` / `integration-tests`
+        parallel:matrix — the scenario universe the child is narrowed from.
+    jobs_include:
+      default: .gitlab/ci/molecule-jobs.gitlab-ci.yml
+      description: >-
+        Repo-relative file the generated child `include: local:`s for the
+        `.molecule-test-job` / `.integration-test-job` templates. Must be
+        self-contained (a child pipeline includes ONLY this file) and must NOT
+        also define the static matrix, which the child would then collide with.
+    global_triggers:
+      default: "ansible_collections/weisssrv/infra/molecule-shared/ scripts/sanitize-junit-expected-failures.py"
+      description: >-
+        Extra paths that force the FULL matrix ($MOLECULE_GLOBAL_TRIGGERS,
+        space-separated; a trailing `/` makes it a prefix). The generator
+        already covers the CI file, the jobs include, the galaxy requirements,
+        the two image contexts and its own sources.
+    child_file:
+      default: molecule-child.yml
+      description: Artifact the plan writes and the trigger runs.
+    ci_image_job:
+      default: build-molecule-ci
+      description: >-
+        Image-build job whose dotenv digest pin the trigger forwards, so the
+        child resolves the exact rebuilt job image instead of a racy `:latest`.
+    test_image_job:
+      default: build-molecule-test
+      description: >-
+        Image-build job the trigger waits on when the test image changed, so the
+        child's SHA-tag pull cannot race the push.
+    changes:
+      type: array
+      default:
+        - "ansible_collections/weisssrv/infra/**/*"
+        - "docker/molecule-ci/**/*"
+        - "docker/molecule-test/**/*"
+        - "scripts/molecule-retry.sh"
+        - "scripts/generate-molecule-pipeline.py"
+        - "scripts/sanitize-junit-expected-failures.py"
+        - ".gitlab/ci/molecule-jobs.gitlab-ci.yml"
+        - ".gitlab-ci.yml"
+      description: >-
+        Union of every path that can affect a scenario. Keep `ci_file` in this
+        list — it defines the matrix. While that is `.gitlab-ci.yml`, any CI
+        edit costs a full fan-out; moving the matrix to a small dedicated file
+        and pointing `ci_file` at it is what buys that back.
+---
+# MR-targeted molecule child pipeline: instead of the full role matrix, run only
+# the scenarios the diff affects (role dirs -> their scenarios, provider roles ->
+# dependent roles transitively, integration stacks by exercised role, global
+# inputs -> everything; an unknown role dir fails loudly). The default branch
+# still runs the full static matrix from `ci_file`, so a cross-role regression a
+# targeted MR run missed is caught before any deploy.
+#
+# MR-only by design: on main the static matrix job is the one that runs.
+"$[[ inputs.plan_job_name ]]":
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.image ]]
+  tags: $[[ inputs.tags ]]
+  needs: []
+  interruptible: true
+  variables:
+    # Full clone: a shallow one may not contain the MR diff base.
+    GIT_DEPTH: 0
+    CI_FILE: $[[ inputs.ci_file ]]
+    ROLES_DIR: $[[ inputs.roles_dir ]]
+    INTEGRATION_DIR: $[[ inputs.integration_dir ]]
+    MOLECULE_JOBS_INCLUDE: $[[ inputs.jobs_include ]]
+    MOLECULE_GLOBAL_TRIGGERS: $[[ inputs.global_triggers ]]
+  before_script:
+    - pip install --user --quiet "pyyaml==$[[ inputs.pyyaml_version ]]"
+  script:
+    - python3 "$[[ inputs.generator ]]" "$CI_MERGE_REQUEST_DIFF_BASE_SHA" -o "$[[ inputs.child_file ]]"
+    # Echo the plan: the child pipeline's job list is otherwise invisible in
+    # this job's log, and it is the evidence for what a narrowed run covered.
+    - cat "$[[ inputs.child_file ]]"
+  artifacts:
+    paths:
+      - $[[ inputs.child_file ]]
+    expire_in: 1 day
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: $[[ inputs.changes ]]
+
+"$[[ inputs.trigger_job_name ]]":
+  stage: $[[ inputs.stage ]]
+  # No tags/image: a bridge job runs on no runner.
+  needs:
+    - job: $[[ inputs.plan_job_name ]]
+    - job: $[[ inputs.ci_image_job ]]
+      optional: true
+      artifacts: true
+    - job: $[[ inputs.test_image_job ]]
+      optional: true
+  trigger:
+    include:
+      - artifact: $[[ inputs.child_file ]]
+        job: $[[ inputs.plan_job_name ]]
+    # depend: a red child reds this pipeline, so the targeted tests gate the MR
+    # exactly like the full matrix would.
+    strategy: depend
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: $[[ inputs.changes ]]

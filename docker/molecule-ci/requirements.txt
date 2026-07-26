@@ -1,0 +1,16 @@
+# Python dependencies baked into the molecule-ci image.
+#
+# Exact pins, not lower bounds: this file is COPYed and pip-installed by
+# docker/molecule-ci/Dockerfile, so a rebuild must be reproducible and must never
+# silently pull a new major. Keep the ansible / ansible-lint pins in step with a
+# consumer's ansible-lint CI job so both agree on the version under test.
+ansible==11.6.0
+ansible-lint==25.12.2
+# black is a transitive dep (ansible-lint's jinja rule imports it); the black
+# 26.5.x wheels ship a broken mypyc extension that makes ansible-lint fail to
+# load. Kept in step with the same guard in the .gitlab-ci.yml lint job; lift
+# once 26.5.x is fixed.
+black<26.5.0
+molecule==26.4.0
+molecule-plugins[docker]==25.8.12
+yamllint==1.38.0

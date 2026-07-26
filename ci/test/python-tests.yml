@@ -21,7 +21,15 @@ spec:
       default: "git jq"
       description: >-
         Extra apt packages installed before the run (git is needed by tests that
-        build throwaway git repos; jq by tests that parse JSON). Pass "" for none.
+        build throwaway git repos; jq by tests that parse JSON). Installing them
+        needs ROOT — on the shared non-privileged tenant runner apt-get fails on
+        the lock, so a tenant passes "" and uses an image that already ships
+        what its tests need (e.g. the full `python:3.13`, which has git).
+    pip_packages:
+      default: ""
+      description: >-
+        Extra pip requirement specs installed alongside pytest/pyyaml, e.g.
+        "ruamel.yaml==0.18.10". Word-split; pin every entry.
     changes:
       type: array
       default: ["scripts/**/*", ".gitlab-ci.yml"]
@@ -44,7 +52,8 @@ spec:
     # on the default PATH of python:*-slim images) — calling the `pytest` console
     # script directly would fail "command not found". `python -m pytest` runs the
     # module regardless of PATH (and puts the CWD on sys.path for test imports).
-    - pip install --user --quiet "pytest==$[[ inputs.pytest_version ]]" "pyyaml==$[[ inputs.pyyaml_version ]]"
+    # shellcheck disable=SC2086  # intentional word-split of pip_packages
+    - pip install --user --quiet "pytest==$[[ inputs.pytest_version ]]" "pyyaml==$[[ inputs.pyyaml_version ]]" $[[ inputs.pip_packages ]]
   script:
     - python -m pytest $[[ inputs.test_dir ]] -v --junitxml=report.xml
   artifacts:

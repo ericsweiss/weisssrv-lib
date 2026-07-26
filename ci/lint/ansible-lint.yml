@@ -1,0 +1,103 @@
+spec:
+  inputs:
+    job_name:
+      default: ansible-lint
+      description: Name of the generated job.
+    stage:
+      default: lint
+      description: Pipeline stage the job runs in.
+    image:
+      default: python:3.13-slim
+      description: Base image (must have pip).
+    tags:
+      type: array
+      default: ["infrastructure"]
+      description: >-
+        Runner tag(s). Default targets weisssrv's privileged runner; pass `[]`
+        for the shared tag-less tenant runner.
+    ansible_lint_version:
+      default: "25.12.2"
+      description: >-
+        ansible-lint pip pin (pulls its matching ansible-core). Keep in step
+        with docker/molecule-ci/requirements.txt so lint and molecule agree on
+        the version under test.
+    pip_extra:
+      default: "black<26.5.0"
+      description: >-
+        Extra space-separated pip pins installed alongside ansible-lint. The
+        default guards the broken black 26.5.x mypyc wheels (ansible-lint's
+        jinja rule imports black); lift once 26.5.x is fixed.
+    config:
+      default: ""
+      description: >-
+        Full config argument, e.g. `-c .ansible-lint`. Empty uses
+        ansible-lint's own discovery (nearest .ansible-lint / .config/).
+    targets:
+      default: "."
+      description: Space-separated paths to lint (word-split into one run).
+    collections_path:
+      default: "."
+      description: >-
+        Value for ANSIBLE_COLLECTIONS_PATH, so FQCN references into an
+        in-repo collection resolve (point at the directory CONTAINING
+        `ansible_collections/`). Empty leaves the resolver defaults.
+    galaxy_requirements:
+      default: ""
+      description: >-
+        Galaxy requirements file installed before linting (dependency
+        collections the linted roles' FQCN module refs need, e.g. an in-repo
+        collection's requirements.yml). Empty skips the install.
+    changes:
+      type: array
+      default:
+        - "**/*.yml"
+        - "**/*.yaml"
+        - ".ansible-lint"
+        - ".ansible-lint-ignore"
+        - ".gitlab-ci.yml"
+      description: Path list for the MR/main `changes:` rules.
+---
+"$[[ inputs.job_name ]]":
+  needs: []
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.image ]]
+  tags: $[[ inputs.tags ]]
+  variables:
+    # Keep ansible's caches/tmp inside the build dir — the shared tenant
+    # runner is non-root and $HOME may not be writable.
+    ANSIBLE_HOME: "$CI_PROJECT_DIR/.ansible-home"
+  before_script:
+    # `--user` + absolute user-base path: same non-root rationale as
+    # python-lint (~/.local/bin is off PATH on python:*-slim).
+    # shellcheck disable=SC2086  # word-split pip_extra
+    - pip install --user --quiet "ansible-lint==$[[ inputs.ansible_lint_version ]]" $[[ inputs.pip_extra ]]
+    - ANSIBLE_LINT_BIN="$(python -m site --user-base)/bin/ansible-lint"
+    - ANSIBLE_GALAXY_BIN="$(python -m site --user-base)/bin/ansible-galaxy"
+  script:
+    - |
+      set -e
+      # Singular ONLY: ansible-lint's ansible-compat hard-errors whenever the
+      # legacy plural spelling is present, even alongside the singular.
+      unset ANSIBLE_COLLECTIONS_PATHS
+      DEP_PATH="$ANSIBLE_HOME/collections"
+      # Export BEFORE installing: galaxy's already-installed check honors this
+      # path, so a copy bundled elsewhere on the image cannot satisfy (and
+      # silently skip) a dependency that lint then fails to resolve.
+      if [ -n "$[[ inputs.collections_path ]]" ]; then
+        export ANSIBLE_COLLECTIONS_PATH="$[[ inputs.collections_path ]]:$DEP_PATH"
+      else
+        export ANSIBLE_COLLECTIONS_PATH="$DEP_PATH"
+      fi
+      if [ -n "$[[ inputs.galaxy_requirements ]]" ]; then
+        "$ANSIBLE_GALAXY_BIN" collection install -r "$[[ inputs.galaxy_requirements ]]" -p "$DEP_PATH"
+      fi
+      # shellcheck disable=SC2086  # word-split the config + targets inputs
+      "$ANSIBLE_LINT_BIN" $[[ inputs.config ]] $[[ inputs.targets ]]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: $[[ inputs.changes ]]
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: $[[ inputs.changes ]]
+    - if: '$CI_PIPELINE_SOURCE == "web"'

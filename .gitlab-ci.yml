@@ -1,45 +1,249 @@
 ---
-# CI for weisssrv-lib itself. Deliberately TAG-LESS so it lands on the shared
-# non-privileged runner (this library carries no image build — that needs a
-# privileged runner and stays in the consumers). Every job is non-root safe:
-# `pip install --user`, `python -m`, no apt, no /usr/local/bin writes.
+# CI for weisssrv-lib itself. Two runner classes:
+#
+#   - The lint/test/security/review jobs are TAG-LESS and non-root safe
+#     (`pip install --user`, `python -m`, no apt, no /usr/local/bin writes), so
+#     they land on the shared non-privileged runner.
+#   - The two molecule image builds and the molecule matrix need privileged
+#     Docker-in-Docker and are tagged `infrastructure`.
+#
+# ADMIN PREREQUISITE: `infrastructure` is a PROJECT runner (not instance-wide).
+# It must be enabled for weisssrv-lib under Settings > CI/CD > Runners before any
+# tagged job here can be scheduled — until then those jobs sit pending with "no
+# runner matches". The tag-less jobs are unaffected.
 #
 # NOTE: the CI templates under ci/ are `spec:inputs` files — not standalone
 # pipelines — so they cannot be `glab ci lint`'d in isolation; the
-# ci-templates-parse job below is a YAML/spec smoke. Full render validation
-# happens in the consumers, which include them at a pinned tag with inputs.
+# ci-templates-parse job below is a YAML/spec smoke. This pipeline renders most
+# of them for real via the self-application `include:` block; flux-lint and the
+# ci/templates/ fragments have no library-side workload to run against and are
+# still first rendered in the consumers.
 stages:
+  - build
   - lint
   - test
+  - security
   - ai-review
 
 workflow:
+  # Aggressively cancel superseded MR pipelines. GitLab's default auto-cancel is
+  # "conservative": it stops cancelling the moment any NON-interruptible job (the
+  # image builds) has started — which on an image-touching MR would leave every
+  # heavy molecule job of the previous pipeline running on the scarce privileged
+  # runner. `interruptible` cancels those while leaving the builds alone.
+  auto_cancel:
+    on_new_commit: interruptible
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 variables:
-  YAMLLINT_VERSION: "1.38.0"
-  PYTEST_VERSION: "9.1.1"
   PYYAML_VERSION: "6.0.2"
-  RUAMEL_VERSION: "0.18.10"
 
-yaml-lint:
-  stage: lint
-  image: python:3.13-slim
-  needs: []
-  before_script:
-    - pip install --user --quiet "yamllint==${YAMLLINT_VERSION}"
-  script:
-    - python -m yamllint -c .yamllint ci/ lint/ taskfiles/ .gitlab-ci.yml
+# Self-application: the library consumes its OWN templates rather than
+# hand-rolling equivalent jobs, so every input, rendered script, and rules block
+# is exercised here by the MR that changes it. `local:` resolves against this
+# pipeline's commit (a `project:`+`ref:` self-include would resolve the ref, not
+# the branch under review). Tool pins are literal at each include site; keep the
+# pyyaml one in step with the `variables:` pin above.
+include:
+  # .molecule-base + the molecule job template stay in a LOCAL fragment (not a
+  # ci/ template): the generated MR child pipeline (molecule-plan ->
+  # molecule-trigger) includes ONLY that file, so it must be self-contained, and
+  # it must not carry the static matrix the child emits itself. Including it here
+  # is what lets the static `molecule-tests` job below extend the same template.
+  - local: /.gitlab/ci/molecule-jobs.gitlab-ci.yml
+  # The two molecule images. Separate jobs with DISJOINT inputs (see the rules
+  # overrides below), both on the privileged runner — DinD cannot run tag-less.
+  # build-molecule-ci additionally emits the digest dotenv that pins
+  # MOLECULE_CI_IMAGE for the matrix and for the child pipeline's jobs.
+  - local: /ci/build/docker-build.yml
+    inputs:
+      job_name: build-molecule-ci
+      image_name: molecule-ci
+      context: docker/molecule-ci
+      tags: ["infrastructure"]
+      digest_dotenv_var: MOLECULE_CI_IMAGE
+      digest_dotenv_file: molecule-images.env
+  # No digest dotenv for the test image: the molecule jobs pull it by its
+  # immutable `:<short-sha>` tag (see the fragment's before_script), which
+  # already pins the test target per pipeline.
+  - local: /ci/build/docker-build.yml
+    inputs:
+      job_name: build-molecule-test
+      image_name: molecule-test
+      context: docker/molecule-test
+      tags: ["infrastructure"]
+  # MR-targeted molecule child pipeline. Every other input already matches this
+  # repo (roles_dir/ci_file/jobs_include/global_triggers/changes and the two
+  # image jobs); integration_dir points at a dir that does not exist, which is
+  # correct — this library ships no integration suite. tags: the PLAN job is
+  # non-root safe, so it runs on the shared runner; the child's jobs take their
+  # tags from the fragment.
+  - local: /ci/internal/molecule-matrix.gitlab-ci.yml
+    inputs:
+      tags: []
+  - local: /ci/lint/ansible-lint.yml
+    inputs:
+      tags: []
+      config: "-c .ansible-lint"
+      targets: "ansible_collections"
+      # The repo root holds ansible_collections/, so `.` is what makes the
+      # collection's own FQCN self-references resolve.
+      collections_path: "."
+      # Dependency collections (community.general etc.) the roles' FQCN module
+      # refs need — without them syntax-check fails on unresolvable modules.
+      galaxy_requirements: "ansible_collections/weisssrv/infra/requirements.yml"
+      changes:
+        - "ansible_collections/**/*"
+        - ".ansible-lint"
+        - ".ansible-lint-ignore"
+        - ".gitlab-ci.yml"
+  - local: /ci/lint/yaml-lint.yml
+    inputs:
+      tags: []
+      image: python:3.13-slim
+      yamllint_version: "1.38.0"
+      config: "-c .yamllint"
+      targets: "ci/ lint/ taskfiles/ ansible_collections/ .gitlab/ .gitlab-ci.yml"
+      changes:
+        - "ci/**/*"
+        - "lint/**/*"
+        - "taskfiles/**/*"
+        - "ansible_collections/**/*"
+        - ".gitlab/**/*"
+        - ".gitlab-ci.yml"
+        - ".yamllint"
+  - local: /ci/lint/shellcheck.yml
+    inputs:
+      tags: []
+      direct_globs: "scripts/*.sh"
+      # The collection ships shell in role files/ and templates/ (*.sh.j2 gets
+      # the Jinja neutralizer treatment), which is what find_dir walks.
+      find_dir: "ansible_collections"
+      changes:
+        - "scripts/**/*.sh"
+        - "ansible_collections/**/*.sh"
+        - "ansible_collections/**/*.sh.j2"
+        - ".gitlab-ci.yml"
+  - local: /ci/lint/python-lint.yml
+    inputs:
+      tags: []
+      image: python:3.13-slim
+      config: "--config lint/ruff.toml"
+      targets: "scripts tests cli"
+      changes:
+        - "scripts/**/*.py"
+        - "tests/**/*.py"
+        - "cli/**/*.py"
+        - "lint/ruff.toml"
+        - ".gitlab-ci.yml"
+  - local: /ci/lint/docs-link-check.yml
+    inputs:
+      tags: []
+      image: python:3.13-slim
+      # AGENTS.md and cli/README.md are deliberately absent: the checker's
+      # default roots are docs/ + top-level README.md/CLAUDE.md, so triggering
+      # on them would imply coverage the job does not have.
+      changes:
+        - "docs/**/*"
+        - "README.md"
+        - "scripts/check-doc-links.py"
+  - local: /ci/test/python-tests.yml
+    inputs:
+      tags: []
+      # The FULL python image (not -slim) ships git — needed by the
+      # check-taskfile / tree.py tests that init throwaway repos — so no apt
+      # package is required and the job stays non-root safe.
+      image: python:3.13
+      apt_packages: ""
+      test_dir: "tests cli/tests"
+      pytest_version: "9.1.1"
+      pyyaml_version: "6.0.2"
+      # copier: without it the CLI's new-cluster tests skip (it is an optional
+      # extra of the package, not a runtime dependency).
+      pip_packages: "ruamel.yaml==0.18.10 copier==9.17.0"
+      changes:
+        - "scripts/**/*"
+        - "tests/**/*"
+        - "cli/**/*"
+        - "taskfiles/**/*"
+        # test_ansible_collection.py asserts on the collection tree itself
+        # (galaxy.yml deps vs requirements.yml, role metadata).
+        - "ansible_collections/**/*"
+        - ".gitlab-ci.yml"
+  # cpu_selector keeps its default: gitleaks SIGILLs on the legacy-CPU nodes and
+  # the shared runner allowlists exactly that override. allow_failure keeps its
+  # default too — findings block here, which is the point of shipping the gate.
+  - local: /ci/security/secret-detection.yml
+    inputs:
+      tags: []
+  # terraform/modules/ is the library-side workload for this template. Both jobs
+  # run in the lint stage (this pipeline has no validate stage), and validate
+  # loops over the module dirs rather than the template's `terraform/*/` default.
+  - local: /ci/validate/terraform.yml
+    inputs:
+      tags: []
+      validate_stage: lint
+      fmt_dir: "terraform/"
+      module_glob: "terraform/modules/*/"
+      changes:
+        - "terraform/**/*"
+        - ".gitlab-ci.yml"
+  # AI code review. Everything but the runner tag and the needs list is the
+  # template default (pragent 0.40.0 digest-pinned, gpt-5.6 at xhigh, review +
+  # improve, inline dual-publishing at score >= 6, `$OPENAI__KEY` gate,
+  # allow_failure). secrets_source stays `env`: this library's shared runner is
+  # non-root and cannot apt-install the 1Password CLI, so the two secrets come
+  # from masked CI/CD variables (OPENAI__KEY, GITLAB__PERSONAL_ACCESS_TOKEN) that
+  # pr-agent reads straight from the environment. The gate means the job is not
+  # CREATED until those variables are set — an absent AI review is expected, not
+  # a failure.
+  - local: /ci/review/pr-agent.yml
+    inputs:
+      tags: []
+      needs:
+        - job: yaml-lint
+          optional: true
+        - job: shellcheck
+          optional: true
+        - job: ci-templates-parse
+          optional: true
+        - job: python-tests
+          optional: true
 
-shellcheck:
-  stage: lint
-  image: koalaman/shellcheck-alpine:v0.10.0
-  needs: []
-  script:
-    - shellcheck --severity=warning --exclude=SC1091,SC2034 scripts/*.sh
+# The two image builds have DISJOINT inputs, so each gates on only its own
+# context — a pip pin bump must not rebuild molecule-test's ~40-package apt
+# layer, and a molecule-test apt change must not rebuild molecule-ci's
+# pip+galaxy layers. Deliberately NOT gated on .gitlab-ci.yml either: an
+# unrelated CI edit must not trigger a multi-minute DinD rebuild and re-push.
+# docker-build.yml exposes no `changes` input (its rules are unconditional), so
+# the rules are overridden here — an included job merges key-by-key with a local
+# job of the same name, and `rules:` is replaced wholesale.
+build-molecule-ci:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - "docker/molecule-ci/**/*"
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - "docker/molecule-ci/**/*"
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+
+build-molecule-test:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - "docker/molecule-test/**/*"
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - "docker/molecule-test/**/*"
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
 
 ci-templates-parse:
   # Smoke: every CI template must be valid multi-document YAML (a spec header +
@@ -73,75 +277,132 @@ ci-templates-parse:
       sys.exit(bad)
       PY
 
-python-tests:
-  # scripts/ helper tests + the CLI's own suite (rename/prune/wire/verify).
-  stage: test
-  # The FULL python image (not -slim) ships git — needed by the check-taskfile /
-  # tree.py tests that init throwaway repos. The shared runner is NON-ROOT, so
-  # apt-installing git is impossible (it fails with a lock permission error);
-  # baking it into the image is the only option. kustomize is intentionally
-  # absent — verify's build check is advisory and the CLI tests exercise it via
-  # a monkeypatched branch.
-  image: python:3.13
-  needs: []
-  before_script:
-    - pip install --user --quiet "pytest==${PYTEST_VERSION}" "pyyaml==${PYYAML_VERSION}" "ruamel.yaml==${RUAMEL_VERSION}"
-  script:
-    - python -m pytest tests cli/tests -q --junitxml=report.xml
-  artifacts:
-    when: always
-    reports:
-      junit: report.xml
-
-# AI code review — the SAME reviewer weisssrv runs (codiumai/pr-agent 0.34,
-# gpt-5.5, high reasoning, review + improve, identical instructions). Difference
-# from weisssrv is only secret plumbing: this library's shared runner is
-# non-root and cannot apt-install the 1Password CLI, so the two secrets come
-# from masked CI/CD variables (OPENAI__KEY, GITLAB__PERSONAL_ACCESS_TOKEN) that
-# pr-agent reads directly from the env — exactly the pattern
-# ci/templates/install-1password.yml documents for the non-privileged runner.
-# The `&& $OPENAI__KEY` rule guard means the job is simply not created until the
-# variables are set (an absent AI review is expected, not a failure — same as
-# weisssrv's $OP_SERVICE_ACCOUNT_TOKEN guard). allow_failure so it never blocks.
-pr-agent-review:
-  stage: ai-review
-  needs:
-    - job: yaml-lint
-      optional: true
-    - job: shellcheck
-      optional: true
-    - job: ci-templates-parse
-      optional: true
-    - job: python-tests
-      optional: true
-  # Pinned by digest (matches weisssrv) — this job handles a GitLab PAT and an
-  # OpenAI key, so no floating tag.
-  image: codiumai/pr-agent:0.34@sha256:1c1743e93bf6627cd14528cd4defe82465f17860e8f20e6c0ac6558971f61c61
-  variables:
-    CONFIG__GIT_PROVIDER: "gitlab"
-    GITLAB__URL: "https://git.ericsweiss.com"
-    CONFIG__MODEL: "gpt-5.5"
-    CONFIG__MAX_MODEL_TOKENS: "900000"
-    CONFIG__CUSTOM_MODEL_MAX_TOKENS: "1050000"
-    CONFIG__REASONING_EFFORT: "high"
-    CONFIG__AI_TIMEOUT: "600"
-    PR_REVIEWER__NUM_CODE_SUGGESTIONS: "6"
-    PR_REVIEWER__EXTRA_INSTRUCTIONS: "Be thorough. Review every file. Flag all bugs, security issues, and documentation drift."
-    PR_CODE_SUGGESTIONS__NUM_CODE_SUGGESTIONS: "6"
-  script:
-    - |
-      echo "Running AI code review on MR !${CI_MERGE_REQUEST_IID}..."
-      echo "Model: gpt-5.5 (high reasoning, 900k context, 600s call timeout)"
-      python -m pr_agent.cli \
-        --pr_url="https://git.ericsweiss.com/eric/weisssrv-lib/-/merge_requests/${CI_MERGE_REQUEST_IID}" \
-        review
-      python -m pr_agent.cli \
-        --pr_url="https://git.ericsweiss.com/eric/weisssrv-lib/-/merge_requests/${CI_MERGE_REQUEST_IID}" \
-        improve
-      echo "AI review complete"
+# Molecule unit tests — one parallel job per role/scenario, every scenario under
+# ansible_collections/weisssrv/infra/roles/*/molecule/. This full static matrix
+# is the scenario UNIVERSE: scripts/generate-molecule-pipeline.py reads it to
+# narrow an MR run, and a role dir with no entry here fails that generator loudly
+# rather than shipping untested. MR pipelines run the targeted child instead
+# (molecule-plan -> molecule-trigger); main and web run everything.
+molecule-tests:
+  extends: .molecule-test-job
+  parallel:
+    matrix:
+      - ROLE: acme_certs
+        SCENARIO: default
+      - ROLE: adguard_home
+        SCENARIO: default
+      # tls: the AdGuard-over-HTTPS branch (self-contained scenario, no -c base).
+      - ROLE: adguard_home
+        SCENARIO: tls
+      - ROLE: adguard_sync
+        SCENARIO: default
+      - ROLE: alloy_host
+        SCENARIO: default
+      # apt_signed_repo is the shared signed-apt-repo pipeline backing
+      # alloy_host + the consumer-side roles; its scenario hermetically tests
+      # both the accept (correct fingerprint) and reject paths.
+      - ROLE: apt_signed_repo
+        SCENARIO: default
+      - ROLE: base
+        SCENARIO: default
+      # compose_app is the shared compose-lifecycle super-role (compose systemd
+      # unit + write_prom_metrics lib + nginx task flow); its scenario asserts
+      # the rendered unit body and the metrics lib without a Docker runtime.
+      - ROLE: compose_app
+        SCENARIO: default
+      # docker_engine renders + asserts the journald daemon.json on the
+      # skip-install path (no real repo or daemon in the container).
+      - ROLE: docker_engine
+        SCENARIO: default
+      # encrypted_swap contract-tests the crypttab/systemd render on the skip
+      # path (a dm-crypt random-key swap cannot be created in a container).
+      - ROLE: encrypted_swap
+        SCENARIO: default
+      # k3s runs server + agent as separate jobs to halve wall time.
+      - ROLE: k3s
+        SCENARIO: default
+      - ROLE: k3s
+        SCENARIO: agent
+      - ROLE: nas_storage
+        SCENARIO: default
+      - ROLE: nfs_tls
+        SCENARIO: default
+      - ROLE: nic_tuning
+        SCENARIO: default
+      - ROLE: node_exporter_host
+        SCENARIO: default
+      - ROLE: postfix_null_client
+        SCENARIO: default
+      # prometheus_exporter is the shared install pipeline backing zfs_exporter +
+      # unbound_exporter; its scenario contract-tests both artifact branches
+      # (tarball + deb) on the skip path.
+      - ROLE: prometheus_exporter
+        SCENARIO: default
+      - ROLE: proxmox_backup
+        SCENARIO: default
+      - ROLE: proxmox_firewall
+        SCENARIO: default
+      - ROLE: proxmox_ha
+        SCENARIO: default
+      - ROLE: proxmox_lxc
+        SCENARIO: default
+      - ROLE: proxmox_vm
+        SCENARIO: default
+      - ROLE: qol
+        SCENARIO: default
+      - ROLE: resolv_conf
+        SCENARIO: default
+      # empty-search: the opt-out branch (`resolv_conf_search_domains: []`), so a
+      # regression that emits a bare `search ` trips CI.
+      - ROLE: resolv_conf
+        SCENARIO: empty-search
+      # restic_offsite runs against a local file repo + a fake snapshot tree (no
+      # network), asserting subcommands, metric names, 0600 secret files, timer
+      # enable, and the freshness-guard abort.
+      - ROLE: restic_offsite
+        SCENARIO: default
+      - ROLE: smtp_relay
+        SCENARIO: default
+      - ROLE: tailscale
+        SCENARIO: default
+      - ROLE: textfile_collector
+        SCENARIO: default
+      - ROLE: unbound
+        SCENARIO: default
+      - ROLE: unbound_exporter
+        SCENARIO: default
+      - ROLE: vfio_passthrough
+        SCENARIO: default
+      - ROLE: zfs_arc_cap
+        SCENARIO: default
+      # zfs_encryption validates template rendering, file modes, systemd
+      # ordering hooks and per-pool service enable. It cannot exercise
+      # `zfs load-key` (no kernel module in a container) or live 1Password
+      # Connect calls, but covers the deploy contract with mocked inputs.
+      - ROLE: zfs_encryption
+        SCENARIO: default
+      - ROLE: zfs_exporter
+        SCENARIO: default
+      # zvol_mount uses loop devices in prepare; works under privileged DinD.
+      - ROLE: zvol_mount
+        SCENARIO: default
   rules:
+    # Defensive (the workflow rules already exclude schedules): a future
+    # maintenance schedule must never fire this 37-job privileged fan-out.
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $OPENAI__KEY'
-  allow_failure: true
-  timeout: 45m
+    # NO merge_request_event clause: MR pipelines run the targeted child
+    # (molecule-plan / molecule-trigger) instead of this full matrix.
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - "ansible_collections/**/*"
+        - "docker/molecule-ci/**/*"
+        - "docker/molecule-test/**/*"
+        - "scripts/molecule-retry.sh"
+        - "scripts/sanitize-junit-expected-failures.py"
+        - ".gitlab/ci/molecule-jobs.gitlab-ci.yml"
+        # This file defines the matrix and the plan/trigger wiring: a CI-only
+        # change must re-run the suite rather than pass green and break the NEXT
+        # collection MR.
+        - ".gitlab-ci.yml"
+    - if: '$CI_PIPELINE_SOURCE == "web"'

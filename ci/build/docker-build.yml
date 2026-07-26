@@ -53,9 +53,33 @@ spec:
         Push the :latest tag on main. The immutable :<short-sha> tag is ALWAYS
         pushed (MR pipelines use it so they never overwrite :latest with an
         unmerged image).
-    cpu_selector:
+    digest_dotenv_var:
       default: ""
-      description: Optional KUBERNETES_NODE_SELECTOR_CPU pin (e.g. esweiss.com/cpu=modern).
+      description: >-
+        Opt-in: name of a dotenv variable set to the PUSHED image's immutable
+        digest ref (`<repo>@sha256:…`), e.g. `MOLECULE_CI_IMAGE`. A downstream
+        job that `needs:` this one with `artifacts: true` then resolves the exact
+        image this pipeline built instead of a racy `:latest` anyone can retag
+        mid-flight — including a child pipeline, whose trigger forwards it.
+        Empty (the default) emits an EMPTY dotenv artifact: no variables, so
+        existing consumers are unaffected.
+    digest_dotenv_file:
+      default: "image-digest.env"
+      description: >-
+        Path of the dotenv artifact. Always written (empty when
+        `digest_dotenv_var` is), because `artifacts:reports:dotenv` is a static
+        key — a missing file would warn on every run.
+    cpu_selector:
+      default: "esweiss.com/cpu=modern"
+      description: >-
+        KUBERNETES_NODE_SELECTOR_CPU pin. The job always emits this variable, so
+        the value must satisfy the runner's `node_selector_overwrite_allowed`
+        regex — `""` is NOT a "no pin" escape: on a runner that sets that regex
+        (both of this instance's runners allowlist
+        ^esweiss\.com/cpu=(modern|legacy)$) an empty value FAILS the check and
+        the job errors at pod creation. On a runner that sets no regex, overwrite
+        is disabled and any value here is ignored, so this default is safe
+        off-instance too; a runner with a different allowlist needs its own value.
 ---
 "$[[ inputs.job_name ]]":
   # Pushes an image later jobs may consume; do not interrupt.
@@ -90,6 +114,8 @@ spec:
     DOCKERFILE: "$[[ inputs.dockerfile ]]"
     EXTRA_BUILD_ARGS: "$[[ inputs.extra_build_args ]]"
     PUBLISH_ON_MAIN: "$[[ inputs.publish_on_main ]]"
+    DIGEST_DOTENV_VAR: "$[[ inputs.digest_dotenv_var ]]"
+    DIGEST_DOTENV_FILE: "$[[ inputs.digest_dotenv_file ]]"
     KUBERNETES_NODE_SELECTOR_CPU: "$[[ inputs.cpu_selector ]]"
   before_script:
     # Install the static docker CLI (NOT docker.io: some bases ship only the
@@ -132,6 +158,11 @@ spec:
       docker info >/dev/null 2>&1 || { echo "docker daemon did not become ready"; exit 1; }
     - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
     - |
+      # Full image ref for an image_name (empty = the registry base itself).
+      # Shared with the digest-dotenv step so both derive the ref one way.
+      image_ref() {
+        if [ -n "$1" ]; then echo "${REGISTRY}/$1"; else echo "${REGISTRY}"; fi
+      }
       # build_and_push: builds ${ref}:<short-sha>, pushes it (and :latest on main
       # when publish_on_main). Seeds a registry layer cache from the previous
       # :latest + embeds inline cache for the next run — EXCEPT on a schedule
@@ -140,7 +171,7 @@ spec:
       # re-attempts (cheap: cached layers) while a real build error still fails.
       build_and_push() {
         img="$1"
-        if [ -n "$img" ]; then ref="${REGISTRY}/${img}"; else ref="${REGISTRY}"; fi
+        ref="$(image_ref "$img")"
         cache_args=""
         if [ "$CI_PIPELINE_SOURCE" != "schedule" ]; then
           cache_args="--cache-from ${ref}:latest --build-arg BUILDKIT_INLINE_CACHE=1"
@@ -167,6 +198,23 @@ spec:
       }
   script:
     - build_and_push "$IMAGE_NAME"
+    - |
+      # Digest pin (opt-in). RepoDigests is populated by the push above, so this
+      # is the digest the registry actually holds for this pipeline's build. An
+      # empty result means the ref was never pushed — fail rather than emit
+      # `VAR=`, which a consumer would resolve to an unusable image.
+      : > "$DIGEST_DOTENV_FILE"
+      if [ -n "$DIGEST_DOTENV_VAR" ]; then
+        ref="$(image_ref "$IMAGE_NAME")"
+        digest=$(docker inspect --format='{{index .RepoDigests 0}}' "${ref}:${CI_COMMIT_SHORT_SHA}")
+        [ -n "$digest" ] || { echo "no pushed digest for ${ref}:${CI_COMMIT_SHORT_SHA}"; exit 1; }
+        echo "${DIGEST_DOTENV_VAR}=${digest}" > "$DIGEST_DOTENV_FILE"
+        cat "$DIGEST_DOTENV_FILE"
+      fi
+  artifacts:
+    reports:
+      dotenv: $[[ inputs.digest_dotenv_file ]]
+    expire_in: 7 days
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
