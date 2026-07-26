@@ -29,6 +29,13 @@ regexes = [
   # Test/fixture tokens — anchored at start of token so a real secret prefixed
   # with "prodtestkey_…" or similar can't be silenced.
   '''^(test|fake|dummy|example)[-_]?(password|token|key|secret)[A-Za-z0-9_-]*''',
+  # Published supply-chain pins the CI templates verify downloaded key material
+  # against (1Password's apt GPG fingerprint and its apk public key's sha256).
+  # Both are public by construction but trip gitleaks' generic-api-key entropy
+  # rule. Listed as exact values, so rotating a pinned key forces this allowlist
+  # to be reviewed alongside it rather than silently covering the new material.
+  '''^3FEF9748469ADBE15DA7CA80AC2D62742012EA22$''',
+  '''^0e88171d9f8b7630763f70cbf69f2a01b4ba8ea1d8e79487f59c162db255eb84$''',
 ]
 
 paths = [

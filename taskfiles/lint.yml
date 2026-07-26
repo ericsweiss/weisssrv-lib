@@ -39,6 +39,14 @@ tasks:
       - 'shellcheck --severity=warning --exclude=SC1091,SC2034 {{.SHELLCHECK_GLOBS}}'
 
   doc-links:
-    desc: Resolve relative Markdown cross-links offline (no-op if the script is absent).
+    desc: Resolve relative Markdown cross-links offline (skipped if the script is absent).
     cmds:
-      - '[ -f {{.DOC_LINK_SCRIPT}} ] && python3 {{.DOC_LINK_SCRIPT}} || echo "no {{.DOC_LINK_SCRIPT}} — skipping"'
+      # NOT `[ -f x ] && python3 x || echo skip`: in that form the `||` also
+      # fires when the CHECKER fails, printing "skipping" over a real failure
+      # and exiting 0 — the gate could never fail.
+      - |
+        if [ -f {{.DOC_LINK_SCRIPT}} ]; then
+          python3 {{.DOC_LINK_SCRIPT}}
+        else
+          echo "no {{.DOC_LINK_SCRIPT}} — skipping"
+        fi
