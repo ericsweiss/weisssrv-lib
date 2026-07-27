@@ -32,6 +32,16 @@ mapper_active() {
     '$1 == m || (r != "" && $1 == r) { found=1 } END { exit !found }' /proc/swaps
 }
 
+# Restore the plaintext fallback AFTER cryptsetup has opened the mapping.
+# The crypttab `swap` option mkswaps through the dm-crypt layer, so the backing
+# device's plaintext swap signature is destroyed the moment the mapper opens —
+# a bare `swapon -a` then finds no valid signature and the host ends up
+# swapless. Recreate the signature first; the device holds nothing but swap.
+restore_plaintext_swap() {
+  mkswap "$dev" >/dev/null 2>&1 || true
+  swapon -a || true
+}
+
 if ! mapper_active; then
   # Recovery arm — only meaningful while the deferred plaintext line still
   # exists uncommented (otherwise there is nothing to race against).
@@ -46,21 +56,21 @@ if ! mapper_active; then
   fi
   if ! systemctl start "systemd-cryptsetup@${mapper_name}.service"; then
     echo "encrypted-swap-finalize: cryptsetup open failed; restoring plaintext fallback" >&2
-    swapon -a || true
+    restore_plaintext_swap
     exit 0
   fi
   if ! swapon "$mapper"; then
     echo "encrypted-swap-finalize: swapon ${mapper} failed; restoring plaintext fallback" >&2
     swapoff "$mapper" >/dev/null 2>&1 || true
     systemctl stop "systemd-cryptsetup@${mapper_name}.service" >/dev/null 2>&1 || true
-    swapon -a || true
+    restore_plaintext_swap
     exit 0
   fi
   if ! mapper_active; then
     echo "encrypted-swap-finalize: ${mapper} still not active after switch; restoring plaintext fallback" >&2
     swapoff "$mapper" >/dev/null 2>&1 || true
     systemctl stop "systemd-cryptsetup@${mapper_name}.service" >/dev/null 2>&1 || true
-    swapon -a || true
+    restore_plaintext_swap
     exit 0
   fi
   echo "encrypted-swap-finalize: boot-time switch complete (${mapper} active)" >&2

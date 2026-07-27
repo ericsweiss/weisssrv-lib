@@ -52,11 +52,25 @@ if [ -n "$pid" ]; then
 fi
 set -e
 
-# Normalize: an empty or non-numeric cpu would emit a malformed Prometheus
-# line ("proxmox_corosync_cpu_percent " with a trailing space and no value),
-# which node_exporter's textfile parser rejects — taking ALL three metrics
-# in this file down with it, including the staleness sentinel. Force a
-# numeric value here so a partial top failure degrades to cpu=0 instead.
+# corosync is RUNNING but produced no usable sample: leave the previous
+# textfile in place and fail. Publishing cpu=0 here would report the healthy
+# value for the wedged-at-100% condition this collector exists to catch, and
+# would refresh the success sentinel while doing it. Failing instead lets the
+# sentinel go stale, which CorosyncHealthCollectorStale alerts on.
+if [ -n "$pid" ]; then
+    case "$cpu" in
+        ''|*[!0-9.]*)
+            echo "failed to sample corosync CPU for PID $pid" >&2
+            rm -f "$TMP"
+            exit 1
+            ;;
+    esac
+fi
+
+# corosync not running: 0 is the truthful value. (A running-but-unsampleable
+# corosync already exited above, so this can no longer mask a wedge; the guard
+# stays because an unset cpu would emit a malformed line and node_exporter's
+# textfile parser would reject ALL three metrics, sentinel included.)
 case "$cpu" in
     ''|*[!0-9.]*) cpu=0 ;;
 esac
