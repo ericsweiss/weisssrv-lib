@@ -1,0 +1,12 @@
+---
+# Which VMs/containers HA manages. Per-entry schema: README.
+
+# All three managed variables default to empty lists (tasks guard every read
+# with `| default([])` / `is defined`, but defaulting them here keeps the three
+# consistent and matches the README).
+proxmox_ha_resources: []
+proxmox_ha_rules: []
+proxmox_ha_replication_jobs: []
+
+# Inventory group the role asserts membership of before touching HA state.
+proxmox_ha_host_group: proxmox

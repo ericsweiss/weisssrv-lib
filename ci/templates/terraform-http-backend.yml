@@ -1,24 +1,40 @@
+spec:
+  inputs:
+    api_url:
+      default: "https://git.ericsweiss.com/api/v4"
+      description: >-
+        GitLab API base the state is hosted on. Defaults to this instance, so a
+        consumer that includes the file with no inputs renders exactly what it
+        rendered before this input existed. A consumer on ANOTHER instance must
+        override it — TF_HTTP_PASSWORD is `${CI_JOB_TOKEN}`, which is only valid
+        against the instance that issued it, so a foreign address gets a
+        401/404 on `terraform init`. `${CI_API_V4_URL}` tracks whichever
+        instance the pipeline runs on.
+    state_name:
+      default: "cloudflare"
+      description: >-
+        Terraform state name under the project (weisssrv's default). This sets
+        the pipeline's ONE default state: the hidden job's name is fixed, so a
+        second include with another `state_name` would collide. A job managing a
+        DIFFERENT state overrides the three TF_HTTP_*ADDRESS vars per-job —
+        exactly as weisssrv's tailscale-drift-plan / authentik-drift-plan do.
 ---
 # GitLab-managed Terraform HTTP state backend fragment. Defines the hidden
 # `.terraform-http-backend` job: TF_HTTP_* env pointing at this project's
 # GitLab-hosted state, authenticated with the pipeline's CI_JOB_TOKEN. A
 # consumer `extends: .terraform-http-backend`.
 #
-# Defaults target a state named `cloudflare` (weisssrv's default). A job that
-# manages a DIFFERENT state overrides the three address vars per-job — exactly
-# as weisssrv's tailscale-drift-plan / authentik-drift-plan do:
+# Per-job override for a one-off state (no second include):
 #
 #   variables:
 #     TF_HTTP_ADDRESS: "https://.../terraform/state/<name>"
 #     TF_HTTP_LOCK_ADDRESS: "https://.../terraform/state/<name>/lock"
 #     TF_HTTP_UNLOCK_ADDRESS: "https://.../terraform/state/<name>/lock"
-#
-# Extracted verbatim from weisssrv's `.terraform-http-backend`.
 .terraform-http-backend:
   variables:
-    TF_HTTP_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare"
-    TF_HTTP_LOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare/lock"
-    TF_HTTP_UNLOCK_ADDRESS: "https://git.ericsweiss.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/cloudflare/lock"
+    TF_HTTP_ADDRESS: "$[[ inputs.api_url ]]/projects/${CI_PROJECT_ID}/terraform/state/$[[ inputs.state_name ]]"
+    TF_HTTP_LOCK_ADDRESS: "$[[ inputs.api_url ]]/projects/${CI_PROJECT_ID}/terraform/state/$[[ inputs.state_name ]]/lock"
+    TF_HTTP_UNLOCK_ADDRESS: "$[[ inputs.api_url ]]/projects/${CI_PROJECT_ID}/terraform/state/$[[ inputs.state_name ]]/lock"
     TF_HTTP_USERNAME: "gitlab-ci-token"
     TF_HTTP_PASSWORD: "${CI_JOB_TOKEN}"
     TF_HTTP_LOCK_METHOD: "POST"

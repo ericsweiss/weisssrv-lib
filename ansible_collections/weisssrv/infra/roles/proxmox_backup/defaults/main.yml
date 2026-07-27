@@ -1,0 +1,23 @@
+---
+# Declarative Proxmox storage entries (storage.cfg), reconciled via pvesh:
+# absent entries are created; mutable properties (content, options) are
+# updated on drift; create-fixed properties (server, export, path) fail loud
+# with recreation instructions instead of silently diverging. Reconciled on ONE
+# node — storage.cfg and jobs.cfg are cluster-wide. Schema: README.
+proxmox_backup_storage: []
+
+# Declarative vzdump backup jobs (jobs.cfg), reconciled via pvesh
+# (/cluster/backup). A job's `id` must match the live jobs.cfg id to adopt an
+# existing job (GUI-created ids look like backup-xxxxxxxx-xxxx); unmanaged live
+# jobs are warned about, never deleted. Schema: README. Note `bwlimit`: a
+# cluster-wide `all` job runs on every node at once against one target, so the
+# per-node cap is what bounds the aggregate.
+proxmox_backup_vzdump_jobs: []
+
+# The vzdump metrics hookscript that a job's `script` key points at is deployed
+# fleet-wide by node_exporter_host (to /usr/local/bin/vzdump-metrics-hook.sh on
+# every Proxmox host) — a cluster-wide `all` job runs on each node for its local
+# guests and invokes the hook there, so it must exist on all of them, not only
+# the node where this role reconciles the clustered jobs.cfg. The hook writes
+# vzdump_backup_last_run_success + _last_success_timestamp_seconds, feeding the
+# VzdumpBackupFailed/Stale alerts.

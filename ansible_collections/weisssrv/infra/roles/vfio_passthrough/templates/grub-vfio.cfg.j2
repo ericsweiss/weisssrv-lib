@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+# Debian's grub sources /etc/default/grub.d/*.cfg AFTER /etc/default/grub, so
+# this appends kernel parameters without touching the main grub file or other
+# PVE settings. Takes effect on `update-grub` + reboot.
+#
+# vfio-pci.ids= is the PRIMARY bind: as a module cmdline parameter, vfio-pci
+# claims the functions the instant it loads in the initramfs — earlier than udev
+# in the real root could hand one to a host driver. The /etc/modules-load.d
+# force-load and /etc/modprobe.d ids=/blacklist/softdep are backups.
+GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT {{ vfio_passthrough_cmdline_params | join(' ') }} vfio-pci.ids={{ vfio_passthrough_pci_ids | join(',') }}"

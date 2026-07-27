@@ -1,0 +1,96 @@
+spec:
+  inputs:
+    job_name:
+      default: semantic-release
+    stage:
+      default: release
+      description: >-
+        Must be the LAST stage in the consumer's pipeline — the job deliberately
+        sets no `needs:` so stage ordering gates the release on every earlier
+        job passing.
+    image:
+      # The full python image ships git; python:*-slim does not, and the shared
+      # non-root runner cannot apt-install it.
+      default: python:3.13
+    tags:
+      type: array
+      default: ["infrastructure"]
+      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+    script_path:
+      default: "scripts/semantic-release.py"
+      description: >-
+        Path to the release script IN THE CONSUMER repo (vendored from this
+        library's scripts/semantic-release.py — stdlib only, no extra deps).
+    tag_prefix:
+      default: "v"
+    initial_version:
+      default: "0.1.0"
+      description: Version cut when the repo has no `<tag_prefix>X.Y.Z` tag yet.
+    release_branch:
+      default: "main"
+      description: >-
+        Branch the release is cut from, as a LITERAL name. It lands inside a
+        quoted `rules:if` string and GitLab does not expand variables inside
+        quotes, so `$CI_DEFAULT_BRANCH` would be compared as literal text and
+        never match — leaving a pipeline that silently never releases.
+    release_token:
+      default: "$CI_JOB_TOKEN"
+      description: >-
+        Variable REFERENCE for the token. `$CI_JOB_TOKEN` is enough: the Releases
+        API accepts it and creates the tag from `ref` (the Tags API itself is
+        read-only for job tokens). Pass a PAT reference — with `token_header:
+        PRIVATE-TOKEN` — when protected tags restrict who may create `v*`, or
+        when the project restricts job-token API scope.
+    token_header:
+      default: "JOB-TOKEN"
+      options: ["JOB-TOKEN", "PRIVATE-TOKEN"]
+    major_on_zero:
+      type: boolean
+      default: false
+      description: >-
+        While the version is 0.x, a breaking commit bumps MINOR by default —
+        leaving initial development is a deliberate call. `true` lets `feat!:`
+        cut 1.0.0.
+    dry_run:
+      type: boolean
+      default: false
+      description: Compute and print the release; create nothing.
+---
+"$[[ inputs.job_name ]]":
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.image ]]
+  tags: $[[ inputs.tags ]]
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - scheduler_failure
+  # Serializes rapid merges so two pipelines can't race to compute (and create)
+  # the same next tag.
+  resource_group: $[[ inputs.job_name ]]
+  variables:
+    # The commit range is `<last tag>..HEAD`; a shallow clone can lack the tag's
+    # commit, which would make the range unresolvable.
+    GIT_DEPTH: "0"
+    RELEASE_TOKEN: "$[[ inputs.release_token ]]"
+  script:
+    - |
+      set -e
+      FLAGS=""
+      if [ "$[[ inputs.dry_run ]]" = "true" ]; then FLAGS="--dry-run"; fi
+      if [ "$[[ inputs.major_on_zero ]]" = "true" ]; then FLAGS="$FLAGS --major-on-zero"; fi
+      # shellcheck disable=SC2086  # FLAGS holds zero or more separate flags
+      python3 "$[[ inputs.script_path ]]" \
+        --tag-prefix "$[[ inputs.tag_prefix ]]" \
+        --initial-version "$[[ inputs.initial_version ]]" \
+        --token-header "$[[ inputs.token_header ]]" \
+        --output release.json $FLAGS
+  artifacts:
+    when: always
+    paths:
+      - release.json
+    expire_in: 30 days
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "$[[ inputs.release_branch ]]"'

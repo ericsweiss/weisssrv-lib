@@ -7,7 +7,7 @@
 # hits) when the runner has no distributed cache backend — safe either way.
 #
 # This is a plain fragment (no spec:inputs): it carries no parameterizable
-# values. Extracted verbatim from weisssrv's `.dep-cache`.
+# values.
 .dep-cache:
   variables:
     PIP_CACHE_DIR: "${CI_PROJECT_DIR}/.cache/pip"

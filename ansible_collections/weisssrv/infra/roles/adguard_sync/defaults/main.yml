@@ -1,0 +1,35 @@
+---
+# Pushes AdGuard Home config from the primary to the replica. The whole role is
+# gated on adguard_sync_enabled, so set it true on the primary only.
+adguard_sync_enabled: false
+
+# How often the sync timer fires (systemd OnCalendar).
+adguard_sync_schedule: "*:0/5"
+
+# Which AdGuard config sections the primary pushes. tlsConfig stays false: cert
+# files/paths are host-local and reconciled per host by weisssrv.infra.adguard_home,
+# so syncing them would fight the Ansible-managed config on the replica.
+adguard_sync_features:
+  dns:
+    accessLists: true
+    serverConfig: true
+    rewrites: true
+  dhcp:
+    serverConfig: true
+    staticLeases: true
+  generalSettings: true
+  queryLogConfig: true
+  statsConfig: true
+  clientSettings: true
+  services: true
+  filters: true
+  theme: true
+  tlsConfig: false
+
+# Required inputs (no default — asserted in tasks/main.yml):
+# - adguard_sync_version: pinned adguardhome-sync release, fetched by the shared
+#   prometheus_exporter install pipeline.
+# - adguard_sync_origin / adguard_sync_replica: primary and replica AdGuard API
+#   URLs.
+# - adguard_sync_admin_user / adguard_sync_admin_password: credentials valid on
+#   BOTH endpoints. Never defaulted here — supply from the secret store.

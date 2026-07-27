@@ -32,6 +32,11 @@ spec:
   needs: []
   stage: $[[ inputs.fmt_stage ]]
   tags: $[[ inputs.tags ]]
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - scheduler_failure
   image:
     name: $[[ inputs.image ]]
     entrypoint: [""]
@@ -51,6 +56,11 @@ spec:
   needs: []
   stage: $[[ inputs.validate_stage ]]
   tags: $[[ inputs.tags ]]
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - scheduler_failure
   image:
     name: $[[ inputs.image ]]
     entrypoint: [""]

@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+# Fail2ban filter for Proxmox VE authentication failures — web UI, API, and
+# console/spice/vnc. Proxmox 9.x has no daemon.log, so the jail pairs this with
+# backend=systemd + a journalmatch for pveproxy.
+
+[Definition]
+
+# PAM authentication failure format from pveproxy/pvedaemon
+# When using systemd backend, fail2ban reads from journal and applies this regex
+# Examples from journal:
+#   authentication failure; logname= uid=0 euid=0 tty= ruser= rhost=10.0.0.100
+#   authentication failure; logname= uid=0 euid=0 tty= ruser= rhost=10.0.0.50 user=root
+
+failregex = ^.*authentication failure;.*rhost=<HOST>.*$
+
+# Ignore certain patterns (adjust as needed)
+ignoreregex =
+
+# Date pattern: auto-detect (systemd journal provides timestamps)
+datepattern = {^LN-BEG}

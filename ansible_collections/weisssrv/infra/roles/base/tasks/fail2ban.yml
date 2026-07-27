@@ -1,0 +1,90 @@
+---
+# Unprivileged LXC containers lack CAP_NET_ADMIN, so iptables/nftables banning
+# is unavailable there; container mode uses the 'route' banaction (blackhole
+# routes) instead. Trade-offs: bans are IP-wide, the recidive jail is off
+# (route has no allports), and all jails share one routing table.
+#
+# Refs: https://pieterbakker.com/secure-debian-12-with-fail2ban-and-nftables/
+#       https://forum.proxmox.com/threads/iptables-inside-lxc-container-not-blocking-anything.123807/
+
+- name: Install fail2ban
+  ansible.builtin.apt:
+    name: fail2ban
+    state: present
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Create fail2ban configuration directory
+  ansible.builtin.file:
+    path: /etc/fail2ban/jail.d
+    state: directory
+    mode: "0755"
+    owner: root
+    group: root
+
+- name: Create fail2ban filter directory
+  ansible.builtin.file:
+    path: /etc/fail2ban/filter.d
+    state: directory
+    mode: "0755"
+    owner: root
+    group: root
+
+- name: Deploy fail2ban jail configuration
+  ansible.builtin.template:
+    src: jail.local.j2
+    dest: /etc/fail2ban/jail.local
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart fail2ban
+
+# Deploy Proxmox filter only when pveproxy jail is enabled
+- name: Deploy Proxmox pveproxy filter
+  ansible.builtin.template:
+    src: proxmox.conf.j2
+    dest: /etc/fail2ban/filter.d/proxmox.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: base_fail2ban_pveproxy_enabled | default(false)
+  notify: Restart fail2ban
+
+- name: Ensure fail2ban log file exists
+  ansible.builtin.file:
+    path: /var/log/fail2ban.log
+    state: touch
+    mode: "0640"
+    owner: root
+    group: adm
+    modification_time: preserve
+    access_time: preserve
+  # Match the jail.local template: the recidive jail is only rendered when
+  # NOT a container, so the log file is only needed off-container too.
+  when:
+    - base_fail2ban_recidive_enabled | default(true)
+    - not (base_is_container | default(false))
+
+- name: Enable and start fail2ban service
+  ansible.builtin.systemd:
+    name: fail2ban
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# Verify fail2ban is working (non-blocking check)
+- name: Check fail2ban status
+  ansible.builtin.command: fail2ban-client status
+  register: base_fail2ban_status
+  changed_when: false
+  failed_when: false
+
+- name: Display fail2ban status and mode
+  vars:
+    banaction_mode: "{{ 'route (LXC container mode)' if (base_is_container | default(false)) else 'iptables (standard mode)' }}"
+    recidive_status: "{{ 'disabled (not supported with route action)' if (base_is_container | default(false)) else 'enabled' }}"
+  ansible.builtin.debug:
+    msg:
+      - "Fail2ban banaction: {{ banaction_mode }}"
+      - "Recidive jail: {{ recidive_status }}"
+      - "Status: {{ base_fail2ban_status.stdout_lines | default(['Not running']) }}"
+  when: base_fail2ban_status.rc == 0

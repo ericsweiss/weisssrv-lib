@@ -1,0 +1,17 @@
+---
+# zfs_arc_cap — cap the ZFS ARC on the compute Proxmox hosts. A byte count is
+# rendered into /etc/modprobe.d/zfs.conf, baked into the initramfs (so the cap
+# applies at EARLY boot, before the pool imports and the ARC grows to the
+# ~half-RAM default) AND written live to /sys/module/zfs/parameters/zfs_arc_max
+# so a change needs no reboot. Empty ("") makes the role a total no-op.
+#
+# The COMPUTE counterpart to nas_storage's zfs_arc_max_bytes (a different
+# playbook lifecycle owns the NAS cap). It exists because a VFIO-passthrough
+# guest's RAM is host-pinned and non-reclaimable, so an uncapped ARC collides
+# with the pinned VM and thrashes.
+zfs_arc_cap_max_bytes: ""
+
+# Skip the update-initramfs handler (molecule / check-mode). The modprobe.d file
+# still renders; only the initramfs rebuild — which needs a real /boot kernel —
+# is suppressed so the role converges inside a plain CI container.
+zfs_arc_cap_skip_initramfs: false

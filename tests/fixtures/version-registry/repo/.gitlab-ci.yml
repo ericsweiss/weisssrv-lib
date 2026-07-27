@@ -1,0 +1,2 @@
+pr-agent-review:
+  image: codiumai/pr-agent:0.34@sha256:1c1743e93bf6627cd14528cd4defe82465f17860e8f20e6c0ac6558971f61c61

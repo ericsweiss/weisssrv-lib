@@ -1,0 +1,17 @@
+---
+# Run from the repository root, with the repo itself on the collections path so
+# `weisssrv.infra.<role>` resolves:
+#
+#   ANSIBLE_COLLECTIONS_PATH=$PWD:~/.ansible/collections \
+#     ansible-lint ansible_collections/weisssrv/infra/roles/*
+profile: production
+
+exclude_paths:
+  - .cache/
+  - .venv/
+  - venv/
+
+# No skip_list. var-naming[no-role-prefix] in particular stays ON: a role
+# variable's name is consumer-visible API here, so the prefix is the contract.
+# The only exemptions are per-file entries in .ansible-lint-ignore.
+offline: false

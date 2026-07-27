@@ -1,9 +1,11 @@
 """Shared pytest fixtures for the CLI tests.
 
-Each test gets a fresh copy of the tenant scaffold (tests/fixtures/scaffold, a
-faithful copy of the weisssrv-project-template tree) in a tmpdir, so edits never
-touch the fixtures. The package is imported off the repo path (no install
-needed), keeping the suite offline.
+Each test gets a fresh copy of the tenant scaffold (tests/fixtures/scaffold) in a
+tmpdir, so edits never touch the fixtures. The package is imported off the repo
+path (no install needed), keeping the suite offline.
+
+The fixture is byte-identical to the app template except for a stub README;
+test_template_contract.py enforces that against a real checkout.
 """
 from __future__ import annotations
 

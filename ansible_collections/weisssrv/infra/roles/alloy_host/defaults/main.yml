@@ -1,0 +1,27 @@
+---
+# Required inputs (no default — asserted in tasks/main.yml):
+#   alloy_host_version    — the pinned `alloy=<version>` apt package version
+#   alloy_host_loki_url   — the Loki push endpoint
+#
+# An https:// endpoint is assumed to be behind an authenticating proxy, so the
+# credentials below are asserted non-empty for it; a plaintext endpoint (an
+# in-cluster NodePort used as an outage fallback, say) needs none.
+alloy_host_loki_url: ""
+
+# Basic-auth credentials for an authenticated (https) push endpoint. A config
+# rendered with empty credentials ships 401s and silently drops the fleet's
+# journals, so tasks/main.yml turns that into a deploy-time error.
+alloy_host_loki_user: ""
+alloy_host_loki_password: ""
+
+# On-disk write-ahead log for the loki.write client. This host-side Alloy is
+# circularly dependent on the very Loki it observes: Loki typically runs inside
+# the cluster these hosts carry, so a cluster/Loki/ingress outage is exactly when
+# host journald (kubelet/etcd/containerd units) matters most — yet without a WAL
+# those logs are dropped after the in-memory queue fills. Enabling the WAL
+# buffers entries to disk (under Alloy's storage path) and backfills them once
+# Loki returns, so an outage degrades to delayed delivery instead of loss.
+# max_segment_age bounds how long a segment is held before being cut/flushed,
+# capping disk use and replay lag. Override per-host if a node is space-constrained.
+alloy_host_wal_enabled: true
+alloy_host_wal_max_segment_age: "1h"

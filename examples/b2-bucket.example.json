@@ -1,0 +1,17 @@
+{
+  "account_id": "REPLACE-WITH-B2-ACCOUNT-ID",
+  "bucket_id": "REPLACE-WITH-B2-BUCKET-ID",
+  "bucket_name": "REPLACE-WITH-BUCKET-NAME",
+  "desired": {
+    "bucketType": "allPrivate",
+    "defaultServerSideEncryption": {"mode": "SSE-B2", "algorithm": "AES256"},
+    "lifecycleRules": [
+      {
+        "fileNamePrefix": "",
+        "daysFromHidingToDeleting": 30,
+        "daysFromUploadingToHiding": null
+      }
+    ],
+    "defaultRetention": {"mode": null, "period": null}
+  }
+}

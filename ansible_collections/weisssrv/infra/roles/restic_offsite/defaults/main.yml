@@ -1,0 +1,105 @@
+---
+# Nightly offsite backup to Backblaze B2 via restic + rclone, intended to run
+# on the storage host and chained OnSuccess= after the local archive job.
+#
+# Everything that describes WHAT to back up (repository, sources, zvol sources,
+# excludes, cache location) is site data with no safe generic value and is
+# therefore empty or unset here — see README.md.
+
+restic_offsite_enabled: true
+
+# restic/rclone are installed from the Debian archive (state: present) so the
+# molecule scenario stays hermetic (no GitHub-release fetch). These pins are
+# restic — ADVISORY: set to an exact Debian package version to hard-pin, or
+# leave empty to track the distro.
+restic_offsite_restic_version: ""
+# rclone — REQUIRED semantic version + .deb sha256: installed from
+# rclone.org's official release deb, never Debian apt (trixie ships a
+# 2022-era 1.60.1-DEV build; the pinned current build keeps the backup
+# transport reproducible — see tasks/main.yml). all.yml carries the
+# production values; these defaults keep molecule/standalone runs working.
+restic_offsite_rclone_version: "1.74.4"
+restic_offsite_rclone_deb_sha256: "a9da2eaa70428c6dcc5acbb0b7eac0faec4c61643e0b468d9fe09ddf79b7e929"
+
+# restic repository. REQUIRED when enabled; the rclone b2 backend path form is
+# `rclone:b2:<bucket>/<path>`.
+restic_offsite_repo: ""
+
+# restic metadata cache. REQUIRED, and deliberately without a default: the cache
+# holds the repo tree/index — including file PATHS — in PLAINTEXT even though the
+# data blobs are client-encrypted, so it must be placed on an encrypted dataset
+# deliberately rather than landing wherever a default points. The role creates it
+# 0700 root. Keep it out of any client-exported directory; restic's own
+# CACHEDIR.TAG + `--exclude-caches` keeps it out of the file walk, so it is never
+# re-uploaded.
+# restic_offsite_cache_dir: /path/on/an/encrypted/dataset
+
+# Stable path roots: file sources bind their latest archsync snapshot subtree
+# here; the data-zvol clones mount here. Stable paths let restic's parent-
+# snapshot optimization re-read only changed files instead of re-hashing ~1T.
+restic_offsite_bind_root: /mnt/restic-src
+restic_offsite_zvol_mount_root: /run/restic-offsite
+# bind (real host: mount --bind the .zfs snapshot) | direct (molecule: no ZFS).
+restic_offsite_bind_mode: bind
+restic_offsite_zvol_clone_suffix: b2walk
+
+# Throttles: deliberately deferential under I/O contention. The WAN upload is
+# the real cap; RCLONE_BWLIMIT bounds it anyway.
+restic_offsite_bwlimit: "50M"           # RCLONE_BWLIMIT
+restic_offsite_rclone_transfers: 4      # RCLONE_TRANSFERS
+restic_offsite_gogc: 20                 # GOGC — caps restic heap during index/prune
+
+restic_offsite_metrics_dir: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
+restic_offsite_snap_prefix: archsync
+# Abort (do not upload) if any source's latest archsync snapshot is older than
+# this — B2 chains OnSuccess= after archive-backup, so a fresh snapshot is the
+# norm; >26h tolerates one deferred-archive night while still refusing a stale tree.
+restic_offsite_freshness_max_age_h: 26
+
+restic_offsite_restore_base: /mnt/restore/restic
+restic_offsite_config_dir: /etc/restic-offsite
+restic_offsite_excludes_file: "{{ restic_offsite_config_dir }}/excludes.txt"
+
+# GFS retention (task-mandated).
+restic_offsite_keep_daily: 3
+restic_offsite_keep_weekly: 2
+restic_offsite_keep_monthly: 3
+restic_offsite_keep_yearly: 1
+
+# systemd load-shaping: deferential under contention.
+restic_offsite_nice: 10
+restic_offsite_io_class: best-effort
+restic_offsite_io_priority: 6
+restic_offsite_cpu_weight: 20
+restic_offsite_io_weight: 20
+# Fallback timer (the PRIMARY trigger is OnSuccess=restic-offsite.service on
+# archive-backup.service). 07:15 = shortly after the 06:30 archive run finishes.
+restic_offsite_timer_calendar: "*-*-* 07:15:00"
+# Weekly rotating deep verify (restic check --read-data-subset, ISO-week % 12):
+# midday Sunday, far from the nightly 02:00-07:30 backup window. The full repo
+# is re-read against bit-rot every ~12 weeks; ResticOffsiteVerifyStale (8d)
+# pages when a week's verify is missed or fails.
+restic_offsite_verify_timer_calendar: "Sun *-*-* 12:00:00"
+restic_offsite_timer_randomized_delay: 10m
+
+# File-walkable sources. Each item binds <mountpoint>'s latest snapshot subtree
+# at <bind_root>/<name>, so restic sees a STABLE path and its parent-snapshot
+# optimization re-reads only changed files. Site data — empty means nothing is
+# walked. Item shape: {name, mountpoint}.
+#
+# A dataset with zvol-backed CHILDREN appears in the walk as empty mountpoint
+# dirs; back those up via logical dumps that land in a walked source instead.
+restic_offsite_sources: []
+
+# File-bearing data zvols: cloned from their latest snapshot and mounted
+# read-only so their filesystem contents ride offsite (a file walk cannot see a
+# live zvol). The control script owns the full clone -> mount -> restic ->
+# umount -> destroy lifecycle with EXIT-trap cleanup. Site data; item shape:
+# {name, zvol, fstype, mount_opts}.
+restic_offsite_zvol_sources: []
+
+# restic --exclude patterns, expressed against the BIND paths
+# (<restic_offsite_bind_root>/<source name>/...). Site data: what is
+# regenerable, what has its own retention, and which zvol mountpoint dirs are
+# empty in the walk are all deployment-specific.
+restic_offsite_excludes: []

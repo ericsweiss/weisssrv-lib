@@ -1,0 +1,45 @@
+---
+# De-provisioning path for nas_storage_archive_backup_enabled: false.
+#
+# Without this, flipping the feature off (or never setting the opt-in on a host
+# that was configured before it became opt-in) leaves the last-deployed timer
+# firing a script the role no longer owns: the play reports green while the host
+# keeps replicating nightly and never receives another fix. Everything here is
+# gated on the unit file actually existing, so a host that never had the feature
+# does no systemd work at all.
+
+- name: Check for a previously deployed archive-backup timer
+  ansible.builtin.stat:
+    path: /etc/systemd/system/archive-backup.timer
+  register: nas_storage_archive_timer_unit
+
+- name: Stop and disable the archive-backup timer
+  ansible.builtin.systemd:
+    name: archive-backup.timer
+    enabled: false
+    state: stopped
+    daemon_reload: true
+  when: nas_storage_archive_timer_unit.stat.exists
+
+# Stop only — the service is deliberately NOT in the disable above.
+# archive-backup.service carries no [Install] section (the timer's
+# WantedBy=timers.target is what wires the schedule), so `systemctl is-enabled`
+# reports "static", which ansible.builtin.systemd maps to enabled=True: an
+# `enabled: false` here would report changed on every single run and shell out
+# to `systemctl disable` on a unit with no installation config. Removing the
+# unit file below is what de-provisions it.
+- name: Stop the archive-backup service
+  ansible.builtin.systemd:
+    name: archive-backup.service
+    state: stopped
+  when: nas_storage_archive_timer_unit.stat.exists
+
+- name: Remove the archive-backup units and script
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/archive-backup.timer
+    - /etc/systemd/system/archive-backup.service
+    - /usr/local/sbin/archive-backupctl
+  notify: Reload systemd

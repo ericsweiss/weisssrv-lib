@@ -1,0 +1,123 @@
+---
+# Role vars are prefixed; where a value is conventionally inventory-wide (and
+# read by other roles too) the prefixed var is ALIASED to it, so a site can set
+# either. `admin_user: root` — the fallback — means "manage no admin user": the
+# create/sudoers/authorized_keys tasks all self-skip.
+base_admin_user: "{{ admin_user | default('root') }}"
+base_admin_email: "{{ admin_email | default('root@localhost', true) }}"
+
+base_ssh_port: "{{ ssh_port | default(22) }}"
+base_ssh_permit_root_login: "{{ ssh_permit_root_login | default('no') }}"
+base_ssh_password_authentication: "{{ ssh_password_authentication | default(false) }}"
+base_ssh_pubkey_authentication: "{{ ssh_pubkey_authentication | default(true) }}"
+base_ssh_service_name: ssh
+base_ssh_authorized_keys: "{{ ssh_authorized_keys | default([]) }}"
+
+# Lockout guard (asserted in tasks/ssh.yml). A login path survives when a managed
+# non-root account carries at least one key, or root login is still permitted, or
+# password authentication is left on — the last keeps every pre-existing account
+# reachable, which is the case for hosts whose keys are provisioned outside
+# Ansible by cloud-init or image baking.
+# It lives here, not inline in the assert, so the role and the accept/reject
+# matrix in molecule/default/verify.yml share ONE expression: the matrix loads
+# this file and re-resolves the var per case with the four inputs overridden, so
+# dropping or inverting a clause here fails the matrix.
+base_ssh_login_path_survives: >-
+  {{ (base_admin_user != 'root' and base_ssh_authorized_keys | default([]) | length > 0)
+     or (base_ssh_permit_root_login | string | lower != 'no')
+     or (base_ssh_password_authentication | bool) }}
+
+base_timezone: "{{ timezone | default('Etc/UTC') }}"
+
+base_common_packages:
+  - curl
+  - wget
+  - neovim
+  - htop
+  - tmux
+  - git
+  - jq
+  - unzip
+  - rsync
+  - net-tools
+  - dnsutils
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - sudo  # required by the sudoers task's visudo validate (and admin user sudo)
+
+# VM-specific packages (only installed on VMs, not LXC or bare metal)
+base_vm_packages:
+  - qemu-guest-agent
+
+# Fail2ban Configuration
+# Fail2ban provides intrusion prevention by banning IPs after failed auth attempts
+# Enabled by default on all hosts for SSH protection
+#
+# LXC container mode uses banaction=route — see the header in
+# tasks/fail2ban.yml for the trade-offs and references.
+
+base_fail2ban_enabled: true
+
+# Trusted networks that should never be banned
+# Default: internal LAN and Tailscale networks
+# Add the site's LAN and any overlay-VPN range (e.g. 100.64.0.0/10 for a
+# Tailscale tailnet) — locking yourself out over the LAN is the failure mode.
+base_fail2ban_ignoreip:
+  - 127.0.0.1/8
+  - ::1
+
+# Default jail settings (can be overridden per-jail)
+base_fail2ban_default_bantime: 1h       # Duration of IP ban
+base_fail2ban_default_findtime: 10m     # Window to count failures
+base_fail2ban_default_maxretry: 5       # Failures before ban
+
+# Progressive ban multiplier for recidivists
+# Each repeat offense multiplies bantime by this factor
+base_fail2ban_recidive_enabled: true
+base_fail2ban_recidive_bantime: 1w      # Ban repeat offenders for 1 week
+base_fail2ban_recidive_findtime: 1d     # Look back 1 day for repeat bans
+base_fail2ban_recidive_maxretry: 3      # 3 bans triggers recidive
+
+# SSH jail configuration
+base_fail2ban_sshd_enabled: true
+base_fail2ban_sshd_port: "{{ base_ssh_port }}"
+base_fail2ban_sshd_maxretry: 5
+base_fail2ban_sshd_bantime: 1h
+base_fail2ban_sshd_findtime: 10m
+
+# Proxmox web UI (pveproxy) jail - only for Proxmox hosts
+# Uses the custom 'proxmox' filter (filter.d/proxmox.conf) with the systemd journal backend
+base_fail2ban_pveproxy_enabled: false  # Explicitly enabled on proxmox hosts
+base_fail2ban_pveproxy_port: 8006
+base_fail2ban_pveproxy_maxretry: 5
+base_fail2ban_pveproxy_bantime: 1h
+base_fail2ban_pveproxy_findtime: 10m
+
+# Email notifications (optional - uses the local SMTP relay)
+base_fail2ban_email_enabled: false
+# The fallback must trigger on undefined AND empty/falsy values — a site that
+# derives admin_email from an env lookup can legitimately produce an undef
+# sentinel — hence the second `true` arg to default(). Dormant unless email is
+# enabled.
+base_fail2ban_email_dest: "{{ base_admin_email }}"
+base_fail2ban_email_sender: "fail2ban@{{ inventory_hostname }}"
+base_fail2ban_email_action: "%(action_mwl)s"  # Ban with email + whois + log lines
+
+# DNS: dns_servers is the collection-wide list every non-resolver host gets.
+# A host that RUNS the resolver bootstraps off base_bootstrap_dns_servers until
+# its own 127.0.0.1 answers base_resolver_probe_name — see tasks/dns.yml.
+base_dns_servers: "{{ dns_servers | default(base_bootstrap_dns_servers) }}"
+base_is_resolver_host: false
+base_bootstrap_dns_servers:
+  - 1.1.1.1
+  - 8.8.8.8
+base_resolver_probe_name: example.com
+
+# Component gates
+# Each skips one block of the role; declared here so a typo cannot silently
+# disable a guard.
+base_skip_ssh_config: false          # sshd hardening drop-in
+base_skip_dns_config: false          # /etc/resolv.conf management
+base_skip_timezone_config: false     # timezone
+base_skip_sudoers_validation: false  # `visudo -cf` on the admin sudoers file

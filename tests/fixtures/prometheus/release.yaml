@@ -1,0 +1,27 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kube-prometheus-stack
+  namespace: monitoring
+spec:
+  values:
+    additionalPrometheusRulesMap:
+      node-rules:
+        groups:
+          - name: node
+            rules:
+              - alert: NodeDown
+                expr: up{job="node-exporter"} == 0
+                for: 5m
+                annotations:
+                  summary: node down
+      flux-rules:
+        groups:
+          - name: flux
+            rules:
+              - alert: FluxReconcileFailure
+                expr: max(gotk_reconcile_condition{type="Ready", status="False"}) > 0
+                for: 15m
+              - record: flux:ready:ratio
+                expr: avg(gotk_reconcile_condition{type="Ready", status="True"})

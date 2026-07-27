@@ -43,6 +43,11 @@ spec:
   stage: $[[ inputs.stage ]]
   image: $[[ inputs.image ]]
   tags: $[[ inputs.tags ]]
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - scheduler_failure
   before_script:
     # Keep the yamllint pin in step with the CI image. `--user`: the shared
     # NON-ROOT tenant runner can't write system site-packages, so pip installs to

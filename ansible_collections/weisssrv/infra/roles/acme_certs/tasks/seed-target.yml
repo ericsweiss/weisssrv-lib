@@ -1,0 +1,72 @@
+---
+# Seed ONE cert-distribution target: probe it, then (only if it answered)
+# install the forced-command receiver, its sudoers rule and the pinned pubkey.
+# Included once per target from main.yml — see the comment there for why the
+# delegation must not be a loop.
+
+- name: Probe for reachability — {{ acme_certs_target.host }}
+  ansible.builtin.ping:
+  delegate_to: "{{ acme_certs_target.host }}"
+  ignore_unreachable: true
+  # A module-level failure (reachable host, broken python, become refused) must
+  # not abort the run either: only a real pong seeds the target.
+  failed_when: false
+  changed_when: false
+  register: acme_certs_probe
+
+- name: Record as unreachable — {{ acme_certs_target.host }}
+  ansible.builtin.set_fact:
+    acme_certs_unreachable_targets: >-
+      {{ acme_certs_unreachable_targets + [acme_certs_target.host] }}
+  when: acme_certs_probe.ping | default('') != 'pong'
+
+# The receiver and its sudoers rule must exist BEFORE the key is pinned:
+# authorized_keys forces `sudo <receiver>`, so a key pinned to a missing
+# receiver locks the next cert push out.
+- name: Seed the reachable target
+  when: acme_certs_probe.ping | default('') == 'pong'
+  block:
+    - name: Deploy the cert-receive forced-command receiver — {{ acme_certs_target.host }}
+      ansible.builtin.template:
+        src: cert-receive.sh.j2
+        dest: "{{ acme_certs_receiver_path }}"
+        owner: root
+        group: root
+        mode: "0500"
+      delegate_to: "{{ acme_certs_target.host }}"
+
+    # Scopes the escalation: the cert key's forced command `sudo <receiver>` is
+    # the ONLY thing this rule permits, so the receiver keeps working even if
+    # the login user's broader sudo is later tightened — and the key can still
+    # do nothing else.
+    - name: Deploy the cert-receive sudoers drop-in — {{ acme_certs_target.host }}
+      ansible.builtin.copy:
+        # Static marker, not {{ ansible_managed }}: the copy module (unlike
+        # template) does not inject it, so referencing it here is undefined on
+        # modern ansible-core and aborts the task.
+        content: |
+          # Ansible managed - acme_certs cert-receive sudoers drop-in
+          {{ acme_certs_target.ssh_user | default(acme_certs_ssh_user) }} ALL=(root) NOPASSWD: {{ acme_certs_receiver_path }}
+          Defaults!{{ acme_certs_receiver_path }} !requiretty
+        dest: /etc/sudoers.d/cert-receive
+        owner: root
+        group: root
+        mode: "0440"
+        validate: "visudo -cf %s"
+      delegate_to: "{{ acme_certs_target.host }}"
+
+    - name: Pin the cert-distribution pubkey in authorized_keys — {{ acme_certs_target.host }}
+      ansible.posix.authorized_key:
+        user: "{{ acme_certs_target.ssh_user | default(acme_certs_ssh_user) }}"
+        state: present
+        key: "{{ acme_certs_ssh_public_key }}"
+        comment: "cert distribution ({{ inventory_hostname }})"
+        # Lock the key to the receiver: restrict (no pty/agent/port/X11/user-rc)
+        # + command="sudo <receiver>" so a leaked key can only install a
+        # validated cert and run the target's baked-in reload — never a shell.
+        # acme_certs_key_from adds a source pin as defense in depth; empty drops
+        # only that clause.
+        key_options: >-
+          {{ (('from="' ~ acme_certs_key_from ~ '",') if (acme_certs_key_from | default('') | length > 0) else '')
+             ~ 'command="sudo ' ~ acme_certs_receiver_path ~ '",restrict' }}
+      delegate_to: "{{ acme_certs_target.host }}"

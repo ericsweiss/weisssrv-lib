@@ -1,0 +1,8 @@
+---
+zfs_exporter_port: 9134
+
+# Upstream release pin + checksum of the linux-amd64 tarball. The binary runs
+# as root with /dev/zfs access, so a compromised release or MITM must not
+# silently land — bump the pair together.
+zfs_exporter_version: "2.3.12"
+zfs_exporter_checksum: "sha256:7f2c953967bfcbd5ddd4931fb9d74122c45fa36df72be78d1025ab2371514a2d"

@@ -1,0 +1,7 @@
+---
+# Floor, not a range: the roles are developed and CI-tested on the ansible-core
+# that ansible 11.6.0 ships (2.18), which is also what the molecule-ci image
+# pins. An upper bound here would hard-block consumers on a newer core instead
+# of letting them find out from a test run, so newer cores are allowed and
+# untested rather than forbidden.
+requires_ansible: ">=2.18.0"

@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+# Overrides the Debian-packaged prometheus-node-exporter unit. Only two flags
+# change behaviour: --web.listen-address (port {{ node_exporter_host_port }},
+# avoiding the k3s DaemonSet on 9100) and --collector.textfile.directory. The
+# bare --collector.hwmon/thermal_zone/textfile flags are explicit-intent no-ops
+# (all default-on), and --collector.disable-defaults is deliberately NOT passed,
+# so the default collectors stay on without being listed.
+#
+# Metrics are unauthenticated plaintext HTTP on all interfaces — the Proxmox
+# firewall limiting the scrape port to cluster scrapers is the ONLY access
+# control on this endpoint.
+
+[Service]
+ExecStart=
+ExecStart=/usr/bin/prometheus-node-exporter \
+  --web.listen-address=:{{ node_exporter_host_port }} \
+  --collector.hwmon \
+  --collector.thermal_zone \
+  --collector.textfile \
+  --collector.textfile.directory={{ node_exporter_host_textfile_dir }}

@@ -39,7 +39,7 @@ def main() -> int:
         print(f"{len(skipped)} kind(s) skipped — no schema in catalog, UNVALIDATED:")
         for s in skipped:
             print(f"  - {s}")
-        print("If a kind here is new, vendor its CRD schema or accept the gap (docs/16).")
+        print("If a kind here is new, vendor its CRD schema or accept the gap.")
     else:
         print("All rendered kinds were schema-validated (no skips).")
     return 0

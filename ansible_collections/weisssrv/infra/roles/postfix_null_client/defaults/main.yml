@@ -1,0 +1,40 @@
+---
+# Required site inputs (no default — asserted in tasks/main.yml):
+#   postfix_null_client_relay_host     — central relay hostname
+#   postfix_null_client_mail_domain    — domain appended to inventory_hostname
+#   postfix_null_client_sasl_user      — SASL user for the relay
+#   postfix_null_client_sasl_password  — SASL password for the relay
+
+postfix_null_client_relay_port: 587
+
+# Where root's mail ends up. Local by default so a site that forgets to map it
+# keeps the mail instead of relaying it somewhere unintended.
+postfix_null_client_root_alias: root@localhost
+
+postfix_null_client_config:
+  myhostname: "{{ inventory_hostname }}.{{ postfix_null_client_mail_domain }}"
+  myorigin: "/etc/mailname"
+  # $myhostname must stay listed: the /etc/aliases root->admin rewrite only
+  # applies to locally delivered mail. The bare domain must NOT be listed, or
+  # every null client would deliver/bounce *@<domain> locally instead of
+  # relaying it.
+  mydestination: "$myhostname, localhost.localdomain, localhost"
+  relayhost: "[{{ postfix_null_client_relay_host }}]:{{ postfix_null_client_relay_port }}"
+  mynetworks: "127.0.0.0/8"
+  inet_interfaces: "loopback-only"
+  # "secure" = encrypt AND verify the relay's certificate against CAfile;
+  # "encrypt" alone would let a LAN MITM capture the SASL credentials inside
+  # STARTTLS. Requires the relay to present a cert covering
+  # postfix_null_client_relay_host that chains to the system CA bundle.
+  smtp_tls_security_level: "secure"
+  smtp_tls_CAfile: "/etc/ssl/certs/ca-certificates.crt"
+  smtp_sasl_auth_enable: "yes"
+  smtp_sasl_security_options: "noanonymous"
+  smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
+
+postfix_null_client_aliases:
+  postmaster: root
+  nobody: root
+  hostmaster: root
+  webmaster: root
+  root: "{{ postfix_null_client_root_alias }}"

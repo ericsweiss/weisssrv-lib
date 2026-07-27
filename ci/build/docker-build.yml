@@ -24,6 +24,17 @@ spec:
       default: "4f798b3ee1e0140eab5bf30b0edc4e84f4cdb53255a429dc3bbae9524845d640"
     docker_cli_sha256_arm64:
       default: "e6b53725a73763ab3f988c73f8772eaed429754c1a579db5ff11f21990fd1817"
+    buildx_version:
+      default: "v0.35.0"
+      description: >-
+        Static docker buildx CLI-plugin version (sha256-pinned per arch below).
+        The static docker CLI ships NO buildx plugin, so with DOCKER_BUILDKIT=1
+        the plugin is what makes `docker build` work at all. Bump the version
+        and both shas together.
+    buildx_sha256_amd64:
+      default: "d41ece72044243b4f58b343441ae37446d9c29a7d6b5e11c61847bbcf8f7dfda"
+    buildx_sha256_arm64:
+      default: "c4248d6cbc4a619a7e0b4609c11e509ad4ac0b475e1c64817c0ac20c5d90c766"
     registry:
       default: "$CI_REGISTRY_IMAGE"
       description: >-
@@ -46,16 +57,62 @@ spec:
     extra_build_args:
       default: ""
       description: Extra `docker build` args (e.g. "--build-arg FOO=bar"), word-split.
+    default_branch:
+      default: "main"
+      description: >-
+        The consumer's default branch, as a LITERAL name (`main`, `master`,
+        `trunk`). Gates BOTH the post-merge run (the `rules:` clause) and the
+        `:latest` publish. It is NOT a place for `$CI_DEFAULT_BRANCH`: the value
+        lands inside a quoted `rules:if` string and GitLab does not expand
+        variables inside quotes, so the comparison would be against that literal
+        text and never match. A consumer on `master`/`trunk` that leaves this at
+        `main` never runs the job post-merge, so `:latest` is never pushed —
+        SHA-tagged builds keep succeeding while `--cache-from` and any `:latest`
+        fallback pull silently stop resolving.
     publish_on_main:
       type: boolean
       default: true
       description: >-
-        Push the :latest tag on main. The immutable :<short-sha> tag is ALWAYS
-        pushed (MR pipelines use it so they never overwrite :latest with an
-        unmerged image).
-    cpu_selector:
+        Push the :latest tag on `default_branch`. The immutable :<short-sha> tag
+        is ALWAYS pushed (MR pipelines use it so they never overwrite :latest
+        with an unmerged image).
+    changes:
+      type: array
+      default: ["**/*"]
+      description: >-
+        Path list for the MR/default-branch `changes:` rules. The default
+        `**/*` matches everything, i.e. the unconditional rules this template
+        had before the input existed — narrow it to the image's context (plus
+        anything baked into it) so an unrelated commit does not trigger a
+        multi-minute DinD rebuild and re-push. The `web` clause stays manual and
+        ungated.
+    digest_dotenv_var:
       default: ""
-      description: Optional KUBERNETES_NODE_SELECTOR_CPU pin (e.g. esweiss.com/cpu=modern).
+      description: >-
+        Opt-in: name of a dotenv variable set to the PUSHED image's immutable
+        digest ref (`<repo>@sha256:…`), e.g. `MOLECULE_CI_IMAGE`. A downstream
+        job that `needs:` this one with `artifacts: true` then resolves the exact
+        image this pipeline built instead of a racy `:latest` anyone can retag
+        mid-flight — including a child pipeline, whose trigger forwards it.
+        Empty (the default) emits an EMPTY dotenv artifact: no variables, so
+        existing consumers are unaffected.
+    digest_dotenv_file:
+      default: "image-digest.env"
+      description: >-
+        Path of the dotenv artifact. Always written (empty when
+        `digest_dotenv_var` is), because `artifacts:reports:dotenv` is a static
+        key — a missing file would warn on every run.
+    cpu_selector:
+      default: "esweiss.com/cpu=modern"
+      description: >-
+        KUBERNETES_NODE_SELECTOR_CPU pin. The job always emits this variable, so
+        the value must satisfy the runner's `node_selector_overwrite_allowed`
+        regex — `""` is NOT a "no pin" escape: on a runner that sets that regex
+        (both of this instance's runners allowlist
+        ^esweiss\.com/cpu=(modern|legacy)$) an empty value FAILS the check and
+        the job errors at pod creation. On a runner that sets no regex, overwrite
+        is disabled and any value here is ignored, so this default is safe
+        off-instance too; a runner with a different allowlist needs its own value.
 ---
 "$[[ inputs.job_name ]]":
   # Pushes an image later jobs may consume; do not interrupt.
@@ -84,12 +141,18 @@ spec:
     DOCKER_CLI_VERSION: "$[[ inputs.docker_cli_version ]]"
     DOCKER_CLI_SHA256_AMD64: "$[[ inputs.docker_cli_sha256_amd64 ]]"
     DOCKER_CLI_SHA256_ARM64: "$[[ inputs.docker_cli_sha256_arm64 ]]"
+    BUILDX_VERSION: "$[[ inputs.buildx_version ]]"
+    BUILDX_SHA256_AMD64: "$[[ inputs.buildx_sha256_amd64 ]]"
+    BUILDX_SHA256_ARM64: "$[[ inputs.buildx_sha256_arm64 ]]"
     REGISTRY: "$[[ inputs.registry ]]"
     IMAGE_NAME: "$[[ inputs.image_name ]]"
     BUILD_CONTEXT: "$[[ inputs.context ]]"
     DOCKERFILE: "$[[ inputs.dockerfile ]]"
     EXTRA_BUILD_ARGS: "$[[ inputs.extra_build_args ]]"
+    DEFAULT_BRANCH: "$[[ inputs.default_branch ]]"
     PUBLISH_ON_MAIN: "$[[ inputs.publish_on_main ]]"
+    DIGEST_DOTENV_VAR: "$[[ inputs.digest_dotenv_var ]]"
+    DIGEST_DOTENV_FILE: "$[[ inputs.digest_dotenv_file ]]"
     KUBERNETES_NODE_SELECTOR_CPU: "$[[ inputs.cpu_selector ]]"
   before_script:
     # Install the static docker CLI (NOT docker.io: some bases ship only the
@@ -112,12 +175,10 @@ spec:
       # buildx plugin, so with DOCKER_BUILDKIT=1 `docker build` fails with
       # "BuildKit is enabled but the buildx component is missing or broken";
       # installing the plugin routes the build through the dind daemon's embedded
-      # BuildKit (enables --cache-from + inline cache). Bump BUILDX_VERSION + both
-      # sha256s together.
-      BUILDX_VERSION=v0.35.0
+      # BuildKit (enables --cache-from + inline cache).
       case "$ARCH" in
-        amd64) BUILDX_SHA256=d41ece72044243b4f58b343441ae37446d9c29a7d6b5e11c61847bbcf8f7dfda ;;
-        arm64) BUILDX_SHA256=c4248d6cbc4a619a7e0b4609c11e509ad4ac0b475e1c64817c0ac20c5d90c766 ;;
+        amd64) BUILDX_SHA256="$BUILDX_SHA256_AMD64" ;;
+        arm64) BUILDX_SHA256="$BUILDX_SHA256_ARM64" ;;
       esac
       curl -fsSL "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-${ARCH}" -o /tmp/docker-buildx
       echo "${BUILDX_SHA256}  /tmp/docker-buildx" | sha256sum -c -
@@ -132,6 +193,11 @@ spec:
       docker info >/dev/null 2>&1 || { echo "docker daemon did not become ready"; exit 1; }
     - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
     - |
+      # Full image ref for an image_name (empty = the registry base itself).
+      # Shared with the digest-dotenv step so both derive the ref one way.
+      image_ref() {
+        if [ -n "$1" ]; then echo "${REGISTRY}/$1"; else echo "${REGISTRY}"; fi
+      }
       # build_and_push: builds ${ref}:<short-sha>, pushes it (and :latest on main
       # when publish_on_main). Seeds a registry layer cache from the previous
       # :latest + embeds inline cache for the next run — EXCEPT on a schedule
@@ -140,7 +206,7 @@ spec:
       # re-attempts (cheap: cached layers) while a real build error still fails.
       build_and_push() {
         img="$1"
-        if [ -n "$img" ]; then ref="${REGISTRY}/${img}"; else ref="${REGISTRY}"; fi
+        ref="$(image_ref "$img")"
         cache_args=""
         if [ "$CI_PIPELINE_SOURCE" != "schedule" ]; then
           cache_args="--cache-from ${ref}:latest --build-arg BUILDKIT_INLINE_CACHE=1"
@@ -158,18 +224,43 @@ spec:
           echo "build/push attempt $((attempt-1)) failed; retrying (${attempt}/${max})..."
           sleep $(( (RANDOM % 20) + 10 ))
         done
-        # :latest only on main — MR pipelines use SHA tags so they never
-        # overwrite :latest with an unmerged branch image.
-        if [ "$CI_COMMIT_BRANCH" = "main" ] && [ "$PUBLISH_ON_MAIN" = "true" ]; then
+        # :latest only on the default branch — MR pipelines use SHA tags so they
+        # never overwrite :latest with an unmerged branch image.
+        if [ "$CI_COMMIT_BRANCH" = "$DEFAULT_BRANCH" ] && [ "$PUBLISH_ON_MAIN" = "true" ]; then
           docker tag "${ref}:${CI_COMMIT_SHORT_SHA}" "${ref}:latest"
           docker push "${ref}:latest"
         fi
+        # NOTE: an MR build never writes :latest, not even to bootstrap a repo
+        # where it does not exist yet — that tag is consumed by privileged CI
+        # jobs, so unreviewed code must not be able to populate it. A fresh
+        # repo gets :latest from its first default-branch pipeline; MR
+        # pipelines resolve the image they just built via the digest dotenv
+        # (`digest_dotenv_var`) or the immutable :<short-sha> tag.
       }
   script:
     - build_and_push "$IMAGE_NAME"
+    - |
+      # Digest pin (opt-in). RepoDigests is populated by the push above, so this
+      # is the digest the registry actually holds for this pipeline's build. An
+      # empty result means the ref was never pushed — fail rather than emit
+      # `VAR=`, which a consumer would resolve to an unusable image.
+      : > "$DIGEST_DOTENV_FILE"
+      if [ -n "$DIGEST_DOTENV_VAR" ]; then
+        ref="$(image_ref "$IMAGE_NAME")"
+        digest=$(docker inspect --format='{{index .RepoDigests 0}}' "${ref}:${CI_COMMIT_SHORT_SHA}")
+        [ -n "$digest" ] || { echo "no pushed digest for ${ref}:${CI_COMMIT_SHORT_SHA}"; exit 1; }
+        echo "${DIGEST_DOTENV_VAR}=${digest}" > "$DIGEST_DOTENV_FILE"
+        cat "$DIGEST_DOTENV_FILE"
+      fi
+  artifacts:
+    reports:
+      dotenv: $[[ inputs.digest_dotenv_file ]]
+    expire_in: 7 days
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: $[[ inputs.changes ]]
+    - if: '$CI_COMMIT_BRANCH == "$[[ inputs.default_branch ]]"'
+      changes: $[[ inputs.changes ]]
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
       allow_failure: true

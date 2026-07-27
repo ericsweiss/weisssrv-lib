@@ -45,6 +45,11 @@ spec:
   stage: $[[ inputs.stage ]]
   image: $[[ inputs.image ]]
   tags: $[[ inputs.tags ]]
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - scheduler_failure
   script:
     - echo "Running ShellCheck..."
     - |
@@ -54,7 +59,6 @@ spec:
       # instead of failing — passing an UNMATCHED glob literally to shellcheck
       # would error "No such file". In POSIX sh an unmatched glob stays literal,
       # so `[ -e ]` distinguishes a real file from a non-matching pattern.
-      # weisssrv's default globs all match, so it scans the same files as before.
       rc=0
       # word-split + glob-expand direct_globs on purpose (SC2086).
       for f in $[[ inputs.direct_globs ]]; do

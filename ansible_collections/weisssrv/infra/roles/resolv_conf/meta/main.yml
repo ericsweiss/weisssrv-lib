@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: resolv_conf
+  namespace: weisssrv
+  author: Eric Weiss
+  description: Managed /etc/resolv.conf with optional immutable-flag handling
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+
+dependencies: []

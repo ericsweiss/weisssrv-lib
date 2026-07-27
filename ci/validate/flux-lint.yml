@@ -77,6 +77,11 @@ spec:
   stage: $[[ inputs.stage ]]
   image: $[[ inputs.image ]]
   tags: $[[ inputs.tags ]]
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - scheduler_failure
   # Cache the pinned lint binaries across runs (substitute mode), keyed on the
   # consumer's .gitlab-ci.yml (where the version inputs live) so a bump busts it.
   # No-op without a runner cache backend.

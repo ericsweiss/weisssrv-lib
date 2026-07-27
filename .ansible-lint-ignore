@@ -1,0 +1,46 @@
+# ansible-lint per-file exemptions: "<path> <rule-id>", one per line.
+# Paths are repository-root relative — run ansible-lint from the repo root.
+#
+# var-naming[no-role-prefix] on a molecule scenario playbook is a false
+# positive of the path heuristic: converge/verify/prepare are PLAYBOOKS that
+# happen to live under a role directory, and their registers and set_facts are
+# scenario-local test state, not role API. The rule stays enforced on every
+# role's tasks/, handlers/, defaults/ and vars/.
+ansible_collections/weisssrv/infra/roles/acme_certs/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/adguard_home/molecule/tls/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/adguard_sync/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/alloy_host/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/base/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/encrypted_swap/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/k3s/molecule/agent/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/k3s/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/nas_storage/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/nfs_tls/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/nic_tuning/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/node_exporter_host/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/postfix_null_client/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/prometheus_exporter/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/proxmox_backup/molecule/default/converge.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/proxmox_backup/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/proxmox_firewall/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/proxmox_ha/molecule/default/converge.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/proxmox_ha/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/proxmox_lxc/molecule/default/converge.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/proxmox_lxc/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/proxmox_vm/molecule/default/converge.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/proxmox_vm/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/qol/molecule/default/converge.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/qol/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/resolv_conf/molecule/empty-search/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/restic_offsite/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/smtp_relay/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/tailscale/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/textfile_collector/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/unbound/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/unbound_exporter/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/vfio_passthrough/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/zfs_arc_cap/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/zfs_encryption/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/zfs_exporter/molecule/default/verify.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/zvol_mount/molecule/default/prepare.yml var-naming[no-role-prefix]
+ansible_collections/weisssrv/infra/roles/zvol_mount/molecule/default/verify.yml var-naming[no-role-prefix]

@@ -1,0 +1,63 @@
+---
+# NAS storage role: ZFS, NFS, MergerFS, Samba, media-mover
+
+- name: Include ZFS tasks
+  ansible.builtin.include_tasks: zfs.yml
+  when:
+    - nas_storage_zfs_pools is defined
+    - not (nas_storage_skip_zfs_operations | default(false))
+
+- name: Include MergerFS tasks
+  ansible.builtin.include_tasks: mergerfs.yml
+  when:
+    - nas_storage_mergerfs_mounts is defined
+    - not (nas_storage_skip_mergerfs | default(false))
+
+- name: Include NFS tasks
+  ansible.builtin.include_tasks: nfs.yml
+  when: nas_storage_exports is defined
+
+- name: Include Samba tasks
+  ansible.builtin.include_tasks: samba.yml
+  when: nas_storage_samba_shares is defined
+
+- name: Include media-mover tasks
+  ansible.builtin.include_tasks: media_mover.yml
+  when: nas_storage_media_mover_enabled | default(false)
+
+- name: Include swap-clean tasks
+  ansible.builtin.include_tasks: swap_clean.yml
+  when: nas_storage_swap_clean_enabled | default(false)
+
+- name: Include SMART monitoring tasks
+  ansible.builtin.include_tasks: smartd.yml
+  when: nas_storage_smartd_enabled | default(true)
+
+- name: Include archive backup tasks
+  when: nas_storage_archive_backup_enabled | bool
+  block:
+    # The rendered script rewrites the destination pool's root properties and
+    # destroys its own snapshots there, so a pool nominated by accident (or an
+    # empty source list producing a no-op timer) must fail before the unit ships.
+    - name: Assert the archive-backup inventory is supplied
+      ansible.builtin.assert:
+        that:
+          - nas_storage_archive_backup_pool | default('') | length > 0
+          - nas_storage_archive_backup_sources | default([]) | length > 0
+        fail_msg: >-
+          nas_storage_archive_backup_enabled is true, so
+          nas_storage_archive_backup_pool (the destination pool, whose root
+          properties this role rewrites) and nas_storage_archive_backup_sources
+          (the datasets to replicate) are both required.
+
+    - name: Include archive backup tasks
+      ansible.builtin.include_tasks: archive_backup.yml
+
+# Opt-out converges instead of orphaning: see archive_backup_absent.yml.
+- name: Remove a previously deployed archive backup
+  ansible.builtin.include_tasks: archive_backup_absent.yml
+  when: not (nas_storage_archive_backup_enabled | bool)
+
+- name: Include backup-artifact metrics tasks
+  ansible.builtin.include_tasks: backup_metrics.yml
+  when: nas_storage_backup_artifact_metrics_enabled | default(false)

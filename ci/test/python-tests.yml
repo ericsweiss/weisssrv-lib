@@ -21,7 +21,25 @@ spec:
       default: "git jq"
       description: >-
         Extra apt packages installed before the run (git is needed by tests that
-        build throwaway git repos; jq by tests that parse JSON). Pass "" for none.
+        build throwaway git repos; jq by tests that parse JSON). Installing them
+        needs ROOT — on the shared non-privileged tenant runner apt-get fails on
+        the lock, so a tenant passes "" and uses an image that already ships
+        what its tests need (e.g. the full `python:3.13`, which has git).
+    pip_packages:
+      default: ""
+      description: >-
+        Extra pip requirement specs installed alongside pytest/pyyaml, e.g.
+        "ruamel.yaml==0.18.10". Word-split; pin every entry. Routed through a
+        job variable, so a version-ceiling pin (`<`) is safe here — see the
+        PIP_PACKAGES note below.
+    setup_command:
+      default: "true"
+      description: >-
+        Single shell command run in before_script AFTER the apt install and
+        BEFORE the pip install (default no-op), so it may use anything
+        `apt_packages` provides. For setup the package inputs cannot express —
+        e.g. cloning a sibling repo that a cross-repo contract test asserts
+        against, which needs the default `git`.
     changes:
       type: array
       default: ["scripts/**/*", ".gitlab-ci.yml"]
@@ -32,19 +50,37 @@ spec:
   needs: []  # run in parallel with the lint stage
   image: $[[ inputs.image ]]
   tags: $[[ inputs.tags ]]
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - scheduler_failure
+  variables:
+    # Both package lists reach the shell as VARIABLES, never as interpolated
+    # text: $[[ inputs.* ]] is textual substitution into the YAML scalar, so a
+    # version-ceiling pin (`black<26.5.0`) would render a literal `<` that the
+    # shell parses as an input redirection before any expansion happens. The
+    # result of a parameter expansion is word-split but never re-scanned for
+    # redirection operators, so this form is safe.
+    APT_PACKAGES: "$[[ inputs.apt_packages ]]"
+    PIP_PACKAGES: "$[[ inputs.pip_packages ]]"
   before_script:
     - |
-      PKGS="$[[ inputs.apt_packages ]]"
-      if [ -n "$PKGS" ]; then
+      if [ -n "$APT_PACKAGES" ]; then
         # shellcheck disable=SC2086  # intentional word-split of the package list
-        apt-get update -qq && apt-get install -y -qq --no-install-recommends $PKGS
+        apt-get update -qq && apt-get install -y -qq --no-install-recommends $APT_PACKAGES
       fi
+    # Consumer setup hook (default no-op) — e.g. cloning a sibling repo a
+    # cross-repo test asserts against. AFTER the apt install, whose default
+    # `git jq` is exactly what such a hook needs on the slim default image.
+    - $[[ inputs.setup_command ]]
     # `--user` + `python -m pytest`: the shared NON-ROOT tenant runner can't
     # write system site-packages, so pip installs to ~/.local (whose bin/ is NOT
     # on the default PATH of python:*-slim images) — calling the `pytest` console
     # script directly would fail "command not found". `python -m pytest` runs the
     # module regardless of PATH (and puts the CWD on sys.path for test imports).
-    - pip install --user --quiet "pytest==$[[ inputs.pytest_version ]]" "pyyaml==$[[ inputs.pyyaml_version ]]"
+    # shellcheck disable=SC2086  # intentional word-split of PIP_PACKAGES
+    - pip install --user --quiet "pytest==$[[ inputs.pytest_version ]]" "pyyaml==$[[ inputs.pyyaml_version ]]" $PIP_PACKAGES
   script:
     - python -m pytest $[[ inputs.test_dir ]] -v --junitxml=report.xml
   artifacts:

@@ -1,0 +1,10 @@
+---
+- name: Restart node_exporter_host
+  ansible.builtin.systemd:
+    name: prometheus-node-exporter
+    state: restarted
+    daemon_reload: true
+
+# The corosync/zpool/smartmon collector timers are reloaded + restarted on a
+# unit change by the shared textfile_collector role (restart-on-change task),
+# so this role no longer carries per-collector reload handlers.

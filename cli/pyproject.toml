@@ -4,8 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "weisssrv-lib-cli"
-version = "0.1.0"
-description = "Scaffold a weisssrv cluster tenant repo (rename / prune / wire / verify)."
+# Tracks the library release tag (see docs/VERSIONING.md); weisssrv_lib_cli
+# reads it back at runtime via importlib.metadata rather than duplicating it.
+version = "0.2.0"
+description = "Scaffold weisssrv cluster tenants (rename/prune/wire/verify) and render cluster templates."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
@@ -21,7 +23,11 @@ dependencies = [
 [project.optional-dependencies]
 # pyyaml is TEST-ONLY — the test suite reads manifests back with yaml.safe_load;
 # it is never imported by the weisssrv_lib_cli package at runtime.
-test = ["pytest>=7", "pyyaml>=6"]
+test = ["pytest>=7", "pyyaml>=6", "copier>=9.4,<10"]
+# copier is an EXTRA, not a runtime dependency: only `new-cluster` imports it,
+# and making it mandatory would put jinja2/pydantic/plumbum in the path of every
+# `pipx run … rename` the app template performs.
+cluster = ["copier>=9.4,<10"]
 
 [project.scripts]
 weisssrv-new-project = "weisssrv_lib_cli.cli:main"

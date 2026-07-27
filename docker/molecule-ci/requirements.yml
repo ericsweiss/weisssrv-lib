@@ -1,0 +1,19 @@
+---
+# Ansible Galaxy requirements baked into the molecule-ci image (COPYed by
+# docker/molecule-ci/Dockerfile). A consumer whose roles need more collections
+# either rebuilds this image with its own context or installs the extras in the
+# job's before_script.
+
+collections:
+  # Pin to the tested major line (upper bound) so `ansible-galaxy install -r`
+  # never silently pulls a new major with breaking changes. Bump deliberately.
+  - name: ansible.posix
+    version: ">=2.1.0,<3.0.0"
+  - name: community.general
+    version: ">=12.2.0,<13.0.0"
+  - name: community.crypto
+    version: ">=3.1.0,<4.0.0"
+  - name: community.docker
+    version: ">=4.3.0,<5.0.0"
+
+roles: []

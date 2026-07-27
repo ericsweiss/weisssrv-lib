@@ -1,0 +1,6 @@
+# {{ ansible_managed }}
+# Backup to the primary `vfio-pci.ids=` cmdline bind: systemd-modules-load reads
+# this at real-root boot and loads vfio-pci even when nothing else pulls it in
+# (the blacklisted host driver's softdep never fires). Full mechanism:
+# vfio_passthrough/tasks/main.yml.
+vfio-pci

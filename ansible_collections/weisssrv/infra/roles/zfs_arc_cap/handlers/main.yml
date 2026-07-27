@@ -1,0 +1,10 @@
+---
+# The cap must be baked into the initramfs to bind at early boot, where the pool
+# imports: a bare /etc/modprobe.d write applies only at the next module load,
+# which never happens for the already-loaded zfs module short of a reboot. This
+# governs the NEXT-boot cap only — the sysfs task owns the running value.
+# Skipped in molecule/check-mode (no real /boot).
+- name: Rebuild initramfs for zfs arc cap
+  ansible.builtin.command: update-initramfs -u
+  changed_when: true
+  when: not (zfs_arc_cap_skip_initramfs | default(false))

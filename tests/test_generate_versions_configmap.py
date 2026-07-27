@@ -1,0 +1,206 @@
+"""Tests for scripts/generate-versions-configmap.py.
+
+Run via `python3 -m pytest tests`.
+"""
+from __future__ import annotations
+
+import importlib.util
+import textwrap
+from pathlib import Path
+
+import pytest
+
+_SPEC = importlib.util.spec_from_file_location(
+    "gen_versions_configmap",
+    Path(__file__).resolve().parent.parent / "scripts" / "generate-versions-configmap.py",
+)
+gen = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(gen)  # type: ignore[union-attr]
+
+
+class TestFlatten:
+    """Core behavior of flatten() — the single function that determines what
+    ends up in the ConfigMap. Regressions here silently break every Flux
+    postBuild substitution downstream."""
+
+    def test_top_level_version_suffix_kept(self):
+        assert gen.flatten({"authentik_version": "2026.2.2", "unrelated": "x"}) == {
+            "authentik_version": "2026.2.2"
+        }
+
+    def test_non_version_suffix_dropped(self):
+        assert gen.flatten({"some_random_key": "foo"}) == {}
+
+    def test_integer_version_coerced_to_str(self):
+        # Matches the actual debian_version: 13 case in all.yml.
+        assert gen.flatten({"debian_version": 13}) == {"debian_version": "13"}
+
+    def test_nested_helm_chart_versions_flattened(self):
+        result = gen.flatten(
+            {"helm_chart_versions": {"traefik": "40.0.0", "cert_manager": "v1.20.2"}}
+        )
+        assert result == {
+            "helm_chart_versions_traefik": "40.0.0",
+            "helm_chart_versions_cert_manager": "v1.20.2",
+        }
+
+    def test_empty_input_returns_empty(self):
+        assert gen.flatten({}) == {}
+
+    def test_nested_non_registered_key_ignored(self):
+        # Only keys in NESTED_KEYS get nested flattening.
+        assert gen.flatten({"not_nested": {"foo": "1"}}) == {}
+
+
+class TestTypeSafety:
+    """flatten() must reject surprise types that would silently corrupt the
+    ConfigMap. bool is the obvious one (bool is int subclass in Python)."""
+
+    def test_bool_at_top_level_raises(self):
+        # Fail closed, like the nested branch: skipping one mis-quoted
+        # `some_version: yes` leaves an unresolved ${some_version} at
+        # reconcile, and the "no flat keys" guard only catches a total drop.
+        with pytest.raises(ValueError, match="bool"):
+            gen.flatten({"flag_version": True})
+
+    def test_non_scalar_at_top_level_raises(self):
+        with pytest.raises(ValueError, match="non-scalar"):
+            gen.flatten({"list_version": ["a"]})
+
+    def test_bool_inside_nested_helm_chart_raises(self):
+        with pytest.raises(ValueError, match="bool"):
+            gen.flatten({"helm_chart_versions": {"traefik": True}})
+
+    def test_float_at_top_level_raises(self):
+        # An unquoted version like `foo_version: 1.20` parses to the float 1.2 and
+        # would silently ship as "1.2" — fail loud so the author quotes it.
+        with pytest.raises(ValueError, match="float"):
+            gen.flatten({"redis_version": 1.20})
+
+    def test_float_inside_nested_helm_chart_raises(self):
+        with pytest.raises(ValueError, match="float"):
+            gen.flatten({"helm_chart_versions": {"traefik": 1.20}})
+
+    def test_dict_inside_nested_helm_chart_raises(self):
+        with pytest.raises(ValueError, match="non-scalar"):
+            gen.flatten({"helm_chart_versions": {"traefik": {"nested": "bad"}}})
+
+    def test_list_inside_nested_helm_chart_raises(self):
+        with pytest.raises(ValueError, match="non-scalar"):
+            gen.flatten({"helm_chart_versions": {"traefik": ["1.0", "2.0"]}})
+
+    def test_hyphen_in_nested_key_raises(self):
+        # Flux postBuild var names require [A-Za-z_][A-Za-z0-9_]*.
+        # A nested key with a hyphen would produce an invalid var name;
+        # catch it at generation time instead of silently shipping it.
+        with pytest.raises(ValueError, match="Flux postBuild"):
+            gen.flatten({"helm_chart_versions": {"external-dns": "1.0"}})
+
+
+class TestDeterministic:
+    """The generated output is diffed by CI, so flatten must be order-stable."""
+
+    def test_twice_same_result(self):
+        data = {
+            "authentik_version": "1.0",
+            "mealie_version": "2.0",
+            "helm_chart_versions": {"traefik": "3.0", "cert_manager": "4.0"},
+        }
+        assert gen.flatten(data) == gen.flatten(data)
+
+
+class TestMain:
+    """End-to-end main() coverage — the CI out-of-sync contract (this script's
+    reason to exist). Paths come from --vars-file / --output."""
+
+    @staticmethod
+    def _argv(tmp_path, vars_text: str | None, *extra: str) -> tuple[list[str], Path]:
+        out = tmp_path / "versions-configmap.yaml"
+        vars_file = tmp_path / "all.yml"
+        if vars_text is not None:
+            vars_file.write_text(vars_text)
+        argv = ["--vars-file", str(vars_file), "--output", str(out), *extra]
+        return argv, out
+
+    def test_golden_output_with_header(self, tmp_path):
+        argv, out = self._argv(
+            tmp_path,
+            textwrap.dedent(
+                """\
+                authentik_version: "2026.2.2"
+                debian_version: 13
+                some_unrelated_key: "ignored"
+                helm_chart_versions:
+                  traefik: "40.0.0"
+                  cert_manager: "v1.20.2"
+                """
+            ),
+            "--regen-command", "task flux:sync-versions",
+        )
+        assert gen.main(argv) == 0
+        produced = out.read_text()
+        assert produced.startswith("---\n# AUTO-GENERATED by generate-versions-configmap.py from\n")
+        assert "# Run `task flux:sync-versions` to regenerate." in produced
+        # ConfigMap shape + flattened keys present; unrelated key dropped.
+        import yaml
+
+        body = produced.split("\n", 4)[-1]  # strip the 4-line header comment
+        cm = yaml.safe_load(body)
+        assert cm["kind"] == "ConfigMap"
+        assert cm["metadata"] == {"name": "cluster-versions", "namespace": "flux-system"}
+        assert cm["data"]["authentik_version"] == "2026.2.2"
+        assert cm["data"]["debian_version"] == "13"
+        assert cm["data"]["helm_chart_versions_traefik"] == "40.0.0"
+        assert cm["data"]["helm_chart_versions_cert_manager"] == "v1.20.2"
+        assert "some_unrelated_key" not in cm["data"]
+
+    def test_name_and_namespace_are_inputs(self, tmp_path):
+        argv, out = self._argv(
+            tmp_path, 'authentik_version: "1.0"\n',
+            "--name", "my-versions", "--namespace", "gitops",
+        )
+        assert gen.main(argv) == 0
+        import yaml
+
+        cm = yaml.safe_load(out.read_text().split("\n", 4)[-1])
+        assert cm["metadata"] == {"name": "my-versions", "namespace": "gitops"}
+
+    def test_custom_nested_key_flattened(self, tmp_path):
+        argv, out = self._argv(
+            tmp_path,
+            'chart_versions:\n  traefik: "40.0.0"\n',
+            "--nested-key", "chart_versions",
+        )
+        assert gen.main(argv) == 0
+        import yaml
+
+        cm = yaml.safe_load(out.read_text().split("\n", 4)[-1])
+        assert cm["data"] == {"chart_versions_traefik": "40.0.0"}
+
+    def test_output_is_byte_identical_across_runs(self, tmp_path):
+        argv, out = self._argv(tmp_path, 'authentik_version: "1.0"\nmealie_version: "2.0"\n')
+        assert gen.main(argv) == 0
+        first = out.read_text()
+        assert gen.main(argv) == 0
+        assert out.read_text() == first
+
+    def test_missing_file_exits_one(self, tmp_path):
+        argv, _ = self._argv(tmp_path, None)  # vars file never created
+        assert gen.main(argv) == 1
+
+    def test_empty_file_exits_one(self, tmp_path):
+        argv, _ = self._argv(tmp_path, "")
+        assert gen.main(argv) == 1
+
+    def test_non_mapping_top_level_exits_one(self, tmp_path):
+        argv, _ = self._argv(tmp_path, "- just\n- a\n- list\n")
+        assert gen.main(argv) == 1
+
+    def test_no_version_keys_exits_one(self, tmp_path):
+        # Valid mapping but nothing matches the _version suffix / nested keys.
+        argv, _ = self._argv(tmp_path, "foo: bar\nbaz: qux\n")
+        assert gen.main(argv) == 1
+
+    def test_invalid_yaml_exits_one(self, tmp_path):
+        argv, _ = self._argv(tmp_path, "foo: [unterminated\n")
+        assert gen.main(argv) == 1
