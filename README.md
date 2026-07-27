@@ -5,7 +5,7 @@ configurations, helper scripts, taskfile fragments, and the project CLI
 consumed by
 [weisssrv](https://git.ericsweiss.com/eric/weisssrv) and by projects generated
 from
-[weisssrv-project-template](https://git.ericsweiss.com/eric/weisssrv-project-template).
+[weisssrv-app-template](https://git.ericsweiss.com/eric/weisssrv-app-template).
 
 The goal is one source of truth for the generic CI/tooling layer both a homelab
 platform repo and its cluster tenants share — so a lint/version/build change is

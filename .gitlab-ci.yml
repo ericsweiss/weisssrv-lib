@@ -213,7 +213,7 @@ include:
       # working through GitLab's rename redirect until the rename lands.
       setup_command: >-
         git clone --depth 1
-        "${CI_SERVER_PROTOCOL}://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/eric/weisssrv-project-template.git"
+        "${CI_SERVER_PROTOCOL}://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/eric/weisssrv-app-template.git"
         "$WEISSSRV_TEMPLATE_ROOT"
       changes:
         - "scripts/**/*"

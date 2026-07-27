@@ -1,6 +1,6 @@
 """Shared model of the weisssrv tenant scaffold + low-level file helpers.
 
-The CLI operates on a project generated from weisssrv-project-template: a
+The CLI operates on a project generated from weisssrv-app-template: a
 `kubernetes/flux/` directory of manifests plus a `kustomization.yaml` that lists
 them, with placeholder tokens `changeme-app` / `changeme-group` across the
 tracked tree.

@@ -1,7 +1,7 @@
 # weisssrv-new-project
 
 The scaffolding CLI for weisssrv cluster tenant repos. It turns a fresh copy of
-[weisssrv-project-template](https://git.ericsweiss.com/eric/weisssrv-project-template)
+[weisssrv-app-template](https://git.ericsweiss.com/eric/weisssrv-app-template)
 into a configured project. Offline and dependency-light — the only runtime
 dependency is `ruamel.yaml`, which handles both the round-trip edits that
 preserve the scaffold's comments and the plain safe-loads used to inspect
@@ -147,7 +147,7 @@ template: it asserts byte-equality for every file the CLI parses, that the
 `kubernetes/flux` manifest sets match, and that both trees satisfy the layout
 contract hardcoded in `tree`/`prune`/`wire` (opt-in lines, document names,
 `-internal` suffix, the `authentik-auth` middleware pair, …). It uses a sibling
-`weisssrv-app-template` / `weisssrv-project-template` checkout by default:
+`weisssrv-app-template` / `weisssrv-app-template` checkout by default:
 
 ```bash
 WEISSSRV_TEMPLATE_ROOT=~/src/weisssrv-app-template python3 -m pytest cli/tests -q
