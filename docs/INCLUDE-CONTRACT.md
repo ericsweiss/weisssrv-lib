@@ -350,6 +350,26 @@ Conventions shared by every template:
   the tag from `ref` (the Tags API itself is read-only for job tokens). Pass a
   PAT reference with `token_header: PRIVATE-TOKEN` if protected tags restrict
   who may create `v*`.
+- **This template is GitLab-only; the SCRIPT is not.** `semantic-release.py`
+  takes `--platform {gitlab,github}` (default `gitlab`, so this template and
+  every consumer of it are unaffected — it passes no such flag). In `github`
+  mode the same vendored file targets
+  `$GITHUB_API_URL/repos/:owner/:repo/releases` with `Authorization: Bearer`,
+  reading `GITHUB_REPOSITORY` / `GITHUB_API_URL` / `GITHUB_SHA` /
+  `GITHUB_TOKEN` where the GitLab path reads the `CI_*` set. Only the two API
+  calls differ; the bump decision and the notes are forge-neutral, which is what
+  keeps ONE byte-identical script in the library, the app template and the
+  cluster template. Per-flag detail in [SCRIPTS.md](SCRIPTS.md#semantic-releasepy).
+- **GitHub consumers** (the app template's CI shape B) have no `include:` to
+  point at — the library ships no reusable Actions workflows — so they vendor
+  [`ci/release/github-release-workflow.example.yml`](../ci/release/github-release-workflow.example.yml)
+  as `.github/workflows/release.yml` next to the vendored script. It reproduces
+  this job's contract in Actions terms: release branch only and never on a
+  schedule, `workflow_run` on the CI workflow succeeding (Actions has no stage
+  ordering to gate on), `concurrency` for `resource_group`, `fetch-depth: 0`
+  for `GIT_DEPTH: 0`, and `release.json` uploaded `if: always()`. That file is a
+  reference copy, NOT a template: nothing `include:`s it, and re-vendoring when
+  it changes is a manual, deliberate step.
 - **Requires:** the script vendored at `script_path`, `release` declared as the
   LAST stage (the job sets no `needs:` so stage ordering gates it on the rest of
   the pipeline passing), and a `resource_group` — already set — to serialize
