@@ -50,6 +50,12 @@ _ACTIVE_RESOURCES = frozenset(
 
 _ROOT_FILES = ("Dockerfile", ".dockerignore")  # prune image-build targets
 
+# The template ships ALL THREE CI shapes (docs/CI-SHAPES.md) and a project keeps
+# one; `prune ci:<shape>` is what selects. Every path the selector may delete
+# must therefore be present in an unselected tree — otherwise a shape's files
+# moved and the prune silently becomes a no-op.
+_CI_SHAPE_PATHS = (tree.GITLAB_CI, tree.GITHUB_WORKFLOWS, *tree.GITLAB_CI_EXTRA)
+
 
 def _is_template(path: Path) -> bool:
     return (path / tree.FLUX_DIR).is_dir()
@@ -115,6 +121,15 @@ def _assert_cli_contract(root: Path) -> None:
 
     for name in _ROOT_FILES:
         assert (root / name).exists(), f"prune image-build target {name} missing"
+
+    # All three CI shapes ship unselected, and `prune ci:` can reach each one.
+    for rel in _CI_SHAPE_PATHS:
+        assert (root / rel).exists(), f"CI-shape path {rel} missing"
+    assert (root / tree.GITHUB_WORKFLOWS).is_dir()
+    assert any(
+        p.is_file() for p in (root / tree.GITHUB_WORKFLOWS).iterdir()
+    ), f"{tree.GITHUB_WORKFLOWS}/ ships no workflow"
+    assert set(prune.CI_SHAPES) == {"gitlab", "github", "none"}
 
     # prune metrics drops this document from networkpolicy.yaml.
     npol = tree.flux_file(root, "networkpolicy.yaml").read_text(encoding="utf-8")

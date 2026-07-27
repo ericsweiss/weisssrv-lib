@@ -1,0 +1,214 @@
+---
+# CI for a weisssrv cluster tenant repo — CI shape `gitlab`, the DEFAULT.
+#
+# The template ships three interchangeable CI shapes and a project keeps exactly
+# one: `gitlab` (this file), `github` (.github/workflows/), or `none` (Flux-only,
+# no pipeline). Select yours with `./scripts/select-ci.sh <shape>` and delete the
+# rest. Deployment is Flux in all three — see docs/CI-SHAPES.md.
+#
+# The generic lint / validate / security jobs are NOT defined here — they are
+# pulled from the shared library `eric/weisssrv-lib` at a pinned release tag, so
+# a tooling/version change is made once in the library and every consumer picks
+# it up by bumping the ref. See docs/CONSUMING.md for the full story and
+# https://git.ericsweiss.com/eric/weisssrv-lib/-/blob/main/docs/INCLUDE-CONTRACT.md
+# for each template's inputs.
+#
+# Runner: the lint / validate / security jobs are TAG-LESS (they pass
+# `tags: []`) so they land on weisssrv's shared, NON-privileged `k8s-deploy`
+# runner — internet egress only, NO LAN/tailnet, NO SSH, NO Docker-in-Docker.
+# The ONE exception is the image build (docker-build), which needs a privileged
+# runner for Docker-in-Docker and is therefore tagged `infrastructure`. Deploys
+# happen through Flux (git is the source of truth), never a CI `kubectl apply`.
+#
+# Bumping the library: change every `ref:` below to the new tag in one MR (there
+# is no hosted dependency bot — bumps are deliberate). See docs/CONSUMING.md.
+stages:
+  - build       # only the OPTIONAL image build lands here (see the include below)
+  - lint
+  - validate    # only the OPTIONAL terraform validate lands here
+  - security
+  - ai-review
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_TAG'
+
+# ============================================================================
+# Shared library templates (include:project + inputs). Every job is the tenant
+# profile: `tags: []` (shared runner) and the non-root-safe input set.
+# ============================================================================
+include:
+  # -- yaml-lint: lint the whole tree against the repo-local .yamllint --------
+  - project: eric/weisssrv-lib
+    ref: v0.1.1
+    file: /ci/lint/yaml-lint.yml
+    inputs:
+      tags: []
+      config: "-c .yamllint"
+      targets: "."
+      changes:
+        - "**/*.yaml"
+        - "**/*.yml"
+        - ".yamllint"
+
+  # -- flux-lint: kustomize build + kubeconform (SIMPLE mode) ----------------
+  # substitute: false — a tenant has no cluster-versions ConfigMap and pins
+  # literal image tags, so there is nothing to envsubst. The TOOL versions
+  # (kubeconform / kustomize + their sha256s) are OWNED by the library's
+  # defaults on purpose — do not re-pin them here; bump the library ref to move
+  # them (this removes the drift the template used to carry). k8s_version IS
+  # pinned here: it is the cluster's k8s minor kubeconform validates against, a
+  # per-consumer fact (k3s v1.36.x today), not a library-owned tool version.
+  - project: eric/weisssrv-lib
+    ref: v0.1.1
+    file: /ci/validate/flux-lint.yml
+    inputs:
+      tags: []
+      substitute: false
+      k8s_version: "1.36.0"
+      changes:
+        - "kubernetes/**/*"
+
+  # -- shellcheck: lint the scripts/ helpers (the rename wrapper) -------------
+  - project: eric/weisssrv-lib
+    ref: v0.1.1
+    file: /ci/lint/shellcheck.yml
+    inputs:
+      tags: []
+      direct_globs: "scripts/*.sh"
+      find_dir: ""          # no ansible role tree in a tenant repo
+      changes:
+        - "scripts/**/*"
+
+  # -- docs-link-check: relative Markdown cross-links resolve -----------------
+  # Runs the vendored, stdlib-only scripts/check-doc-links.py (copied from the
+  # library). Scans docs/ + README.md + CLAUDE.md.
+  - project: eric/weisssrv-lib
+    ref: v0.1.1
+    file: /ci/lint/docs-link-check.yml
+    inputs:
+      tags: []
+      changes:
+        - "docs/**/*"
+        - "README.md"
+        - "CLAUDE.md"
+        - "AGENTS.md"
+        - "scripts/check-doc-links.py"
+
+  # -- secret-detection: GitLab Secret Detection (gitleaks) ------------------
+  # Defaults reproduce this template's previous job: the modern-CPU node
+  # selector the shared runner allowlists, and allow_failure: true (findings
+  # WARN). Tuned by .gitleaks.toml via .gitlab/secret-detection-ruleset.toml.
+  # To make a secret finding HARD-BLOCK the pipeline, add
+  # `inputs: { allow_failure: false }`.
+  - project: eric/weisssrv-lib
+    ref: v0.1.1
+    file: /ci/security/secret-detection.yml
+
+  # -- build-image: build THIS service's container image (the main use case) --
+  # ACTIVE by default — a template-derived project builds its service image out
+  # of the box. Builds the repo-root Dockerfile (replace the placeholder with
+  # your app's real build) and pushes $CI_REGISTRY_IMAGE:<short-sha> (+ :latest
+  # on main; $CI_REGISTRY_* are GitLab built-ins). Point deployment.yaml's
+  # `image:` at that tag. This is the ONE job that needs a PRIVILEGED runner:
+  # Docker-in-Docker cannot run on the shared, non-privileged tenant runner, so
+  # it is tagged `infrastructure` (weisssrv's privileged runner) — retag to your
+  # OWN privileged runner if you registered one. For the rare project that
+  # builds nothing (upstream image), remove this include and run
+  # `weisssrv-new-project prune image-build` to drop the Dockerfile. See
+  # docs/CONSUMING.md ("Building the service image").
+  - project: eric/weisssrv-lib
+    ref: v0.1.1
+    file: /ci/build/docker-build.yml
+    inputs:
+      tags: ["infrastructure"]       # a PRIVILEGED runner (retag to yours)
+      dockerfile: "Dockerfile"
+      # This instance's runners validate the node-selector override against
+      # ^esweiss\.com/cpu=(modern|legacy)$ — the library's default ("") is
+      # rejected, so pin the build to modern-CPU nodes. Drop/adjust if your
+      # runner has no node_selector_overwrite_allowed restriction.
+      cpu_selector: "esweiss.com/cpu=modern"
+      # image_name: ""               # default: push to the $CI_REGISTRY_IMAGE base
+      # context: "."
+      # publish_on_main: true        # push :latest on main (always pushes :<sha>)
+
+  # ==========================================================================
+  # OPTIONAL — terraform fmt + validate, if this repo grows a terraform/ dir.
+  # Inert until terraform/ exists (the changes: rules never match otherwise).
+  # Runs on the shared runner (no LAN), so `plan`/`apply` (not shipped here)
+  # would need a remote/HTTP state backend and internet-reachable providers.
+  # --------------------------------------------------------------------------
+  # - project: eric/weisssrv-lib
+  #   ref: v0.1.1
+  #   file: /ci/validate/terraform.yml
+  #   inputs:
+  #     tags: []
+  #     changes: ["terraform/**/*"]
+
+# The library's secret-detection template pulls in GitLab's managed
+# Secret-Detection job through a nested include, which resolves onto the
+# `infrastructure` (privileged) runner and exposes no `tags` input. A tenant runs
+# secret scanning on the shared tag-less runner like every other lint job, so pin
+# it back here. (Only the `tags` key is overridden; the library still owns the
+# job's rules, variables, and allow_failure.)
+secret_detection:
+  tags: []
+
+# ============================================================================
+# AI REVIEW — optional, never blocks. BYO-keys: runs only when BOTH masked
+# CI/CD variables AI_REVIEW_OPENAI_KEY and GITLAB_REVIEW_TOKEN are set on the
+# project (Settings -> CI/CD -> Variables); absent them (e.g. fork MRs) the job
+# simply isn't created. There is no in-job 1Password path: the shared runner is
+# non-root and can't install the op CLI at job time, so 1Password users source
+# those two values from their vault WHEN THEY SET the CI variables (e.g.
+# `op read "op://Homelab/OpenAI API Key/api-key"`), not at runtime. This is the
+# ONE generic job the library does not ship (it carries no pr-agent template),
+# so it stays defined here — see docs/CONSUMING.md ("Bring your own keys").
+# ============================================================================
+pr-agent-review:
+  stage: ai-review
+  # Digest-pinned: this job exports a GitLab PAT and an OpenAI key into the
+  # container, so the image must not move under a mutable tag (supply-chain).
+  image: codiumai/pr-agent:0.34@sha256:1c1743e93bf6627cd14528cd4defe82465f17860e8f20e6c0ac6558971f61c61
+  needs:
+    - job: yaml-lint
+      optional: true
+    - job: flux-lint
+      optional: true
+    - job: secret_detection
+      optional: true
+  variables:
+    CONFIG__GIT_PROVIDER: "gitlab"
+    GITLAB__URL: "https://git.ericsweiss.com"
+  before_script:
+    - export OPENAI__KEY="$AI_REVIEW_OPENAI_KEY"
+    - export GITLAB__PERSONAL_ACCESS_TOKEN="$GITLAB_REVIEW_TOKEN"
+  script:
+    - |
+      python -m pr_agent.cli \
+        --pr_url="${CI_MERGE_REQUEST_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID}" \
+        review
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $AI_REVIEW_OPENAI_KEY && $GITLAB_REVIEW_TOKEN'
+  allow_failure: true
+  timeout: 30m
+
+# ============================================================================
+# OPTIONAL manual reconcile poke. Flux owns deploys: on merge to main it pulls
+# this repo and reconciles automatically (see the operator-side GitRepository).
+# This job only fast-forwards that by POSTing to a Flux webhook receiver, and
+# only if you set FLUX_WEBHOOK_URL (the receiver must be PUBLICLY reachable —
+# the shared runner has no LAN access). Default off.
+# ----------------------------------------------------------------------------
+# trigger-reconcile:
+#   stage: ai-review
+#   image: curlimages/curl:8.11.1
+#   needs: []
+#   script:
+#     - curl -fsS -X POST "$FLUX_WEBHOOK_URL"
+#   rules:
+#     - if: '$CI_COMMIT_BRANCH == "main" && $FLUX_WEBHOOK_URL'
+#       when: manual
+#       allow_failure: true

@@ -2,6 +2,8 @@
 
 Checks (all offline, no cluster access):
   * no `changeme-` placeholder tokens remain anywhere;
+  * exactly one CI shape survives, with no leftovers from the others
+    (the template ships all three — see docs/CI-SHAPES.md);
   * every resource listed in kustomization.yaml exists on disk;
   * every non-opt-in manifest on disk is referenced by the kustomization
     (an orphaned manifest would silently never deploy);
@@ -14,7 +16,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from . import tree
+from . import prune, tree
 from . import kustomization as kz
 
 
@@ -33,6 +35,66 @@ def _remaining_tokens(root: Path) -> list[Path]:
     return hits
 
 
+def _ci_shapes_present(root: Path) -> set[str]:
+    """Which CI shapes this project still carries.
+
+    A `.github/workflows/` that exists but holds no file runs nothing, so it is
+    not a shape — it is a leftover, reported separately.
+    """
+    present = set()
+    if (root / tree.GITLAB_CI).is_file():
+        present.add("gitlab")
+    workflows = root / tree.GITHUB_WORKFLOWS
+    if workflows.is_dir() and any(p.is_file() for p in workflows.iterdir()):
+        present.add("github")
+    return present
+
+
+def _ci_problems(root: Path) -> list[str]:
+    """Flag an unselected project, and a half-applied selection either way.
+
+    The template ships all three shapes; a generated project must keep exactly
+    one (`prune ci:<shape>`, or `rename --ci <shape>`). Leaving two means a
+    GitHub mirror with Actions enabled runs a second, duplicate set of gates.
+    """
+    problems: list[str] = []
+    present = _ci_shapes_present(root)
+
+    if len(present) > 1:
+        problems.append(
+            f"both CI shapes are present ({tree.GITLAB_CI} and "
+            f"{tree.GITHUB_WORKFLOWS}/) — this project has not selected one; run "
+            f"`weisssrv-new-project prune ci:<{'|'.join(prune.CI_SHAPES)}>` "
+            "(see docs/CI-SHAPES.md)"
+        )
+
+    # The surviving shape must be complete, and the dropped shapes must leave
+    # nothing behind. `.gitlab/secret-detection-ruleset.toml` is what makes
+    # GitLab's Secret-Detection analyzer read .gitleaks.toml, so it lives and
+    # dies with .gitlab-ci.yml.
+    for extra in tree.GITLAB_CI_EXTRA:
+        exists = (root / extra).exists()
+        if "gitlab" in present and not exists:
+            problems.append(
+                f"the gitlab CI shape is selected but {extra} is missing "
+                f"({tree.GITLAB_CI} needs it to load .gitleaks.toml)"
+            )
+        elif "gitlab" not in present and exists:
+            problems.append(
+                f"{extra} is left over from the gitlab CI shape but "
+                f"{tree.GITLAB_CI} is gone — re-run "
+                f"`weisssrv-new-project prune ci:<{'|'.join(prune.CI_SHAPES)}>`"
+            )
+
+    workflows = root / tree.GITHUB_WORKFLOWS
+    if "github" not in present and workflows.is_dir():
+        problems.append(
+            f"{tree.GITHUB_WORKFLOWS}/ is left over (empty) from the github CI "
+            "shape — delete it"
+        )
+    return problems
+
+
 def verify(root: Path, run_kustomize: bool = True) -> tuple[bool, list[str]]:
     """Return (ok, problems). ok is True when problems is empty."""
     problems: list[str] = []
@@ -41,6 +103,9 @@ def verify(root: Path, run_kustomize: bool = True) -> tuple[bool, list[str]]:
     token_hits = _remaining_tokens(root)
     for p in token_hits:
         problems.append(f"placeholder token remains in {p.relative_to(root)}")
+
+    # 2. Exactly one CI shape, cleanly applied.
+    problems.extend(_ci_problems(root))
 
     fdir = tree.flux_dir(root)
     kpath = tree.flux_file(root, tree.KUSTOMIZATION)
@@ -54,12 +119,12 @@ def verify(root: Path, run_kustomize: bool = True) -> tuple[bool, list[str]]:
     ktext = kpath.read_text(encoding="utf-8")
     resources = kz.list_resources(ktext)
 
-    # 2. Listed resources exist on disk.
+    # 3. Listed resources exist on disk.
     for name in resources:
         if not (fdir / name).exists():
             problems.append(f"kustomization lists '{name}' but it is missing on disk")
 
-    # 3. Non-opt-in manifests on disk are referenced.
+    # 4. Non-opt-in manifests on disk are referenced.
     on_disk = {
         p.name
         for p in fdir.glob("*.yaml")
@@ -71,7 +136,7 @@ def verify(root: Path, run_kustomize: bool = True) -> tuple[bool, list[str]]:
             continue
         problems.append(f"manifest '{name}' is on disk but not referenced by the kustomization")
 
-    # 4. Optional kustomize build.
+    # 5. Optional kustomize build.
     if run_kustomize:
         if shutil.which("kustomize"):
             res = subprocess.run(

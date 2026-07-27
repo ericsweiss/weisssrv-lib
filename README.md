@@ -130,8 +130,10 @@ including how to point Ansible at an unmerged checkout, are in
 ## The scaffolding CLI
 
 `cli/` ships `weisssrv-new-project`, which turns a fresh copy of the app
-template into a configured project: `rename` the placeholders, `prune`
-components you don't need, `wire` opt-in components, and `verify` the result.
+template into a configured project: `rename` the placeholders (optionally
+selecting the CI shape in the same call with `--ci gitlab|github|none`), `prune`
+components you don't need — including the CI shapes you didn't pick, via
+`prune ci:<shape>` — `wire` opt-in components, and `verify` the result.
 `new-cluster` (experimental) additionally renders a **cluster** template with
 copier. Install it at a pinned tag — the spec is positional, not `--spec`:
 

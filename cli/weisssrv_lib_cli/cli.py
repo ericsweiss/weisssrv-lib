@@ -31,12 +31,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_rename.add_argument("app_slug", help="app slug (a DNS label: lowercase, digits, hyphens)")
     p_rename.add_argument("gitlab_group", help="GitLab namespace path (may be nested)")
+    p_rename.add_argument(
+        "--ci",
+        choices=prune.CI_SHAPES,
+        help="also select the CI shape to keep, dropping the others "
+        "(equivalent to a following `prune ci:<shape>`; see docs/CI-SHAPES.md)",
+    )
     _root_arg(p_rename)
 
     p_prune = sub.add_parser(
         "prune",
         help="drop unwanted components "
-        f"({', '.join(prune.FEATURES)}, or manifest:<file>)",
+        f"({', '.join(prune.FEATURES)}, manifest:<file>, "
+        f"or ci:<{'|'.join(prune.CI_SHAPES)}>)",
     )
     p_prune.add_argument("features", nargs="+", help="one or more features to remove")
     _root_arg(p_prune)
@@ -147,6 +154,9 @@ def main(argv: list[str] | None = None) -> int:
     root: Path = args.root
 
     if args.command == "rename":
+        # Both inputs are validated before ANY file is touched: argparse rejects
+        # an unknown --ci at parse time, and rename() checks the slug/group up
+        # front — so a bad invocation never half-renames the tree.
         try:
             changed = rename.rename(root, args.app_slug, args.gitlab_group)
         except rename.RenameError as exc:
@@ -154,6 +164,14 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         _report("updated", changed, root)
         print(f"Renamed to app='{args.app_slug}' group='{args.gitlab_group}'.")
+        if args.ci:
+            try:
+                dropped = prune.prune(root, [f"ci:{args.ci}"])
+            except prune.PruneError as exc:  # pragma: no cover - argparse gates it
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+            _report("pruned", dropped, root)
+            print(f"CI shape: {args.ci}.")
         return 0
 
     if args.command == "prune":

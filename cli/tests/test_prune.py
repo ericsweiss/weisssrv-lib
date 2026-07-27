@@ -1,12 +1,13 @@
 """Tests for the `prune` command."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 import yaml
 
-from weisssrv_lib_cli import prune
+from weisssrv_lib_cli import prune, tree
 from weisssrv_lib_cli import kustomization as kz
 
 
@@ -176,6 +177,152 @@ class TestGenericAndErrors:
         prune.prune(scaffold, ["image-build"])
         assert not (scaffold / "Dockerfile").exists()
         assert not (scaffold / ".dockerignore").exists()
+
+
+def _ci_paths(root: Path) -> dict[str, Path]:
+    return {
+        "gitlab-ci": root / tree.GITLAB_CI,
+        "ruleset": root / tree.GITLAB_CI_EXTRA[0],
+        "workflows": root / tree.GITHUB_WORKFLOWS,
+    }
+
+
+class TestCiShape:
+    """`prune ci:<shape>` must reproduce the template's scripts/select-ci.sh."""
+
+    def test_gitlab_keeps_gitlab_drops_github(self, scaffold):
+        prune.prune(scaffold, ["ci:gitlab"])
+        p = _ci_paths(scaffold)
+        assert p["gitlab-ci"].is_file()
+        assert p["ruleset"].is_file()
+        assert not p["workflows"].exists()
+        # select-ci.sh rmdirs an emptied parent; .gitlab keeps its host metadata
+        # only if it has any — the fixture's .gitlab holds just the ruleset.
+        assert not (scaffold / ".github").exists()
+
+    def test_github_keeps_workflows_drops_gitlab_ci_and_ruleset(self, scaffold):
+        prune.prune(scaffold, ["ci:github"])
+        p = _ci_paths(scaffold)
+        assert not p["gitlab-ci"].exists()
+        assert not p["ruleset"].exists()
+        assert sorted(x.name for x in p["workflows"].iterdir()) == [
+            "build-image.yml",
+            "ci.yml",
+        ]
+        # .gitlab held only the ruleset, so it is gone too.
+        assert not (scaffold / ".gitlab").exists()
+
+    def test_none_drops_both(self, scaffold):
+        prune.prune(scaffold, ["ci:none"])
+        for path in _ci_paths(scaffold).values():
+            assert not path.exists()
+        assert not (scaffold / ".github").exists()
+        assert not (scaffold / ".gitlab").exists()
+
+    def test_non_ci_gitlab_metadata_survives(self, scaffold):
+        # `.gitlab/{issue,merge_request}_templates/` are GitLab HOST metadata,
+        # not CI: select-ci.sh leaves them, so the parent must NOT be rmdir'd.
+        keep = scaffold / ".gitlab" / "issue_templates" / "Bug.md"
+        keep.parent.mkdir(parents=True)
+        keep.write_text("bug\n")
+        prune.prune(scaffold, ["ci:none"])
+        assert keep.is_file()
+        assert not (scaffold / tree.GITLAB_CI_EXTRA[0]).exists()
+
+    def test_kubernetes_flux_is_never_touched(self, scaffold):
+        before = {
+            p.name: p.read_bytes()
+            for p in (scaffold / "kubernetes" / "flux").glob("*.yaml")
+        }
+        for shape in prune.CI_SHAPES:
+            prune.prune(scaffold, [f"ci:{shape}"])
+        after = {
+            p.name: p.read_bytes()
+            for p in (scaffold / "kubernetes" / "flux").glob("*.yaml")
+        }
+        assert before == after
+
+    @pytest.mark.parametrize("shape", ["gitlab", "github", "none"])
+    def test_idempotent(self, scaffold, shape):
+        prune.prune(scaffold, [f"ci:{shape}"])
+        assert prune.prune(scaffold, [f"ci:{shape}"]) == []
+
+    def test_reports_what_it_removed(self, scaffold):
+        changed = prune.prune(scaffold, ["ci:github"])
+        names = {str(p.relative_to(scaffold)) for p in changed}
+        assert tree.GITLAB_CI in names
+        assert tree.GITLAB_CI_EXTRA[0] in names
+
+
+class TestCiShapeAllowlistSecurity:
+    """The `ci:` selector deletes paths OUTSIDE kubernetes/flux, so it cannot
+    lean on `_safe_manifest_name`'s containment guard. Its defence is that the
+    shape name is only ever a dict KEY: no user text is ever joined into a path.
+    """
+
+    def test_allowlist_is_closed_over_fixed_template_paths(self):
+        allowed = {rel for paths in prune._CI_SHAPE_DROPS.values() for rel in paths}
+        assert allowed == {
+            tree.GITLAB_CI,
+            tree.GITHUB_WORKFLOWS,
+            *tree.GITLAB_CI_EXTRA,
+        }
+        for rel in allowed:
+            assert not os.path.isabs(rel), rel
+            assert ".." not in Path(rel).parts, rel
+        assert prune.CI_SHAPES == ("gitlab", "github", "none")
+
+    @pytest.mark.parametrize(
+        "evil",
+        [
+            "ci:",
+            "ci:.",
+            "ci:..",
+            "ci:/etc",
+            "ci:../../etc",
+            "ci:gitlab/../../..",
+            "ci:none/../gitlab",
+            "ci:GITLAB",
+            "ci:gitlab ",
+            "ci:gitlab\x00",
+            "ci:.gitlab-ci.yml",
+            "ci:kubernetes/flux",
+        ],
+    )
+    def test_crafted_shape_deletes_nothing(self, scaffold, tmp_path, evil):
+        outside = tmp_path / "outside.txt"
+        outside.write_text("i must survive\n")
+        before = sorted(str(p.relative_to(scaffold)) for p in scaffold.rglob("*"))
+
+        with pytest.raises(prune.PruneError) as exc:
+            prune.prune(scaffold, [evil])
+        assert "unknown CI shape" in str(exc.value)
+
+        assert outside.exists()
+        assert sorted(str(p.relative_to(scaffold)) for p in scaffold.rglob("*")) == before
+
+        # And up-front validation refuses the whole request: a valid feature
+        # queued before the crafted shape must not have run either.
+        with pytest.raises(prune.PruneError):
+            prune.prune(scaffold, ["secrets", evil])
+        assert _flux(scaffold, "externalsecret.yaml").exists()
+        assert outside.exists()
+
+    def test_symlinked_workflows_dir_is_unlinked_not_followed(self, scaffold, tmp_path):
+        # A planted symlink must not become a delete of whatever it points at.
+        victim_dir = tmp_path / "victim"
+        victim_dir.mkdir()
+        (victim_dir / "precious.txt").write_text("keep me\n")
+
+        workflows = scaffold / tree.GITHUB_WORKFLOWS
+        import shutil as _sh
+
+        _sh.rmtree(workflows)
+        workflows.symlink_to(victim_dir, target_is_directory=True)
+
+        prune.prune(scaffold, ["ci:none"])
+        assert not workflows.exists() and not workflows.is_symlink()
+        assert (victim_dir / "precious.txt").read_text() == "keep me\n"
 
 
 class TestUpFrontValidation:

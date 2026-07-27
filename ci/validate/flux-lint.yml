@@ -49,6 +49,18 @@ spec:
     cluster_dir:
       default: "kubernetes/clusters/weisssrv"
       description: (substitute=true) dir of Flux Kustomizations to iterate.
+    require_cluster_root:
+      type: boolean
+      default: false
+      description: >-
+        (substitute=true) false (default): skip the cluster-root build when
+        $CLUSTER_DIR/flux-system/gotk-components.yaml is absent. That file is
+        written by `flux bootstrap`, so a repo generated from
+        weisssrv-cluster-template would otherwise fail its VERY FIRST pipeline
+        for a reason it cannot fix — and the template's local `task flux:lint`
+        already skips the same way. true: always build the root, so a missing
+        flux-system/ is an error. A bootstrapped cluster (weisssrv commits
+        gotk-components.yaml) builds the root either way.
     versions_configmap:
       default: "kubernetes/infrastructure/sources/versions-configmap.yaml"
       description: (substitute=true) the cluster-versions ConfigMap.
@@ -104,6 +116,7 @@ spec:
     K8S_VERSION_INPUT: "$[[ inputs.k8s_version ]]"
     KUSTOMIZE_PATH: "$[[ inputs.kustomize_path ]]"
     CLUSTER_DIR: "$[[ inputs.cluster_dir ]]"
+    REQUIRE_CLUSTER_ROOT: "$[[ inputs.require_cluster_root ]]"
     VERSIONS_CONFIGMAP: "$[[ inputs.versions_configmap ]]"
     FLUX_RENDER_SCRIPT: "$[[ inputs.flux_render_script ]]"
     SKIPPED_SCRIPT: "$[[ inputs.skipped_script ]]"
@@ -260,10 +273,21 @@ spec:
 
       # Build the cluster root to catch a malformed top-level kustomization.yaml
       # (the loop validates target paths, not the root itself).
-      echo "=== Building cluster root $CLUSTER_DIR ==="
-      if ! kustomize build "$CLUSTER_DIR" >/dev/null; then
-        echo "ERROR: cluster root kustomization failed to build"
-        FAILED=1
+      #
+      # The root pulls in flux-system/, whose gotk-components.yaml is written by
+      # `flux bootstrap` and does not exist before it. Building unconditionally
+      # therefore failed the FIRST pipeline of every freshly generated cluster
+      # repo, for a reason the consumer cannot fix — and disagreed with the
+      # cluster template's own `task flux:lint`, which skips the same way. Skip
+      # it pre-bootstrap; pass require_cluster_root: true to demand the build.
+      if [ -f "$CLUSTER_DIR/flux-system/gotk-components.yaml" ] || [ "$REQUIRE_CLUSTER_ROOT" = "true" ]; then
+        echo "=== Building cluster root $CLUSTER_DIR ==="
+        if ! kustomize build "$CLUSTER_DIR" >/dev/null; then
+          echo "ERROR: cluster root kustomization failed to build"
+          FAILED=1
+        fi
+      else
+        echo "=== Skipping cluster root $CLUSTER_DIR: flux-system/gotk-components.yaml is absent (flux bootstrap writes it); set require_cluster_root: true to build anyway ==="
       fi
 
       # Consumer-injected extra validation (weisssrv: HPA/VPA invariant + helm

@@ -135,7 +135,20 @@ Conventions shared by every template:
   (`scripts/flux-render.sh`), `skipped_script` (`scripts/kubeconform-skipped.py`),
   `k8s_version` (empty → derived from k3s_version), `pyyaml_version` (6.0.2 —
   pins the inline spec.path parser to match weisssrv's `PYYAML_VERSION`),
-  `extra_validation` (empty).
+  `require_cluster_root` (false), `extra_validation` (empty).
+- **Cluster-root build (substitute mode) is bootstrap-aware.** After the
+  per-Kustomization loop the job builds `cluster_dir` itself, to catch a
+  malformed top-level `kustomization.yaml`. That root pulls in `flux-system/`,
+  whose `gotk-components.yaml` is written by `flux bootstrap` — so before
+  bootstrap it does not exist and the build cannot succeed. The job therefore
+  **skips the root build (with a one-line note) when
+  `<cluster_dir>/flux-system/gotk-components.yaml` is absent**, which is exactly
+  the guard weisssrv-cluster-template's local `task flux:lint` applies; without
+  it every generated cluster repo failed its first pipeline for a reason it
+  could not fix. Pass `require_cluster_root: true` to build unconditionally and
+  make a missing `flux-system/` an error. **A bootstrapped cluster is
+  unaffected** — weisssrv commits `gotk-components.yaml`, so its root is built
+  exactly as before.
 - **Simple-mode inputs:** `kustomize_path` (`kubernetes/flux`), `k8s_version`.
 - **Parity:** the render loop, missing-placeholder check, envsubst allowlist, and
   informational skip tracker are extracted from weisssrv. **Full weisssrv parity
