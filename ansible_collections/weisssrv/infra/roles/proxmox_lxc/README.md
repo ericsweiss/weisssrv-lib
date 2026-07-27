@@ -12,7 +12,9 @@ passthrough, UID/GID mapping, and an admin user bootstrapped for Ansible.
 - Bind mounts (media directories)
 - GPU passthrough (/dev/dri for transcoding)
 - UID/GID mapping for host file access
-- Admin-user bootstrap for Ansible (`proxmox_lxc_admin_user`)
+- Admin-user bootstrap for Ansible (`proxmox_lxc_admin_user`; its home is
+  `proxmox_lxc_admin_home`, which resolves to `/root` for root and
+  `/home/<user>` otherwise)
 - Autostart configuration
 
 ## Storage Selection

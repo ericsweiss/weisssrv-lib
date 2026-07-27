@@ -702,7 +702,7 @@
 - name: Create SSH directory for the admin user
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
-    pct exec {{ proxmox_lxc_id }} -- bash -c 'mkdir -p /home/{{ proxmox_lxc_admin_user }}/.ssh && chmod 700 /home/{{ proxmox_lxc_admin_user }}/.ssh'
+    pct exec {{ proxmox_lxc_id }} -- bash -c 'mkdir -p {{ proxmox_lxc_admin_home }}/.ssh && chmod 700 {{ proxmox_lxc_admin_home }}/.ssh'
   when:
     - not ansible_check_mode
     - proxmox_lxc_exists.rc != 0
@@ -724,7 +724,7 @@
       set -euo pipefail
       pct exec {{ proxmox_lxc_id }} -- bash -c '
         set -euo pipefail
-        auth_dir="/home/{{ proxmox_lxc_admin_user }}/.ssh"
+        auth_dir="{{ proxmox_lxc_admin_home }}/.ssh"
         auth_file="${auth_dir}/authorized_keys"
         desired="$(printf "%s" "{{ proxmox_lxc_ssh_public_keys | b64encode }}" | base64 -d)"
         install -d -m 700 -o {{ proxmox_lxc_admin_user }} -g {{ proxmox_lxc_admin_user }} "$auth_dir"
@@ -757,8 +757,8 @@
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
     pct exec {{ proxmox_lxc_id }} -- bash -c '
-      chmod 600 /home/{{ proxmox_lxc_admin_user }}/.ssh/authorized_keys &&
-      chown -R {{ proxmox_lxc_admin_user }}:{{ proxmox_lxc_admin_user }} /home/{{ proxmox_lxc_admin_user }}
+      chmod 600 {{ proxmox_lxc_admin_home }}/.ssh/authorized_keys &&
+      chown -R {{ proxmox_lxc_admin_user }}:{{ proxmox_lxc_admin_user }} {{ proxmox_lxc_admin_home }}
     '
   when:
     - not ansible_check_mode
