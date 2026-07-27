@@ -1528,6 +1528,14 @@ def check_all(
 
     if category_filter:
         services = [s for s in services if s["category"] == category_filter]
+        # An unknown --category (or one that no --service matches) would
+        # otherwise check nothing and report a clean run — a typo must not read
+        # as "everything is up to date".
+        if not services:
+            raise ValueError(
+                f"no services match category {category_filter!r} "
+                "(check the spelling, or the --service filter combined with it)"
+            )
 
     results = []
     for svc_def in services:

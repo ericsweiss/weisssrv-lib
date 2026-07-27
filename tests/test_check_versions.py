@@ -61,6 +61,31 @@ SERVICE_REGISTRY = check_versions.SERVICE_REGISTRY
 
 
 
+
+class TestCategoryFilterFailsClosed:
+    """A typo'd --category selected zero services and exited 0 — a clean
+    report for a check that never ran."""
+
+    def test_unknown_category_raises(self):
+        with pytest.raises(ValueError, match="no services match category"):
+            check_versions.check_all(
+                services=[{"category": "github", "name": "x", "var_name": "x_version"}],
+                category_filter="githubb",
+            )
+
+    def test_known_category_still_selects(self, monkeypatch):
+        monkeypatch.setattr(check_versions, "read_current_versions", lambda: {})
+        monkeypatch.setattr(
+            check_versions, "check_service",
+            lambda svc, cur, use_cache=True: check_versions.ServiceVersion(
+                name="x", category="manual", current_version="1",
+                var_name="x_version"))
+        out = check_versions.check_all(
+            services=[{"category": "manual", "name": "x", "var_name": "x_version"}],
+            category_filter="manual")
+        assert len(out) == 1
+
+
 class TestAptRepoKeyNames:
     """The published schema and the shipped example use `apt_url`; the
     function was written against `apt_index_url`. Both must work."""
