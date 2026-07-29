@@ -297,9 +297,9 @@ Conventions shared by every template:
 - **Inputs:** `job_name` (pr-agent-review), `stage` (ai-review), `image`
   (`pragent/pr-agent:0.40.0@sha256:08c42a2b…`, the multi-arch index digest),
   `tags`, `needs` (`[]`), `model` (gpt-5.6), `reasoning_effort` (xhigh),
-  `max_model_tokens` (900000), `ai_timeout` (600),
+  `max_model_tokens` (900000), `ai_timeout` (1800),
   `dual_publishing_threshold` (6), `commands` (`review improve`),
-  `extra_instructions`, `gitlab_url` (`$CI_SERVER_URL`), `timeout` (45m),
+  `extra_instructions`, `gitlab_url` (`$CI_SERVER_URL`), `timeout` (90m),
   `secrets_source` (env | 1password), `openai_key` / `gitlab_token` (CI variable
   REFERENCES for env mode), `op_openai_key_ref` / `op_gitlab_token_ref`
   (1password mode), `gate` (the expression that must be non-empty for the job to

@@ -36,8 +36,13 @@ spec:
         Operational input cap. get_max_tokens() returns the TOTAL context and
         reserves nothing for output, so stay under the model's input limit.
     ai_timeout:
-      default: "600"
-      description: Per-LLM-call timeout (seconds); the 120s default times out at xhigh.
+      default: "1800"
+      description: >-
+        Per-LLM-call timeout (seconds). The upstream 120s default times out at
+        xhigh immediately; 600 was not enough either — a single `improve` call on
+        a 52k-token diff measured 1478s, so it timed out, RETRIED, and burned the
+        job budget on a second attempt. Sized above that measurement: a slow call
+        should finish, not restart. Lower it only together with reasoning_effort.
     dual_publishing_threshold:
       default: "6"
       description: >-
@@ -54,8 +59,12 @@ spec:
       default: "$CI_SERVER_URL"
       description: GitLab base URL pr-agent posts back to.
     timeout:
-      default: "45m"
-      description: Job timeout; xhigh across two commands can run long.
+      default: "90m"
+      description: >-
+        Job timeout. Must exceed ai_timeout times the number of `commands`, or a
+        slow call is killed by the job rather than by its own timeout — which
+        loses the output of commands that already succeeded. At the defaults:
+        two commands x 1800s = 60m, plus image pull and clone.
     secrets_source:
       default: "env"
       options: ["env", "1password"]
