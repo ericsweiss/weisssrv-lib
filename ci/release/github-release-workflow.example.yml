@@ -72,8 +72,15 @@ jobs:
     # Requiring a same-repo push means only code that already had write access
     # can run here. Do not relax these to "fix" a release that did not fire —
     # a release must never be cut from an untrusted checkout.
+    # workflow_dispatch is pinned to main for the same reason: it takes a ref,
+    # checks out that ref's tip, and runs its semantic-release.py with the same
+    # write token — so an unpinned dispatch would cut a release from an
+    # unreviewed branch whose gates never ran. Dispatching on main is the
+    # supported manual re-run (including after a manual ci.yml run, which does
+    # not satisfy the push condition above).
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.ref == 'refs/heads/main') ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.head_repository.full_name == github.repository)

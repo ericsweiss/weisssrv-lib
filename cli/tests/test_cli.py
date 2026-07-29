@@ -1,6 +1,7 @@
 """End-to-end tests of the CLI dispatch layer (weisssrv_lib_cli.cli.main)."""
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,23 @@ class TestRenameCommand:
         assert "changeme-app" in (scaffold / "README.md").read_text()
         assert (scaffold / tree.GITLAB_CI).is_file()
         assert (scaffold / tree.GITHUB_WORKFLOWS).is_dir()
+
+    def test_unprunable_ci_shape_renames_nothing(self, scaffold, tmp_path):
+        # The ci: prune can refuse for a reason argparse cannot see (a symlinked
+        # CI parent). Without a preflight the rename would already have rewritten
+        # the tree, leaving the combined operation half-applied.
+        outside = tmp_path / "outside"
+        (outside / "workflows").mkdir(parents=True)
+        shutil.rmtree(scaffold / ".github")
+        (scaffold / ".github").symlink_to(outside, target_is_directory=True)
+        rc = main(
+            ["rename", "recipe-box", "eric", "--ci", "gitlab", "--root", str(scaffold)]
+        )
+        assert rc == 2
+        # Assert on a file the rename DOES rewrite: .gitlab-ci.yml carries no
+        # placeholder, so comparing its bytes passes whether or not rename ran.
+        assert "changeme-app" in (scaffold / "README.md").read_text()
+        assert (outside / "workflows").is_dir()
 
     def test_invalid_slug_with_ci_prunes_nothing(self, scaffold):
         rc = main(

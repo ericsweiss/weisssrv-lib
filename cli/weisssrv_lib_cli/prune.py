@@ -390,6 +390,15 @@ def _prune_image_build(root: Path, changed: list[Path]) -> None:
             changed.append(path)
 
 
+def validate(root: Path, features: list[str]) -> None:
+    """Raise PruneError if `prune(root, features)` would refuse.
+
+    Public so a caller that mutates the tree BEFORE pruning (cli `rename --ci`)
+    can fail before its first write instead of leaving the tree half-applied.
+    """
+    _validate_features(root, features)
+
+
 def prune(root: Path, features: list[str]) -> list[Path]:
     """Apply each named prune feature. Returns the files changed/removed.
 

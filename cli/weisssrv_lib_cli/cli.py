@@ -155,11 +155,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "rename":
         # Both inputs are validated before ANY file is touched: argparse rejects
-        # an unknown --ci at parse time, and rename() checks the slug/group up
-        # front — so a bad invocation never half-renames the tree.
+        # an unknown --ci at parse time, rename() checks the slug/group up front,
+        # and the ci: prune is preflighted here rather than after the rename —
+        # its symlinked-ancestor refusal fires at validation time, which would
+        # otherwise leave the tree renamed but unpruned, i.e. the combined
+        # operation half-applied.
         try:
+            if args.ci:
+                prune.validate(root, [f"ci:{args.ci}"])
             changed = rename.rename(root, args.app_slug, args.gitlab_group)
-        except rename.RenameError as exc:
+        except (rename.RenameError, prune.PruneError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
         _report("updated", changed, root)
