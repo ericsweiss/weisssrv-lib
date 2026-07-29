@@ -153,8 +153,11 @@ def _validate_features(root: Path, features: list[str]) -> None:
             _safe_manifest_name(root, feat.split(":", 1)[1])
             continue
         if feat.startswith("ci:"):
-            # Allowlist membership only — see _safe_ci_shape.
-            _safe_ci_shape(feat.split(":", 1)[1])
+            # Allowlist membership (see _safe_ci_shape) AND a symlink preflight,
+            # so a refusal happens before anything is deleted rather than
+            # halfway through the shape.
+            for rel in _CI_SHAPE_DROPS[_safe_ci_shape(feat.split(":", 1)[1])]:
+                _safe_ci_target(root, rel)
             continue
         if feat not in FEATURES:
             raise PruneError(
@@ -172,6 +175,26 @@ def _validate_features(root: Path, features: list[str]) -> None:
                 "or use `prune manifest:<file>` to delete the file and its "
                 "kustomization entry."
             )
+
+
+def _safe_ci_target(root: Path, rel: str) -> Path:
+    """Resolve a CI drop target, refusing to traverse a symlinked ancestor.
+
+    The names in _CI_SHAPE_DROPS are hardcoded, so the LEAF is safe and the
+    delete path already unlinks a symlinked leaf rather than following it. An
+    ANCESTOR is the hole: with `.github` a symlink, `root / ".github/workflows"`
+    resolves outside the project and rmtree() would delete whatever is there.
+    """
+    ancestor = root
+    for part in Path(rel).parts[:-1]:
+        ancestor /= part
+        if ancestor.is_symlink():
+            raise PruneError(
+                f"ci: refusing to traverse symlinked directory '{ancestor}' — "
+                "delete the CI files by hand, or replace the symlink with a "
+                "real directory"
+            )
+    return root / rel
 
 
 def _delete_manifest(root: Path, name: str, changed: list[Path]) -> None:
@@ -340,7 +363,9 @@ def _prune_ci(root: Path, shape: str, changed: list[Path]) -> None:
     lookup key, so every path deleted here is a hardcoded `tree` constant.
     """
     for rel in _CI_SHAPE_DROPS[shape]:
-        target = root / rel
+        # Re-checked here, not just in _validate_features: this is the call that
+        # deletes, and it must not depend on a caller having preflighted.
+        target = _safe_ci_target(root, rel)
         # A symlink is unlinked, never followed: rmtree() refuses symlinks
         # anyway, and following one would delete whatever it points at.
         if target.is_symlink() or target.is_file():

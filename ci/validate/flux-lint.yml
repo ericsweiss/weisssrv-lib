@@ -280,14 +280,25 @@ spec:
       # repo, for a reason the consumer cannot fix — and disagreed with the
       # cluster template's own `task flux:lint`, which skips the same way. Skip
       # it pre-bootstrap; pass require_cluster_root: true to demand the build.
-      if [ -f "$CLUSTER_DIR/flux-system/gotk-components.yaml" ] || [ "$REQUIRE_CLUSTER_ROOT" = "true" ]; then
+      # Both gotk files, not just one. Keying the skip on gotk-components.yaml
+      # alone meant deleting that tracked file turned the build into a green
+      # skip — the check stopped firing on exactly the damage it exists to
+      # catch. Absent as a PAIR is the genuine pre-bootstrap state (the
+      # hand-authored kustomization lists both and neither exists yet); either
+      # one present means bootstrap has run, so build and let a missing resource
+      # fail loudly. Not keyed on flux-system/ existing: the cluster template
+      # ships that directory with its kustomization, so it is present before
+      # bootstrap and would build-and-fail on every freshly generated repo.
+      if [ -f "$CLUSTER_DIR/flux-system/gotk-components.yaml" ] \
+        || [ -f "$CLUSTER_DIR/flux-system/gotk-sync.yaml" ] \
+        || [ "$REQUIRE_CLUSTER_ROOT" = "true" ]; then
         echo "=== Building cluster root $CLUSTER_DIR ==="
         if ! kustomize build "$CLUSTER_DIR" >/dev/null; then
           echo "ERROR: cluster root kustomization failed to build"
           FAILED=1
         fi
       else
-        echo "=== Skipping cluster root $CLUSTER_DIR: flux-system/gotk-components.yaml is absent (flux bootstrap writes it); set require_cluster_root: true to build anyway ==="
+        echo "=== Skipping cluster root $CLUSTER_DIR: neither flux-system/gotk-components.yaml nor gotk-sync.yaml exists (flux bootstrap writes both); set require_cluster_root: true to build anyway ==="
       fi
 
       # Consumer-injected extra validation (weisssrv: HPA/VPA invariant + helm

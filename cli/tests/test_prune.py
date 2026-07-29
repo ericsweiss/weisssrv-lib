@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -218,6 +219,27 @@ class TestCiShape:
             assert not path.exists()
         assert not (scaffold / ".github").exists()
         assert not (scaffold / ".gitlab").exists()
+
+    def test_symlinked_ci_parent_is_refused_and_nothing_outside_is_deleted(
+        self, scaffold, tmp_path
+    ):
+        # The leaf guard already unlinks a symlinked target rather than
+        # following it. An ANCESTOR was the hole: with `.github` a symlink,
+        # root/".github/workflows" resolves outside the project and rmtree()
+        # would delete whatever is there.
+        outside = tmp_path / "outside"
+        (outside / "workflows").mkdir(parents=True)
+        (outside / "workflows" / "keep.yml").write_text("keep\n")
+        shutil.rmtree(scaffold / ".github")
+        (scaffold / ".github").symlink_to(outside, target_is_directory=True)
+
+        with pytest.raises(prune.PruneError, match="symlinked"):
+            prune.prune(scaffold, ["ci:gitlab"])
+
+        assert (outside / "workflows" / "keep.yml").is_file()
+        # Refused during validation, so the OTHER shape's files are untouched
+        # too — a partial prune is worse than none.
+        assert (scaffold / tree.GITLAB_CI).is_file()
 
     def test_non_ci_gitlab_metadata_survives(self, scaffold):
         # `.gitlab/{issue,merge_request}_templates/` are GitLab HOST metadata,

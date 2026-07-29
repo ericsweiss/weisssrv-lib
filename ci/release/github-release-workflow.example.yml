@@ -58,11 +58,25 @@ jobs:
   release:
     name: semantic-release
     runs-on: ubuntu-latest
-    # workflow_run fires for FAILED runs too; releasing from one would defeat
-    # the ordering above.
+    # Three conditions, and the last two are the security ones.
+    #
+    # `conclusion == success`: workflow_run fires for FAILED runs too, and
+    # releasing from one would defeat the ordering above.
+    #
+    # `event == push` and `head_repository == repository`: workflow_run also
+    # fires for ci.yml runs triggered by a FORK's pull_request, and its
+    # `branches: [main]` filter matches the FORK's branch name — so a fork whose
+    # head branch is called `main` reaches this job. This job then checks out
+    # that commit and executes scripts/semantic-release.py from it while holding
+    # a contents:write token, which hands the fork the token and the repository.
+    # Requiring a same-repo push means only code that already had write access
+    # can run here. Do not relax these to "fix" a release that did not fire —
+    # a release must never be cut from an untrusted checkout.
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         with:
