@@ -51,16 +51,18 @@ spec:
       description: (substitute=true) dir of Flux Kustomizations to iterate.
     require_cluster_root:
       type: boolean
-      default: false
+      default: true
       description: >-
-        (substitute=true) false (default): skip the cluster-root build when
-        $CLUSTER_DIR/flux-system/gotk-components.yaml is absent. That file is
-        written by `flux bootstrap`, so a repo generated from
-        weisssrv-cluster-template would otherwise fail its VERY FIRST pipeline
-        for a reason it cannot fix — and the template's local `task flux:lint`
-        already skips the same way. true: always build the root, so a missing
-        flux-system/ is an error. A bootstrapped cluster (weisssrv commits
-        gotk-components.yaml) builds the root either way.
+        (substitute=true) true (default): always build the cluster root, so a
+        bootstrapped consumer that loses its flux-system content fails instead of
+        skipping. Defaulting the other way meant deleting both gotk files turned
+        the check into a silent pass. false: skip the root build while BOTH
+        $CLUSTER_DIR/flux-system/gotk-components.yaml and gotk-sync.yaml are
+        absent — the genuine pre-bootstrap state, since `flux bootstrap` writes
+        both and the hand-authored kustomization already lists them. A repo
+        generated from weisssrv-cluster-template MUST pass false, or its very
+        first pipeline fails for a reason it cannot fix; the failure below says
+        so. A bootstrapped cluster builds the root either way.
     versions_configmap:
       default: "kubernetes/infrastructure/sources/versions-configmap.yaml"
       description: (substitute=true) the cluster-versions ConfigMap.
@@ -295,6 +297,14 @@ spec:
         echo "=== Building cluster root $CLUSTER_DIR ==="
         if ! kustomize build "$CLUSTER_DIR" >/dev/null; then
           echo "ERROR: cluster root kustomization failed to build"
+          # Name the one cause the consumer cannot deduce: a repo that has never
+          # been bootstrapped has no gotk files for its kustomization to resolve,
+          # and the fix is an input, not a code change.
+          if [ ! -f "$CLUSTER_DIR/flux-system/gotk-components.yaml" ] \
+            && [ ! -f "$CLUSTER_DIR/flux-system/gotk-sync.yaml" ]; then
+            echo "HINT: neither flux-system/gotk-components.yaml nor gotk-sync.yaml exists, so this repo has not been bootstrapped yet."
+            echo "HINT: pass require_cluster_root: false to this template until \`flux bootstrap\` has run."
+          fi
           FAILED=1
         fi
       else
