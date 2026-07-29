@@ -170,8 +170,22 @@ def _validate_features(root: Path, features: list[str]) -> None:
             # Allowlist membership (see _safe_ci_shape) AND a symlink preflight,
             # so a refusal happens before anything is deleted rather than
             # halfway through the shape.
-            for rel in _CI_SHAPE_DROPS[_safe_ci_shape(feat.split(":", 1)[1])]:
+            shape = _safe_ci_shape(feat.split(":", 1)[1])
+            for rel in _CI_SHAPE_DROPS[shape]:
                 _safe_ci_target(root, rel)
+            # The shape being KEPT must exist before the others are deleted.
+            # Selecting gitlab in a tree whose .gitlab-ci.yml is already gone
+            # would delete .github/workflows/ and report success, leaving the
+            # project with no pipeline at all — the destructive outcome, from a
+            # request whose intent was to keep one.
+            missing = _ci_shape_missing(root, shape)
+            if missing:
+                raise PruneError(
+                    f"ci:{shape} keeps a shape this tree does not have — "
+                    + ", ".join(missing)
+                    + ". Deleting the other shape would leave no pipeline; "
+                    "restore the files, or select the shape you actually have"
+                )
             continue
         if feat not in FEATURES:
             raise PruneError(
@@ -189,6 +203,32 @@ def _validate_features(root: Path, features: list[str]) -> None:
                 "or use `prune manifest:<file>` to delete the file and its "
                 "kustomization entry."
             )
+
+
+def _ci_shape_missing(root: Path, shape: str) -> list[str]:
+    """What the named shape needs but this tree lacks. Empty means keepable.
+
+    `none` keeps nothing, so it can never be unsatisfiable.
+    """
+    if shape == "gitlab":
+        return [
+            rel
+            for rel in (tree.GITLAB_CI, *tree.GITLAB_CI_EXTRA)
+            if not (root / rel).is_file()
+        ]
+    if shape == "github":
+        workflows = root / tree.GITHUB_WORKFLOWS
+        runnable = (
+            workflows.is_dir()
+            and not workflows.is_symlink()
+            and any(
+                p.is_file() and not p.is_symlink() and p.suffix in (".yml", ".yaml")
+                for p in workflows.iterdir()
+            )
+        )
+        # Same predicate verify uses: GitHub runs regular .yml/.yaml only.
+        return [] if runnable else [f"{tree.GITHUB_WORKFLOWS}/ (no runnable workflow)"]
+    return []
 
 
 def _safe_ci_target(root: Path, rel: str) -> Path:

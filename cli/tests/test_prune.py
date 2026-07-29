@@ -220,6 +220,22 @@ class TestCiShape:
         assert not (scaffold / ".github").exists()
         assert not (scaffold / ".gitlab").exists()
 
+    @pytest.mark.parametrize(
+        "shape,break_it",
+        [
+            ("gitlab", lambda r: (r / tree.GITLAB_CI).unlink()),
+            ("github", lambda r: shutil.rmtree(r / tree.GITHUB_WORKFLOWS)),
+        ],
+    )
+    def test_keeping_a_shape_the_tree_lacks_is_refused(self, scaffold, shape, break_it):
+        # Otherwise the kept shape is already gone, the other is deleted, and the
+        # project is left with NO pipeline while prune reports success.
+        break_it(scaffold)
+        other = tree.GITHUB_WORKFLOWS if shape == "gitlab" else tree.GITLAB_CI
+        with pytest.raises(prune.PruneError, match="does not have"):
+            prune.prune(scaffold, [f"ci:{shape}"])
+        assert (scaffold / other).exists()
+
     def test_conflicting_shapes_are_refused_without_deleting_either(self, scaffold):
         # Applied in sequence these drop each other's files and leave the project
         # with NO CI — the most destructive outcome, from a request that cannot
@@ -265,16 +281,21 @@ class TestCiShape:
         assert keep.is_file()
         assert not (scaffold / tree.GITLAB_CI_EXTRA[0]).exists()
 
-    def test_kubernetes_flux_is_never_touched(self, scaffold):
+    @pytest.mark.parametrize("shape", prune.CI_SHAPES)
+    def test_kubernetes_flux_is_never_touched(self, scaffold, tmp_path, shape):
+        # One FRESH tree per shape. Chaining the shapes onto a single tree used
+        # to work here, but that sequence is now refused for the reason it
+        # should be: the second call keeps a shape the first one deleted.
+        tree_copy = tmp_path / f"scaffold-{shape}"
+        shutil.copytree(scaffold, tree_copy)
         before = {
             p.name: p.read_bytes()
-            for p in (scaffold / "kubernetes" / "flux").glob("*.yaml")
+            for p in (tree_copy / "kubernetes" / "flux").glob("*.yaml")
         }
-        for shape in prune.CI_SHAPES:
-            prune.prune(scaffold, [f"ci:{shape}"])
+        prune.prune(tree_copy, [f"ci:{shape}"])
         after = {
             p.name: p.read_bytes()
-            for p in (scaffold / "kubernetes" / "flux").glob("*.yaml")
+            for p in (tree_copy / "kubernetes" / "flux").glob("*.yaml")
         }
         assert before == after
 
