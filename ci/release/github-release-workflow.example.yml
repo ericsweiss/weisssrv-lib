@@ -42,6 +42,16 @@
 # `if: github.event_name == 'push' && github.ref == 'refs/heads/main'`.
 name: release
 
+# No workflow_dispatch. A dispatch runs the workflow definition FROM THE
+# SELECTED REF, so any `if:` guard here is guarded by a file the caller chose —
+# a branch that deletes the guard runs its own code with contents:write, past
+# branch protection. Pinning the dispatch to `github.ref == main` looked like a
+# fix and was not: main's copy of that condition never executes.
+#
+# Recovery the script's crash message asks for ("if <tag> is missing its
+# Release, re-run this job") is GitHub's "Re-run jobs" on the previous run,
+# which replays the original trusted workflow_run payload.
+#
 # Quoted: unquoted `on` is a YAML 1.1 boolean, which yamllint's truthy rule
 # flags. GitHub reads the quoted key identically.
 "on":
@@ -49,9 +59,6 @@ name: release
     workflows: [ci]
     types: [completed]
     branches: [main]
-  # Manual re-run, for the case the script's own crash-recovery message asks
-  # for ("if <tag> is missing its Release, re-run this job").
-  workflow_dispatch:
 
 # Creating a tag and a Release needs write; nothing else here does.
 permissions:
@@ -82,23 +89,18 @@ jobs:
     # Requiring a same-repo push means only code that already had write access
     # can run here. Do not relax these to "fix" a release that did not fire —
     # a release must never be cut from an untrusted checkout.
-    # workflow_dispatch is pinned to main for the same reason: it takes a ref,
-    # checks out that ref's tip, and runs its semantic-release.py with the same
-    # write token — so an unpinned dispatch would cut a release from an
-    # unreviewed branch whose gates never ran. Dispatching on main is the
-    # supported manual re-run (including after a manual ci.yml run, which does
-    # not satisfy the push condition above).
     if: >-
-      (github.event_name == 'workflow_dispatch' &&
-       github.ref == 'refs/heads/main') ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         with:
-          # The commit ci.yml actually tested (see "ordering" above).
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # The commit ci.yml actually tested (see "ordering" above). No
+          # `|| github.sha` fallback: workflow_run is now the only trigger, so
+          # head_sha is always set, and falling back would quietly release the
+          # default-branch tip instead of the commit the gates passed on.
+          ref: ${{ github.event.workflow_run.head_sha }}
           # Full history AND tags: the plan is computed from `<last tag>..HEAD`,
           # and the crash-recovery probe needs to see the previous tag at all.
           fetch-depth: 0
@@ -115,7 +117,7 @@ jobs:
           # deliberately do not start workflow runs, so an `on: release` or
           # `on: push: tags:` workflow will not fire for this release.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
         # The SHA reaches the command through the environment rather than `${{ }}`
         # interpolation — the standing rule for any expression value that lands
         # on a shell line. python3 and git ship in the runner image.
