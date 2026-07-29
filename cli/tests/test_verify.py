@@ -65,14 +65,41 @@ class TestCiShape:
         assert not ok
         assert any("gitlab CI shape is selected but" in p for p in problems)
 
-    def test_empty_workflows_dir_is_flagged_not_counted_as_a_shape(self, scaffold):
+    @pytest.mark.parametrize(
+        "leftover",
+        [
+            None,  # empty dir
+            ".gitkeep",  # a file, but GitHub runs nothing from it
+            "README.md",
+        ],
+    )
+    def test_workflows_dir_without_a_runnable_workflow_is_a_leftover(
+        self, scaffold, leftover
+    ):
+        # GitHub runs regular .yml/.yaml only. Counting "any file" as the shape
+        # let verify pass a project whose CI would never execute.
         _configured(scaffold, "gitlab")
-        (scaffold / tree.GITHUB_WORKFLOWS).mkdir(parents=True)
+        wf = scaffold / tree.GITHUB_WORKFLOWS
+        wf.mkdir(parents=True)
+        if leftover:
+            (wf / leftover).write_text("x\n")
         ok, problems = verify.verify(scaffold, run_kustomize=False)
         assert not ok
-        assert any("left over (empty)" in p for p in problems)
-        # An empty dir runs nothing, so it must NOT read as a second shape.
+        assert any("no runnable workflow" in p for p in problems)
+        # It runs nothing, so it must NOT read as a second shape.
         assert not any("both CI shapes" in p for p in problems)
+
+    def test_symlinked_workflow_does_not_count_as_a_shape(self, scaffold, tmp_path):
+        # Actions does not follow a symlink out of the workspace.
+        _configured(scaffold, "gitlab")
+        real = tmp_path / "ci.yml"
+        real.write_text("name: x\n")
+        wf = scaffold / tree.GITHUB_WORKFLOWS
+        wf.mkdir(parents=True)
+        (wf / "ci.yml").symlink_to(real)
+        ok, problems = verify.verify(scaffold, run_kustomize=False)
+        assert not ok
+        assert any("no runnable workflow" in p for p in problems)
 
 
 class TestStructure:

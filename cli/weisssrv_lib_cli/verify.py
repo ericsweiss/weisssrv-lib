@@ -45,7 +45,18 @@ def _ci_shapes_present(root: Path) -> set[str]:
     if (root / tree.GITLAB_CI).is_file():
         present.add("gitlab")
     workflows = root / tree.GITHUB_WORKFLOWS
-    if workflows.is_dir() and any(p.is_file() for p in workflows.iterdir()):
+    # A REGULAR .yml/.yaml, not merely "some file": GitHub runs nothing else, so
+    # a leftover .gitkeep or README would otherwise report the github shape as
+    # selected and let verify pass a project with no CI at all. Symlinks are
+    # excluded because Actions does not follow them out of the workspace.
+    if (
+        workflows.is_dir()
+        and not workflows.is_symlink()
+        and any(
+            p.is_file() and not p.is_symlink() and p.suffix in (".yml", ".yaml")
+            for p in workflows.iterdir()
+        )
+    ):
         present.add("github")
     return present
 
@@ -87,10 +98,14 @@ def _ci_problems(root: Path) -> list[str]:
             )
 
     workflows = root / tree.GITHUB_WORKFLOWS
-    if "github" not in present and workflows.is_dir():
+    # Reached when the dir exists but holds no REGULAR .yml/.yaml — empty, or
+    # left with a .gitkeep/README, or a symlink. GitHub runs none of those, so
+    # the shape is not selected and the directory is a leftover either way.
+    if "github" not in present and (workflows.is_dir() or workflows.is_symlink()):
         problems.append(
-            f"{tree.GITHUB_WORKFLOWS}/ is left over (empty) from the github CI "
-            "shape — delete it"
+            f"{tree.GITHUB_WORKFLOWS}/ exists but holds no runnable workflow "
+            "(a regular .yml/.yaml) — it is left over from the github CI shape; "
+            "delete it, or restore the workflow if this project meant to keep it"
         )
     return problems
 
