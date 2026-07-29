@@ -135,20 +135,21 @@ Conventions shared by every template:
   (`scripts/flux-render.sh`), `skipped_script` (`scripts/kubeconform-skipped.py`),
   `k8s_version` (empty → derived from k3s_version), `pyyaml_version` (6.0.2 —
   pins the inline spec.path parser to match weisssrv's `PYYAML_VERSION`),
-  `require_cluster_root` (false), `extra_validation` (empty).
-- **Cluster-root build (substitute mode) is bootstrap-aware.** After the
-  per-Kustomization loop the job builds `cluster_dir` itself, to catch a
+  `require_cluster_root` (true), `extra_validation` (empty).
+- **Cluster-root build (substitute mode) is bootstrap-aware, opt-out.** After
+  the per-Kustomization loop the job builds `cluster_dir` itself, to catch a
   malformed top-level `kustomization.yaml`. That root pulls in `flux-system/`,
-  whose `gotk-components.yaml` is written by `flux bootstrap` — so before
-  bootstrap it does not exist and the build cannot succeed. The job therefore
-  **skips the root build (with a one-line note) when
-  `<cluster_dir>/flux-system/gotk-components.yaml` is absent**, which is exactly
-  the guard weisssrv-cluster-template's local `task flux:lint` applies; without
-  it every generated cluster repo failed its first pipeline for a reason it
-  could not fix. Pass `require_cluster_root: true` to build unconditionally and
-  make a missing `flux-system/` an error. **A bootstrapped cluster is
-  unaffected** — weisssrv commits `gotk-components.yaml`, so its root is built
-  exactly as before.
+  whose `gotk-components.yaml` and `gotk-sync.yaml` are written by `flux
+  bootstrap` — so before bootstrap they do not exist and the build cannot
+  succeed. `require_cluster_root` therefore defaults to **true**: a bootstrapped
+  consumer always builds its root, so losing that content fails instead of
+  quietly skipping. **A pre-bootstrap consumer must pass
+  `require_cluster_root: false`** — weisssrv-cluster-template's generated repo is
+  the case — and even then the skip applies only while **both** gotk files are
+  absent. If either exists, the root is built so a missing companion file fails
+  loudly. A generated repo that omits the input fails its first pipeline; the job
+  prints the input to pass. **A bootstrapped cluster is unaffected** — weisssrv
+  commits `gotk-components.yaml`, so its root is built either way.
 - **Simple-mode inputs:** `kustomize_path` (`kubernetes/flux`), `k8s_version`.
 - **Parity:** the render loop, missing-placeholder check, envsubst allowlist, and
   informational skip tracker are extracted from weisssrv. **Full weisssrv parity
