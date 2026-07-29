@@ -220,6 +220,20 @@ class TestCiShape:
         assert not (scaffold / ".github").exists()
         assert not (scaffold / ".gitlab").exists()
 
+    def test_conflicting_shapes_are_refused_without_deleting_either(self, scaffold):
+        # Applied in sequence these drop each other's files and leave the project
+        # with NO CI — the most destructive outcome, from a request that cannot
+        # have been meant.
+        with pytest.raises(prune.PruneError, match="conflicting CI shapes"):
+            prune.prune(scaffold, ["ci:gitlab", "ci:github"])
+        assert (scaffold / tree.GITLAB_CI).is_file()
+        assert (scaffold / tree.GITHUB_WORKFLOWS).is_dir()
+
+    def test_repeating_one_shape_is_still_allowed(self, scaffold):
+        prune.prune(scaffold, ["ci:gitlab", "ci:gitlab"])
+        assert (scaffold / tree.GITLAB_CI).is_file()
+        assert not (scaffold / tree.GITHUB_WORKFLOWS).exists()
+
     def test_symlinked_ci_parent_is_refused_and_nothing_outside_is_deleted(
         self, scaffold, tmp_path
     ):

@@ -146,6 +146,20 @@ def _validate_features(root: Path, features: list[str]) -> None:
     """Reject the whole request BEFORE mutating anything, so a bad feature name
     (or an external-ingress prune that would empty a file) never leaves a
     half-mutated repo."""
+    # A project keeps exactly ONE CI shape, but the features are applied in
+    # sequence, so `ci:gitlab ci:github` used to drop each other's files in turn
+    # and leave the project with no CI at all — a self-contradictory request
+    # silently doing the most destructive thing. Repeating the same shape is
+    # still fine (it is idempotent).
+    shapes = {
+        _safe_ci_shape(f.split(":", 1)[1]) for f in features if f.startswith("ci:")
+    }
+    if len(shapes) > 1:
+        raise PruneError(
+            "conflicting CI shapes requested ("
+            + ", ".join(sorted(shapes))
+            + "); a project keeps exactly one"
+        )
     for feat in features:
         if feat.startswith("manifest:"):
             # Validates the file name (incl. path-traversal rejection); raises

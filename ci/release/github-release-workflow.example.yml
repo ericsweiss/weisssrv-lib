@@ -23,7 +23,17 @@
 #
 # Ordering — the one real difference. A second workflow on `push: main` would
 # run in PARALLEL with ci.yml and could tag a commit whose gates then fail, so
-# this triggers on ci.yml COMPLETING successfully. The cost of `workflow_run` is
+# this triggers on ci.yml COMPLETING successfully.
+#
+# That makes `ci` the aggregate gate, and it must actually BE one: this waits for
+# `ci` and for nothing else, so any OTHER workflow you require on main — the app
+# template ships `build-image.yml` separately — can still be running, or already
+# failed, when the tag is cut. If a required workflow must gate the release, make
+# it a job inside ci.yml rather than a sibling workflow. Polling the Actions API
+# for a sibling run was considered and rejected: docs/CI-SHAPES.md documents
+# deleting build-image.yml for a project with no image, and a poller cannot tell
+# "not started yet" from "will never exist", so it would hang and then fail the
+# release for exactly those repos. The cost of `workflow_run` is
 # that its own `github.sha` is the default branch tip at trigger time, NOT the
 # commit that was tested — hence `head_sha` in both the checkout and `--ref`.
 # If you would rather not reason about that, delete this file and append the
