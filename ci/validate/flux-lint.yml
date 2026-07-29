@@ -291,8 +291,15 @@ spec:
       # fail loudly. Not keyed on flux-system/ existing: the cluster template
       # ships that directory with its kustomization, so it is present before
       # bootstrap and would build-and-fail on every freshly generated repo.
-      if [ -f "$CLUSTER_DIR/flux-system/gotk-components.yaml" ] \
-        || [ -f "$CLUSTER_DIR/flux-system/gotk-sync.yaml" ] \
+      # `-e || -L` rather than `-f`: -f is false for a directory or a DANGLING
+      # symlink at those paths, which would read as "pre-bootstrap" and skip a
+      # root that is actually corrupt. The predicate asks "is anything there",
+      # and the hint below uses the identical test — if the two ever disagreed,
+      # the job would either skip without explaining or explain without skipping.
+      gotk_components="$CLUSTER_DIR/flux-system/gotk-components.yaml"
+      gotk_sync="$CLUSTER_DIR/flux-system/gotk-sync.yaml"
+      if [ -e "$gotk_components" ] || [ -L "$gotk_components" ] \
+        || [ -e "$gotk_sync" ] || [ -L "$gotk_sync" ] \
         || [ "$REQUIRE_CLUSTER_ROOT" = "true" ]; then
         echo "=== Building cluster root $CLUSTER_DIR ==="
         if ! kustomize build "$CLUSTER_DIR" >/dev/null; then
@@ -300,8 +307,8 @@ spec:
           # Name the one cause the consumer cannot deduce: a repo that has never
           # been bootstrapped has no gotk files for its kustomization to resolve,
           # and the fix is an input, not a code change.
-          if [ ! -f "$CLUSTER_DIR/flux-system/gotk-components.yaml" ] \
-            && [ ! -f "$CLUSTER_DIR/flux-system/gotk-sync.yaml" ]; then
+          if [ ! -e "$gotk_components" ] && [ ! -L "$gotk_components" ] \
+            && [ ! -e "$gotk_sync" ] && [ ! -L "$gotk_sync" ]; then
             echo "HINT: neither flux-system/gotk-components.yaml nor gotk-sync.yaml exists, so this repo has not been bootstrapped yet."
             echo "HINT: pass require_cluster_root: false to this template until \`flux bootstrap\` has run."
           fi
