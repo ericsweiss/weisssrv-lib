@@ -298,7 +298,21 @@ spec:
       # the job would either skip without explaining or explain without skipping.
       gotk_components="$CLUSTER_DIR/flux-system/gotk-components.yaml"
       gotk_sync="$CLUSTER_DIR/flux-system/gotk-sync.yaml"
-      if [ -e "$gotk_components" ] || [ -L "$gotk_components" ] \
+      # Shape of the tree FIRST, then build-or-skip. This check used to sit only
+      # in the pre-bootstrap branch, so a symlinked CLUSTER_DIR that happened to
+      # contain a gotk file skipped it entirely and handed kustomize a tree
+      # outside the repo to validate. Whether the root is real is not a question
+      # about bootstrap state, so it cannot live inside one of its branches.
+      if [ ! -d "$CLUSTER_DIR" ] || [ -L "$CLUSTER_DIR" ] \
+        || [ ! -d "$CLUSTER_DIR/flux-system" ] \
+        || [ -L "$CLUSTER_DIR/flux-system" ] \
+        || [ ! -f "$CLUSTER_DIR/kustomization.yaml" ] \
+        || [ -L "$CLUSTER_DIR/kustomization.yaml" ] \
+        || [ ! -f "$CLUSTER_DIR/flux-system/kustomization.yaml" ] \
+        || [ -L "$CLUSTER_DIR/flux-system/kustomization.yaml" ]; then
+        echo "ERROR: $CLUSTER_DIR and its flux-system/ must be real directories, and both hand-authored kustomization.yaml files must be regular files (not symlinks)"
+        FAILED=1
+      elif [ -e "$gotk_components" ] || [ -L "$gotk_components" ] \
         || [ -e "$gotk_sync" ] || [ -L "$gotk_sync" ] \
         || [ "$REQUIRE_CLUSTER_ROOT" = "true" ]; then
         echo "=== Building cluster root $CLUSTER_DIR ==="
@@ -314,20 +328,6 @@ spec:
           fi
           FAILED=1
         fi
-      elif [ ! -d "$CLUSTER_DIR" ] || [ -L "$CLUSTER_DIR" ] \
-        || [ ! -d "$CLUSTER_DIR/flux-system" ] \
-        || [ -L "$CLUSTER_DIR/flux-system" ] \
-        || [ ! -f "$CLUSTER_DIR/kustomization.yaml" ] \
-        || [ -L "$CLUSTER_DIR/kustomization.yaml" ] \
-        || [ ! -f "$CLUSTER_DIR/flux-system/kustomization.yaml" ] \
-        || [ -L "$CLUSTER_DIR/flux-system/kustomization.yaml" ]; then
-        # "Both gotk files absent" is ALSO true when the cluster root itself has
-        # been deleted or replaced by a symlink — in which case skipping would
-        # pass a repo that has no cluster root at all. Pre-bootstrap means the
-        # hand-authored scaffold is present and only the generated files are
-        # missing, so require the scaffold before allowing the skip.
-        echo "ERROR: $CLUSTER_DIR looks pre-bootstrap (no gotk files) but its hand-authored scaffold is missing: both $CLUSTER_DIR/kustomization.yaml and $CLUSTER_DIR/flux-system/kustomization.yaml must be regular files"
-        FAILED=1
       else
         echo "=== Skipping cluster root $CLUSTER_DIR: neither flux-system/gotk-components.yaml nor gotk-sync.yaml exists (flux bootstrap writes both); set require_cluster_root: true to build anyway ==="
       fi
