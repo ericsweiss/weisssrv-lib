@@ -1,6 +1,7 @@
 """Tests for the `verify` command."""
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -88,6 +89,21 @@ class TestCiShape:
         assert any("no runnable workflow" in p for p in problems)
         # It runs nothing, so it must NOT read as a second shape.
         assert not any("both CI shapes" in p for p in problems)
+
+    def test_malformed_gitlab_ci_is_named_not_reported_as_gone(
+        self, scaffold, tmp_path
+    ):
+        # A symlinked .gitlab-ci.yml is not the gitlab shape (prune refuses to
+        # keep it, so verify must agree) — but the operator has to be told the
+        # file is malformed, not that it is missing when it is sitting there.
+        real = tmp_path / "elsewhere.yml"
+        real.write_text("stages: [x]\n")
+        (scaffold / tree.GITLAB_CI).unlink()
+        (scaffold / tree.GITLAB_CI).symlink_to(real)
+        shutil.rmtree(scaffold / tree.GITHUB_WORKFLOWS)
+        ok, problems = verify.verify(scaffold, run_kustomize=False)
+        assert not ok
+        assert any("is not a regular file" in p for p in problems)
 
     def test_symlinked_workflow_does_not_count_as_a_shape(self, scaffold, tmp_path):
         # Actions does not follow a symlink out of the workspace.

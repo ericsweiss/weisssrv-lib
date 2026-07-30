@@ -83,6 +83,18 @@ def _ci_problems(root: Path) -> list[str]:
             "(see docs/CI-SHAPES.md)"
         )
 
+    # A .gitlab-ci.yml that exists but is not a regular file (a symlink, a
+    # directory) is not the gitlab shape — _ci_shapes_present rejects it, to stay
+    # aligned with what prune will keep. Say so explicitly, or the leftover
+    # branch below reports ".gitlab-ci.yml is gone" about a file that is sitting
+    # right there.
+    gitlab_ci = root / tree.GITLAB_CI
+    if (gitlab_ci.exists() or gitlab_ci.is_symlink()) and "gitlab" not in present:
+        problems.append(
+            f"{tree.GITLAB_CI} exists but is not a regular file — GitLab will "
+            "not run it; restore the file or remove it"
+        )
+
     # The surviving shape must be complete, and the dropped shapes must leave
     # nothing behind. `.gitlab/secret-detection-ruleset.toml` is what makes
     # GitLab's Secret-Detection analyzer read .gitleaks.toml, so it lives and
