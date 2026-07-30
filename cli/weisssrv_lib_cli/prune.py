@@ -210,14 +210,20 @@ def _ci_shape_missing(root: Path, shape: str) -> list[str]:
 
     `none` keeps nothing, so it can never be unsatisfiable.
     """
+    # _safe_ci_target, not `root / rel`: the DROP paths were already checked for
+    # symlinked ancestors, but the KEPT shape was not — so `ci:github` under a
+    # symlinked `.github` resolved to workflows outside the repo, satisfied this
+    # check, and deleted the working GitLab pipeline. A leaf symlink is rejected
+    # too: git tracks the link, not a runnable file at that path.
     if shape == "gitlab":
-        return [
-            rel
-            for rel in (tree.GITLAB_CI, *tree.GITLAB_CI_EXTRA)
-            if not (root / rel).is_file()
-        ]
+        missing = []
+        for rel in (tree.GITLAB_CI, *tree.GITLAB_CI_EXTRA):
+            path = _safe_ci_target(root, rel)
+            if path.is_symlink() or not path.is_file():
+                missing.append(rel)
+        return missing
     if shape == "github":
-        workflows = root / tree.GITHUB_WORKFLOWS
+        workflows = _safe_ci_target(root, tree.GITHUB_WORKFLOWS)
         runnable = (
             workflows.is_dir()
             and not workflows.is_symlink()

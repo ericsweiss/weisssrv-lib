@@ -236,6 +236,32 @@ class TestCiShape:
             prune.prune(scaffold, [f"ci:{shape}"])
         assert (scaffold / other).exists()
 
+    def test_keeping_github_through_a_symlinked_parent_is_refused(
+        self, scaffold, tmp_path
+    ):
+        # The DROP paths were already ancestor-checked; the KEPT shape was not.
+        # A symlinked .github resolves to workflows outside the repo, which would
+        # satisfy the keep-check and then delete the working GitLab pipeline.
+        outside = tmp_path / "outside"
+        (outside / "workflows").mkdir(parents=True)
+        (outside / "workflows" / "ci.yml").write_text("name: x\n")
+        shutil.rmtree(scaffold / ".github")
+        (scaffold / ".github").symlink_to(outside, target_is_directory=True)
+        with pytest.raises(prune.PruneError, match="symlinked"):
+            prune.prune(scaffold, ["ci:github"])
+        assert (scaffold / tree.GITLAB_CI).is_file()
+
+    def test_keeping_gitlab_whose_config_is_a_symlink_is_refused(
+        self, scaffold, tmp_path
+    ):
+        real = tmp_path / "elsewhere.yml"
+        real.write_text("stages: [x]\n")
+        (scaffold / tree.GITLAB_CI).unlink()
+        (scaffold / tree.GITLAB_CI).symlink_to(real)
+        with pytest.raises(prune.PruneError, match="does not have"):
+            prune.prune(scaffold, ["ci:gitlab"])
+        assert (scaffold / tree.GITHUB_WORKFLOWS).is_dir()
+
     def test_conflicting_shapes_are_refused_without_deleting_either(self, scaffold):
         # Applied in sequence these drop each other's files and leave the project
         # with NO CI — the most destructive outcome, from a request that cannot
