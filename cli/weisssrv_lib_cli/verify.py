@@ -42,7 +42,11 @@ def _ci_shapes_present(root: Path) -> set[str]:
     not a shape — it is a leftover, reported separately.
     """
     present = set()
-    if (root / tree.GITLAB_CI).is_file():
+    # `is_file()` follows symlinks, and prune now REFUSES to keep a symlinked
+    # .gitlab-ci.yml. Without the same test here the two disagree: verify reports
+    # the gitlab shape as selected while prune says the tree does not have it.
+    gitlab_ci = root / tree.GITLAB_CI
+    if gitlab_ci.is_file() and not gitlab_ci.is_symlink():
         present.add("gitlab")
     workflows = root / tree.GITHUB_WORKFLOWS
     # A REGULAR .yml/.yaml, not merely "some file": GitHub runs nothing else, so

@@ -392,18 +392,26 @@ def get_release(
     """The Release for `tag`, or None when the tag carries none (HTTP 404).
 
     Both forges answer 404 for a tag that exists with no Release, so the
-    crash-recovery probe reads the same on either. GitHub's endpoint returns the
-    PUBLISHED release for a tag, so a draft someone left behind also reads as
-    "missing" here — the backfill below then fails loudly against that tag
-    rather than quietly publishing a second Release for it.
+    crash-recovery probe reads the same on either. GitHub documents its
+    releases/tags endpoint as returning the PUBLISHED release, so a draft someone
+    left behind should read as "missing" here and the backfill below should fail
+    loudly against that tag rather than quietly publishing a second Release.
+
+    The explicit draft check below does not assume that documented behaviour: if
+    the endpoint never returns a draft it is a no-op, and if it ever does (an
+    authenticated token with push access is the case usually cited) a draft would
+    otherwise be mistaken for a published release and skip recovery entirely.
     """
     url = _release_by_tag_url(api_url, project_id, tag, platform)
     try:
-        return (request or _requester(platform))(url, token, token_header, None)
+        release = (request or _requester(platform))(url, token, token_header, None)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return None
         raise
+    if platform == "github" and isinstance(release, dict) and release.get("draft"):
+        return None
+    return release
 
 
 def create_release(

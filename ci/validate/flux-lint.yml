@@ -314,7 +314,10 @@ spec:
           fi
           FAILED=1
         fi
-      elif [ ! -f "$CLUSTER_DIR/kustomization.yaml" ] \
+      elif [ ! -d "$CLUSTER_DIR" ] || [ -L "$CLUSTER_DIR" ] \
+        || [ ! -d "$CLUSTER_DIR/flux-system" ] \
+        || [ -L "$CLUSTER_DIR/flux-system" ] \
+        || [ ! -f "$CLUSTER_DIR/kustomization.yaml" ] \
         || [ -L "$CLUSTER_DIR/kustomization.yaml" ] \
         || [ ! -f "$CLUSTER_DIR/flux-system/kustomization.yaml" ] \
         || [ -L "$CLUSTER_DIR/flux-system/kustomization.yaml" ]; then
