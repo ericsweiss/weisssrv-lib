@@ -211,9 +211,17 @@ include:
       # failure). Needs weisssrv-lib on the template project's job-token
       # allowlist (admin prerequisite, see header). The old project path keeps
       # working through GitLab's rename redirect until the rename lands.
+      #
+      # WEISSSRV_TEMPLATE_REF defaults to the template's default branch. Override
+      # it (a pipeline variable) when a change spans both repos: this fixture and
+      # the template must move together, but GitLab cannot merge two projects
+      # atomically, so whichever lands first would otherwise red the other. Point
+      # it at the template's MR branch for that one pipeline instead of muting
+      # the comparison — a disabled gate is how the drift got here.
       setup_command: >-
         git clone --depth 1
-        "${CI_SERVER_PROTOCOL}://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/eric/weisssrv-project-template.git"
+        ${WEISSSRV_TEMPLATE_REF:+--branch "$WEISSSRV_TEMPLATE_REF"}
+        "${CI_SERVER_PROTOCOL}://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/eric/weisssrv-app-template.git"
         "$WEISSSRV_TEMPLATE_ROOT"
       changes:
         - "scripts/**/*"

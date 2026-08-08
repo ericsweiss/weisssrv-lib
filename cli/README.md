@@ -1,7 +1,7 @@
 # weisssrv-new-project
 
 The scaffolding CLI for weisssrv cluster tenant repos. It turns a fresh copy of
-[weisssrv-project-template](https://git.ericsweiss.com/eric/weisssrv-project-template)
+[weisssrv-app-template](https://git.ericsweiss.com/eric/weisssrv-app-template)
 into a configured project. Offline and dependency-light — the only runtime
 dependency is `ruamel.yaml`, which handles both the round-trip edits that
 preserve the scaffold's comments and the plain safe-loads used to inspect
@@ -38,14 +38,19 @@ needs credentials (a PAT with `read_repository` in the URL, or use
 
 Run each from the project root, or pass `--root <dir>`.
 
-### rename `<app-slug> <gitlab-group>`
+### rename `<app-slug> <gitlab-group>` `[--ci gitlab|github|none]`
 
 Replaces the `changeme-app` / `changeme-group` placeholders across the tracked
 tree. The slug must be a DNS label (it becomes the namespace and Flux
 Kustomization name); the group is a GitLab namespace path (may be nested).
 
+`--ci <shape>` additionally selects the project's CI shape in the same call —
+identical to a following `prune ci:<shape>` (see below). Both inputs are
+validated before any file is touched, so a typo never half-renames the tree.
+
 ```bash
 weisssrv-new-project rename recipe-box eric/apps
+weisssrv-new-project rename recipe-box eric/apps --ci github   # rename + select
 ```
 
 ### prune `<feature...>`
@@ -63,6 +68,7 @@ kustomization entry, and cleans cross-references):
 | `external-ingress` | remove the public IngressRoute + Certificate (keep the internal variants) |
 | `image-build`      | delete a repo-root Dockerfile / .dockerignore |
 | `manifest:<file>`  | delete kubernetes/flux/&lt;file&gt;.yaml + its kustomization entry |
+| `ci:<shape>`       | keep one CI shape (`gitlab`, `github`, `none`), delete the others' files |
 
 All requested features are validated up front — an unknown feature name (or an
 `external-ingress` prune that would empty a file because no internal variant is
@@ -74,6 +80,27 @@ weisssrv-new-project prune metrics single-replica
 # (prune external-ingress refuses if the internal variant isn't active yet)
 weisssrv-new-project wire internal-ingress && weisssrv-new-project prune external-ingress
 ```
+
+**CI shapes.** The app template ships all three and a project keeps exactly one
+(the template's `docs/CI-SHAPES.md` explains what each gives up):
+
+| shape | keeps | deletes |
+|-------|-------|---------|
+| `gitlab` | `.gitlab-ci.yml`, `.gitlab/secret-detection-ruleset.toml` | `.github/workflows/` |
+| `github` | `.github/workflows/` | `.gitlab-ci.yml`, `.gitlab/secret-detection-ruleset.toml` |
+| `none`   | neither — Flux pulls and deploys with no pipeline | both |
+
+```bash
+weisssrv-new-project prune ci:github
+```
+
+`.gitlab/issue_templates/` and `.gitlab/merge_request_templates/` are GitLab
+*host* metadata, not CI, and are deliberately left alone; `.github` / `.gitlab`
+are removed only if the drop left them empty. Nothing under `kubernetes/flux/`
+is touched — Flux deploys the tenant in all three shapes, so the manifests are
+identical whichever is chosen. The shape name is matched against a fixed
+internal allowlist and is never joined into a filesystem path, so it cannot
+reach a file outside that table.
 
 ### wire `<feature...>`
 
@@ -92,10 +119,12 @@ weisssrv-new-project wire hpa
 
 ### verify
 
-Sanity-checks the result: no placeholder tokens remain, every kustomization
-resource exists on disk, no manifest is orphaned, and (when `kustomize` is on
-PATH) `kustomize build kubernetes/flux` succeeds. Exit non-zero on any hard
-problem.
+Sanity-checks the result: no placeholder tokens remain, exactly one CI shape
+survives (both `.gitlab-ci.yml` and `.github/workflows/` present means the
+project never selected one, and a GitHub mirror would run duplicate gates),
+every kustomization resource exists on disk, no manifest is orphaned, and (when
+`kustomize` is on PATH) `kustomize build kubernetes/flux` succeeds. Exit
+non-zero on any hard problem.
 
 ```bash
 weisssrv-new-project verify          # runs kustomize build if available
@@ -146,8 +175,9 @@ miniature local copier template; those tests skip without the `cluster` extra.
 template: it asserts byte-equality for every file the CLI parses, that the
 `kubernetes/flux` manifest sets match, and that both trees satisfy the layout
 contract hardcoded in `tree`/`prune`/`wire` (opt-in lines, document names,
-`-internal` suffix, the `authentik-auth` middleware pair, …). It uses a sibling
-`weisssrv-app-template` / `weisssrv-project-template` checkout by default:
+`-internal` suffix, the `authentik-auth` middleware pair, the three CI-shape
+paths `prune ci:` deletes, …). It uses a sibling
+`weisssrv-app-template` checkout by default:
 
 ```bash
 WEISSSRV_TEMPLATE_ROOT=~/src/weisssrv-app-template python3 -m pytest cli/tests -q

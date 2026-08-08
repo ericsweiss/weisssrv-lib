@@ -1,6 +1,6 @@
 """Shared model of the weisssrv tenant scaffold + low-level file helpers.
 
-The CLI operates on a project generated from weisssrv-project-template: a
+The CLI operates on a project generated from weisssrv-app-template: a
 `kubernetes/flux/` directory of manifests plus a `kustomization.yaml` that lists
 them, with placeholder tokens `changeme-app` / `changeme-group` across the
 tracked tree.
@@ -29,6 +29,23 @@ DEPLOYMENT = "deployment.yaml"
 # Manifests present in the scaffold but NOT listed in kustomization resources by
 # default (opt-in). `verify` must not flag these as orphaned.
 OPT_IN_MANIFESTS = frozenset({"hpa.yaml"})
+
+# --- CI shapes -------------------------------------------------------------
+# The template ships all three CI shapes (docs/CI-SHAPES.md) and a project keeps
+# exactly one; `prune ci:<shape>` drops the others. These paths are repo-root
+# relative and sit OUTSIDE FLUX_DIR — see prune._CI_SHAPE_DROPS, whose fixed
+# allowlist is the only thing allowed to turn a shape name into a deletion.
+# Nothing under kubernetes/flux/ is CI-shape specific: Flux deploys the tenant
+# in all three shapes, so the manifests are identical whichever is chosen.
+GITLAB_CI = ".gitlab-ci.yml"
+GITHUB_WORKFLOWS = ".github/workflows"
+# GitLab CI companions that die with .gitlab-ci.yml. `.gitlab/issue_templates/`
+# and `.gitlab/merge_request_templates/` are deliberately absent: they are
+# GitLab HOST metadata, not CI, and stay useful on a repo that runs no pipeline.
+GITLAB_CI_EXTRA = (".gitlab/secret-detection-ruleset.toml",)
+# Parents a CI-shape drop can empty. Removed only when empty, so a project that
+# keeps e.g. .gitlab/merge_request_templates/ keeps the directory.
+CI_PARENT_DIRS = (".github", ".gitlab")
 
 APP_TOKEN = "changeme-app"
 GROUP_TOKEN = "changeme-group"

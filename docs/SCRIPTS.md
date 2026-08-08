@@ -58,23 +58,45 @@ the copy in the consumer repo) and are stdlib-only.
 
 ### `semantic-release.py`
 
-Cuts the tag + GitLab Release from the conventional commits since the last
+Cuts the tag + Release from the conventional commits since the last
 version tag: `feat` → minor, `fix`/`perf`/`refactor` → patch, `!` or a
 `BREAKING CHANGE:` trailer → major (demoted to minor while the version is `0.x`
 unless `--major-on-zero`). Tag and Release are created in ONE Releases API call —
-that endpoint creates the tag from `ref`, which is the only tag write a
-`CI_JOB_TOKEN` can perform. No releasable commit → exit 0, nothing created.
+that endpoint creates the tag from the ref, which on GitLab is the only tag write
+a `CI_JOB_TOKEN` can perform. No releasable commit → exit 0, nothing created.
 
 ```
-semantic-release.py [--repo-dir DIR] [--tag-prefix v] [--initial-version 0.1.0]
-    [--major-on-zero] [--ref SHA] [--api-url URL] [--project-id ID]
-    [--token-env RELEASE_TOKEN] [--token-header JOB-TOKEN|PRIVATE-TOKEN]
+semantic-release.py [--platform gitlab|github] [--repo-dir DIR] [--tag-prefix v]
+    [--initial-version 0.1.0] [--major-on-zero] [--ref SHA] [--api-url URL]
+    [--project-id ID] [--token-env VAR] [--token-header JOB-TOKEN|PRIVATE-TOKEN]
     [--output release.json] [--dry-run]
 ```
 
-- **Env:** the `--token-env` variable (default `RELEASE_TOKEN`), `CI_API_V4_URL`,
-  `CI_PROJECT_ID`, `CI_COMMIT_SHA` (default `--ref`), `CI_PROJECT_URL` (compare
-  link in the notes).
+- **`--platform`** picks the forge; everything above the two API calls (commit
+  parsing, the bump decision, the notes) is forge-neutral, so one vendored copy
+  serves both. **`gitlab` is the default**, so a consumer that passes nothing is
+  unaffected.
+
+  | | `gitlab` (default) | `github` |
+  |---|---|---|
+  | create | `POST $CI_API_V4_URL/projects/:id/releases` | `POST $GITHUB_API_URL/repos/:owner/:repo/releases` |
+  | probe | `GET …/releases/:tag` | `GET …/releases/tags/:tag` |
+  | auth | `JOB-TOKEN:` (or `PRIVATE-TOKEN:`, `--token-header`) | `Authorization: Bearer` + `Accept: application/vnd.github+json` |
+  | project | id or `%2F`-escaped path | `:owner/:repo` (the slash is a path separator) |
+  | tag | ANNOTATED, carries the notes as its message | LIGHTWEIGHT — the Releases API writes only a ref, so the notes live in the Release body alone |
+
+- **Env**, by platform — a flag always wins over the env:
+
+  | | `gitlab` | `github` |
+  |---|---|---|
+  | token env (default `--token-env`) | `RELEASE_TOKEN` | `GITHUB_TOKEN` |
+  | `--api-url` | `CI_API_V4_URL` | `GITHUB_API_URL` |
+  | `--project-id` | `CI_PROJECT_ID` | `GITHUB_REPOSITORY` |
+  | `--ref` | `CI_COMMIT_SHA` | `GITHUB_SHA` |
+  | compare link in the notes | `CI_PROJECT_URL` | `GITHUB_SERVER_URL` + `GITHUB_REPOSITORY` |
+
+  `--token-header` is GitLab-only; GitHub's auth header is fixed. With no ref in
+  the env and none passed, both fall back to `git rev-parse HEAD`.
 - **Artifact** (`--output`): the outcome, not the intention — `released` is true
   only after the API call succeeded, `dry_run` marks a computed-only run, and a
   failure carries an `error` field. `recovered` names a tag whose missing
@@ -89,11 +111,25 @@ semantic-release.py [--repo-dir DIR] [--tag-prefix v] [--initial-version 0.1.0]
   stops the run and says so against ITS tag — the new tag is not cut. The check
   itself is best-effort: an API failure on it is warned about and skipped rather
   than allowed to veto an otherwise-healthy release.
+- **Crash recovery on GitHub** works identically, because both halves it needs
+  hold there: `GET /releases/tags/:tag` 404s for a tag carrying no *published*
+  Release, and creating a Release for a tag that already exists is a plain
+  create (`target_commitish` is documented as unused once the tag exists).
+  What differs is how the orphan arises — GitHub creates ref and Release in one
+  request, so the GitLab half-failure window is not the usual cause. The states
+  that do produce it there are ordinary: a `vX.Y.Z` pushed by hand (what a
+  GitHub repo did before this backend existed), or a Release deleted while
+  GitHub kept its tag. Both land in exactly the same place, and the same repair
+  fixes them. One asymmetry: the probe cannot see a *draft* Release, so a draft
+  squatting on the tag reads as "missing" and the backfill then fails loudly
+  against that tag rather than publishing a second Release for it.
 - **Exit codes:** 0 released / nothing to release / dry run; 1 missing
   credentials, an API failure, a git failure (its stderr is printed) or an
   unreachable API.
-- Requires full history + tags (`GIT_DEPTH: 0`).
-- Wired by `ci/release/semantic-release.yml`.
+- Requires full history + tags (`GIT_DEPTH: 0`, or `fetch-depth: 0`).
+- Wired by `ci/release/semantic-release.yml` (GitLab) and, for a GitHub
+  consumer, by the vendored reference workflow
+  [`ci/release/github-release-workflow.example.yml`](../ci/release/github-release-workflow.example.yml).
 
 ### `version-bump-mr.py`
 

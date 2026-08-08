@@ -27,11 +27,12 @@ _spec.loader.exec_module(sr)
 RS = sr.RECORD_SEP
 FS = sr.FIELD_SEP
 
-# GitLab injects these into every job, and main()'s argparse defaults read them
-# at call time: an unscrubbed CI_COMMIT_SHA silently overrides the fake HEAD the
-# main() tests pin, so the release-creation and crash-recovery assertions fail in
-# the pipeline and pass locally. Scrub the whole set so the suite behaves
-# identically in and out of CI; a test that wants one sets it explicitly.
+# GitLab (and now GitHub Actions) inject these into every job, and main() reads
+# them for whichever platform is selected: an unscrubbed CI_COMMIT_SHA silently
+# overrides the fake HEAD the main() tests pin, so the release-creation and
+# crash-recovery assertions fail in the pipeline and pass locally. Scrub the
+# whole set so the suite behaves identically in and out of CI, on either forge;
+# a test that wants one sets it explicitly.
 CI_ENV = (
     "CI",
     "GITLAB_CI",
@@ -46,6 +47,12 @@ CI_ENV = (
     "CI_DEFAULT_BRANCH",
     "RELEASE_TOKEN",
     "BOT_TOKEN",
+    "GITHUB_ACTIONS",
+    "GITHUB_API_URL",
+    "GITHUB_REPOSITORY",
+    "GITHUB_SERVER_URL",
+    "GITHUB_SHA",
+    "GITHUB_TOKEN",
 )
 
 
@@ -276,10 +283,27 @@ def recording_opener(body: bytes = b"{}"):
         seen["data"] = request.data
         seen["token"] = request.get_header("Job-token")
         seen["content_type"] = request.get_header("Content-type")
+        # urllib capitalises header names, so the keys read `Job-token`,
+        # `Content-type`, `X-github-api-version`.
+        seen["headers"] = dict(request.header_items())
         seen["timeout"] = timeout
         return FakeResponse(body)
 
     return opener, seen
+
+
+def through(requester, opener):
+    """The `request` seam wired to a REAL requester over a fake urlopen.
+
+    Lets a create_release/get_release test assert on the wire request the caller
+    would actually make — URL, headers and body together — instead of stopping
+    at the seam.
+    """
+
+    def call(url, token, token_header, payload):
+        return requester(url, token, token_header, payload, opener=opener)
+
+    return call
 
 
 def test_api_request_posts_json_with_the_token_header():
@@ -368,6 +392,190 @@ def test_get_release_escapes_the_tag_in_the_url():
     assert seen["url"] == "https://git.example/api/v4/projects/eric%2Flib/releases/v0.2.0"
 
 
+def test_the_gitlab_wire_request_is_unchanged_by_the_github_backend():
+    """The assertion that must never move: what a GitLab consumer puts on the
+    wire. Every field here predates --platform — URL, the single JOB-TOKEN
+    header, the annotated-tag message, `ref`, `description`, the 60s timeout."""
+    opener, seen = recording_opener()
+    plan = sr.plan_release(["v0.1.1"], log(("a" * 8, "feat: x")))
+    sr.create_release(
+        "https://git.example/api/v4",
+        "42",
+        "tok",
+        plan,
+        "deadbeef",
+        request=through(sr.api_request, opener),
+    )
+    assert seen["method"] == "POST"
+    assert seen["url"] == "https://git.example/api/v4/projects/42/releases"
+    assert seen["headers"] == {"Job-token": "tok", "Content-type": "application/json"}
+    assert json.loads(seen["data"].decode()) == {
+        "tag_name": "v0.2.0",
+        "ref": "deadbeef",
+        "name": "v0.2.0",
+        "tag_message": "v0.2.0\n\n%s" % plan.notes,
+        "description": plan.notes,
+    }
+    assert seen["timeout"] == 60
+
+
+# --- github_api_request: the same two calls against GitHub --------------------
+
+def test_github_api_request_posts_json_with_bearer_auth():
+    opener, seen = recording_opener(b'{"html_url": "u"}')
+    result = sr.github_api_request(
+        "https://api.github.test/repos/acme/widget/releases", "ghs_tok",
+        payload={"tag_name": "v0.2.0"}, opener=opener,
+    )
+    assert result == {"html_url": "u"}
+    assert seen["method"] == "POST"
+    assert seen["headers"] == {
+        "Authorization": "Bearer ghs_tok",
+        "Accept": "application/vnd.github+json",
+        "X-github-api-version": "2022-11-28",
+        "Content-type": "application/json",
+    }
+    # The GitLab header never appears — the token reaches GitHub once, and only
+    # in the header GitHub authenticates.
+    assert seen["token"] is None
+    assert json.loads(seen["data"].decode()) == {"tag_name": "v0.2.0"}
+    assert seen["timeout"] == 60
+
+
+def test_github_api_request_gets_when_there_is_no_payload():
+    opener, seen = recording_opener(b'{"tag_name": "v0.2.0"}')
+    assert sr.github_api_request("https://api.github.test/x", "tok", opener=opener) == {
+        "tag_name": "v0.2.0"
+    }
+    assert seen["method"] == "GET"
+    assert seen["data"] is None
+    assert seen["content_type"] is None
+    assert seen["headers"]["Accept"] == "application/vnd.github+json"
+
+
+def test_github_api_request_ignores_the_gitlab_token_header():
+    """Both requesters are called through the same 4-argument seam, so the
+    GitLab-only argument has to be harmless rather than absent."""
+    opener, seen = recording_opener()
+    sr.github_api_request("https://api.github.test/x", "tok", "PRIVATE-TOKEN", opener=opener)
+    assert "PRIVATE-TOKEN" not in seen["headers"] and "Private-token" not in seen["headers"]
+    assert seen["headers"]["Authorization"] == "Bearer tok"
+
+
+def test_github_api_request_empty_body_is_an_empty_dict():
+    opener, _ = recording_opener(b"")
+    assert sr.github_api_request("https://api.github.test/x", "t", opener=opener) == {}
+
+
+def test_github_api_request_propagates_http_error_with_its_body():
+    def opener(request, timeout=None):
+        raise _http_error(422, b'{"message": "Validation Failed"}')
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        sr.github_api_request("https://api.github.test/x", "t", payload={"a": 1}, opener=opener)
+    assert exc.value.code == 422
+    assert b"Validation Failed" in exc.value.read()
+
+
+def test_github_api_request_propagates_url_error():
+    def opener(request, timeout=None):
+        raise urllib.error.URLError("name or service not known")
+
+    with pytest.raises(urllib.error.URLError):
+        sr.github_api_request("https://api.github.test/x", "t", payload={"a": 1}, opener=opener)
+
+
+def test_github_api_request_propagates_a_timeout():
+    def opener(request, timeout=None):
+        raise TimeoutError("timed out")
+
+    with pytest.raises(OSError):
+        sr.github_api_request("https://api.github.test/x", "t", payload={"a": 1}, opener=opener)
+
+
+def test_create_release_posts_the_github_payload():
+    opener, seen = recording_opener(b'{"html_url": "https://github.test/acme/widget/releases/v0.2.0"}')
+    plan = sr.plan_release(["v0.1.1"], log(("a" * 8, "feat: x")))
+    sr.create_release(
+        "https://api.github.test/",
+        "acme/widget",
+        "ghs_tok",
+        plan,
+        "deadbeef",
+        request=through(sr.github_api_request, opener),
+        platform="github",
+    )
+    # owner/repo is TWO path segments — the slash must survive quoting.
+    assert seen["url"] == "https://api.github.test/repos/acme/widget/releases"
+    assert json.loads(seen["data"].decode()) == {
+        "tag_name": "v0.2.0",
+        "target_commitish": "deadbeef",
+        "name": "v0.2.0",
+        "body": plan.notes,
+    }
+    # GitHub's Releases API writes a LIGHTWEIGHT ref: there is nowhere to put a
+    # tag message, and the GitLab field names would be silently ignored.
+    assert "tag_message" not in json.loads(seen["data"].decode())
+    assert "ref" not in json.loads(seen["data"].decode())
+
+
+def test_get_release_probes_the_github_tags_endpoint():
+    seen = {}
+
+    def request(url, token, token_header, payload):
+        assert payload is None
+        seen["url"] = url
+        return {"tag_name": "v0.2.0"}
+
+    sr.get_release(
+        "https://api.github.test", "acme/widget", "t", "v0.2.0", request=request, platform="github"
+    )
+    assert seen["url"] == "https://api.github.test/repos/acme/widget/releases/tags/v0.2.0"
+
+
+def test_get_release_returns_none_on_404_from_github():
+    """A tag with no PUBLISHED Release 404s on GitHub exactly as it does on
+    GitLab, so the crash-recovery probe needs no platform-specific reading."""
+
+    def request(url, token, token_header, payload):
+        raise _http_error(404, b'{"message": "Not Found"}')
+
+    assert (
+        sr.get_release(
+            "https://api.github.test", "acme/widget", "t", "v0.2.0",
+            request=request, platform="github",
+        )
+        is None
+    )
+
+
+def test_get_release_reraises_other_http_errors_from_github():
+    def request(url, token, token_header, payload):
+        raise _http_error(401)
+
+    with pytest.raises(urllib.error.HTTPError):
+        sr.get_release(
+            "https://api.github.test", "acme/widget", "t", "v0.2.0",
+            request=request, platform="github",
+        )
+
+
+def test_the_platform_picks_the_requester_and_gitlab_is_the_default(monkeypatch):
+    """The seam that turns --platform into an actual API call. Called without a
+    platform — as every pre-existing consumer does — it is the GitLab one."""
+    calls = []
+    monkeypatch.setattr(sr, "api_request", lambda *a, **kw: calls.append("gitlab") or {})
+    monkeypatch.setattr(sr, "github_api_request", lambda *a, **kw: calls.append("github") or {})
+    plan = sr.plan_release(["v0.1.1"], log(("a" * 8, "feat: x")))
+
+    sr.create_release("https://git.example/api/v4", "42", "t", plan, "sha")
+    sr.get_release("https://git.example/api/v4", "42", "t", "v0.1.1")
+    sr.create_release("https://api.github.test", "acme/widget", "t", plan, "sha", platform="github")
+    sr.get_release("https://api.github.test", "acme/widget", "t", "v0.1.1", platform="github")
+
+    assert calls == ["gitlab", "gitlab", "github", "github"]
+
+
 # --- main(): the release-creation half ----------------------------------------
 
 def fake_git(tags, logs, head="deadbeef"):
@@ -402,14 +610,22 @@ def test_main_creates_the_release_and_only_then_reports_it(tmp_path, monkeypatch
     monkeypatch.setattr(sr, "get_release", released_tag)
     captured = {}
 
-    def fake_create(api_url, project_id, token, plan, ref, token_header="JOB-TOKEN"):
-        captured.update(tag=plan.tag, ref=ref, token=token, header=token_header)
+    def fake_create(api_url, project_id, token, plan, ref, token_header="JOB-TOKEN", platform="gitlab"):
+        captured.update(tag=plan.tag, ref=ref, token=token, header=token_header, platform=platform)
         return {"_links": {"self": "https://git.example/releases/v0.2.0"}}
 
     monkeypatch.setattr(sr, "create_release", fake_create)
     out = tmp_path / "release.json"
     assert sr.main(["--output", str(out), *API]) == 0
-    assert captured == {"tag": "v0.2.0", "ref": "deadbeef", "token": "tok", "header": "JOB-TOKEN"}
+    # `platform` is the DEFAULT, not a flag this call passed: an accidental flip
+    # of that default would retarget every existing consumer's release.
+    assert captured == {
+        "tag": "v0.2.0",
+        "ref": "deadbeef",
+        "token": "tok",
+        "header": "JOB-TOKEN",
+        "platform": "gitlab",
+    }
     payload = json.loads(out.read_text())
     assert (payload["released"], payload["tag"], payload["dry_run"]) == (True, "v0.2.0", False)
     assert "Created release" in capsys.readouterr().out
@@ -455,8 +671,16 @@ def recording_create(monkeypatch):
     """Replace create_release with a recorder; returns the list of calls."""
     calls = []
 
-    def fake_create(api_url, project_id, token, plan, ref, token_header="JOB-TOKEN"):
-        calls.append({"tag": plan.tag, "version": plan.version, "notes": plan.notes, "ref": ref})
+    def fake_create(api_url, project_id, token, plan, ref, token_header="JOB-TOKEN", platform="gitlab"):
+        calls.append(
+            {
+                "tag": plan.tag,
+                "version": plan.version,
+                "notes": plan.notes,
+                "ref": ref,
+                "platform": platform,
+            }
+        )
         return {}
 
     monkeypatch.setattr(sr, "create_release", fake_create)
@@ -542,7 +766,7 @@ def failing_create(monkeypatch, fail_tag, code=403, body=b"denied"):
     """create_release that records every tag it is asked for and raises for one."""
     calls = []
 
-    def fake_create(api_url, project_id, token, plan, ref, token_header="JOB-TOKEN"):
+    def fake_create(api_url, project_id, token, plan, ref, token_header="JOB-TOKEN", platform="gitlab"):
         calls.append(plan.tag)
         if plan.tag == fail_tag:
             raise _http_error(code, body)
@@ -680,6 +904,120 @@ def test_main_does_not_backfill_when_the_previous_tag_has_its_release(tmp_path, 
     assert [c["tag"] for c in calls] == ["v0.2.1"]
     assert "recovered" not in json.loads(out.read_text())
     assert "exists with no Release" not in capsys.readouterr().out
+
+
+# --- main(): the same two endings against GitHub ------------------------------
+
+GITHUB_API = ["--platform", "github", "--api-url", "https://api.github.test", "--project-id", "acme/widget"]
+
+
+def test_main_reads_the_github_actions_env_and_creates_the_release(tmp_path, monkeypatch, capsys):
+    """Nothing but `--platform github` is passed: the API base, the repository,
+    the ref and the token env all come from what Actions injects, the way the
+    GitLab path reads CI_API_V4_URL/CI_PROJECT_ID/CI_COMMIT_SHA."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_tok")
+    monkeypatch.setenv("GITHUB_API_URL", "https://api.github.test")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "acme/widget")
+    monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.test")
+    monkeypatch.setenv("GITHUB_SHA", "cafebabe")
+    monkeypatch.setattr(sr, "git", fake_git(["v0.1.1"], {"v0.1.1..HEAD": log(("a" * 8, "feat: x"))}))
+    monkeypatch.setattr(sr, "get_release", released_tag)
+    captured = {}
+
+    def fake_create(api_url, project_id, token, plan, ref, token_header="JOB-TOKEN", platform="gitlab"):
+        captured.update(
+            api_url=api_url, project_id=project_id, token=token, ref=ref,
+            platform=platform, notes=plan.notes,
+        )
+        return {"html_url": "https://github.test/acme/widget/releases/tag/v0.2.0"}
+
+    monkeypatch.setattr(sr, "create_release", fake_create)
+    out = tmp_path / "release.json"
+    assert sr.main(["--output", str(out), "--platform", "github"]) == 0
+
+    assert captured["api_url"] == "https://api.github.test"
+    assert captured["project_id"] == "acme/widget"
+    assert captured["token"] == "ghs_tok"  # $GITHUB_TOKEN, without --token-env
+    assert captured["ref"] == "cafebabe"  # $GITHUB_SHA, not `git rev-parse HEAD`
+    assert captured["platform"] == "github"
+    # GitHub's compare path has no `/-/` segment.
+    assert "https://github.test/acme/widget/compare/v0.1.1...v0.2.0" in captured["notes"]
+    assert json.loads(out.read_text())["released"] is True
+    assert "Created release https://github.test/acme/widget/releases/tag/v0.2.0" in capsys.readouterr().out
+
+
+def test_main_names_the_github_env_when_credentials_are_missing(tmp_path, monkeypatch, capsys):
+    """The GitLab token env is not a fallback: a repo that still carries a
+    RELEASE_TOKEN variable must not release with it in github mode."""
+    monkeypatch.setenv("RELEASE_TOKEN", "gitlab-only")
+    monkeypatch.setattr(sr, "git", fake_git(["v0.1.1"], {"v0.1.1..HEAD": log(("a" * 8, "feat: x"))}))
+    out = tmp_path / "release.json"
+    assert sr.main(["--output", str(out), *GITHUB_API]) == 1
+    assert "missing token" in json.loads(out.read_text())["error"]
+    assert "need $GITHUB_TOKEN, $GITHUB_API_URL and $GITHUB_REPOSITORY" in capsys.readouterr().err
+
+
+def test_main_backfills_an_orphan_tag_on_github(tmp_path, monkeypatch, capsys):
+    """Crash recovery survives the move to GitHub, where the orphan state is
+    reached by different routes — a tag pushed by hand (what shape B did before
+    this backend existed), or a Release deleted while GitHub kept its tag —
+    and lands in exactly the same place: an empty commit range that reads as
+    "nothing to release" forever. Both halves of the repair hold there:
+    `/releases/tags/:tag` 404s for a tag with no published Release, and creating
+    a Release for an EXISTING tag is a plain create (`target_commitish` is
+    documented as unused once the tag exists)."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_tok")
+    orphan_git(monkeypatch)
+    calls = recording_create(monkeypatch)
+    out = tmp_path / "release.json"
+
+    assert sr.main(["--output", str(out), *GITHUB_API]) == 0
+
+    assert [(c["tag"], c["ref"], c["platform"]) for c in calls] == [
+        ("v0.2.0", "v0.2.0", "github"),
+        ("v0.2.1", "deadbeef", "github"),
+    ]
+    assert "the orphaned work" in calls[0]["notes"]
+    assert "the orphaned work" not in calls[1]["notes"]
+    payload = json.loads(out.read_text())
+    assert (payload["released"], payload["tag"], payload["recovered"]) == (True, "v0.2.1", "v0.2.0")
+    assert "exists with no Release" in capsys.readouterr().out
+
+
+def test_main_stops_at_a_failed_github_backfill(tmp_path, monkeypatch, capsys):
+    """A tag GitHub will not accept a Release for — a draft already holding the
+    name, a protected ref — must stop the run against ITS tag, not be blamed on
+    the new one, exactly as on GitLab."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_tok")
+    orphan_git(monkeypatch)
+    calls = failing_create(monkeypatch, "v0.2.0", code=422, body=b'{"message": "Validation Failed"}')
+    out = tmp_path / "release.json"
+
+    assert sr.main(["--output", str(out), *GITHUB_API]) == 1
+
+    assert calls == ["v0.2.0"]
+    payload = json.loads(out.read_text())
+    assert payload["released"] is False and payload["tag"] == "v0.2.1"
+    assert "backfill of v0.2.0 failed" in payload["error"] and "422" in payload["error"]
+    assert "the new tag v0.2.1 was NOT cut" in capsys.readouterr().err
+
+
+def test_main_dry_run_on_github_needs_no_token_or_api(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sr,
+        "git",
+        lambda args, repo_dir=".": "v0.1.0\n" if args[0] == "tag" else log(("a" * 8, "feat: x")),
+    )
+    monkeypatch.setattr(sr, "create_release", lambda *a, **kw: pytest.fail("dry run called the API"))
+    assert sr.main(["--platform", "github", "--dry-run"]) == 0
+    assert "v0.1.0 -> v0.2.0 (minor bump)" in capsys.readouterr().out
+
+
+def test_compare_url_template_falls_back_to_no_link():
+    """A local run has neither forge's web-URL env; the notes then carry no
+    compare link rather than a half-formed one."""
+    assert sr.compare_url_template("github", "") is None
+    assert sr.compare_url_template("gitlab") is None
 
 
 def test_plan_existing_tag_reuses_the_tags_own_range():

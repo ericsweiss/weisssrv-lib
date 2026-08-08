@@ -135,7 +135,21 @@ Conventions shared by every template:
   (`scripts/flux-render.sh`), `skipped_script` (`scripts/kubeconform-skipped.py`),
   `k8s_version` (empty → derived from k3s_version), `pyyaml_version` (6.0.2 —
   pins the inline spec.path parser to match weisssrv's `PYYAML_VERSION`),
-  `extra_validation` (empty).
+  `require_cluster_root` (true), `extra_validation` (empty).
+- **Cluster-root build (substitute mode) is bootstrap-aware, opt-out.** After
+  the per-Kustomization loop the job builds `cluster_dir` itself, to catch a
+  malformed top-level `kustomization.yaml`. That root pulls in `flux-system/`,
+  whose `gotk-components.yaml` and `gotk-sync.yaml` are written by `flux
+  bootstrap` — so before bootstrap they do not exist and the build cannot
+  succeed. `require_cluster_root` therefore defaults to **true**: a bootstrapped
+  consumer always builds its root, so losing that content fails instead of
+  quietly skipping. **A pre-bootstrap consumer must pass
+  `require_cluster_root: false`** — weisssrv-cluster-template's generated repo is
+  the case — and even then the skip applies only while **both** gotk files are
+  absent. If either exists, the root is built so a missing companion file fails
+  loudly. A generated repo that omits the input fails its first pipeline; the job
+  prints the input to pass. **A bootstrapped cluster is unaffected** — weisssrv
+  commits `gotk-components.yaml`, so its root is built either way.
 - **Simple-mode inputs:** `kustomize_path` (`kubernetes/flux`), `k8s_version`.
 - **Parity:** the render loop, missing-placeholder check, envsubst allowlist, and
   informational skip tracker are extracted from weisssrv. **Full weisssrv parity
@@ -282,8 +296,8 @@ Conventions shared by every template:
   this library and the app template — with the 0.40.0 upgrade folded in.
 - **Inputs:** `job_name` (pr-agent-review), `stage` (ai-review), `image`
   (`pragent/pr-agent:0.40.0@sha256:08c42a2b…`, the multi-arch index digest),
-  `tags`, `needs` (`[]`), `model` (gpt-5.6), `reasoning_effort` (xhigh),
-  `max_model_tokens` (900000), `ai_timeout` (600),
+  `tags`, `needs` (`[]`), `model` (gpt-5.6), `reasoning_effort` (high),
+  `max_model_tokens` (900000), `ai_timeout` (1200),
   `dual_publishing_threshold` (6), `commands` (`review improve`),
   `extra_instructions`, `gitlab_url` (`$CI_SERVER_URL`), `timeout` (45m),
   `secrets_source` (env | 1password), `openai_key` / `gitlab_token` (CI variable
@@ -337,6 +351,26 @@ Conventions shared by every template:
   the tag from `ref` (the Tags API itself is read-only for job tokens). Pass a
   PAT reference with `token_header: PRIVATE-TOKEN` if protected tags restrict
   who may create `v*`.
+- **This template is GitLab-only; the SCRIPT is not.** `semantic-release.py`
+  takes `--platform {gitlab,github}` (default `gitlab`, so this template and
+  every consumer of it are unaffected — it passes no such flag). In `github`
+  mode the same vendored file targets
+  `$GITHUB_API_URL/repos/:owner/:repo/releases` with `Authorization: Bearer`,
+  reading `GITHUB_REPOSITORY` / `GITHUB_API_URL` / `GITHUB_SHA` /
+  `GITHUB_TOKEN` where the GitLab path reads the `CI_*` set. Only the two API
+  calls differ; the bump decision and the notes are forge-neutral, which is what
+  keeps ONE byte-identical script in the library, the app template and the
+  cluster template. Per-flag detail in [SCRIPTS.md](SCRIPTS.md#semantic-releasepy).
+- **GitHub consumers** (the app template's CI shape B) have no `include:` to
+  point at — the library ships no reusable Actions workflows — so they vendor
+  [`ci/release/github-release-workflow.example.yml`](../ci/release/github-release-workflow.example.yml)
+  as `.github/workflows/release.yml` next to the vendored script. It reproduces
+  this job's contract in Actions terms: release branch only and never on a
+  schedule, `workflow_run` on the CI workflow succeeding (Actions has no stage
+  ordering to gate on), `concurrency` for `resource_group`, `fetch-depth: 0`
+  for `GIT_DEPTH: 0`, and `release.json` uploaded `if: always()`. That file is a
+  reference copy, NOT a template: nothing `include:`s it, and re-vendoring when
+  it changes is a manual, deliberate step.
 - **Requires:** the script vendored at `script_path`, `release` declared as the
   LAST stage (the job sets no `needs:` so stage ordering gates it on the rest of
   the pipeline passing), and a `resource_group` — already set — to serialize

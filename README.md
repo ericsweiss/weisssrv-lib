@@ -5,7 +5,7 @@ configurations, helper scripts, taskfile fragments, and the project CLI
 consumed by
 [weisssrv](https://git.ericsweiss.com/eric/weisssrv) and by projects generated
 from
-[weisssrv-project-template](https://git.ericsweiss.com/eric/weisssrv-project-template).
+[weisssrv-app-template](https://git.ericsweiss.com/eric/weisssrv-app-template).
 
 The goal is one source of truth for the generic CI/tooling layer both a homelab
 platform repo and its cluster tenants share — so a lint/version/build change is
@@ -130,8 +130,10 @@ including how to point Ansible at an unmerged checkout, are in
 ## The scaffolding CLI
 
 `cli/` ships `weisssrv-new-project`, which turns a fresh copy of the app
-template into a configured project: `rename` the placeholders, `prune`
-components you don't need, `wire` opt-in components, and `verify` the result.
+template into a configured project: `rename` the placeholders (optionally
+selecting the CI shape in the same call with `--ci gitlab|github|none`), `prune`
+components you don't need — including the CI shapes you didn't pick, via
+`prune ci:<shape>` — `wire` opt-in components, and `verify` the result.
 `new-cluster` (experimental) additionally renders a **cluster** template with
 copier. Install it at a pinned tag — the spec is positional, not `--spec`:
 

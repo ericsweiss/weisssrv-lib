@@ -49,6 +49,20 @@ spec:
     cluster_dir:
       default: "kubernetes/clusters/weisssrv"
       description: (substitute=true) dir of Flux Kustomizations to iterate.
+    require_cluster_root:
+      type: boolean
+      default: true
+      description: >-
+        (substitute=true) true (default): always build the cluster root, so a
+        bootstrapped consumer that loses its flux-system content fails instead of
+        skipping. Defaulting the other way meant deleting both gotk files turned
+        the check into a silent pass. false: skip the root build while BOTH
+        $CLUSTER_DIR/flux-system/gotk-components.yaml and gotk-sync.yaml are
+        absent — the genuine pre-bootstrap state, since `flux bootstrap` writes
+        both and the hand-authored kustomization already lists them. A repo
+        generated from weisssrv-cluster-template MUST pass false, or its very
+        first pipeline fails for a reason it cannot fix; the failure below says
+        so. A bootstrapped cluster builds the root either way.
     versions_configmap:
       default: "kubernetes/infrastructure/sources/versions-configmap.yaml"
       description: (substitute=true) the cluster-versions ConfigMap.
@@ -104,6 +118,7 @@ spec:
     K8S_VERSION_INPUT: "$[[ inputs.k8s_version ]]"
     KUSTOMIZE_PATH: "$[[ inputs.kustomize_path ]]"
     CLUSTER_DIR: "$[[ inputs.cluster_dir ]]"
+    REQUIRE_CLUSTER_ROOT: "$[[ inputs.require_cluster_root ]]"
     VERSIONS_CONFIGMAP: "$[[ inputs.versions_configmap ]]"
     FLUX_RENDER_SCRIPT: "$[[ inputs.flux_render_script ]]"
     SKIPPED_SCRIPT: "$[[ inputs.skipped_script ]]"
@@ -260,10 +275,76 @@ spec:
 
       # Build the cluster root to catch a malformed top-level kustomization.yaml
       # (the loop validates target paths, not the root itself).
-      echo "=== Building cluster root $CLUSTER_DIR ==="
-      if ! kustomize build "$CLUSTER_DIR" >/dev/null; then
-        echo "ERROR: cluster root kustomization failed to build"
+      #
+      # The root pulls in flux-system/, whose gotk-components.yaml is written by
+      # `flux bootstrap` and does not exist before it. Building unconditionally
+      # therefore failed the FIRST pipeline of every freshly generated cluster
+      # repo, for a reason the consumer cannot fix — and disagreed with the
+      # cluster template's own `task flux:lint`, which skips the same way. Skip
+      # it pre-bootstrap; pass require_cluster_root: true to demand the build.
+      # Both gotk files, not just one. Keying the skip on gotk-components.yaml
+      # alone meant deleting that tracked file turned the build into a green
+      # skip — the check stopped firing on exactly the damage it exists to
+      # catch. Absent as a PAIR is the genuine pre-bootstrap state (the
+      # hand-authored kustomization lists both and neither exists yet); either
+      # one present means bootstrap has run, so build and let a missing resource
+      # fail loudly. Not keyed on flux-system/ existing: the cluster template
+      # ships that directory with its kustomization, so it is present before
+      # bootstrap and would build-and-fail on every freshly generated repo.
+      # `-e || -L` rather than `-f`: -f is false for a directory or a DANGLING
+      # symlink at those paths, which would read as "pre-bootstrap" and skip a
+      # root that is actually corrupt. The predicate asks "is anything there",
+      # and the hint below uses the identical test — if the two ever disagreed,
+      # the job would either skip without explaining or explain without skipping.
+      gotk_components="$CLUSTER_DIR/flux-system/gotk-components.yaml"
+      gotk_sync="$CLUSTER_DIR/flux-system/gotk-sync.yaml"
+      # Shape of the tree FIRST, then build-or-skip. This check used to sit only
+      # in the pre-bootstrap branch, so a symlinked CLUSTER_DIR that happened to
+      # contain a gotk file skipped it entirely and handed kustomize a tree
+      # outside the repo to validate. Whether the root is real is not a question
+      # about bootstrap state, so it cannot live inside one of its branches.
+      # The -L tests below only inspect the FINAL component of each path, so an
+      # intermediate symlink (kubernetes/clusters -> /tmp/x) resolves straight
+      # through them and still hands kustomize a tree outside the checkout —
+      # every leaf can be a genuine directory on the other side of the link.
+      # Containment is therefore asserted on the RESOLVED path as well, which is
+      # the only check that covers a component we did not enumerate.
+      repo_root=$(pwd -P)
+      cluster_real=$(readlink -f "$CLUSTER_DIR" 2>/dev/null || echo "")
+      case "${cluster_real:-/nonexistent}/" in
+        "$repo_root"/*) cluster_contained=1 ;;
+        *) cluster_contained=0 ;;
+      esac
+      if [ "$cluster_contained" != "1" ]; then
+        echo "ERROR: $CLUSTER_DIR resolves to ${cluster_real:-nothing}, which is outside the repository at $repo_root (symlinked path component?)"
         FAILED=1
+      elif [ ! -d "$CLUSTER_DIR" ] || [ -L "$CLUSTER_DIR" ] \
+        || [ ! -d "$CLUSTER_DIR/flux-system" ] \
+        || [ -L "$CLUSTER_DIR/flux-system" ] \
+        || [ ! -f "$CLUSTER_DIR/kustomization.yaml" ] \
+        || [ -L "$CLUSTER_DIR/kustomization.yaml" ] \
+        || [ ! -f "$CLUSTER_DIR/flux-system/kustomization.yaml" ] \
+        || [ -L "$CLUSTER_DIR/flux-system/kustomization.yaml" ]; then
+        echo "ERROR: $CLUSTER_DIR and its flux-system/ must be real directories, and both hand-authored kustomization.yaml files must be regular files (not symlinks)"
+        FAILED=1
+      elif [ -e "$gotk_components" ] || [ -L "$gotk_components" ] \
+        || [ -e "$gotk_sync" ] || [ -L "$gotk_sync" ] \
+        || [ "$REQUIRE_CLUSTER_ROOT" = "true" ]; then
+        echo "=== Building cluster root $CLUSTER_DIR ==="
+        if ! kustomize build "$CLUSTER_DIR" >/dev/null; then
+          echo "ERROR: cluster root kustomization failed to build"
+          # Name the one cause the consumer cannot deduce: a repo that has never
+          # been bootstrapped has no gotk files for its kustomization to resolve,
+          # and the fix is an input, not a code change.
+          if [ ! -e "$gotk_components" ] && [ ! -L "$gotk_components" ] \
+            && [ ! -e "$gotk_sync" ] && [ ! -L "$gotk_sync" ]; then
+            echo "HINT: neither flux-system/gotk-components.yaml nor gotk-sync.yaml exists, so this repo has not been bootstrapped yet."
+            echo "HINT: pass require_cluster_root: false to this template until \`flux bootstrap\` has run."
+          fi
+          FAILED=1
+        fi
+      else
+        echo "=== Skipping cluster root $CLUSTER_DIR: neither flux-system/gotk-components.yaml nor gotk-sync.yaml exists (flux bootstrap writes both); set require_cluster_root: true to build anyway ==="
       fi
 
       # Consumer-injected extra validation (weisssrv: HPA/VPA invariant + helm

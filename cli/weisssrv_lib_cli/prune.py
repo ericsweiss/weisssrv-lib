@@ -4,10 +4,17 @@ Each feature deletes the relevant manifest(s), removes their kustomization
 entry, and cleans up any cross-references (the deployment secret env block, the
 observability-scrape NetworkPolicy). Idempotent: pruning an already-pruned
 feature is a no-op.
+
+Two prefixed selectors take an argument instead of naming a fixed feature:
+`manifest:<file>` (any kubernetes/flux manifest) and `ci:<shape>` (keep one of
+the template's three CI shapes, delete the others' files). Both sanitise their
+argument up front — by containment and by allowlist respectively — so a crafted
+value can never reach a path the caller did not intend.
 """
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -23,6 +30,22 @@ FEATURES = (
     "external-ingress",
     "image-build",
 )
+
+# The ONLY paths `ci:<shape>` may delete, keyed by the shape that is KEPT.
+#
+# SECURITY: unlike `manifest:<file>`, these paths live outside kubernetes/flux/,
+# so `_safe_manifest_name`'s containment guard cannot apply. The defence here is
+# different in kind: the shape name is never joined into a path. It is only ever
+# used as an exact dict key, and the paths deleted are the fixed constants in
+# `tree` — so no attacker-supplied text ever reaches the filesystem, and a
+# crafted shape (`../..`, `/etc`, `gitlab/../../x`) simply misses the mapping and
+# is refused by `_safe_ci_shape` before anything is touched.
+_CI_SHAPE_DROPS = {
+    "gitlab": (tree.GITHUB_WORKFLOWS,),
+    "github": (tree.GITLAB_CI, *tree.GITLAB_CI_EXTRA),
+    "none": (tree.GITLAB_CI, *tree.GITLAB_CI_EXTRA, tree.GITHUB_WORKFLOWS),
+}
+CI_SHAPES = tuple(_CI_SHAPE_DROPS)
 
 
 class PruneError(ValueError):
@@ -102,20 +125,72 @@ def _safe_manifest_name(root: Path, raw: str) -> str:
     return fname
 
 
+def _safe_ci_shape(raw: str) -> str:
+    """Validate a `ci:<shape>` argument against the fixed allowlist.
+
+    The returned value is a KEY of `_CI_SHAPE_DROPS`, never a path: the caller
+    looks the key up to get the hardcoded `tree` constants it deletes. Because
+    the shape is never concatenated onto `root`, there is no path to traverse —
+    an unknown value has nothing to select and is refused here, up front.
+    """
+    if raw not in _CI_SHAPE_DROPS:
+        raise PruneError(
+            f"unknown CI shape '{raw}' (known: {', '.join(CI_SHAPES)}) — "
+            "e.g. ci:gitlab keeps .gitlab-ci.yml, ci:github keeps "
+            ".github/workflows/, ci:none keeps neither"
+        )
+    return raw
+
+
 def _validate_features(root: Path, features: list[str]) -> None:
     """Reject the whole request BEFORE mutating anything, so a bad feature name
     (or an external-ingress prune that would empty a file) never leaves a
     half-mutated repo."""
+    # A project keeps exactly ONE CI shape, but the features are applied in
+    # sequence, so `ci:gitlab ci:github` used to drop each other's files in turn
+    # and leave the project with no CI at all — a self-contradictory request
+    # silently doing the most destructive thing. Repeating the same shape is
+    # still fine (it is idempotent).
+    shapes = {
+        _safe_ci_shape(f.split(":", 1)[1]) for f in features if f.startswith("ci:")
+    }
+    if len(shapes) > 1:
+        raise PruneError(
+            "conflicting CI shapes requested ("
+            + ", ".join(sorted(shapes))
+            + "); a project keeps exactly one"
+        )
     for feat in features:
         if feat.startswith("manifest:"):
             # Validates the file name (incl. path-traversal rejection); raises
             # PruneError up front so a bad `manifest:` never deletes anything.
             _safe_manifest_name(root, feat.split(":", 1)[1])
             continue
+        if feat.startswith("ci:"):
+            # Allowlist membership (see _safe_ci_shape) AND a symlink preflight,
+            # so a refusal happens before anything is deleted rather than
+            # halfway through the shape.
+            shape = _safe_ci_shape(feat.split(":", 1)[1])
+            for rel in _CI_SHAPE_DROPS[shape]:
+                _safe_ci_target(root, rel)
+            # The shape being KEPT must exist before the others are deleted.
+            # Selecting gitlab in a tree whose .gitlab-ci.yml is already gone
+            # would delete .github/workflows/ and report success, leaving the
+            # project with no pipeline at all — the destructive outcome, from a
+            # request whose intent was to keep one.
+            missing = _ci_shape_missing(root, shape)
+            if missing:
+                raise PruneError(
+                    f"ci:{shape} keeps a shape this tree does not have — "
+                    + ", ".join(missing)
+                    + ". Deleting the other shape would leave no pipeline; "
+                    "restore the files, or select the shape you actually have"
+                )
+            continue
         if feat not in FEATURES:
             raise PruneError(
-                f"unknown prune feature '{feat}' "
-                f"(known: {', '.join(FEATURES)}, or manifest:<file>)"
+                f"unknown prune feature '{feat}' (known: {', '.join(FEATURES)}, "
+                f"manifest:<file>, or ci:<{'|'.join(CI_SHAPES)}>)"
             )
     if "external-ingress" in features:
         offenders = _external_ingress_would_empty(root)
@@ -128,6 +203,58 @@ def _validate_features(root: Path, features: list[str]) -> None:
                 "or use `prune manifest:<file>` to delete the file and its "
                 "kustomization entry."
             )
+
+
+def _ci_shape_missing(root: Path, shape: str) -> list[str]:
+    """What the named shape needs but this tree lacks. Empty means keepable.
+
+    `none` keeps nothing, so it can never be unsatisfiable.
+    """
+    # _safe_ci_target, not `root / rel`: the DROP paths were already checked for
+    # symlinked ancestors, but the KEPT shape was not — so `ci:github` under a
+    # symlinked `.github` resolved to workflows outside the repo, satisfied this
+    # check, and deleted the working GitLab pipeline. A leaf symlink is rejected
+    # too: git tracks the link, not a runnable file at that path.
+    if shape == "gitlab":
+        missing = []
+        for rel in (tree.GITLAB_CI, *tree.GITLAB_CI_EXTRA):
+            path = _safe_ci_target(root, rel)
+            if path.is_symlink() or not path.is_file():
+                missing.append(rel)
+        return missing
+    if shape == "github":
+        workflows = _safe_ci_target(root, tree.GITHUB_WORKFLOWS)
+        runnable = (
+            workflows.is_dir()
+            and not workflows.is_symlink()
+            and any(
+                p.is_file() and not p.is_symlink() and p.suffix in (".yml", ".yaml")
+                for p in workflows.iterdir()
+            )
+        )
+        # Same predicate verify uses: GitHub runs regular .yml/.yaml only.
+        return [] if runnable else [f"{tree.GITHUB_WORKFLOWS}/ (no runnable workflow)"]
+    return []
+
+
+def _safe_ci_target(root: Path, rel: str) -> Path:
+    """Resolve a CI drop target, refusing to traverse a symlinked ancestor.
+
+    The names in _CI_SHAPE_DROPS are hardcoded, so the LEAF is safe and the
+    delete path already unlinks a symlinked leaf rather than following it. An
+    ANCESTOR is the hole: with `.github` a symlink, `root / ".github/workflows"`
+    resolves outside the project and rmtree() would delete whatever is there.
+    """
+    ancestor = root
+    for part in Path(rel).parts[:-1]:
+        ancestor /= part
+        if ancestor.is_symlink():
+            raise PruneError(
+                f"ci: refusing to traverse symlinked directory '{ancestor}' — "
+                "delete the CI files by hand, or replace the symlink with a "
+                "real directory"
+            )
+    return root / rel
 
 
 def _delete_manifest(root: Path, name: str, changed: list[Path]) -> None:
@@ -284,12 +411,52 @@ def _prune_external_ingress(root: Path, changed: list[Path]) -> None:
                 changed.append(path)
 
 
+def _prune_ci(root: Path, shape: str, changed: list[Path]) -> None:
+    """Keep one CI shape, delete the others' files (docs/CI-SHAPES.md).
+
+    Mirrors the template's scripts/select-ci.sh: drop the losing shapes' paths,
+    then remove `.github` / `.gitlab` if — and only if — the drop left them
+    empty. Nothing under kubernetes/flux/ is touched; the manifests are
+    CI-agnostic because Flux deploys the tenant in all three shapes.
+
+    `shape` MUST already have passed `_safe_ci_shape` — it is used solely as a
+    lookup key, so every path deleted here is a hardcoded `tree` constant.
+    """
+    for rel in _CI_SHAPE_DROPS[shape]:
+        # Re-checked here, not just in _validate_features: this is the call that
+        # deletes, and it must not depend on a caller having preflighted.
+        target = _safe_ci_target(root, rel)
+        # A symlink is unlinked, never followed: rmtree() refuses symlinks
+        # anyway, and following one would delete whatever it points at.
+        if target.is_symlink() or target.is_file():
+            target.unlink()
+        elif target.is_dir():
+            shutil.rmtree(target)
+        else:
+            continue  # already applied
+        changed.append(target)
+    for parent in tree.CI_PARENT_DIRS:
+        path = root / parent
+        if path.is_dir() and not path.is_symlink() and not any(path.iterdir()):
+            path.rmdir()
+            changed.append(path)
+
+
 def _prune_image_build(root: Path, changed: list[Path]) -> None:
     for fname in ("Dockerfile", ".dockerignore"):
         path = root / fname
         if path.exists():
             path.unlink()
             changed.append(path)
+
+
+def validate(root: Path, features: list[str]) -> None:
+    """Raise PruneError if `prune(root, features)` would refuse.
+
+    Public so a caller that mutates the tree BEFORE pruning (cli `rename --ci`)
+    can fail before its first write instead of leaving the tree half-applied.
+    """
+    _validate_features(root, features)
 
 
 def prune(root: Path, features: list[str]) -> list[Path]:
@@ -305,6 +472,11 @@ def prune(root: Path, features: list[str]) -> list[Path]:
             # Re-validate (defence in depth) and normalise to a safe .yaml name.
             name = _safe_manifest_name(root, feat.split(":", 1)[1])
             _delete_manifest(root, name, changed)
+            continue
+        if feat.startswith("ci:"):
+            # Re-validate (defence in depth): only an allowlisted shape name can
+            # reach _prune_ci, which deletes fixed paths and nothing else.
+            _prune_ci(root, _safe_ci_shape(feat.split(":", 1)[1]), changed)
             continue
         if feat == "secrets":
             _prune_secrets(root, changed)
@@ -323,7 +495,7 @@ def prune(root: Path, features: list[str]) -> list[Path]:
             _prune_image_build(root, changed)
         else:
             raise PruneError(
-                f"unknown prune feature '{feat}' "
-                f"(known: {', '.join(FEATURES)}, or manifest:<file>)"
+                f"unknown prune feature '{feat}' (known: {', '.join(FEATURES)}, "
+                f"manifest:<file>, or ci:<{'|'.join(CI_SHAPES)}>)"
             )
     return changed

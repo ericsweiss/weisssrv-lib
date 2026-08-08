@@ -21,6 +21,10 @@ spec:
       description: >-
         Path to the release script IN THE CONSUMER repo (vendored from this
         library's scripts/semantic-release.py — stdlib only, no extra deps).
+        That script also has a `--platform github` backend; this job never
+        passes it, so the GitLab default applies. A consumer on github.com
+        vendors ci/release/github-release-workflow.example.yml instead of
+        including this template.
     tag_prefix:
       default: "v"
     initial_version:
