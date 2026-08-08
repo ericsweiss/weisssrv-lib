@@ -33,6 +33,7 @@ ci/release/github-release-workflow.example.yml):
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import re
@@ -283,11 +284,22 @@ def plan_existing_tag(
 # AttributeError from inside itself and loses the record it exists to write.
 # URLError and timeouts are already OSError subclasses — named anyway, because
 # the point of this tuple is to be read as the list of what can go wrong.
+#
+# The last two are NOT OSError subclasses and are easy to miss:
+#   UnicodeDecodeError   json.loads() on a non-UTF-8 body raises this, NOT
+#                        JSONDecodeError — verified, they are disjoint here.
+#   http.client.HTTPException  a TRUNCATED response surfaces as IncompleteRead,
+#                        whose base is HTTPException (BadStatusLine and friends
+#                        share it). Nothing in the OSError family covers it.
+# Both are exactly the flaky-network shapes this tuple exists for, so leaving
+# them out would drop the failure artifact on the failures hardest to reproduce.
 API_ERRORS = (
     urllib.error.HTTPError,
     urllib.error.URLError,
     OSError,
     json.JSONDecodeError,
+    UnicodeDecodeError,
+    http.client.HTTPException,
 )
 
 

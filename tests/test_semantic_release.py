@@ -1184,3 +1184,33 @@ def test_main_records_a_failure_whose_error_body_cannot_be_read(tmp_path, monkey
     assert "body unreadable" in payload["error"]
     assert "connection reset by peer" in payload["error"]
     assert "release creation failed" in capsys.readouterr().err
+
+
+def test_main_records_a_failure_that_is_not_an_oserror(tmp_path, monkeypatch, capsys):
+    """UnicodeDecodeError and http.client.HTTPException are outside OSError.
+
+    A non-UTF-8 body reaches json.loads and raises UnicodeDecodeError (NOT
+    JSONDecodeError — they are disjoint), and a truncated response surfaces as
+    IncompleteRead, whose base is HTTPException. Neither is in the OSError
+    family, so both would escape main() and skip the artifact.
+    """
+    import http.client
+
+    for exc in (
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+        http.client.IncompleteRead(b"partial"),
+    ):
+        monkeypatch.setenv("RELEASE_TOKEN", "tok")
+        monkeypatch.setattr(
+            sr, "git", fake_git(["v0.1.1"], {"v0.1.1..HEAD": log(("a" * 8, "feat: x"))})
+        )
+        monkeypatch.setattr(sr, "get_release", released_tag)
+        monkeypatch.setattr(sr, "create_release", lambda *a, **kw: (_ for _ in ()).throw(exc))
+        out = tmp_path / f"release-{type(exc).__name__}.json"
+
+        assert sr.main(["--output", str(out), *API]) == 1
+
+        payload = json.loads(out.read_text())
+        assert payload["released"] is False
+        assert type(exc).__name__ in payload["error"]
+        assert "release creation failed" in capsys.readouterr().err

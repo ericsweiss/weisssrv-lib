@@ -164,25 +164,46 @@ def _assert_cli_contract(root: Path) -> None:
 
 
 def _pinned_lib_ref() -> str:
-    """The one library ref the template pins — proven to be one.
+    """The one library ref the template pins — proven to be exactly one.
 
-    Four coexisted here once (two wrapper scripts, two include blocks), so
-    "the ref the template pins" was not a well-defined thing: `rename.sh` and
-    `select-ci.sh` ran different versions of the same CLI while both comments
-    claimed to be in step. Gather every pin and require agreement before any
-    caller relies on the answer.
+    The template pins the library in several places (include blocks plus the
+    wrapper scripts). They must agree, or "the ref the template pins" is not a
+    well-defined thing and `rename.sh` and `select-ci.sh` can run different
+    versions of the same CLI.
+
+    Every ref is captured RAW and then required to be a version, rather than
+    matched with a version-shaped pattern. The difference matters: a pattern that
+    only recognises `vX.Y.Z` cannot see `ref: main` or a SHA at all, so switching
+    one include to a moving ref would be silently dropped from the set while the
+    remaining pins still agree — a gate that passes precisely when the thing it
+    guards has been broken.
     """
     pins: set[str] = set()
     ci = _TEMPLATE / ".gitlab-ci.yml"
     if ci.is_file():
-        pins |= set(
-            re.findall(r"^\s*ref:\s*(v\d+\.\d+\.\d+)\s*$", ci.read_text(encoding="utf-8"), re.M)
-        )
+        # Only refs belonging to weisssrv-lib includes: `ref:` under an include
+        # for some OTHER project is none of this test's business.
+        project = None
+        for line in ci.read_text(encoding="utf-8").splitlines():
+            m = re.match(r"\s*-?\s*project:\s*(\S+)", line)
+            if m:
+                project = m.group(1).strip("'\"")
+                continue
+            m = re.match(r"\s*ref:\s*(\S+)\s*$", line)
+            if m and project and project.endswith("weisssrv-lib"):
+                pins.add(m.group(1).strip("'\""))
     for script in sorted((_TEMPLATE / "scripts").glob("*.sh")):
         pins |= set(
-            re.findall(r"WEISSSRV_LIB_REF:-(v\d+\.\d+\.\d+)", script.read_text(encoding="utf-8"))
+            re.findall(r"WEISSSRV_LIB_REF:-([^}\"'\s]+)", script.read_text(encoding="utf-8"))
         )
     assert pins, "the template pins no library ref at all"
+    unversioned = sorted(p for p in pins if not re.fullmatch(r"v\d+\.\d+\.\d+", p))
+    assert not unversioned, (
+        "the template pins a moving library ref: "
+        + ", ".join(unversioned)
+        + " — a branch or SHA defeats the vendored-copy comparison below, which "
+        "can only resolve a released tag"
+    )
     assert len(pins) == 1, f"the template pins more than one library ref: {sorted(pins)}"
     return pins.pop()
 
