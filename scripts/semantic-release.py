@@ -277,6 +277,27 @@ def plan_existing_tag(
     return Plan(True, bump_level(commits), earlier, tag, version, render_notes(commits, compare_url), commits)
 
 
+# Every way a forge call can fail. Only HTTPError carries a status and a body;
+# a DNS failure, connection reset, timeout or non-JSON response arrives as one
+# of the others with neither, so a handler that reaches for `exc.code` raises
+# AttributeError from inside itself and loses the record it exists to write.
+# URLError and timeouts are already OSError subclasses — named anyway, because
+# the point of this tuple is to be read as the list of what can go wrong.
+API_ERRORS = (
+    urllib.error.HTTPError,
+    urllib.error.URLError,
+    OSError,
+    json.JSONDecodeError,
+)
+
+
+def describe_api_error(exc: BaseException) -> str:
+    """One line naming a failed forge call, whatever shape the failure took."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return "HTTP %s: %s" % (exc.code, exc.read().decode(errors="replace"))
+    return "%s: %s" % (type(exc).__name__, exc)
+
+
 PLATFORMS = ("gitlab", "github")
 
 # GitHub wants the media type and the API version on every call; GitLab needs
@@ -569,7 +590,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     project_id = args.project_id or os.environ.get(env["project"], "")
     token_env = args.token_env or env["token"]
     compare_template = compare_url_template(args.platform, project_id)
-    tags = git(["tag", "--list"], args.repo_dir).split()
+    # `--merged HEAD` is load-bearing: the newest tag chosen here fixes BOTH the
+    # next version and the commit range that becomes the notes. A bare
+    # `--list` returns every tag in the repo, so a higher version cut on an
+    # unrelated branch (a maintenance line, an abandoned spike, an upstream tag
+    # in a fork) silently rebases this release onto a commit that is not an
+    # ancestor — wrong version, and a log range spanning history that never
+    # shipped here. Restricting to tags reachable from HEAD keeps the choice on
+    # this branch's own line. CI sets GIT_DEPTH: 0, so reachability is real
+    # rather than an artefact of a shallow clone.
+    tags = git(["tag", "--list", "--merged", "HEAD"], args.repo_dir).split()
     previous = latest_version_tag(tags, args.tag_prefix)
     # A shallow clone can lack the previous tag's commit; the job sets GIT_DEPTH: 0.
     log_range = "%s..HEAD" % previous if previous else "HEAD"
@@ -608,12 +638,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             existing = get_release(
                 api_url, project_id, token, previous, args.token_header, platform=args.platform
             )
-        except (
-            urllib.error.HTTPError,
-            urllib.error.URLError,
-            OSError,
-            json.JSONDecodeError,
-        ) as exc:
+        except API_ERRORS as exc:
             # The probe is a REPAIR check, not a precondition for the release it
             # precedes: a 429/502/timeout/garbled body here must not cost a
             # healthy release that the POST below would have created.
@@ -679,19 +704,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 args.token_header,
                 platform=args.platform,
             )
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode(errors="replace")
+        except API_ERRORS as exc:
+            detail = describe_api_error(exc)
             write_plan(
                 args.output,
                 plan,
                 released=False,
-                error="backfill of %s failed: HTTP %s: %s" % (recovery.tag, exc.code, detail),
+                error="backfill of %s failed: %s" % (recovery.tag, detail),
                 recovery_check=recovery_check,
             )
             print(
-                "ERROR: backfilling the missing Release for %s failed (HTTP %s): %s — the new "
+                "ERROR: backfilling the missing Release for %s failed (%s) — the new "
                 "tag %s was NOT cut. Fix or delete %s, then re-run."
-                % (recovery.tag, exc.code, detail, plan.tag, recovery.tag),
+                % (recovery.tag, detail, plan.tag, recovery.tag),
                 file=sys.stderr,
             )
             return 1
@@ -702,17 +727,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         release = create_release(
             api_url, project_id, token, plan, ref, args.token_header, platform=args.platform
         )
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")
+    except API_ERRORS as exc:
+        detail = describe_api_error(exc)
         write_plan(
             args.output,
             plan,
             released=False,
-            error="HTTP %s: %s" % (exc.code, detail),
+            error=detail,
             recovered=recovered_tag,
             recovery_check=recovery_check,
         )
-        print("ERROR: release creation failed (HTTP %s): %s" % (exc.code, detail), file=sys.stderr)
+        print("ERROR: release creation failed (%s)" % detail, file=sys.stderr)
         return 1
     write_plan(
         args.output,

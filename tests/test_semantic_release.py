@@ -646,7 +646,7 @@ def test_main_failed_release_never_claims_the_tag_exists(tmp_path, monkeypatch, 
     # `artifacts: when: always` publishes this file even on failure.
     assert payload["released"] is False
     assert "403" in payload["error"]
-    assert "release creation failed (HTTP 403)" in capsys.readouterr().err
+    assert "release creation failed (HTTP 403" in capsys.readouterr().err
 
 
 def test_main_dry_run_artifact_is_marked_as_such(tmp_path, monkeypatch):
@@ -821,7 +821,7 @@ def test_main_records_a_backfill_that_succeeded_before_the_new_tag_failed(
     assert "backfill" not in payload["error"]
     out_text, err = capsys.readouterr()
     assert "Backfilled the missing Release for v0.2.0." in out_text
-    assert "release creation failed (HTTP 403)" in err
+    assert "release creation failed (HTTP 403" in err
 
 
 def test_main_announces_the_backfill_only_after_it_succeeded(tmp_path, monkeypatch, capsys):
@@ -1054,3 +1054,98 @@ def test_run_cli_reports_an_unreachable_api(monkeypatch, capsys):
     assert sr.run_cli(API) == 1
     err = capsys.readouterr().err
     assert "URLError" in err and "Traceback" not in err
+
+
+# --- Failures that carry no HTTP status --------------------------------------
+#
+# Only HTTPError has `.code` and `.read()`. A DNS failure, connection reset,
+# timeout or non-JSON body arrives as URLError/OSError/JSONDecodeError, and
+# before API_ERRORS those escaped main() entirely — so `release.json`, which
+# both CI shapes publish `when: always` and which is the only record a failed
+# release leaves behind, went unwritten for exactly the failures that are
+# hardest to reproduce afterwards.
+
+
+def test_main_records_a_release_that_failed_without_an_http_status(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("RELEASE_TOKEN", "tok")
+    monkeypatch.setattr(sr, "git", fake_git(["v0.1.1"], {"v0.1.1..HEAD": log(("a" * 8, "feat: x"))}))
+    monkeypatch.setattr(sr, "get_release", released_tag)
+
+    def boom(*a, **kw):
+        raise urllib.error.URLError("Name or service not known")
+
+    monkeypatch.setattr(sr, "create_release", boom)
+    out = tmp_path / "release.json"
+
+    assert sr.main(["--output", str(out), *API]) == 1
+
+    payload = json.loads(out.read_text())
+    assert payload["released"] is False
+    assert "URLError" in payload["error"]
+    assert "Name or service not known" in payload["error"]
+    assert "release creation failed" in capsys.readouterr().err
+
+
+def test_main_records_a_backfill_that_failed_without_an_http_status(tmp_path, monkeypatch, capsys):
+    """Same gap on the repair path, where losing the record costs more: the run
+    stops without cutting the new tag, so the artifact is the only thing saying
+    which tag needs fixing before a re-run can succeed."""
+    monkeypatch.setenv("RELEASE_TOKEN", "tok")
+    orphan_git(monkeypatch)
+
+    def boom(*a, **kw):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(sr, "create_release", boom)
+    out = tmp_path / "release.json"
+
+    assert sr.main(["--output", str(out), *API]) == 1
+
+    payload = json.loads(out.read_text())
+    assert payload["released"] is False
+    assert payload["tag"] == "v0.2.1"
+    assert "backfill of v0.2.0 failed" in payload["error"]
+    assert "timed out" in payload["error"]
+    assert "the new tag v0.2.1 was NOT cut" in capsys.readouterr().err
+
+
+def _git_cmd(args, cwd):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def test_a_higher_tag_on_an_unrelated_branch_does_not_drive_the_release(tmp_path):
+    """The one test here that runs real git, because the stub cannot catch this.
+
+    `fake_git` answers every `tag` call with the same list whatever flags it is
+    handed, so a stubbed version of this assertion would pass with or without
+    `--merged HEAD` — a gate that cannot fail. The tag selected here fixes BOTH
+    the next version and the commit range that becomes the release notes, so a
+    stray tag on an abandoned line is a wrong release, not a cosmetic detail.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_cmd(["init", "-q", "-b", "main"], repo)
+    _git_cmd(["config", "user.email", "test@example.com"], repo)
+    _git_cmd(["config", "user.name", "Test"], repo)
+    (repo / "f").write_text("1\n")
+    _git_cmd(["add", "-A"], repo)
+    _git_cmd(["commit", "-qm", "feat: first"], repo)
+    _git_cmd(["tag", "v0.1.0"], repo)
+
+    # A spike on its own root, carrying a far higher tag, never merged back.
+    _git_cmd(["checkout", "-q", "--orphan", "spike"], repo)
+    (repo / "g").write_text("2\n")
+    _git_cmd(["add", "-A"], repo)
+    _git_cmd(["commit", "-qm", "feat: spike"], repo)
+    _git_cmd(["tag", "v9.0.0"], repo)
+    _git_cmd(["checkout", "-q", "main"], repo)
+
+    (repo / "f").write_text("2\n")
+    _git_cmd(["commit", "-qam", "feat: second"], repo)
+
+    out = tmp_path / "release.json"
+    assert sr.main(["--repo-dir", str(repo), "--output", str(out), "--dry-run"]) == 0
+
+    payload = json.loads(out.read_text())
+    # v0.2.0, continuing this branch's own line — not v9.1.0 from the spike.
+    assert (payload["previous_tag"], payload["tag"]) == ("v0.1.0", "v0.2.0")
