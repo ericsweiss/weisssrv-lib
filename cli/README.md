@@ -177,7 +177,7 @@ template: it asserts byte-equality for every file the CLI parses, that the
 contract hardcoded in `tree`/`prune`/`wire` (opt-in lines, document names,
 `-internal` suffix, the `authentik-auth` middleware pair, the three CI-shape
 paths `prune ci:` deletes, …). It uses a sibling
-`weisssrv-app-template` / `weisssrv-app-template` checkout by default:
+`weisssrv-app-template` checkout by default:
 
 ```bash
 WEISSSRV_TEMPLATE_ROOT=~/src/weisssrv-app-template python3 -m pytest cli/tests -q

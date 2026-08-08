@@ -303,7 +303,22 @@ spec:
       # contain a gotk file skipped it entirely and handed kustomize a tree
       # outside the repo to validate. Whether the root is real is not a question
       # about bootstrap state, so it cannot live inside one of its branches.
-      if [ ! -d "$CLUSTER_DIR" ] || [ -L "$CLUSTER_DIR" ] \
+      # The -L tests below only inspect the FINAL component of each path, so an
+      # intermediate symlink (kubernetes/clusters -> /tmp/x) resolves straight
+      # through them and still hands kustomize a tree outside the checkout —
+      # every leaf can be a genuine directory on the other side of the link.
+      # Containment is therefore asserted on the RESOLVED path as well, which is
+      # the only check that covers a component we did not enumerate.
+      repo_root=$(pwd -P)
+      cluster_real=$(readlink -f "$CLUSTER_DIR" 2>/dev/null || echo "")
+      case "${cluster_real:-/nonexistent}/" in
+        "$repo_root"/*) cluster_contained=1 ;;
+        *) cluster_contained=0 ;;
+      esac
+      if [ "$cluster_contained" != "1" ]; then
+        echo "ERROR: $CLUSTER_DIR resolves to ${cluster_real:-nothing}, which is outside the repository at $repo_root (symlinked path component?)"
+        FAILED=1
+      elif [ ! -d "$CLUSTER_DIR" ] || [ -L "$CLUSTER_DIR" ] \
         || [ ! -d "$CLUSTER_DIR/flux-system" ] \
         || [ -L "$CLUSTER_DIR/flux-system" ] \
         || [ ! -f "$CLUSTER_DIR/kustomization.yaml" ] \
