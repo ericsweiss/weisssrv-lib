@@ -283,15 +283,39 @@ class TestFixtureMatchesTemplate:
             f"differ. Re-vendor with: git -C {_LIB_ROOT} show {pinned}:{rel} > {vendored}"
         )
 
+    def test_example_and_fixture_release_workflows_match(self):
+        """The two copies inside THIS repo, compared without needing a template.
+
+        The GitHub release workflow exists in three byte-identical places: this
+        library's reference copy, the scaffold fixture, and the app template's
+        vendored .github/workflows/release.yml. Nothing compared any of them —
+        the identity was asserted only in the header comment of the file itself,
+        the same defect that let semantic-release.py drift.
+
+        Deliberately NOT @_needs_template. Every other comparison in this class
+        runs only when a template checkout is reachable, so with no template
+        they all skip and the two copies sitting in this very repository go
+        unchecked — the drift that is easiest to introduce (editing one of the
+        two files here) would be caught by nothing at all. This one always runs.
+        """
+        rel = ".github/workflows/release.yml"
+        example = _LIB_ROOT / "ci" / "release" / "github-release-workflow.example.yml"
+        fixture = _FIXTURE / rel
+
+        assert example.is_file(), "the library's reference copy is gone"
+        assert fixture.is_file(), f"{rel} is missing from the scaffold fixture"
+        assert example.read_bytes() == fixture.read_bytes(), (
+            f"{rel} in the fixture has drifted from {example.name}; "
+            f"resync with: cp {example} {fixture}"
+        )
+
     @_needs_template
     def test_vendored_github_release_workflow_matches_the_library_example(self):
-        """The GitHub release workflow exists in THREE copies; compare them.
+        """The third copy: what a consumer actually runs.
 
-        ci/release/github-release-workflow.example.yml is the reference, the
-        template vendors it as .github/workflows/release.yml, and the fixture
-        holds a third copy. Nothing compared any of them — the identity was
-        asserted only in the header comment of the file itself, which is the
-        same defect that let semantic-release.py drift.
+        With the fixture pinned to the example by the test above, this closes
+        the triangle — example == fixture and example == vendored, so all three
+        agree.
 
         Compared against the library's WORKING TREE rather than a released tag,
         unlike the vendored script: this file is `uses:`-less reference YAML that
