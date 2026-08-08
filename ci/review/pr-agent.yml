@@ -26,23 +26,32 @@ spec:
       default: "gpt-5.6"
       description: Model alias; must be in the image's MAX_TOKENS table.
     reasoning_effort:
-      default: "xhigh"
+      default: "high"
       description: >-
-        low | medium | high | xhigh. `xhigh` is pr-agent's ceiling — an
-        unrecognised value (e.g. gpt-5.6's `max`) silently downgrades to medium.
+        low | medium | high | xhigh. `xhigh` is pr-agent's ceiling, and it was the
+        default until it proved unusable: MEASURED on weisssrv-lib!4 it took 40.7m,
+        44.6m and 74.5m to succeed and twice failed outright by running out the job
+        (45m, then 90m) having emitted nothing at all — on a 56k-token diff, so not
+        a size problem. A review nobody waits for is not a review. `high` produces
+        substantive findings on weisssrv in 3-16m against comparable diffs, which
+        is the evidence this default rests on. Note an unrecognised value (e.g.
+        gpt-5.6's `max`) silently downgrades to medium.
     max_model_tokens:
       default: "900000"
       description: >-
         Operational input cap. get_max_tokens() returns the TOTAL context and
         reserves nothing for output, so stay under the model's input limit.
     ai_timeout:
-      default: "1800"
+      default: "1200"
       description: >-
-        Per-LLM-call timeout (seconds). The upstream 120s default times out at
-        xhigh immediately; 600 was not enough either — a single `improve` call on
-        a 52k-token diff measured 1478s, so it timed out, RETRIED, and burned the
-        job budget on a second attempt. Sized above that measurement: a slow call
-        should finish, not restart. Lower it only together with reasoning_effort.
+        Per-LLM-call timeout (seconds). The upstream 120s default times out
+        immediately; 600 was not enough either — a single `improve` call on a
+        52k-token diff measured 1478s at xhigh, so it timed out, RETRIED, and
+        burned the job budget on a second attempt. 1800 was sized for that xhigh
+        measurement; with the default now `high` the calls are far shorter, so
+        1200 keeps headroom while halving the worst-case hang. This input and
+        reasoning_effort move TOGETHER — raising effort without raising this
+        reproduces the timeout-retry loop.
     dual_publishing_threshold:
       default: "6"
       description: >-
@@ -59,12 +68,14 @@ spec:
       default: "$CI_SERVER_URL"
       description: GitLab base URL pr-agent posts back to.
     timeout:
-      default: "90m"
+      default: "45m"
       description: >-
         Job timeout. Must exceed ai_timeout times the number of `commands`, or a
         slow call is killed by the job rather than by its own timeout — which
         loses the output of commands that already succeeded. At the defaults:
-        two commands x 1800s = 60m, plus image pull and clone.
+        two commands x 1200s = 40m, plus image pull and clone. Keep that
+        inequality if either number changes. This is a CEILING on a wedged job,
+        not a target: it does not make a healthy review faster.
     secrets_source:
       default: "env"
       options: ["env", "1password"]
