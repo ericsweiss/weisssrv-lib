@@ -1149,3 +1149,38 @@ def test_a_higher_tag_on_an_unrelated_branch_does_not_drive_the_release(tmp_path
     payload = json.loads(out.read_text())
     # v0.2.0, continuing this branch's own line — not v9.1.0 from the spike.
     assert (payload["previous_tag"], payload["tag"]) == ("v0.1.0", "v0.2.0")
+
+
+def test_main_records_a_failure_whose_error_body_cannot_be_read(tmp_path, monkeypatch, capsys):
+    """The diagnostic itself must not throw.
+
+    An HTTPError body is stream-backed, so `read()` can fail independently of
+    the request that produced it. Raising from inside describe_api_error lands
+    in the handler that called it, skipping write_plan — losing the artifact in
+    exactly the case the broadened catch was added to cover.
+    """
+    monkeypatch.setenv("RELEASE_TOKEN", "tok")
+    monkeypatch.setattr(sr, "git", fake_git(["v0.1.1"], {"v0.1.1..HEAD": log(("a" * 8, "feat: x"))}))
+    monkeypatch.setattr(sr, "get_release", released_tag)
+
+    def boom(*a, **kw):
+        err = _http_error(502, b"ignored")
+
+        def unreadable(*_a, **_kw):
+            raise ConnectionResetError("connection reset by peer")
+
+        err.read = unreadable
+        raise err
+
+    monkeypatch.setattr(sr, "create_release", boom)
+    out = tmp_path / "release.json"
+
+    assert sr.main(["--output", str(out), *API]) == 1
+
+    payload = json.loads(out.read_text())
+    assert payload["released"] is False
+    # The status survives even though the body did not.
+    assert "502" in payload["error"]
+    assert "body unreadable" in payload["error"]
+    assert "connection reset by peer" in payload["error"]
+    assert "release creation failed" in capsys.readouterr().err

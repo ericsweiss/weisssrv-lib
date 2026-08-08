@@ -292,9 +292,20 @@ API_ERRORS = (
 
 
 def describe_api_error(exc: BaseException) -> str:
-    """One line naming a failed forge call, whatever shape the failure took."""
+    """One line naming a failed forge call, whatever shape the failure took.
+
+    Must never raise. An HTTPError body is stream-backed, so `read()` can fail
+    on its own — a reset or a truncated response mid-read — and a throw from
+    HERE lands inside the handler that called it, skipping the write_plan below
+    and losing the artifact. That is the exact failure this helper exists to
+    prevent, so the status is kept and the unreadable body is reported as such.
+    """
     if isinstance(exc, urllib.error.HTTPError):
-        return "HTTP %s: %s" % (exc.code, exc.read().decode(errors="replace"))
+        try:
+            detail = exc.read().decode(errors="replace")
+        except Exception as body_exc:  # noqa: BLE001 - a diagnostic must not throw
+            detail = "<body unreadable: %s: %s>" % (type(body_exc).__name__, body_exc)
+        return "HTTP %s: %s" % (exc.code, detail)
     return "%s: %s" % (type(exc).__name__, exc)
 
 
