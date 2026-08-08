@@ -16,6 +16,8 @@ is used. With neither, the template half skips (the fixture half still runs).
 from __future__ import annotations
 
 import os
+import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -161,6 +163,30 @@ def _assert_cli_contract(root: Path) -> None:
     assert set(prune.FEATURES) and set(wire.FEATURES)
 
 
+def _pinned_lib_ref() -> str:
+    """The one library ref the template pins — proven to be one.
+
+    Four coexisted here once (two wrapper scripts, two include blocks), so
+    "the ref the template pins" was not a well-defined thing: `rename.sh` and
+    `select-ci.sh` ran different versions of the same CLI while both comments
+    claimed to be in step. Gather every pin and require agreement before any
+    caller relies on the answer.
+    """
+    pins: set[str] = set()
+    ci = _TEMPLATE / ".gitlab-ci.yml"
+    if ci.is_file():
+        pins |= set(
+            re.findall(r"^\s*ref:\s*(v\d+\.\d+\.\d+)\s*$", ci.read_text(encoding="utf-8"), re.M)
+        )
+    for script in sorted((_TEMPLATE / "scripts").glob("*.sh")):
+        pins |= set(
+            re.findall(r"WEISSSRV_LIB_REF:-(v\d+\.\d+\.\d+)", script.read_text(encoding="utf-8"))
+        )
+    assert pins, "the template pins no library ref at all"
+    assert len(pins) == 1, f"the template pins more than one library ref: {sorted(pins)}"
+    return pins.pop()
+
+
 class TestFixtureMatchesTemplate:
     def test_env_override_points_at_a_template(self):
         env = os.environ.get("WEISSSRV_TEMPLATE_ROOT")
@@ -177,6 +203,63 @@ class TestFixtureMatchesTemplate:
         assert real.exists(), f"{rel} is gone from the template"
         assert fixture == real.read_bytes(), (
             f"{rel} drifted; resync with: cp {real} {_FIXTURE / rel}"
+        )
+
+    @_needs_template
+    def test_vendored_semantic_release_matches_the_library_ref_it_pins(self):
+        """The template VENDORS this script. Prose said so; nothing checked it.
+
+        The two copies had already drifted (98b6410f vs 83ad4b82) with every
+        gate green, because a vendored file is only compared by whoever
+        remembers to compare it. The cost is one-directional and quiet: fixes
+        land here, the template keeps shipping the old script, and every project
+        scaffolded from it inherits bugs that were fixed upstream months ago.
+
+        Compared against the library AT THE REF THE TEMPLATE PINS, not at HEAD.
+        Pinning is the whole point of vendoring — the template is entitled to
+        lag, so long as it lags coherently. Comparing to HEAD would red this
+        suite for the duration of every unreleased change, and a gate that is
+        red by default gets muted. This one goes red for exactly one reason:
+        someone bumped the ref without re-vendoring the file it carries.
+        """
+        rel = "scripts/semantic-release.py"
+        vendored = _TEMPLATE / rel
+        assert vendored.is_file(), f"{rel} is no longer vendored in the template"
+
+        pinned = _pinned_lib_ref()
+
+        def _show():
+            return subprocess.run(
+                ["git", "show", f"{pinned}:{rel}"], cwd=_LIB_ROOT, capture_output=True
+            )
+
+        blob = _show()
+        if blob.returncode != 0:
+            # CI clones shallow and does not always carry tags, so a tag one
+            # commit behind HEAD can still be unresolvable. Fetch just that tag
+            # and retry rather than reporting drift that is really a clone
+            # depth. Offline (a local run with no remote) this simply fails
+            # again and falls through to the error below.
+            subprocess.run(
+                ["git", "fetch", "--quiet", "--depth", "1", "origin", "tag", pinned],
+                cwd=_LIB_ROOT,
+                capture_output=True,
+            )
+            blob = _show()
+        if blob.returncode != 0:
+            # Deliberately a failure, not a skip: "the tag was not in the
+            # checkout" is indistinguishable from "the files match" once it is
+            # a skip, and this gate exists because an invisible gap is what
+            # let the copies drift.
+            raise AssertionError(
+                f"cannot read {rel} at {pinned} from this checkout "
+                f"({blob.stderr.decode(errors='replace').strip()}). "
+                "Fetch tags (GIT_DEPTH: 0) so the comparison can run."
+            )
+
+        assert vendored.read_bytes() == blob.stdout, (
+            f"the template vendors {rel} but pins library {pinned}, and the two "
+            f"differ. Re-vendor with: git -C {_LIB_ROOT} show {pinned}:{rel} > {vendored}"
         )
 
     @_needs_template
