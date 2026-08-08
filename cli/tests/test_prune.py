@@ -206,9 +206,13 @@ class TestCiShape:
         p = _ci_paths(scaffold)
         assert not p["gitlab-ci"].exists()
         assert not p["ruleset"].exists()
+        # Exact list on purpose: it catches an unexpected EXTRA as well as a
+        # missing one. release.yml is shape B's release path (the vendored
+        # semantic-release.py with --platform github), so ci:github keeps it.
         assert sorted(x.name for x in p["workflows"].iterdir()) == [
             "build-image.yml",
             "ci.yml",
+            "release.yml",
         ]
         # .gitlab held only the ruleset, so it is gone too.
         assert not (scaffold / ".gitlab").exists()

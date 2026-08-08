@@ -183,6 +183,36 @@ class TestFixtureMatchesTemplate:
     def test_flux_manifest_set_matches(self):
         assert _flux_names(_FIXTURE) == _flux_names(_TEMPLATE)
 
+    @_needs_template
+    def test_fixture_covers_every_template_ci_file(self):
+        """A template file absent from the fixture is compared by NOTHING.
+
+        test_byte_identical parametrises over _fixture_files(), which walks the
+        FIXTURE — so drift is only caught for files the fixture already has.
+        Adding a workflow to the template and forgetting the fixture leaves it
+        permanently unchecked, and the suite stays green. That is how
+        release.yml arrived: vendored into the template, invisible here.
+
+        Scoped to the CI surface rather than the whole tree: those are the files
+        the byte-identity contract exists to protect.
+        """
+        ci_rel = {
+            ".gitlab-ci.yml",
+            ".gitlab/secret-detection-ruleset.toml",
+            ".dockerignore",
+            "Dockerfile",
+            "CODEOWNERS",
+        }
+        for p in (_TEMPLATE / ".github" / "workflows").glob("*.y*ml"):
+            ci_rel.add(str(p.relative_to(_TEMPLATE)))
+        missing = sorted(
+            r for r in ci_rel if (_TEMPLATE / r).is_file() and not (_FIXTURE / r).is_file()
+        )
+        assert not missing, (
+            "template CI files with no fixture copy, so nothing compares them: "
+            + ", ".join(missing)
+        )
+
     @pytest.mark.parametrize("rel", sorted(_SYNTHETIC))
     def test_synthetic_files_carry_both_tokens(self, rel):
         text = (_FIXTURE / rel).read_text(encoding="utf-8")
