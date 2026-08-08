@@ -284,6 +284,32 @@ class TestFixtureMatchesTemplate:
         )
 
     @_needs_template
+    def test_vendored_github_release_workflow_matches_the_library_example(self):
+        """The GitHub release workflow exists in THREE copies; compare them.
+
+        ci/release/github-release-workflow.example.yml is the reference, the
+        template vendors it as .github/workflows/release.yml, and the fixture
+        holds a third copy. Nothing compared any of them — the identity was
+        asserted only in the header comment of the file itself, which is the
+        same defect that let semantic-release.py drift.
+
+        Compared against the library's WORKING TREE rather than a released tag,
+        unlike the vendored script: this file is `uses:`-less reference YAML that
+        a consumer copies by hand, so there is no pinned ref for it to lag
+        behind. If they differ, one of the three was edited alone.
+        """
+        rel = ".github/workflows/release.yml"
+        example = _LIB_ROOT / "ci" / "release" / "github-release-workflow.example.yml"
+        vendored = _TEMPLATE / rel
+
+        assert example.is_file(), "the library's reference copy is gone"
+        assert vendored.is_file(), f"{rel} is no longer vendored in the template"
+        assert example.read_bytes() == vendored.read_bytes(), (
+            f"{rel} in the template has drifted from {example.name}; "
+            f"re-vendor with: cp {example} {vendored}"
+        )
+
+    @_needs_template
     def test_flux_manifest_set_matches(self):
         assert _flux_names(_FIXTURE) == _flux_names(_TEMPLATE)
 
