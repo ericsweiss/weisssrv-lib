@@ -66,6 +66,38 @@ class TestCiShape:
         assert not ok
         assert any("gitlab CI shape is selected but" in p for p in problems)
 
+    def test_symlinked_gitlab_ruleset_is_flagged(self, scaffold, tmp_path):
+        # verify and prune must agree about the SAME tree. verify used
+        # `.exists()`, which follows symlinks, so a symlinked ruleset verified
+        # clean while `prune ci:gitlab` called the shape unsatisfiable and
+        # refused to keep it — one of the two was lying. git tracks the link,
+        # not a runnable file at that path.
+        _configured(scaffold, "gitlab")
+        ruleset = scaffold / tree.GITLAB_CI_EXTRA[0]
+        target = tmp_path / "elsewhere.toml"
+        target.write_text("[secrets]\n")
+        ruleset.unlink()
+        ruleset.symlink_to(target)
+        assert ruleset.exists(), "precondition: the link resolves, so .exists() is True"
+        ok, problems = verify.verify(scaffold, run_kustomize=False)
+        assert not ok
+        assert any("not a regular file" in p for p in problems), problems
+
+    def test_dangling_leftover_gitlab_ruleset_is_flagged(self, scaffold, tmp_path):
+        # A BROKEN link is neither a regular file nor absent. Without the
+        # is_symlink() arm it would fall through both branches and be reported
+        # as a clean `none` tree.
+        _configured(scaffold, "none")
+        leftover = scaffold / tree.GITLAB_CI_EXTRA[0]
+        leftover.parent.mkdir(parents=True, exist_ok=True)
+        if leftover.exists() or leftover.is_symlink():
+            leftover.unlink()
+        leftover.symlink_to(tmp_path / "does-not-exist.toml")
+        assert not leftover.exists() and leftover.is_symlink()
+        ok, problems = verify.verify(scaffold, run_kustomize=False)
+        assert not ok
+        assert any("left over from the gitlab CI shape" in p for p in problems), problems
+
     @pytest.mark.parametrize(
         "leftover",
         [

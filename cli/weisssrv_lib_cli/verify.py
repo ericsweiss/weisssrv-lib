@@ -100,13 +100,23 @@ def _ci_problems(root: Path) -> list[str]:
     # GitLab's Secret-Detection analyzer read .gitleaks.toml, so it lives and
     # dies with .gitlab-ci.yml.
     for extra in tree.GITLAB_CI_EXTRA:
-        exists = (root / extra).exists()
-        if "gitlab" in present and not exists:
+        path = root / extra
+        # Regular-file predicate, matching prune._ci_shape_missing exactly. The
+        # old test was `.exists()`, which FOLLOWS symlinks, so a symlinked
+        # .gitleaks.toml passed verify while `prune ci:gitlab` called the same
+        # tree unsatisfiable and refused to keep it. Two gates disagreeing about
+        # one tree means one of them is lying about it. `present` uses
+        # is_symlink() as well so a DANGLING link still counts as left over
+        # rather than vanishing from both branches.
+        regular = path.is_file() and not path.is_symlink()
+        present_on_disk = path.exists() or path.is_symlink()
+        if "gitlab" in present and not regular:
             problems.append(
-                f"the gitlab CI shape is selected but {extra} is missing "
-                f"({tree.GITLAB_CI} needs it to load .gitleaks.toml)"
+                f"the gitlab CI shape is selected but {extra} is missing or is "
+                f"not a regular file ({tree.GITLAB_CI} needs it to load "
+                ".gitleaks.toml)"
             )
-        elif "gitlab" not in present and exists:
+        elif "gitlab" not in present and present_on_disk:
             problems.append(
                 f"{extra} is left over from the gitlab CI shape but "
                 f"{tree.GITLAB_CI} is gone — re-run "
