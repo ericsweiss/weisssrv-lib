@@ -1196,6 +1196,14 @@ def test_main_records_a_failure_that_is_not_an_oserror(tmp_path, monkeypatch, ca
     """
     import http.client
 
+    def raiser(exc):
+        """Bind exc per iteration — a closure over the loop variable is ruff B023."""
+
+        def _boom(*_a, **_kw):
+            raise exc
+
+        return _boom
+
     for exc in (
         UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
         http.client.IncompleteRead(b"partial"),
@@ -1205,7 +1213,7 @@ def test_main_records_a_failure_that_is_not_an_oserror(tmp_path, monkeypatch, ca
             sr, "git", fake_git(["v0.1.1"], {"v0.1.1..HEAD": log(("a" * 8, "feat: x"))})
         )
         monkeypatch.setattr(sr, "get_release", released_tag)
-        monkeypatch.setattr(sr, "create_release", lambda *a, **kw: (_ for _ in ()).throw(exc))
+        monkeypatch.setattr(sr, "create_release", raiser(exc))
         out = tmp_path / f"release-{type(exc).__name__}.json"
 
         assert sr.main(["--output", str(out), *API]) == 1
