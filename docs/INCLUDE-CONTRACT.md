@@ -392,8 +392,9 @@ Conventions shared by every template:
   `tags`, `setup_command` (pip install), `check_command` (**required** — the
   command that reports and writes the report), `report_path`
   (`version-report.json`), `secret_token_command` (optional credential export
-  for the MR-comment path), `changes` (optional MR-rule filter; empty runs on
-  every MR).
+  for the MR-comment path, variable-routed), `changes` (MR-rule filter,
+  defaulting to `["**/*"]` — NOT `[]`, which matches nothing and would delete
+  the job silently).
 - **Soft-fail on every trigger, deliberately.** Most checkers signal "updates
   found" with rc=1, which is information rather than a defect — a scheduled or
   MR pipeline must not go red because upstream shipped a release. The artifact
@@ -402,9 +403,11 @@ Conventions shared by every template:
   job defaults to `allow_failure: false`, which leaves every web pipeline sitting
   "blocked" on a job nobody intended to play.
 - **Degrades rather than fails without credentials.** `secret_token_command` is
-  optional: with no token the check still runs and still publishes its artifact,
-  and only the MR comment is lost. A consumer outside the credential's reach
-  (a fork) gets the report, not a red job.
+  optional, and a FAILING one is a warning rather than fatal: under `set -e` an
+  unguarded eval would end the job before the report it exists to produce. With
+  no token, or a broken one, the check still runs and still publishes its
+  artifact — only the MR comment is lost. A consumer outside the credential's
+  reach (a fork) gets the report, not a red job.
 
 ## ci/maintenance/version-bump-bot.yml
 

@@ -33,11 +33,13 @@ spec:
         comment is the part that degrades, not the report.
     changes:
       type: array
-      default: []
+      default: ["**/*"]
       description: >-
-        Optional `changes:` filter for the merge-request rule. Empty (default)
-        means the check runs on EVERY merge request, which is the right default
-        for a report nobody has to act on.
+        `changes:` filter for the merge-request rule; the default matches every
+        merge request. NOT an empty list: `changes` is an OR over the paths it
+        lists, so `[]` has nothing to match and the job is simply never created —
+        a report that silently stops existing is worse than one that runs too
+        often. Pass narrower paths to filter it.
 ---
 # Reports dependency/pin updates that are available, WITHOUT changing anything.
 #
@@ -63,15 +65,29 @@ spec:
   tags: $[[ inputs.tags ]]
   variables:
     REPORT_PATH: "$[[ inputs.report_path ]]"
+    # Routed through variables rather than interpolated into a script line: a
+    # consumer's value carries shell operators ($(...), redirects), and the
+    # rendered text would otherwise be parsed by the shell before expansion.
+    SECRET_TOKEN_COMMAND: "$[[ inputs.secret_token_command ]]"
   script:
-    - $[[ inputs.setup_command ]]
+    # Block scalars, not bare interpolation — matching version-bump-bot: an
+    # unquoted command can otherwise be parsed as a YAML scalar of the wrong
+    # type before it ever reaches the shell.
+    - |
+      $[[ inputs.setup_command ]]
     - |
       set -eo pipefail
-      SECRET_CMD='$[[ inputs.secret_token_command ]]'
-      if [ -n "$SECRET_CMD" ]; then
-        eval "$SECRET_CMD"
+      # A failed credential lookup is a WARNING, never fatal. Under `set -e` an
+      # unguarded eval would end the job here and the report — the whole point
+      # of this job, and published `when: always` — would never be written. A
+      # fork or a credential outage must still get the report, minus the
+      # comment. The `!` form is exempt from set -e by virtue of being a
+      # condition, which is what makes the guard work.
+      if [ -n "$SECRET_TOKEN_COMMAND" ] && ! eval "$SECRET_TOKEN_COMMAND"; then
+        printf '%s\n' "warning: credential setup failed; continuing without it" >&2
       fi
-    - $[[ inputs.check_command ]]
+    - |
+      $[[ inputs.check_command ]]
   artifacts:
     paths:
       - "$[[ inputs.report_path ]]"
