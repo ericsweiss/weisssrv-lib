@@ -1,0 +1,94 @@
+spec:
+  inputs:
+    job_name:
+      default: version-check
+    stage:
+      default: lint
+    image:
+      default: python:3.11
+    tags:
+      type: array
+      default: ["infrastructure"]
+      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+    setup_command:
+      default: 'pip install --quiet pyyaml requests'
+      description: >-
+        Shell command run before the check (tool install). Pin versions here
+        rather than floating — a checker that breaks on a new pyyaml reports
+        "no updates available", which is the wrong answer delivered quietly.
+    check_command:
+      description: >-
+        REQUIRED. Shell command that reports available updates and writes
+        `report_path`. It may exit 1 to signal "updates found"; this job is
+        soft-fail on every trigger, so that is reported rather than fatal.
+    report_path:
+      default: "version-report.json"
+      description: "Artifact the check writes; published on every outcome."
+    secret_token_command:
+      default: ""
+      description: >-
+        Optional shell command exporting whatever credential the check needs to
+        post its MR comment (e.g. an `op read` for a GitLab API token). Left
+        empty the check still runs and still publishes its artifact — the
+        comment is the part that degrades, not the report.
+    changes:
+      type: array
+      default: []
+      description: >-
+        Optional `changes:` filter for the merge-request rule. Empty (default)
+        means the check runs on EVERY merge request, which is the right default
+        for a report nobody has to act on.
+---
+# Reports dependency/pin updates that are available, WITHOUT changing anything.
+#
+# This is the read-only half of the pair. ci/maintenance/version-bump-bot.yml is
+# the other half: a scheduled job that rewrites pins and raises the MR. A repo
+# wants BOTH — this one so an MR author sees drift while they are already
+# looking, the bot so drift gets acted on when nobody is looking.
+#
+# SOFT-FAIL ON EVERY TRIGGER, deliberately. "Updates are available" is rc=1 from
+# most checkers, and that is information, not a defect: a scheduled or MR
+# pipeline must not go red because upstream shipped a release. The artifact is
+# published `when: always` so the report survives whatever the exit code was.
+#
+# `when: manual` on web pipelines needs its own `allow_failure: true`: a
+# rules-based manual job defaults to allow_failure FALSE, which leaves every web
+# pipeline sitting "blocked" on a job nobody intended to play.
+"$[[ inputs.job_name ]]":
+  # Starts immediately rather than waiting out a build stage it has no
+  # dependency on. Soft-fail everywhere, so an earlier start is free.
+  needs: []
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.image ]]
+  tags: $[[ inputs.tags ]]
+  variables:
+    REPORT_PATH: "$[[ inputs.report_path ]]"
+  script:
+    - $[[ inputs.setup_command ]]
+    - |
+      set -eo pipefail
+      SECRET_CMD='$[[ inputs.secret_token_command ]]'
+      if [ -n "$SECRET_CMD" ]; then
+        eval "$SECRET_CMD"
+      fi
+    - $[[ inputs.check_command ]]
+  artifacts:
+    paths:
+      - "$[[ inputs.report_path ]]"
+    expire_in: 7 days
+    when: always
+  rules:
+    # Scheduled: the weekly sweep. Soft-fail — rc=1 only means updates exist.
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      allow_failure: true
+    # Web: manual, and explicitly soft-fail (see the note above).
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    # Merge requests: informational for whoever is already reading the diff.
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: $[[ inputs.changes ]]
+      allow_failure: true
+    # main: informational.
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      allow_failure: true

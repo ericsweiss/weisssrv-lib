@@ -19,7 +19,7 @@
 # NOTE: the CI templates under ci/ are `spec:inputs` files — not standalone
 # pipelines — so they cannot be `glab ci lint`'d in isolation; the
 # ci-templates-parse job below is a YAML/spec smoke. This pipeline renders most
-# of them for real via the self-application `include:` block. Exactly three are
+# of them for real via the self-application `include:` block. Exactly four are
 # NOT rendered here and are still first exercised in a consumer:
 #
 #   - ci/validate/flux-lint.yml           — no Kubernetes tree in this repo
@@ -29,6 +29,10 @@
 #                                           command + config; this library
 #                                           tracks no upstream versions, so the
 #                                           bot is wired by each CONSUMER
+#   - ci/maintenance/version-check.yml    — same reason: its check_command is
+#                                           REQUIRED and there is nothing here
+#                                           for it to check. The pair is wired
+#                                           together by each CONSUMER.
 #
 # ci/release/semantic-release.yml IS wired (the `release` stage below): merging
 # to main cuts this library's own tag, which is what every consumer pins.

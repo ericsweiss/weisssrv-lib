@@ -381,6 +381,31 @@ Conventions shared by every template:
   (`release` stage, `tags: []`), so the tag every consumer pins is cut by the
   merge that earns it and the template is exercised by the MR that changes it.
 
+## ci/maintenance/version-check.yml
+
+- **New capability.** The read-only half of the version pair: reports available
+  updates and publishes a report artifact, changing nothing. `version-bump-bot`
+  is the other half — it rewrites pins and raises the MR. A repo wants BOTH:
+  this one so an MR author sees drift while they are already looking, the bot so
+  drift is acted on when nobody is.
+- **Inputs:** `job_name` (version-check), `stage` (lint), `image` (python:3.11),
+  `tags`, `setup_command` (pip install), `check_command` (**required** — the
+  command that reports and writes the report), `report_path`
+  (`version-report.json`), `secret_token_command` (optional credential export
+  for the MR-comment path), `changes` (optional MR-rule filter; empty runs on
+  every MR).
+- **Soft-fail on every trigger, deliberately.** Most checkers signal "updates
+  found" with rc=1, which is information rather than a defect — a scheduled or
+  MR pipeline must not go red because upstream shipped a release. The artifact
+  is published `when: always`, so the report survives whatever the exit code was.
+- **`when: manual` carries its own `allow_failure: true`.** A rules-based manual
+  job defaults to `allow_failure: false`, which leaves every web pipeline sitting
+  "blocked" on a job nobody intended to play.
+- **Degrades rather than fails without credentials.** `secret_token_command` is
+  optional: with no token the check still runs and still publishes its artifact,
+  and only the MR comment is lost. A consumer outside the credential's reach
+  (a fork) gets the report, not a red job.
+
 ## ci/maintenance/version-bump-bot.yml
 
 - **New capability.** A scheduled job that runs the consumer's own version-check
