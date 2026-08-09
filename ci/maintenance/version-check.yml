@@ -68,7 +68,13 @@ spec:
     # Routed through variables rather than interpolated into a script line: a
     # consumer's value carries shell operators ($(...), redirects), and the
     # rendered text would otherwise be parsed by the shell before expansion.
-    SECRET_TOKEN_COMMAND: "$[[ inputs.secret_token_command ]]"
+    #
+    # BLOCK SCALAR, not a quoted string. These commands routinely contain double
+    # quotes — `op read "op://..."` is the obvious case — and interpolating that
+    # into a double-quoted YAML scalar produces a parse error at include time,
+    # i.e. the consumer's whole pipeline fails to render.
+    SECRET_TOKEN_COMMAND: |-
+      $[[ inputs.secret_token_command ]]
   script:
     # Block scalars, not bare interpolation — matching version-bump-bot: an
     # unquoted command can otherwise be parsed as a YAML scalar of the wrong
