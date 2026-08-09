@@ -83,14 +83,31 @@ spec:
       $[[ inputs.setup_command ]]
     - |
       set -eo pipefail
-      # A failed credential lookup is a WARNING, never fatal. Under `set -e` an
-      # unguarded eval would end the job here and the report — the whole point
-      # of this job, and published `when: always` — would never be written. A
-      # fork or a credential outage must still get the report, minus the
-      # comment. The `!` form is exempt from set -e by virtue of being a
-      # condition, which is what makes the guard work.
-      if [ -n "$SECRET_TOKEN_COMMAND" ] && ! eval "$SECRET_TOKEN_COMMAND"; then
-        printf '%s\n' "warning: credential setup failed; continuing without it" >&2
+      # PROTECTED REFS ONLY. `check_command` is supplied by the .gitlab-ci.yml of
+      # the ref being tested, so on a merge-request branch the code that runs
+      # here is the code under review. Exporting a credential before it would
+      # hand any pushable branch whatever that token can reach — and these
+      # tokens are typically broad (a 1Password service account reaches a whole
+      # vault). CI_COMMIT_REF_PROTECTED is GitLab's own answer to that question
+      # and needs no configuration to be correct.
+      #
+      # The cost is explicit: on an unprotected ref the check still runs and
+      # still publishes its report, but anything needing the credential — an MR
+      # comment, typically — does not happen. That is the right way round. If a
+      # consumer needs privileged MR comments, the answer is a separate job on a
+      # trusted trigger, not a token handed to branch-controlled code.
+      #
+      # A failed lookup on a protected ref is a WARNING, never fatal: under
+      # `set -e` an unguarded eval would end the job before the report it exists
+      # to produce. The `!` form is exempt from set -e by being a condition.
+      if [ -n "$SECRET_TOKEN_COMMAND" ]; then
+        if [ "$CI_COMMIT_REF_PROTECTED" = "true" ]; then
+          if ! eval "$SECRET_TOKEN_COMMAND"; then
+            printf '%s\n' "warning: credential setup failed; continuing without it" >&2
+          fi
+        else
+          printf '%s\n' "note: unprotected ref — credential setup skipped; report still produced" >&2
+        fi
       fi
     - |
       $[[ inputs.check_command ]]

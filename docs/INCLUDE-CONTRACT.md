@@ -402,12 +402,19 @@ Conventions shared by every template:
 - **`when: manual` carries its own `allow_failure: true`.** A rules-based manual
   job defaults to `allow_failure: false`, which leaves every web pipeline sitting
   "blocked" on a job nobody intended to play.
-- **Degrades rather than fails without credentials.** `secret_token_command` is
-  optional, and a FAILING one is a warning rather than fatal: under `set -e` an
-  unguarded eval would end the job before the report it exists to produce. With
-  no token, or a broken one, the check still runs and still publishes its
-  artifact — only the MR comment is lost. A consumer outside the credential's
-  reach (a fork) gets the report, not a red job.
+- **Credentials load on PROTECTED REFS ONLY.** `check_command` comes from the
+  `.gitlab-ci.yml` of the ref being tested, so on a merge-request branch it *is*
+  the code under review; exporting a token first would hand any pushable branch
+  whatever that token reaches, and these tend to be broad (a 1Password service
+  account reaches a whole vault). Gated on `CI_COMMIT_REF_PROTECTED`, which needs
+  no configuration to be right. The cost is explicit: on an unprotected ref the
+  check still runs and still publishes its report, but the MR comment does not
+  happen. A consumer needing privileged MR comments should use a separate job on
+  a trusted trigger rather than a token exposed to branch-controlled code.
+- **Degrades rather than fails without credentials.** A FAILING lookup on a
+  protected ref is a warning rather than fatal: under `set -e` an unguarded eval
+  would end the job before the report it exists to produce. With no token, or a
+  broken one, the check still runs and still publishes its artifact.
 
 ## ci/maintenance/version-bump-bot.yml
 
