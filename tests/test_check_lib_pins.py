@@ -619,3 +619,61 @@ def test_fix_still_works_with_an_alias_outside_the_include_block(
     p = _write(tmp_path, content)
     assert clp.fix(p) == 1
     assert clp.check(p) == []
+
+
+def test_check_reports_drift_on_an_entry_with_an_empty_file_list(
+    tmp_path: Path,
+) -> None:
+    """`file: []` must not collapse the report loop and hide a drifted pin."""
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.2"
+        include:
+          - project: eric/weisssrv-lib
+            ref: v0.3.2
+            file: []
+        """
+    )
+    problems = clp.check(_write(tmp_path, content))
+    assert problems, "a drifted pin passed the gate because file: was empty"
+    assert "v0.3.2" in problems[0]
+
+
+def test_non_mapping_document_is_an_operator_error(tmp_path, capsys) -> None:
+    """Valid YAML of the wrong shape must exit 2, not crash on doc.get()."""
+    p = tmp_path / ".gitlab-ci.yml"
+    p.write_text("- just\n- a\n- list\n")
+    rc = clp.main(["--ci-file", str(p)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "not valid YAML" in err
+    assert "Traceback" not in err
+
+
+def test_fix_refuses_an_anchor_defined_inside_the_include_block(
+    tmp_path: Path,
+) -> None:
+    """An anchor defined here can be referenced from OUTSIDE the block.
+
+    Rewriting the pin would then change what that outside reference resolves
+    to, so the block is refused even though no alias appears within it.
+    """
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.2"
+        include:
+          - &entry
+            project: eric/weisssrv-lib
+            ref: v0.3.2
+            file: /ci/lint/yaml-lint.yml
+        elsewhere:
+          copy: *entry
+        """
+    )
+    p = _write(tmp_path, content)
+    before = p.read_text()
+    with pytest.raises(SystemExit):
+        clp.fix(p)
+    assert p.read_text() == before

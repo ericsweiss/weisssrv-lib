@@ -294,16 +294,18 @@ commit in the consuming repo at all.
   pin to have landed as the exact string intended, and bounds its targets to the
   include block's own span so an aliased entry cannot redirect it at an anchor
   elsewhere in the file, and it refuses the whole block when an **alias** appears
-  inside `include:` (composing resolves aliases away, so the rewrite would follow
-  one to its anchor). Where it cannot repair — a missing `ref:`, a flow-style
+  inside `include:` — or an anchor DEFINED there, which something outside can
+  reference (composing resolves aliases away, so the node tree cannot show
+  either). Where it cannot repair — a missing `ref:`, a flow-style
   entry, a pin outside `include:`, an aliased block — it says so and leaves the
   file untouched instead of returning a clean 0. An alias elsewhere in the file
   does not disable it.
 - **Exit codes:** 0 consistent, 1 on drift / branch ref / missing variable /
   **no matching include entries at all** — an empty set is reported rather than
   passing, so restructuring the includes out from under the gate is visible.
-  **2** for an operator error (unreadable path, malformed YAML), one line and no
-  traceback, so CI can tell "the pins drifted" from "I could not read the file".
+  **2** for an operator error (unreadable path, malformed YAML, or a top-level
+  document that is not a mapping), one line and no traceback, so CI can tell
+  "the pins drifted" from "I could not read the file".
 - **Handles a `file:` list**, the form that shares one `ref:` across several
   templates, and names every affected template rather than just the entry.
 - **Consumers vendor it** and run it from their own tree (their `python-tests`

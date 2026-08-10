@@ -69,7 +69,15 @@ def parse_ci(text: str) -> dict:
     reads the file ONCE. Two reads could disagree if the file changed between
     them, and --fix rewrites lines located by one read into text from another.
     """
-    return yaml.load(text, Loader=_RefTolerantLoader) or {}
+    doc = yaml.load(text, Loader=_RefTolerantLoader)
+    if doc is None:
+        return {}
+    if not isinstance(doc, dict):
+        # Valid YAML, wrong shape. Raised as a YAMLError so it lands on the
+        # operator-error path (exit 2) rather than reaching `doc.get(...)` and
+        # surfacing as an AttributeError traceback.
+        raise yaml.YAMLError("the top-level CI document must be a mapping")
+    return doc
 
 
 def lib_includes(doc: dict, project: str = LIB_PROJECT) -> list[dict]:
@@ -95,7 +103,10 @@ def files_of(entry: dict) -> list[str]:
     """
     f = entry.get("file")
     if isinstance(f, list):
-        return [str(x) for x in f]
+        # `or [...]`: an EMPTY list must not collapse the caller's reporting
+        # loop to zero iterations — that would let a drifted pin pass the gate
+        # silently, which is the failure this whole script exists to prevent.
+        return [str(x) for x in f] or ["<entry with an empty file: list>"]
     return [str(f)] if f else ["<entry with no file:>"]
 
 
@@ -186,12 +197,17 @@ def _ref_key_lines(text: str, project: str) -> set[int]:
     # rather than editing a line that belongs to something else. Scoped to the
     # span, so an alias elsewhere in the file does not disable --fix.
     for event in yaml.parse(text, Loader=_RefTolerantLoader):
-        if isinstance(event, yaml.AliasEvent) and (
-            include_start <= event.start_mark.index < include_end
-        ):
+        if not include_start <= event.start_mark.index < include_end:
+            continue
+        is_alias = isinstance(event, yaml.AliasEvent)
+        # An anchor DEFINED here can be referenced from outside the block, so
+        # rewriting this pin would change what that reference resolves to.
+        defines_anchor = not is_alias and getattr(event, "anchor", None)
+        if is_alias or defines_anchor:
             raise SystemExit(
-                "the `include:` block contains a YAML alias, whose anchor may "
-                "live anywhere; refusing to rewrite it. Update the pins by hand."
+                "the `include:` block contains a YAML anchor or alias, which "
+                "may share configuration with the rest of the file; refusing "
+                "to rewrite it. Update the pins by hand."
             )
 
     entries = (
