@@ -186,3 +186,38 @@ def test_fix_does_not_rewrite_a_project_whose_path_merely_ends_with_ours(
     assert refs["eric/weisssrv-lib"] == "v0.5.0"
     assert refs["acme/eric/weisssrv-lib"] == "v9.9.9"
     assert clp.check(p) == []
+
+
+def test_fix_matches_a_quoted_or_commented_project_value(tmp_path: Path) -> None:
+    """`project:` is YAML, so quotes and trailing comments are not part of it."""
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.0"
+        include:
+          - project: "eric/weisssrv-lib"
+            ref: v0.3.2
+            file: /ci/lint/yaml-lint.yml
+          - project: eric/weisssrv-lib  # the shared CI library
+            ref: v0.3.2
+            file: /ci/lint/shellcheck.yml
+        """
+    )
+    p = _write(tmp_path, content)
+    assert clp.fix(p) == 2
+    assert clp.check(p) == []
+
+
+def test_fix_reports_failure_when_the_result_still_violates(
+    tmp_path: Path, capsys
+) -> None:
+    """--fix must not exit 0 on a file it cannot actually repair.
+
+    A branch ref in the single source is not something the rewrite can fix: it
+    happily makes every entry agree with `main` and would otherwise report
+    success for a file that still violates the contract.
+    """
+    p = _write(tmp_path, _ci("main", ("v0.4.0", "v0.4.0")))
+    rc = clp.main(["--ci-file", str(p), "--fix"])
+    assert rc == 1
+    assert "FAILED after rewrite" in capsys.readouterr().err

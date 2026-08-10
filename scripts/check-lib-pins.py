@@ -136,8 +136,13 @@ def fix(path: Path, project: str = LIB_PROJECT, ref_var: str = REF_VAR) -> int:
         if stripped.startswith("- project:") or stripped.startswith("project:"):
             # EXACT value equality, matching check(). A suffix test would treat
             # `acme/eric/weisssrv-lib` as ours and rewrite a ref that check()
-            # never policed — a --fix that edits what it does not verify.
-            value = stripped.split(":", 1)[1].strip().strip("\"'")
+            # never policed — a --fix that edits what it does not verify. Parsed
+            # as YAML rather than string-stripped so a quoted value or a trailing
+            # comment resolves the same way it does for the include itself.
+            try:
+                value = yaml.safe_load(stripped.split(":", 1)[1].strip())
+            except yaml.YAMLError:
+                value = None
             in_lib_entry = value == project
             continue
         if in_lib_entry and stripped.startswith("ref:"):
@@ -175,6 +180,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.fix:
         changed = fix(args.ci_file, args.project, args.ref_var)
+        # Verify the result rather than trusting the rewrite. --fix cannot
+        # repair a branch ref in the variable, an absent include block, or an
+        # entry whose `ref:` the line rewriter did not recognise — and exiting 0
+        # on any of those would report success for a file still in violation.
+        problems = check(args.ci_file, args.project, args.ref_var)
+        if problems:
+            print("check-lib-pins: FAILED after rewrite", file=sys.stderr)
+            for problem in problems:
+                print(f"  {problem}", file=sys.stderr)
+            return 1
         print(f"check-lib-pins: rewrote {changed} ref(s) in {args.ci_file}")
         return 0
 
