@@ -19,20 +19,22 @@
 # NOTE: the CI templates under ci/ are `spec:inputs` files — not standalone
 # pipelines — so they cannot be `glab ci lint`'d in isolation; the
 # ci-templates-parse job below is a YAML/spec smoke. This pipeline renders most
-# of them for real via the self-application `include:` block. Exactly four are
+# of them for real via the self-application `include:` block. Exactly three are
 # NOT rendered here and are still first exercised in a consumer:
 #
 #   - ci/validate/flux-lint.yml           — no Kubernetes tree in this repo
 #   - ci/templates/*.yml                  — hidden-job fragments with no
 #                                           library-side job to extend them
-#   - ci/maintenance/version-bump-bot.yml — needs a repo-local version-check
-#                                           command + config; this library
-#                                           tracks no upstream versions, so the
-#                                           bot is wired by each CONSUMER
-#   - ci/maintenance/version-check.yml    — same reason: its check_command is
-#                                           REQUIRED and there is nothing here
-#                                           for it to check. The pair is wired
-#                                           together by each CONSUMER.
+#   - ci/maintenance/version-bump-bot.yml — it WRITES to the repo (branch,
+#                                           push, MR), so a self-applied run
+#                                           would raise bot MRs against this
+#                                           library on every schedule. Wired
+#                                           by each CONSUMER instead.
+#
+# ci/maintenance/version-check.yml IS self-applied, with a trivial check_command
+# that just writes the report: this repo has nothing real to check, but rendering
+# the job still proves its inputs, rules and artifact behaviour work. It is
+# read-only, so unlike the bot it costs nothing to run here.
 #
 # ci/release/semantic-release.yml IS wired (the `release` stage below): merging
 # to main cuts this library's own tag, which is what every consumer pins.
@@ -146,6 +148,25 @@ include:
         # Self-application: a template-only MR must EXECUTE a rendered job, and
         # this one's before_script is where the pip_extra variable-routing lives.
         - "ci/**/*"
+  # Self-applied with a deliberately trivial check. This repo tracks no upstream
+  # versions, so there is nothing real to report — but that is an argument about
+  # the CONTENT of check_command, not about whether the template renders. Running
+  # it here is what exercises its spec:inputs, its interpolation, its four rules
+  # and its artifact behaviour in the MR that changes it, rather than discovering
+  # a defect in a consumer. This template needed six review rounds; every one of
+  # them was a defect a rendered run could have surfaced.
+  - local: /ci/maintenance/version-check.yml
+    inputs:
+      tags: []
+      job_name: version-check-selftest
+      setup_command: "true"
+      # Writes the artifact and exits 0. `printf` rather than `echo` for the
+      # literal, and REPORT_PATH rather than a hard-coded name so the job proves
+      # the input actually reaches the script.
+      check_command: 'printf ''{"selftest": true}\n'' > "$REPORT_PATH"'
+      changes:
+        - "ci/maintenance/version-check.yml"
+        - ".gitlab-ci.yml"
   - local: /ci/lint/yaml-lint.yml
     inputs:
       tags: []

@@ -417,10 +417,13 @@ Conventions shared by every template:
   a token passes it as a masked CI variable, scoped to what it would tolerate
   leaking: an MR comment needs only Reporter + `api`, which can comment and read
   but not push. Vault-wide or user tokens do not belong here.
-- **Degrades rather than fails without credentials.** A FAILING lookup on a
-  protected ref is a warning rather than fatal: under `set -e` an unguarded eval
-  would end the job before the report it exists to produce. With no token, or a
-  broken one, the check still runs and still publishes its artifact.
+- **Credential handling and report creation are the CHECKER's job, not this
+  template's.** The template runs `check_command` and uploads `report_path`; it
+  does not fetch, validate or fall back on anything. So "it degrades gracefully
+  without a token" is a property a consumer's checker either has or does not —
+  `version-check-ci.py` in weisssrv skips its MR comment and still writes the
+  report, but an arbitrary checker may just as easily exit before writing
+  anything, and this job cannot rescue that.
 
 ## ci/maintenance/version-bump-bot.yml
 
