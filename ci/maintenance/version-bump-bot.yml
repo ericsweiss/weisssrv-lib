@@ -4,6 +4,10 @@ spec:
       default: version-bump-bot
     stage:
       default: maintenance
+      description: >-
+        Defaults to `maintenance` — this half writes (branch, push, MR) and runs
+        off-cycle. Its version-check counterpart defaults to `lint`, so a
+        consumer declaring stages needs both.
     image:
       # The full python image ships git; python:*-slim does not, and the shared
       # non-root runner cannot apt-install it.
@@ -61,6 +65,11 @@ spec:
   stage: $[[ inputs.stage ]]
   image: $[[ inputs.image ]]
   tags: $[[ inputs.tags ]]
+  # Writes side effects (force-pushed branch + one MR), so it must neither race
+  # itself nor be cancelled mid-push: a schedule and a manual web run can
+  # otherwise overlap on the same branch.
+  resource_group: $[[ inputs.job_name ]]
+  interruptible: false
   retry:
     max: 2
     when:
@@ -73,8 +82,8 @@ spec:
     GIT_DEPTH: "0"
     BOT_TOKEN: "$[[ inputs.bot_token ]]"
   script:
-    # Block scalars, not bare interpolation: an unquoted `true` (the
-    # setup_command default) would parse as a YAML boolean and be rejected.
+    # Block scalars so a multi-line command works and no shell metacharacter in
+    # the value can collide with YAML flow syntax.
     - |
       $[[ inputs.setup_command ]]
     - |

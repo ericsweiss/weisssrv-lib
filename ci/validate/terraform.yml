@@ -23,10 +23,18 @@ spec:
       description: >-
         Glob of module dirs `terraform validate` loops over. Each module with a
         versions.tf is `terraform init -backend=false && terraform validate`d.
+    default_branch:
+      default: "main"
+      description: >-
+        Consumer's default branch as a LITERAL name (`main`, `master`, `trunk`)
+        for the post-merge rules of BOTH jobs. NOT `$CI_DEFAULT_BRANCH`: the
+        value lands inside a quoted `rules:if` string, which GitLab does not
+        expand, so the comparison would never match and the jobs would silently
+        stop running post-merge.
     changes:
       type: array
       default: ["terraform/**/*"]
-      description: Path list for the MR/main `changes:` rules (weisssrv .paths-terraform).
+      description: Path list for the MR / default-branch `changes:` rules.
 ---
 "$[[ inputs.fmt_job_name ]]":
   needs: []
@@ -48,7 +56,7 @@ spec:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes: $[[ inputs.changes ]]
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "$[[ inputs.default_branch ]]"'
       changes: $[[ inputs.changes ]]
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
@@ -79,6 +87,6 @@ spec:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes: $[[ inputs.changes ]]
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "$[[ inputs.default_branch ]]"'
       changes: $[[ inputs.changes ]]
     - if: '$CI_PIPELINE_SOURCE == "web"'

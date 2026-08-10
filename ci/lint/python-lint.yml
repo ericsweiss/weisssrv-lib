@@ -28,6 +28,14 @@ spec:
     targets:
       default: "."
       description: Space-separated paths to check (word-split into one ruff run).
+    default_branch:
+      default: "main"
+      description: >-
+        Consumer's default branch as a LITERAL name (`main`, `master`, `trunk`)
+        for the post-merge rule. NOT `$CI_DEFAULT_BRANCH`: the value lands
+        inside a quoted `rules:if` string, which GitLab does not expand, so the
+        comparison would never match and the job would silently stop running
+        post-merge.
     format_check:
       type: boolean
       default: false
@@ -41,7 +49,7 @@ spec:
         - "ruff.toml"
         - "pyproject.toml"
         - ".gitlab-ci.yml"
-      description: Path list for the MR/main `changes:` rules.
+      description: Path list for the MR / default-branch `changes:` rules.
 ---
 "$[[ inputs.job_name ]]":
   needs: []
@@ -78,6 +86,6 @@ spec:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes: $[[ inputs.changes ]]
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "$[[ inputs.default_branch ]]"'
       changes: $[[ inputs.changes ]]
     - if: '$CI_PIPELINE_SOURCE == "web"'

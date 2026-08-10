@@ -1,43 +1,20 @@
 ---
-# CI for weisssrv-lib itself. Two runner classes:
-#
-#   - The lint/test/security/review jobs are TAG-LESS and non-root safe
-#     (`pip install --user`, `python -m`, no apt, no /usr/local/bin writes), so
-#     they land on the shared non-privileged runner.
-#   - The two molecule image builds and the molecule matrix need privileged
-#     Docker-in-Docker and are tagged `infrastructure`.
+# CI for weisssrv-lib itself. Two runner classes: the lint/test/security/review
+# jobs are TAG-LESS and non-root safe (`pip install --user`, `python -m`, no
+# apt, no /usr/local/bin writes) and land on the shared runner; the two molecule
+# image builds, the molecule matrix and the image retag need privileged
+# Docker-in-Docker and are tagged `infrastructure`.
 #
 # ADMIN PREREQUISITES:
-#   1. `infrastructure` is a PROJECT runner (not instance-wide). It must be
-#      enabled for weisssrv-lib under Settings > CI/CD > Runners before any
-#      tagged job here can be scheduled — until then those jobs sit pending
-#      with "no runner matches". The tag-less jobs are unaffected.
+#   1. `infrastructure` is a PROJECT runner: it must be enabled for this project
+#      (Settings > CI/CD > Runners) or every tagged job sits pending.
 #   2. The app-template project must list weisssrv-lib on its CI/CD job-token
-#      allowlist, so python-tests can clone it for the cross-repo contract
-#      test.
+#      allowlist, so python-tests can clone it for the cross-repo contract test.
 #
-# NOTE: the CI templates under ci/ are `spec:inputs` files — not standalone
-# pipelines — so they cannot be `glab ci lint`'d in isolation; the
-# ci-templates-parse job below is a YAML/spec smoke. This pipeline renders most
-# of them for real via the self-application `include:` block. Exactly three are
-# NOT rendered here and are still first exercised in a consumer:
-#
-#   - ci/validate/flux-lint.yml           — no Kubernetes tree in this repo
-#   - ci/templates/*.yml                  — hidden-job fragments with no
-#                                           library-side job to extend them
-#   - ci/maintenance/version-bump-bot.yml — it WRITES to the repo (branch,
-#                                           push, MR), so a self-applied run
-#                                           would raise bot MRs against this
-#                                           library on every schedule. Wired
-#                                           by each CONSUMER instead.
-#
-# ci/maintenance/version-check.yml IS self-applied, with a trivial check_command
-# that just writes the report: this repo has nothing real to check, but rendering
-# the job still proves its inputs, rules and artifact behaviour work. It is
-# read-only, so unlike the bot it costs nothing to run here.
-#
-# ci/release/semantic-release.yml IS wired (the `release` stage below): merging
-# to main cuts this library's own tag, which is what every consumer pins.
+# The ci/ templates are `spec:inputs` files, not standalone pipelines, so they
+# cannot be `glab ci lint`'d in isolation: ci-templates-parse below is the
+# YAML/spec smoke, and the `include:` block renders the rest for real. Which
+# templates cannot be self-applied here, and why, is in docs/INCLUDE-CONTRACT.md.
 stages:
   - build
   - lint
@@ -59,31 +36,30 @@ workflow:
     - if: '$CI_COMMIT_BRANCH == "main"'
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
+# Makes the auto_cancel above actually reach the included lint/test jobs, none of
+# which declares `interruptible`. The jobs that must survive a supersede (both
+# image builds, semantic-release, the release retag) set `interruptible: false`
+# on themselves, which wins over this default.
+default:
+  interruptible: true
+
 variables:
   PYYAML_VERSION: "6.0.2"
 
-# Self-application: the library consumes its OWN templates rather than
-# hand-rolling equivalent jobs, so every input and rules block is RESOLVED here
-# by the MR that changes it — includes are expanded at pipeline creation
-# regardless of any job's `changes:`, so an undeclared input or a malformed
-# render fails the pipeline outright. EXECUTING a rendered script is separately
-# path-gated, so two include sites carry `ci/**/*` in their `changes` —
-# python-tests (which runs tests/test_render_templates.py over every ci/
-# template) and ansible-lint — and a template-only MR therefore always runs at
-# least those two for real; the remaining rendered scripts run when their own
-# paths move. `local:` resolves against this pipeline's commit (a
+# Self-application: the library consumes its OWN templates instead of
+# hand-rolling equivalents, so an undeclared input or a malformed render fails
+# the MR that introduced it (includes expand at pipeline creation regardless of
+# any job's `changes:`). EXECUTING a rendered script is separately path-gated,
+# so python-tests and ansible-lint carry `ci/**/*` and a template-only MR always
+# runs those two for real. `local:` resolves against this pipeline's commit; a
 # `project:`+`ref:` self-include would resolve the ref, not the branch under
-# review).
+# review.
 #
-# Tool pins are literal at each include site — an `include:` is resolved before
-# `variables:` exist, so a pin there cannot reference $PYYAML_VERSION. PyYAML is
-# therefore pinned at THREE places that must move together:
-#
-#   1. the `variables:` block above — used by ci-templates-parse and
-#      collection-checks, the two jobs written inline in this file
-#   2. the `pyyaml_version` input passed to ci/test/python-tests.yml below
-#   3. the `pyyaml_version` DEFAULT in ci/internal/molecule-matrix.gitlab-ci.yml,
-#      taken as-is (not overridden at its include site below)
+# PyYAML is pinned at THREE places that must move together — an `include:` is
+# resolved before `variables:` exist, so a pin there cannot reference
+# $PYYAML_VERSION: the `variables:` block above (used by the two inline jobs),
+# the `pyyaml_version` input passed to ci/test/python-tests.yml below, and the
+# `pyyaml_version` DEFAULT in ci/internal/molecule-matrix.gitlab-ci.yml.
 include:
   # .molecule-base + the molecule job template stay in a LOCAL fragment (not a
   # ci/ template): the generated MR child pipeline (molecule-plan ->
@@ -148,13 +124,10 @@ include:
         # Self-application: a template-only MR must EXECUTE a rendered job, and
         # this one's before_script is where the pip_extra variable-routing lives.
         - "ci/**/*"
-  # Self-applied with a deliberately trivial check. This repo tracks no upstream
-  # versions, so there is nothing real to report — but that is an argument about
-  # the CONTENT of check_command, not about whether the template renders. Running
-  # it here is what exercises its spec:inputs, its interpolation, its four rules
-  # and its artifact behaviour in the MR that changes it, rather than discovering
-  # a defect in a consumer. This template needed six review rounds; every one of
-  # them was a defect a rendered run could have surfaced.
+  # Self-applied with a deliberately trivial check: this repo tracks no upstream
+  # versions, so the CONTENT is a no-op, but rendering the job still exercises
+  # its inputs, interpolation, rules and artifact behaviour in the MR that
+  # changes it instead of in a consumer.
   - local: /ci/maintenance/version-check.yml
     inputs:
       tags: []
@@ -239,15 +212,12 @@ include:
       # Clone the app template so test_template_contract.py's cross-repo half
       # RUNS here (WEISSSRV_TEMPLATE_REQUIRED below turns its skip into a
       # failure). Needs weisssrv-lib on the template project's job-token
-      # allowlist (admin prerequisite, see header). The old project path keeps
-      # working through GitLab's rename redirect until the rename lands.
+      # allowlist (admin prerequisite, see header).
       #
-      # WEISSSRV_TEMPLATE_REF defaults to the template's default branch. Override
-      # it (a pipeline variable) when a change spans both repos: this fixture and
-      # the template must move together, but GitLab cannot merge two projects
-      # atomically, so whichever lands first would otherwise red the other. Point
-      # it at the template's MR branch for that one pipeline instead of muting
-      # the comparison — a disabled gate is how the drift got here.
+      # WEISSSRV_TEMPLATE_REF defaults to the template's default branch. Point it
+      # (as a pipeline variable) at the template's MR branch when a change spans
+      # both repos — GitLab cannot merge two projects atomically, so whichever
+      # lands first would otherwise red the other.
       setup_command: >-
         git clone --depth 1
         ${WEISSSRV_TEMPLATE_REF:+--branch "$WEISSSRV_TEMPLATE_REF"}
@@ -320,6 +290,79 @@ include:
     inputs:
       tags: []
 
+# Republish the two molecule images under the tag semantic-release just cut, so
+# a consumer pins the image at the SAME ref it pins the templates at
+# (molecule-ci:vX.Y.Z). The build jobs are path-gated, so most releases ship an
+# image built by an earlier pipeline: the source is this pipeline's :<short-sha>
+# when it rebuilt, else the current :latest. Both immutable tags stay published
+# either way — this only adds the version alias.
+publish-molecule-image-tags:
+  stage: release
+  tags: ["infrastructure"]
+  # Writes tags consumers pin; must not be cancelled by the next merge.
+  interruptible: false
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - scheduler_failure
+  needs:
+    - job: semantic-release
+      artifacts: true
+  image:
+    # CLI-only image (no daemon); digest-pinned multi-arch index, same 27.5.1
+    # line as the dind service and ci/build/docker-build.yml's static CLI.
+    name: docker:27.5.1-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c
+    entrypoint: [""]
+  services:
+    - name: docker:27.5.1-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  script:
+    - |
+      set -eu
+      # release.json is written by scripts/semantic-release.py with indent=2, so
+      # a top-level key is the only thing at exactly two spaces of indent; the
+      # notes body is a single escaped JSON string and cannot match.
+      released=$(sed -n 's/^  "released": \([a-z]*\),*$/\1/p' release.json | head -n1)
+      tag=$(sed -n 's/^  "tag": "\([^"]*\)",*$/\1/p' release.json | head -n1)
+      if [ "$released" != "true" ]; then
+        echo "no release cut in this pipeline — nothing to retag"; exit 0
+      fi
+      [ -n "$tag" ] || { echo "release.json says released but carries no tag"; exit 1; }
+      # `if` rather than `cmd && break`: an AND-list whose first command fails
+      # returns non-zero, which `set -e` would take as a reason to exit.
+      i=0
+      while [ "$i" -lt 30 ]; do
+        if docker info >/dev/null 2>&1; then break; fi
+        i=$((i + 1))
+        sleep 2
+      done
+      docker info >/dev/null 2>&1 || { echo "docker daemon did not become ready"; exit 1; }
+      echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+      for img in molecule-ci molecule-test; do
+        ref="${CI_REGISTRY_IMAGE}/${img}"
+        if docker pull "${ref}:${CI_COMMIT_SHORT_SHA}" >/dev/null 2>&1; then
+          src="${ref}:${CI_COMMIT_SHORT_SHA}"
+        elif docker pull "${ref}:latest" >/dev/null 2>&1; then
+          src="${ref}:latest"
+        else
+          # First release of a fresh repo: the images have never been pushed.
+          # Warn instead of reddening the pipeline that already cut the tag.
+          echo "WARNING: no ${ref} image to retag — ${tag} not published for ${img}"
+          continue
+        fi
+        docker tag "$src" "${ref}:${tag}"
+        docker push "${ref}:${tag}"
+        echo "published ${ref}:${tag} (from ${src})"
+      done
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
 # Same-named override MERGES with the included python-tests job at the map
 # level: these variables land on it without touching its scripts. The env pair
 # makes the template-contract test's cross-repo half mandatory here (an
@@ -370,9 +413,9 @@ molecule-plan:
     - job: docs-link-check
       optional: true
 
-# Right-size the tag-less job pods (the runner allows overrides <= 6Gi):
-# these jobs use ~200Mi; declaring 1Gi keeps a full fan-out at ~12Gi of
-# quota instead of 60Gi, which is what made pipelines 929-934 fail.
+# Right-size the tag-less job pods (the runner allows overrides <= 6Gi): these
+# jobs use ~200Mi, so declaring 1Gi keeps a full fan-out inside the namespace
+# quota instead of failing at pod creation.
 yaml-lint:
   variables:
     KUBERNETES_MEMORY_LIMIT: "1Gi"
@@ -438,9 +481,8 @@ ci-templates-parse:
           except Exception as e:  # noqa: BLE001
               bad = 1
               print("FAIL", f, e)
-      # Regression guard: every documented template must actually be committed
-      # (a `.gitignore` pattern once hid ci/build/docker-build.yml — it was on
-      # disk but untracked, so a consumer's include resolved at no ref).
+      # Regression guard: every documented template must be TRACKED — a file
+      # that exists only on disk makes a consumer's include resolve at no ref.
       required = ["ci/build/docker-build.yml"]
       for r in required:
           if r not in found or not os.path.isfile(r):
@@ -454,17 +496,14 @@ collection-checks:
   needs:
     - job: ci-templates-parse
       optional: true
-  # Two invariants over ansible_collections/weisssrv/infra that nothing else
-  # covers:
-  #   - the molecule matrix below must list every scenario dir on disk. The
-  #     generator's own CoverageError is ROLE-level, so a second scenario added
-  #     under an already-listed role runs in no job at all; this gate is the one
-  #     that names it. Same env-var contract the molecule-plan job uses.
-  #   - the collection must build AND the artifact must match `build_ignore` —
-  #     a bad pattern either ships the molecule scaffolding into every
-  #     consumer's installed copy or drops real content, and `ansible-galaxy
-  #     collection build` exits 0 either way, so the tarball itself is
-  #     inspected below. Otherwise it surfaces first at a consumer's install.
+  # Two invariants nothing else covers:
+  #   - the matrix below lists every scenario dir on disk. The generator's own
+  #     CoverageError is ROLE-level, so a second scenario under an already-listed
+  #     role would run in no job at all; this gate names it.
+  #   - the built collection matches `build_ignore`. A bad pattern either ships
+  #     molecule scaffolding into every consumer's install or drops real content,
+  #     and `ansible-galaxy collection build` exits 0 either way, so the tarball
+  #     is inspected below.
   stage: lint
   image: python:3.13-slim
   tags: []
@@ -564,6 +603,17 @@ molecule-tests:
       # path (a dm-crypt random-key swap cannot be created in a container).
       - ROLE: encrypted_swap
         SCENARIO: default
+      - ROLE: gitlab
+        SCENARIO: default
+      - ROLE: home_assistant
+        SCENARIO: default
+      # immich + immich_ml run on their skip-install path (no Docker runtime in
+      # the container): compose file, .env, nginx site, units and backup wrapper
+      # are rendered and asserted instead.
+      - ROLE: immich
+        SCENARIO: default
+      - ROLE: immich_ml
+        SCENARIO: default
       # k3s runs server + agent as separate jobs to halve wall time.
       - ROLE: k3s
         SCENARIO: default
@@ -571,11 +621,15 @@ molecule-tests:
         SCENARIO: agent
       - ROLE: nas_storage
         SCENARIO: default
+      - ROLE: nextcloud
+        SCENARIO: default
       - ROLE: nfs_tls
         SCENARIO: default
       - ROLE: nic_tuning
         SCENARIO: default
       - ROLE: node_exporter_host
+        SCENARIO: default
+      - ROLE: plex
         SCENARIO: default
       - ROLE: postfix_null_client
         SCENARIO: default
@@ -634,7 +688,7 @@ molecule-tests:
         SCENARIO: default
   rules:
     # Defensive (the workflow rules already exclude schedules): a future
-    # maintenance schedule must never fire this 37-job privileged fan-out.
+    # maintenance schedule must never fire this whole privileged fan-out.
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     # NO merge_request_event clause: MR pipelines run the targeted child

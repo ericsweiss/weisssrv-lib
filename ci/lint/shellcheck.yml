@@ -22,15 +22,23 @@ spec:
     direct_globs:
       default: "scripts/*.sh ansible/*.sh"
       description: >-
-        Space-separated files/globs shellchecked directly. Default reproduces
-        weisssrv (scripts/ + ansible-root helper scripts). A repo with only
-        scripts/ passes `scripts/*.sh`.
+        Space-separated files/globs shellchecked directly; a glob that matches
+        nothing is skipped with a note. A repo with only scripts/ passes
+        `scripts/*.sh`.
     find_dir:
       default: "ansible/roles"
       description: >-
         Directory recursively searched for *.sh and *.sh.j2 (the Jinja shell
-        templates get the neutralizer treatment). Empty string skips both find
-        loops — set it empty for a repo with no such tree.
+        templates get the neutralizer treatment). Empty — or a directory this
+        repo does not have — skips both find loops with a note.
+    default_branch:
+      default: "main"
+      description: >-
+        Consumer's default branch as a LITERAL name (`main`, `master`, `trunk`)
+        for the post-merge rule. NOT `$CI_DEFAULT_BRANCH`: the value lands
+        inside a quoted `rules:if` string, which GitLab does not expand, so the
+        comparison would never match and the job would silently stop running
+        post-merge.
     changes:
       type: array
       default:
@@ -38,7 +46,7 @@ spec:
         - "ansible/*.sh"
         - "ansible/roles/**/*.sh"
         - "ansible/roles/**/*.sh.j2"
-      description: Path list for the MR/main `changes:` rules (weisssrv .paths-shellcheck).
+      description: Path list for the MR / default-branch `changes:` rules.
 ---
 "$[[ inputs.job_name ]]":
   needs: []
@@ -71,7 +79,10 @@ spec:
       [ "$rc" -eq 0 ] || { echo "ShellCheck failed on one or more direct files"; exit "$rc"; }
     - |
       FIND_DIR="$[[ inputs.find_dir ]]"
+      # Unset OR absent skips: a set-but-missing dir would make `find` exit
+      # non-zero, failing a consumer that simply does not have that tree.
       [ -n "$FIND_DIR" ] || { echo "no find_dir set — skipping role shell + template checks"; exit 0; }
+      [ -d "$FIND_DIR" ] || { echo "no such find_dir '$FIND_DIR' — skipping role shell + template checks"; exit 0; }
       # Also lint shell scripts shipped under the find dir (e.g. Ansible roles).
       # `find ... | while ...` would mask failures: the pipeline's exit code is
       # the while loop's, i.e. the rc of its LAST iteration — a shellcheck
@@ -82,19 +93,17 @@ spec:
     - |
       FIND_DIR="$[[ inputs.find_dir ]]"
       [ -n "$FIND_DIR" ] || exit 0
-      # Lint shell-script Jinja templates (*.sh.j2) shipped in roles (incl. the
-      # boot-time crypto-unlock units). We can't render real values, so
-      # neutralize Jinja first. The {# #} comment-RANGE delete eats bash
-      # ${#arr[@]} and corrupts the body, so {% raw %}-wrapped scripts (literal
-      # bash) instead delete only FULL-LINE {# ... #} comments (anchored, can't
-      # touch a mid-line ${#...}); plain templates keep the full neutralizer.
-      # CONSTRAINT: a multi-line/inline {# #} in the out-of-raw header of a raw-
-      # wrapped template isn't stripped — keep header comments to single lines.
+      [ -d "$FIND_DIR" ] || exit 0
+      # Lint shell-script Jinja templates (*.sh.j2): real values can't be
+      # rendered, so Jinja is neutralized first. A {# #} comment-RANGE delete
+      # would eat bash ${#arr[@]}, so {% raw %}-wrapped templates (literal bash)
+      # drop only FULL-LINE {# ... #} comments; plain ones keep the full
+      # neutralizer. CONSTRAINT: an inline/multi-line {# #} in the out-of-raw
+      # header of a raw-wrapped template is NOT stripped — keep those single-line.
       #
-      # Accumulate rc (not `find | while`, whose exit status is only the last
-      # iteration's) via a list file — not a pipe or process substitution, since
-      # this job's shell is ash/sh — so the loop runs in the current shell and
-      # rc survives. `rc=1` on any failure + the final `exit $rc` fails the job.
+      # rc is accumulated via a list file, not `find | while` (whose status is
+      # only the last iteration's) and not a pipe/process substitution (this
+      # job's shell is ash), so the loop runs in the current shell.
       rendered=$(mktemp)
       tmpl_list=$(mktemp)
       rc=0
@@ -126,6 +135,6 @@ spec:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes: $[[ inputs.changes ]]
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "$[[ inputs.default_branch ]]"'
       changes: $[[ inputs.changes ]]
     - if: '$CI_PIPELINE_SOURCE == "web"'

@@ -4,6 +4,10 @@ spec:
       default: version-check
     stage:
       default: lint
+      description: >-
+        Defaults to `lint` — this half is informational and runs alongside the
+        MR lint jobs. Its bump-bot counterpart defaults to `maintenance`, so a
+        consumer declaring stages needs both.
     image:
       default: python:3.11
     tags:
@@ -29,6 +33,14 @@ spec:
     report_path:
       default: "version-report.json"
       description: "Artifact the check writes; published on every outcome."
+    default_branch:
+      default: "main"
+      description: >-
+        Consumer's default branch as a LITERAL name (`main`, `master`, `trunk`)
+        for the post-merge rule. NOT `$CI_DEFAULT_BRANCH`: the value lands
+        inside a quoted `rules:if` string, which GitLab does not expand, so the
+        comparison would never match and the job would silently stop running
+        post-merge.
     changes:
       type: array
       default: ["**/*"]
@@ -39,37 +51,22 @@ spec:
         a report that silently stops existing is worse than one that runs too
         often. Pass narrower paths to filter it.
 ---
-# Reports dependency/pin updates that are available, WITHOUT changing anything.
+# Reports available dependency/pin updates WITHOUT changing anything — the
+# read-only half of the pair whose other half (ci/maintenance/version-bump-bot.yml)
+# rewrites pins and raises the MR on a schedule.
 #
-# This is the read-only half of the pair. ci/maintenance/version-bump-bot.yml is
-# the other half: a scheduled job that rewrites pins and raises the MR. A repo
-# wants BOTH — this one so an MR author sees drift while they are already
-# looking, the bot so drift gets acted on when nobody is looking.
+# NO CREDENTIAL RETRIEVAL HERE. `setup_command` and `check_command` come from the
+# .gitlab-ci.yml of the ref under test and run in one shell, so on an MR they ARE
+# the code under review: anything this job fetches, that code can read, and any
+# guard around the fetch is defeatable by the step that runs before it. A consumer
+# needing a token passes a masked CI variable scoped to what it would tolerate
+# leaking (an MR comment needs only Reporter + `api`); privileged work belongs in
+# a separate job triggered from a trusted ref.
 #
-# NO CREDENTIAL RETRIEVAL HERE, deliberately. `check_command` and
-# `setup_command` both come from the .gitlab-ci.yml of the ref being tested, so
-# on a merge request they ARE the code under review, running in one shell. A
-# credential fetched by this job is therefore readable by that code, and any
-# guard around the fetch is defeatable by the step that runs before it — an
-# earlier `setup_command` can export CI_COMMIT_REF_PROTECTED=true, or simply
-# eval the fetch command itself. A gate the attacker controls is not a gate.
-#
-# So a consumer that needs a token here passes it as a masked CI VARIABLE and
-# accepts that branch code can read it — which means scoping it to what you
-# would tolerate leaking. Posting an MR comment needs only Reporter and `api`;
-# a project access token at that level can comment and read, and cannot push.
-# Anything broader (a vault-wide secrets-manager token, a user PAT) does not
-# belong in a job that executes branch-controlled commands. If privileged work
-# is genuinely required, run it in a separate job triggered from a trusted ref.
-#
-# SOFT-FAIL ON EVERY TRIGGER, deliberately. "Updates are available" is rc=1 from
-# most checkers, and that is information, not a defect: a scheduled or MR
-# pipeline must not go red because upstream shipped a release. The artifact is
-# published `when: always` so the report survives whatever the exit code was.
-#
-# `when: manual` on web pipelines needs its own `allow_failure: true`: a
-# rules-based manual job defaults to allow_failure FALSE, which leaves every web
-# pipeline sitting "blocked" on a job nobody intended to play.
+# SOFT-FAIL ON EVERY TRIGGER: "updates are available" is rc=1 from most checkers,
+# which must not redden a pipeline. The artifact is published `when: always`.
+# The web rule needs its own `allow_failure: true` — a rules-based manual job
+# defaults to allow_failure FALSE and leaves the pipeline "blocked".
 "$[[ inputs.job_name ]]":
   # Starts immediately rather than waiting out a build stage it has no
   # dependency on. Soft-fail everywhere, so an earlier start is free.
@@ -77,12 +74,16 @@ spec:
   stage: $[[ inputs.stage ]]
   image: $[[ inputs.image ]]
   tags: $[[ inputs.tags ]]
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - scheduler_failure
   variables:
     REPORT_PATH: "$[[ inputs.report_path ]]"
   script:
-    # Block scalars, not bare interpolation — matching version-bump-bot: an
-    # unquoted command can otherwise be parsed as a YAML scalar of the wrong
-    # type before it ever reaches the shell.
+    # Block scalars so a multi-line command works and no shell metacharacter in
+    # the value can collide with YAML flow syntax.
     - |
       $[[ inputs.setup_command ]]
     - |
@@ -104,6 +105,6 @@ spec:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes: $[[ inputs.changes ]]
       allow_failure: true
-    # main: informational.
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    # Default branch: informational.
+    - if: '$CI_COMMIT_BRANCH == "$[[ inputs.default_branch ]]"'
       allow_failure: true

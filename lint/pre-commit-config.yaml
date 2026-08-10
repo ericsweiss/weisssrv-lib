@@ -23,4 +23,6 @@ repos:
         args: [--markdown-linebreak-ext=md]
       - id: check-merge-conflict
       - id: check-yaml
-        args: [--allow-multiple-documents]
+        # --unsafe: syntax-only parse (no tag construction), so GitLab's
+        # `!reference` and Ansible's `!vault` custom tags do not false-fail.
+        args: [--allow-multiple-documents, --unsafe]

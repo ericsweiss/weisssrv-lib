@@ -15,8 +15,13 @@ spec:
         --privileged, which the shared non-privileged tenant runner cannot
         provide. A consumer without one registers their own and retags here.
     dind_service:
-      default: "docker:24.0-dind"
-      description: Docker-in-Docker service image (daemon-embedded BuildKit).
+      default: "docker:27.5.1-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce"
+      description: >-
+        Docker-in-Docker service image (daemon-embedded BuildKit). Digest-pinned
+        (multi-arch INDEX digest, so it stays portable) — this is the one
+        component of the job that runs PRIVILEGED, and it executes the binaries
+        the sha256 pins below protect. Kept on the same 27.5.1 line as
+        docker_cli_version.
     docker_cli_version:
       default: "27.5.1"
       description: Static docker CLI version (sha256-pinned per arch below).
@@ -130,7 +135,10 @@ spec:
   image: $[[ inputs.image ]]
   tags: $[[ inputs.tags ]]
   services:
-    - $[[ inputs.dind_service ]]
+    # Explicit alias: the runner derives one from the image name, and a
+    # digest-pinned name must still answer at the `docker` host DOCKER_HOST uses.
+    - name: $[[ inputs.dind_service ]]
+      alias: docker
   variables:
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
@@ -222,7 +230,10 @@ spec:
             echo "docker build/push of ${ref} failed after ${max} attempts"; return 1
           fi
           echo "build/push attempt $((attempt-1)) failed; retrying (${attempt}/${max})..."
-          sleep $(( (RANDOM % 20) + 10 ))
+          # 10-29s backoff, jittered per job+attempt from the PID so parallel
+          # image builds do not re-collide. POSIX: $RANDOM is a bashism and the
+          # `image` input may be a dash-only base.
+          sleep $(( 10 + ($$ + attempt * 7) % 20 ))
         done
         # :latest only on the default branch — MR pipelines use SHA tags so they
         # never overwrite :latest with an unmerged branch image.
