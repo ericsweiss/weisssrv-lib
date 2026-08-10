@@ -198,14 +198,24 @@ def _ref_key_lines(text: str, project: str) -> set[int]:
     # read back correctly. So targets are bounded to the include block's own
     # textual span; anything outside it is left for check() to report.
     include_start = include_key.start_mark.index
-    include_end = min(
-        (
-            key.start_mark.index
-            for key, _ in root.value
-            if key.start_mark.index > include_start
-        ),
-        default=len(text),
-    )
+    # The node's own end mark is the exact span. Deriving it from the NEXT
+    # top-level key instead can overshoot when that key is reached through an
+    # alias, whose mark points back at the anchor — which would pull unrelated
+    # jobs into the span and refuse a fix that was safe. That errs in the safe
+    # direction, but the precise bound is also the simpler one.
+    include_end = include_node.end_mark.index
+    if include_end <= include_start:
+        # The include value is ITSELF an alias, so its composed node carries the
+        # anchor's marks and the span reads as empty. Fall back to the
+        # conservative bound, which keeps the alias inside it and refused.
+        include_end = min(
+            (
+                key.start_mark.index
+                for key, _ in root.value
+                if key.start_mark.index > include_start
+            ),
+            default=len(text),
+        )
 
     # Bounding to the span is not enough on its own: an alias whose ANCHOR also
     # lives inside `include:` — under another entry's `inputs:`, say — passes the

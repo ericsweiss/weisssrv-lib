@@ -781,3 +781,29 @@ def test_fix_refuses_duplicate_top_level_include_keys(tmp_path: Path) -> None:
     # reason, which would let this test pass while the defect remained.
     assert "multiple top-level `include:`" in str(excinfo.value)
     assert p.read_text() == before
+
+
+def test_fix_succeeds_when_a_later_job_uses_an_alias(tmp_path: Path) -> None:
+    """An alias AFTER the include block must not be pulled into its span.
+
+    The span is bounded by the include node's own end mark; an over-wide bound
+    would drag this job's `<<: *base` in and refuse a perfectly safe rewrite.
+    """
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.2"
+        .base: &base
+          image: python:3.13
+        include:
+          - project: eric/weisssrv-lib
+            ref: v0.3.2
+            file: /ci/lint/yaml-lint.yml
+        some-job:
+          <<: *base
+          script: ["true"]
+        """
+    )
+    p = _write(tmp_path, content)
+    assert clp.fix(p) == 1
+    assert clp.check(p) == []
