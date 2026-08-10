@@ -61,7 +61,15 @@ _RefTolerantLoader.add_multi_constructor(
 
 
 def load_ci(path: Path) -> dict:
-    return yaml.load(path.read_text(), Loader=_RefTolerantLoader) or {}
+    return parse_ci(path.read_text(encoding="utf-8"))
+
+
+def parse_ci(text: str) -> dict:
+    """Parse already-read text, so a caller that also needs the raw source
+    reads the file ONCE. Two reads could disagree if the file changed between
+    them, and --fix rewrites lines located by one read into text from another.
+    """
+    return yaml.load(text, Loader=_RefTolerantLoader) or {}
 
 
 def lib_includes(doc: dict, project: str = LIB_PROJECT) -> list[dict]:
@@ -215,7 +223,8 @@ def _ref_key_lines(text: str, project: str) -> set[int]:
 
 def fix(path: Path, project: str = LIB_PROJECT, ref_var: str = REF_VAR) -> int:
     """Rewrite every library include `ref:` to the declared value."""
-    doc = load_ci(path)
+    text = path.read_text(encoding="utf-8")
+    doc = parse_ci(text)
     want = declared_ref(doc, ref_var)
     if not want:
         raise SystemExit(f"{path}: variables.{ref_var} is not set; nothing to sync")
@@ -231,7 +240,6 @@ def fix(path: Path, project: str = LIB_PROJECT, ref_var: str = REF_VAR) -> int:
 
     # Textual rewrite so comments and formatting survive, but the lines to
     # touch come from the parsed tree (see _ref_key_lines) rather than a scan.
-    text = path.read_text()
     targets = _ref_key_lines(text, project)
     lines = text.splitlines(keepends=True)
     changed = 0
@@ -287,7 +295,7 @@ def fix(path: Path, project: str = LIB_PROJECT, ref_var: str = REF_VAR) -> int:
                 f"{path}: rewrite did not land cleanly (pins parsed back as "
                 f"{landed!r}, wanted {want!r}); file left unchanged"
             )
-        path.write_text(updated)
+        path.write_text(updated, encoding="utf-8")
     return changed
 
 
