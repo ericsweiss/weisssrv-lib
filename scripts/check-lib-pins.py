@@ -101,7 +101,9 @@ def check(
     want = declared_ref(doc, ref_var)
     if not want:
         return [f"{path}: variables.{ref_var} is not set (the single source)"]
-    if not TAG_RE.match(want):
+    # fullmatch, not match: Python's `$` also matches before a trailing
+    # newline, so a multiline scalar like "v0.5.1\n" would pass the tag gate.
+    if not isinstance(want, str) or TAG_RE.fullmatch(want) is None:
         problems.append(
             f"{path}: {ref_var} is {want!r}, which is not a release tag "
             "(vX.Y.Z). The include contract forbids pinning a branch."
@@ -133,16 +135,33 @@ def _ref_key_lines(text: str, project: str) -> set[int]:
     if not isinstance(root, yaml.MappingNode):
         return set()
 
-    include_node = next(
+    include_pair = next(
         (
-            value
+            (key, value)
             for key, value in root.value
             if isinstance(key, yaml.ScalarNode) and key.value == "include"
         ),
         None,
     )
-    if include_node is None:
+    if include_pair is None:
         return set()
+    include_key, include_node = include_pair
+
+    # An ALIAS resolves to its anchored node, so a `ref` reached through
+    # `include: *shared` carries source marks pointing at the ANCHOR — which may
+    # sit anywhere in the file. Rewriting there would edit shared configuration,
+    # and the re-parse would still agree, because the alias makes the include
+    # read back correctly. So targets are bounded to the include block's own
+    # textual span; anything outside it is left for check() to report.
+    include_start = include_key.start_mark.index
+    include_end = min(
+        (
+            key.start_mark.index
+            for key, _ in root.value
+            if key.start_mark.index > include_start
+        ),
+        default=len(text),
+    )
 
     entries = (
         include_node.value
@@ -166,7 +185,8 @@ def _ref_key_lines(text: str, project: str) -> set[int]:
         if isinstance(proj[1], yaml.ScalarNode) and proj[1].value == project:
             # The KEY's line, not the value's: an empty `ref:` parses to null,
             # whose node can be marked on the FOLLOWING line.
-            found.add(ref[0].start_mark.line)
+            if include_start <= ref[0].start_mark.index < include_end:
+                found.add(ref[0].start_mark.line)
     return found
 
 
@@ -176,6 +196,15 @@ def fix(path: Path, project: str = LIB_PROJECT, ref_var: str = REF_VAR) -> int:
     want = declared_ref(doc, ref_var)
     if not want:
         raise SystemExit(f"{path}: variables.{ref_var} is not set; nothing to sync")
+    # Validated BEFORE anything is written. Without this, pointing the variable
+    # at a branch made --fix propagate that branch to every include and only
+    # then report failure — leaving the file worse than it found it, which is
+    # the opposite of what a repair command should do on bad input.
+    if not isinstance(want, str) or TAG_RE.fullmatch(want) is None:
+        raise SystemExit(
+            f"{path}: variables.{ref_var} must be a release tag (vX.Y.Z), got "
+            f"{want!r}; file left unchanged"
+        )
 
     # Textual rewrite so comments and formatting survive, but the lines to
     # touch come from the parsed tree (see _ref_key_lines) rather than a scan.

@@ -210,19 +210,21 @@ def test_fix_matches_a_quoted_or_commented_project_value(tmp_path: Path) -> None
     assert clp.check(p) == []
 
 
-def test_fix_reports_failure_when_the_result_still_violates(
-    tmp_path: Path, capsys
+def test_fix_refuses_a_branch_source_without_touching_the_file(
+    tmp_path: Path,
 ) -> None:
-    """--fix must not exit 0 on a file it cannot actually repair.
+    """--fix must not propagate a bad source value into the file.
 
-    A branch ref in the single source is not something the rewrite can fix: it
-    happily makes every entry agree with `main` and would otherwise report
-    success for a file that still violates the contract.
+    A branch in the single source is not something the rewrite can repair: it
+    would happily make every entry agree with `main` and only then report the
+    violation, leaving the CI file worse than it found it. So the value is
+    validated BEFORE anything is written.
     """
     p = _write(tmp_path, _ci("main", ("v0.4.0", "v0.4.0")))
-    rc = clp.main(["--ci-file", str(p), "--fix"])
-    assert rc == 1
-    assert "FAILED after rewrite" in capsys.readouterr().err
+    before = p.read_text()
+    with pytest.raises(SystemExit):
+        clp.fix(p)
+    assert p.read_text() == before
 
 
 def test_fix_ignores_project_ref_pairs_outside_the_include_block(
@@ -427,3 +429,46 @@ def test_fix_refuses_a_value_yaml_would_retype(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         clp.fix(p)
     assert p.read_text() == before
+
+
+def test_check_rejects_a_tag_with_a_trailing_newline(tmp_path: Path) -> None:
+    """Python's `$` matches before a trailing newline; `fullmatch` does not."""
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.1\\n"
+        include:
+          - project: eric/weisssrv-lib
+            ref: "v0.5.1\\n"
+            file: /ci/lint/yaml-lint.yml
+        """
+    )
+    problems = clp.check(_write(tmp_path, content))
+    assert any("not a release tag" in p for p in problems)
+
+
+def test_fix_ignores_a_ref_reached_through_an_alias_outside_include(
+    tmp_path: Path,
+) -> None:
+    """An alias resolves to its anchor, whose marks may be anywhere in the file.
+
+    Rewriting at the anchor would edit shared configuration, and the post-fix
+    re-parse would still agree — the alias makes the include read back
+    correctly. Targets are therefore bounded to the include block's own span.
+    """
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.1"
+        .shared: &shared
+          project: eric/weisssrv-lib
+          ref: v0.3.2
+          file: /ci/lint/yaml-lint.yml
+        include:
+          - *shared
+        """
+    )
+    p = _write(tmp_path, content)
+    before = p.read_text()
+    assert clp.fix(p) == 0          # nothing inside include: to rewrite
+    assert p.read_text() == before  # the anchor is untouched
