@@ -470,5 +470,59 @@ def test_fix_ignores_a_ref_reached_through_an_alias_outside_include(
     )
     p = _write(tmp_path, content)
     before = p.read_text()
-    assert clp.fix(p) == 0          # nothing inside include: to rewrite
+    # Nothing inside include: to rewrite — and rather than report that as a
+    # clean 0, fix() says it cannot repair the file and leaves it alone.
+    with pytest.raises(SystemExit):
+        clp.fix(p)
     assert p.read_text() == before  # the anchor is untouched
+
+
+def test_fix_refuses_a_flow_style_entry_it_cannot_rewrite(tmp_path: Path) -> None:
+    """The line rewriter only understands block style; say so, do not return 0."""
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.2"
+        include:
+          - {project: eric/weisssrv-lib, ref: v0.3.2, file: /ci/lint/yaml-lint.yml}
+        """
+    )
+    p = _write(tmp_path, content)
+    before = p.read_text()
+    with pytest.raises(SystemExit):
+        clp.fix(p)
+    assert p.read_text() == before
+
+
+def test_fix_refuses_an_entry_with_no_ref_to_rewrite(tmp_path: Path) -> None:
+    """`--fix` cannot ADD a missing pin; reporting 0 would hide that."""
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.2"
+        include:
+          - project: eric/weisssrv-lib
+            file: /ci/lint/yaml-lint.yml
+        """
+    )
+    p = _write(tmp_path, content)
+    before = p.read_text()
+    with pytest.raises(SystemExit):
+        clp.fix(p)
+    assert p.read_text() == before
+
+
+def test_check_names_an_entry_that_has_no_file_key(tmp_path: Path) -> None:
+    """Drift on a file-less entry must not be reported against a bare None."""
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.2"
+        include:
+          - project: eric/weisssrv-lib
+            ref: v0.3.2
+        """
+    )
+    problems = clp.check(_write(tmp_path, content))
+    assert problems and "None pins" not in problems[0]
+    assert "<entry with no file:>" in problems[0]

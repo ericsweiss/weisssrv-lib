@@ -79,9 +79,16 @@ def declared_ref(doc: dict, ref_var: str = REF_VAR) -> str | None:
 
 
 def files_of(entry: dict) -> list[str]:
-    """`file:` is a string OR a list — a list shares one ref across templates."""
+    """`file:` is a string OR a list — a list shares one ref across templates.
+
+    An entry may carry no `file:` at all (a malformed include, or one using a
+    different selector). Naming it `<entry with no file:>` beats reporting the
+    drift against a bare `None`, which reads like a bug in this script.
+    """
     f = entry.get("file")
-    return list(f) if isinstance(f, list) else [f]
+    if isinstance(f, list):
+        return [str(x) for x in f]
+    return [str(f)] if f else ["<entry with no file:>"]
 
 
 def check(
@@ -231,6 +238,16 @@ def fix(path: Path, project: str = LIB_PROJECT, ref_var: str = REF_VAR) -> int:
             # emit `ref:v0.5.0`.
             lines[n] = f"{m.group(1)}ref: {want}{m.group(3)}{newline}"
             changed += 1
+    remaining = check(path, project, ref_var) if not changed else []
+    if remaining:
+        # fix() reporting 0 is a claim that nothing needed doing. It cannot add
+        # a `ref:` that is absent, rewrite a flow-style entry, or reach a pin
+        # that lives outside `include:` — and returning 0 for any of those hands
+        # the caller a clean result over an unrepaired file.
+        raise SystemExit(
+            f"{path}: --fix could not repair this file; fix it by hand:\n  "
+            + "\n  ".join(remaining)
+        )
     if changed:
         updated = "".join(lines)
         # Verify by OUTCOME rather than enumerating the ways a textual rewrite
