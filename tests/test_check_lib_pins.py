@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import importlib.util
 import textwrap
+
+import pytest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -378,3 +380,50 @@ def test_fix_ignores_a_nested_inputs_project_and_ref_pair(tmp_path: Path) -> Non
     assert entry["ref"] == "v0.5.0"
     assert entry["inputs"]["ref"] == "user-supplied"
     assert clp.check(p) == []
+
+
+def test_fix_refuses_a_block_scalar_ref_and_leaves_the_file_alone(
+    tmp_path: Path,
+) -> None:
+    """A `ref: >-` body survives a first-line rewrite and breaks the document.
+
+    Rather than special-casing block scalars, fix() re-parses its own output
+    and refuses anything that did not land as the exact intended string. The
+    file must be untouched when it refuses — a half-edited CI file is worse
+    than an unedited one.
+    """
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.0"
+        include:
+          - project: eric/weisssrv-lib
+            ref: >-
+              v0.3.2
+            file: /ci/lint/yaml-lint.yml
+        """
+    )
+    p = _write(tmp_path, content)
+    before = p.read_text()
+    with pytest.raises(SystemExit):
+        clp.fix(p)
+    assert p.read_text() == before
+
+
+def test_fix_refuses_a_value_yaml_would_retype(tmp_path: Path) -> None:
+    """`ref: on` parses back as True, not the string that was written."""
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "on"
+        include:
+          - project: eric/weisssrv-lib
+            ref: v0.3.2
+            file: /ci/lint/yaml-lint.yml
+        """
+    )
+    p = _write(tmp_path, content)
+    before = p.read_text()
+    with pytest.raises(SystemExit):
+        clp.fix(p)
+    assert p.read_text() == before

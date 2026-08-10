@@ -203,7 +203,29 @@ def fix(path: Path, project: str = LIB_PROJECT, ref_var: str = REF_VAR) -> int:
             lines[n] = f"{m.group(1)}ref: {want}{m.group(3)}{newline}"
             changed += 1
     if changed:
-        path.write_text("".join(lines))
+        updated = "".join(lines)
+        # Verify by OUTCOME rather than enumerating the ways a textual rewrite
+        # can go wrong. A `ref: >-` block scalar leaves its body behind; a value
+        # YAML would retype (`on`, `null`, a date) lands as the wrong type; an
+        # aliased include can carry marks from elsewhere. Each has its own
+        # special case, and the list is open-ended — so instead: re-parse, and
+        # require every library pin to have landed as the exact string intended.
+        # Anything else keeps the original file. Nothing is written until this
+        # passes, so a refusal is never a half-edited file.
+        try:
+            reparsed = yaml.load(updated, Loader=_RefTolerantLoader) or {}
+        except yaml.YAMLError as exc:
+            raise SystemExit(
+                f"{path}: rewrite would produce invalid YAML ({exc}); "
+                "file left unchanged"
+            ) from exc
+        landed = [entry.get("ref") for entry in lib_includes(reparsed, project)]
+        if any(ref != want for ref in landed):
+            raise SystemExit(
+                f"{path}: rewrite did not land cleanly (pins parsed back as "
+                f"{landed!r}, wanted {want!r}); file left unchanged"
+            )
+        path.write_text(updated)
     return changed
 
 
