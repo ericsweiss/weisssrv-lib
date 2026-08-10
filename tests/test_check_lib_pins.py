@@ -255,3 +255,60 @@ def test_fix_ignores_project_ref_pairs_outside_the_include_block(
     assert doc["include"][0]["ref"] == "v0.5.0"
     assert doc["mirror-job"]["variables"]["ref"] == "v0.1.1"
     assert clp.check(p) == []
+
+
+def test_fix_rewrites_an_empty_ref_without_corrupting_the_line(
+    tmp_path: Path,
+) -> None:
+    """`line.replace("", want, 1)` would insert at column 0 and mangle the file."""
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.0"
+        include:
+          - project: eric/weisssrv-lib
+            ref:
+            file: /ci/lint/yaml-lint.yml
+        """
+    )
+    p = _write(tmp_path, content)
+    assert clp.fix(p) == 1
+    assert "    ref: v0.5.0\n" in p.read_text()
+    assert clp.check(p) == []
+
+
+def test_fix_preserves_a_trailing_comment_on_the_ref_line(tmp_path: Path) -> None:
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.0"
+        include:
+          - project: eric/weisssrv-lib
+            ref: v0.3.2  # pinned deliberately
+            file: /ci/lint/yaml-lint.yml
+        """
+    )
+    p = _write(tmp_path, content)
+    assert clp.fix(p) == 1
+    assert "ref: v0.5.0  # pinned deliberately" in p.read_text()
+
+
+def test_fix_leaves_a_nested_inputs_ref_alone(tmp_path: Path) -> None:
+    """`inputs:` can carry its own `ref` input; only the entry's pin is ours."""
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.0"
+        include:
+          - project: eric/weisssrv-lib
+            ref: v0.3.2
+            file: /ci/thing.yml
+            inputs:
+              ref: some-user-value
+        """
+    )
+    p = _write(tmp_path, content)
+    assert clp.fix(p) == 1
+    doc = clp.load_ci(p)
+    assert doc["include"][0]["ref"] == "v0.5.0"
+    assert doc["include"][0]["inputs"]["ref"] == "some-user-value"

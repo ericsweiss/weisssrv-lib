@@ -130,6 +130,7 @@ def fix(path: Path, project: str = LIB_PROJECT, ref_var: str = REF_VAR) -> int:
     # line that opens the block.
     lines = path.read_text().splitlines(keepends=True)
     in_lib_entry = False
+    entry_indent = -1
     in_include_block = False
     changed = 0
     for n, line in enumerate(lines):
@@ -155,11 +156,27 @@ def fix(path: Path, project: str = LIB_PROJECT, ref_var: str = REF_VAR) -> int:
             except yaml.YAMLError:
                 value = None
             in_lib_entry = value == project
+            # The `ref:` we may rewrite is this key's SIBLING, so remember where
+            # the key starts. Anything deeper belongs to a nested block such as
+            # `inputs:`, which can legitimately carry its own `ref` input.
+            entry_indent = line.index("project:")
             continue
         if in_lib_entry and stripped.startswith("ref:"):
-            current = stripped.split(":", 1)[1].strip()
-            if current != want:
-                lines[n] = line.replace(current, want, 1)
+            if line.index("ref:") != entry_indent:
+                continue  # nested (e.g. inputs.ref), not the entry's own pin
+            # Rebuild the line instead of substituting the old value into it.
+            # `line.replace(current, want, 1)` inserts at column 0 when the ref
+            # is EMPTY (`current` is ""), corrupting the file — and could match
+            # the wrong span for any short value.
+            m = re.match(
+                r"^(\s*)ref:[^\S\n]*(.*?)([^\S\n]*(?:#.*)?)$", line.rstrip("\n")
+            )
+            if m and m.group(2) != want:
+                newline = "\n" if line.endswith("\n") else ""
+                # `ref: ` rebuilt rather than reused: an EMPTY `ref:` has no
+                # trailing space to preserve, so reusing the matched prefix
+                # would emit `ref:v0.5.0`.
+                lines[n] = f"{m.group(1)}ref: {want}{m.group(3)}{newline}"
                 changed += 1
             in_lib_entry = False
     if changed:
