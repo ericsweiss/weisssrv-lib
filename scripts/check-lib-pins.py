@@ -170,6 +170,22 @@ def _ref_key_lines(text: str, project: str) -> set[int]:
         default=len(text),
     )
 
+    # Bounding to the span is not enough on its own: an alias whose ANCHOR also
+    # lives inside `include:` — under another entry's `inputs:`, say — passes the
+    # bound while still redirecting the rewrite at shared nested configuration.
+    # Composing resolves aliases away, so they are detected on the event stream.
+    # Refusing is the conservative answer: fix() reports the drift unrepaired
+    # rather than editing a line that belongs to something else. Scoped to the
+    # span, so an alias elsewhere in the file does not disable --fix.
+    for event in yaml.parse(text, Loader=_RefTolerantLoader):
+        if isinstance(event, yaml.AliasEvent) and (
+            include_start <= event.start_mark.index < include_end
+        ):
+            raise SystemExit(
+                "the `include:` block contains a YAML alias, whose anchor may "
+                "live anywhere; refusing to rewrite it. Update the pins by hand."
+            )
+
     entries = (
         include_node.value
         if isinstance(include_node, yaml.SequenceNode)

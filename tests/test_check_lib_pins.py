@@ -562,3 +562,60 @@ class TestCliErrors:
         with pytest.raises(SystemExit) as e:
             clp.main(["--help"])
         assert e.value.code == 0
+
+
+def test_fix_refuses_an_alias_anchored_inside_the_include_block(
+    tmp_path: Path,
+) -> None:
+    """The span bound alone does not cover an anchor that is ALSO in include:.
+
+    Such an alias passes the bounds check while still pointing the rewrite at a
+    line belonging to another entry's nested config, so the whole block is
+    refused rather than edited.
+    """
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.2"
+        include:
+          - project: eric/weisssrv-lib
+            file: /ci/a.yml
+            inputs:
+              shared: &shared
+                ref: v0.0.1
+          - project: eric/weisssrv-lib
+            ref: v0.3.2
+            file: /ci/b.yml
+            inputs:
+              reused: *shared
+        """
+    )
+    p = _write(tmp_path, content)
+    before = p.read_text()
+    with pytest.raises(SystemExit):
+        clp.fix(p)
+    assert p.read_text() == before
+
+
+def test_fix_still_works_with_an_alias_outside_the_include_block(
+    tmp_path: Path,
+) -> None:
+    """An alias elsewhere in the file must not disable --fix."""
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.2"
+        .base: &base
+          image: python:3.13
+        some-job:
+          <<: *base
+          script: ["true"]
+        include:
+          - project: eric/weisssrv-lib
+            ref: v0.3.2
+            file: /ci/lint/yaml-lint.yml
+        """
+    )
+    p = _write(tmp_path, content)
+    assert clp.fix(p) == 1
+    assert clp.check(p) == []
