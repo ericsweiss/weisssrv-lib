@@ -312,3 +312,41 @@ def test_fix_leaves_a_nested_inputs_ref_alone(tmp_path: Path) -> None:
     doc = clp.load_ci(p)
     assert doc["include"][0]["ref"] == "v0.5.0"
     assert doc["include"][0]["inputs"]["ref"] == "some-user-value"
+
+
+def test_fix_does_not_treat_a_hash_inside_the_ref_as_a_comment(
+    tmp_path: Path,
+) -> None:
+    """In YAML a `#` opens a comment only when whitespace precedes it."""
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.0"
+        include:
+          - project: eric/weisssrv-lib
+            ref: v1.0#rc1
+            file: /ci/lint/yaml-lint.yml
+        """
+    )
+    p = _write(tmp_path, content)
+    assert clp.fix(p) == 1
+    # The whole old value is replaced — no fragment survives as a comment.
+    assert "#rc1" not in p.read_text()
+    assert clp.check(p) == []
+
+
+def test_fix_replaces_a_quoted_ref_value(tmp_path: Path) -> None:
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.0"
+        include:
+          - project: eric/weisssrv-lib
+            ref: "v0.3.2"
+            file: /ci/lint/yaml-lint.yml
+        """
+    )
+    p = _write(tmp_path, content)
+    assert clp.fix(p) == 1
+    assert clp.load_ci(p)["include"][0]["ref"] == "v0.5.0"
+    assert clp.check(p) == []

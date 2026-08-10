@@ -168,8 +168,15 @@ def fix(path: Path, project: str = LIB_PROJECT, ref_var: str = REF_VAR) -> int:
             # `line.replace(current, want, 1)` inserts at column 0 when the ref
             # is EMPTY (`current` is ""), corrupting the file — and could match
             # the wrong span for any short value.
+            # A `#` only opens a YAML comment when whitespace precedes it, and a
+            # quoted scalar may contain one outright. Splitting on a bare `#`
+            # would cut a ref like `v1.0#rc1` in half and paste the remainder
+            # back as a comment.
             m = re.match(
-                r"^(\s*)ref:[^\S\n]*(.*?)([^\S\n]*(?:#.*)?)$", line.rstrip("\n")
+                r"""^(\s*)ref:[^\S\n]*"""
+                r"""("(?:\\.|[^"\\])*"|'(?:''|[^'])*'|.*?)"""
+                r"""([^\S\n]+#.*|[^\S\n]*)$""",
+                line.rstrip("\n"),
             )
             if m and m.group(2) != want:
                 newline = "\n" if line.endswith("\n") else ""
