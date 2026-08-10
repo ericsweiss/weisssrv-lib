@@ -402,15 +402,16 @@ Conventions shared by every template:
 - **`when: manual` carries its own `allow_failure: true`.** A rules-based manual
   job defaults to `allow_failure: false`, which leaves every web pipeline sitting
   "blocked" on a job nobody intended to play.
-- **Credentials load on PROTECTED REFS ONLY.** `check_command` comes from the
-  `.gitlab-ci.yml` of the ref being tested, so on a merge-request branch it *is*
-  the code under review; exporting a token first would hand any pushable branch
-  whatever that token reaches, and these tend to be broad (a 1Password service
-  account reaches a whole vault). Gated on `CI_COMMIT_REF_PROTECTED`, which needs
-  no configuration to be right. The cost is explicit: on an unprotected ref the
-  check still runs and still publishes its report, but the MR comment does not
-  happen. A consumer needing privileged MR comments should use a separate job on
-  a trusted trigger rather than a token exposed to branch-controlled code.
+- **No credential retrieval in this job, by design.** `setup_command` and
+  `check_command` both come from the `.gitlab-ci.yml` of the ref being tested, so
+  on a merge request they *are* the code under review, sharing one shell. Any
+  credential this job fetched would be readable by that code, and any guard
+  around the fetch is defeatable by the step that runs first — an earlier
+  `setup_command` can export `CI_COMMIT_REF_PROTECTED=true`, or eval the fetch
+  command itself. A gate the attacker controls is not a gate. A consumer needing
+  a token passes it as a masked CI variable, scoped to what it would tolerate
+  leaking: an MR comment needs only Reporter + `api`, which can comment and read
+  but not push. Vault-wide or user tokens do not belong here.
 - **Degrades rather than fails without credentials.** A FAILING lookup on a
   protected ref is a warning rather than fatal: under `set -e` an unguarded eval
   would end the job before the report it exists to produce. With no token, or a
