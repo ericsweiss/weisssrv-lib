@@ -350,3 +350,31 @@ def test_fix_replaces_a_quoted_ref_value(tmp_path: Path) -> None:
     assert clp.fix(p) == 1
     assert clp.load_ci(p)["include"][0]["ref"] == "v0.5.0"
     assert clp.check(p) == []
+
+
+def test_fix_ignores_a_nested_inputs_project_and_ref_pair(tmp_path: Path) -> None:
+    """`inputs:` may carry `project` and `ref` of its own — they are inputs.
+
+    This is what defeated every indentation heuristic: the nested pair looks
+    exactly like an entry's own pin to a line scanner, but check() reads only
+    the direct include mappings and never sees it.
+    """
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.0"
+        include:
+          - project: eric/weisssrv-lib
+            ref: v0.3.2
+            file: /ci/thing.yml
+            inputs:
+              project: eric/weisssrv-lib
+              ref: user-supplied
+        """
+    )
+    p = _write(tmp_path, content)
+    assert clp.fix(p) == 1
+    entry = clp.load_ci(p)["include"][0]
+    assert entry["ref"] == "v0.5.0"
+    assert entry["inputs"]["ref"] == "user-supplied"
+    assert clp.check(p) == []
