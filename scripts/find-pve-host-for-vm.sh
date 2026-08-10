@@ -32,18 +32,13 @@ VMID="$1"
 shift
 HOSTS=("$@")
 
-# `ha-manager status` and `pvesh get /cluster/resources` both report the bare
-# Proxmox node name, which on the reference cluster is the SSH target minus a
-# `pve-` prefix. Normalizing to a hardcoded prefix would hand the caller an
-# unresolvable hostname on a site whose nodes are named otherwise, so the prefix
-# is a knob. `${x-y}` (not `${x:-y}`) so an explicitly empty value disables the
-# rewrite entirely.
+# The API reports the bare Proxmox node name; the SSH target may carry a
+# prefix. `${x-y}` (not `${x:-y}`) so an explicitly empty value disables the
+# rewrite.
 PVE_NODE_PREFIX="${PVE_NODE_PREFIX-pve-}"
 
-# VMID is interpolated into a remote shell command (`grep "service vm:${VMID}"`)
-# and an inline Python snippet (`if x.get('vmid') == ${VMID}`) below. Pin it to
-# a positive integer up front so a hostile or malformed input can't break out of
-# either context. Proxmox VMIDs are always positive integers in [100, 999999999].
+# VMID is interpolated into a remote shell command and an inline Python
+# snippet below, so pin it to a positive integer first.
 if [[ ! "$VMID" =~ ^[0-9]+$ ]]; then
     echo "ERROR: VMID must be a positive integer (got: ${VMID})" >&2
     exit 2
@@ -62,20 +57,11 @@ if [ -z "$REACHABLE" ]; then
     exit 1
 fi
 
-# Step 2: ha-manager (preferred when service is HA-managed).
-# `|| true` swallows the non-zero exit when the VM isn't HA-managed —
-# without it, the upstream grep miss + pipefail aborts the script under
-# `set -e` before steps 3/4 can run.
-#
-# Boundary: match vm:<N> followed by whitespace or end-of-line so
-# vm:154 doesn't match vm:1540. The earlier form used `\b` which is a
-# GNU-grep extension to ERE — fine on Debian/PVE today, but the
-# explicit `( |\t|$)` is portable across BSD grep / busybox in case
-# this script ever gets reused outside the Proxmox cluster.
-# `sed -n ...p` only prints lines where the substitution actually matched.
-# Without `-n` (and the trailing `p`), a line that grep matched but whose
-# `(node,...)` shape sed can't parse would be echoed VERBATIM, putting the
-# whole status line into $NODE instead of falling through to steps 3/4.
+# Step 2: ha-manager (preferred when the service is HA-managed). `|| true`
+# swallows the grep miss for a non-HA VM so steps 3/4 still run. The
+# `([[:space:]]|$)` boundary keeps vm:154 from matching vm:1540, and `sed -n
+# …p` prints only lines the substitution matched, so an unparseable status
+# line falls through instead of landing verbatim in $NODE.
 NODE=$(ssh_probe "$REACHABLE" "sudo ha-manager status 2>/dev/null | grep -E 'service vm:${VMID}([[:space:]]|\$)'" 2>/dev/null \
     | sed -n 's/.*(\([^,]*\),.*/\1/p' || true)
 
@@ -87,13 +73,9 @@ if [ -z "$NODE" ]; then
         || true)
 fi
 
-# Single normalization for BOTH API-derived branches: ensure exactly one
-# $PVE_NODE_PREFIX on the front. Steps 2 and 3 answer the same question with the
-# same bare node identifier, so a rewrite living inside one of them silently
-# returns an unresolvable hostname whenever the other wins — and step 2, which
-# covers the HA-managed guests this helper mostly exists for, wins first.
-# Deliberately placed BEFORE step 4 and not after: that branch sets NODE from
-# the caller's own SSH-target list, which is already the name to connect to.
+# Both API-derived branches normalize here, to exactly one $PVE_NODE_PREFIX.
+# Before step 4 on purpose: that branch sets NODE from the caller's own SSH
+# targets, which are already connectable names.
 if [ -n "$NODE" ] && [ -n "$PVE_NODE_PREFIX" ]; then
     NODE="${PVE_NODE_PREFIX}${NODE#"$PVE_NODE_PREFIX"}"
 fi

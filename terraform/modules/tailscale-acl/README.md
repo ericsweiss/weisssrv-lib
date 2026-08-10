@@ -10,7 +10,7 @@ data the caller supplies.
 
 ```hcl
 module "tailnet" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/tailscale-acl?ref=v0.2.0"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/tailscale-acl?ref=v0.6.0"
 
   acl_policy = file("${path.module}/policy.hujson")
 

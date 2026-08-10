@@ -7,9 +7,6 @@ the Taskfile and ansible/test-all-roles.sh. Each test invokes the script in a
 bash subprocess under a controlled PATH/HOME/PYTHONPATH so no real tool on the
 developer's machine leaks into the result, and asserts the printed invocation
 and exit code for one tier.
-
-Run with pytest:
-    pytest scripts/test_resolve_tool.py -q
 """
 
 from __future__ import annotations

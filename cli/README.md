@@ -11,19 +11,20 @@ documents. No PyYAML is needed at runtime (it is a test-only extra).
 
 The distribution is `weisssrv-lib-cli`; the console script is
 `weisssrv-new-project`. Pin the library tag — the CLI encodes the template
-contract of the tag it ships in.
+contract of the tag it ships in. The tags below are examples: use the tag your
+repo pins (docs/VERSIONING.md).
 
 ```bash
 # No install (the path the template's scripts/rename.sh takes):
-pipx run --spec 'git+https://git.ericsweiss.com/eric/weisssrv-lib.git@v0.2.0#subdirectory=cli' \
+pipx run --spec 'git+https://git.ericsweiss.com/eric/weisssrv-lib.git@v0.6.0#subdirectory=cli' \
   weisssrv-new-project --help
 
 # Install the console script. The spec is POSITIONAL: `pipx install --spec …`
 # fails with "unrecognized arguments: --spec" (pipx dropped that flag).
-pipx install 'git+https://git.ericsweiss.com/eric/weisssrv-lib.git@v0.2.0#subdirectory=cli'
+pipx install 'git+https://git.ericsweiss.com/eric/weisssrv-lib.git@v0.6.0#subdirectory=cli'
 
 # …with the copier extra, which only `new-cluster` needs:
-pipx install 'weisssrv-lib-cli[cluster] @ git+https://git.ericsweiss.com/eric/weisssrv-lib.git@v0.2.0#subdirectory=cli'
+pipx install 'weisssrv-lib-cli[cluster] @ git+https://git.ericsweiss.com/eric/weisssrv-lib.git@v0.6.0#subdirectory=cli'
 
 # From a checkout of this library:
 pip install ./cli            # or: pip install './cli[cluster]'
@@ -32,7 +33,7 @@ PYTHONPATH=cli python3 -m weisssrv_lib_cli --help   # no install at all
 
 weisssrv-lib is an **internal-visibility** GitLab project, so `git+https://`
 needs credentials (a PAT with `read_repository` in the URL, or use
-`git+ssh://git@git.ericsweiss.com/eric/weisssrv-lib.git@v0.2.0#subdirectory=cli`).
+`git+ssh://git@git.ericsweiss.com/eric/weisssrv-lib.git@v0.6.0#subdirectory=cli`).
 
 ## Commands
 
@@ -131,12 +132,13 @@ weisssrv-new-project verify          # runs kustomize build if available
 weisssrv-new-project verify --no-kustomize
 ```
 
-### new-cluster `<source> <destination>` — EXPERIMENTAL
+### new-cluster `<source> <destination>`
 
 Renders a **cluster** template (a [copier](https://copier.readthedocs.io)
 template, unlike the fork-and-rename app scaffold above) into an absent-or-empty
-directory. `weisssrv-cluster-template` is not published yet, so the flags may
-still change. Needs the `cluster` extra.
+directory. The published template is
+`https://git.ericsweiss.com/eric/weisssrv-cluster-template.git`; render one of
+its tags with `--vcs-ref`. Needs the `cluster` extra.
 
 | flag | effect |
 |------|--------|
@@ -149,7 +151,7 @@ still change. Needs the `cluster` extra.
 ```bash
 weisssrv-new-project new-cluster \
   https://git.ericsweiss.com/eric/weisssrv-cluster-template.git ./my-cluster \
-  --vcs-ref v0.1.0 --data cluster_name=lab --defaults
+  --vcs-ref v0.2.0 --data cluster_name=lab --defaults
 
 # Iterating on an unreleased template: a local path works as the source.
 weisssrv-new-project new-cluster ../weisssrv-cluster-template ./my-cluster --defaults
@@ -185,3 +187,10 @@ WEISSSRV_TEMPLATE_ROOT=~/src/weisssrv-app-template python3 -m pytest cli/tests -
 
 Without a checkout the template half skips — resync the fixture (the failure
 message prints the `cp` command) whenever the template changes.
+
+## Python floor
+
+`requires-python = ">=3.9"` is a compatibility promise enforced by lint
+(`lint/ruff.toml` targets py39 and every module carries
+`from __future__ import annotations`); CI itself only runs the suite on the
+image's Python (3.13).

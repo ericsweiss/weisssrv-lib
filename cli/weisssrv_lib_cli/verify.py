@@ -101,13 +101,9 @@ def _ci_problems(root: Path) -> list[str]:
     # dies with .gitlab-ci.yml.
     for extra in tree.GITLAB_CI_EXTRA:
         path = root / extra
-        # Regular-file predicate, matching prune._ci_shape_missing exactly. The
-        # old test was `.exists()`, which FOLLOWS symlinks, so a symlinked
-        # .gitleaks.toml passed verify while `prune ci:gitlab` called the same
-        # tree unsatisfiable and refused to keep it. Two gates disagreeing about
-        # one tree means one of them is lying about it. `present` uses
-        # is_symlink() as well so a DANGLING link still counts as left over
-        # rather than vanishing from both branches.
+        # Regular-file predicate, matching prune._ci_shape_missing: a symlink
+        # is not a runnable file here. `present_on_disk` checks is_symlink()
+        # too, so a dangling link still counts as leftover.
         regular = path.is_file() and not path.is_symlink()
         present_on_disk = path.exists() or path.is_symlink()
         if "gitlab" in present and not regular:
@@ -168,8 +164,8 @@ def verify(root: Path, run_kustomize: bool = True) -> tuple[bool, list[str]]:
     # 4. Non-opt-in manifests on disk are referenced.
     on_disk = {
         p.name
-        for p in fdir.glob("*.yaml")
-        if p.name != tree.KUSTOMIZATION
+        for p in fdir.iterdir()
+        if p.suffix in (".yaml", ".yml") and p.name != tree.KUSTOMIZATION
     }
     referenced = set(resources)
     for name in sorted(on_disk - referenced):

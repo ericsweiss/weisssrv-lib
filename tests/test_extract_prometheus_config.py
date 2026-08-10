@@ -4,8 +4,6 @@ Drives the extraction/rendering against fixture manifests (tests/fixtures/
 prometheus/) shaped like a kube-prometheus-stack HelmRelease + an ExternalSecret
 Alertmanager template, so a structural regression fails here before the
 promtool/amtool CI job downloads its binaries.
-
-Run via `python3 -m pytest tests`.
 """
 from __future__ import annotations
 

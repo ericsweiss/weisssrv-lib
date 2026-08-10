@@ -71,10 +71,9 @@ include:
   # substitute: false — a tenant has no cluster-versions ConfigMap and pins
   # literal image tags, so there is nothing to envsubst. The TOOL versions
   # (kubeconform / kustomize + their sha256s) are OWNED by the library's
-  # defaults on purpose — do not re-pin them here; bump the library ref to move
-  # them (this removes the drift the template used to carry). k8s_version IS
-  # pinned here: it is the cluster's k8s minor kubeconform validates against, a
-  # per-consumer fact (k3s v1.36.x today), not a library-owned tool version.
+  # defaults — do not re-pin them here; bump the library ref to move them.
+  # k8s_version IS pinned here: it is the cluster's k8s minor kubeconform
+  # validates against, a per-consumer fact, not a library-owned tool version.
   - project: eric/weisssrv-lib
     ref: v0.3.1
     file: /ci/validate/flux-lint.yml
@@ -274,35 +273,7 @@ python-tests:
     WEISSSRV_REQUIRE_CLI: "1"
 
 # ============================================================================
-# AI REVIEW — now the library's shared template (see the include: block above),
-# not a job defined here. It used to be inline because the library shipped no
-# pr-agent template; that stopped being true at v0.2.0, and the divergence had
-# already cost something real: the inline copy pinned codiumai/pr-agent:0.34, a
-# namespace FROZEN when the project moved to the community org, and ran only
-# `review` — no `improve` pass, so no code suggestions at all.
-#
-# BYO-keys is unchanged: the job is CREATED only when both masked CI/CD
-# variables are set (Settings -> CI/CD -> Variables), so a fork MR simply has no
-# AI review, which is expected rather than a failure. There is still no in-job
-# 1Password path — the shared runner is non-root and cannot install `op` at job
-# time, so 1Password users read those values into the CI variables when they SET
-# them. See docs/CONSUMING.md ("Bring your own keys").
+# AI REVIEW comes from the library include above. The job is CREATED only when
+# both masked key variables are set (Settings -> CI/CD -> Variables), so a fork
+# MR simply has no AI review. See docs/CONSUMING.md ("Bring your own keys").
 # ============================================================================
-
-# ============================================================================
-# OPTIONAL manual reconcile poke. Flux owns deploys: on merge to main it pulls
-# this repo and reconciles automatically (see the operator-side GitRepository).
-# This job only fast-forwards that by POSTing to a Flux webhook receiver, and
-# only if you set FLUX_WEBHOOK_URL (the receiver must be PUBLICLY reachable —
-# the shared runner has no LAN access). Default off.
-# ----------------------------------------------------------------------------
-# trigger-reconcile:
-#   stage: ai-review
-#   image: curlimages/curl:8.11.1
-#   needs: []
-#   script:
-#     - curl -fsS -X POST "$FLUX_WEBHOOK_URL"
-#   rules:
-#     - if: '$CI_COMMIT_BRANCH == "main" && $FLUX_WEBHOOK_URL'
-#       when: manual
-#       allow_failure: true

@@ -1,6 +1,4 @@
 """Tests for scripts/semantic-release.py (conventional-commit release planning).
-
-Run via `pytest tests` (the python-tests CI job runs this automatically).
 """
 from __future__ import annotations
 
@@ -27,12 +25,9 @@ _spec.loader.exec_module(sr)
 RS = sr.RECORD_SEP
 FS = sr.FIELD_SEP
 
-# GitLab (and now GitHub Actions) inject these into every job, and main() reads
-# them for whichever platform is selected: an unscrubbed CI_COMMIT_SHA silently
-# overrides the fake HEAD the main() tests pin, so the release-creation and
-# crash-recovery assertions fail in the pipeline and pass locally. Scrub the
-# whole set so the suite behaves identically in and out of CI, on either forge;
-# a test that wants one sets it explicitly.
+# Both forges inject these into every job and main() reads them, so an
+# unscrubbed CI_COMMIT_SHA would override the fake HEAD these tests pin. Scrub
+# the set; a test that wants one sets it explicitly.
 CI_ENV = (
     "CI",
     "GITLAB_CI",
@@ -1058,12 +1053,9 @@ def test_run_cli_reports_an_unreachable_api(monkeypatch, capsys):
 
 # --- Failures that carry no HTTP status --------------------------------------
 #
-# Only HTTPError has `.code` and `.read()`. A DNS failure, connection reset,
-# timeout or non-JSON body arrives as URLError/OSError/JSONDecodeError, and
-# before API_ERRORS those escaped main() entirely — so `release.json`, which
-# both CI shapes publish `when: always` and which is the only record a failed
-# release leaves behind, went unwritten for exactly the failures that are
-# hardest to reproduce afterwards.
+# Only HTTPError has `.code`/`.read()`; a DNS failure, reset, timeout or
+# non-JSON body arrives as URLError/OSError/JSONDecodeError. Each must still
+# write release.json — the only record a failed release leaves behind.
 
 
 def test_main_records_a_release_that_failed_without_an_http_status(tmp_path, monkeypatch, capsys):

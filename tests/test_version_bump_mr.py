@@ -1,6 +1,4 @@
 """Tests for scripts/version-bump-mr.py (the idempotent bot-MR manager).
-
-Run via `pytest tests` (the python-tests CI job runs this automatically).
 """
 from __future__ import annotations
 

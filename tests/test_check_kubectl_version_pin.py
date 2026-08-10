@@ -5,8 +5,6 @@ path resolution against throwaway files, and the argparse surface: the two
 positional paths are optional (defaults apply), a bad argument is rejected
 rather than treated as a filename, and an unreadable input exits 2 with a
 one-line error instead of a traceback.
-
-Run via `python3 -m pytest tests` (the python-tests CI job runs this).
 """
 from __future__ import annotations
 

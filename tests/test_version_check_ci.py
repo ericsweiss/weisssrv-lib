@@ -18,9 +18,6 @@ tests pin the contract CI depends on:
   - the artifact path defaults to version-report.json and is redirectable with
     --output (a consumer whose CI collects the report elsewhere)
 
-Run with pytest (preferred):
-    pytest scripts/test_version_check_ci.py -v
-
 unittest fallback is provided for environments without pytest.
 """
 
@@ -32,11 +29,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-try:
-    import pytest
-    PYTEST_AVAILABLE = True
-except ImportError:
-    PYTEST_AVAILABLE = False
+import pytest
 
 # Import the hyphen-named module via importlib (same pattern as
 # test_check_versions.py).
@@ -438,7 +431,4 @@ class TestServicesGuard(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    if PYTEST_AVAILABLE:
-        pytest.main([__file__, "-v"])
-    else:
-        unittest.main(verbosity=2)
+    raise SystemExit(pytest.main([__file__, "-v"]))

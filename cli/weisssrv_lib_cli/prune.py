@@ -33,13 +33,10 @@ FEATURES = (
 
 # The ONLY paths `ci:<shape>` may delete, keyed by the shape that is KEPT.
 #
-# SECURITY: unlike `manifest:<file>`, these paths live outside kubernetes/flux/,
-# so `_safe_manifest_name`'s containment guard cannot apply. The defence here is
-# different in kind: the shape name is never joined into a path. It is only ever
-# used as an exact dict key, and the paths deleted are the fixed constants in
-# `tree` — so no attacker-supplied text ever reaches the filesystem, and a
-# crafted shape (`../..`, `/etc`, `gitlab/../../x`) simply misses the mapping and
-# is refused by `_safe_ci_shape` before anything is touched.
+# SECURITY: these paths live outside kubernetes/flux/, so `_safe_manifest_name`
+# cannot guard them. Instead the shape name is never joined into a path — it is
+# an exact dict key only, and the deleted paths are fixed `tree` constants, so a
+# crafted shape misses the mapping and `_safe_ci_shape` refuses it.
 _CI_SHAPE_DROPS = {
     "gitlab": (tree.GITHUB_WORKFLOWS,),
     "github": (tree.GITLAB_CI, *tree.GITLAB_CI_EXTRA),
@@ -146,11 +143,9 @@ def _validate_features(root: Path, features: list[str]) -> None:
     """Reject the whole request BEFORE mutating anything, so a bad feature name
     (or an external-ingress prune that would empty a file) never leaves a
     half-mutated repo."""
-    # A project keeps exactly ONE CI shape, but the features are applied in
-    # sequence, so `ci:gitlab ci:github` used to drop each other's files in turn
-    # and leave the project with no CI at all — a self-contradictory request
-    # silently doing the most destructive thing. Repeating the same shape is
-    # still fine (it is idempotent).
+    # At most one CI shape per invocation: the features are applied in
+    # sequence, so two shapes would drop each other's files and leave no CI at
+    # all. Repeats of the SAME shape are idempotent and allowed.
     shapes = {
         _safe_ci_shape(f.split(":", 1)[1]) for f in features if f.startswith("ci:")
     }
@@ -210,11 +205,9 @@ def _ci_shape_missing(root: Path, shape: str) -> list[str]:
 
     `none` keeps nothing, so it can never be unsatisfiable.
     """
-    # _safe_ci_target, not `root / rel`: the DROP paths were already checked for
-    # symlinked ancestors, but the KEPT shape was not — so `ci:github` under a
-    # symlinked `.github` resolved to workflows outside the repo, satisfied this
-    # check, and deleted the working GitLab pipeline. A leaf symlink is rejected
-    # too: git tracks the link, not a runnable file at that path.
+    # Both the DROP and the KEPT paths go through _safe_ci_target, so a
+    # symlinked ancestor cannot resolve outside the repo. A leaf symlink is
+    # rejected too: git tracks the link, not a runnable file at that path.
     if shape == "gitlab":
         missing = []
         for rel in (tree.GITLAB_CI, *tree.GITLAB_CI_EXTRA):

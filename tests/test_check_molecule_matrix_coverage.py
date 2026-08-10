@@ -14,9 +14,6 @@ layout, covering:
 
 The script resolves the repo root from its own location, so each fixture test
 runs against a copy of the script placed inside the fixture tree.
-
-Run with pytest:
-    python3 -m pytest tests/test_check_molecule_matrix_coverage.py -v
 """
 
 from __future__ import annotations

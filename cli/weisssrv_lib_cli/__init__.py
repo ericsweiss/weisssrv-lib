@@ -12,4 +12,6 @@ try:
     # library tag is this CLI from?" instead of a hand-copied literal.
     __version__ = _version("weisssrv-lib-cli")
 except PackageNotFoundError:
-    __version__ = "0.2.0+source"  # running off a checkout (PYTHONPATH=cli)
+    # Running off a checkout (PYTHONPATH=cli): a version-free marker, so it
+    # cannot go stale against the release tag.
+    __version__ = "0+source"

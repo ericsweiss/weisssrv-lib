@@ -64,11 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_cluster = sub.add_parser(
         "new-cluster",
-        help="[EXPERIMENTAL] render a cluster template with copier",
+        help="render a cluster template with copier",
         description=(
-            "[EXPERIMENTAL] Render a weisssrv cluster template with copier. "
-            "weisssrv-cluster-template is not published yet, so this command's "
-            "interface may still change. Needs the `cluster` extra "
+            "Render a weisssrv cluster template with copier — by default "
+            f"{cluster.CLUSTER_TEMPLATE_URL}, whose tags are the supported "
+            "sources. Needs the `cluster` extra "
             "(pip install 'weisssrv-lib-cli[cluster]')."
         ),
     )
@@ -120,11 +120,6 @@ def _report(action: str, changed: list[Path], root: Path) -> None:
 
 
 def _new_cluster(args) -> int:
-    print(
-        "warning: `new-cluster` is EXPERIMENTAL — its flags may change before "
-        "weisssrv-cluster-template is published.",
-        file=sys.stderr,
-    )
     try:
         dest = cluster.render(
             args.source,
@@ -154,12 +149,9 @@ def main(argv: list[str] | None = None) -> int:
     root: Path = args.root
 
     if args.command == "rename":
-        # Both inputs are validated before ANY file is touched: argparse rejects
-        # an unknown --ci at parse time, rename() checks the slug/group up front,
-        # and the ci: prune is preflighted here rather than after the rename —
-        # its symlinked-ancestor refusal fires at validation time, which would
-        # otherwise leave the tree renamed but unpruned, i.e. the combined
-        # operation half-applied.
+        # Everything is validated before any file is touched: the ci: prune is
+        # preflighted here so its refusals cannot leave the tree renamed but
+        # unpruned.
         try:
             if args.ci:
                 prune.validate(root, [f"ci:{args.ci}"])

@@ -10,7 +10,7 @@ supplies (a cluster instance's `dns.tf` / `terraform.tfvars`).
 
 ```hcl
 module "zone" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/cloudflare-zone?ref=v0.2.0"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/cloudflare-zone?ref=v0.6.0"
 
   account_id = var.cloudflare_account_id
   zone_name  = var.external_domain

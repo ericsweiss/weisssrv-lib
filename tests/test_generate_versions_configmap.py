@@ -1,6 +1,4 @@
 """Tests for scripts/generate-versions-configmap.py.
-
-Run via `python3 -m pytest tests`.
 """
 from __future__ import annotations
 

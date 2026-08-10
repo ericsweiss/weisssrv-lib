@@ -1,8 +1,8 @@
-"""Tests for the experimental `new-cluster` copier wrapper.
+"""Tests for the `new-cluster` copier wrapper.
 
 Rendering runs against tests/fixtures/copier-template (a miniature local copier
-template) — weisssrv-cluster-template does not exist yet. Everything that does
-not need copier installed is tested unconditionally.
+template) so the suite stays offline. Everything that does not need copier
+installed is tested unconditionally.
 """
 from __future__ import annotations
 
@@ -159,10 +159,10 @@ class TestRender:
 
 
 class TestNewClusterCommand:
-    def test_help_marks_it_experimental(self, capsys):
+    def test_help_names_the_published_template(self, capsys):
         with pytest.raises(SystemExit):
             main(["new-cluster", "--help"])
-        assert "EXPERIMENTAL" in capsys.readouterr().out
+        assert cluster.CLUSTER_TEMPLATE_URL in capsys.readouterr().out
 
     def test_bad_data_returns_2(self, tmp_path, capsys):
         rc = main(["new-cluster", str(TEMPLATE), str(tmp_path / "out"), "--data", "nope"])
@@ -183,7 +183,6 @@ class TestNewClusterCommand:
             ]
         )
         assert rc == 0
-        out, err = capsys.readouterr()
-        assert "EXPERIMENTAL" in err
+        out, _err = capsys.readouterr()
         assert "rendered" in out
         assert (dest / "clusters" / "lab" / "cluster.yaml").exists()

@@ -33,10 +33,9 @@ OPT_IN_MANIFESTS = frozenset({"hpa.yaml"})
 # --- CI shapes -------------------------------------------------------------
 # The template ships all three CI shapes (docs/CI-SHAPES.md) and a project keeps
 # exactly one; `prune ci:<shape>` drops the others. These paths are repo-root
-# relative and sit OUTSIDE FLUX_DIR — see prune._CI_SHAPE_DROPS, whose fixed
-# allowlist is the only thing allowed to turn a shape name into a deletion.
-# Nothing under kubernetes/flux/ is CI-shape specific: Flux deploys the tenant
-# in all three shapes, so the manifests are identical whichever is chosen.
+# relative and sit OUTSIDE FLUX_DIR — prune._CI_SHAPE_DROPS is the only mapping
+# allowed to turn a shape name into a deletion. Nothing under kubernetes/flux/
+# is CI-shape specific.
 GITLAB_CI = ".gitlab-ci.yml"
 GITHUB_WORKFLOWS = ".github/workflows"
 # GitLab CI companions that die with .gitlab-ci.yml. `.gitlab/issue_templates/`

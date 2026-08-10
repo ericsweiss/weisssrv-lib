@@ -228,20 +228,11 @@ class TestFixtureMatchesTemplate:
 
     @_needs_template
     def test_vendored_semantic_release_matches_the_library_ref_it_pins(self):
-        """The template VENDORS this script. Prose said so; nothing checked it.
+        """The template vendors this script; nothing else compares the copies.
 
-        The two copies had already drifted (98b6410f vs 83ad4b82) with every
-        gate green, because a vendored file is only compared by whoever
-        remembers to compare it. The cost is one-directional and quiet: fixes
-        land here, the template keeps shipping the old script, and every project
-        scaffolded from it inherits bugs that were fixed upstream months ago.
-
-        Compared against the library AT THE REF THE TEMPLATE PINS, not at HEAD.
-        Pinning is the whole point of vendoring — the template is entitled to
-        lag, so long as it lags coherently. Comparing to HEAD would red this
-        suite for the duration of every unreleased change, and a gate that is
-        red by default gets muted. This one goes red for exactly one reason:
-        someone bumped the ref without re-vendoring the file it carries.
+        Compared at the ref the template PINS, not at HEAD: the template is
+        entitled to lag, so long as it lags coherently. The gate reds when
+        someone bumps the ref without re-vendoring the file.
         """
         rel = "scripts/semantic-release.py"
         vendored = _TEMPLATE / rel
@@ -256,11 +247,8 @@ class TestFixtureMatchesTemplate:
 
         blob = _show()
         if blob.returncode != 0:
-            # CI clones shallow and does not always carry tags, so a tag one
-            # commit behind HEAD can still be unresolvable. Fetch just that tag
-            # and retry rather than reporting drift that is really a clone
-            # depth. Offline (a local run with no remote) this simply fails
-            # again and falls through to the error below.
+            # A shallow CI clone may not carry the tag: fetch just that tag
+            # and retry, rather than reporting a clone depth as drift.
             subprocess.run(
                 ["git", "fetch", "--quiet", "--depth", "1", "origin", "tag", pinned],
                 cwd=_LIB_ROOT,
@@ -268,10 +256,8 @@ class TestFixtureMatchesTemplate:
             )
             blob = _show()
         if blob.returncode != 0:
-            # Deliberately a failure, not a skip: "the tag was not in the
-            # checkout" is indistinguishable from "the files match" once it is
-            # a skip, and this gate exists because an invisible gap is what
-            # let the copies drift.
+            # A failure, not a skip: an unreadable tag would otherwise be
+            # indistinguishable from "the files match".
             raise AssertionError(
                 f"cannot read {rel} at {pinned} from this checkout "
                 f"({blob.stderr.decode(errors='replace').strip()}). "
@@ -284,19 +270,10 @@ class TestFixtureMatchesTemplate:
         )
 
     def test_example_and_fixture_release_workflows_match(self):
-        """The two copies inside THIS repo, compared without needing a template.
-
-        The GitHub release workflow exists in three byte-identical places: this
-        library's reference copy, the scaffold fixture, and the app template's
-        vendored .github/workflows/release.yml. Nothing compared any of them —
-        the identity was asserted only in the header comment of the file itself,
-        the same defect that let semantic-release.py drift.
-
-        Deliberately NOT @_needs_template. Every other comparison in this class
-        runs only when a template checkout is reachable, so with no template
-        they all skip and the two copies sitting in this very repository go
-        unchecked — the drift that is easiest to introduce (editing one of the
-        two files here) would be caught by nothing at all. This one always runs.
+        """The GitHub release workflow exists in three byte-identical places:
+        the library's reference copy, the scaffold fixture, and the template's
+        vendored .github/workflows/release.yml. This compares the two that live
+        in THIS repo, so it deliberately runs without a template checkout.
         """
         rel = ".github/workflows/release.yml"
         example = _LIB_ROOT / "ci" / "release" / "github-release-workflow.example.yml"
@@ -311,16 +288,10 @@ class TestFixtureMatchesTemplate:
 
     @_needs_template
     def test_vendored_github_release_workflow_matches_the_library_example(self):
-        """The third copy: what a consumer actually runs.
-
-        With the fixture pinned to the example by the test above, this closes
-        the triangle — example == fixture and example == vendored, so all three
-        agree.
-
-        Compared against the library's WORKING TREE rather than a released tag,
-        unlike the vendored script: this file is `uses:`-less reference YAML that
-        a consumer copies by hand, so there is no pinned ref for it to lag
-        behind. If they differ, one of the three was edited alone.
+        """The third copy: what a consumer runs. With the fixture pinned to the
+        example above, this closes the triangle. Compared against the working
+        tree rather than a tag: the file is reference YAML a consumer copies by
+        hand, so there is no pinned ref for it to lag behind.
         """
         rel = ".github/workflows/release.yml"
         example = _LIB_ROOT / "ci" / "release" / "github-release-workflow.example.yml"
@@ -393,3 +364,31 @@ class TestCliContract:
     @_needs_template
     def test_template_satisfies_contract(self):
         _assert_cli_contract(_TEMPLATE)
+
+
+class TestCommentedAlternates:
+    """The scaffold ships alternate manifests commented out (`wire` and the
+    operator uncomment them). Each block must still be valid YAML when
+    uncommented, or the documented opt-in produces a broken tree."""
+
+    ALTERNATES = (
+        "externalsecret.yaml",
+        "ingressroute.yaml",
+        "certificate.yaml",
+    )
+
+    @pytest.mark.parametrize("name", ALTERNATES)
+    def test_uncommented_alternate_parses(self, name):
+        yaml = pytest.importorskip("yaml")
+        text = (_FIXTURE / tree.FLUX_DIR / name).read_text(encoding="utf-8")
+        marker = "# ---"
+        assert marker in text, f"{name} no longer carries a commented alternate"
+        block = text[text.index(marker):]
+        uncommented = "\n".join(
+            line[2:] if line.startswith("# ") else ("" if line.strip() == "#" else line)
+            for line in block.splitlines()
+        )
+        docs = [d for d in yaml.safe_load_all(uncommented) if d]
+        assert docs, f"{name}'s commented alternate yielded no document"
+        for doc in docs:
+            assert doc.get("kind"), f"{name}'s alternate has no kind"

@@ -11,7 +11,7 @@ which URLs) is site data the caller supplies.
 
 ```hcl
 module "sso" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/authentik-sso?ref=v0.2.0"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/authentik-sso?ref=v0.6.0"
 
   oauth2_providers = {
     grafana = {

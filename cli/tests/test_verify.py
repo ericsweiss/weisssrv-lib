@@ -67,11 +67,8 @@ class TestCiShape:
         assert any("gitlab CI shape is selected but" in p for p in problems)
 
     def test_symlinked_gitlab_ruleset_is_flagged(self, scaffold, tmp_path):
-        # verify and prune must agree about the SAME tree. verify used
-        # `.exists()`, which follows symlinks, so a symlinked ruleset verified
-        # clean while `prune ci:gitlab` called the shape unsatisfiable and
-        # refused to keep it — one of the two was lying. git tracks the link,
-        # not a runnable file at that path.
+        # A symlinked .gitleaks.toml must read as absent in verify, matching
+        # prune: git tracks the link, not a runnable file at that path.
         _configured(scaffold, "gitlab")
         ruleset = scaffold / tree.GITLAB_CI_EXTRA[0]
         target = tmp_path / "elsewhere.toml"

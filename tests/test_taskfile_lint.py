@@ -1,18 +1,12 @@
 #!/usr/bin/env python3
 """Contract tests for the taskfiles/lint.yml go-task fragment.
 
-The fragment is the local mirror of the lint CI templates, so a consumer that
-includes it uses it as a pre-MR gate. A gate that cannot fail is worse than no
-gate, and the `doc-links` task previously shipped as
-`[ -f x ] && python3 x || echo "skipping"` — where the `||` also fires when the
-CHECKER exits non-zero, printing "skipping" over a real failure and exiting 0.
+The fragment is a consumer's local mirror of the lint CI templates, so the
+exit-code contract matters: `doc-links` must skip only when the checker is
+absent, and fail when the checker fails.
 
-These tests execute the task's command body with `sh` (go-task's default
-interpreter is POSIX-sh compatible) against throwaway scripts, so the exit-code
-contract is pinned by behaviour rather than by grepping for the anti-pattern.
-
-Run with pytest:
-    pytest tests/test_taskfile_lint.py -v
+The tests execute each task's command body with `sh` (go-task's default
+interpreter is POSIX-sh compatible) against throwaway scripts.
 """
 from __future__ import annotations
 

@@ -2,23 +2,16 @@
 """Unit tests for scripts/check-taskfile.sh.
 
 check-taskfile.sh is the taskfile-smoke CI gate: it asserts every
-scripts/<name>.{sh,py} referenced by Taskfile.yml exists on disk, plus the
-`dotenv:` target scripts/hosts.env (go-task evaluates command templates lazily
-and never stats referenced files, so a since-renamed script reference isn't
-caught by `task --list` alone). Every sibling gate script has a test suite; this
-pins check-taskfile.sh's contract — including the hosts.env multi-line-list
-matcher — the same way.
+scripts/<name>.{sh,py} referenced by a Taskfile exists on disk, plus each
+`dotenv:` target ($CHECK_TASKFILE_DOTENV, default scripts/hosts.env).
 
-The script derives REPO_ROOT from its own location and resolves references
-against it, so each test builds a throwaway repo (a copy of the script under
-<root>/scripts/ + a fixture Taskfile) to control which scripts / hosts.env are
-present.
-
-Run with pytest:
-    pytest scripts/test_check_taskfile.py -v
+The script derives REPO_ROOT from its own location, so each test builds a
+throwaway repo (a copy of the script under <root>/scripts/ + a fixture
+Taskfile) to control which scripts / dotenv files are present.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -42,11 +35,12 @@ def _make_repo(tmp_path: Path, taskfile_text: str,
     return root
 
 
-def _run(root: Path) -> subprocess.CompletedProcess:
+def _run(root: Path, env: dict | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["bash", str(root / "scripts" / "check-taskfile.sh"),
          str(root / "Taskfile.yml")],
         capture_output=True, text=True,
+        env={**os.environ, **(env or {})},
     )
 
 
@@ -125,6 +119,26 @@ class TestHostsEnvDotenv:
         res = _run(root)
         assert res.returncode == 1
         assert "hosts.env" in res.stderr
+
+    def test_dotenv_target_is_env_overridable(self, tmp_path: Path):
+        # $CHECK_TASKFILE_DOTENV replaces the default target list, so a
+        # consumer with a differently-named dotenv file is still gated.
+        root = _make_repo(
+            tmp_path,
+            "dotenv: ['config/site.env']\ntasks:\n  a:\n    cmds:\n      - echo hi\n",
+        )
+        res = _run(root, env={"CHECK_TASKFILE_DOTENV": "config/site.env"})
+        assert res.returncode == 1
+        assert "config/site.env" in res.stderr
+
+    def test_default_target_not_required_when_overridden(self, tmp_path: Path):
+        root = _make_repo(
+            tmp_path,
+            "dotenv: ['scripts/hosts.env']\ntasks:\n  a:\n    cmds:\n      - echo hi\n",
+            hosts_env=False,
+        )
+        res = _run(root, env={"CHECK_TASKFILE_DOTENV": "config/site.env"})
+        assert res.returncode == 0, res.stderr
 
     def test_absent_but_unreferenced_passes(self, tmp_path: Path):
         # hosts.env is only required when the Taskfile references it as a dotenv

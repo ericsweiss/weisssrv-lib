@@ -7,9 +7,6 @@ The `ssh` stub EXECUTES the remote command string locally against stub
 `ha-manager` / `pvesh` / `qm` binaries, so the script's own grep boundary
 matching, sed extraction and `set -o pipefail` handling are the code under test
 rather than something the harness papers over.
-
-Run with pytest:
-    python3 -m pytest tests/test_find_pve_host_for_vm.py -v
 """
 
 import os

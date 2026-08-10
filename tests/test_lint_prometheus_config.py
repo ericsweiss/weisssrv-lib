@@ -6,9 +6,6 @@ PromQL or an invalid Alertmanager config green all the way to the cluster.
 
 `promtool`, `amtool` and the extractor are stubs on a controlled PATH, so no
 Prometheus tooling is needed to run this.
-
-Run with pytest:
-    python3 -m pytest tests/test_lint_prometheus_config.py -v
 """
 
 import os

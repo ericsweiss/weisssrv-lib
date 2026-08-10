@@ -1,9 +1,7 @@
 """Tests for scripts/check-doc-links.py (the offline Markdown link gate).
 
-Exercises the relative-`.md`-link resolution and the URL/anchor/non-md
-exclusions, plus a smoke check that the real repo docs currently pass.
-
-Run via `pytest scripts/` (the python-tests CI job runs this automatically).
+Exercises relative-`.md`-link resolution, the URL/anchor/non-md exclusions, the
+tracked-vs-fallback file discovery, and a smoke check on the real repo docs.
 """
 from __future__ import annotations
 
@@ -75,13 +73,39 @@ class TestExclusions:
 
 
 class TestDocFiles:
-    def test_collects_docs_and_top_level_readmes(self, tmp_path: Path):
+    def test_fallback_collects_docs_and_top_level_readmes(self, tmp_path: Path):
+        # Not a git checkout => docs/ + $CHECK_DOC_LINKS_EXTRA fallback.
         _write(tmp_path / "docs" / "01-a.md", "a\n")
         _write(tmp_path / "docs" / "sub" / "02-b.md", "b\n")
         _write(tmp_path / "README.md", "r\n")
         _write(tmp_path / "CLAUDE.md", "c\n")
         names = {p.name for p in cdl.doc_files(tmp_path)}
         assert {"01-a.md", "02-b.md", "README.md", "CLAUDE.md"} <= names
+
+    def test_fallback_extra_files_are_env_overridable(self, tmp_path: Path, monkeypatch):
+        _write(tmp_path / "docs" / "01-a.md", "a\n")
+        _write(tmp_path / "TESTING.md", "t\n")
+        _write(tmp_path / "README.md", "r\n")
+        monkeypatch.setenv("CHECK_DOC_LINKS_EXTRA", "TESTING.md")
+        names = {p.name for p in cdl.doc_files(tmp_path)}
+        assert "TESTING.md" in names
+        assert "README.md" not in names
+
+    def test_tracked_scan_covers_markdown_outside_docs(self, tmp_path: Path):
+        # In a git checkout every tracked *.md is scanned, not just docs/.
+        import subprocess
+
+        _write(tmp_path / "roles" / "foo" / "README.md", "[x](../../docs/01-a.md)\n")
+        _write(tmp_path / "docs" / "01-a.md", "a\n")
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+        import os as _os
+        env = {**_os.environ, **env}
+        subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True, env=env)
+        subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True, env=env)
+        subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "x"], check=True, env=env)
+        names = {str(p.relative_to(tmp_path)) for p in cdl.doc_files(tmp_path)}
+        assert "roles/foo/README.md" in names
 
 
 class TestRealRepo:
