@@ -391,14 +391,19 @@ Conventions shared by every template:
 - **Inputs:** `job_name` (version-check), `stage` (lint), `image` (python:3.11),
   `tags`, `setup_command` (pip install), `check_command` (**required** — the
   command that reports and writes the report), `report_path`
-  (`version-report.json`), `secret_token_command` (optional credential export
-  for the MR-comment path, variable-routed), `changes` (MR-rule filter,
-  defaulting to `["**/*"]` — NOT `[]`, which matches nothing and would delete
-  the job silently).
+  (`version-report.json`), `changes` (MR-rule filter, defaulting to `["**/*"]` —
+  NOT `[]`, which matches nothing and would delete the job silently). There is
+  deliberately no credential input; see below.
 - **Soft-fail on every trigger, deliberately.** Most checkers signal "updates
   found" with rc=1, which is information rather than a defect — a scheduled or
-  MR pipeline must not go red because upstream shipped a release. The artifact
-  is published `when: always`, so the report survives whatever the exit code was.
+  MR pipeline must not go red because upstream shipped a release.
+- **`when: always` publishes a report that exists; it does not create one.** It
+  means a non-zero exit will not suppress a report the check already wrote — not
+  that a report appears regardless. A `check_command` that dies before writing
+  `report_path` leaves nothing to upload, and the job goes green-ish (soft-fail)
+  with no artifact at all. Write the report as early as the data allows, and
+  treat "no artifact" as a check that failed before reporting rather than as a
+  clean run.
 - **`when: manual` carries its own `allow_failure: true`.** A rules-based manual
   job defaults to `allow_failure: false`, which leaves every web pipeline sitting
   "blocked" on a job nobody intended to play.
