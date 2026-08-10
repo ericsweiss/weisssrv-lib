@@ -1,0 +1,7 @@
+---
+# The compose-stack restart and nginx reload handlers live in compose_app
+# ("Restart compose stack" / "Reload nginx (compose_app)"). This role keeps only
+# the systemd reload for its backup service + timer units.
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true

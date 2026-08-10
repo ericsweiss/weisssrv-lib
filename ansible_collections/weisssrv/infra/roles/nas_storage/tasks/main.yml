@@ -58,6 +58,10 @@
   ansible.builtin.include_tasks: archive_backup_absent.yml
   when: not (nas_storage_archive_backup_enabled | bool)
 
+- name: Include /etc/pve cluster-config backup tasks
+  ansible.builtin.include_tasks: pve_cluster_backup.yml
+  when: nas_storage_pve_cluster_backup_enabled | default(false)
+
 - name: Include backup-artifact metrics tasks
   ansible.builtin.include_tasks: backup_metrics.yml
   when: nas_storage_backup_artifact_metrics_enabled | default(false)

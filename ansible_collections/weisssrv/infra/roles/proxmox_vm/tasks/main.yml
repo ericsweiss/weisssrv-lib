@@ -207,7 +207,7 @@
       --name {{ inventory_hostname }} \
       --memory {{ proxmox_vm_memory }}{{ ' --balloon ' + (proxmox_vm_balloon | string) if proxmox_vm_balloon is defined else '' }} \
       --cores {{ proxmox_vm_cores }} \
-      --cpu {{ proxmox_vm_cpu_type | default('host') }} \
+      --cpu {{ proxmox_vm_cpu_type }} \
       --net0 virtio,bridge={{ proxmox_vm_bridge }},firewall=1 \
       --ostype {{ proxmox_vm_ostype }} \
       --agent enabled={{ proxmox_vm_agent_enabled | ternary(1, 0) }}{{ ' --pool ' + proxmox_resource_pool if proxmox_resource_pool is defined else '' }}
@@ -217,17 +217,11 @@
     - not _proxmox_vm_is_windows
   changed_when: true
 
-# --- Windows guest: create the VM shell (firmware + disk + media configured
-# in the "Configure Windows …" tasks after the Linux boot-order block below).
-# Kept adjacent to the Linux create so the shared NIC/agent reconciles that
-# follow see an already-created VM for both guest types.
-#
-# Media is validated and the VirtIO ISO downloaded BEFORE `qm create` on
-# purpose: the create-path tasks are guarded on `proxmox_vm_exists.rc != 0`, so a
-# failure AFTER create (missing install ISO, download/checksum error) would
-# strand a bare VM shell that every rerun then skips. Front-loading the media
-# checks means a prerequisite failure aborts before any VM exists, and the
-# rerun is clean.
+# Windows guest: create the VM shell here (firmware/disk/media follow the Linux
+# boot-order block below) so the shared NIC/agent reconciles see a created VM
+# for both guest types. Media is validated and the VirtIO ISO fetched BEFORE
+# `qm create`: create-path tasks gate on `proxmox_vm_exists.rc != 0`, so a media
+# failure after create would strand a bare shell that every rerun skips.
 - name: Assert the Windows install ISO is specified
   ansible.builtin.assert:
     that:
@@ -294,7 +288,7 @@
       --cores {{ proxmox_vm_cores }} \
       --machine {{ proxmox_vm_windows_machine }} \
       --bios ovmf \
-      --cpu {{ proxmox_vm_cpu_type | default('host') }} \
+      --cpu {{ proxmox_vm_cpu_type }} \
       --ostype {{ proxmox_vm_windows_ostype }} \
       --scsihw virtio-scsi-pci \
       --net0 virtio,bridge={{ proxmox_vm_bridge }},firewall=1 \
@@ -347,6 +341,28 @@
   when:
     - not ansible_check_mode
     - proxmox_vm_balloon is defined
+
+# Without this, proxmox_vm_memory would only ever be applied by `qm create`, so
+# changing it in inventory for an existing guest would reach nothing — not even
+# a reboot, which restarts against the unchanged config. `qm set --memory` on a
+# running guest writes the config and takes effect at its NEXT start; this task
+# never restarts anything, so applying it stays an operator step.
+- name: Reconcile VM memory allocation
+  delegate_to: "{{ proxmox_vm_reconcile_host }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    current=$(qm config {{ proxmox_vm_id }} | sed -n 's/^memory: //p')
+    if [ "$current" != "{{ proxmox_vm_memory }}" ]; then
+      qm set {{ proxmox_vm_id }} --memory {{ proxmox_vm_memory }}
+      echo CHANGED
+    fi
+  args:
+    executable: /bin/bash
+  register: proxmox_vm_memory_reconcile
+  changed_when: "'CHANGED' in (proxmox_vm_memory_reconcile.stdout | default(''))"
+  when:
+    - not ansible_check_mode
+    - proxmox_vm_memory is defined
 
 - name: Import cloud image disk
   delegate_to: "{{ proxmox_host }}"
@@ -402,16 +418,12 @@
     - not _proxmox_vm_is_windows
   changed_when: true
 
-# PCI passthrough (VFIO). CREATE-TIME ONLY, on purpose: attaching a PCI device
-# requires the guest STOPPED, so — unlike the balloon/agent/onboot reconciles —
-# this cannot be a live drift-reconcile against a running VM. Attaching here (a
-# `qm set` right after create, mirroring the disk/cloud-init/boot attaches above)
-# realizes proxmox_vm_hostpci for a freshly-provisioned guest; an EXISTING guest that
-# gains proxmox_vm_hostpci is applied by the operator with a manual `qm set <id>
-# --hostpci0 …` in a stop/start maintenance window (same apply gap as proxmox_vm_memory —
-# same apply gap as memory). Each list entry maps to --hostpci<index> and is
-# passed verbatim, so it carries any Proxmox hostpci options — a whole
-# multifunction device on i440fx is just `0000:01:00` (no pcie=1).
+# PCI passthrough (VFIO). CREATE-TIME ONLY: attaching a PCI device requires the
+# guest STOPPED, so this cannot be a live drift-reconcile. An existing guest that
+# gains proxmox_vm_hostpci needs a manual `qm set <id> --hostpci0 …` in a
+# stop/start window. Each list entry maps to --hostpci<index> verbatim, so it
+# carries any Proxmox hostpci option (a whole multifunction device on i440fx is
+# just `0000:01:00`, no pcie=1).
 - name: Attach PCI passthrough devices (create-time)
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
@@ -423,22 +435,16 @@
     - proxmox_vm_hostpci | default([]) | length > 0
   changed_when: true
 
-# --- Windows guest: firmware (EFI vars + TPM 2.0), empty boot disk, and the
-# install + VirtIO driver CDROMs. The install/VirtIO media is validated and
-# fetched in the preflight block above (before `qm create`). Boot order is set
-# to the install CD first so Windows setup runs; the post-install flip to
-# `order=scsi0` is a manual runbook step. All create-time
-# only (guarded on the VM not yet existing) — an existing Windows VM is never
-# re-clobbered.
+# Windows guest: firmware (EFI vars + TPM 2.0), empty boot disk, and the install
+# + VirtIO driver CDROMs. Boot order is the install CD first so Windows setup
+# runs; the post-install flip to `order=scsi0` is a manual step. Create-time only
+# — an existing Windows VM is never re-clobbered.
 - name: Configure Windows EFI vars disk, TPM 2.0, and boot disk
   delegate_to: "{{ proxmox_host }}"
-  # efidisk0/tpmstate0 take `<storage>:1` — the size arg is a placeholder that
-  # Proxmox ignores and allocates a zvol of the correct fixed size (EFI vars,
-  # 4M TPM state) on the zfspool. pre-enrolled-keys=1 ships Microsoft's Secure
-  # Boot keys so Win11's Secure Boot check passes out of the box. The boot disk
-  # is an EMPTY zvol (`<storage>:<GiB>`) — no cloud image import — with discard
-  # + ssd flags for the SSD-backed pool (virtio-scsi-pci carries no iothread,
-  # matching the Linux path).
+  # efidisk0/tpmstate0 take `<storage>:1`: the size is a placeholder Proxmox
+  # ignores, allocating the correct fixed size itself. pre-enrolled-keys=1 ships
+  # Microsoft's Secure Boot keys so Win11's check passes. The boot disk is an
+  # EMPTY zvol (no cloud image import).
   ansible.builtin.shell: |
     qm set {{ proxmox_vm_id }} \
       --efidisk0 {{ _proxmox_vm_effective_storage }}:1,efitype=4m,pre-enrolled-keys=1 \
@@ -501,13 +507,10 @@
     - not _proxmox_vm_is_windows
     - not (proxmox_vm_skip_create | default(false))
 
-# Private temp file (mode 0600, random suffix) instead of a guessable
-# /tmp/ssh_key_<vmid>.pub — on a shared Proxmox host a predictable path is a
-# race/clobber target. Registered so the path flows to qm set and cleanup.
-# Stage the key, consume it via `qm set --sshkeys`, then remove it in `always`
-# so a failure between staging and consuming never leaves the (public) key file
-# behind on the shared Proxmox host. delegate_to/when propagate to all of the
-# block's tasks, including the always cleanup.
+# The key is staged in a private temp file (0600, random suffix — a predictable
+# /tmp/ssh_key_<vmid>.pub on a shared Proxmox host is a race/clobber target),
+# consumed by `qm set --sshkeys`, and removed in `always` so a failure between
+# the two never leaves it behind.
 - name: Stage and consume the cloud-init SSH public key
   delegate_to: "{{ proxmox_host }}"
   when:
@@ -749,10 +752,6 @@
     - proxmox_vm_disk_attach_result.results is defined
     - item.stdout is defined
   changed_when: false
-
-# (The cloud-init SSH key temp file is now removed in the `always` of the
-# "Stage and consume the cloud-init SSH public key" block above, so it is
-# cleaned up even when a create-path task between staging and consuming fails.)
 
 # Linux VMs are started + waited-on here. A Windows VM is deliberately created
 # STOPPED: the operator boots it from the Proxmox console to run the interactive

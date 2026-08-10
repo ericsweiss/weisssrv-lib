@@ -1,6 +1,7 @@
 ---
 galaxy_info:
   role_name: zfs_encryption
+  namespace: weisssrv
   description: >-
     Boot-time unlock of ZFS-native encrypted pools by fetching their
     passphrase from 1Password Connect (host-side counterpart to the

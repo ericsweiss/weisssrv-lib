@@ -10,6 +10,30 @@ corosync/zpool/SMART/vzdump collectors — are gated on
 **`node_exporter_host_proxmox`**, so a guest installs only the package, the 9101
 override and the textfile-collector directory.
 
+## Liveness gate
+
+`node-exporter-healthcheck.timer` fires
+`/usr/local/sbin/node-exporter-healthcheck.sh` every
+`node_exporter_host_healthcheck_interval` (default `5min`). It GETs
+`http://127.0.0.1:<port>/metrics` twice (20s timeout, 5s apart) and, if both
+fail while systemd still reports the unit active, restarts
+`prometheus-node-exporter` and writes
+`node_exporter_healthcheck_last_restart_timestamp_seconds` to the textfile dir.
+
+It exists because the exporter can go **zombie** (`/proc/<pid>/status`
+`State: Z`) with its listening socket still bound and nothing accepting: systemd
+sees a live main PID, reports `active (running)` forever, and no `Restart=`
+policy can fire — the host silently stops being monitored while any
+metric-absence alert pages for the wrong reason. `WatchdogSec` cannot cover it
+either: the Debian unit is `Type=simple` and node_exporter never `sd_notify`s,
+so an HTTP probe is the only trustworthy liveness signal.
+
+A deliberately stopped unit is left alone (`systemctl is-active` guard), so the
+gate never fights an operator. Size the interval well inside the `for:` of the
+exporter-down alert covering this job, so the self-heal normally lands first.
+This is the runtime counterpart to the role's deploy-time `uri` check, which
+only proves the exporter was alive at the end of the play.
+
 ## Textfile collector
 
 Reads `/var/lib/node_exporter/*.prom` files for custom metrics. Currently
@@ -123,9 +147,10 @@ These metrics drive three alerts worth wiring up:
 Defaults (`defaults/main.yml`):
 
 ```yaml
-node_exporter_host_port: 9101            # 9101 to avoid a k3s DaemonSet on 9100
+node_exporter_host_port: 9101              # 9101 to avoid a k3s DaemonSet on 9100
 node_exporter_host_textfile_dir: /var/lib/node_exporter
-node_exporter_host_proxmox: false        # true on bare-metal Proxmox hosts
+node_exporter_host_proxmox: false          # true on bare-metal Proxmox hosts
+node_exporter_host_healthcheck_interval: 5min   # liveness-gate probe period
 ```
 
 The `prometheus-node-exporter` package is installed with `state: present`

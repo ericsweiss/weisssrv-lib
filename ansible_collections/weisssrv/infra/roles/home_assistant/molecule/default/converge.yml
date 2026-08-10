@@ -1,0 +1,8 @@
+---
+# home_assistant_render_only=true (molecule.yml group_vars): the role writes
+# /tmp/ha-configuration.yaml + /tmp/ha-secrets.yaml and touches no HAOS.
+- name: Converge
+  hosts: all
+  become: true
+  roles:
+    - role: weisssrv.infra.home_assistant

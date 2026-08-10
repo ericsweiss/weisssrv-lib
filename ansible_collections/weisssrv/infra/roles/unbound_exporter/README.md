@@ -1,20 +1,31 @@
 # Role: unbound_exporter
 
 Installs the [letsencrypt/unbound_exporter](https://github.com/letsencrypt/unbound_exporter)
-on a resolver host to expose Unbound stats (cache hit rate, query counts,
-DNSSEC validations) to Prometheus.
+on a resolver host so Prometheus can scrape Unbound stats (cache hit rate, query
+counts, DNSSEC validations).
 
-Talks to Unbound via `unbound-control` over its local Unix control socket
-(`/run/unbound.ctl`, `control-use-cert: no`). The `unbound` role provisions
-the socket; the exporter unit runs as a DynamicUser with
-`SupplementaryGroups=unbound` for socket access.
+Thin wrapper over `weisssrv.infra.prometheus_exporter` (`.deb` artifact): that
+role downloads, checksum-verifies, installs, enables, and health-checks; this
+role only supplies the pins and its own unit file.
 
-## Configuration
+The exporter talks to Unbound through the local Unix control socket
+`/run/unbound.ctl` (`control-use-cert: no`), provisioned by
+`weisssrv.infra.unbound`. The unit runs as a `DynamicUser` with
+`SupplementaryGroups=unbound` for socket access, so no static account is created.
 
-```yaml
-unbound_exporter_port: 9167
-```
+## Inputs
 
-`unbound_exporter_version` + `unbound_exporter_checksum` pin the upstream
-release `.deb`; upstream publishes no checksum file, so the checksum is ours —
-bump the pair together.
+| Variable | Default | Purpose |
+|---|---|---|
+| `unbound_exporter_port` | `9167` | `--web.listen-address` port and the health-check target |
+| `unbound_exporter_version` | `0.6.0` | Upstream release tag; also what the dpkg version check compares against |
+| `unbound_exporter_checksum` | `sha256:4f61876a…` | Upstream publishes no checksum file, so this is our own sha256 of the release `.deb` — bump it together with the version |
+
+The installed version is read with `dpkg-query`, not from the binary: it has no
+`--version` flag. The Debian version is normalized (epoch and revision stripped)
+before comparison with the pin.
+
+## See also
+
+- `weisssrv.infra.unbound` — the resolver and its control socket
+- `weisssrv.infra.prometheus_exporter` — the shared install/enable pipeline

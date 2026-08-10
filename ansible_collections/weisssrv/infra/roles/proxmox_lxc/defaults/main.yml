@@ -1,12 +1,10 @@
 ---
-# Skips exactly two real-Proxmox-only tasks — the `pveam download` template
-# fetch and the final `wait_for` SSH probe — so the storage-selection and
-# pool-validation logic can run against stub `pct`/`pvesh` shims.
-#
-# It does NOT bypass `pct create`/`pct exec`, idmap edits, or the
-# /etc/pve/lxc/<id>.conf writes: those gate on `proxmox_lxc_exists.rc != 0`, so
-# stubbing `pvesh` to report the container as existing is the supported way to
-# no-op them in a test rig.
+# Skips the real-Proxmox-only tasks — the network-input assert, the `pveam
+# download`, the final `wait_for` SSH probe — and, when the container does not
+# exist, the reconciles that would `pct config` a missing CT. It does NOT bypass
+# `pct create`/`pct exec`, idmap edits, or the /etc/pve/lxc/<id>.conf writes:
+# those gate on `proxmox_lxc_exists.rc != 0`, so stubbing `pvesh` to report the
+# container as existing is the supported way to no-op them in a test rig.
 proxmox_lxc_skip_create: false
 
 # IP address handed to the role's pct-create + SSH-wait logic. Defaults to

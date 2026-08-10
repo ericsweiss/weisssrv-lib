@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: home_assistant
+  namespace: weisssrv
+  author: Eric Weiss
+  description: Home Assistant OS configuration deployment over the HAOS SSH add-on
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+
+dependencies: []

@@ -139,13 +139,26 @@
       register: adguard_home_config_content
       when: adguard_home_config_file.stat.exists
 
-    - name: Verify config file has password hash
+    # The admin's own entry must carry a bcrypt hash — a bare "password:" match
+    # would also pass on a different user's line, the exact confusion
+    # adguard-admin-hash.py exists to prevent.
+    - name: Verify the admin user's entry carries a bcrypt hash
       ansible.builtin.assert:
         that:
-          - "'password:' in (adguard_home_config_content.content | b64decode)"
-        fail_msg: "Config file missing password hash"
-        success_msg: "Config file contains password hash"
+          - >-
+            (adguard_home_config_content.content | b64decode | from_yaml).users
+            | selectattr('name', 'equalto', adguard_home_admin_user | default('admin'))
+            | map(attribute='password') | select('match', '^\$2[aby]\$')
+            | list | length == 1
+        fail_msg: "The admin user's password is not a bcrypt hash"
+        success_msg: "The admin user's password is a bcrypt hash"
       when: adguard_home_config_file.stat.exists
+
+    - name: Check the admin-password helper is installed
+      ansible.builtin.stat:
+        path: /usr/local/sbin/adguard-admin-hash.py
+      register: adguard_home_hash_helper
+      failed_when: not adguard_home_hash_helper.stat.exists
 
     - name: Display test results
       ansible.builtin.debug:

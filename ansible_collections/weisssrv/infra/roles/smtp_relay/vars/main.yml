@@ -1,0 +1,5 @@
+---
+# main.cf and the tasks read the merged map, never the two halves: role defaults
+# stay live under a partial site override. Defined in vars/ (not defaults/) so a
+# site cannot replace the merged result by accident.
+smtp_relay_effective_config: "{{ smtp_relay_default_config | combine(smtp_relay_config | default({}, true)) }}"

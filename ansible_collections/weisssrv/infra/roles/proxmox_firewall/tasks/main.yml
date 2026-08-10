@@ -42,15 +42,11 @@
   when: inventory_hostname in groups[proxmox_firewall_host_group] | default([])
 
 # Resolve a REACHABLE Proxmox host to carry the cluster-wide tasks rather than
-# hard-pinning the group's first member, whose being down would fail every
-# firewall + monitoring-user deploy on the delegate. Probe once (run_once), then
-# have every host derive the same delegate from the probe runner's fact, so the
-# run_once delegate_to and the per-host hostvars done-fact reads agree — even in
-# guest-only plays where no Proxmox host is in ansible_play_hosts. Falls back to
-# the first member if the probe recorded nothing.
-#
-# The probe is a looped INCLUDE of a single delegated ping; probe-delegate.yml
-# documents why a looped ping aborts the whole play when one delegate is down.
+# pinning the group's first member, whose being down would fail every firewall
+# and monitoring-user deploy. Probe once, then have every host derive the same
+# delegate from the probe runner's fact so the run_once delegate_to and the
+# per-host hostvars reads agree — including in guest-only plays. Falls back to
+# the first group member when the probe recorded nothing.
 - name: Reset the reachability probe results for this play
   ansible.builtin.set_fact:
     _proxmox_firewall_reachable: []
@@ -68,23 +64,19 @@
 
 - name: Resolve the first reachable Proxmox host as the cluster-task delegate
   vars:
-    # The run_once probe accumulated its results on the first host of the
-    # CURRENT BATCH (run_once fires once per serial batch, and in a serial
-    # play each batch re-runs the probe on its own first host) — read them
-    # from there so EVERY host derives the same delegate. ansible_play_batch
-    # equals ansible_play_hosts in the non-serial plays that include this
-    # role today, but stays correct if one ever batches.
+    # run_once fires once per serial batch, so the probe results live on the
+    # first host of the CURRENT batch — read them from there so every host
+    # derives the same delegate, serial play or not.
     _proxmox_firewall_reachable_hosts: >-
       {{ hostvars[ansible_play_batch | first]['_proxmox_firewall_reachable'] | default([]) }}
   ansible.builtin.set_fact:
     _proxmox_firewall_delegate: "{{ _proxmox_firewall_reachable_hosts[0] if (_proxmox_firewall_reachable_hosts | length > 0) else groups[proxmox_firewall_host_group][0] }}"
   when: (groups[proxmox_firewall_host_group] | default([]) | length) > 0
 
-# Cross-play guard: this role is included by many plays (proxmox, dns, mail,
-# services …), but cluster.fw and the pveum user/ACL/token below are cluster-wide
-# and need to run ONCE per invocation. run_once alone fires once PER PLAY, so
-# completion is recorded as a delegate_facts fact on the reachable delegate (a
-# global, evaluable on every host) and later plays skip via hostvars[...].
+# Cross-play guard: cluster.fw and the pveum user/ACL/token are cluster-wide and
+# must run ONCE per invocation, but run_once fires once PER PLAY and this role is
+# included by several. Completion is therefore a delegate_facts fact on the
+# delegate, which later plays read through hostvars.
 - name: Deploy cluster firewall configuration
   ansible.builtin.include_tasks:
     file: deploy-pmxcfs-config.yml
@@ -97,9 +89,8 @@
     pmxcfs_config_src: cluster.fw.j2
     pmxcfs_config_dest: "{{ proxmox_firewall_config_dir }}/cluster.fw"
     pmxcfs_config_label: cluster.fw
-  # cluster.fw is on the shared /etc/pve filesystem - only deploy once, via a Proxmox node.
-  # delegate_to ensures this works even when the play runs for non-Proxmox groups (services, etc.)
-  # where inventory_hostname may not be in groups[proxmox_firewall_host_group].
+  # cluster.fw is on the shared /etc/pve filesystem: deploy it once, via a
+  # Proxmox node, so the role also works in plays whose hosts are guests.
   run_once: true
   when:
     - proxmox_firewall_enabled | default(true)
@@ -131,9 +122,9 @@
     - proxmox_firewall_enabled | default(true)
     - inventory_hostname in groups[proxmox_firewall_host_group] | default([])
 
-# Note: The "firewall: 1" option in /etc/pve/datacenter.cfg is deprecated in Proxmox VE 8+
-# Firewall is now enabled via /etc/pve/firewall/cluster.fw (deployed above) and the pve-firewall service
-# The deprecated option causes parse errors: 'firewall': property is not defined in schema
+# The firewall is enabled through cluster.fw plus the pve-firewall service. The
+# datacenter.cfg "firewall: 1" option is deprecated on PVE 8+ and setting it
+# raises "property is not defined in schema".
 
 - name: Ensure pve-firewall service is enabled and running
   ansible.builtin.systemd:
@@ -151,12 +142,10 @@
     - vmid is defined
     - guest_security_groups is defined
 
-# Proxmox monitoring user and API token for Prometheus exporters.
-# PVE user management is cluster-wide — run_once + delegate_to ensures
-# these tasks execute exactly once on a single Proxmox node. The
-# _proxmox_firewall_pveum_done guard (set on the delegate host below) additionally
-# stops the `pveum … list` probes from re-running once PER PLAY when the
-# role is pulled in by the guest-only dns/mail/services plays.
+# Proxmox monitoring user and API token for the Prometheus exporters. PVE user
+# management is cluster-wide, so run_once + delegate_to run these on a single
+# node, and the _proxmox_firewall_pveum_done fact set below keeps the `pveum …
+# list` probes from repeating in every later play that includes this role.
 - name: Check if monitoring@pve user exists
   ansible.builtin.command: pveum user list --output-format json
   register: proxmox_firewall_users
@@ -165,7 +154,7 @@
   run_once: true
   delegate_to: "{{ _proxmox_firewall_delegate }}"
   when:
-    - groups.get('proxmox', []) | length > 0
+    - groups.get(proxmox_firewall_host_group, []) | length > 0
     - not (proxmox_firewall_skip_pveum | default(false))
     - not (hostvars[_proxmox_firewall_delegate]['_proxmox_firewall_pveum_done'] | default(false))
 
@@ -177,10 +166,9 @@
   run_once: true
   delegate_to: "{{ _proxmox_firewall_delegate }}"
   when:
-    - groups.get('proxmox', []) | length > 0
-    # Explicit gate on skip_pveum so a future refactor that pre-seeds
-    # proxmox_firewall_users.stdout from cache (making `.stdout is defined` true) can't
-    # accidentally fire pveum against a container without the binary.
+    - groups.get(proxmox_firewall_host_group, []) | length > 0
+    # Explicit skip_pveum gate: `.stdout is defined` alone would let a cached or
+    # pre-seeded register fire pveum on a host without the binary.
     - not (proxmox_firewall_skip_pveum | default(false))
     - not (hostvars[_proxmox_firewall_delegate]['_proxmox_firewall_pveum_done'] | default(false))
     - proxmox_firewall_users.stdout is defined
@@ -197,7 +185,7 @@
   run_once: true
   delegate_to: "{{ _proxmox_firewall_delegate }}"
   when:
-    - groups.get('proxmox', []) | length > 0
+    - groups.get(proxmox_firewall_host_group, []) | length > 0
     - not (proxmox_firewall_skip_pveum | default(false))
     - not (hostvars[_proxmox_firewall_delegate]['_proxmox_firewall_pveum_done'] | default(false))
 
@@ -208,7 +196,7 @@
   run_once: true
   delegate_to: "{{ _proxmox_firewall_delegate }}"
   when:
-    - groups.get('proxmox', []) | length > 0
+    - groups.get(proxmox_firewall_host_group, []) | length > 0
     - not (proxmox_firewall_skip_pveum | default(false))
     - not (hostvars[_proxmox_firewall_delegate]['_proxmox_firewall_pveum_done'] | default(false))
     - proxmox_firewall_acls.stdout is defined
@@ -227,7 +215,7 @@
   run_once: true
   delegate_to: "{{ _proxmox_firewall_delegate }}"
   when:
-    - groups.get('proxmox', []) | length > 0
+    - groups.get(proxmox_firewall_host_group, []) | length > 0
     - not (proxmox_firewall_skip_pveum | default(false))
     - not (hostvars[_proxmox_firewall_delegate]['_proxmox_firewall_pveum_done'] | default(false))
 
@@ -240,7 +228,7 @@
   run_once: true
   delegate_to: "{{ _proxmox_firewall_delegate }}"
   when:
-    - groups.get('proxmox', []) | length > 0
+    - groups.get(proxmox_firewall_host_group, []) | length > 0
     - not (proxmox_firewall_skip_pveum | default(false))
     - not (hostvars[_proxmox_firewall_delegate]['_proxmox_firewall_pveum_done'] | default(false))
     - proxmox_firewall_tokens.stdout is defined
@@ -258,17 +246,15 @@
       on any Proxmox node, or rotate it (`pveum user token remove
       monitoring@pve exporter && pveum user token add monitoring@pve exporter
       --privsep 0`) and capture the printed value, then store it in the
-      "Proxmox API Token" 1Password item.
+      secret store the exporters read.
   run_once: true
   delegate_to: "{{ _proxmox_firewall_delegate }}"
   when:
     - proxmox_firewall_token_created is defined
     - proxmox_firewall_token_created is changed
 
-# Mark the pveum reconcile as complete for this run so later plays that include
-# proxmox_firewall (dns/mail/services) skip the `pveum … list` probes entirely.
-# Set on the delegate host (delegate_facts) so it is visible cross-play via
-# hostvars[_proxmox_firewall_delegate].
+# Recorded on the delegate (delegate_facts) so later plays that include this
+# role read it through hostvars and skip the `pveum … list` probes.
 - name: Mark pveum monitoring user/token reconcile as done for this run
   ansible.builtin.set_fact:
     _proxmox_firewall_pveum_done: true
@@ -276,5 +262,5 @@
   delegate_facts: true
   run_once: true
   when:
-    - groups.get('proxmox', []) | length > 0
+    - groups.get(proxmox_firewall_host_group, []) | length > 0
     - not (proxmox_firewall_skip_pveum | default(false))

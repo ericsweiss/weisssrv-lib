@@ -2,15 +2,11 @@
 # Interface: {{ item.interface }}
 # Per-interface ethtool overrides applied at ifup.
 #
-# The iface header is REQUIRED: ifupdown2 (the Proxmox default) hard-rejects a
-# bare post-up line with "error processing line", leaving the whole drop-in
-# inert at boot. Duplicate iface stanzas merge, so this composes with the
-# interface's declaration in /etc/network/interfaces.
-#
-# `logger` catches the silent-regression mode this role exists to prevent: a
-# post-up failure (renamed interface, missing ethtool) otherwise warns once at
-# ifup and the interface comes up WITHOUT the feature change. Grep it with
-# `journalctl -t nic-tuning-ifup`.
+# The iface header is REQUIRED: ifupdown2 hard-rejects a bare post-up line
+# ("error processing line"), leaving the whole drop-in inert at boot. Duplicate
+# iface stanzas merge with the declaration in /etc/network/interfaces.
+# `logger` makes a post-up failure greppable (`journalctl -t nic-tuning-ifup`);
+# without it the interface silently comes up without the feature change.
 iface {{ item.interface }} inet manual
 {% for opt in item.options | default([]) %}
     post-up /sbin/ethtool -K {{ item.interface }} {{ opt.feature }} {{ opt.value }} || logger -t nic-tuning-ifup "FAILED ethtool -K {{ item.interface }} {{ opt.feature }}={{ opt.value }}"

@@ -51,14 +51,29 @@
             in (apt_signed_repo_sources.content | b64decode)
         fail_msg: "sources entry missing signed-by keyring pin"
 
-    - name: The staging key was cleaned up
+    # The key is staged in a root-only directory, never at a world-writable
+    # path, and the accept path clears its staged key afterwards. The directory
+    # itself can survive: the reject paths in converge fail before cleanup.
+    - name: Stat the staging directory, its accept-path key, and the /tmp path
       ansible.builtin.stat:
-        # Default staging path: /tmp/<keyring-basename>.download
-        path: /tmp/test-ok.gpg.download
+        path: "{{ item }}"
       register: apt_signed_repo_stage
+      loop:
+        - /run/apt-signed-repo
+        - /run/apt-signed-repo/test-ok.gpg.download
+        - /tmp/test-ok.gpg.download
 
-    - name: No downloaded key left behind
+    - name: Staging is root-only, cleaned up, and never under /tmp
       ansible.builtin.assert:
         that:
-          - not apt_signed_repo_stage.stat.exists
-        fail_msg: "downloaded signing key was not cleaned up"
+          - not apt_signed_repo_stage.results[1].stat.exists
+          - not apt_signed_repo_stage.results[2].stat.exists
+          - >-
+            not apt_signed_repo_stage.results[0].stat.exists
+            or (apt_signed_repo_stage.results[0].stat.isdir
+                and apt_signed_repo_stage.results[0].stat.pw_name == 'root'
+                and apt_signed_repo_stage.results[0].stat.mode == '0700')
+        fail_msg: >-
+          The signing key was staged at a world-writable path, left behind on
+          the accept path, or the staging directory is not a root-owned 0700
+          directory — either reopens the verify->dearmor TOCTOU window.

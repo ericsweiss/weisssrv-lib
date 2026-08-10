@@ -16,7 +16,7 @@ placement.
   pool. Without it, a fresh molecule CI container's systemd PID 1 intermittently
   dies at boot with *"Failed to allocate manager object: Too many open files"*
   and the job fails at molecule's *"Wait for systemd to be ready"* prepare step.
-  Toggle with `k3s_inotify_tuning`; see the note below and the role README
+  Toggle with `k3s_inotify_tuning`.
 
 ### Persistent Storage
 - Additional disk formatting (passthrough block devices, e.g. ZFS zvols)
@@ -27,11 +27,14 @@ placement.
 ### K3s Installation
 - Version checking and upgrading (pinned installer script, optional sha256 pin
   via `k3s_install_script_checksum`)
-- Server installation (with embedded etcd, `secrets-encryption: true`,
-  WireGuard flannel backend — see the role README)
-- Agent installation (connects to API VIP with the lower-privilege agent
-  token; existing agents are migrated off the server token — see the role README)
-- Kube-vip manifest deployment (first server only)
+- Server installation (embedded etcd, `secrets-encryption: true`, WireGuard
+  flannel backend)
+- Agent installation (connects to the API VIP with the lower-privilege agent
+  token; existing agents are migrated off the server token)
+- Kube-vip manifest deployment (first server only), pinned
+  `system-node-critical` with a memory limit so the pod owning the API VIP is
+  neither preemptible nor BestEffort
+- metrics-server override (first server only, opt-in — see below)
 - /etc/hosts pins: container-registry hostname → internal Traefik VIP
   (`k3s_registry_host_pins`) and NAS storage hostname for NFS-over-TLS PVs
   (`k3s_storage_host_pins`)
@@ -41,9 +44,31 @@ placement.
   copies the newest local etcd snapshot to an NFS export (by hostname, over
   TLS) and emits an `etcd_snapshot_last_copy_timestamp_seconds`
   textfile metric for the `EtcdSnapshotStale` alert — off by default via
-  `k3s_etcd_snapshot_offnode_enabled` (see the role README and defaults for the
-  companion NFS export + `node_exporter_host` + `nfs_tls`/tlshd on the servers
-  it needs — the `xprtsec=tls` mount hangs without the TLS handshake daemon)
+  `k3s_etcd_snapshot_offnode_enabled` (see defaults for the companion NFS export
+  + `node_exporter_host` + `nfs_tls`/tlshd on the servers it needs — the
+  `xprtsec=tls` mount hangs without the TLS handshake daemon)
+
+## Required variables
+
+The role ships **no** version pins and **no** site addresses: a role-local
+duplicate of a site's pin silently deploys the stale value the day the two
+drift. These are asserted, so a dropped inventory var fails the run.
+
+| Variable | Aliases | Required on | Notes |
+|---|---|---|---|
+| `k3s_token` | — | all nodes | server/cluster join token; a secret |
+| `k3s_version` | — | all nodes | e.g. `v1.36.3+k3s1` |
+| `k3s_api_vip` | — | all nodes | the kube-vip API address |
+| `k3s_kube_vip_version` | `kube_vip_version` | servers | kube-vip image tag |
+| `k3s_gpu_*` (4 pins) | `nvidia_*` | GPU agents | see the GPU section |
+
+Everything else has a working default. The ones a site almost always sets:
+`k3s_agent_token` (falls back to `k3s_token`, which is fine for a test run and
+wrong for production — an agent token cannot promote a node),
+`k3s_kube_vip_interface` (alias `kube_vip_interface`, default `eth0`),
+`k3s_registry_host_pins` / `k3s_storage_host_pins` (both `[]`),
+`k3s_etcd_snapshot_nfs_server` (empty; required once the off-node copy is on),
+`k3s_disable`, `k3s_labels`, `k3s_taints`.
 
 ## Configuration
 
@@ -52,6 +77,8 @@ placement.
 k3s_api_vip: "10.0.0.161"          # required — the kube-vip API address
 k3s_token: "<server/cluster join token>"
 k3s_agent_token: "<lower-privilege agent join token>"
+k3s_version: "v1.36.3+k3s1"
+k3s_kube_vip_version: "v1.2.2"     # required on servers
 k3s_server_group: k3s_servers      # inventory group holding the servers
 
 # Extra apiserver-certificate SANs, on top of k3s_api_vip, inventory_hostname
@@ -134,6 +161,31 @@ network/package task (and the assert above) — the escape hatch molecule and
 check-mode runs use. `k3s_gpu_debian_sources_path` retargets the deb822 sources
 file whose `Components:` line is normalized.
 
+## metrics-server override (`k3s_metrics_server_override_enabled`)
+
+k3s packages metrics-server as a single replica with no memory limit, and it is
+the only metric source every HPA and the VPA recommender read: if that one pod
+OOMs, HPAs freeze on their last replica count and look healthy. Enabling this
+writes a `HelmChartConfig` into the first server's manifests dir raising the
+replica count and bounding memory:
+
+```yaml
+k3s_metrics_server_override_enabled: true
+k3s_metrics_server_replicas: 2                 # default
+k3s_metrics_server_resources:                  # default
+  requests: {cpu: 25m, memory: 128Mi}
+  limits: {memory: 256Mi}
+```
+
+A `HelmChartConfig` only reaches the component where k3s packages it as a
+HelmChart. Where k3s ships metrics-server as a static wrangler AddOn, the
+override applies cleanly and changes nothing — so the role probes for
+`HelmChart/metrics-server` in `kube-system` first and fails with that diagnosis
+rather than leaving an inert file behind. On such a k3s the alternative is to
+disable the packaged component (`k3s_disable`) and ship a full replacement
+manifest. The same trap applies to CoreDNS, which is why a replica pin for it is
+an in-cluster HPA rather than a `HelmChartConfig`.
+
 ## Task Flow
 
 ```
@@ -160,9 +212,11 @@ file whose `Components:` line is normalized.
 - `tasks/install-script.yml` - Shared version detection + installer staging
 - `tasks/gpu.yml` - NVIDIA driver/toolkit enablement (included when `k3s_gpu_node`)
 - `tasks/etcd-snapshot-offnode.yml` - Off-node etcd snapshot copy (opt-in)
+- `tasks/metrics-server-override.yml` - metrics-server replicas/resources (opt-in)
 - `templates/k3s-server-config.yaml.j2` - Server configuration
 - `templates/k3s-agent-config.yaml.j2` - Agent configuration
 - `templates/kube-vip-manifest.yaml.j2` - Kube-vip DaemonSet
+- `templates/metrics-server-helmchartconfig.yaml.j2` - metrics-server override
 - `templates/k3s-etcd-snapshot-copy.{sh,service,timer}.j2` - Off-node snapshot copy
 - `defaults/main.yml` - Default values
 - `handlers/main.yml` - Service restart + Ready-gate handlers
@@ -190,8 +244,6 @@ systemctl status k3s          # servers
 systemctl status k3s-agent    # agents
 journalctl -u k3s -f
 kubectl get nodes
-
-```bash
 kubectl get pods -A --field-selector spec.nodeName=<node>
 ```
 

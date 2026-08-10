@@ -20,6 +20,11 @@ provisioner:
     group_vars:
       all:
         nic_tuning_ip_forward: true
+        # A container's lo/veth may expose no ethtool feature ioctls at all, so
+        # the role's read-back cannot run here. verify.yml drives the real
+        # assert task file with captured `ethtool --show-features` output
+        # instead, in both the passing and failing directions.
+        nic_tuning_verify_offloads: false
         nic_tuning_vm_swappiness: 10
         nic_tuning_overrides:
           - interface: lo

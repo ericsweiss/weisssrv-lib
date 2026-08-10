@@ -3,9 +3,9 @@
 # Drop-in: gate nfsd on the encrypted ZFS datasets being unlocked + mounted.
 #
 # Exporting an encrypted dataset before it is mounted serves the empty/locked
-# mountpoint and wedges the NFS-over-TLS data path for NEW client mounts
-# (observed 2026-06-21, when nfsd was force-started ahead of the mounts with
-# `systemctl start --job-mode=ignore-dependencies`).
+# mountpoint and wedges the NFS-over-TLS data path for NEW client mounts. Any
+# route that starts nfsd ahead of the mounts (a forced
+# `--job-mode=ignore-dependencies` start, for instance) reproduces it.
 #
 # RequiresMountsFor is SCOPED to encrypted exports only: a hard
 # RequiresMountsFor on the mergerfs /media mount (no nofail) would block nfsd,

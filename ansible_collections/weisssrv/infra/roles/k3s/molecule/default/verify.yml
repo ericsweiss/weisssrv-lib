@@ -111,8 +111,39 @@
           - "'readOnly: true' in (kube_vip_content.content | b64decode)"
           - "'--prometheusHTTPServer=' in (kube_vip_content.content | b64decode)"
           - "'prometheus_server' not in (kube_vip_content.content | b64decode)"
+          # The API-VIP owner must not be preemptible or BestEffort.
+          - "'priorityClassName: system-node-critical' in (kube_vip_content.content | b64decode)"
+          - "'memory: 192Mi' in (kube_vip_content.content | b64decode)"
+          - "'memory: 96Mi' in (kube_vip_content.content | b64decode)"
         fail_msg: "kube-vip manifest missing expected settings"
         success_msg: "kube-vip manifest contains expected settings"
+      when: k3s_is_first_server
+
+    # metrics-server override (k3s_metrics_server_override_enabled: true in
+    # molecule.yml): first server only, since it owns the manifests dir.
+    - name: Check the metrics-server override presence matches the first-server role
+      ansible.builtin.stat:
+        path: /var/lib/rancher/k3s/server/manifests/metrics-server-config.yaml
+      register: k3s_metrics_server_manifest
+      failed_when: k3s_metrics_server_manifest.stat.exists != (k3s_is_first_server | bool)
+
+    - name: Read the metrics-server override
+      ansible.builtin.slurp:
+        src: /var/lib/rancher/k3s/server/manifests/metrics-server-config.yaml
+      register: k3s_metrics_server_content
+      when: k3s_is_first_server
+
+    - name: Verify the metrics-server override raises replicas and bounds memory
+      vars:
+        _override: "{{ (k3s_metrics_server_content.content | b64decode | from_yaml).spec.valuesContent | from_yaml }}"
+      ansible.builtin.assert:
+        that:
+          - _override.replicas == 2
+          - _override.resources.limits.memory == '256Mi'
+          - _override.resources.requests.memory == '128Mi'
+          - _override.resources.requests.cpu == '25m'
+        fail_msg: "metrics-server override did not render replicas/resources"
+        success_msg: "metrics-server override renders 2 replicas with a memory limit"
       when: k3s_is_first_server
 
     # Negative test recorded by converge: re-running the role with a NIC that
@@ -132,6 +163,21 @@
           The kube-vip interface assert did not reject a nonexistent NIC —
           a bad k3s_kube_vip_interface would deploy silently and never announce
           the API VIP. Check the assert in tasks/server.yml.
+
+    - name: Read the kube-vip version negative-assert result
+      ansible.builtin.slurp:
+        src: /tmp/kube-vip-version-assert.json
+      register: kube_vip_version_assert
+
+    - name: Assert an empty kube-vip version pin fails the role
+      ansible.builtin.assert:
+        that:
+          - (kube_vip_version_assert.content | b64decode | from_json).failed
+          - "'k3s_kube_vip_version' in (kube_vip_version_assert.content | b64decode | from_json).msg"
+        fail_msg: >-
+          The version assert accepted an empty k3s_kube_vip_version — a dropped
+          site pin would deploy whatever kube-vip image tag rendered. Check the
+          assert in tasks/server.yml.
 
     # Off-node etcd snapshot copy artifacts (k3s_etcd_snapshot_offnode_enabled:
     # true in molecule.yml). The NFS mount + timer start are molecule-notest;
@@ -285,5 +331,8 @@
           - "secrets-encryption, agent-token, and flannel backend render"
           - "cluster-init vs join stanza matches k3s_is_first_server"
           - "kube-vip manifest deployed on the first server only (VIP, readOnly kubeconfig)"
+          - "kube-vip runs system-node-critical with bounded memory"
           - "kube-vip interface assert rejects a nonexistent NIC"
+          - "version assert rejects an empty kube-vip pin"
+          - "metrics-server override renders on the first server only"
           - "(k3s binary install skipped in container testing)"

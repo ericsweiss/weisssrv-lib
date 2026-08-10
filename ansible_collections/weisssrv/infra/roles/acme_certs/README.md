@@ -87,7 +87,9 @@ A sudo target never grants the distribution key a shell. Each gets:
 **Pipe protocol.** `homelab-cert-reload.sh` pushes each sudo target in a single
 SSH round-trip: `fullchain.pem`, a fixed non-PEM boundary line, then
 `privkey.pem` on the forced command's stdin. The receiver reads stdin with a
-hard 64 KiB cap, splits at the boundary (it assigns the output filenames —
+hard 64 KiB cap and **rejects** anything larger (it reads one byte past the cap,
+so an oversized bundle fails as oversized rather than as a truncated PEM), splits
+at the boundary (it assigns the output filenames —
 nothing from stdin becomes a path), then validates before trusting: both parse,
 the cert is unexpired, the key matches the leaf, the SAN covers
 `*.<acme_certs_domain>`, and the leaf chains to a CA already in the host
@@ -139,6 +141,20 @@ post-reload `.applied-fullchain.sha256` marker matches the cert being pushed
 source. So an unchanged, successfully-applied cert restarts nothing, while a
 target that is missing the cert, holds an older one, was rebuilt, or whose
 previous reload failed gets the full push.
+
+## Metrics
+
+`homelab-cert-reload.sh` writes two node_exporter textfiles under
+`node_exporter_host_textfile_dir` (default `/var/lib/node_exporter`):
+
+- `cert_renewal.prom` — `cert_renewal_last_run_success`,
+  `cert_renewal_last_run_duration_seconds`,
+  `cert_renewal_last_success_timestamp_seconds`, and
+  `cert_local_expiry_timestamp_seconds` (the on-disk cert's `notAfter`, emitted
+  on failed runs too so an expiry alert's `absent()` clause does not false-fire)
+- `cert_distribution_targets.prom` —
+  `cert_distribution_target_last_run_success{host="…"}`, so one dead target is
+  visible instead of being collapsed into the run-level bit
 
 ## Operations
 

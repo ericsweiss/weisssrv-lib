@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: nextcloud
+  namespace: weisssrv
+  author: Eric Weiss
+  description: Nextcloud on a Debian guest as a docker-compose stack behind a host nginx
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+
+# Dependencies stay in the playbook so the role can be unit-tested in isolation.
+# compose_app / docker_engine / zvol_mount are included at task level.
+dependencies: []

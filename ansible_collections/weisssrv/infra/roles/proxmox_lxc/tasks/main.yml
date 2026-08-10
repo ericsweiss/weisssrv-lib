@@ -193,10 +193,7 @@
 # `pveam download` validates the name against the freshly-updated appliance
 # index BEFORE consulting the local cache, so a pinned template that has since
 # rotated upstream hard-fails "no such template" even though `pct create` from
-# the cached tarball works fine (observed 2026-07-19). Probing the cache first
-# keeps recreation working offline and across index rotations; a genuine cache
-# miss still fails loudly here rather than as a cryptic `pct create ... vztmpl`
-# error later.
+# the cached tarball works fine. Probe the cache first.
 - name: Check for cached LXC template
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.command: pveam list {{ proxmox_lxc_template_storage }}
@@ -349,7 +346,11 @@
     executable: /bin/bash
   register: proxmox_lxc_net0_firewall
   changed_when: "'CHANGED' in (proxmox_lxc_net0_firewall.stdout | default(''))"
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    # Same existence gate as the authorized-keys reconcile: don't `pct config`
+    # a container that was never created on a skip-create run.
+    - proxmox_lxc_exists.rc == 0 or not (proxmox_lxc_skip_create | default(false))
 
 # Reconcile onboot/startup on EXISTING containers too. Like the VM role, these
 # are metadata-only knobs (applied by Proxmox at the next boot, never disrupting
@@ -396,19 +397,11 @@
     - not ansible_check_mode
     - proxmox_lxc_exists.rc == 0
 
-# NOTE: create-time only. Everything from here through "Configure GPU
-# passthrough" below — bind mounts (mp* lines), the lxc.idmap UID/GID maps,
-# and the GPU /dev/dri passthrough — is guarded on `proxmox_lxc_exists.rc != 0`
-# and therefore applies ONLY when the container is first created. Changing any
-# of these in inventory for an EXISTING container is a silent no-op here: the
-# role does not reconcile them onto a running container (live idmap/mount
-# changes are risky and deliberately out of scope). To apply such a change,
-# either recreate the container (destroy + re-run this role), or edit
-# /etc/pve/lxc/<id>.conf on the Proxmox host by hand and `pct restart <id>`.
-# (onboot/startup ARE reconciled above; only idmap/mounts/GPU are create-only.)
-
-# Configure bind mounts for containers that need host storage access
-# This must be done before starting the container
+# CREATE-TIME ONLY, from here through "Configure GPU passthrough": bind mounts,
+# lxc.idmap and /dev/dri all gate on `proxmox_lxc_exists.rc != 0`. Changing them
+# in inventory for an existing container is a no-op — live idmap/mount changes
+# are out of scope. Recreate the container, or edit /etc/pve/lxc/<id>.conf and
+# `pct restart <id>` by hand. (onboot/startup ARE reconciled above.)
 - name: Configure bind mounts
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
@@ -426,12 +419,9 @@
 
 # An unprivileged container shifts every id by proxmox_lxc_idmap_base; one uid
 # and one gid are mapped through 1:1 so bind-mounted host files stay accessible.
-#
-# The rewrite is guarded: the previous `grep -v … > "$CONF_FILE".tmp || true; mv`
-# ran without errexit, so a missing/unreadable config left an EMPTY .tmp that the
-# mv then published — replacing the whole container config with just the idmap
-# lines. Staging happens off pmxcfs (/etc/pve rejects the metadata syscalls a
-# rename needs) and the result is validated before it is published with `cp`.
+# The rewrite stages off pmxcfs (/etc/pve rejects the syscalls a rename needs)
+# and sanity-checks the staged file before publishing it with `cp`, so an
+# unreadable config can never be replaced by a gutted one.
 - name: Configure UID/GID mapping (standard)
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell:
@@ -480,13 +470,10 @@
     - not (proxmox_lxc_gpu_passthrough | default(false))
   changed_when: true
 
-# Runs for EVERY unprivileged GPU container, bind mounts or not: the video/
-# render GID passthrough is what lets in-container processes open the 0660
-# root:video/render /dev/dri nodes (an unprivileged container's root is not
-# host root, so CAP_DAC_OVERRIDE cannot bypass the device perms — the group
-# match is the only access path). Gating this on bind mounts would leave a
-# mount-less GPU guest (immich-ml) with the Proxmox default idmap and an
-# unopenable GPU.
+# Runs for EVERY unprivileged GPU container, bind mounts or not: an
+# unprivileged container's root is not host root, so CAP_DAC_OVERRIDE cannot
+# bypass the 0660 root:video/render perms on /dev/dri — the passed-through GID
+# is the only access path.
 - name: Configure UID/GID mapping (with GPU)
   delegate_to: "{{ proxmox_host }}"
   vars:
@@ -560,25 +547,25 @@
     - proxmox_lxc_gpu_passthrough | default(false)
   changed_when: true
 
-# Configure GPU passthrough for hardware transcoding
-# Pass through /dev/dri devices for Intel/AMD GPU access
+# Pass /dev/dri (DRM major 226) through for hardware transcoding.
 - name: Configure GPU passthrough
   delegate_to: "{{ proxmox_host }}"
-  ansible.builtin.shell: |
-    CONF_FILE="/etc/pve/lxc/{{ proxmox_lxc_id }}.conf"
-
-    # Check if GPU passthrough is already configured
-    if ! grep -q "lxc.cgroup2.devices.allow" "$CONF_FILE"; then
-      # Allow access to DRI devices (GPU)
-      echo "lxc.cgroup2.devices.allow: c 226:* rwm" >> "$CONF_FILE"
-      # Mount /dev/dri into container
-      echo "lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir" >> "$CONF_FILE"
-    fi
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      CONF_FILE="/etc/pve/lxc/{{ proxmox_lxc_id }}.conf"
+      if ! grep -q "lxc.cgroup2.devices.allow" "$CONF_FILE"; then
+        echo "lxc.cgroup2.devices.allow: c 226:* rwm" >> "$CONF_FILE"
+        echo "lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir" >> "$CONF_FILE"
+        echo CHANGED
+      fi
+    executable: /bin/bash
+  register: proxmox_lxc_gpu_config
+  changed_when: "'CHANGED' in (proxmox_lxc_gpu_config.stdout_lines | default([]))"
   when:
     - not ansible_check_mode
     - proxmox_lxc_exists.rc != 0
     - proxmox_lxc_gpu_passthrough | default(false)
-  changed_when: true
 
 - name: Start LXC container
   delegate_to: "{{ proxmox_host }}"
@@ -628,67 +615,58 @@
     - proxmox_lxc_exists.rc != 0
   changed_when: false
 
-- name: Verify DNS resolution in container
+# If internal DNS cannot answer the bootstrap apt-get, a public resolver is
+# APPENDED to the container's resolv.conf for the duration of the bootstrap.
+# The `always` restore runs even when package installation fails, so the
+# container never persists on public DNS (which cannot see split-horizon
+# internal names and bypasses the site's filtering resolver).
+- name: Bootstrap container packages, with a temporary public-DNS fallback
   delegate_to: "{{ proxmox_host }}"
-  ansible.builtin.shell: |
-    # First check what nameservers are configured
-    echo "Current resolv.conf:"
-    pct exec {{ proxmox_lxc_id }} -- cat /etc/resolv.conf
-    # Try apt-get update to test DNS (most reliable test)
-    echo "Testing DNS with apt-get update..."
-    if pct exec {{ proxmox_lxc_id }} -- apt-get update >/dev/null 2>&1; then
-      echo "DNS working"
-      exit 0
-    fi
-    # If DNS fails, APPEND public DNS (keep the configured internal servers as
-    # primary) only to complete bootstrap apt-get. The restore task below resets
-    # resolv.conf to internal-only so the container doesn't persist on public
-    # DNS, which can't resolve split-horizon internal names.
-    echo "WARNING: internal DNS not answering apt-get; appending public DNS to complete bootstrap"
-    echo "FALLBACK_DNS_APPLIED"
-    pct exec {{ proxmox_lxc_id }} -- bash -c 'echo "nameserver {{ proxmox_lxc_bootstrap_fallback_dns }}" >> /etc/resolv.conf'
-    if pct exec {{ proxmox_lxc_id }} -- apt-get update >/dev/null 2>&1; then
-      echo "DNS working with public fallback"
-      exit 0
-    fi
-    echo "DNS resolution failed even with public DNS"
-    exit 1
   when:
     - not ansible_check_mode
     - proxmox_lxc_exists.rc != 0
-  register: proxmox_lxc_dns_check
-  changed_when: false
+  block:
+    - name: Verify DNS resolution in container
+      ansible.builtin.shell: |
+        echo "Current resolv.conf:"
+        pct exec {{ proxmox_lxc_id }} -- cat /etc/resolv.conf
+        # apt-get update is the most representative DNS test for what follows.
+        echo "Testing DNS with apt-get update..."
+        if pct exec {{ proxmox_lxc_id }} -- apt-get update >/dev/null 2>&1; then
+          echo "DNS working"
+          exit 0
+        fi
+        echo "WARNING: internal DNS not answering apt-get; appending public DNS to complete bootstrap"
+        echo "FALLBACK_DNS_APPLIED"
+        pct exec {{ proxmox_lxc_id }} -- bash -c 'echo "nameserver {{ proxmox_lxc_bootstrap_fallback_dns }}" >> /etc/resolv.conf'
+        if pct exec {{ proxmox_lxc_id }} -- apt-get update >/dev/null 2>&1; then
+          echo "DNS working with public fallback"
+          exit 0
+        fi
+        echo "DNS resolution failed even with public DNS"
+        exit 1
+      register: proxmox_lxc_dns_check
+      # The task mutates resolv.conf on the fallback path; report that honestly
+      # rather than declaring itself unconditionally unchanged.
+      changed_when: "'FALLBACK_DNS_APPLIED' in (proxmox_lxc_dns_check.stdout_lines | default([]))"
 
-- name: Install required packages in container
-  delegate_to: "{{ proxmox_host }}"
-  ansible.builtin.shell: |
-    pct exec {{ proxmox_lxc_id }} -- bash -c 'apt-get update && apt-get install -y openssh-server sudo'
-  when:
-    - not ansible_check_mode
-    - proxmox_lxc_exists.rc != 0
-  changed_when: true
-
-# The public-DNS fallback above is only a bootstrap crutch. Now that apt-get is
-# done, restore the configured internal nameservers so the container doesn't
-# persist resolving through public DNS (which can't see split-horizon internal
-# names and bypasses the site's filtering resolver). No further task here needs
-# DNS, so this is safe even when internal DNS is still down.
-- name: Restore configured nameservers after public-DNS bootstrap fallback
-  delegate_to: "{{ proxmox_host }}"
-  ansible.builtin.shell: |
-    pct exec {{ proxmox_lxc_id }} -- bash -c '
-      printf "search %s\n" "{{ proxmox_lxc_searchdomain }}" > /etc/resolv.conf
-      for ns in {{ proxmox_lxc_nameserver }}; do
-        printf "nameserver %s\n" "$ns" >> /etc/resolv.conf
-      done
-    '
-  when:
-    - not ansible_check_mode
-    - proxmox_lxc_exists.rc != 0
-    # Machine-readable marker, not a log phrase: editing the message text must
-    # not silently leave the container on public DNS.
-    - "'FALLBACK_DNS_APPLIED' in (proxmox_lxc_dns_check.stdout_lines | default([]))"
-  changed_when: true
+    - name: Install required packages in container
+      ansible.builtin.shell: |
+        pct exec {{ proxmox_lxc_id }} -- bash -c 'apt-get update && apt-get install -y openssh-server sudo'
+      changed_when: true
+  always:
+    - name: Restore configured nameservers after public-DNS bootstrap fallback
+      ansible.builtin.shell: |
+        pct exec {{ proxmox_lxc_id }} -- bash -c '
+          printf "search %s\n" "{{ proxmox_lxc_searchdomain }}" > /etc/resolv.conf
+          for ns in {{ proxmox_lxc_nameserver }}; do
+            printf "nameserver %s\n" "$ns" >> /etc/resolv.conf
+          done
+        '
+      # Machine-readable marker, not a log phrase: editing the message text must
+      # not silently leave the container on public DNS.
+      when: "'FALLBACK_DNS_APPLIED' in (proxmox_lxc_dns_check.stdout_lines | default([]))"
+      changed_when: true
 
 - name: Create the admin user with sudo group
   delegate_to: "{{ proxmox_host }}"
@@ -709,14 +687,11 @@
   changed_when: true
 
 # Reconcile the admin authorized_keys on EVERY run (not just create) so a rotated
-# SSH key propagates as part of routine config management. The key is delivered
-# atomically: written to a temp file inside the container, compared against the
-# live authorized_keys, and moved into place only on difference (so the task is
-# idempotent and reports changed exactly when the key set actually changes). The
-# key material is base64-encoded before templating into the inner `pct exec`
-# script: base64 output is shell-safe (only [A-Za-z0-9+/=]), so it cannot break
-# the command line, and it is decoded back to the original key bytes inside the
-# container. `pct exec` does not forward host env vars, so the value is embedded.
+# SSH key propagates as part of routine config management. The key is written to
+# a temp file, compared, and moved into place only on difference, so the task
+# reports changed exactly when the key set changes. `pct exec` forwards no host
+# env vars, so the key is embedded — base64-encoded, since that alphabet cannot
+# break out of the inner shell command line.
 - name: Reconcile SSH authorized keys for the admin user
   delegate_to: "{{ proxmox_lxc_reconcile_host }}"
   ansible.builtin.shell:
@@ -753,17 +728,18 @@
     # don't pct exec a non-existent container (skip-create / molecule-stub runs).
     - proxmox_lxc_exists.rc == 0 or not (proxmox_lxc_skip_create | default(false))
 
-- name: Set ownership on authorized_keys and home directory
+# The reconcile above already owns .ssh and authorized_keys (install -d -m 700
+# -o <user>, chmod 600 + chown before the atomic move). This only sweeps the
+# rest of the freshly-created home directory.
+- name: Set ownership on the admin home directory
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
     pct exec {{ proxmox_lxc_id }} -- bash -c '
-      chmod 600 {{ proxmox_lxc_admin_home }}/.ssh/authorized_keys &&
       chown -R {{ proxmox_lxc_admin_user }}:{{ proxmox_lxc_admin_user }} {{ proxmox_lxc_admin_home }}
     '
   when:
     - not ansible_check_mode
     - proxmox_lxc_exists.rc != 0
-    - proxmox_lxc_ssh_public_keys | length > 0
   changed_when: true
 
 - name: Configure passwordless sudo for the admin user

@@ -1,0 +1,259 @@
+---
+# Immich compose stack. Order: mount the persistent volumes -> install Docker +
+# nginx -> render config/compose/nginx -> bring the stack up via a systemd unit
+# -> install the pg_dump backup timer. The shared compose scaffolding (Docker
+# install, compose systemd unit, nginx task flow, backup-metrics helper) is the
+# compose_app role, included below with immich-specific vars.
+
+- name: Validate the required inputs
+  ansible.builtin.assert:
+    that:
+      - immich_version | length > 0
+      - immich_postgres_version | length > 0
+      - immich_postgres_digest | length > 0
+      - immich_valkey_version | length > 0
+      - immich_valkey_digest | length > 0
+      - immich_external_url | length > 0
+      - immich_oauth_issuer_url | length > 0
+    fail_msg: >-
+      immich_version, immich_postgres_version, immich_postgres_digest,
+      immich_valkey_version, immich_valkey_digest, immich_external_url and
+      immich_oauth_issuer_url are required inputs with no default — see the
+      role README.
+    success_msg: "Required image pins and URLs present"
+
+# Fail early and clearly when the deploy wrapper did not inject the secrets.
+- name: Validate the required database credential
+  ansible.builtin.assert:
+    that:
+      - immich_db_password | default('') | length > 0
+    fail_msg: >-
+      immich_db_password is empty. Set it, or export IMMICH_DB_PASSWORD (its
+      default is that env lookup) from the site's secret manager.
+    success_msg: "Database credential present"
+  no_log: true
+
+- name: Validate the required OIDC credentials
+  ansible.builtin.assert:
+    that:
+      - immich_oauth_client_id | default('') | length > 0
+      - immich_oauth_client_secret | default('') | length > 0
+    fail_msg: >-
+      immich_oauth_client_id / immich_oauth_client_secret are empty. Set them,
+      or export IMMICH_OAUTH_CLIENT_ID / IMMICH_OAUTH_CLIENT_SECRET. Create the
+      OIDC provider first — see the role README (SSO).
+    success_msg: "OIDC credentials present"
+  no_log: true
+
+- name: Validate the offsite backup landing inputs
+  ansible.builtin.assert:
+    that:
+      - immich_backup_nfs_server | length > 0
+      - immich_backup_nfs_export | length > 0
+    fail_msg: >-
+      immich_backup_nfs_enabled needs immich_backup_nfs_server (a HOSTNAME when
+      the export requires TLS) and immich_backup_nfs_export.
+    success_msg: "Offsite backup landing inputs present"
+  when: immich_backup_nfs_enabled | bool
+
+# Persistent storage (block devices attached by the hypervisor role)
+- name: Mount additional persistent disks
+  ansible.builtin.include_role:
+    name: weisssrv.infra.zvol_mount
+  vars:
+    zvol_mount_disks: "{{ immich_additional_disks }}"
+  when: immich_additional_disks | length > 0
+
+# Pinned-engine install + dpkg hold + journald daemon.json, via compose_app.
+- name: Install Docker Engine + compose plugin
+  ansible.builtin.include_role:
+    name: weisssrv.infra.compose_app
+    tasks_from: docker.yml
+  vars:
+    compose_app_skip_install: "{{ immich_skip_install }}"
+
+- name: Create the Immich compose project directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - "{{ immich_compose_dir }}"
+    - "{{ immich_config_dir }}"
+    - "{{ immich_model_cache_dir }}"
+
+# immich-server runs as root (upstream default) and writes the library tree here.
+- name: Create the photo library directory on the data volume
+  ansible.builtin.file:
+    path: "{{ immich_upload_location }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+# role_path inside an include_role resolves to the INCLUDED role, so this role's
+# nginx site template must be resolved to an absolute path eagerly, here.
+- name: Resolve the Immich nginx site template path
+  ansible.builtin.set_fact:
+    immich_nginx_site_template: "{{ role_path }}/templates/immich.nginx.conf.j2"
+
+- name: Configure the host nginx reverse proxy
+  ansible.builtin.include_role:
+    name: weisssrv.infra.compose_app
+    tasks_from: nginx.yml
+  vars:
+    compose_app_skip_install: "{{ immich_skip_install }}"
+    compose_app_nginx_cert_dir: "{{ immich_nginx_ssl_cert | dirname }}"
+    compose_app_nginx_cert_dir_mode: "0750"
+    compose_app_nginx_ssl_cert: "{{ immich_nginx_ssl_cert }}"
+    compose_app_nginx_ssl_key: "{{ immich_nginx_ssl_key }}"
+    compose_app_nginx_site_name: immich.conf
+    compose_app_nginx_site_template: "{{ immich_nginx_site_template }}"
+    compose_app_nginx_self_signed_days: 3650
+    compose_app_nginx_self_signed_subj: "{{ immich_nginx_self_signed_subj }}"
+    compose_app_nginx_self_signed_san: "{{ immich_nginx_self_signed_san }}"
+    # Seeded unconditionally: nginx must start on a fresh guest to be reachable
+    # for the first real-cert push.
+    compose_app_nginx_bootstrap_cert: true
+
+# IMMICH_CONFIG_FILE holds the system config, OIDC client secret inline — no_log.
+- name: Render the Immich system config file
+  ansible.builtin.template:
+    src: immich-config.json.j2
+    dest: "{{ immich_config_dir }}/immich-config.json"
+    owner: root
+    group: root
+    mode: "0640"
+  no_log: true
+  notify: Restart compose stack
+
+# The compose .env carries DB_PASSWORD — no_log.
+- name: Render the compose environment file
+  ansible.builtin.template:
+    src: immich.env.j2
+    dest: "{{ immich_compose_dir }}/.env"
+    owner: root
+    group: root
+    mode: "0640"
+  no_log: true
+  notify: Restart compose stack
+
+- name: Render the docker-compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ immich_compose_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Restart compose stack
+
+- name: Deploy + start the Immich compose stack
+  ansible.builtin.include_role:
+    name: weisssrv.infra.compose_app
+  vars:
+    compose_app_skip_install: "{{ immich_skip_install }}"
+    compose_app_service_name: immich-compose
+    compose_app_description: "Immich (docker compose stack)"
+    compose_app_working_directory: "{{ immich_compose_dir }}"
+    compose_app_requires_mounts_for:
+      - "{{ immich_app_dir }}"
+      - "{{ immich_db_data_location }}"
+      - "{{ immich_data_dir }}"
+    compose_app_requires_mounts_comment:
+      - "Never start the stack before its data volumes are mounted — otherwise"
+      - "compose would write into the (unmounted) root filesystem. These map to the"
+      - "fstab-generated mount units for the app/postgres/library volumes."
+    compose_app_reconcile_comment:
+      - "`up -d` reconciles the running stack to the rendered compose/.env/config,"
+      - "recreating only the containers whose definition changed."
+
+# immich_backup_dir is the NFS mountpoint when the offsite landing is enabled,
+# otherwise a dir on the app volume. This task creates whichever; the mount
+# below overlays it in the NFS case.
+#
+# The root:root/0750 attrs belong to the local UNDERLAY only. Re-running the file
+# task against a live NFS mount would chown the export root, which an
+# all_squash export rejects with EPERM — so skip it once something is mounted
+# there and let the fileserver own those attrs.
+- name: Check whether the backup landing directory is already a mountpoint
+  ansible.builtin.command: mountpoint -q {{ immich_backup_dir | quote }}
+  register: immich_backup_dir_mountpoint
+  changed_when: false
+  failed_when: false
+
+- name: Create the backup landing directory
+  ansible.builtin.file:
+    path: "{{ immich_backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  when: immich_backup_dir_mountpoint.rc != 0
+
+- name: Mount the offsite backup NFS export
+  ansible.posix.mount:
+    path: "{{ immich_backup_mountpoint }}"
+    src: "{{ immich_backup_nfs_server }}:{{ immich_backup_nfs_export }}"
+    fstype: nfs4
+    opts: "{{ immich_backup_nfs_options }}"
+    state: mounted
+  when:
+    - not (immich_skip_install | bool)
+    - immich_backup_nfs_enabled | bool
+  tags:
+    - molecule-notest
+
+- name: Ensure the node_exporter textfile collector directory exists
+  ansible.builtin.file:
+    path: "{{ immich_backup_metrics_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# The metric-writing logic is the shared write_prom_metrics helper, sourced by
+# immich-backup-run.sh.
+- name: Deploy the shared backup-metrics helper library
+  ansible.builtin.include_role:
+    name: weisssrv.infra.compose_app
+    tasks_from: backup_lib.yml
+  vars:
+    compose_app_skip_install: "{{ immich_skip_install }}"
+    compose_app_backup_lib_dest: "{{ immich_backup_lib_path }}"
+    compose_app_backup_size_help_object: "database dump"
+
+- name: Deploy the Immich backup wrapper (pg_dump + freshness metric)
+  ansible.builtin.template:
+    src: immich-backup-run.sh.j2
+    dest: /usr/local/sbin/immich-backup-run.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy the Immich backup service unit
+  ansible.builtin.template:
+    src: immich-backup.service.j2
+    dest: /etc/systemd/system/immich-backup.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for immich-backup
+
+- name: Deploy the Immich backup timer
+  ansible.builtin.template:
+    src: immich-backup.timer.j2
+    dest: /etc/systemd/system/immich-backup.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for immich-backup
+
+- name: Enable and start the Immich backup timer
+  ansible.builtin.systemd:
+    name: immich-backup.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: not (immich_skip_install | bool)

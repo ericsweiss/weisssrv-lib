@@ -7,14 +7,17 @@ one-file edit instead of hand-syncing every collector's `.service`/`.timer`.
 
 Modelled on the `prometheus_exporter` wrapper pattern: a calling role
 `include_role`s this with vars. The collector **script** and the **enable/start**
-of the timer stay in the calling role — the enable/start carries each role's own
-molecule gating (`node_exporter_host` tags it `molecule-notest`; `smtp_relay`
-starts and asserts the timer live).
+of the timer stay in the calling role, which is where each role's own molecule
+gating rides (`node_exporter_host` tags it `molecule-notest`; `smtp_relay` starts
+and asserts the timer live).
 
-Consumers today: `node_exporter_host` (corosync / zpool / smartmon collectors)
-and `smtp_relay` (postfix queue collector).
+Consumers in this collection: `node_exporter_host` (corosync / zpool / smartmon
+collectors), `smtp_relay` (postfix queue collector), and `nas_storage`
+(backup-artifact mtime collector).
 
 ## Required vars
+
+All five are asserted at role entry.
 
 | var | purpose |
 | --- | --- |

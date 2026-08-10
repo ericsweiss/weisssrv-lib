@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Nextcloud PostgreSQL logical backup
+After=nextcloud-compose.service
+Requires=nextcloud-compose.service
+# The landing dir must be mounted before the dump runs — the local volume by
+# default, or the NFS export (nofail, pulled on demand) when enabled.
+RequiresMountsFor={{ nextcloud_backup_dir }}
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/nextcloud-backup-run.sh

@@ -23,6 +23,14 @@ compose it into a play only where you want it.
 this role has a `meta` dependency on `weisssrv.infra.base`, and the two must
 agree on the user.
 
+## Version pins
+
+`qol_omz_commit` and `qol_vundle_version` are the role's two upstream pins. They
+are ordinary role variables, so a consumer that keeps every version in one place
+should set both there (and register them with whatever checks its pins for
+upstream releases) rather than relying on the role defaults, which move only when
+the collection is released.
+
 Vundle itself is pinned, but `+PluginInstall` clones `qol_nvim_plugins` at their
 current HEAD — plugin *contents* are not reproducible across hosts or time. Pin
 via forks or explicit checkouts if that ever matters.
@@ -40,7 +48,7 @@ overwritten), `~/.config/nvim/init.vim`, `~/.oh-my-zsh/`, `~/.vim/bundle/`.
 - A legacy `--depth=1` clone left by upstream's `install.sh` is removed once, so
   the pinned commit is fetchable.
 - `+PluginInstall` is guarded by a marker keyed to the **sha1 of the plugin
-  list**, so adding a plugin re-runs it (a fixed marker filename silently
-  no-op'd) while a converged host does not.
+  list**, so editing `qol_nvim_plugins` re-runs it while a converged host
+  does not.
 - The login shell is set unconditionally; the `user` module reports changed only
   on a real change.

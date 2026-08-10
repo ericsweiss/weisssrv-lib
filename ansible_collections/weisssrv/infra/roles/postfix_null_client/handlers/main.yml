@@ -1,5 +1,5 @@
 ---
-# Definition order is execution order: the map rebuilds must run before
+# Definition order is execution order: the map rebuilds must precede
 # 'Reload postfix' so the reload picks up fresh .db files.
 
 - name: Postmap sasl_passwd

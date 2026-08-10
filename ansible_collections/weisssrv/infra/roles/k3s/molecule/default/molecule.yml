@@ -63,3 +63,6 @@ provisioner:
         # The container-hostile steps (NFS mount, tlshd assert, timer start) are
         # molecule-notest-tagged; the file/template tasks render for verify.yml.
         k3s_etcd_snapshot_offnode_enabled: true
+        # Exercise the metrics-server override render. Its live HelmChart probe
+        # + assert are molecule-notest-tagged (no cluster in a container).
+        k3s_metrics_server_override_enabled: true

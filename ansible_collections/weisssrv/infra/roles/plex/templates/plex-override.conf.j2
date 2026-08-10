@@ -1,0 +1,43 @@
+# {{ ansible_managed }}
+# Plex Media Server systemd override
+
+[Unit]
+# Wants= as well as After=: After alone does not add the target to the
+# transaction (systemd.special(7)).
+{% for after_target in plex_service_after %}
+Wants={{ after_target }}
+After={{ after_target }}
+{% endfor %}
+
+[Service]
+# Run Plex with the media group as its PRIMARY group (the packaged unit forces
+# Group=plex). A FUSE mount with default_permissions — mergerfs, for the usual
+# pooled library — honours only the primary GID, so a supplementary membership
+# is ignored there and Plex cannot write (e.g. DVR recordings).
+#
+# Overriding Group= REPLACES the primary group from /etc/passwd and does NOT
+# re-add it, so the process would lose the `{{ plex_user }}` group entirely —
+# the group that owns the TLS bundle at {{ plex_cert_dir }} (0640 root:{{ plex_user }}).
+# Without it Plex logs "Found a user-provided certificate, but couldn't install
+# it" and silently serves its plex.direct fallback. SupplementaryGroups restores
+# it; the video/render groups for GPU transcode still come from the plex user's
+# own memberships via initgroups. UMask 0002 keeps new DVR files group-writable
+# so a setgid media tree stays writable — existing library directories need a
+# one-time `chmod -R g+w` on the HOST (an unprivileged container cannot chmod
+# uid-mapped files).
+Group={{ plex_media_group }}
+SupplementaryGroups={{ plex_user }}
+UMask=0002
+
+Environment="PLEX_MEDIA_SERVER_APPLICATION_SUPPORT_DIR={{ plex_config_dir }}/Library/Application Support"
+
+# PLEX_MEDIA_SERVER_TMPDIR was removed in Plex 1.43.0+ (the transcoder path now
+# lives in Preferences.xml), so TMPDIR is what steers scratch writes.
+Environment="TMPDIR={{ plex_transcode_dir }}"
+
+{% if plex_claim | length > 0 %}
+Environment="PLEX_CLAIM={{ plex_claim }}"
+{% endif %}
+
+Restart=on-failure
+RestartSec=5

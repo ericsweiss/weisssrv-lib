@@ -1,43 +1,29 @@
 # Role: resolv_conf
 
-Shared helper that owns `/etc/resolv.conf` for hosts that need a managed DNS
-config. Used transitively by other roles rather than invoked directly.
+Shared helper that owns `/etc/resolv.conf`. It is normally reached through
+another role rather than invoked directly: `weisssrv.infra.base` (unless DNS
+config is skipped) and `weisssrv.infra.adguard_home`, which points the resolver
+host at its own instance via `127.0.0.1`.
 
-Consumed by `weisssrv.infra.base` (unless DNS config is skipped) and by
-`weisssrv.infra.adguard_home`, which points the resolver host at its own
-instance via `127.0.0.1`.
+Writes the nameserver list, an optional `domain` + `search` pair, and a single
+combined `options timeout:2 attempts:2` line (musl honours only the first
+`options` line, so it is never split).
 
 ## Inputs
 
-Required:
+| Variable | Default | Purpose |
+|---|---|---|
+| `resolv_conf_nameservers` | `host_dns_servers` (else `[]`) | **Required** — nameserver IPs. The role asserts it is non-empty; the unprefixed `host_dns_servers` is the alias callers already pass |
+| `resolv_conf_internal_domain` | `internal_domain` (else `''`) | Only used as the first entry of the search list |
+| `resolv_conf_search_domains` | `[resolv_conf_internal_domain]`, `[]` when unset | Search-suffix domains. Set `[]` to omit **both** `domain` and `search` (`domain` is a one-element search list, so suppressing `search` alone still expands suffixes) |
+| `resolv_conf_immutable` | `false` | Strip `chattr +i` before the write, re-set it after, and assert it stuck |
+| `resolv_conf_is_container` | derived from `ansible_facts['virtualization_type']` | Overridable container detection |
+| `resolv_conf_unsafe_writes` | `false` | Direct (non-atomic) write; needed only where the file is bind-mounted and the rename returns `EBUSY`, i.e. Molecule containers |
 
-- `resolv_conf_nameservers` — list of nameserver IPs; the role asserts it is
-  non-empty. Defaults to `host_dns_servers`, the neutral (unprefixed) name that
-  is the shared contract between `base`/`adguard_home` and this helper, so a
-  caller can keep setting either.
+Set `resolv_conf_search_domains: []` on Kubernetes nodes: kubelet copies the
+host's search list into every pod, where the default `ndots:5` makes each
+cluster-internal lookup get suffixed and probed upstream first.
 
-Optional:
-
-- `resolv_conf_internal_domain` — defaults to the inventory-wide
-  `internal_domain` (empty if unset). Used only as the first entry of
-  `resolv_conf_search_domains`.
-- `resolv_conf_search_domains` — list of search-suffix domains. Defaults
-  to `[resolv_conf_internal_domain]` (empty when that is unset);
-  explicitly set to `[]` to omit BOTH the
-  `domain` and `search` lines. (`domain` is functionally a 1-element
-  search list, so suppressing only `search` would still apply
-  search-suffix behavior via `domain`.) Set `[]` on a Kubernetes node:
-  kubelet propagates the host's search domains into every pod, which
-  inflates every cluster-internal lookup by `ndots:5`.
-- `resolv_conf_unsafe_writes` — defaults to `false`. Set to `true` only
-  in Molecule container environments where `/etc/resolv.conf` is
-  bind-mounted from the host and atomic rename returns `EBUSY`.
-  Production hosts never need this.
-- `resolv_conf_immutable` — defaults to `false`. When `true`, the role
-  removes the `chattr +i` immutable flag before writing, re-sets it
-  afterwards, and verifies it stuck (protects the file from DHCP/systemd
-  overwrites). On an unprivileged container `chattr +i` cannot succeed
-  (no CAP_LINUX_IMMUTABLE in the owning namespace) — the role warns
-  there instead of failing, and protection relies on the file being
-  Ansible-managed. Container detection is `resolv_conf_is_container`
-  (derived from `ansible_facts['virtualization_type']`, overridable).
+`chattr +i` needs `CAP_LINUX_IMMUTABLE` in the owning user namespace, which
+unprivileged LXC guests lack. There the role warns instead of failing, and the
+file's protection is that it is Ansible-managed and rewritten on every run.

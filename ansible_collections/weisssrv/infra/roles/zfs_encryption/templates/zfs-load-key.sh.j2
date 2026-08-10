@@ -3,19 +3,15 @@
 #
 # zfs-load-key.sh <pool> [<1p-item-title> [field]]
 #
-# Fetches a ZFS pool encryption passphrase from 1Password Connect and
-# loads it into the kernel via `zfs load-key`. Invoked by
-# zfs-load-key@<pool>.service after network-online.target. Mounting is NOT
-# done here — the late, retrying zfs-mount-encrypted.service runs `zfs mount
-# -a` once every encryption root reports keystatus=available.
+# Fetches a ZFS pool encryption passphrase from 1Password Connect and loads it
+# via `zfs load-key`. Invoked by zfs-load-key@<pool>.service. Mounting is left
+# to zfs-mount-encrypted.service (role README, "Boot ordering").
 #
-# Cold-cluster recovery (README "Cold-cluster boot"): if Connect stays
-# unreachable, an operator runs `sudo zfs load-key <pool>` and every dependent
-# unit converges on its own retry.
+# The bearer token at /etc/onepassword-connect/token (0400 root) goes to curl on
+# stdin (`-H @-`), never on argv, so it never appears in /proc/<pid>/cmdline.
 #
-# Authorization: bearer token at /etc/onepassword-connect/token (0400, root),
-# passed to curl via stdin (`-H @-`) — never on argv, so it never appears in
-# /proc/<pid>/cmdline.
+# The exit codes below are a contract: zfs-load-key@.service lists 1/3/4/7 in
+# RestartPreventExitStatus, so renumbering here changes retry behaviour.
 #
 # Exit codes:
 #   0 — key loaded (or already loaded); zfs-mount-encrypted.service handles mounting
@@ -48,10 +44,9 @@ RETRY_SLEEP="{{ zfs_encryption_fetch_retry_seconds }}"
 
 log() { logger -t "zfs-load-key[${POOL}]" -s -- "$*"; }
 
-# Every Connect response body is written to a /dev/shm temp file first, and the
-# item fetch's body carries the passphrase. Each call site removes its own file,
-# but an errexit abort or a signal between mktemp and rm would leave plaintext
-# in tmpfs — so track the current one and clear it from a single EXIT trap.
+# Connect response bodies land in a /dev/shm temp file, and the item fetch's
+# body carries the passphrase. Track the current file and clear it from a single
+# EXIT trap so an errexit abort or a signal cannot leave plaintext in tmpfs.
 tmp=""
 cleanup_tmp() { [[ -n "$tmp" ]] && rm -f "$tmp"; tmp=""; }
 trap cleanup_tmp EXIT INT TERM
@@ -78,14 +73,11 @@ connect_get() {
     printf '%s' "$code"
 }
 
-# Pool must already be imported by zfs-import.target before this unit
-# runs, but a late import must be WAITED for, not fast-failed: an instant
-# exit 5 makes every restart cycle ~RestartSec, burning StartLimitBurst in
-# ~30 min and parking the unit in a permanent failed state that never sees
-# the import. Waiting fetch_timeout here keeps every ExecStart on the slow
-# path the unit's retry-budget math assumes. A pool still absent after the
-# window (typo in zfs_encryption_pools[*].name) exits 5 as before — the
-# unit retries on its schedule without ever tripping the burst limit.
+# zfs-import.target normally imports the pool before this unit runs, but a late
+# import must be WAITED for, not fast-failed: an instant exit 5 cycles at
+# ~RestartSec and burns StartLimitBurst in ~30 min, parking the unit failed
+# before the import ever lands. Waiting keeps every ExecStart on the slow path
+# the unit's retry budget assumes.
 deadline=$(( $(date +%s) + FETCH_TIMEOUT ))
 until zpool list -H -o name "$POOL" >/dev/null 2>&1; do
     if [[ $(date +%s) -ge $deadline ]]; then
@@ -176,11 +168,8 @@ while [[ -z "$ITEM_ID" ]]; do
     case "$http" in
         200)
             ITEM_ID=$(printf '%s' "$body" | jq -r '.[0].id // empty')
-            # HTTP 200 + empty result list = item title not in vault.
-            # Fail fast with the documented exit-3 code rather than
-            # looping until fetch_timeout and exiting 2 ("unreachable")
-            # — a typo in zfs_encryption_pools[*].item shouldn't look
-            # like a network outage to the operator.
+            # 200 + empty list = the title is not in the vault. Exit 3 rather
+            # than looping to exit 2, so a typo doesn't look like an outage.
             if [[ -z "$ITEM_ID" ]]; then
                 log "Connect returned 200 but no item titled '$ITEM_TITLE' in vault '$VAULT_REF'"
                 exit 3
@@ -205,15 +194,9 @@ while [[ -z "$ITEM_ID" ]]; do
     fi
 done
 
-# Fetch the passphrase field. Match on .id first (stable), then fall
-# back to .label (display name; user may have renamed it). 1Password's
-# Password template ships with a 'password' field; the homelab convention
-# uses 'passphrase' for ZFS items. Accept either via FIELD.
-#
-# Same deadline/retry loop as the item-id lookup above, so a transient
-# non-200 (including curl transport code 000) burns the full FETCH_TIMEOUT
-# before exit 2 rather than fast-failing — this keeps the StartLimitBurst
-# safety math in zfs-load-key@.service honest (no fast retry cycle).
+# Fetch the item. Same deadline/retry loop as the lookup above, so a transient
+# non-200 (including curl's transport code 000) burns the full FETCH_TIMEOUT
+# before exit 2 — fast-failing here would break the unit's retry budget.
 deadline=$(( $(date +%s) + FETCH_TIMEOUT ))
 body=""
 while :; do
@@ -244,42 +227,29 @@ while :; do
     esac
 done
 
-# Use jq's `first` to stop at the first matching field (the previous
-# `... | head -n1` pipeline emitted all matches into a sub-process then
-# truncated; under `set -o pipefail` an early head close races jq's
-# write and the pipeline can return non-zero before the script's clean
-# "field missing" branch ever runs).
+# Match FIELD against .id (stable) or .label (renameable). jq's `first` does the
+# truncation internally: a `| head -n1` pipeline would race SIGPIPE under
+# `set -o pipefail` and fail before the clean "field missing" branch below.
 PASSPHRASE=$(printf '%s' "$body" | jq -r \
     --arg f "$FIELD" \
     'first(.fields[]? | select((.id == $f) or (.label == $f)) | select(.value != null and .value != "") | .value) // empty')
 
-# Scrub the response body from this shell as soon as we've extracted
-# the field — otherwise the cleartext passphrase remains in $body for
-# the rest of the script's lifetime.
+# Scrub the response body now the field is extracted; it holds cleartext.
 unset body
 
 if [[ -z "$PASSPHRASE" ]]; then
-    # Either the field doesn't exist on the item, or it exists but the
-    # value is null/empty (e.g. someone created the 1P item but never
-    # filled in the passphrase). Either way, this is a config error
-    # that won't fix itself by retrying.
+    # Missing field or empty value — a config error that retrying won't fix.
     log "field '$FIELD' (matching id or label) is missing or empty on item '$ITEM_TITLE'"
     exit 3
 fi
 
-# Load the key into every encryption root under $POOL, one at a time.
-# `zfs load-key -r` can NOT be used: it reads the passphrase from stdin once,
-# so with more than one root it satisfies the first and fails the rest with
-# "encryption failure".
+# One encryption root at a time: `zfs load-key -r` reads the passphrase from
+# stdin ONCE, so with more than one root it satisfies the first and fails the
+# rest with "encryption failure".
 #
-# Mounting is deliberately left to the late zfs-mount-encrypted.service: a
-# `zfs mount -a` here would race sibling keys across the per-pool instances and
-# would not propagate outside this unit's ProtectSystem=strict namespace.
-#
-# Capture `zfs get`'s exit status explicitly rather than inferring from awk's
-# (empty) output: awk exits 0 on empty input, so an early-boot /dev/zfs ioctl
-# race would otherwise look identical to "no encrypted datasets" and exit 0
-# with the pool still locked.
+# Check `zfs get`'s exit status explicitly instead of inferring from awk's
+# (empty) output — awk exits 0 on empty input, so a /dev/zfs ioctl race would
+# otherwise look like "no encrypted datasets" and exit 0 on a locked pool.
 if ! roots_raw="$(zfs get -H -t filesystem,volume -o name,value -r encryptionroot "$POOL")"; then
     log "zfs get encryptionroot failed for $POOL — refusing to report success with the pool possibly locked"
     exit 5
@@ -309,10 +279,8 @@ if [ "$load_rc" -ne 0 ]; then
     exit 4
 fi
 
-# Defense in depth: scrub the variable from this shell. Memory of the
-# zfs kernel module retains the raw key (that's how decryption works);
-# nothing we can do about that, but at least don't leave it in shell
-# scope.
+# Defence in depth: the kernel keeps the raw key (that is how decryption
+# works), but nothing needs it in shell scope any more.
 unset PASSPHRASE
 
 log "all encryption roots unlocked for $POOL ($n_roots root(s))"

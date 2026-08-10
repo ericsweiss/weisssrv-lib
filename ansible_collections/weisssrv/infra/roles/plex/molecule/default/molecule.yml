@@ -1,0 +1,38 @@
+---
+# Full-install scenario: the Plex package really is installed from the v2 repo,
+# but GPU drivers and the service lifecycle are skipped (no render node, no
+# usable plexmediaserver in a container). The cert-reload hook is exercised end
+# to end against a stub systemctl and a stub TLS server.
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        plex_version: latest
+        plex_user: plex
+        plex_media_group: media
+        plex_media_gid: 2000
+        plex_claim: ''
+        plex_config_dir: /tmp/plex-config
+        plex_transcode_dir: /tmp/plex-transcode
+        plex_media_dir: /tmp/plex-media
+        plex_service_after:
+          - network-online.target
+        plex_skip_gpu_drivers: true
+        plex_skip_service: true
+        plex_custom_cert_enabled: true
+        plex_pfx_passphrase: molecule-mock-pfx-passphrase
+        plex_cert_domain: plex.molecule.test
+platforms:
+  - name: plex-test
+    image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    tmpfs:
+      - /run
+      - /tmp

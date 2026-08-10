@@ -13,6 +13,14 @@ adguard_home_dot_port: 853
 adguard_home_https_port: 443
 adguard_home_admin_user: admin
 
+# Where files/adguard-admin-hash.py is installed; it is also the operator tool
+# for inspecting or resetting the admin hash (README § Admin password).
+adguard_home_hash_helper_path: /usr/local/sbin/adguard-admin-hash.py
+
+# Seconds to wait between the config rewrite and the restart handler. Only a
+# container test harness needs this; leave 0 on real hosts.
+adguard_home_settle_seconds: 0
+
 # Reconcile rewrites + filtering rules here. Exactly ONE instance may do so:
 # the replicas receive them through weisssrv.infra.adguard_sync, and a second
 # reconciler would fight that sync.

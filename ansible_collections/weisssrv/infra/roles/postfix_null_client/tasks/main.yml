@@ -63,12 +63,6 @@
     - Reload postfix
   no_log: true
 
-- name: Ensure SASL password database exists
-  ansible.builtin.command: postmap /etc/postfix/sasl_passwd
-  args:
-    creates: /etc/postfix/sasl_passwd.db
-  no_log: true
-
 - name: Deploy virtual aliases
   ansible.builtin.template:
     src: virtual.j2
@@ -102,6 +96,16 @@
     group: root
     mode: "0644"
   notify: Newaliases
+
+# Both map sources are notify-only, so a lost handler leaves a correct source
+# next to a stale compiled .db that postfix keeps reading. Placed before the
+# service start so a first converge has a usable sasl_passwd.db without waiting
+# for the handler flush; import_tasks (static) keeps the tasks --tags
+# addressable and visible to --list-tasks.
+- name: Repair stale compiled postfix maps
+  ansible.builtin.import_tasks: repair-compiled-maps.yml
+  vars:
+    postfix_null_client_maps_root_alias: "{{ postfix_null_client_aliases.root | default('') }}"
 
 - name: Ensure postfix is enabled and running
   ansible.builtin.service:

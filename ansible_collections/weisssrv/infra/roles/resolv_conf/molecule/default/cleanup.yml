@@ -1,19 +1,14 @@
 ---
-# Runs before destroy. This scenario converges with resolv_conf_immutable: true,
-# and in a privileged container chattr +i DOES stick on the bind-mounted
-# /etc/resolv.conf — leaving it set would make `docker rm` fail with EPERM.
-# Strip it so destroy can remove the container.
+# Runs before destroy: this scenario converges with resolv_conf_immutable: true
+# and +i sticks in a privileged container, which would make `docker rm` fail
+# with EPERM.
 - name: Cleanup
   hosts: all
   gather_facts: false
-  # The `test` matrix runs cleanup BEFORE create (and again after a failed
-  # converge), so the container often does not exist when this play runs —
-  # especially on a reused CI runner with a stale molecule instance-config.
-  # The docker connection then errors "No such container", which is reported as
-  # a task FAILURE (rc=1), not an unreachable host — so failed_when: false is
-  # what actually tolerates it; ignore_unreachable covers runners that classify
-  # the missing container the other way. Either way there is nothing to strip
-  # when the container isn't there.
+  # Cleanup also runs before create, so the container is often absent. A missing
+  # container surfaces as a task failure on the docker connection (not as
+  # unreachable), so failed_when covers it and ignore_unreachable covers runners
+  # that classify it the other way.
   ignore_unreachable: true
   tasks:
     - name: Strip immutable attr off /etc/resolv.conf before destroy

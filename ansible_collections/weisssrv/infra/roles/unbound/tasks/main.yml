@@ -1,6 +1,5 @@
 ---
-# Unbound DNS resolver configuration
-# Provides DoT upstream resolution for AdGuard Home
+# Forwarding resolver: every query leaves over DoT, nothing recurses from root.
 
 - name: Install Unbound
   ansible.builtin.apt:
@@ -66,11 +65,9 @@
   changed_when: false
   retries: 3
   delay: 2
-  # Check both exit code AND that we got an IP address in the output
-  # dig can return rc=0 with SERVFAIL/NXDOMAIN but no IP in +short output
+  # dig can exit 0 on SERVFAIL/NXDOMAIN, so require an A record in +short too.
   until: unbound_test.rc == 0 and (unbound_test.stdout | regex_search('^\d+\.\d+\.\d+\.\d+', multiline=True) is not none)
   when: not ansible_check_mode
 
-# NOTE: resolv.conf is NOT updated here because unbound listens on port 5335
-# The adguard_home role updates resolv.conf after AdGuard Home is running on port 53
-# Architecture: resolv.conf -> AdGuard Home (53) -> Unbound (5335) -> Internet (DoT)
+# /etc/resolv.conf is deliberately untouched: this resolver is not on port 53.
+# The filtering resolver in front of it (adguard_home) owns that file.

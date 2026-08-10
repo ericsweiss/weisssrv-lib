@@ -1,0 +1,13 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: not (plex_skip_service | bool)
+
+- name: Restart plex
+  ansible.builtin.systemd:
+    name: plexmediaserver
+    state: restarted
+  when:
+    - not ansible_check_mode
+    - not (plex_skip_service | bool)

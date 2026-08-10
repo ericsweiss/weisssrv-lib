@@ -1,18 +1,9 @@
 ---
-# We install the real .deb rather than dropping a mock binary. The role's
-# version check uses `dpkg-query` (not file existence - see the comment in
-# tasks/main.yml), so a mock script at /usr/bin/unbound_exporter doesn't
-# satisfy the check: dpkg-query still returns rc=1, the role downloads
-# and installs the real deb on top of the mock on first converge, and on
-# the idempotence run the mock task overwrites the real binary again
-# (`changed`) - idempotence fails. Installing the real .deb makes both
-# runs match: first converge downloads+installs, idempotence skips
-# install because dpkg-query now reports the pinned version.
-#
-# The unbound_exporter binary will fail to connect to the non-existent
-# Unbound control socket inside the container, but the role's "Verify
-# unbound_exporter is listening" task is tagged `molecule-notest` so the
-# scenario doesn't actually require it to come up.
+# Installs the real .deb, not a mock binary: the role's install check is
+# `dpkg-query`, which a mock never satisfies, so converge would install over it
+# and the idempotence run would re-write the mock (changed) and fail.
+# There is no Unbound control socket in the container, so the shared pipeline's
+# /metrics health check is tagged `molecule-notest`.
 - name: Converge
   hosts: all
   become: true

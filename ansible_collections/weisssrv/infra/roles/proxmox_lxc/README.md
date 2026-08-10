@@ -73,9 +73,18 @@ plex:
 | Setting | Behaviour |
 |---------|-----------|
 | `onboot` / `startup` (order, delay) | **Reconciled** on existing containers — editing `proxmox_autostart_enabled` / `proxmox_startup_order` / `proxmox_startup_delay` and re-running applies them via an idempotent `pct set` (metadata-only, next-boot). |
-| Admin SSH `authorized_keys` | **Reconciled** on every run — a rotated `SSH_PUBLIC_KEY` propagates idempotently (atomic temp-file swap, only rewrites on content change). No longer a one-shot create-time `>` overwrite. |
-| NIC `firewall=1` flag | **Reconciled** on existing containers. |
+| Admin SSH `authorized_keys` | **Reconciled** on every run — a rotated `SSH_PUBLIC_KEY` propagates idempotently (atomic temp-file swap, only rewrites on content change). |
+| NIC `firewall=1` flag | **Reconciled** on existing containers. Skipped when the container does not exist and `proxmox_lxc_skip_create` is set. |
 | Bind mounts (`proxmox_lxc_bind_mounts`), UID/GID `lxc.idmap` (`proxmox_lxc_idmap_*`), GPU `/dev/dri` passthrough | **Create-time only.** Changing them in inventory does **not** reconcile onto an existing container — live idmap/mount changes are risky and out of scope. Recreate the container, or edit `/etc/pve/lxc/<id>.conf` and `pct restart <id>` manually. |
+
+## Bootstrap DNS fallback
+
+The create path installs `openssh-server`/`sudo` over apt. If the configured
+nameservers cannot answer that `apt-get update`, `proxmox_lxc_bootstrap_fallback_dns`
+(default `1.1.1.1`) is appended to the container's `/etc/resolv.conf` for the
+duration of the bootstrap. The restore runs in an `always`, so package-install
+failure still returns the container to the configured internal resolvers — a
+container left on a public resolver cannot see split-horizon internal names.
 
 ## Files
 

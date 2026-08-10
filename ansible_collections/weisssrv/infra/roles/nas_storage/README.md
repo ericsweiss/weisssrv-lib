@@ -1,170 +1,289 @@
 # weisssrv.infra.nas_storage
 
-Manages ZFS pool properties, NFS exports, Samba shares, mergerfs media directory, media-mover and archive-backup automation, a nightly swap reset, and SMART monitoring on the NAS host. Does **not** create or destroy ZFS pools.
+Configures a ZFS NAS host: dataset properties and scrub timers, NFS exports,
+Samba shares, a MergerFS union of a hot and a bulk media tier, a media mover, a
+nightly swap reset, SMART monitoring, ZFS replication to a detachable archive
+pool, a Proxmox cluster-config archive, and a backup-artifact collector.
 
-## What This Role Manages
+**It never creates or destroys ZFS pools, and never creates datasets** — those
+are manual. The role verifies the declared datasets exist and enforces their
+properties; a missing one fails the deploy.
+
+## What this role manages
 
 ### ZFS
-- Pool property configuration (compression, atime, xattr)
-- Dataset verification and property enforcement (datasets are created
-  manually; a missing dataset fails the deploy — see `tasks/zfs.yml`)
-- Automated periodic snapshots via zfs-auto-snapshot
-- Optional ARC cap: when `nas_storage_zfs_arc_max_bytes` is set (a byte count), renders
-  `/etc/modprobe.d/zfs.conf` with
-  `options zfs zfs_arc_max=<bytes>` and notifies an `Update initramfs`
-  handler so the cap applies at early boot, before the pools import. It also
-  applies the value to the running kernel via
-  `/sys/module/zfs/parameters/zfs_arc_max` (compare-then-set) so a changed cap
-  takes effect immediately, not only at next reboot. Empty (the default)
-  leaves ARC at the ZFS default and the file unmanaged.
+- Dataset property enforcement (compare-then-set, so `changed` means changed).
+  Property values in `nas_storage_zfs_pools[].properties` must be written in the
+  human-readable form `zfs get -H -o value` prints (`1M`, not `1048576`).
+- Scrub timers (`zfs-scrub-<schedule>@<pool>.timer`) and `zfs-auto-snapshot`.
+- Optional ARC cap: `nas_storage_zfs_arc_max_bytes` renders
+  `/etc/modprobe.d/zfs.conf` and rebuilds the initramfs, so the cap applies at
+  early boot before the pools import; it is also written to
+  `/sys/module/zfs/parameters/zfs_arc_max` so a change takes effect immediately.
+  Empty (the default) leaves ARC alone and the file unmanaged.
+- Pools that are not imported are skipped, not failed — a detachable archive
+  pool's normal state is exported.
 
 ### NFS
-- NFS server installation and configuration
-- Exports configuration for k3s nodes and services
-- Per-app appdata subdirectories under the `/export/appdata` bind source
-  (`nas_storage_appdata_dirs`, owned `nas_storage_appdata_owner`:`nas_storage_appdata_group` =
-  1000:2000 to match the export's `all_squash,anonuid=1000,anongid=2000`);
-  created after the mounted-dataset guard so a locked/unmounted `ssd` pool
-  can never get them mkdir'd onto its bare mountpoint
-- Security (restricted to nfs_clients IPSet)
+- Server packages, `/etc/exports` (see `nas_storage_exports` below), bind mounts
+  from each dataset into the export tree, and a client-facing readiness probe on
+  port 2049 (`nfs-server.service` is `oneshot`, so its unit state proves nothing).
+- **Mounted-dataset guard**: every ZFS-backed `bind_source` must be a mountpoint
+  before the role touches it. Without it, an unmounted or key-locked dataset
+  leaves a bare root-filesystem directory that would be created, bound and then
+  exported as if it held data. `bind_source_check` points the guard at the
+  parent dataset when the bind source is a subdirectory of one.
+- **nfsd ordering drop-in**: when any export's bind source is listed in
+  `nas_storage_encrypted_bind_sources`, nfsd is ordered after
+  `zfs-mount-encrypted.service` and given `RequiresMountsFor` on those binds.
+  nfsd is a single daemon, so this delays plaintext exports too — an accepted
+  trade against serving encrypted exports off empty mountpoints.
+- Per-app subdirectories under the appdata export (`nas_storage_appdata_dirs`),
+  owned `nas_storage_appdata_owner`:`nas_storage_appdata_group` to match the
+  export's `all_squash,anonuid=…,anongid=…`, created only after the guard above.
 
 ### Samba
-- Samba server installation
-- Share configuration (media, downloads, backups)
-- User management (nas user with password)
-- Guest access where appropriate
+Server packages, the `nas` user, and one share per `nas_storage_samba_shares`
+entry. SMB3 with `smb encrypt = required` on every connection. The password is
+taken from the `SAMBA_NAS_PASSWORD` environment variable (never argv), and is
+reset only on a confirmed auth failure — a transport error is ridden out.
 
-### Mergerfs
-- Unified media directory (/mnt/media)
-- Combines tank/media, nvme/media with policies
-- Automatic remount on boot
+### MergerFS
+Unions a hot tier and a bulk tier at one mountpoint, which is then bind-mounted
+into the export tree.
 
-### Media Mover
-- Systemd timer (production runs at 06:00 daily via `nas_storage_media_mover_schedule`
-  in host_vars; the timer template falls back to 06:00 when unset)
-- Moves aged library files (older than nas_storage_media_mover_min_age) off the NVMe hot
-  tier to tank
-- Preserves directory structure and permissions
-- Load-shaped: it shares the nightly window with vzdump/scrub/smartd, so the
-  unit runs deferentially — `nas_storage_media_mover_nice` (10) + ionice
-  (`nas_storage_media_mover_io_class`/`nas_storage_media_mover_io_priority`, best-effort/7) set
-  absolute priority, and the cgroup-v2 `nas_storage_media_mover_cpu_weight` /
-  `nas_storage_media_mover_io_weight` (both 20, below the 100 default) deprioritize it
-  only under contention. `nas_storage_media_mover_bwlimit` is an optional hard rsync
-  throughput cap (empty = unlimited).
+MergerFS options are **not verifiable at runtime**: FUSE exposes only generic
+options in `/proc/mounts`, xattrs expose a few (minfreespace, policies), and the
+mount-time-only ones (`inodecalc`, `noforget`, `use_ino`, `cache.files`) are
+invisible once mounted. fstab is therefore authoritative — correct fstab plus a
+live mount is taken as proof the options are applied, and any option change
+requires a full remount cycle.
 
-### Swap Reset (swap-clean)
-- Nightly systemd timer (`nas_storage_swap_clean_enabled`; production runs at 07:00 via
-  `nas_storage_swap_clean_schedule` in host_vars, AFTER the overnight backup window so it
-  reclaims the swap those jobs caused). The memory-tight NAS swaps under peak
-  events and that swap never self-clears, so `swap-clean.sh` resets it: shrink
-  ARC for headroom, `swapoff -a`/`swapon -a`, restore ARC.
-- If ARC-shrink headroom alone can't safely cover the swap, it **escalates**:
-  gracefully stops heavy guests from an ordered candidate list
-  (`nas_storage_swap_clean_stop_guests`, only as many as needed), does the swapoff, and
-  **always** restarts every guest it stopped (a single EXIT trap). Guests are
-  only ever stopped gracefully (`qm shutdown`, never a hard kill); a guest that
-  won't stop within its timeout **aborts** the reclaim rather than being forced.
-- Emits `/var/lib/node_exporter/swap_clean.prom` on every exit path
-  (`swap_clean_last_run_success`, `..._last_success_timestamp_seconds`,
-  `..._swap_cleared_bytes`, `..._guests_stopped_count`), so an unsafe-abort night
-  or a guest-stop escalation is directly alertable. See the defaults.
+That cycle is: unexport the MergerFS-backed exports (scoped to
+`<client>:<path>`, never `exportfs -u -a` — the other exports on this server keep
+serving), unmount the binds sourced from the target, unmount and remount
+MergerFS, remount the binds, `exportfs -a`. It runs only when the mount is idle:
+no established connections on port 2049 and no processes holding the mount.
+Otherwise the role prints the manual sequence and leaves the mount alone, and
+the new options apply at the next reboot (fstab is already correct).
 
-### Archive Backup (archive-backupctl)
-- Nightly ZFS replication of `nas_storage_archive_backup_sources` into
-  `nas_storage_archive_backup_pool`, each landing at `<pool>/<basename>`, plus
-  the plug/unplug/restore subcommands and the scrub-timer wiring.
+### Media mover
+Timer-driven rsync from the hot tier to the bulk tier for files older than
+`nas_storage_media_mover_min_age`. Deliberately deferential, because it shares
+the nightly window with backups and scrubs: `nice` + `ionice` set absolute
+priority, and the cgroup-v2 `CPUWeight`/`IOWeight` (both 20, below the 100
+default) deprioritize it only under contention.
+
+### Swap reset (swap-clean)
+Nightly `swapoff -a`/`swapon -a` with ARC shrunk for headroom, for a
+memory-tight host whose swap never self-clears. If ARC headroom alone cannot
+cover the swap it escalates: gracefully stops as many guests as needed from
+`nas_storage_swap_clean_stop_guests` (ordered), does the reclaim, and **always**
+restarts every guest it stopped (a single EXIT trap). Guests are only ever
+stopped gracefully; one that will not stop within its timeout aborts the reclaim
+rather than being forced. Metrics land in `swap_clean.prom` on every exit path.
+
+### Archive backup (archive-backupctl)
+Nightly ZFS replication of `nas_storage_archive_backup_sources` into
+`nas_storage_archive_backup_pool`, each landing at `<pool>/<basename>`, plus
+plug/unplug/restore subcommands and the scrub-timer wiring.
+
 - **Off by default.** The control script rewrites the destination pool's root
-  properties (including `mountpoint=none`) and destroys its own snapshots
-  there, so it must never run against a pool the site did not nominate.
-  Setting `nas_storage_archive_backup_enabled: true` without both the pool and
-  a non-empty source list fails the role.
-- Turning it back **off converges**: the run stops and disables
-  `archive-backup.timer`/`.service` and removes both units plus
-  `/usr/local/sbin/archive-backupctl`, so a host cannot be left firing a script
-  the role no longer manages. A host that never had the feature does no work.
-- Every SRC_LIST **root** must be a filesystem, not a zvol (zvols are fine as
+  properties (including `mountpoint=none`) and destroys its own snapshots there,
+  so it must never run against a pool the site did not nominate. Enabling it
+  without both the pool and a non-empty source list fails the role.
+- Turning it **off converges**: the units, the schedule and the script are
+  removed, so a host cannot be left firing a script the role no longer manages.
+- Every source **root** must be a filesystem, not a zvol (zvols are fine as
   children). Basenames must be unique — they are the restore labels.
 - `nas_storage_archive_backup_vzdump_target` names the one dataset receiving
-  cluster-wide vzdump writes over NFS; it is snapshotted only after writes
-  under its mountpoint quiesce. Empty disables that guard.
+  cluster-wide backup writes over NFS; it is snapshotted only after writes under
+  its mountpoint quiesce, so a half-written image is never captured. On timeout
+  that dataset is deferred to the next run (exit 75) rather than failed. Empty
+  disables the guard.
+- Retention per dataset: the newest `nas_storage_archive_backup_keep_recent`
+  snapshots, plus the newest of each of the last
+  `nas_storage_archive_backup_keep_monthly` calendar months.
+- **Raw re-seed**: a raw (`-w`) stream cannot continue a base that was received
+  non-raw, so a source that has since been encrypted gets a one-time re-seed.
+  It sends only the current snapshot of each dataset — `-R` would ship the whole
+  source snapshot history and can overflow the destination — into a temp
+  sibling, and swaps it in only after a complete receive, so the previous copy
+  survives an interrupted re-seed. Within that loop, filesystems receive with
+  `-o mountpoint=none,canmount=off` and zvols with `-o readonly=on` only,
+  because ZFS rejects a per-dataset mountpoint override on a volume.
 
-### SMART Monitoring
-- Smartmontools configuration
-- Email alerts via SMTP relay
-- Daily short tests, monthly long tests (staggered per pool)
+### Proxmox cluster-config archive (opt-in)
+`nas_storage_pve_cluster_backup_enabled` deploys a nightly tar of `/etc/pve`
+into the landing zone. Guest backups do not capture pmxcfs, so users/ACLs/API
+tokens, `corosync.conf` and `priv/` (cluster CA, node certs, authkey) otherwise
+have no backup at all. The archive holds private key material, so its directory
+and every archive are root-only (0700/0600) and it has no NFS export.
 
-## Configuration
+Both ends fail closed: it refuses to run when `/etc/pve` is not a mounted pmxcfs
+(a stopped `pve-cluster.service` leaves an empty directory that tars into a
+valid, tiny archive of nothing) and when the landing-zone dataset is not mounted
+(which would write key material onto the root filesystem and report success).
+
+### Backup-artifact collector
+Independent NAS-side evidence that each app's dump actually **landed** —
+an app's own backup metric goes green even when a broken mount or wrong path
+means nothing reached the NAS. For each entry in
+`nas_storage_backup_artifact_apps` it emits, to the node_exporter textfile dir:
+
+| Series | Meaning |
+|---|---|
+| `backup_artifact_last_mtime_seconds{app}` | mtime of the newest file matching the app's `pattern` (0 = none) |
+| `backup_artifact_last_size_bytes{app}` | size of that file (0 = none, or truncated) |
+| `backup_artifact_companion_present{app,file}` | 1/0 per declared `companions` glob |
+| `backup_artifact_companion_size_bytes{app,file}` | size of that companion (0 = absent) |
+| `backup_artifact_collector_last_success_seconds` | collector sentinel |
+
+`pattern` is mandatory and should be tight. A collector that takes the newest
+file of *any* name lets an app's nightly config copies keep the freshness signal
+green while no restorable dump lands — a real, hard-to-see failure mode. Files
+named `*.tmp`/`*.partial`/`*.part` are excluded on top of the pattern.
+
+`companions` covers files that are not the dump but are required to restore it
+(an app's secrets/keys file): keep them out of `pattern`, and alert on
+`backup_artifact_companion_present == 0` instead.
+
+An app directory that does not exist emits **no** series (so an `absent()` alert
+arm fires); one that exists but is empty emits 0. When
+`nas_storage_backup_require_mounted_dataset` is true and the landing zone's
+parent dataset is not mounted, no per-app series are emitted at all.
+
+### SMART
+`smartd` with an explicit disk list (no `DEVICESCAN`, which aborted extended
+self-tests when drives entered standby), staggered long tests per pool, and a
+deploy-time assert that every member of every imported pool appears in the union
+of the `nas_storage_smartd_*_disks` lists — otherwise a swapped drive is silently
+unmonitored.
+
+## Variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `nas_storage_zfs_pools` | *(undefined)* | Pools + datasets + properties to enforce. Undefined skips all ZFS tasks. |
+| `nas_storage_zfs_scrub_enabled` | `true` | Enable the per-pool scrub timers. |
+| `nas_storage_zfs_scrub_schedule` | `monthly` | Token in `zfs-scrub-<schedule>@<pool>.timer`. |
+| `nas_storage_zfs_arc_max_bytes` | `{{ zfs_arc_max_bytes \| default('') }}` | ARC cap in bytes; empty = unmanaged. |
+| `nas_storage_exports` | *(undefined)* | NFS exports. Undefined skips all NFS tasks. |
+| `nas_storage_encrypted_bind_sources` | `[]` | Bind sources on encrypted datasets (late mount anchor + nfsd ordering). |
+| `nas_storage_media_group` / `_media_gid` | `media` / `2000` | The shared group created by both the NFS and Samba tasks. |
+| `nas_storage_appdata_base` | `/mnt/ssd/appdata` | Bind source of the appdata export. |
+| `nas_storage_appdata_dirs` | `[]` | Per-app subdirectories to create under it. |
+| `nas_storage_appdata_owner` / `_group` / `_mode` | `1000` / `{{ nas_storage_media_gid }}` / `0775` | Ownership matching the export's squash ids. |
+| `nas_storage_samba_shares` | *(undefined)* | Samba shares. Undefined skips all Samba tasks. |
+| `nas_storage_mergerfs_mounts` | *(undefined)* | MergerFS unions. Undefined skips all MergerFS tasks. |
+| `nas_storage_media_mover_enabled` | `false` | Deploy the media mover. Requires `_src` and `_dst`. |
+| `nas_storage_media_mover_src` / `_dst` | *(required when enabled)* | Hot-tier source, bulk-tier destination. |
+| `nas_storage_media_mover_min_age` | `12h` | Only files older than this are moved. |
+| `nas_storage_media_mover_schedule` | `*-*-* 06:00:00` | Timer. |
+| `nas_storage_media_mover_nice` / `_io_class` / `_io_priority` / `_cpu_weight` / `_io_weight` | `10` / `best-effort` / `7` / `20` / `20` | Load shaping. |
+| `nas_storage_media_mover_bwlimit` | `""` | rsync `--bwlimit` (e.g. `50m`); empty = unlimited. |
+| `nas_storage_swap_clean_enabled` | `false` | Deploy the nightly swap reset. |
+| `nas_storage_swap_clean_schedule` | `*-*-* 07:00:00` | Timer; keep it outside the backup window. |
+| `nas_storage_swap_clean_stop_guests` | `[]` | Ordered `vmid:name:timeout` escalation candidates. |
+| `nas_storage_smartd_enabled` | `true` | Deploy smartd config. |
+| `nas_storage_smartd_{tank,ssd,nvme,archive}_disks` | `[]` | Explicit by-id disk lists. |
+| `nas_storage_backup_apps_base` | `/mnt/tank/backups/apps` | Landing zone for logical dumps. |
+| `nas_storage_backup_require_mounted_dataset` | `not skip_zfs_operations` | Fail-closed mount guard for the landing zone. |
+| `nas_storage_backup_artifact_metrics_enabled` | `true` | Deploy the collector + timer. |
+| `nas_storage_backup_artifact_apps` | `[]` | `name` + `pattern` (+ optional `companions`) per app. |
+| `nas_storage_archive_backup_enabled` | `false` | Deploy archive replication (off converges). |
+| `nas_storage_archive_backup_pool` | `""` | Destination pool; its root properties are rewritten. |
+| `nas_storage_archive_backup_sources` | `[]` | Datasets replicated recursively. Roots must be filesystems. |
+| `nas_storage_archive_backup_vzdump_target` | `""` | Dataset needing the quiesce guard; empty disables it. |
+| `nas_storage_archive_backup_keep_recent` / `_keep_monthly` | `3` / `6` | Snapshot retention. |
+| `nas_storage_archive_backup_schedule` / `_random_delay` | `*-*-* 06:30:00` / `10m` | Timer. |
+| `nas_storage_pve_cluster_backup_enabled` | `false` | Deploy the `/etc/pve` archive. |
+| `nas_storage_pve_cluster_backup_src` | `/etc/pve` | Source (pmxcfs mountpoint). |
+| `nas_storage_pve_cluster_backup_require_src_mount` | `not skip_zfs_operations` | Fail-closed guard on the source. |
+| `nas_storage_pve_cluster_backup_schedule` / `_random_delay` / `_keep` / `_nice` | `*-*-* 02:15:00` / `300` / `14` / `10` | Timer + retention. |
+| `nas_storage_skip_zfs_operations` | `false` | Skip all real-ZFS work (also disables both mount guards). Test use. |
+| `nas_storage_skip_mergerfs` | `false` | Skip MergerFS mount management. |
+| `nas_storage_skip_nfs_reload` | `false` | Skip `exportfs` reload / nfsd start. |
+| `nas_storage_skip_smartd_service` | `false` | Skip enabling/starting smartd. |
+
+## Worked example
 
 ```yaml
-# ZFS pools (never created/destroyed by Ansible — manually built).
-# The role only verifies datasets exist and enforces their properties;
-# dataset creation is manual too.
+# Pools are created manually; this only enforces properties on existing datasets.
 nas_storage_zfs_pools:
-  - name: tank        # 6x 22TB raidz2
+  - name: tank                       # bulk raidz
     datasets:
       - name: tank/media
         properties:
           mountpoint: /mnt/tank/media
           atime: "off"
           compression: zstd
-          recordsize: 1M
-  - name: ssd         # 3x 4TB raidz1
-  - name: nvme        # 1x 4TB
-  - name: archive     # 4x 6TB raidz1
+          recordsize: 1M             # human-readable form, as `zfs get` prints it
+  - name: ssd                        # app data
+  - name: archive                    # detachable replication target
 
-# NFS exports — exports.j2 consumes this exact shape.
-# Each export uses `path:` (the actual exported directory under /export, an
-# NFSv4 root), with `bind_source:` mounted to it; `clients[]` carries one
-# entry per CIDR/host with `spec:` + free-form `options:` string.
+# NFS exports. `path` is the exported directory under the NFSv4 root;
+# `bind_source` is bind-mounted onto it. `clients[]` is one entry per CIDR/host
+# with a free-form `options` string.
 #
-# RPC-with-TLS (NFSv4 over kernel-TLS via the nfs_tls role) has two scopes:
-#   - export-level `xprtsec:` — applies to every client line.
-#   - per-client `xprtsec:` — overrides the export-level value for that one
-#     client, INCLUDING a falsy value to opt a single client OUT.
-# The production k3s exports use "tls" (REQUIRE: reject plaintext mounts).
-# The wire is encrypted because the k3s PVs MOUNT with xprtsec=tls — by
-# HOSTNAME (nas.example.com, so the *.example.com cert verifies; an IP
-# mount fails the TLS handshake). Because xprtsec is per-client, a require-TLS
-# k3s line and a plaintext-only client can share one export (e.g.
-# /export/media: k3s clients require TLS, an appliance client .154 has no xprtsec because its
-# Supervisor can't request it — see the role docs). A client line with no xprtsec is
-# left at the server default (none:tls:mtls), which accepts plaintext.
-# Requires nfs_tls active on the server AND on every client that mounts TLS.
+# Transport encryption (NFSv4 over kernel TLS, via weisssrv.infra.nfs_tls) has
+# two scopes: an export-level `xprtsec` applies to every client line, and a
+# per-client `xprtsec` overrides it for one client — including a falsy value to
+# opt a single client OUT, so a require-TLS client and an appliance that cannot
+# speak xprtsec can share one export. A line with no xprtsec is left at the
+# server default (none:tls:mtls), which ACCEPTS plaintext. The wire is only
+# encrypted when the client MOUNTS with xprtsec=tls, by a name the server
+# certificate covers — a wildcard cert has no IP SAN, so an IP mount fails the
+# handshake.
 nas_storage_exports:
-  # NFSv4 pseudo-root (fsid=0): traversal-only, so read-only — clients cross
-  # from here into whichever child exports are explicitly listed for them.
-  # crossmnt is deliberately ABSENT: it would implicitly export every child
-  # filesystem bound under /export with THIS line's options (plaintext, no
-  # xprtsec), bypassing the per-child client lists and TLS requirements.
-  - path: /export                     # NFSv4 pseudo-root (left plaintext)
+  # NFSv4 pseudo-root (fsid=0): traversal only, so read-only. crossmnt is
+  # deliberately absent — it would implicitly export every child filesystem
+  # bound under the root with THIS line's options, bypassing the per-child
+  # client lists and TLS requirements.
+  - path: /export
     clients:
       - spec: "10.0.0.200/29"
         options: "ro,sync,hide,no_subtree_check,fsid=0,sec=sys,root_squash"
 
-  - path: /export/appdata             # k3s-only -> export-level require TLS
+  - path: /export/appdata
     bind_source: /mnt/ssd/appdata
     owner: 1000
     group: 2000
     mode: "02775"
-    xprtsec: "tls"                    # every client line gets xprtsec=tls (require)
+    xprtsec: "tls"                   # require TLS on every client line
     clients:
       - spec: "10.0.0.200/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=11"
 
-  - path: /export/media               # mixed: per-client require TLS
-    bind_source: /mnt/media
+  - path: /export/media
+    bind_source: /mnt/media          # the MergerFS union
     owner: 1000
     group: 2000
     mode: "02775"
     clients:
       - spec: "10.0.0.200/29"
         options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=20"
-        xprtsec: "tls"                # k3s client: require TLS, reject plaintext
-      - spec: "10.0.0.154/32"      # appliance: no xprtsec -> plaintext accepted
-        options: "ro,sync,no_subtree_check,root_squash,fsid=20"
+        xprtsec: "tls"
+      - spec: "10.0.0.154/32"        # appliance: no xprtsec -> plaintext accepted
+        options: "ro,sync,no_subtree_check,fsid=20"
 
-# Samba shares (list of dicts, not a map)
+  # A per-app landing-zone export: bind_source is a SUBDIR of a dataset, so
+  # bind_source_check points the mounted-dataset guard at the parent.
+  - path: /export/backups-apps/gitlab
+    bind_source: /mnt/tank/backups/apps/gitlab
+    bind_source_check: /mnt/tank/backups
+    owner: 1000
+    group: 2000
+    mode: "02775"
+    xprtsec: "tls"
+    clients:
+      - spec: "10.0.0.153/32"
+        options: "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=97"
+
+nas_storage_encrypted_bind_sources:
+  - /mnt/ssd/appdata
+  - /mnt/tank/backups/apps/gitlab
+
 nas_storage_samba_shares:
   - name: media
     path: /mnt/tank/media
@@ -177,126 +296,43 @@ nas_storage_samba_shares:
     create_mask: "0664"
     directory_mask: "2775"
 
-# ZFS ARC cap — pin it per host; a memory-tight NAS caps it, others leave it
-# empty
-nas_storage_zfs_arc_max_bytes: ""
+nas_storage_backup_artifact_apps:
+  - name: gitlab
+    pattern: "*_gitlab_backup.tar"   # the tarball only, never the config copies
+    companions:
+      - "gitlab-secrets.json"        # required to decrypt a restored database
+  - name: home-assistant
+    pattern: "Automatic_backup_*.tar"  # full backups only, not addon tars
+  - name: pve-cluster
+    pattern: "etc-pve-*.tar.gz"
 
-# Media-mover load-shaping (defaults/main.yml; see Media Mover above)
-nas_storage_media_mover_nice: 10
-nas_storage_media_mover_io_class: best-effort
-nas_storage_media_mover_io_priority: 7
-nas_storage_media_mover_cpu_weight: 20
-nas_storage_media_mover_io_weight: 20
-nas_storage_media_mover_bwlimit: ""               # rsync --bwlimit, e.g. "50m"; empty = unlimited
-
-# Archive backup (see Archive Backup above). Enabling it requires the pool and
-# a non-empty source list; the role asserts both.
-nas_storage_archive_backup_enabled: false
-nas_storage_archive_backup_pool: ""               # e.g. "archive"
-nas_storage_archive_backup_sources: []            # e.g. ["tank/share", "ssd/appdata"]
-nas_storage_archive_backup_vzdump_target: ""      # e.g. "tank/proxmox"; empty = no quiesce guard
-
-# Per-app appdata subdirectories on the /export/appdata bind source.
-# Zvol-backed datasets (authentik/mealie postgres, prometheus, loki) are NOT
-# here — those are separate ext4-on-zvol mounts, not NFS subdirectories.
-nas_storage_appdata_base: /mnt/ssd/appdata
-nas_storage_appdata_owner: 1000
-nas_storage_appdata_group: 2000
-nas_storage_appdata_mode: "0775"
-# nas_storage_appdata_dirs: the per-app list lives in defaults/main.yml (authoritative).
+nas_storage_archive_backup_enabled: true
+nas_storage_archive_backup_pool: archive
+nas_storage_archive_backup_vzdump_target: tank/proxmox
+nas_storage_archive_backup_sources:
+  - tank/share
+  - tank/backups
+  - ssd/appdata
 ```
-
-Mergerfs unifies `/mnt/nvme/media` (hot) + `/mnt/tank/media` (cold) at
-`/mnt/media`; that path is bind-mounted into `/export/media` for NFS clients.
-See the site inventory for the full
-production set of exports, shares, and mergerfs branches.
-
-## Deployment
-
-```bash
-# Deploy NAS configuration
-the storage playbook
-
-# Deploy to the NAS host
-ansible-playbook ansible/playbooks/storage.yml
-```
-
-## Architecture
-
-```
-the NAS host
-├─ ZFS Pools
-│  ├─ tank (6x 22TB raidz2, ~88TB usable)
-│  ├─ ssd (3x 4TB raidz1, ~8TB usable)
-│  ├─ nvme (1x 4TB, ~2.27TB)
-│  └─ archive (4x 6TB raidz1, ~18TB usable)
-├─ Mergerfs: /mnt/media
-│  └─ Combines: tank/media + nvme/media
-├─ NFS: Exports to k3s nodes
-├─ Samba: Shares to LAN
-├─ Media Mover: nvme → tank (06:00 daily, load-shaped)
-├─ Archive backup: archive-backupctl → nas_storage_archive_backup_pool (06:30 nightly)
-├─ Swap reset: swap-clean → ARC-shrink + optional graceful guest-stop (07:00 daily)
-└─ SMART: Monitoring + alerts
-```
-
-## Files
-
-- `tasks/main.yml` - Main orchestration
-- `tasks/zfs.yml` - ZFS configuration (incl. the ARC modprobe.d cap)
-- `tasks/nfs.yml` - NFS exports + per-app appdata subdirectories
-- `tasks/samba.yml` - Samba shares
-- `tasks/mergerfs.yml` - Unified media directory
-- `tasks/media_mover.yml` - Automated file mover
-- `tasks/archive_backup.yml` - Nightly ZFS replication to the archive pool
-- `tasks/archive_backup_absent.yml` - De-provisioning path when the feature is off
-- `tasks/swap_clean.yml` - Nightly swap reset timer (`swap-clean.{sh,service,timer}.j2`)
-- `tasks/smartd.yml` - SMART monitoring
-- `templates/*` - Configuration templates
 
 ## Dependencies
 
-- ZFS pools must exist (created manually)
-- `base` role (for mail relay configuration)
+- `weisssrv.infra.base` (meta dependency — mail relay for smartd alerts).
+- `weisssrv.infra.textfile_collector`, used to ship the artifact collector.
+- ZFS pools and datasets already created, manually.
+- `SAMBA_NAS_PASSWORD` in the environment for the Samba password to be managed.
 
-## CRITICAL: ZFS Pool Creation
+## Files
 
-**NEVER create/destroy pools via Ansible.** Pools are too critical and must be created manually:
-
-```bash
-# Example tank pool creation (DO NOT RUN VIA ANSIBLE)
-zpool create -f tank raidz2 \
-  /dev/disk/by-id/... \
-  /dev/disk/by-id/... \
-  # ... (6 disks total)
-```
-
-Ansible only sets pool/dataset properties and verifies the expected datasets
-exist (they are created manually alongside the pool; a missing one fails the
-deploy).
-
-## Testing
-
-```bash
-# Test NFS from k3s node (clients mount /media off the NFSv4 root /export)
-showmount -e the NAS host
-# Plaintext mount (any name/IP works):
-mount -t nfs4 the NAS host:/media /mnt/test
-# TLS mount MUST use a name the *.example.com cert covers (an IP fails the
-# handshake — "Certificate owner unexpected"):
-mount -t nfs4 -o xprtsec=tls nas.example.com:/media /mnt/test
-
-# Test Samba from Windows/Mac
-smb://the NAS host/media
-
-# Check mergerfs
-df -h /mnt/media
-ls /mnt/media
-
-# Check media-mover
-systemctl status media-mover.timer
-journalctl -u media-mover.service
-
-# Check SMART
-smartctl -a /dev/sda
-```
+| Path | Purpose |
+|---|---|
+| `tasks/zfs.yml` | Dataset properties, scrub timers, ARC cap |
+| `tasks/nfs.yml` | Exports, bind mounts, guards, nfsd ordering drop-in |
+| `tasks/samba.yml` | Shares, `nas` user, password handling |
+| `tasks/mergerfs.yml` | Union mount + the safe remount cycle |
+| `tasks/media_mover.yml` | Hot-to-bulk mover script/unit/timer |
+| `tasks/swap_clean.yml` | Nightly swap reset |
+| `tasks/smartd.yml` | SMART config + unmonitored-disk assert |
+| `tasks/archive_backup.yml` / `archive_backup_absent.yml` | Archive replication, and its de-provisioning path |
+| `tasks/pve_cluster_backup.yml` | `/etc/pve` archive |
+| `tasks/backup_metrics.yml` | Backup-artifact collector |

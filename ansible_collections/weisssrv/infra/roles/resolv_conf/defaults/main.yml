@@ -1,8 +1,19 @@
 ---
+# Nameservers written to the file. Aliases `host_dns_servers`, the neutral name
+# the calling role (base, adguard_home) passes in. Required — asserted in tasks.
+resolv_conf_nameservers: "{{ host_dns_servers | default([]) }}"
+
+# Search-suffix domains; an empty list writes neither `domain` nor `search`.
+# Set [] on a Kubernetes node: kubelet copies the host's search list into every
+# pod, where the default ndots:5 makes each cluster-internal lookup get suffixed
+# and probed upstream before the literal name is tried.
+# resolv_conf_internal_domain aliases the inventory-wide `internal_domain`.
+resolv_conf_internal_domain: "{{ internal_domain | default('') }}"
+resolv_conf_search_domains: "{{ [resolv_conf_internal_domain] if resolv_conf_internal_domain else [] }}"
+
 # Wrap the write in immutable-flag (chattr) handling: drop the flag before
 # writing, re-set it afterwards, and verify it stuck. Consumers that want
-# /etc/resolv.conf protected from DHCP/systemd overwrites (base, adguard_home)
-# set this true.
+# /etc/resolv.conf protected from DHCP/systemd overwrites set this true.
 resolv_conf_immutable: false
 
 # chattr +i needs CAP_LINUX_IMMUTABLE in the owning user namespace, which
@@ -13,22 +24,3 @@ resolv_conf_is_container: "{{ ansible_facts['virtualization_type'] | default('')
 # Container test environments bind-mount /etc/resolv.conf, so the atomic
 # rename returns EBUSY; force a direct write there. Never needed on a real host.
 resolv_conf_unsafe_writes: false
-
-# Default search domains. Empty list = no `search` line is written.
-#
-# Default keeps current behaviour for Proxmox hosts and admin shells
-# (typing `pve-nas-01` resolves via search-suffix). K3s VMs override
-# to [] in group_vars/k3s.yml because kubelet propagates the host's
-# search domains into every pod's /etc/resolv.conf, which interacts
-# badly with the default ndots:5 to amplify cluster-internal lookups
-# (each one is suffixed and probed against AdGuard before the literal
-# is tried).
-#
-# resolv_conf_internal_domain aliases the conventional inventory-wide
-# `internal_domain`; unset, the search list is empty and no line is written.
-resolv_conf_internal_domain: "{{ internal_domain | default('') }}"
-resolv_conf_search_domains: "{{ [resolv_conf_internal_domain] if resolv_conf_internal_domain else [] }}"
-
-# Nameservers written to the file. Aliases `host_dns_servers`, the neutral name
-# the calling role (base, adguard_home) passes in. Required — asserted below.
-resolv_conf_nameservers: "{{ host_dns_servers | default([]) }}"

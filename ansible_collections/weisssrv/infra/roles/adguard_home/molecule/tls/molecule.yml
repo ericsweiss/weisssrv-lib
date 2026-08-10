@@ -76,6 +76,8 @@ provisioner:
         # cert's CN/SAN so AdGuard accepts and enables it.
         adguard_home_tls_enabled: true
         adguard_home_tls_server_name: dns.test.local
+        # Docker exec needs a beat between the config rewrite and the restart.
+        adguard_home_settle_seconds: 1
         adguard_home_https_port: 443
         adguard_home_dot_port: 853
         adguard_home_doq_port: 853

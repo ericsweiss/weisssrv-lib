@@ -29,8 +29,9 @@ k3s_inotify_tuning: true
 k3s_inotify_max_user_instances: 8192
 k3s_inotify_max_user_watches: 1048576
 
-# Fallback pin; a site should set this alongside its other version pins.
-k3s_version: "v1.36.2+k3s1"
+# k3s_version is REQUIRED and deliberately has no default here: a role-local
+# pin duplicates the site's version block and silently deploys the stale value
+# when the group_var is dropped. server.yml/agent.yml assert it instead.
 
 # Molecule/check-mode escape hatch: render the config without installing k3s.
 k3s_skip_install: false
@@ -122,10 +123,37 @@ k3s_gpu_cuda_keyring_sha256: "{{ nvidia_cuda_keyring_sha256 | default('') }}"
 k3s_gpu_driver_version: "{{ nvidia_driver_version | default('') }}"
 k3s_gpu_container_toolkit_version: "{{ nvidia_container_toolkit_version | default('') }}"
 
-# kube-vip. Keep this default in step with the site's own pin so a standalone
-# run or a dropped group_var cannot silently regress the API VIP.
-k3s_kube_vip_version: "v1.2.1"
-k3s_kube_vip_interface: "eth0"
+# kube-vip. The version is REQUIRED on servers (asserted in server.yml) and has
+# no role-local pin — one would duplicate the site's version block and regress
+# the API VIP the moment the two drift. Both alias the conventional
+# inventory-wide `kube_vip_*` names.
+k3s_kube_vip_version: "{{ kube_vip_version | default('') }}"
+k3s_kube_vip_interface: "{{ kube_vip_interface | default('eth0') }}"
+
+# kube-vip pod resources. Upstream ships none, which makes the pod that owns the
+# API VIP BestEffort and the first eviction victim under node memory pressure.
+# Memory limit only — a CPU limit on a VIP announcer buys throttling, not safety.
+k3s_kube_vip_resources:
+  requests:
+    cpu: 25m
+    memory: 96Mi
+  limits:
+    memory: 192Mi
+
+# metrics-server durability override (first server only, opt-in). k3s packages
+# metrics-server itself as a single replica with no memory limit, and it is the
+# only metric source every HPA and the VPA recommender read. When enabled the
+# role writes a HelmChartConfig into the server manifests dir — and asserts
+# first that this k3s actually packages metrics-server as a HelmChart, because
+# against a static wrangler AddOn a HelmChartConfig is silently inert.
+k3s_metrics_server_override_enabled: false
+k3s_metrics_server_replicas: 2
+k3s_metrics_server_resources:
+  requests:
+    cpu: 25m
+    memory: 128Mi
+  limits:
+    memory: 256Mi
 
 # Off-node etcd snapshot copy (see README.md)
 # k3s writes scheduled etcd snapshots to k3s_etcd_snapshot_dir on each server's

@@ -124,6 +124,46 @@
         fail_msg: "qemu-guest-agent should not be installed in docker container"
         success_msg: "VM packages correctly skipped (not a KVM guest)"
 
+    # unattended-upgrades is NOT installed in the test container, which is the
+    # point: the periodic knobs must be written anyway so a later install cannot
+    # come up enabled.
+    - name: Read the unattended-upgrades periodic config
+      ansible.builtin.slurp:
+        src: /etc/apt/apt.conf.d/20auto-upgrades
+      register: auto_upgrades_conf
+
+    - name: Assert unattended-upgrades is disabled even with the package absent
+      ansible.builtin.assert:
+        that:
+          - >-
+            'APT::Periodic::Unattended-Upgrade "0";'
+            in (auto_upgrades_conf.content | b64decode)
+          - >-
+            'APT::Periodic::Update-Package-Lists "0";'
+            in (auto_upgrades_conf.content | b64decode)
+        fail_msg: "20auto-upgrades does not disable the periodic knobs"
+        success_msg: "unattended-upgrades disabled regardless of package state"
+
+    # NIC offloads belong to nic_tuning; base must leave no oneshot of its own.
+    - name: Stat the NIC offload fix units and scripts base used to install
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: nic_offload_orphans
+      loop:
+        - /etc/systemd/system/e1000e-tso-fix.service
+        - /usr/local/sbin/e1000e-tso-fix.sh
+        - /etc/systemd/system/atlantic-gro-fix.service
+        - /usr/local/sbin/atlantic-gro-fix.sh
+
+    - name: Assert no NIC offload fix unit or script is left behind
+      ansible.builtin.assert:
+        that:
+          - nic_offload_orphans.results | selectattr('stat.exists') | list | length == 0
+        fail_msg: >-
+          base still installs (or fails to remove) a NIC offload oneshot —
+          weisssrv.infra.nic_tuning is the single owner of offload settings.
+        success_msg: "No NIC offload fix unit or script present"
+
     - name: Check testuser home directory exists
       ansible.builtin.stat:
         path: /home/testuser
@@ -142,7 +182,6 @@
     # molecule scenarios (default, empty-search); dns.yml is skipped here
     # because /etc/resolv.conf is a docker bind mount.
 
-    # SSH hardening verification
     - name: Check the SSH hardening drop-in exists
       ansible.builtin.stat:
         path: /etc/ssh/sshd_config.d/00-hardening.conf
@@ -185,7 +224,6 @@
         fail_msg: "ssh service is not active/enabled"
         success_msg: "ssh service is active and enabled"
 
-    # Fail2ban verification
     - name: Check if fail2ban is installed
       ansible.builtin.command: dpkg -l fail2ban
       register: fail2ban_pkg
@@ -336,16 +374,16 @@
       vars:
         lockout_matrix:
           # Path 1: managed non-root account carrying a key.
-          - {admin_user: eric, ssh_keys: [k], permit_root: "no", password_auth: false, survives: true}
+          - {admin_user: ops, ssh_keys: [k], permit_root: "no", password_auth: false, survives: true}
           # Path 2: root login still permitted (either spelling).
           - {admin_user: root, ssh_keys: [], permit_root: prohibit-password, password_auth: false, survives: true}
           - {admin_user: root, ssh_keys: [], permit_root: "yes", password_auth: false, survives: true}
           # Path 3: password authentication on — every pre-existing account stays
           # reachable, including keys provisioned by cloud-init or image baking.
           - {admin_user: root, ssh_keys: [], permit_root: "no", password_auth: true, survives: true}
-          - {admin_user: eric, ssh_keys: [], permit_root: "no", password_auth: true, survives: true}
+          - {admin_user: ops, ssh_keys: [], permit_root: "no", password_auth: true, survives: true}
           # True lockout: root refused, no password, no managed account with a key.
-          - {admin_user: eric, ssh_keys: [], permit_root: "no", password_auth: false, survives: false}
+          - {admin_user: ops, ssh_keys: [], permit_root: "no", password_auth: false, survives: false}
           - {admin_user: root, ssh_keys: [k], permit_root: "no", password_auth: false, survives: false}
           - {admin_user: root, ssh_keys: [], permit_root: "no", password_auth: false, survives: false}
           # Case-insensitive on permit_root, so "No" is still a refusal.

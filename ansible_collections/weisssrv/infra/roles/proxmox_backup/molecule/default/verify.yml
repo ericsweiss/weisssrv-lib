@@ -71,6 +71,16 @@
           - bk.d_total == 1
         fail_msg: "Expected storage_set=1/total=1 for content drift, got {{ bk.d_storage_set }}/{{ bk.d_total }}"
 
+    # (f) A job with a `script` path deploys the node_exporter_host hookscript
+    #     first (pvesh rejects a missing --script), then creates the job.
+    - name: F — job with script deploys the hookscript and creates the job
+      ansible.builtin.assert:
+        that:
+          - bk.f_hook
+          - bk.f_job_create == 1
+          - bk.f_total == 1
+        fail_msg: "Expected hook=true/job_create=1/total=1, got {{ bk.f_hook }}/{{ bk.f_job_create }}/{{ bk.f_total }}"
+
     # (e) Create-fixed drift (server IP -> hostname migration) must fail
     #     loud with ZERO mutations — recreation is a deliberate manual step.
     - name: E — fixed-property drift fails loud with NO mutations

@@ -1,7 +1,6 @@
 ---
-# NOTE: Handler execution order matters! Handlers run in the order they are
-# defined here, not in the order they are notified. postmap must run before
-# reload so Postfix picks up the updated .db file.
+# Definition order is execution order: the map rebuilds must precede
+# 'Reload postfix' so the reload picks up fresh .db files.
 
 - name: Postmap sasl_passwd
   ansible.builtin.command: postmap /etc/postfix/sasl_passwd
@@ -15,7 +14,3 @@
   ansible.builtin.service:
     name: postfix
     state: reloaded
-
-# The postfix-queue-collector timer is reloaded + restarted on a unit change by
-# the shared textfile_collector role (restart-on-change task), so this role no
-# longer carries a collector reload handler.

@@ -1,0 +1,50 @@
+---
+# Immich machine-learning (OpenVINO) compose stack in a GPU guest: a
+# single-service compose project whose lifecycle is a systemd unit, mirroring
+# the immich role's pattern. No secrets.
+#
+# The endpoint is AUTHLESS by upstream design — a firewall rule scoping who may
+# reach immich_ml_listen_port IS the security boundary.
+
+# Render-only escape hatch: gates the GPU guard, the Docker install and all
+# service management. Aliases the pre-collection name.
+immich_ml_skip_install: "{{ skip_immich_ml_deploy | default(false) }}"
+
+# Compose project layout. The model cache (multi-GB, downloaded on first run)
+# is a named docker volume in the guest's root filesystem — re-downloadable
+# cache, not state, so no attached volume and no backup enrollment.
+immich_ml_compose_dir: /opt/immich-ml/compose
+
+# Upstream immich-machine-learning default. Published on the LAN; reachability
+# is scoped by the site firewall, not by the bind address.
+immich_ml_listen_port: 3003
+
+immich_ml_timezone: "{{ timezone | default('UTC') }}"
+
+# Required: the Immich release tag. It defaults to the inventory-wide
+# immich_version, so pinning that once keeps this guest in lockstep with the
+# Immich guest's containers. `-openvino` is upstream's Intel GPU variant and
+# bundles its own compute-runtime — the host supplies only the kernel driver;
+# override immich_ml_image whole for a different accelerator variant.
+immich_ml_version: "{{ immich_version | default('') }}"
+immich_ml_image: "ghcr.io/immich-app/immich-machine-learning:{{ immich_ml_version }}-openvino"
+
+# GPU device nodes. Both are asserted present in the guest, the container gets
+# the whole directory, and the GIDs for group_add are read off these two nodes.
+immich_ml_render_device: /dev/dri/renderD128
+immich_ml_card_device: /dev/dri/card0
+immich_ml_device_dir: /dev/dri
+
+# GIDs granted to the container (compose group_add) so it can open the device
+# nodes: in an unprivileged container root is not host root, so CAP_DAC_OVERRIDE
+# cannot bypass the 0660 root:video/render perms — the group match is the only
+# access path. These are the Debian defaults and are overwritten at deploy time
+# by the GIDs discovered on the actual device nodes.
+immich_ml_video_gid: 44
+immich_ml_render_gid: 104
+
+# Health wait after the stack starts. /ping answers as soon as the service is
+# up — BEFORE the first-boot model download finishes (models load lazily per
+# request) — so this covers the image pull and container start only.
+immich_ml_health_retries: 30
+immich_ml_health_delay: 10

@@ -90,6 +90,15 @@
           - (script_content.content | b64decode) is search('Exit codes:')
           # token-via-stdin (-H @-) — never on argv (avoids /proc/<pid>/cmdline leak)
           - (script_content.content | b64decode) is search('-H @-')
+          # the access point is templated from zfs_encryption_connect_url
+          - (script_content.content | b64decode) is search('CONNECT_URL="https://connect.test.local"')
+
+    # Executed, not grepped: drives the rendered script against a stub Connect
+    # endpoint + stub zpool/zfs, asserting each documented exit code (the unit's
+    # RestartPreventExitStatus depends on them) and passphrase delivery.
+    - name: Assert zfs-load-key.sh behavior against a stub Connect endpoint
+      ansible.builtin.script: files/zfs-load-key-behavior.sh
+      changed_when: false
 
     # 4. Systemd template unit
     - name: Stat /etc/systemd/system/zfs-load-key@.service
@@ -119,7 +128,7 @@
       ansible.builtin.set_fact:
         unit_body_no_comments: "{{ (unit_content.content | b64decode).splitlines() | reject('match', '\\s*#') | join('\n') }}"
 
-    - name: Assert post-incident ordering and Install hooks
+    - name: Assert unit ordering and Install hooks
       ansible.builtin.assert:
         that:
           # After=zfs-import.target — pool must be imported first
@@ -127,8 +136,8 @@
           # Install hook is WantedBy the late mount anchor — a failed key-load
           # must never drag a mount (or any boot target) down with it.
           - unit_body_no_comments is search('WantedBy=zfs-mount-encrypted\\.service')
-          # Regression guard for the boot-hang incident: the early-boot edges that
-          # closed the zfs-load-key<->zfs-mount ordering cycle must be ABSENT.
+          # The early-boot edges that close the zfs-load-key <-> zfs-mount
+          # ordering cycle must be ABSENT.
           - unit_body_no_comments is not search('Before=.*zfs-mount\\.service')
           - unit_body_no_comments is not search('RequiredBy=.*zfs-mount\\.service')
           # ConditionPathExists guards against unknown pools
@@ -218,9 +227,9 @@
           - mount_unit_enabled.stdout | trim == 'enabled'
         fail_msg: "Expected zfs-mount-encrypted.service to be 'enabled', got '{{ mount_unit_enabled.stdout | trim }}'"
 
-    # The per-pool key-load is wired into the late anchor's .wants (best-effort),
-    # NOT the old zfs-mount.service.requires (the fatal early-boot edge). Assert
-    # the new link exists and the old one is gone — the core regression guard.
+    # The per-pool key-load is wired into the anchor's .wants (best-effort),
+    # never into zfs-mount.service.requires — enabling the unit must not
+    # materialize that fatal early-boot edge.
     - name: Stat the per-pool .wants symlink under the mount anchor
       ansible.builtin.stat:
         path: /etc/systemd/system/zfs-mount-encrypted.service.wants/zfs-load-key@testpool.service
@@ -241,7 +250,7 @@
           zfs-mount-encrypted.service.wants (got exists={{ pool_wants_link.stat.exists }})
           and must NOT be in zfs-mount.service.requires (got
           exists={{ pool_requires_link.stat.exists }}) — the early-boot edge that
-          caused the documented boot-hang incident.
+          hangs boot behind a network-dependent unlock.
 
     # 7. Encrypted-storage guest-start cohort (pve-start-encrypted-guests)
     - name: Read the guest-start script
@@ -299,6 +308,7 @@
           - "Connect token file deployed (0400 root:root)"
           - "Per-pool env file rendered with ITEM/FIELD"
           - "zfs-load-key.sh deployed (0750 root:root, set -euo pipefail, -H @-, exit-code taxonomy)"
+          - "zfs-load-key.sh executed against a stub Connect endpoint (exit codes + passphrase delivery)"
           - "zfs-load-key@.service template ordering + Install hooks correct (WantedBy anchor, no early-boot edges)"
           - "systemctl recognizes the template unit"
           - "zfs-load-key@testpool.service enabled"

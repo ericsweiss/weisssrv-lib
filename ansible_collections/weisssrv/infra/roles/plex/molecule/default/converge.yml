@@ -1,0 +1,34 @@
+---
+# Converge: create the bind-mount stand-ins the role requires, then run the role.
+- name: Converge
+  hosts: all
+  become: true
+  pre_tasks:
+    - name: Wait out apt locks and refresh the cache
+      ansible.builtin.include_tasks: ../../../../molecule-shared/tasks/container-warmup.yml
+
+    - name: Install prerequisites
+      ansible.builtin.apt:
+        name:
+          - curl
+          - systemd
+          - ca-certificates
+          - sudo
+          - gnupg
+        state: present
+
+    # Stand-ins for the host bind mounts; the role fails loudly without them.
+    - name: Create the bind-mount stand-in directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /tmp/plex-config
+        - /tmp/plex-transcode
+        - /tmp/plex-media
+
+  tasks:
+    - name: Run the plex role
+      ansible.builtin.include_role:
+        name: weisssrv.infra.plex

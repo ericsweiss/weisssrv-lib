@@ -18,8 +18,7 @@
 
     # Debian trixie / PVE 9 carve the crypttab generator + systemd-cryptsetup@
     # template into a SEPARATE systemd-cryptsetup package that cryptsetup does
-    # not pull in. Asserting only cryptsetup let that reach the first fleet
-    # deploy ("Unit systemd-cryptsetup@cryptswap.service not found").
+    # not pull in; without it the mapper unit never exists at boot.
     - name: Check systemd-cryptsetup is installed
       ansible.builtin.package:
         name: systemd-cryptsetup
@@ -28,8 +27,7 @@
       register: systemd_cryptsetup_installed
       failed_when: systemd_cryptsetup_installed.changed
 
-    # The live-switch decision script is removed; the role must purge any copy
-    # left on previously-managed hosts (it carried the unsafe swapoff path).
+    # The role must purge /usr/local/sbin/encrypted-swap-switch.sh if present.
     - name: Assert the obsolete live-switch script is absent
       ansible.builtin.stat:
         path: /usr/local/sbin/encrypted-swap-switch.sh
@@ -122,5 +120,9 @@
           # with restore-on-failure, never a swapless exit.
           - "'attempting boot-time switch' in (finalize_script_raw.content | b64decode)"
           - "'restoring plaintext fallback' in (finalize_script_raw.content | b64decode)"
-        fail_msg: "finalize script missing the active-swap gate, the dm-device resolution, or the boot-race recovery arm"
+          # Restoring the fallback MUST mkswap the backing device first: opening
+          # the mapper mkswaps through dm-crypt and destroys the plaintext swap
+          # signature, so a bare `swapon -a` would leave the host swapless.
+          - "'mkswap \"$dev\"' in (finalize_script_raw.content | b64decode)"
+        fail_msg: "finalize script missing the active-swap gate, the dm-device resolution, the boot-race recovery arm, or the mkswap restore"
         success_msg: "finalize gates on active swap (resolving the mapper device) and recovers a lost boot race safely"

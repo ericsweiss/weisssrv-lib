@@ -1,0 +1,36 @@
+---
+# Converge: render the Immich stack in skip-install mode (no Docker/nginx/systemd
+# services), then side-render the SSO bootstrap branch for verify to assert.
+- name: Converge
+  hosts: all
+  become: true
+  pre_tasks:
+    # Fixture proxies for the default real-IP trust derivation (inventory groups
+    # -> ansible_host). Added mid-play, so they never join this play's host list
+    # while still appearing in `groups`/`hostvars` for the nginx render.
+    - name: Add fixture proxy hosts to the trusted groups
+      ansible.builtin.add_host:
+        name: "{{ item.name }}"
+        groups: "{{ item.group }}"
+        ansible_host: "{{ item.ip }}"
+      loop:
+        - {name: fixture-server-1, group: k3s_servers, ip: 10.10.0.11}
+        - {name: fixture-agent-1, group: k3s_agents, ip: 10.10.0.21}
+      changed_when: false
+
+  roles:
+    - role: weisssrv.infra.immich
+      vars:
+        immich_skip_install: true
+
+  post_tasks:
+    # Branch coverage for the one-time SSO bootstrap state (the default is
+    # bootstrap_mode: false — SSO-only). Rendered to a side path so verify can
+    # assert both states from one converge without flip-flopping the live config.
+    - name: Render the SSO bootstrap-mode config (branch coverage)  # noqa: no-relative-paths
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/immich-config.json.j2"
+        dest: /tmp/immich-config-bootstrap.json
+        mode: "0640"
+      vars:
+        immich_bootstrap_mode: true

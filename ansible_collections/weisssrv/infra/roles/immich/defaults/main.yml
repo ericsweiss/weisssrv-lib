@@ -1,0 +1,158 @@
+---
+# Immich photo-management stack (docker compose) on a dedicated Debian guest,
+# fronted by a host nginx that terminates TLS in front of the compose stack.
+#
+# Required inputs (empty here — the site supplies them, and tasks/main.yml
+# asserts each one): the five image pins, immich_external_url,
+# immich_oauth_issuer_url, and the three credentials below. Worked example and
+# the one-time SSO bootstrap procedure: README.md.
+
+# Render-only escape hatch: gates every step that needs Docker, nginx or a
+# systemd service, so a scenario can render + assert the templates without a
+# container runtime. Mapped onto compose_app_skip_install at each include.
+immich_skip_install: false
+
+# Compose project layout. app_dir carries the compose dir, rendered config and
+# .env, the ML model cache and (unless the backup landing is NFS-backed) the
+# dumps; the database and the photo library get their own volumes.
+immich_app_dir: /mnt/immich-app
+immich_compose_dir: "{{ immich_app_dir }}/compose"
+immich_config_dir: "{{ immich_app_dir }}/config"
+immich_model_cache_dir: "{{ immich_app_dir }}/model-cache"
+immich_db_data_location: /mnt/immich-postgres
+immich_data_dir: /mnt/immich-data
+# The library lives in a subdir so the mount root stays single-purpose; it maps
+# to the container's /data.
+immich_upload_location: "{{ immich_data_dir }}/library"
+
+# Block devices mounted before anything else (zvol_mount schema).
+immich_additional_disks: "{{ vm_additional_disks | default([]) }}"
+
+# Canonical external URL, rendered as server.externalDomain. Required.
+immich_external_url: ""
+
+immich_timezone: "{{ timezone | default('UTC') }}"
+
+# Image pins (required). Immich couples its Postgres image to each release
+# (vectorchord/pgvectors build), so the DB tag MUST come from the pinned
+# release's own docker-compose.yml — never bump it independently.
+immich_version: ""
+immich_postgres_version: ""
+immich_postgres_digest: ""
+immich_valkey_version: ""
+immich_valkey_digest: ""
+immich_server_image: "ghcr.io/immich-app/immich-server:{{ immich_version }}"
+immich_postgres_image: "ghcr.io/immich-app/postgres:{{ immich_postgres_version }}@{{ immich_postgres_digest }}"
+immich_valkey_image: "docker.io/valkey/valkey:{{ immich_valkey_version }}@{{ immich_valkey_digest }}"
+# In-VM CPU machine-learning container (the failover for immich_ml_urls). Named
+# apart from the immich_ml role's own immich_ml_image, which is the GPU variant
+# — setting one inventory-wide must not reach the other guest.
+immich_machine_learning_image: "ghcr.io/immich-app/immich-machine-learning:{{ immich_version }}"
+
+# Deterministic compose network so IMMICH_TRUSTED_PROXIES can name the bridge
+# gateway the host nginx SNATs through (docker userland-proxy rewrites the
+# 127.0.0.1 source to the gateway). Must not collide with the site's LAN or any
+# cluster pod/service CIDR.
+immich_compose_subnet: "172.28.0.0/16"
+immich_compose_gateway: "172.28.0.1"
+
+# Database. Matching Immich's own example.env (superuser `postgres`, database
+# `immich`) means pg_dumpall inside the container authenticates over the local
+# socket with no password.
+immich_db_username: postgres
+immich_db_database_name: immich
+immich_db_password: "{{ lookup('ansible.builtin.env', 'IMMICH_DB_PASSWORD') }}"
+
+# machineLearning.urls, tried IN ORDER — immich-server moves on when one is
+# unreachable, so sequential failover is upstream behaviour. The default is the
+# in-VM CPU container alone (the compose service name resolves on the stack's
+# own network); prepend a dedicated inference endpoint to make that the primary
+# and keep the CPU container as its failover.
+immich_ml_urls:
+  - "http://immich-machine-learning:3003"
+
+# Native Prometheus telemetry: IMMICH_TELEMETRY_INCLUDE=all exposes /metrics on
+# the API and microservices ports of the immich-server container. Both are
+# published on the guest, so scrape access is the site firewall's job.
+immich_telemetry_include: all
+immich_api_metrics_port: 8081
+immich_microservices_metrics_port: 8082
+
+# SSO (OIDC). The issuer is the provider's application URL — Immich appends
+# /.well-known/openid-configuration itself. Required.
+immich_oauth_issuer_url: ""
+immich_oauth_scope: "openid email profile"
+immich_oauth_button_text: "Sign in with SSO"
+# Claim used as the per-user storage label (folder naming).
+immich_oauth_storage_label_claim: "preferred_username"
+# autoRegister provisions an Immich account on first OIDC login; gate WHO may
+# reach the callback in the identity provider, not here. Admin is the bootstrap
+# user, linked by email (see immich_bootstrap_mode).
+immich_oauth_auto_register: true
+immich_oauth_auto_launch: true
+# Per-user default quota in GiB for auto-registered accounts. Empty = unlimited
+# (rendered as JSON null); an integer caps new users.
+immich_oauth_default_storage_quota: ""
+immich_oauth_client_id: "{{ lookup('ansible.builtin.env', 'IMMICH_OAUTH_CLIENT_ID') }}"
+immich_oauth_client_secret: "{{ lookup('ansible.builtin.env', 'IMMICH_OAUTH_CLIENT_SECRET') }}"
+
+# One-time SSO bootstrap: true enables password login and disables OIDC
+# auto-launch so the FIRST account (the owner) can be created through the
+# Admin-Registration page — OIDC auto-register only ever mints regular users.
+# Flip back to false and redeploy for SSO-only. Procedure: README.md.
+immich_bootstrap_mode: false
+
+# Immich's built-in nightly DB dump, off so the external pg_dump timer below is
+# the single backup path. Verify the config key on major upgrades.
+immich_builtin_db_backup_enabled: false
+
+# Host nginx (TLS terminator in front of the compose stack)
+immich_server_listen_port: 2283
+immich_nginx_ssl_cert: /etc/nginx/ssl/fullchain.pem
+immich_nginx_ssl_key: /etc/nginx/ssl/privkey.pem
+# Self-signed placeholder seeded until the site's cert distribution delivers the
+# real certificate. Set the subject/SAN to whatever name the fronting proxy uses
+# for SNI, so the guest is reachable before that first push.
+immich_nginx_self_signed_subj: "/CN={{ inventory_hostname }}"
+immich_nginx_self_signed_san: ""
+
+# Real client IP resolution. Only a genuine proxy hop may be trusted: nginx
+# walks X-Forwarded-For back past every trusted source, so trusting a range that
+# can also connect DIRECTLY (an admin LAN, say) lets such a client forge the
+# client IP Immich logs and rate-limits on. Derived from inventory so a renamed
+# or renumbered proxy cannot silently drop out of the list; set
+# immich_nginx_real_ip_from directly to bypass the derivation.
+immich_nginx_real_ip_groups:
+  - k3s_servers
+  - k3s_agents
+immich_nginx_real_ip_from: >-
+  {{ immich_nginx_real_ip_groups | map('extract', groups) | select('defined')
+     | flatten | map('extract', hostvars, 'ansible_host')
+     | select('defined') | list }}
+
+# Backups: nightly pg_dumpall, with a node_exporter textfile freshness metric.
+immich_backup_hour: "02"
+immich_backup_minute: "30"
+# Local retention stays short when the landing zone is itself replicated
+# offsite; raise it when the dumps are the only copy.
+immich_backup_keep_days: 3
+# Track the node_exporter textfile dir so a central change to it cannot strand
+# the freshness metric in the old path.
+immich_backup_metrics_dir: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
+# Sourceable write_prom_metrics helper library (deployed by compose_app).
+immich_backup_lib_path: /usr/local/lib/immich-backup-lib.sh
+
+# Offsite backup landing zone. Off by default: the dump then lands on the app
+# volume. Enabled, it lands on an NFS export instead, so a file-walking offsite
+# backup can see the compact logical dump (a file walk cannot read a zvol).
+# Mount BY HOSTNAME when the export requires TLS — a wildcard certificate has no
+# IP SAN, so an IP mount fails the handshake — and give the guest a tlshd
+# (weisssrv.infra.nfs_tls). nofail keeps a fileserver-down boot from hanging;
+# the backup unit's RequiresMountsFor pulls the mount on demand.
+immich_backup_nfs_enabled: false
+immich_backup_nfs_server: ""
+immich_backup_nfs_export: ""
+immich_backup_mountpoint: /mnt/backups-offsite
+immich_backup_nfs_options: "vers=4.2,rw,hard,noatime,_netdev,nofail,xprtsec=tls"
+# Resolved from the toggle so enabling the offsite landing is a single flag.
+immich_backup_dir: "{{ immich_backup_mountpoint if immich_backup_nfs_enabled else immich_app_dir + '/backups' }}"

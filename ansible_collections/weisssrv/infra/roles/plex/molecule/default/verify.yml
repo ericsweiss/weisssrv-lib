@@ -1,0 +1,358 @@
+---
+# Verify: the v2 apt repo, the installed package, the systemd override's group
+# contract, the custom-certificate hook (success and revert paths) and the
+# plex user's group memberships.
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Check if the Plex v2 GPG key exists
+      ansible.builtin.stat:
+        path: /etc/apt/keyrings/plexmediaserver.v2.gpg
+      register: plex_gpg
+      failed_when: not plex_gpg.stat.exists
+
+    - name: Read the Plex repository config
+      ansible.builtin.slurp:
+        src: /etc/apt/sources.list.d/plex.list
+      register: plex_repo_content
+
+    - name: Verify the Plex v2 repository config
+      ansible.builtin.assert:
+        that:
+          - "'repo.plex.tv' in (plex_repo_content.content | b64decode)"
+          - "'signed-by=/etc/apt/keyrings/plexmediaserver.v2.gpg' in (plex_repo_content.content | b64decode)"
+        fail_msg: "Plex v2 repository not configured correctly"
+        success_msg: "Plex v2 repository configured correctly"
+
+    - name: Check if the Plex package is installed
+      ansible.builtin.command: dpkg -l plexmediaserver
+      register: plex_installed
+      changed_when: false
+      failed_when: plex_installed.rc != 0
+
+    - name: Get the installed Plex version
+      ansible.builtin.command: dpkg-query -W -f='${Version}' plexmediaserver
+      register: plex_version_check
+      changed_when: false
+
+    # A container's systemd is partial, so the unit file may land in any of the
+    # three locations (or not at all); this is reported, not asserted.
+    - name: Check for the packaged Plex unit file
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: plex_unit_locations
+      loop:
+        - /lib/systemd/system/plexmediaserver.service
+        - /usr/lib/systemd/system/plexmediaserver.service
+        - /etc/systemd/system/plexmediaserver.service
+
+    - name: Note the packaged unit-file status
+      ansible.builtin.debug:
+        msg: >-
+          Packaged plexmediaserver.service:
+          {{ 'found' if (plex_unit_locations.results | map(attribute='stat.exists') | select | list | length > 0)
+             else 'not found (expected where systemd is only partly functional)' }}
+
+    - name: Check the systemd override file
+      ansible.builtin.stat:
+        path: /etc/systemd/system/plexmediaserver.service.d/override.conf
+      register: plex_override_file
+      failed_when: not plex_override_file.stat.exists
+
+    - name: Read the systemd override content
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/plexmediaserver.service.d/override.conf
+      register: plex_override_content
+
+    - name: Verify the systemd override content
+      ansible.builtin.assert:
+        that:
+          - "'PLEX_MEDIA_SERVER_APPLICATION_SUPPORT_DIR' in plex_override_decoded"
+          - "'TMPDIR' in plex_override_decoded"
+          - "'Restart=on-failure' in plex_override_decoded"
+          # DVR fix: media is the PRIMARY group (a FUSE mount honours only the
+          # primary GID for writes).
+          - "'Group=media' in plex_override_decoded"
+          # Regression guard: overriding Group= drops plex's own group, which
+          # owns the TLS bundle — without this line Plex cannot read plex.pfx
+          # and silently serves its plex.direct fallback.
+          - "'SupplementaryGroups=plex' in plex_override_decoded"
+          - "'UMask=0002' in plex_override_decoded"
+          # No claim token was supplied, so the line must be absent.
+          - "'PLEX_CLAIM' not in plex_override_decoded"
+        fail_msg: "Systemd override missing expected configuration"
+        success_msg: "Systemd override has correct configuration"
+      vars:
+        plex_override_decoded: "{{ plex_override_content.content | b64decode }}"
+
+    # The cert hook handles TLS private-key material, so its ownership and modes
+    # are load-bearing: the directory is root:plex 0750 (a compromised plex
+    # account must not swap files root's script consumes), the passphrase file
+    # root:plex 0640, the script itself root:root 0750.
+    - name: Check the Plex cert directory
+      ansible.builtin.stat:
+        path: /etc/ssl/plex
+      register: plex_ssl_dir
+
+    - name: Verify the cert directory ownership and mode
+      ansible.builtin.assert:
+        that:
+          - plex_ssl_dir.stat.exists
+          - plex_ssl_dir.stat.isdir
+          - plex_ssl_dir.stat.pw_name == 'root'
+          - plex_ssl_dir.stat.gr_name == 'plex'
+          - plex_ssl_dir.stat.mode == '0750'
+        fail_msg: "/etc/ssl/plex must be root:plex 0750"
+        success_msg: "/etc/ssl/plex is root:plex 0750"
+
+    - name: Check the PFX passphrase file
+      ansible.builtin.stat:
+        path: /etc/ssl/plex/pfx-passphrase
+      register: plex_pfx_passphrase_file
+
+    - name: Verify the PFX passphrase file ownership and mode
+      ansible.builtin.assert:
+        that:
+          - plex_pfx_passphrase_file.stat.exists
+          - plex_pfx_passphrase_file.stat.pw_name == 'root'
+          - plex_pfx_passphrase_file.stat.gr_name == 'plex'
+          - plex_pfx_passphrase_file.stat.mode == '0640'
+        fail_msg: "/etc/ssl/plex/pfx-passphrase must be root:plex 0640"
+        success_msg: "/etc/ssl/plex/pfx-passphrase is root:plex 0640"
+
+    - name: Check plex-cert-reload.sh
+      ansible.builtin.stat:
+        path: /usr/local/sbin/plex-cert-reload.sh
+      register: plex_cert_reload
+
+    - name: Verify plex-cert-reload.sh ownership and mode
+      ansible.builtin.assert:
+        that:
+          - plex_cert_reload.stat.exists
+          - plex_cert_reload.stat.pw_name == 'root'
+          - plex_cert_reload.stat.gr_name == 'root'
+          - plex_cert_reload.stat.mode == '0750'
+        fail_msg: "/usr/local/sbin/plex-cert-reload.sh must be root:root 0750"
+        success_msg: "/usr/local/sbin/plex-cert-reload.sh is root:root 0750"
+
+    # Behavioural test: stage a self-signed PEM pair, stub systemctl so the
+    # restart/readiness checks pass, serve the pushed cert on the Plex port so
+    # the fingerprint check can succeed, and assert the hook built a
+    # passphrase-verifiable bundle and exited 0 on this first install.
+    - name: Stage a self-signed PEM pair for the cert-reload hook  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: >-
+          openssl req -x509 -newkey rsa:2048 -nodes -days 2
+          -keyout /etc/ssl/plex/privkey.pem -out /etc/ssl/plex/fullchain.pem
+          -subj /CN=plex.molecule.test
+        creates: /etc/ssl/plex/fullchain.pem
+
+    - name: Ensure no prior PFX (exercise the first-install path)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/ssl/plex/plex.pfx
+        - /etc/ssl/plex/plex.pfx.prev
+
+    - name: Create the plex-cert-reload stub bin dir
+      ansible.builtin.file:
+        path: /usr/local/lib/plex-cert-stub
+        state: directory
+        mode: "0755"
+
+    - name: Install a systemctl stub so the restart/readiness checks pass
+      ansible.builtin.copy:
+        dest: /usr/local/lib/plex-cert-stub/systemctl
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          # Stub: pretend plexmediaserver restarts cleanly and is active.
+          exit 0
+
+    - name: Serve the pushed cert on the Plex port so the fingerprint check passes fast
+      ansible.builtin.command:
+        cmd: >-
+          openssl s_server -accept 32400 -naccept 100 -quiet
+          -cert /etc/ssl/plex/fullchain.pem -key /etc/ssl/plex/privkey.pem
+      async: 120
+      poll: 0
+      changed_when: false
+
+    - name: Wait for the stub TLS server to listen (best effort)
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 32400
+        timeout: 10
+      # Not up => the hook takes the documented first-install warn path and
+      # still exits 0, so the assertions below hold either way.
+      failed_when: false
+
+    - name: Run plex-cert-reload.sh
+      ansible.builtin.command: /usr/local/sbin/plex-cert-reload.sh
+      register: plex_cert_reload_run
+      changed_when: true
+      failed_when: plex_cert_reload_run.rc != 0
+      environment:
+        PATH: "/usr/local/lib/plex-cert-stub:{{ ansible_env.PATH }}"
+
+    - name: Stop the stub TLS server
+      ansible.builtin.command: pkill -f "s_server -accept 32400"
+      changed_when: false
+      failed_when: false
+
+    - name: Check plex.pfx was produced
+      ansible.builtin.stat:
+        path: /etc/ssl/plex/plex.pfx
+      register: plex_pfx_built
+      failed_when: not plex_pfx_built.stat.exists
+
+    - name: Verify plex.pfx is parseable with the deployed passphrase  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: >-
+          openssl pkcs12 -info -in /etc/ssl/plex/plex.pfx -nokeys -noout
+          -password file:/etc/ssl/plex/pfx-passphrase
+      changed_when: false
+
+    # Negative path: with a prior bundle staged, a served-cert mismatch must
+    # revert and exit non-zero. The success run cannot pin this — the hook also
+    # exits 0 on the first-install warn fallback.
+    - name: Generate a decoy cert the served-fingerprint check must reject  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: >-
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1
+          -subj /CN=decoy.invalid
+          -keyout /usr/local/lib/plex-cert-stub/decoy.key
+          -out /usr/local/lib/plex-cert-stub/decoy.pem
+        creates: /usr/local/lib/plex-cert-stub/decoy.pem
+
+    - name: Record the current PFX checksum (revert target)
+      ansible.builtin.stat:
+        path: /etc/ssl/plex/plex.pfx
+        checksum_algorithm: sha256
+      register: plex_pfx_before_negative
+
+    - name: Serve the decoy cert on the Plex port (guaranteed fingerprint mismatch)
+      ansible.builtin.command:
+        cmd: >-
+          openssl s_server -accept 32400 -naccept 100 -quiet
+          -cert /usr/local/lib/plex-cert-stub/decoy.pem -key /usr/local/lib/plex-cert-stub/decoy.key
+      async: 300
+      poll: 0
+      changed_when: false
+
+    - name: Wait for the decoy TLS server to listen
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 32400
+        timeout: 15
+      # Not load-bearing: an empty served fingerprint still mismatches, so the
+      # revert assertion holds; a slow port release must not flake the test.
+      failed_when: false
+
+    - name: Run plex-cert-reload.sh against the mismatched served cert
+      ansible.builtin.command: /usr/local/sbin/plex-cert-reload.sh
+      register: plex_cert_reload_negative
+      changed_when: true
+      # A staged .prev + mismatch must fail loudly, not take the warn path.
+      failed_when: plex_cert_reload_negative.rc == 0
+      environment:
+        PATH: "/usr/local/lib/plex-cert-stub:{{ ansible_env.PATH }}"
+
+    - name: Stop the decoy TLS server
+      ansible.builtin.command: pkill -f "s_server -accept 32400"
+      changed_when: false
+      failed_when: false
+
+    - name: Check the PFX after the failed swap
+      ansible.builtin.stat:
+        path: /etc/ssl/plex/plex.pfx
+        checksum_algorithm: sha256
+      register: plex_pfx_after_negative
+
+    - name: Verify the failed swap reverted plex.pfx to the previous bundle
+      ansible.builtin.assert:
+        that:
+          - plex_pfx_after_negative.stat.exists
+          - plex_pfx_after_negative.stat.checksum == plex_pfx_before_negative.stat.checksum
+        fail_msg: "plex-cert-reload did not revert plex.pfx after the fingerprint mismatch"
+        success_msg: "fingerprint mismatch reverted plex.pfx and exited non-zero"
+
+    - name: Check the plex user exists (created by the package)
+      ansible.builtin.command: id plex
+      register: plex_user_check
+      changed_when: false
+      failed_when: plex_user_check.rc != 0
+
+    # The role creates the media group, so its absence is a regression rather
+    # than an environment quirk — asserted unconditionally so a membership check
+    # can never degrade into a skip.
+    - name: Read the media group
+      ansible.builtin.command: getent group media
+      register: plex_media_group_members
+      changed_when: false
+      failed_when: plex_media_group_members.rc != 0
+
+    - name: Verify the media group and the plex user's membership
+      ansible.builtin.assert:
+        that:
+          - plex_media_group_members.stdout.split(':')[2] == '2000'
+          - "'plex' in plex_media_group_members.stdout"
+        fail_msg: "media group missing gid 2000 or the plex user is not a member"
+        success_msg: "media group is gid 2000 and the plex user is a member"
+
+    # The video group is part of the Debian base layout, so it is asserted the
+    # same way; render is genuinely optional (no DRM node in a container).
+    - name: Read the video group
+      ansible.builtin.command: getent group video
+      register: plex_video_group_members
+      changed_when: false
+      failed_when: plex_video_group_members.rc != 0
+
+    - name: Verify the plex user is in the video group
+      ansible.builtin.assert:
+        that:
+          - "'plex' in plex_video_group_members.stdout"
+        fail_msg: "plex user is not in the video group"
+        success_msg: "plex user is in the video group"
+
+    - name: Read the render group (optional)
+      ansible.builtin.command: getent group render
+      register: plex_render_group_members
+      changed_when: false
+      failed_when: false
+
+    - name: Verify the plex user is in the render group when it exists
+      ansible.builtin.assert:
+        that:
+          - "'plex' in plex_render_group_members.stdout"
+        fail_msg: "the render group exists but the plex user was not added to it"
+        success_msg: "plex user is in the render group"
+      when: plex_render_group_members.rc == 0
+
+    - name: Assert GPU drivers were skipped
+      ansible.builtin.command: dpkg -l intel-media-va-driver-non-free
+      register: plex_gpu_driver_check
+      changed_when: false
+      failed_when: plex_gpu_driver_check.rc == 0
+
+    - name: Check the bind-mount stand-in directories exist
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: plex_dirs
+      failed_when: not plex_dirs.stat.exists
+      loop:
+        - /tmp/plex-config
+        - /tmp/plex-transcode
+
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "Plex v2 apt repository configured (fingerprint-verified key, signed-by keyring)"
+          - "Plex Media Server installed: {{ plex_version_check.stdout }}"
+          - "Systemd override verified (support dir, TMPDIR, Restart, Group=media, SupplementaryGroups=plex, UMask, no claim token)"
+          - "Cert hook verified: artefact modes, first-install build, and revert on a served-cert mismatch"
+          - "plex user is a member of media (gid 2000) and video{{ '; render present' if plex_render_group_members.rc == 0 else '; no render group in this environment' }}"
+          - "GPU drivers skipped (plex_skip_gpu_drivers=true); service lifecycle skipped (plex_skip_service=true)"

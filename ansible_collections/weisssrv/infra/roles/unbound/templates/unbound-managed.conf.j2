@@ -2,8 +2,11 @@
 # Managed by the unbound role.
 
 server:
-  # Loopback only: a filtering resolver in front of this is the LAN-facing one.
-  interface: {{ unbound_interface }}
+  # Loopback only by default: a filtering resolver in front of this is the
+  # LAN-facing one.
+{% for iface in unbound_interfaces | default([unbound_interface]) %}
+  interface: {{ iface }}
+{% endfor %}
   port: {{ unbound_port }}
   do-ip4: yes
   do-ip6: yes
@@ -32,9 +35,8 @@ server:
   qname-minimisation: yes
   harden-glue: yes
   harden-dnssec-stripped: yes
-  # 0x20 name randomization. Redundant when every forwarder is reached over
-  # DoT (TLS already authenticates the answer) and a known source of SERVFAIL
-  # against upstreams that normalize case — hence the switch.
+  # 0x20 name randomization: redundant when every forwarder is reached over DoT,
+  # and a SERVFAIL source against upstreams that normalize case.
   use-caps-for-id: {{ 'yes' if (unbound_use_caps_for_id | default(true)) else 'no' }}
   prefetch: yes
   cache-min-ttl: 60
@@ -42,8 +44,7 @@ server:
 
   # DNS rebinding protection: a public domain must never resolve to a
   # private/loopback address. Internal names are answered by the filtering
-  # resolver in front of unbound, so it never legitimately returns these
-  # ranges.
+  # resolver in front of unbound, so it never legitimately returns these ranges.
   private-address: 10.0.0.0/8
   private-address: 172.16.0.0/12
   private-address: 192.168.0.0/16
@@ -52,7 +53,7 @@ server:
   private-address: fd00::/8
   private-address: fe80::/10
 
-  # allow only local clients (loopback)
+  # Every netblock not listed here is refused.
 {% for acl in unbound_access_control %}
   access-control: {{ acl }}
 {% endfor %}

@@ -44,3 +44,8 @@ provisioner:
         adguard_home_skip_resolv_conf_update: true
         adguard_home_use_private_tmp: false
         adguard_home_use_protect_system: false
+        # No certs here, so the TLS POST self-skips — but the role asserts the
+        # SNI up front whenever TLS is enabled.
+        adguard_home_tls_server_name: dns.test.local
+        # Docker exec needs a beat between the config rewrite and the restart.
+        adguard_home_settle_seconds: 1

@@ -1,12 +1,9 @@
 ---
-# Which VMs/containers HA manages. Per-entry schema: README.
-
-# All three managed variables default to empty lists (tasks guard every read
-# with `| default([])` / `is defined`, but defaulting them here keeps the three
-# consistent and matches the README).
-proxmox_ha_resources: []
-proxmox_ha_rules: []
-proxmox_ha_replication_jobs: []
+# Pure inventory data — the role no-ops on an empty list. Per-entry schema and
+# the reconcile semantics: README.
+proxmox_ha_resources: []      # guests HA manages
+proxmox_ha_rules: []          # node-affinity rules
+proxmox_ha_replication_jobs: []  # pvesr jobs (tasks_from: replication)
 
 # Inventory group the role asserts membership of before touching HA state.
 proxmox_ha_host_group: proxmox

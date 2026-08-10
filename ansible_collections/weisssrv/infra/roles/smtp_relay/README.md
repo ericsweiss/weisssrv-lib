@@ -1,4 +1,4 @@
-# Role: smtp_relay
+# weisssrv.infra.smtp_relay
 
 Postfix as a central relay: it accepts authenticated submissions from the
 estate's null clients (`weisssrv.infra.postfix_null_client`) and forwards them
@@ -9,10 +9,12 @@ collector so a wedged upstream is alertable.
 
 | Variable | Default | Meaning |
 |---|---|---|
+| `smtp_relay_internal_domain` | `{{ internal_domain }}` | domain the two names below derive from |
 | `smtp_relay_hostname` | `smtp-relay.{{ internal_domain }}` | `myhostname` in the default config |
 | `smtp_relay_origin` | `{{ internal_domain }}` | `myorigin` in the default config |
 | `smtp_relay_upstream` | `""` | `relayhost`, e.g. `[smtp.example.net]:587`. Empty = direct delivery |
-| `smtp_relay_config` | see `defaults/main.yml` | the whole `main.cf` map, rendered verbatim |
+| `smtp_relay_default_config` | see `defaults/main.yml` | the shipped `main.cf` map |
+| `smtp_relay_config` | `{}` | site overrides, merged **over** the defaults |
 | `smtp_relay_tls_cert_dir` | `/etc/postfix/tls` | where `fullchain.pem` + `privkey.pem` are expected |
 | `smtp_relay_submission_enabled` | `true` | the 587 service in `master.cf` |
 | `smtp_relay_submission_config` | see `defaults/main.yml` | per-service `-o` overrides for 587 |
@@ -26,8 +28,15 @@ Required credentials, no defaults:
 | `smtp_relay_upstream_user` / `smtp_relay_upstream_password` | outbound SASL to the smarthost (`/etc/postfix/sasl_passwd`) |
 | `smtp_relay_sasl_user` / `smtp_relay_sasl_password` | inbound null-client auth, held in the local sasldb |
 
-Every Postfix boolean in `smtp_relay_config` is the **string** `"yes"`/`"no"`,
-never a YAML boolean — the templates render values verbatim.
+Every Postfix boolean is the **string** `"yes"`/`"no"`, never a YAML boolean —
+the templates render values verbatim.
+
+`main.cf` and the tasks read `smtp_relay_effective_config`
+(`vars/main.yml`) = `smtp_relay_default_config | combine(smtp_relay_config)`.
+Set only the keys that differ for the site: Ansible replaces dicts rather than
+merging them, so a whole-dict override would freeze the role's defaults at
+whatever the site copied, and the next hardening default added here would never
+reach it.
 
 ## Security posture the defaults encode
 
@@ -41,9 +50,18 @@ never a YAML boolean — the templates render values verbatim.
   `smtpd_relay_restrictions`.
 - Outbound TLS is `secure`, not `encrypt`: the smarthost's certificate is
   verified against `smtp_tls_CAfile`. `encrypt` alone accepts any certificate.
-- Secrets reach `saslpasswd2` through the environment, never argv, and every
-  task that touches one carries `no_log` — including the sasldb probe, whose
-  grep pattern embeds the relay username.
+- The relay credential reaches `saslpasswd2` and the sasldb probe through the
+  environment, never argv, and every task that touches it carries `no_log`.
+
+## Compiled maps
+
+`/etc/aliases` and `/etc/postfix/sasl_passwd` are templated with `notify:`, so a
+run that dies before `flush_handlers` leaves a correct source next to a stale
+compiled `.db` — which is what postfix actually reads. Before starting postfix
+the role runs `weisssrv.infra.postfix_null_client`'s
+`tasks/repair-compiled-maps.yml` (one shared implementation for both postfix
+roles), comparing each compiled value against the configured one and rebuilding
+on a mismatch.
 
 ## Credential rotation
 

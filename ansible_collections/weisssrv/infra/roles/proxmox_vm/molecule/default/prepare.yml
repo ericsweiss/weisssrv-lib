@@ -94,6 +94,15 @@
             else
               echo "startup: order=100"
             fi
+            # Memory, same contract: the default matches the role default
+            # (proxmox_vm_memory: 2048) so the memory reconcile sees no drift.
+            # Reporting NO memory line would read as drift against any desired
+            # value and make the reconcile mutate on every run.
+            if [ -f /tmp/molecule-stub-state/vm_memory_override ]; then
+              echo "memory: $(cat /tmp/molecule-stub-state/vm_memory_override)"
+            else
+              echo "memory: 2048"
+            fi
             # The additional-disk attach task parses `qm config` for its scsiN
             # line. The override file, when present, supplies the scsi1 value
             # verbatim so converge can simulate a passthrough disk already

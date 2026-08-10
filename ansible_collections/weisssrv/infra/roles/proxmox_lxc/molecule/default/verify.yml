@@ -127,7 +127,7 @@
           bind-mount sets (got {{ idmap_gpu_nobind.mp_calls }}):
           {{ idmap_gpu_nobind.conf }}
 
-    - name: Standard idmap renders the eric/media passthrough map
+    - name: Standard idmap renders the uid-1000/gid-2000 passthrough map
       ansible.builtin.assert:
         that:
           - idmap_standard.conf == expected_conf_standard

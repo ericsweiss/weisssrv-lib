@@ -2,10 +2,25 @@
 # AdGuard Home installation and configuration
 # Runs as unprivileged user with CAP_NET_BIND_SERVICE
 
-- name: Install python3-passlib for password verification and dnsutils for the DNS probe
+# Empty here means AdGuard advertises an empty DoT/DoH/DoQ SNI on every deploy
+# with a green play, so require it up front rather than at the API call.
+- name: Validate the TLS server name is set when TLS is enabled
+  ansible.builtin.assert:
+    that:
+      - adguard_home_tls_server_name | default('') | length > 0
+    fail_msg: >-
+      adguard_home_tls_server_name is required when adguard_home_tls_enabled —
+      it must match the certificate distributed to adguard_home_cert_path.
+    success_msg: "TLS server name is set"
+  when: adguard_home_tls_enabled | bool
+
+- name: Install the password-reconciliation and DNS-probe prerequisites
   ansible.builtin.apt:
     name:
+      # passlib + PyYAML back files/adguard-admin-hash.py, which parses
+      # AdGuardHome.yaml to find the admin's password line.
       - python3-passlib
+      - python3-yaml
       # dig backs the DNS-resolution verify below; install it here so the role
       # is self-contained rather than relying on the base role having run first.
       - dnsutils
@@ -162,8 +177,7 @@
     - Reload systemd
     - Restart AdGuardHome
 
-# Flush handlers to ensure systemd daemon reload happens before starting the service.
-# On a fresh install, the new unit file won't be visible to systemd until daemon-reload runs.
+# A fresh unit file is invisible to systemd until the queued daemon-reload runs.
 - name: Flush handlers before starting service
   ansible.builtin.meta: flush_handlers
 
@@ -193,22 +207,24 @@
     path: "{{ adguard_home_install_path }}/AdGuardHome.yaml"
   register: adguard_home_initial_config
 
-# This prevents sending a blank password to the setup wizard
-- name: Validate AdGuard admin password is set (for initial setup)
+# Required by the setup wizard on a fresh host, and by the password/API
+# reconciliation on every later run.
+- name: Validate AdGuard admin password is set
   ansible.builtin.assert:
     that:
       - adguard_home_admin_password is defined
       - adguard_home_admin_password | length > 0
     fail_msg: >-
       adguard_home_admin_password is not set — supply it from the site's
-      secret store before the initial setup wizard runs.
+      secret store.
     success_msg: "AdGuard admin password is set"
-  when: not adguard_home_initial_config.stat.exists
+  when: >-
+    not adguard_home_initial_config.stat.exists
+    or not (adguard_home_skip_api_config | default(false))
   no_log: true
 
-# Complete initial setup wizard for fresh installations
-# This creates the config file and enables DNS binding
-# Without this, AdGuard Home stays in setup mode and won't serve DNS
+# Without this the instance stays in setup mode and serves no DNS: the wizard
+# POST is what writes AdGuardHome.yaml and binds the DNS listener.
 - name: Complete AdGuard Home initial setup (fresh install only)
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ adguard_home_http_port }}/control/install/configure"
@@ -235,207 +251,90 @@
     timeout: 60
   when: not adguard_home_initial_config.stat.exists
 
-# Password hash management: Check if existing hash matches password before regenerating
-# This prevents unnecessary config rewrites and restarts on every run
-# bcrypt generates a different salt each time, so we can't compare hashes directly
+# AdGuard Home has no password API, so the admin's bcrypt hash is reconciled in
+# AdGuardHome.yaml by files/adguard-admin-hash.py — see that file's docstring
+# for why it parses the document and rewrites exactly one line.
 - name: Check if AdGuard Home config exists (for password check)
   ansible.builtin.stat:
     path: "{{ adguard_home_install_path }}/AdGuardHome.yaml"
   register: adguard_home_config
 
-# Parse the document instead of grepping for an indented `password:` line: the
-# admin user's hash is users[?name == adguard_home_admin_user].password, and a
-# line-oriented read/write pair targets "the last password line" — which is a
-# different user's the moment a second account exists (or a different key
-# entirely after any schema change), silently locking that account out on every
-# deploy while never reconciling the admin.
-- name: Read the AdGuard Home config
-  ansible.builtin.slurp:
-    src: "{{ adguard_home_install_path }}/AdGuardHome.yaml"
-  register: adguard_home_config_raw
-  when:
-    - not (adguard_home_skip_api_config | default(false))
-    - adguard_home_config.stat.exists
-  no_log: true
-
-- name: Parse the AdGuard Home config
-  ansible.builtin.set_fact:
-    adguard_home_config_doc: "{{ adguard_home_config_raw.content | b64decode | from_yaml }}"
-  when:
-    - not (adguard_home_skip_api_config | default(false))
-    - adguard_home_config.stat.exists
-  no_log: true
-
-- name: Assert the admin user exists in the config
-  ansible.builtin.assert:
-    that:
-      - adguard_home_config_doc.users | default([]) | selectattr('name', 'equalto', adguard_home_admin_user) | list | length == 1
-    fail_msg: >-
-      {{ adguard_home_install_path }}/AdGuardHome.yaml has no unique users[] entry
-      named {{ adguard_home_admin_user }} — refusing to guess which account's
-      password to reconcile.
-  when:
-    - not (adguard_home_skip_api_config | default(false))
-    - adguard_home_config.stat.exists
-
-- name: Extract the admin user's existing password hash
-  ansible.builtin.set_fact:
-    adguard_home_existing_hash: >-
-      {{ adguard_home_config_doc.users | selectattr('name', 'equalto', adguard_home_admin_user)
-         | map(attribute='password') | first | default('') }}
-  when:
-    - not (adguard_home_skip_api_config | default(false))
-    - adguard_home_config.stat.exists
-  no_log: true
-
-- name: Verify existing hash against password
-  ansible.builtin.shell: |
-    python3 -c "
-    import os
-    try:
-        from passlib.hash import bcrypt
-        password = os.environ['ADGUARD_PASSWORD']
-        hash_value = os.environ['ADGUARD_HASH']
-        if bcrypt.verify(password, hash_value):
-            print('valid')
-        else:
-            print('invalid')
-    except Exception:
-        print('error')
-    "
-  args:
-    executable: /bin/bash
-  environment:
-    ADGUARD_PASSWORD: "{{ adguard_home_admin_password }}"
-    ADGUARD_HASH: "{{ adguard_home_existing_hash | default('') | trim }}"
-  register: adguard_home_hash_verify_result
-  changed_when: false
-  failed_when: false
-  check_mode: false
-  when:
-    - not (adguard_home_skip_api_config | default(false))
-    - adguard_home_admin_password is defined
-    - adguard_home_admin_password | length > 0
-    - adguard_home_existing_hash | default('') | trim | length > 0
-    - adguard_home_existing_hash | default('') | trim is match('^\$2[aby]\$')
-  no_log: true
-
-- name: Set password hash validity
-  ansible.builtin.set_fact:
-    adguard_home_password_hash_valid: "{{ (adguard_home_hash_verify_result.stdout | default('') | trim == 'valid') | bool }}"
-  when:
-    - not (adguard_home_skip_api_config | default(false))
-    - adguard_home_hash_verify_result is defined
-
-# Generate bcrypt hash from password at deploy time
-# Only regenerate if: no existing hash, hash is invalid, or verification failed
-# Uses passlib on target host (installed as prerequisite) to avoid controller dependency
-- name: Generate bcrypt hash from admin password
-  ansible.builtin.shell: |
-    python3 -c "
-    import os
-    from passlib.hash import bcrypt
-    password = os.environ['ADGUARD_PASSWORD']
-    print(bcrypt.using(rounds=10).hash(password))
-    "
-  args:
-    executable: /bin/bash
-  environment:
-    ADGUARD_PASSWORD: "{{ adguard_home_admin_password }}"
-  register: adguard_home_generated_hash_result
-  changed_when: false
-  check_mode: false
-  when:
-    - not (adguard_home_skip_api_config | default(false))
-    - adguard_home_admin_password is defined
-    - adguard_home_admin_password | length > 0
-    - not (adguard_home_password_hash_valid | default(false) | bool)
-  no_log: true
-
-- name: Set generated password hash fact
-  ansible.builtin.set_fact:
-    adguard_home_admin_password_hash: "{{ adguard_home_generated_hash_result.stdout | trim }}"
-  when:
-    - not (adguard_home_skip_api_config | default(false))
-    - adguard_home_generated_hash_result.stdout is defined
-    - adguard_home_generated_hash_result.stdout | length > 0
-  no_log: true
-
-# If existing hash is valid, use it instead of generating a new one
-- name: Use existing valid password hash
-  ansible.builtin.set_fact:
-    adguard_home_admin_password_hash: "{{ adguard_home_existing_hash | trim }}"
-  when:
-    - not (adguard_home_skip_api_config | default(false))
-    - adguard_home_password_hash_valid | default(false) | bool
-  no_log: true
-
-- name: Validate AdGuard admin password hash is available
-  ansible.builtin.assert:
-    that:
-      - adguard_home_admin_password_hash is defined
-      - adguard_home_admin_password_hash | length > 0
-      - adguard_home_admin_password_hash is match('^\$2[aby]\$')
-    fail_msg: "Failed to generate the AdGuard admin password hash from adguard_home_admin_password."
-    success_msg: "AdGuard admin password hash validated"
+- name: Install the admin-password reconciliation helper
+  ansible.builtin.copy:
+    src: adguard-admin-hash.py
+    dest: "{{ adguard_home_hash_helper_path }}"
+    owner: root
+    group: root
+    mode: "0755"
   when: not (adguard_home_skip_api_config | default(false))
 
-- name: Start the reconciled user list empty
-  ansible.builtin.set_fact:
-    adguard_home_users_reconciled: []
+# The password reaches the helper on stdin, never in argv or `environment:`
+# (Ansible prefixes environment assignments onto the remote command string, so
+# they sit in /proc/<pid>/cmdline for the length of the run). The helper
+# re-hashes only when the stored hash fails verification, so a converged host
+# reports ok and nothing restarts.
+- name: Reconcile the admin password in the AdGuard Home config
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ adguard_home_hash_helper_path }}"
+      - --config
+      - "{{ adguard_home_install_path }}/AdGuardHome.yaml"
+      - --user
+      - "{{ adguard_home_admin_user }}"
+      - reconcile
+    stdin: "{{ adguard_home_admin_password }}"
+    stdin_add_newline: false
+  register: adguard_home_hash_result
+  # Compared exactly, NOT with the `'CHANGED' in ...` idiom used elsewhere: the
+  # negative verdict is UNCHANGED, which contains CHANGED.
+  changed_when: adguard_home_hash_result.stdout | default('') | trim == 'CHANGED'
   when:
     - adguard_home_config.stat.exists
     - not (adguard_home_skip_api_config | default(false))
-    - not (adguard_home_password_hash_valid | default(false) | bool)
-
-# Rebuilt entry by entry rather than mapped, so the other users and the list
-# order survive untouched.
-- name: Replace the admin user's hash in the user list
-  ansible.builtin.set_fact:
-    adguard_home_users_reconciled: >-
-      {{ adguard_home_users_reconciled
-         + [item if item.name != adguard_home_admin_user
-            else item | combine({'password': adguard_home_admin_password_hash})] }}
-  loop: "{{ adguard_home_config_doc.users }}"
-  loop_control:
-    label: "{{ item.name }}"
-  when:
-    - adguard_home_config.stat.exists
-    - not (adguard_home_skip_api_config | default(false))
-    - not (adguard_home_password_hash_valid | default(false) | bool)
+  notify: Restart AdGuardHome
+  # no_log because the password is in this task's args. It also hides the
+  # helper's distinct failure messages, so the failure is deferred and re-raised
+  # by the next task, which prints stderr — none of it contains the secret.
   no_log: true
+  failed_when: false
+  # One resolver at a time: the rewrite queues a restart of the host the LAN
+  # resolves through.
+  throttle: 1
 
-# Whole-document rewrite, gated on the hash actually being stale: AdGuard's own
-# writer formats the file differently, so an unconditional rewrite would report
-# changed on every run and bounce the service each time.
-- name: Update the admin password in the AdGuard Home config
-  ansible.builtin.copy:
-    content: "{{ adguard_home_config_doc | combine({'users': adguard_home_users_reconciled}) | to_nice_yaml(indent=2, width=4096) }}"
-    dest: "{{ adguard_home_install_path }}/AdGuardHome.yaml"
+- name: Surface an admin-password reconciliation failure
+  ansible.builtin.fail:
+    msg: >-
+      adguard-admin-hash.py failed on {{ inventory_hostname }}
+      (rc={{ adguard_home_hash_result.rc | default('?') }}):
+      {{ adguard_home_hash_result.stderr | default('') | trim
+         | default('no stderr captured', true) }}
+  when:
+    - adguard_home_config.stat.exists
+    - not (adguard_home_skip_api_config | default(false))
+    - adguard_home_hash_result.rc | default(0) != 0
+
+# The helper preserves the file's existing mode/ownership rather than asserting
+# it, so correct a config left readable by an operator or by AdGuard itself.
+- name: Enforce ownership and mode on the AdGuard Home config
+  ansible.builtin.file:
+    path: "{{ adguard_home_install_path }}/AdGuardHome.yaml"
     owner: "{{ adguard_home_user }}"
     group: "{{ adguard_home_group }}"
     mode: "0600"
   when:
     - adguard_home_config.stat.exists
     - not (adguard_home_skip_api_config | default(false))
-    - not (adguard_home_password_hash_valid | default(false) | bool)
-  notify: Restart AdGuardHome
-  no_log: true
-  # Serialize execution to prevent Docker exec race conditions in test containers
-  throttle: 1
 
-# Brief pause after config update to stabilize Docker exec interface
-# This prevents race conditions when multiple containers modify configs concurrently
-- name: Stabilize after config update
+# Test harness only: a container connection plugin can need a moment between the
+# config write and the restart. Prod leaves it 0.
+- name: Settle after the config update
   ansible.builtin.pause:
-    seconds: 1
-  when:
-    - adguard_home_config.stat.exists
-    - ansible_connection == "docker"
+    seconds: "{{ adguard_home_settle_seconds }}"
+  when: adguard_home_settle_seconds | int > 0
 
-# Flush handlers to ensure AdGuard Home is fully restarted before API configuration
-# This is critical because the password update above triggers a restart
-# Note: The Restart AdGuardHome handler includes a built-in sleep for container stability
+# Flush before the API tasks: the password change queues a restart, and the API
+# calls below need the resolver back up.
 - name: Flush handlers before API configuration
   ansible.builtin.meta: flush_handlers
 
@@ -445,7 +344,6 @@
     timeout: 60
   when: not ansible_check_mode
 
-# Configure base settings via API (ALL DNS hosts)
 # Base settings (upstreams, TLS, cache, ratelimit) are reconciled on EVERY
 # instance — DNS has to work here before the resolution check below.
 - name: Configure base AdGuard Home settings via API
@@ -462,10 +360,8 @@
     - adguard_home_is_primary | bool
     - not (adguard_home_skip_api_config | default(false))
 
-# Verify AdGuard Home can resolve DNS before updating resolv.conf
-# This must succeed with actual DNS results (not just rc=0) before we switch resolv.conf
-# Skip in molecule tests - Docker containers can't replace bind-mounted resolv.conf
-# Note: Use -4 to force IPv4 since IPv6 responses would fail the regex validation
+# Real answers, not just rc=0, before the host's own resolver is pointed here.
+# -4 because an IPv6 answer would fail the regex.
 - name: Verify AdGuard Home DNS resolution is working
   ansible.builtin.command:
     cmd: dig -4 @127.0.0.1 google.com +short +time=5
@@ -488,12 +384,9 @@
     - not ansible_check_mode
     - not (adguard_home_skip_resolv_conf_update | default(false))
 
-# Update resolv.conf to use localhost now that AdGuard Home is verified working
-# Architecture: resolv.conf -> AdGuard Home (53) -> Unbound (5335) -> Internet (DoT)
-# Skip in molecule tests - Docker containers have resolv.conf as a bind mount that can't be replaced
-# The shared resolv_conf role (invoked below with resolv_conf_immutable: true)
-# owns the chattr -i/+i wrap, stuck-flag verification, and the
-# unprivileged-container warning path.
+# Resolution path once this lands: resolv.conf -> AdGuard (53) -> the upstream
+# resolver. resolv_conf owns the chattr -i/+i wrap and the stuck-flag check.
+# Skipped in containers, where /etc/resolv.conf is an unreplaceable bind mount.
 - name: Update resolv.conf to use localhost for DNS
   ansible.builtin.include_role:
     name: weisssrv.infra.resolv_conf
@@ -529,8 +422,3 @@
   when:
     - not ansible_check_mode
     - not (adguard_home_skip_resolv_conf_update | default(false))
-
-- name: Display resolv.conf skip notice (molecule test)
-  ansible.builtin.debug:
-    msg: "Skipping resolv.conf update - Docker containers have resolv.conf as a bind mount"
-  when: adguard_home_skip_resolv_conf_update | default(false)

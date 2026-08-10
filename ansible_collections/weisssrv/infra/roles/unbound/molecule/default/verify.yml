@@ -33,16 +33,40 @@
         src: /etc/unbound/unbound.conf.d/managed.conf
       register: unbound_config_content
 
+    - name: Decode Unbound config
+      ansible.builtin.set_fact:
+        unbound_config_text: "{{ unbound_config_content.content | b64decode }}"
+
     - name: Verify config contains expected settings
       ansible.builtin.assert:
         that:
-          - "'port: 5335' in (unbound_config_content.content | b64decode)"
-          - "'forward-tls-upstream: yes' in (unbound_config_content.content | b64decode)"
-          - "'cloudflare-dns.com' in (unbound_config_content.content | b64decode)"
-          - "'dns.google' in (unbound_config_content.content | b64decode)"
-          - "'serve-expired: yes' in (unbound_config_content.content | b64decode)"
+          - "'port: 5335' in unbound_config_text"
+          - "'forward-tls-upstream: yes' in unbound_config_text"
+          - "'cloudflare-dns.com' in unbound_config_text"
+          - "'dns.google' in unbound_config_text"
+          - "'serve-expired: yes' in unbound_config_text"
+          - "'use-caps-for-id: yes' in unbound_config_text"
         fail_msg: "Unbound config missing expected settings"
         success_msg: "Unbound config contains all expected settings"
+
+    # The listen set and the ACL set must agree: an ACL for an address nothing
+    # listens on is dead config, and the reverse silently serves clients.
+    - name: Verify the listen addresses and access-control agree
+      ansible.builtin.assert:
+        that:
+          - "'interface: 127.0.0.1' in unbound_config_text"
+          - "'interface: ::1' not in unbound_config_text"
+          - "'access-control: 127.0.0.0/8 allow' in unbound_config_text"
+          - "'access-control: ::1' not in unbound_config_text"
+        fail_msg: "Unbound listen addresses and access-control do not match"
+        success_msg: "Unbound serves and allows exactly the loopback IPv4 address"
+
+    - name: Verify no superseded drop-in survives
+      ansible.builtin.find:
+        paths: /etc/unbound/unbound.conf.d
+        patterns: "weisssrv.conf"
+      register: unbound_legacy_found
+      failed_when: unbound_legacy_found.matched != 0
 
     - name: Check if remote-control config exists
       ansible.builtin.stat:
@@ -56,9 +80,8 @@
       register: remote_control_content
 
     - name: Assert remote-control uses the local Unix socket (no TLS control certs)
-      # The role configures unbound-control over a local Unix socket
-      # (control-interface: /run/unbound.ctl, control-use-cert: no), so the
-      # unbound_server/_control .pem/.key files are intentionally NOT generated.
+      # The Unix socket path is why no unbound_server/_control .pem/.key pair is
+      # generated; the exporter reaches unbound through it.
       ansible.builtin.assert:
         that:
           - "'control-interface: /run/unbound.ctl' in (remote_control_content.content | b64decode)"
@@ -66,9 +89,8 @@
         fail_msg: "unbound remote-control is not configured for the local Unix socket"
         success_msg: "unbound remote-control uses the local Unix socket (no control certs)"
 
-    # Tolerant probe: containers may lack outbound DoT, so this never fails
-    # the run — the summary below reports the outcome, and the dns-stack
-    # integration scenario hard-asserts real resolution.
+    # Tolerant probe: containers may lack outbound DoT, so this never fails the
+    # run — the dns-stack integration scenario hard-asserts real resolution.
     - name: Test DNS resolution via Unbound
       ansible.builtin.command: dig @127.0.0.1 -p 5335 google.com +short
       register: dns_test
@@ -78,10 +100,7 @@
     - name: Display test results
       ansible.builtin.debug:
         msg:
-          - "Unbound installed and version verified"
-          - "Unbound service is active"
-          - "Listening on 127.0.0.1:5335"
-          - "Configuration deployed with DoT forwarders"
-          - "Remote-control configuration deployed"
+          - "Unbound {{ unbound_installed.stdout_lines[0] | default('') }} active on 127.0.0.1:5335"
+          - "Drop-in managed.conf deployed with DoT forwarders; no legacy drop-in left"
           - "Remote-control via local Unix socket (no TLS control certs)"
           - "DNS resolution: {{ 'working' if dns_test.rc == 0 else 'skipped (no network in container)' }}"

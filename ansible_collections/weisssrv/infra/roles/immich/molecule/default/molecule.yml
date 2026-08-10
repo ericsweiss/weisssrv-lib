@@ -1,0 +1,45 @@
+---
+# Render/contract scenario: immich_skip_install skips the Docker/nginx install
+# and all service management, so the compose file, system config (both the
+# SSO-only and bootstrap branches), .env, nginx site, systemd units and the
+# backup wrapper are rendered and asserted without a container runtime.
+provisioner:
+  playbooks:
+    prepare: prepare.yml
+  env:
+    # Defaults of the three credential vars, normally injected by the site's
+    # secret manager.
+    IMMICH_DB_PASSWORD: testdbpassword123
+    IMMICH_OAUTH_CLIENT_ID: test-immich-client-id
+    IMMICH_OAUTH_CLIENT_SECRET: test-immich-client-secret
+  inventory:
+    group_vars:
+      all:
+        timezone: America/Los_Angeles
+        # Required inputs the site normally supplies.
+        immich_version: v3.0.3
+        immich_postgres_version: 14-vectorchord0.4.3-pgvectors0.2.0
+        immich_postgres_digest: sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
+        immich_valkey_version: "9"
+        immich_valkey_digest: sha256:4963247afc4cd33c7d3b2d2816b9f7f8eeebab148d29056c2ca4d7cbc966f2d9
+        immich_external_url: "https://photos.example.com"
+        immich_oauth_issuer_url: "https://auth.example.com/application/o/photos/"
+        # Dedicated inference endpoint first, in-VM CPU container as failover —
+        # order is the contract (upstream tries the urls sequentially).
+        immich_ml_urls:
+          - "http://10.10.0.58:3003"
+          - "http://immich-machine-learning:3003"
+platforms:
+  - name: immich-test
+    image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    tmpfs:
+      - /run
+      - /tmp

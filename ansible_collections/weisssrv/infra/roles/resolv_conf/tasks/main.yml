@@ -1,10 +1,9 @@
 ---
 # Shared /etc/resolv.conf management, included by the base and adguard_home
-# roles. Required input: resolv_conf_nameservers (alias: host_dns_servers, the
-# name the calling role passes). Optional knobs are in defaults/main.yml.
+# roles. Required input: resolv_conf_nameservers (alias: host_dns_servers).
 
-# An empty list would write a resolv.conf with no nameserver at all, which
-# breaks resolution on the host rather than failing the play.
+# An empty list would write a resolv.conf with no nameserver at all, breaking
+# resolution on the host instead of failing the play.
 - name: Assert nameservers were supplied
   ansible.builtin.assert:
     that:
@@ -38,10 +37,6 @@
     - not ansible_check_mode
     - resolv_conf_attrs_pre.stdout | default('') is search('^[^ ]*i[^ ]* ')
 
-# unsafe_writes is needed in container test environments where
-# /etc/resolv.conf is bind-mounted from the host and atomic rename
-# returns EBUSY. On real hosts the rename works fine; the variable
-# defaults to false so production behavior is unchanged.
 - name: Configure /etc/resolv.conf
   ansible.builtin.template:
     src: resolv.conf.j2
@@ -49,7 +44,9 @@
     owner: root
     group: root
     mode: "0644"
-    unsafe_writes: "{{ resolv_conf_unsafe_writes | default(false) }}"
+    # False on real hosts; true only where the file is bind-mounted and the
+    # atomic rename returns EBUSY (container test environments).
+    unsafe_writes: "{{ resolv_conf_unsafe_writes | bool }}"
 
 - name: Ensure resolv.conf is immutable
   ansible.builtin.command:

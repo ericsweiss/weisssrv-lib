@@ -36,9 +36,12 @@ chmod 0700 "$TMP"
 trap 'rm -rf "$TMP"' EXIT
 
 # 1. Read stdin (untrusted) with a hard size cap — a cert bundle is a few KB;
-#    the cap stops a rogue key from filling /tmp. head -c bounds the read.
-head -c "$MAX_BYTES" > "$TMP/in" || fail "could not read bundle"
+#    the cap stops a rogue key from filling /tmp. Read one byte PAST the cap and
+#    reject when it arrives: `head -c $MAX_BYTES` succeeds on oversized input and
+#    would hand the validators a truncated PEM, reported as "does not parse".
+head -c "$((MAX_BYTES + 1))" > "$TMP/in" || fail "could not read bundle"
 [ -s "$TMP/in" ] || fail "empty bundle"
+[ "$(wc -c < "$TMP/in")" -le "$MAX_BYTES" ] || fail "bundle exceeds ${MAX_BYTES} bytes"
 
 # 2. Split at the fixed delimiter. The RECEIVER assigns the output filenames
 #    (fullchain.pem / privkey.pem) — nothing from stdin becomes a path, so a

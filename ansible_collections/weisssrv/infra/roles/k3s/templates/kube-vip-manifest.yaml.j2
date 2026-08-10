@@ -51,6 +51,9 @@ spec:
         app.kubernetes.io/name: kube-vip
     spec:
       serviceAccountName: kube-vip
+      # This pod owns the API VIP; at the default priority (0) it is a
+      # first-choice preemption victim on a control-plane node under pressure.
+      priorityClassName: system-node-critical
       hostNetwork: true
       hostAliases:
       - hostnames:
@@ -111,6 +114,11 @@ spec:
           value: "10"
         - name: address
           value: "{{ k3s_api_vip }}"
+        # Upstream ships no resources block, which makes the pod that owns the
+        # API VIP BestEffort — the kubelet's first eviction victim under node
+        # memory pressure. Memory limit only, no CPU limit.
+        resources:
+{{ k3s_kube_vip_resources | to_nice_yaml(indent=2) | trim | indent(10, true) }}
         securityContext:
           capabilities:
             add:

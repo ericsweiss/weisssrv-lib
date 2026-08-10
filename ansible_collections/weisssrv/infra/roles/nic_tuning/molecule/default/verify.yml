@@ -140,12 +140,15 @@
           boot-time persistence would be inert
       when: "'operation not supported' not in (ifquery_lo.stderr | lower)"
 
-    # Read-back of the live apply: the drop-in only covers the next ifup, so a
-    # silently-unapplied override would otherwise be invisible until a reboot.
+    # Read-back of the live apply, where the container kernel allows it: some
+    # container interfaces expose no ethtool feature ioctls, so a failed read is
+    # skipped rather than failed. The assert-offloads unit tests at the bottom
+    # cover the comparison logic deterministically either way.
     - name: Read the live feature state of lo
       ansible.builtin.command: ethtool -k lo
       register: nic_tuning_lo_features
       changed_when: false
+      failed_when: false
 
     - name: Assert the requested features are live on lo
       ansible.builtin.assert:
@@ -155,6 +158,7 @@
         fail_msg: >-
           the ethtool overrides are not in effect on lo — the live apply was a
           silent no-op
+      when: nic_tuning_lo_features.rc == 0
 
     - name: Assert ethtool drop-in pipes failures to logger
       ansible.builtin.assert:
@@ -215,3 +219,92 @@
           bonding module all_slaves_active was not flipped to 0 (or the surgical
           replace clobbered fail_over_mac) — the guard would revert on next boot
         success_msg: "bonding module all_slaves_active=0 (reboot-safe); fail_over_mac preserved"
+
+    # The offload read-back (tasks/assert-offloads.yml) is the only thing that
+    # turns a swallowed `ethtool -K` failure into a red play, and it cannot run
+    # against container interfaces. Drive the real task file with captured
+    # `ethtool --show-features` output instead, in all three directions.
+    - name: Offload assert | a matching read-back passes
+      ansible.builtin.include_role:
+        name: weisssrv.infra.nic_tuning
+        tasks_from: assert-offloads.yml
+      vars:
+        nic_tuning_overrides:
+          - interface: nic0
+            options:
+              - feature: tso
+                value: "off"
+              - feature: gro
+                value: "off"
+        nic_tuning_offload_state:
+          results:
+            - item: {interface: nic0}
+              rc: 0
+              stderr: ""
+              stdout_lines:
+                - "Features for nic0:"
+                - "rx-checksumming: on"
+                - "  tx-checksum-ipv4: off [fixed]"   # sub-feature: indented, must not match
+                - "tcp-segmentation-offload: off"
+                - "  tx-tcp-segmentation: off"
+                - "generic-receive-offload: off [fixed]"
+
+    - name: Offload assert | a feature still ON must fail
+      block:
+        - name: Offload assert | drive the assert with a drifted read-back
+          ansible.builtin.include_role:
+            name: weisssrv.infra.nic_tuning
+            tasks_from: assert-offloads.yml
+          vars:
+            nic_tuning_overrides:
+              - interface: nic0
+                options:
+                  - feature: gro
+                    value: "off"
+            nic_tuning_offload_state:
+              results:
+                - item: {interface: nic0}
+                  rc: 0
+                  stderr: ""
+                  stdout_lines:
+                    - "Features for nic0:"
+                    - "generic-receive-offload: on"
+
+        - name: Offload assert | the drifted read-back did NOT fail
+          ansible.builtin.fail:
+            msg: >-
+              assert-offloads.yml passed with generic-receive-offload still on —
+              the offload verification cannot detect a failed apply.
+      rescue:
+        - name: Offload assert | drifted read-back correctly failed
+          ansible.builtin.debug:
+            msg: "assert-offloads.yml fails when the requested feature is not live"
+
+    - name: Offload assert | an unreadable interface must fail
+      block:
+        - name: Offload assert | drive the assert with an ethtool error
+          ansible.builtin.include_role:
+            name: weisssrv.infra.nic_tuning
+            tasks_from: assert-offloads.yml
+          vars:
+            nic_tuning_overrides:
+              - interface: nic9
+                options:
+                  - feature: gro
+                    value: "off"
+            nic_tuning_offload_state:
+              results:
+                - item: {interface: nic9}
+                  rc: 71
+                  stderr: "Cannot get device feature names: No such device"
+                  stdout_lines: []
+
+        - name: Offload assert | the ethtool error did NOT fail
+          ansible.builtin.fail:
+            msg: >-
+              assert-offloads.yml passed while ethtool could not read the
+              interface — a renamed NIC would be a silent no-op.
+      rescue:
+        - name: Offload assert | ethtool error correctly failed
+          ansible.builtin.debug:
+            msg: "assert-offloads.yml fails when ethtool cannot read the interface"

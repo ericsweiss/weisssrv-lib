@@ -32,7 +32,6 @@ persistent ZFS zvol disks.
 | Media | cloud-init drive | `--ide2 <iso-store>:iso/<install>.iso` + `--ide0 <iso-store>:iso/virtio-win.iso` (both `media=cdrom`), `--vga std` |
 | Boot order | `--boot c --bootdisk scsi0` | `--boot 'order=ide2;scsi0'` (install CD first; flip to `order=scsi0` post-install by hand) |
 | Post-create | `qm start` + wait for SSH:22 | **created stopped** — no start, no SSH wait |
-| Backwards-compat | unchanged for every existing Linux VM | new path, fully guarded |
 
 Windows-guest vars (see `defaults/main.yml`): `proxmox_vm_install_iso` (REQUIRED — the
 Win11 ISO the operator downloads manually to the ISO store; the role asserts
@@ -112,6 +111,13 @@ driver + service on Windows). **Do not set it on k3s nodes** — the kubelet acc
 for the full node RAM and schedules pods to it, so reclaiming underneath causes pod
 OOMs. Leave `proxmox_vm_balloon` unset (the default) for a fixed allocation.
 
+## CPU type (`proxmox_vm_cpu_type`)
+
+Defaults to `Penryn` — a conservative live-migration baseline (SSE3/SSSE3/SSE4.1,
+no SSE4.2/AVX) so a guest can migrate across heterogeneous hosts. Set it to
+`host` for any guest pinned to one node; that exposes the full host CPU
+(AVX/AVX2) and is required for a PCI-passthrough guest, which cannot migrate.
+
 ## PCI passthrough (`proxmox_vm_hostpci`)
 
 Optional list of Proxmox `hostpci` device specs; each entry becomes
@@ -120,7 +126,7 @@ Used to pass a GPU (or other PCI device) into a VM via VFIO. Because attaching a
 PCI device requires the guest stopped, this is applied only when the VM is first
 provisioned — an already-existing guest that gains `proxmox_vm_hostpci` is attached by
 the operator with a manual `qm set <id> --hostpci0 …` in a stop/start
-maintenance window (the same apply gap as `proxmox_vm_memory`).
+maintenance window.
 
 ```yaml
 # hosts.yml — pass the whole multifunction GPU on i440fx (no pcie=1)
@@ -152,13 +158,17 @@ applied **only at VM creation**:
 | `onboot` / `startup` (order, delay) | **Reconciled** on existing VMs — editing `proxmox_autostart_enabled` / `proxmox_startup_order` / `proxmox_startup_delay` and re-running applies them via an idempotent `qm set`. These are metadata-only (next-boot), so converging a live VM is safe. |
 | QEMU guest-agent flag (`proxmox_vm_agent_enabled`) | **Reconciled** on existing VMs (metadata-only `qm set --agent`). |
 | NIC `firewall=1` flag | **Reconciled** on existing VMs (one-time repair of legacy NICs). |
-| CPU/memory/cores, disk size, cloud-init (user, SSH key, IP), boot disk | **Create-time only.** Changing these in inventory does not reconcile onto an existing VM — recreate the VM (or `qm set …` by hand). Persistent zvols are matched idempotently by stable SCSI slot and survive recreation. |
+| `proxmox_vm_memory` | **Reconciled** on existing VMs via `qm set --memory`, which writes the config and takes effect at the guest's **next start** — the task never restarts anything. Draining and restarting the guest stays an operator step. |
+| `proxmox_vm_balloon` | **Reconciled** on existing VMs when defined; `qm set --balloon` takes effect live. |
+| Cores, disk size, `proxmox_vm_cpu_type`, cloud-init (user, SSH key, IP), boot disk, `proxmox_vm_hostpci` | **Create-time only.** Changing these in inventory does not reconcile onto an existing VM — recreate the VM (or `qm set …` by hand in a stop/start window for PCI). Persistent zvols are matched idempotently by stable SCSI slot and survive recreation. |
 
 ## Notes
 
-- Cloud-init user: eric (with SSH key)
-- Network: DHCP by default, then set static via cloud-init
-- Persistent zvols survive VM recreation
+- The cloud-init user is `proxmox_vm_cloudinit_user` (defaults to the
+  inventory-wide `admin_user`), authorized with `SSH_PUBLIC_KEY`.
+- Networking is static via cloud-init `--ipconfig0`
+  (`proxmox_vm_target_ip`/`proxmox_vm_cloudinit_prefix_len`/`proxmox_vm_cloudinit_gateway`).
+- Persistent zvols survive VM recreation.
 - The cloud-init SSH public key is staged on the Proxmox host in a private
   `tempfile` (mode 0600, random name) and removed after `qm set`, never a
   predictable `/tmp` path.

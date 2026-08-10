@@ -1,12 +1,7 @@
 ---
-# Molecule scenario for the empty-search-list branch of resolv_conf.
-# Setting `resolv_conf_search_domains: []` is the supported way to opt
-# out of the search line (used by k3s VMs to keep kubelet from
-# propagating the host's search domains into every pod, which amplifies
-# cluster-internal lookups against AdGuard with the default ndots:5).
-# Default scenario covers the populated-list path; this one covers the
-# empty path so a regression that quietly emits `search ` or `domain `
-# trips CI instead of slipping into prod.
+# Covers the `resolv_conf_search_domains: []` branch (the default scenario
+# covers the populated one): a regression that emits a bare `search ` or
+# `domain ` line has to trip CI rather than reach a Kubernetes node.
 dependency:
   name: galaxy
   options:
@@ -54,14 +49,15 @@ provisioner:
   inventory:
     group_vars:
       all:
-        host_dns_servers:
-          - 192.168.0.150
-          - 192.168.0.160
-        internal_domain: example.test
-        # The actual feature under test.
+        # Canonical role-prefixed input here; the default scenario covers the
+        # unprefixed `host_dns_servers` alias.
+        resolv_conf_nameservers:
+          - 192.0.2.10
+          - 192.0.2.11
+        # The feature under test.
         resolv_conf_search_domains: []
-        # /etc/resolv.conf is bind-mounted in Docker containers; atomic
-        # rename returns EBUSY. Force a direct write for tests only.
+        # /etc/resolv.conf is bind-mounted in Docker containers; the atomic
+        # rename returns EBUSY. Test-only.
         resolv_conf_unsafe_writes: true
 verifier:
   name: ansible

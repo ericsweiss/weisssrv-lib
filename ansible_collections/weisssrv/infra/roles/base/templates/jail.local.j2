@@ -1,11 +1,9 @@
 # {{ ansible_managed }}
-# Fail2ban jail configuration
-#
-# This file is deployed by Ansible. Manual changes will be overwritten.
-# To customize, modify the fail2ban_* variables in Ansible inventory.
+# Fail2ban jail configuration. Manual changes are overwritten on the next run;
+# customise via the base_fail2ban_* variables.
 
 [DEFAULT]
-# Whitelist trusted networks (LAN + Tailscale)
+# Networks that are never banned
 ignoreip = {{ base_fail2ban_ignoreip | join(' ') }}
 
 # Default ban settings
@@ -76,14 +74,10 @@ findtime = {{ base_fail2ban_pveproxy_findtime }}
 {% endif %}
 
 {% if base_fail2ban_recidive_enabled and not (base_is_container | default(false)) %}
-# Recidive Jail - Progressive Banning for Repeat Offenders
-# Monitors fail2ban's own log for IPs that get banned multiple times
-# Escalates ban duration for persistent attackers
-#
-# Note: Disabled on LXC containers because:
+# Off on LXC containers because:
 #   - The 'route' banaction doesn't support banaction_allports
-#   - Duplicate route entries cause errors when multiple jails ban the same IP
-#   - The base sshd jail with extended bantime (1h) provides sufficient protection
+#   - Duplicate route entries error when multiple jails ban the same IP
+#   - The sshd jail's own 1h bantime is sufficient protection there
 
 [recidive]
 enabled = true

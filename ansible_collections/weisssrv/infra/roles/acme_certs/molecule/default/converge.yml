@@ -15,9 +15,8 @@
       changed_when: false
       when: ansible_os_family == "Debian"
 
-    # Fix any interrupted dpkg state in Docker containers
-    # Note: We only run dpkg --configure -a to recover from interrupted installs
-    # We do NOT clean apt cache as this can cause race conditions with concurrent downloads
+    # Recover an interrupted install. Deliberately no apt-cache clean: it races
+    # concurrent downloads in the container.
     - name: Fix any interrupted dpkg state
       ansible.builtin.shell: |
         dpkg --configure -a || true

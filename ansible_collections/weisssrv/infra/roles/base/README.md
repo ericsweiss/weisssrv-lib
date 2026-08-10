@@ -35,13 +35,13 @@ Foundational system configuration applied to all managed hosts. Provides essenti
 
 ### Fail2ban
 - sshd jail enabled on all hosts (aggressive mode, systemd backend)
-- pveproxy jail on Proxmox hosts (`fail2ban_pveproxy_enabled`)
+- pveproxy jail on Proxmox hosts (`base_fail2ban_pveproxy_enabled`)
 - Recidive jail for repeat offenders on physical/VM hosts
 - LXC containers use `banaction = route` (blackhole routes) because
   unprivileged containers lack CAP_NET_ADMIN for iptables/nftables; the
   recidive jail is disabled there — trade-offs documented in
   `tasks/fail2ban.yml`
-- Networks listed in `fail2ban_ignoreip` are never banned
+- Networks listed in `base_fail2ban_ignoreip` are never banned
 
 ### DNS Configuration
 - DNS servers configured via `/etc/resolv.conf` (rendered by the shared
@@ -63,13 +63,17 @@ Foundational system configuration applied to all managed hosts. Provides essenti
 - VM guest agent enablement (qemu-guest-agent service)
 - openipmi.service masked on hosts without IPMI hardware (its LSB init script
   otherwise fails at boot and leaves systemd degraded)
-- Intel e1000e NIC workaround (disables TSO/GSO/GRO via a oneshot unit on
-  bare-metal hosts with an affected I219/I218/I217 NIC, to prevent driver hangs)
+- unattended-upgrades turned off on VMs and containers — the
+  `/etc/apt/apt.conf.d/20auto-upgrades` knobs are written whether or not the
+  package is installed, so a later `apt install unattended-upgrades` cannot
+  come up enabled
 
-> Every other NIC offload workaround is owned by
-> **`weisssrv.infra.nic_tuning`**. This role carries only the auto-detected
-> e1000e fix; a site that also drives that NIC from `nic_tuning_overrides`
-> should disable one of the two.
+> **NIC offloads are not this role's business.** They are owned by
+> **`weisssrv.infra.nic_tuning`** (declarative `nic_tuning_overrides`). This
+> role only removes the `atlantic-gro-fix` and `e1000e-tso-fix` oneshot units it
+> used to install, so a host cannot end up with two owners of the same offload
+> settings. A host that needs the e1000e TSO/GSO/GRO workaround must declare it
+> in `nic_tuning_overrides`.
 
 ## Configuration
 
@@ -79,7 +83,7 @@ These are **collection-wide site inputs** — several roles read them, so they
 are deliberately not role-prefixed:
 
 ```yaml
-admin_user: eric                 # `root` (the default) manages no admin user
+admin_user: ops                  # `root` (the default) manages no admin user
 admin_email: ops@example.com     # used by fail2ban notifications
 ssh_port: 22
 ssh_permit_root_login: "no"      # "prohibit-password" where migration needs it
@@ -154,7 +158,7 @@ Apply it to every managed host. It gives them:
     ├─ Probe the local resolver on a resolver host (keep 127.0.0.1 when healthy)
     ├─ Determine DNS servers
     └─ Include resolv_conf role (writes file, manages immutable flag)
-11. e1000e TSO fix (auto-detected bare-metal hosts)
+11. Remove orphaned NIC offload fix units (atlantic-gro-fix, e1000e-tso-fix)
 12. Include fail2ban tasks (install, jail.local, filters, service)
 ```
 

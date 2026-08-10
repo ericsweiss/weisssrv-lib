@@ -23,6 +23,8 @@ Both write to the same Loki backend; labels distinguish the source.
 | `alloy_host_loki_user` / `_password` | basic-auth credentials; asserted non-empty when the endpoint is `https://` (an authenticating proxy) | for https |
 | `alloy_host_wal_enabled` | on-disk WAL for `loki.write` | no (`true`) |
 | `alloy_host_wal_max_segment_age` | WAL segment cut interval — bounds replay lag and disk use | no (`1h`) |
+| `alloy_host_journal_max_age` | how far back a restarted Alloy re-reads the journal | no (`3h`) |
+| `alloy_host_http_port` | Alloy HTTP listen port, used by the post-deploy `/-/ready` probe | no (`12345`) |
 
 Point `alloy_host_loki_url` at an authenticated ingress hostname; a plaintext
 in-cluster endpoint (a NodePort, say) is a legitimate outage fallback and skips
@@ -32,19 +34,29 @@ journals that explain it.
 
 ## Relabeling contract
 
-`loki.source.journal` applies `loki.relabel.journal.rules` **inside the source**,
-while the `__journal_*` metadata still exists, and forwards straight to
-`loki.write`. The `loki.relabel "journal"` component therefore declares rules
-only and keeps `forward_to = []`. Routing entries through it as well applies the
-rules a second time after the metadata is gone, which sets `unit`, `priority`
-and `hostname` to `""` — i.e. deletes them, and every `unit=` dashboard query
-silently returns nothing.
+Two constraints in `templates/config.alloy.j2` are easy to break by tidying, and
+both are asserted on the rendered config by the Molecule verify.
 
-**Deliberate change from the pre-collection role**, which did route the source
-through `loki.relabel.journal` and so shipped every host journal stream without
-those labels. Adopting this role restores them, which is a visible change to
-live log labels: dashboards and alert rules that worked around the missing
-labels need re-checking.
+**Apply the rules exactly once.** `loki.source.journal` forwards straight to
+`loki.write` and passes the rules by reference
+(`relabel_rules = loki.relabel.journal.rules`); `loki.relabel "journal"` is a
+rules holder with `forward_to = []`. Routing entries through that component as
+well applies the rules a second time, after Alloy has dropped the `__journal_*`
+metadata, so each `target_label` is set to `""` — i.e. deleted, and every
+`unit=` dashboard query silently returns nothing.
+
+**`unit` is the only journal stream label, deliberately.** Every rule here
+becomes a Loki stream label, and each one multiplies the chunks the ingester
+holds open for up to `max_chunk_age`. `priority` (a pure ~1.4x multiplier with
+no dashboard consumer) and `hostname` (a duplicate of the `host` label the
+source already sets) are not mapped. Adding one means re-checking
+`max_global_streams_per_user` and the Loki ingester's memory limit.
+
+**Sender/receiver pair.** `alloy_host_journal_max_age` is the sender half of a
+pair with Loki's out-of-order accept window (`ingester.max_chunk_age / 2`).
+Re-read entries older than that window are pushed and then rejected
+`too_far_behind` and lost, in short restart-shaped bursts. Keep the two in
+lockstep: raise both or neither.
 
 ## Files
 

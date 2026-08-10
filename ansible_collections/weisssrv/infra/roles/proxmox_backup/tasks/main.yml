@@ -100,17 +100,14 @@
     # The hookscript belongs to weisssrv.infra.node_exporter_host, which puts it
     # on EVERY Proxmox host (a cluster-wide `all` job runs on each node and
     # invokes the hook there). That role typically runs after this one, and
-    # pvesh validates the --script path when the job is saved — so without this
-    # the first deploy fails and aborts the play. Copy the same file (from the
-    # sibling role in this collection, so there is no second copy to drift)
-    # onto the reconciling node. Skipped unless a job sets `script`.
+    # pvesh validates the --script path when the job is saved — so run its
+    # hookscript task here first. Skipped unless a job sets `script`.
     - name: Ensure vzdump metrics hookscript exists before pvesh validates it
-      ansible.builtin.copy:
-        src: "{{ role_path }}/../node_exporter_host/files/vzdump-metrics-hook.sh"
-        dest: /usr/local/bin/vzdump-metrics-hook.sh
-        owner: root
-        group: root
-        mode: "0755"
+      ansible.builtin.include_role:
+        name: weisssrv.infra.node_exporter_host
+        tasks_from: vzdump_hook
+        apply:
+          tags: [proxmox_backup, proxmox_backup_jobs]
       when: proxmox_backup_vzdump_jobs | selectattr('script', 'defined') | list | length > 0
 
     - name: Get current vzdump backup jobs

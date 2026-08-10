@@ -6,6 +6,11 @@ node_exporter_host_port: 9101
 # Textfile collector directory for custom script metrics
 node_exporter_host_textfile_dir: /var/lib/node_exporter
 
+# How often the liveness gate probes /metrics (README "Liveness gate"). Keep it
+# well inside the `for:` of whatever exporter-down alert covers this job, so the
+# self-heal normally lands before the alert does.
+node_exporter_host_healthcheck_interval: 5min
+
 # Is this a bare-metal Proxmox host? Gates smartmontools, the drivetemp module
 # and the corosync/zpool/SMART/vzdump collectors — all of which are meaningless
 # (and the modprobe fails) in an unprivileged LXC or a guest VM. Set it from the

@@ -25,7 +25,7 @@ provisioner:
       all:
         proxmox_vm_skip_create: true
         # Site inputs the role's cloud-init defaults alias.
-        admin_user: eric
+        admin_user: molecule
         dns_servers: [192.168.0.150, 192.168.0.160]
         proxmox_vm_cloudinit_gateway: 192.168.0.1
         proxmox_storage_defaults:
@@ -41,6 +41,10 @@ provisioner:
     defaults:
       remote_tmp: /tmp/ansible-tmp
 scenario:
+  # No `idempotence` step: converge drives negative-path cases to failure via
+  # block/rescue and rewrites the qm/pvesh stub state between cases, so a second
+  # converge would not replay the same inputs. Per-task idempotence is asserted
+  # directly instead (verify.yml counts the qm calls each reconcile makes).
   test_sequence:
     - dependency
     - cleanup

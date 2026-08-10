@@ -1,0 +1,45 @@
+---
+- name: Reconfigure gitlab
+  ansible.builtin.command: /opt/gitlab/bin/gitlab-ctl reconfigure
+  changed_when: true
+
+- name: Save iptables rules
+  ansible.builtin.command: netfilter-persistent save
+  changed_when: true
+
+- name: Restart sshd
+  ansible.builtin.service:
+    name: "{{ gitlab_ssh_service_name }}"
+    state: restarted
+
+# ansible.posix.sysctl is idempotent against the file the preceding copy: task
+# wrote (same key, same value) and additionally applies the knob at runtime, so
+# a fresh guest does not wait for a reboot.
+- name: Reload sysctl gitlab-redis
+  ansible.posix.sysctl:
+    name: vm.overcommit_memory
+    value: "1"
+    state: present
+    sysctl_file: /etc/sysctl.d/99-gitlab-redis.conf
+    reload: true
+
+- name: Reload systemd for gitlab-backup
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+# `state: restarted` (not started) is required: RemainAfterExit makes `started`
+# a no-op for an already-active oneshot, so a changed ExecStart would not run
+# until next boot.
+- name: Reload systemd for THP unit
+  ansible.builtin.systemd:
+    name: disable-transparent-hugepages.service
+    daemon_reload: true
+    state: restarted
+
+# Reuses the presence probe registered in tasks/main.yml. When that task did not
+# run (tag-limited play), the default skips the restart rather than failing.
+- name: Restart fail2ban
+  ansible.builtin.systemd:
+    name: fail2ban
+    state: restarted
+  when: gitlab_fail2ban_service_file.stat.exists | default(false)

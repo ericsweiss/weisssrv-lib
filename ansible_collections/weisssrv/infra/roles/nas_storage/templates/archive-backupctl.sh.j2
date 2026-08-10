@@ -17,11 +17,12 @@ SNAP_PREFIX="archsync"
 SCRUB_TIMER="zfs-scrub-{{ nas_storage_zfs_scrub_schedule | default('monthly') }}@{{ nas_storage_archive_backup_pool }}.timer"
 {% raw %}
 
-# Retention:
-# - Keep the newest N snapshots always
-# - Plus keep the newest snapshot from the last M months (grandfather)
-KEEP_RECENT=3
-KEEP_MONTHLY=6
+# Retention: the newest N snapshots always, plus the newest snapshot of each of
+# the last M calendar months (grandfather).
+{% endraw %}
+KEEP_RECENT={{ nas_storage_archive_backup_keep_recent }}
+KEEP_MONTHLY={{ nas_storage_archive_backup_keep_monthly }}
+{% raw %}
 
 # vzdump-overrun guard (see replicate_one). A cluster-wide vzdump target is
 # written by remote PVE nodes over NFS, so a local pgrep can't see an in-flight
@@ -466,33 +467,21 @@ replicate_one() {
   log "Snapshot: ${src}@${snap_now}"
   zfs snapshot -r "${src}@${snap_now}"
 
-  # A raw stream cannot continue a base that was received non-raw. When a source
-  # has been newly encrypted but its archive copy was seeded non-raw
-  # (encryption=off), do a one-time raw re-seed. To never leave the dataset
-  # without a backup, build the replacement in a temp sibling and swap only
-  # after a COMPLETE receive: the old copy survives a failed/interrupted re-seed
-  # because set -e/pipefail aborts before the swap on any send error, and a crash
-  # between the destroy and the rename is repaired by the recovery block above.
-  # Fires once per dataset (the next run sees an encrypted dst and resumes
-  # incrementals). Only an exact encryption=off triggers it, so a transient
-  # `zfs get` blip cannot destroy a good encrypted backup.
+  # A raw stream cannot continue a non-raw base, so a source that has since been
+  # encrypted needs a one-time raw re-seed. It is built in a temp sibling and
+  # swapped in only after a COMPLETE receive, so the old copy survives a failed
+  # or interrupted re-seed. Only an exact encryption=off triggers it — a
+  # transient `zfs get` blip must not destroy a good encrypted backup. See the
+  # role README (Archive Backup) for the full sequence.
   if [[ ${#raw_flags[@]} -gt 0 ]] && dataset_present "$dst" \
      && [[ "$(zfs get -H -o value encryption "$dst" 2>/dev/null)" == "off" ]]; then
     log "Re-seed: ${src} is encrypted but ${dst} is non-raw; building raw copy in ${reseed_tmp} (current snapshot only)"
-    # Send ONLY the current snapshot of each dataset, never -R: -R replicates
-    # the source's whole snapshot history, including zfs-auto-snap churn the
-    # archive does not retain, which can dwarf the live data (~7.8T vs ~3.1T for
-    # proxmox) and overflow the pool. Incrementals rebuild the archsync history
-    # forward from here.
-    #
-    # Drive the loop from the @snap_now snapshots, not the live dataset tree, so
-    # a dataset created after the recursive snapshot can't enter the loop and
-    # abort it. Enumerate up front (not in a process substitution) so a failed
-    # enumeration can't run a partial loop and still set the completion marker.
-    # Sort explicitly by '/' depth: snapshot names cannot be lexically sorted
-    # for this (a child's '/' sorts before a parent's '@'), and every dataset's
-    # parent must be received before it so each nested encryptionroot ships raw
-    # with its own wrapped key.
+    # Current snapshot per dataset, never -R: -R would ship the source's whole
+    # snapshot history (auto-snap churn the archive does not retain) and can
+    # overflow the pool. The loop is driven by the @snap_now snapshots, listed
+    # up front so a failed enumeration cannot run a partial loop and still set
+    # the completion marker, and sorted by '/' depth because snapshot names do
+    # not sort parent-before-child lexically (a child's '/' precedes '@').
     local snap ds sub recv_opts dtype snap_list
     if ! snap_list="$(zfs list -H -o name -t snapshot -r "$src" \
         | awk -F@ -v s="$snap_now" '$2 == s { d = $1; print gsub(/\//, "/", d) "\t" $0 }' \
@@ -505,17 +494,11 @@ replicate_one() {
       ds="${snap%@${snap_now}}"
       sub="${reseed_tmp}${ds#"${src}"}"
       # zfs REJECTS a per-dataset '-o mountpoint/canmount' override on a zvol
-      # receive, so volumes get read-only only and filesystems get the full
-      # non-mountable set. Only this non-R loop needs the type split: the -R
-      # paths below apply -o solely to the stream's top-level dataset (a
-      # filesystem, per the SRC_LIST invariant) and zvol descendants neither
-      # inherit nor can hold those properties. Any source tree may hold zvol
-      # children, so each dataset is type-detected on its own.
-      #
+      # receive, so volumes get read-only only. Only this non-R loop needs the
+      # split; the -R paths apply -o to the stream's top-level dataset alone.
       # '|| true' lets a transient `zfs get` error fall through with an empty
-      # dtype so the else branch aborts LOUDLY with a $ds-specific log, instead
-      # of set -e killing the bare assignment with a generic message or a zvol
-      # silently taking the filesystem branch.
+      # dtype, so the else branch aborts loudly with a $ds-specific log rather
+      # than a zvol silently taking the filesystem branch.
       dtype="$(zfs get -H -o value type "$ds" 2>/dev/null || true)"
       if [[ "$dtype" == "volume" ]]; then
         recv_opts=( -o readonly=on )

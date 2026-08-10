@@ -17,14 +17,10 @@
   roles:
     - role: weisssrv.infra.proxmox_firewall
 
-# Second play in the SAME invocation: proves the cross-play run-once guard.
-# After the first play, `_proxmox_firewall_cluster_done` must be set on groups['proxmox'] | first
-# (here that's the docker platform host, proxmox-firewall-test — alphabetically
-# first in this scenario's inventory; in prod it's pve-nas-01) via delegate_facts,
-# so a later including play reads it from hostvars and SKIPS re-deploying
-# cluster.fw. The delegate being the docker platform is what lets verify slurp
-# cluster.fw inside the container. We capture the fact's pre-include value to
-# disk, then re-include the role to confirm it still runs cleanly.
+# Second play in the SAME invocation, proving the cross-play run-once guard: the
+# first play must have set _proxmox_firewall_cluster_done on the delegate (the
+# docker platform here, which is also what lets verify slurp cluster.fw), so this
+# play captures the fact's pre-include value before re-including the role.
 - name: Cross-play guard — second include must see the run-once fact already set
   hosts: proxmox-firewall-test
   become: true

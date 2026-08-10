@@ -10,9 +10,14 @@
       - k3s_version | length > 0
       - k3s_api_vip is defined
       - k3s_api_vip | length > 0
+      - k3s_kube_vip_version is defined
+      - k3s_kube_vip_version | length > 0
     fail_msg: >-
-      k3s_token, k3s_version and k3s_api_vip are all required — supply the
-      join token from the site's secret store.
+      k3s_token, k3s_version, k3s_api_vip and k3s_kube_vip_version are all
+      required — supply the join token from the site's secret store and the two
+      version pins from its version block (k3s_kube_vip_version aliases
+      kube_vip_version). The role ships no version defaults, so a dropped pin
+      fails here instead of quietly deploying a stale one.
     success_msg: "Required k3s variables are present"
   tags: [validation, always]
 
@@ -220,14 +225,19 @@
     ('tainted' in (k3s_taint_result.stdout | default('')))
     or ('modified' in (k3s_taint_result.stdout | default('')))
 
-# Off-node etcd snapshot copy (see README.md). Server nodes hold the etcd snapshots on
-# local disk only; this copies the newest one off-node so losing all the
-# servers (or their Proxmox hosts) does not lose etcd. Opt-in — off by default
-# until the companion NFS export + node_exporter_host exist (see defaults).
-# No k3s_skip_install gate: the container-hostile steps inside (NFS mount, tlshd
-# assert, timer enable+start) are molecule-notest-tagged, and the rest are pure
-# file/template ops that don't need k3s installed — so molecule can render and
-# assert the artifacts. Prod never sets k3s_skip_install.
+# metrics-server durability override, written into the server manifests dir the
+# first server owns. Opt-in; see defaults and README.md.
+- name: Override the packaged metrics-server
+  ansible.builtin.include_tasks: metrics-server-override.yml
+  when:
+    - k3s_metrics_server_override_enabled | bool
+    - k3s_is_first_server | default(false)
+
+# Servers hold their etcd snapshots on local disk only; this copies the newest
+# one off-node. Opt-in, and off until the companion NFS export +
+# node_exporter_host exist (see defaults). No k3s_skip_install gate: the
+# container-hostile steps inside are molecule-notest-tagged and the rest are
+# file/template ops, so molecule can render and assert the artifacts.
 - name: Configure off-node etcd snapshot copy
   ansible.builtin.include_tasks: etcd-snapshot-offnode.yml
   when: k3s_etcd_snapshot_offnode_enabled | bool

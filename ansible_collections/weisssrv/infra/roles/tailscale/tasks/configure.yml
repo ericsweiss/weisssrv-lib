@@ -1,7 +1,6 @@
 ---
-# Tailscale VPN setup
-# Note: `tailscale up` runs automatically when TAILSCALE_AUTH_KEY is injected
-# via `op run`; otherwise the play ends with the exact manual command to run
+# `tailscale up` runs automatically when TAILSCALE_AUTH_KEY is present in the
+# environment; without it the play ends by printing the manual command to run.
 
 - name: Create keyrings directory
   ansible.builtin.file:
@@ -10,12 +9,10 @@
     mode: '0755'
   when: ansible_facts['os_family'] == "Debian"
 
-# The key is re-fetched on every run (force: true) so a rotated upstream
-# signing key is picked up without manual file removal — but into a staging
-# path, and fingerprint-verified BEFORE being copied into the trusted keyring
-# location. Installing first and verifying after would leave a tampered
-# download trusted by apt (tailscale.list already references the keyring path
-# on established hosts) even though the play fails.
+# The key is re-fetched every run (force: true) so an upstream rotation is
+# picked up without manual removal — into a staging path, verified there, and
+# only then installed: apt on an established host already trusts the keyring
+# path, so installing before verifying would trust a tampered download.
 - name: Create staging file for Tailscale GPG key
   ansible.builtin.tempfile:
     state: file
@@ -85,10 +82,9 @@
   when:
     - ansible_facts['os_family'] == "Debian"
 
-# Hold the package so a manual `apt upgrade` can't move Tailscale past the pin
-# (pkgs.tailscale.com continuously serves newer builds). Mirrors the alloy/plex
-# host-side pins; the install above sets allow_change_held_packages so a pinned
-# re-install still proceeds through the hold.
+# Hold so a manual `apt upgrade` can't move Tailscale past the pin —
+# pkgs.tailscale.com continuously serves newer builds. The install above sets
+# allow_change_held_packages, so a pin bump still proceeds through the hold.
 - name: Hold Tailscale package to prevent unintended upgrades
   ansible.builtin.dpkg_selections:
     name: tailscale
@@ -114,22 +110,17 @@
     reload: true
   when: tailscale_advertise_routes | length > 0
 
-# Removing the drop-in stops ip_forward being re-asserted at boot, but does NOT
-# reset the live net.ipv4.ip_forward (a demoted subnet router keeps forwarding
-# until reboot). Deliberately not forced to 0 here: nic_tuning independently owns
-# ip_forward on the same hosts (its own 99-nic-tuning-ip-forward.conf), so
-# forcing 0 would fight that role. A reboot — or the owning role — re-establishes
-# the correct value.
+# Stops ip_forward being re-asserted at boot but deliberately does not force the
+# live value to 0: nic_tuning may own ip_forward on the same host. A demoted
+# subnet router therefore keeps forwarding until reboot.
 - name: Remove ip_forward sysctl drop-in when subnet routing disabled
   ansible.builtin.file:
     path: /etc/sysctl.d/99-tailscale-ip-forward.conf
     state: absent
   when: tailscale_advertise_routes | length == 0
 
-# Earlier revisions of this role persisted the value in /etc/sysctl.conf (the
-# sysctl module default); remove that entry so the drop-in above is the single
-# owner. Only matches the uncommented directive — the distribution's commented
-# example line is left alone.
+# Keep the drop-in above the single owner of ip_forward. The regexp matches only
+# the uncommented directive, leaving the distribution's example line alone.
 - name: Remove ip_forward entry from /etc/sysctl.conf
   ansible.builtin.lineinfile:
     path: /etc/sysctl.conf
@@ -143,9 +134,8 @@
     mode: '0755'
   when: tailscale_advertise_routes | length > 0
 
-# On Proxmox hosts, ip_forward can be reset to 0 during boot by bridge/network
-# module initialization that occurs after systemd-sysctl. This drop-in ensures
-# ip_forward is re-applied after tailscaled starts (which is after networking).
+# Bridge/network initialization can reset ip_forward to 0 after systemd-sysctl
+# has run, so re-apply it once tailscaled starts (which is after networking).
 - name: Persist IP forwarding via tailscaled ExecStartPost
   ansible.builtin.copy:
     dest: /etc/systemd/system/tailscaled.service.d/ip-forward.conf
@@ -163,7 +153,6 @@
   when: tailscale_advertise_routes | length == 0
   notify: Reload and restart tailscaled
 
-
 - name: Check Tailscale status
   ansible.builtin.command: tailscale status --json
   register: tailscale_status
@@ -171,16 +160,10 @@
   failed_when: false
   when: not ansible_check_mode
 
-# Auth key via TS_AUTHKEY env (tailscale reads it natively) so it never
-# appears on the command line / in the process list.
-#
-# --advertise-tags is intentionally NOT passed here. Tag adoption is handled only
-# by the best-effort `tailscale set --advertise-tags` reconcile task below. A tag
-# on the initial `up` would HARD-FAIL a first-time join while the live ACL has no
-# `tagOwners` entry yet (the migration window before the supervised ACL apply),
-# or trigger an interactive reauth `up` cannot complete non-interactively —
-# breaking the "pipeline stays green" staging contract. Decoupling keeps the join
-# unconditional and lets the reconcile path adopt the tag once tagOwners exists.
+# Auth key via TS_AUTHKEY env (tailscale reads it natively) so it never reaches
+# argv or the process list. --advertise-tags is deliberately NOT passed here: a
+# tag on the join hard-fails while the live ACL has no tagOwners entry, or needs
+# an interactive reauth. Tags are adopted by the reconcile task below instead.
 - name: Authenticate Tailscale with auth key
   ansible.builtin.command: >
     tailscale up
@@ -198,15 +181,10 @@
   register: tailscale_up
   changed_when: "'Success' in tailscale_up.stdout or tailscale_up.rc == 0"
 
-# `tailscale up` above only runs for the initial authentication (gated on
-# BackendState), so prefs edited in inventory afterwards would never reach an
-# already-Running node. Reconcile them every run with `tailscale set`, which is
-# idempotent and applies changes without re-auth. (Advertised routes still need
-# approval in the admin console; this only sets the node's own prefs.)
-# tailscale_additional_flags (e.g. --ssh, --operator) are applied only by the
-# initial `up` — they rarely drift and --operator isn't a `tailscale set` pref.
-# changed_when is false because `tailscale set` is idempotent and gives no
-# reliable changed signal; a drift diff would need `tailscale debug prefs`.
+# `tailscale up` above is gated on BackendState, so it only ever runs the initial
+# join; `tailscale set` is what carries later inventory edits to a Running node.
+# tailscale_additional_flags stay on `up` only (--operator is not a `set` pref).
+# changed_when: false — `set` gives no reliable changed signal.
 - name: Reconcile Tailscale preferences on authenticated node
   ansible.builtin.command: >
     tailscale set
@@ -219,25 +197,11 @@
     - (tailscale_status.stdout | default('{}') | from_json).get('BackendState', '') == "Running"
   changed_when: false
 
-# ACL tags get their own task, deliberately not folded into the route/DNS
-# reconcile above: the FIRST transition of a user-owned device to a tag-owned
-# identity needs an interactive reauth that this run cannot complete, and a
-# mid-migration reauth prompt must not fail the reconcile every host depends on.
-# `tailscale set` only touches flags it is passed, so gating on a non-empty tag
-# list never clears tags on hosts that advertise none.
-#
-# Two failure modes so genuine errors are not masked:
-#   - default (tailscale_tags_require_adoption=false): BEST-EFFORT, so the
-#     expected pre-cutover "needs reauth" keeps the pipeline green; the debug
-#     task below still prints rc + stderr.
-#   - supervised adoption (-e tailscale_tags_require_adoption=true, after the
-#     ACL defines tagOwners): STRICT, so a host that silently fails adoption is
-#     caught rather than leaving the lockdown half-applied behind a green run.
-#
-# --advertise-tags exists on `tailscale set` only in some CLI versions (the
-# pinned release moved it to `tailscale up`, which needs interactive reauth), so
-# detect support first — otherwise every deploy emits a full usage dump while
-# the tags stay correctly adopted server-side.
+# Tags reconcile in their own task: first adoption needs an interactive reauth
+# this run cannot complete, and that must not fail the route/DNS reconcile every
+# host depends on. tailscale_tags_require_adoption picks best-effort (default)
+# vs strict. --advertise-tags is missing from `tailscale set` on some CLI
+# releases, so probe for it first — see the README (ACL tags).
 - name: Check whether `tailscale set` supports --advertise-tags on this CLI
   ansible.builtin.command: tailscale set --help
   register: tailscale_set_help
@@ -247,14 +211,10 @@
     - not ansible_check_mode
     - tailscale_advertise_tags | length > 0
 
-# Strict/supervised mode (tailscale_tags_require_adoption=true) exists to ENFORCE
-# tag adoption. When the CLI can't run the non-interactive reconcile below, that
-# task is skipped and its failed_when never fires — so strict mode would pass
-# SILENTLY. But failing unconditionally would also be wrong: the operator adopts
-# tags out-of-band via `tailscale up --advertise-tags`, so on a supported host the
-# tags ARE present and strict mode should pass. So VERIFY the live tag state from
-# `tailscale status` (Self.Tags) and fail only when a requested tag is still
-# missing. (Best-effort default mode is unaffected — it legitimately skips.)
+# Without this, strict mode would pass silently on a CLI that cannot reconcile:
+# the task below is skipped, so its failed_when never fires. Tags may still be
+# correct (adopted out-of-band via `tailscale up`), so check the live Self.Tags
+# rather than failing outright.
 - name: Verify strict tag adoption when the CLI cannot reconcile tags non-interactively
   ansible.builtin.assert:
     that:

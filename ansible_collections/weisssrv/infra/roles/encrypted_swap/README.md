@@ -11,27 +11,38 @@ plaintext swap" gap next to at-rest disk encryption.
 - **`/etc/crypttab`** — `cryptswap <source> /dev/urandom
   swap,cipher=aes-xts-plain64,size=512,sector-size=4096`. `systemd-cryptsetup`
   opens the backing device with a random key and `mkswap`s the mapper (the
-  `swap` option) at boot. `size=512` = **AES-256-XTS** (two 256-bit keys),
-  (AES-256-XTS). No `luks` option ⇒ plain mode.
+  `swap` option) at boot. `size=512` = **AES-256-XTS** (two 256-bit keys); no
+  `luks` option ⇒ plain mode.
   The role installs **both** `cryptsetup` (userspace tools) and
   `systemd-cryptsetup` — Debian trixie / PVE 9 ship the crypttab generator +
   `systemd-cryptsetup@.service` template in the separate `systemd-cryptsetup`
-  package (carved out of `systemd`; `cryptsetup` does not pull it in), and
-  without it the boot generator never materializes the unit and swap never
-  activates.
+  package, which `cryptsetup` does not pull in; without it the boot generator
+  never materializes the unit and swap never activates.
 - **`/etc/fstab`** — the encrypted mapper line
   `/dev/mapper/cryptswap none swap sw,pri=100,nofail 0 0`. `nofail` lets
   `swapon -a` silently **skip** the mapper while it is still absent (the
   pre-reboot deferred-activation window) instead of erroring; `pri=` makes the
   kernel prefer the encrypted mapper for new swap-outs the moment it comes up.
 
+## Variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `encrypted_swap_enabled` | `true` | Set false to make the role a no-op on a host. |
+| `encrypted_swap_source_device` | `/dev/pve/swap` | Backing swap device (the Proxmox installer's LVM layout); override per host if a box differs. |
+| `encrypted_swap_mapper_name` | `cryptswap` | Mapper name; also names the `systemd-cryptsetup@` unit. |
+| `encrypted_swap_cipher` | `aes-xts-plain64` | crypttab cipher. |
+| `encrypted_swap_key_size` | `512` | Key size in bits (512 ⇒ AES-256-XTS). |
+| `encrypted_swap_sector_size` | `4096` | crypttab sector size. |
+| `encrypted_swap_mapper_swap_priority` | `100` | fstab `pri=` for the mapper line; must be above the plaintext line's priority. |
+
 ### Never a zero-swap window
 
 The role **never** produces a state where `swapon -a` yields zero swap. The
-plaintext backing line (`/dev/pve/swap none swap …`) is **kept** in fstab
-*alongside* the higher-priority mapper line. Until the activation reboot the
-mapper is absent (`nofail` ⇒ skipped) and the plaintext device carries swap. A
-one-shot **boot finalize unit** (`encrypted-swap-finalize.service`,
+plaintext backing line (`<source> none swap …`) is **kept** in fstab *alongside*
+the higher-priority mapper line. Until the activation reboot the mapper is absent
+(`nofail` ⇒ skipped) and the plaintext device carries swap. A one-shot **boot
+finalize unit** (`encrypted-swap-finalize.service`,
 `ConditionPathExists=/etc/crypttab`,
 `After=swap.target systemd-cryptsetup@cryptswap.service`) then `swapoff`s the
 plaintext device and comments its fstab line **exactly once** after the mapper
@@ -51,69 +62,52 @@ There is deliberately **no live (running-host) switchover**. Converting an
 *active* swap device to encrypted needs a `swapoff` first, and
 systemd-cryptsetup's `mkswap` on the mapper **overwrites the plaintext device's
 swap header** — so a live switch that fails its post-`swapon` verification cannot
-restore plaintext swap and leaves the host **swapless**. That is exactly what a
-first live run did to five hosts, so the live path was removed in
-favour of the clean, standard reboot path. Swap is ephemeral, so deferring costs
-nothing.
+roll back and leaves the host **swapless**. Swap is ephemeral, so deferring to
+the clean, standard reboot path costs nothing.
 
 ### Boot-race recovery
 
-At boot both contenders want the same backing LV: the retained plaintext fstab
-line and `systemd-cryptsetup@cryptswap`. systemd orders `cryptsetup.target`
+At boot both contenders want the same backing device: the retained plaintext
+fstab line and `systemd-cryptsetup@cryptswap`. systemd orders `cryptsetup.target`
 before `swap.target`, so the mapper normally wins; the finalize unit
 (`After=swap.target`) handles the rare loss — if the mapper is **not** active it
 `swapoff`s the plaintext device, opens the mapper, and `swapon`s it (memory is
-empty at boot, so the `swapoff` cannot OOM), always keeping a working swap on any
-failure. It detects an active mapper by resolving `/dev/mapper/cryptswap` to its
-`/dev/dm-N` kernel name before matching `/proc/swaps` (dm devices never appear
-there by their `/dev/mapper/` path).
+empty at boot, so the `swapoff` cannot OOM). Every failure arm restores a working
+swap: because opening the mapper `mkswap`s *through* dm-crypt and destroys the
+backing device's plaintext swap signature, the restore path runs `mkswap` on the
+backing device before `swapon -a` — a bare `swapon -a` would find no signature
+and leave the host swapless. Active-mapper detection resolves
+`/dev/mapper/cryptswap` to its `/dev/dm-N` kernel name before matching
+`/proc/swaps` (dm devices never appear there by their `/dev/mapper/` path).
 
-Two things to expect around the **activation reboot** (both benign, both
-self-healing):
+Expect one benign, self-healing effect around the **activation reboot**: the
+retained plaintext line (no `nofail`) fails to `swapon` once the mapper has
+claimed the backing device, so its `.swap` unit enters `failed` and
+`systemctl is-system-running` reports `degraded` **for that one boot** — until
+the finalize unit comments the plaintext line out. Encrypted swap is already
+active (the `nofail` mapper line comes up independently), so boot is not harmed;
+subsequent boots are clean.
 
-- **One-shot `swap.target` degraded state.** The retained plaintext line
-  (`/dev/pve/swap none swap sw 0 0`, no `nofail`) fails to `swapon` once the
-  mapper has claimed the backing LV, so `dev-pve-swap.swap` enters `failed` and
-  `systemctl is-system-running` reports `degraded` **for that one boot** — until
-  the finalize unit comments the plaintext line out. Encrypted swap is already
-  active (the `nofail` mapper line comes up independently), so boot is not
-  harmed; subsequent boots are clean.
-- **Rare recovery-arm swapless-until-reboot.** If the plaintext line wins the
-  boot race, the finalize recovery arm completes the switch; on the narrow path
-  where the mapper opens (its `mkswap` has by then overwritten the plaintext
-  header) but the subsequent `swapon` fails, `swapon -a` can restore nothing and
-  the host stays swapless until the next reboot. This is inherent to plain-mode
-  random-key swap (the plaintext header is unrecoverable once the mapper is
-  mkswap'd), low-probability, and surfaced by the `NASSwapGone` alert.
+### Interaction with `nas_storage`'s swap-clean
 
-### Interaction with `nas_storage`'s swap-clean (NAS only)
-
-`swap-clean.sh` is **device-agnostic** — it reads swap usage from
-`/proc/meminfo` and cycles swap with `swapoff -a` / `swapon -a`, so post-reboot
-it works transparently against `/dev/mapper/cryptswap`. The former pre-reboot
-caveat is now **guarded on both sides**: swap-clean's **pre-flight** skips the
-whole cycle as a deliberate no-op when any fstab swap device is absent (exactly
-the deferred window, where fstab names the not-yet-present mapper), and even if
-it did cycle, the kept plaintext fstab line means `swapon -a` restores real swap.
-So a deferred activation can no longer strand a host swapless — reboot when
-convenient rather than urgently.
+`swap-clean.sh` is **device-agnostic** — it reads swap usage from `/proc/meminfo`
+and cycles swap with `swapoff -a` / `swapon -a`, so post-reboot it works
+transparently against `/dev/mapper/cryptswap`. The deferred window is guarded on
+both sides: swap-clean's pre-flight skips the whole cycle when any fstab swap
+device is absent (exactly that window), and the kept plaintext fstab line means
+`swapon -a` restores real swap even if it did cycle.
 
 ## Scope
 
-Bare-metal hosts only. The backing device defaults to `/dev/pve/swap` (the
-Proxmox installer's LVM layout) — override `encrypted_swap_source_device` per
-host if a box differs.
+Bare-metal hosts only — a VM or container has no backing swap LV to encrypt.
 
 ## Molecule
 
 Activation is deferred to reboot (real devices), so converge asserts the rendered
-config: `cryptsetup` **and `systemd-cryptsetup`** installed (the split-out package
-ships the crypttab generator + `@.service` template — without it swap never
-activates at boot); the crypttab entry renders (mapper, source, `/dev/urandom`,
-plain-mode cipher/size); the fstab **keeps** the plaintext line alongside the
-higher-priority `nofail` mapper line; and the boot finalize unit + script are
-deployed and enabled (`ConditionPathExists=/etc/crypttab`,
-`After=swap.target systemd-cryptsetup@cryptswap.service`). The finalize-script
-assertions cover the active-swap gate, the boot-race recovery arm, and — key to
-the fix — that the mapper is resolved to its `/dev/dm-N` device (`readlink -f`)
-before matching `/proc/swaps`.
+config: `cryptsetup` **and `systemd-cryptsetup`** installed; the crypttab entry
+(mapper, source, `/dev/urandom`, plain-mode cipher/size); the fstab **keeps** the
+plaintext line alongside the higher-priority `nofail` mapper line; the obsolete
+live-switch script is absent; and the boot finalize unit + script are deployed
+and enabled. The finalize-script assertions cover the active-swap gate, the
+`readlink -f` resolution to `/dev/dm-N`, the boot-race recovery arm, and the
+`mkswap`-before-`swapon -a` restore.

@@ -1,14 +1,11 @@
 ---
-# Shared Docker Engine (CE) install pipeline: the pinned engine + compose/buildx
-# plugins from the official download.docker.com apt repo, dpkg-held so an
-# apt-upgrade never bumps them out from under a running compose stack, plus the
-# journald daemon.json (rationale at the deploy task below).
+# Pinned Docker Engine (CE) + compose/buildx plugins from download.docker.com,
+# dpkg-held so an apt-upgrade never bumps them out from under a running compose
+# stack, plus the journald daemon.json.
 #
-# docker_engine_skip_install gates every step that needs the real apt repo, the
-# Docker binary, or a running daemon, so the role's own molecule scenario can
-# render + assert the daemon.json without a container runtime. It defaults false,
-# so real deploys run the full flow; callers additionally gate the whole include
-# on their own skip flag.
+# docker_engine_skip_install gates every step needing the real apt repo, the
+# Docker binary or a running daemon, so a render-only run can still assert the
+# daemon.json. It defaults false; callers gate the whole include on their own flag.
 
 - name: Validate the pinned Docker versions are supplied
   ansible.builtin.assert:
@@ -22,15 +19,11 @@
       required — pin them alongside the site's other component versions.
   when: not (docker_engine_skip_install | default(false))
 
-# The keyring standardization (/usr/share/keyrings -> /etc/apt/keyrings) left
-# pre-standardization hosts with BOTH repo lines in docker.list: apt_repository
-# appends the new line without removing the old one, and apt then refuses the
-# source outright ("Conflicting values set for option Signed-By"), wedging every
-# subsequent apt operation on the host. Drop the legacy line + orphaned keyring
-# up front — before any task that touches apt — so a keyring-path move converges
-# in one play instead of wedging apt. Pure local file ops (no network, no
-# daemon), so they deliberately run in render-only mode too and the molecule
-# scenario seeds + asserts the cleanup.
+# A host that still carries the old /usr/share/keyrings repo line ends up with
+# BOTH lines in docker.list once the current one is added, and apt then refuses
+# the source ("Conflicting values set for option Signed-By"), wedging every later
+# apt operation. Drop the legacy line + orphaned keyring before anything touches
+# apt. Pure local file ops, so they run in render-only mode too.
 - name: Remove legacy Docker repo line (pre-standardization keyring path)
   ansible.builtin.lineinfile:
     path: /etc/apt/sources.list.d/docker.list
@@ -84,19 +77,15 @@
     name: "{{ docker_engine_packages }}"
     state: present
     update_cache: true
-    # The packages are held below so `apt upgrade` never bumps the engine out
-    # from under a running stack — but that same hold would make THIS task fail
-    # ("held packages were changed") the day a pin in group_vars is bumped.
-    # allow_change_held_packages lets the new pin reconcile through the hold in
-    # place; the Hold task re-applies the hold at the new version afterward.
+    # The hold below would make THIS task fail ("held packages were changed") the
+    # day a pin is bumped; allow_change_held_packages reconciles the new pin
+    # through the hold, and the Hold task re-applies it at the new version.
     allow_change_held_packages: true
     # The pins are authoritative in BOTH directions: a host that drifted ABOVE
-    # the pin must converge down, not fail the deploy. (Seen in production when
-    # a first deploy died between this install and the Hold task: the un-held
-    # engine got bumped by a later apt-upgrade and every deploy after that
-    # failed with "Packages were downgraded and -y was used without
-    # --allow-downgrades". daemon.json's live-restore keeps containers running
-    # across the engine restart either way.)
+    # the pin (an un-held engine caught by an apt-upgrade) must converge down
+    # rather than fail every deploy with "Packages were downgraded and -y was
+    # used without --allow-downgrades". live-restore keeps containers running
+    # across the engine restart either way.
     allow_downgrade: true
   when: not (docker_engine_skip_install | default(false))
 

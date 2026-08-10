@@ -2,22 +2,22 @@
 # SMTP relay server configuration
 # Central postfix relay that forwards to Gmail
 
-# Assert the EFFECTIVE config, so a deployment that overrides smtp_relay_config
-# wholesale is checked too. An empty relayhost renders `relayhost = ` (postfix
+# Assert the EFFECTIVE config (defaults + smtp_relay_config merged), so a site
+# override is checked too. An empty relayhost renders `relayhost = ` (postfix
 # falls back to direct MX delivery from this host) and makes sasl_passwd.j2 emit
 # a leading-whitespace line, which postmap reads as a continuation rather than a
 # smarthost entry — both silent.
 - name: Validate the relay identity and smarthost are set
   ansible.builtin.assert:
     that:
-      - smtp_relay_config.relayhost | default('') | length > 0
-      - smtp_relay_config.myhostname | default('') | length > 0
-      - smtp_relay_config.myorigin | default('') | length > 0
+      - smtp_relay_effective_config.relayhost | default('') | length > 0
+      - smtp_relay_effective_config.myhostname | default('') | length > 0
+      - smtp_relay_effective_config.myorigin | default('') | length > 0
     fail_msg: >-
-      smtp_relay_config needs a non-empty relayhost, myhostname and myorigin.
-      On the default config these come from smtp_relay_upstream and
+      The relay config needs a non-empty relayhost, myhostname and myorigin.
+      On the defaults these come from smtp_relay_upstream and
       smtp_relay_hostname/_origin (which derive from smtp_relay_internal_domain,
-      alias: internal_domain).
+      alias: internal_domain); a site can also set them in smtp_relay_config.
     success_msg: "SMTP relay identity and smarthost are set"
 
 - name: Validate required SMTP Gmail credentials are set
@@ -47,9 +47,7 @@
     success_msg: "SMTP relay auth credentials are present"
   no_log: true
 
-# Cert-distribution pubkey deployment lives in acme_certs (single owner for
-# every target); a duplicate task here with a different key comment caused a
-# permanent changed flip-flop between the two.
+# Cert-distribution pubkey deployment is owned by acme_certs, for every target.
 
 - name: Install postfix and dependencies
   ansible.builtin.apt:
@@ -63,7 +61,7 @@
 
 - name: Configure mailname
   ansible.builtin.copy:
-    content: "{{ smtp_relay_config.myhostname }}\n"
+    content: "{{ smtp_relay_effective_config.myhostname }}\n"
     dest: /etc/mailname
     owner: root
     group: root
@@ -108,16 +106,6 @@
     - Reload postfix
   no_log: true
 
-# Safety-net: the handler above only runs when the plaintext sasl_passwd
-# changes, so a deleted/corrupted .db would never be rebuilt on a re-run and
-# the Gmail SASL lookup would silently fail (fleet-wide mail defer). Rebuild it
-# whenever the .db is missing, mirroring postfix_null_client.
-- name: Ensure SASL password database exists
-  ansible.builtin.command: postmap /etc/postfix/sasl_passwd
-  args:
-    creates: /etc/postfix/sasl_passwd.db
-  no_log: true
-
 - name: Create SASL configuration directory
   ansible.builtin.file:
     path: /etc/postfix/sasl
@@ -141,14 +129,18 @@
 - name: Check if SASL user exists
   ansible.builtin.shell: |
     set -o pipefail
-    sasldblistusers2 | grep -q "{{ smtp_relay_sasl_user }}@{{ smtp_relay_config.myhostname }}"
+    sasldblistusers2 | grep -Fq -- "$SASL_USER@$SASL_REALM"
   args:
     executable: /bin/bash
+  environment:
+    SASL_USER: "{{ smtp_relay_sasl_user }}"
+    SASL_REALM: "{{ smtp_relay_effective_config.myhostname }}"
   register: smtp_relay_sasl_user_check
   failed_when: false
   changed_when: false
-  # The relay username is a credential half; without this it is rendered into
-  # -v output, --diff and CI job logs by the grep pattern above.
+  # The relay username is a credential half, so it reaches the probe through the
+  # environment (never argv) and -F keeps a metacharacter in it from matching
+  # something else.
   no_log: true
 
 # sasldb stores no recoverable plaintext to compare against, so rotation is
@@ -166,19 +158,22 @@
 
 - name: Compute expected SASL relay credential fingerprint
   ansible.builtin.set_fact:
-    smtp_relay_sasl_expected_fingerprint: "{{ (smtp_relay_sasl_user ~ '@' ~ smtp_relay_config.myhostname ~ ':' ~ smtp_relay_sasl_password) | hash('sha256') }}"
+    smtp_relay_sasl_expected_fingerprint: >-
+      {{ (smtp_relay_sasl_user ~ '@' ~ smtp_relay_effective_config.myhostname
+      ~ ':' ~ smtp_relay_sasl_password) | hash('sha256') }}
   no_log: true
 
 # Secret reaches saslpasswd2 via the task environment, never the argv.
 - name: Create/update relay user in SASL database
   ansible.builtin.shell: |
     set -o pipefail
-    printf '%s' "$SASL_PW" | saslpasswd2 -p -c -u {{ smtp_relay_config.myhostname }} "$SASL_USER"
+    printf '%s' "$SASL_PW" | saslpasswd2 -p -c -u "$SASL_REALM" "$SASL_USER"
   args:
     executable: /bin/bash
   environment:
     SASL_PW: "{{ smtp_relay_sasl_password }}"
     SASL_USER: "{{ smtp_relay_sasl_user }}"
+    SASL_REALM: "{{ smtp_relay_effective_config.myhostname }}"
   no_log: true
   changed_when: >-
     smtp_relay_sasl_user_check.rc != 0
@@ -211,6 +206,19 @@
     group: root
     mode: "0644"
   notify: Newaliases
+
+# Both map sources are notify-only, so a lost handler leaves a correct source
+# next to a stale compiled .db that postfix keeps reading. Placed before the
+# service start so a first converge has a usable sasl_passwd.db without waiting
+# for the handler flush. The task file is shared with postfix_null_client (same
+# two maps, same hazard); that role's identically-named handlers come along with
+# the include and are inert duplicates of this role's.
+- name: Repair stale compiled postfix maps
+  ansible.builtin.include_role:
+    name: weisssrv.infra.postfix_null_client
+    tasks_from: repair-compiled-maps.yml
+  vars:
+    postfix_null_client_maps_root_alias: "{{ smtp_relay_aliases.root | default('') }}"
 
 - name: Ensure postfix is enabled and running
   ansible.builtin.service:

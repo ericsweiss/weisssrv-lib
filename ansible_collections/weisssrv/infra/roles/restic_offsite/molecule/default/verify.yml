@@ -1,8 +1,10 @@
 ---
-# Verify: the control script + secret files + timer render correctly, an actual
-# run against the LOCAL restic file repo produces a snapshot + success metric,
-# the freshness guard aborts (success=0) on a stale source, and the static
-# subcommand/metric/zvol-clone contract holds.
+# Verify: the control script + secret files + timers render correctly; a real
+# run against the LOCAL restic file repo produces a snapshot and the split
+# backup/retention metrics; a second run short-circuits (and --force overrides);
+# restore round-trips; the deep-verify cursor advances; the freshness guard
+# aborts (success=0) on a stale source; and the static subcommand / metric /
+# zvol-clone contract holds.
 - name: Verify
   hosts: all
   become: true
@@ -94,6 +96,77 @@
         fail_msg: "restic_offsite.prom missing expected metrics on success"
         success_msg: "restic_offsite.prom emits all run metrics on success"
 
+    - name: Assert the backup/prune metric split is emitted
+      ansible.builtin.assert:
+        that:
+          - "'restic_offsite_last_backup_success 1' in (prom_ok.content | b64decode)"
+          - "'restic_offsite_last_backup_timestamp_seconds ' in (prom_ok.content | b64decode)"
+          - "'restic_offsite_last_prune_success 1' in (prom_ok.content | b64decode)"
+          - "'restic_offsite_retention_blocked 0' in (prom_ok.content | b64decode)"
+          - "'restic_offsite_retention_pending_removals ' in (prom_ok.content | b64decode)"
+        fail_msg: >-
+          restic_offsite.prom does not separate the backup result from the
+          retention result — a refused prune would read as a failed upload.
+        success_msg: "restic_offsite.prom reports backup and retention outcomes separately"
+
+    # ALREADY-UPLOADED short-circuit: the primary trigger (the archive job's
+    # OnSuccess=) and the fallback timer both fire every night, so a second run
+    # against the SAME source generation must skip rather than repeat a full
+    # backup + forget --prune. Asserted behaviourally: re-run now, expect rc=0,
+    # the already-uploaded log line, and NO additional restic snapshot.
+    - name: Count restic snapshots before the duplicate run
+      ansible.builtin.shell: |
+        set -o pipefail
+        set -a; . /etc/restic-offsite/env; set +a
+        restic snapshots --json | grep -c '"short_id"'
+      args:
+        executable: /bin/bash
+      register: restic_offsite_snaps_before
+      changed_when: false
+
+    - name: Re-run restic-offsitectl run against the same source generation
+      ansible.builtin.shell: |
+        set -a; . /etc/restic-offsite/env; set +a
+        restic-offsitectl run
+      args:
+        executable: /bin/bash
+      register: restic_offsite_duplicate_run
+      changed_when: false
+
+    - name: Count restic snapshots after the duplicate run
+      ansible.builtin.shell: |
+        set -o pipefail
+        set -a; . /etc/restic-offsite/env; set +a
+        restic snapshots --json | grep -c '"short_id"'
+      args:
+        executable: /bin/bash
+      register: restic_offsite_snaps_after
+      changed_when: false
+
+    - name: Assert the duplicate run skipped instead of re-uploading
+      ansible.builtin.assert:
+        that:
+          - restic_offsite_duplicate_run.rc == 0
+          - restic_offsite_duplicate_run.stdout is search('already-uploaded')
+          - restic_offsite_snaps_after.stdout | int == restic_offsite_snaps_before.stdout | int
+        fail_msg: >-
+          A second run against the same source generation did not short-circuit
+          (snapshots {{ restic_offsite_snaps_before.stdout }} ->
+          {{ restic_offsite_snaps_after.stdout }}) — the nightly job is running twice.
+        success_msg: "A second run against the same source generation skips (already-uploaded)"
+
+    - name: Assert --force overrides the already-uploaded skip
+      ansible.builtin.shell: |
+        set -a; . /etc/restic-offsite/env; set +a
+        restic-offsitectl run --force
+      args:
+        executable: /bin/bash
+      register: restic_offsite_forced_run
+      changed_when: false
+      failed_when: >-
+        restic_offsite_forced_run.rc != 0
+        or restic_offsite_forced_run.stdout is search('already-uploaded')
+
     # RESTORE round-trip: restore the appdata source (bind mode backs it up at
     # BIND_ROOT/appdata, which cmd_restore's --include prefix matches) into a temp
     # target and assert the seeded payload comes back byte-for-byte.
@@ -139,6 +212,32 @@
           - "'restic_offsite_last_verify_timestamp_seconds ' in (prom_verify.content | b64decode)"
         fail_msg: "restic-offsitectl verify did not record restic_offsite_last_verify_success 1"
         success_msg: "restic-offsitectl verify records success=1 in its .prom"
+
+    # ROTATING deep verify: the pack-group cursor is persisted (not derived from
+    # the calendar), so consecutive runs read group 1 then group 2 and a failed
+    # week is retried instead of skipped for a whole cycle.
+    - name: Run two rotating deep verifies
+      ansible.builtin.shell: |
+        set -a; . /etc/restic-offsite/env; set +a
+        restic-offsitectl verify --auto-subset
+        grep '^restic_offsite_verify_group ' /var/lib/node_exporter/restic_offsite_verify.prom
+        restic-offsitectl verify --auto-subset
+        grep '^restic_offsite_verify_group ' /var/lib/node_exporter/restic_offsite_verify.prom
+      args:
+        executable: /bin/bash
+      register: restic_offsite_rotation
+      changed_when: false
+
+    - name: Assert the deep-verify cursor advances and is persisted
+      ansible.builtin.assert:
+        that:
+          - restic_offsite_rotation.stdout is search('read-data-subset=1/12')
+          - restic_offsite_rotation.stdout is search('read-data-subset=2/12')
+          - restic_offsite_rotation.stdout is search('restic_offsite_verify_group 2')
+        fail_msg: >-
+          The rotating deep verify did not advance its persisted group cursor —
+          a failed week would be skipped for a full cycle.
+        success_msg: "The rotating deep verify advances a persisted group cursor"
 
     # FRESHNESS-GUARD abort: age the appdata source's snapshot into the past so
     # its parsed timestamp exceeds the max age; a run must abort with success=0

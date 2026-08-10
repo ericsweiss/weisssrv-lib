@@ -12,10 +12,12 @@ qol_packages:
   - ripgrep
   - fd-find
 
-# Oh My Zsh pinned commit — the framework clone is checked out at this commit
-# (no release tags upstream; pin for reproducibility).
-# Update by checking: https://github.com/ohmyzsh/ohmyzsh/commits/master
+# Upstream pins. Oh My Zsh publishes no release tags, so the clone is pinned to
+# a commit (https://github.com/ohmyzsh/ohmyzsh/commits/master); Vundle is tagged.
+# Both are role defaults so a consumer can carry them alongside its other
+# version pins and have them reported by its version-check tooling.
 qol_omz_commit: "061f773dd356df52a8bccd5e73377c012f97ef14"
+qol_vundle_version: v0.10.2
 
 qol_omz_theme: risto
 # Only OMZ-bundled plugins are supported: the role templates the plugins=()
@@ -36,8 +38,6 @@ qol_omz_plugins:
   - terraform
   - tmux
   - vscode
-
-qol_vundle_version: v0.10.2
 
 qol_nvim_plugins:
   - tpope/vim-fugitive

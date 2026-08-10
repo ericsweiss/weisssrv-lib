@@ -1,12 +1,10 @@
 ---
-# Mount ZFS zvols attached as SCSI devices by the proxmox_vm role
+# Mount block devices attached to the guest as extra SCSI disks.
 #
-# IMPORTANT: Linux device naming (/dev/sdX) is NOT deterministic!
-# We use /dev/disk/by-id/scsi-* symlinks which are stable across reboots.
-# QEMU creates predictable IDs: scsi-0QEMU_QEMU_HARDDISK_drive-scsi{N}
-# scsi0 is the root disk, so additional disks start at scsi1 (index 0 -> scsi1)
-#
-# Input: zvol_mount_disks - list of dicts with name, mount_point, fstype
+# Input: zvol_mount_disks — dicts of name, mount_point, fstype, scsi_slot.
+# /dev/sdX is NOT stable across reboots, so devices are addressed through
+# zvol_mount_device_id_prefix + the slot. Slot 0 is the root disk, so extra
+# disks start at 1 (which is also what the idx + 1 fallback produces).
 
 - name: Reset zvol_mount_disk_devices for this invocation
   ansible.builtin.set_fact:

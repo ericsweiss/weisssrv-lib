@@ -36,13 +36,27 @@
     - apt_signed_repo_when
     - apt_signed_repo_install_gnupg
 
+# Root-only staging area. Verify and dearmor are separate SSH invocations, so
+# the key must sit somewhere no other local user can substitute it in between.
+- name: Ensure the key staging directory exists
+  ansible.builtin.file:
+    path: "{{ apt_signed_repo_stage_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when:
+    - apt_signed_repo_when
+    - not (apt_signed_repo_keyring.stat.exists | default(false))
+
 - name: Download signing key
   ansible.builtin.get_url:
     url: "{{ apt_signed_repo_key_url }}"
     dest: "{{ apt_signed_repo_tmp_key }}"
-    mode: "0644"
-    # Always fetch fresh: recovers from a stale file left by a failed verify and
-    # overwrites any pre-seeded file at the predictable staging path.
+    owner: root
+    group: root
+    mode: "0600"
+    # Always fetch fresh, recovering from a stale file left by a failed verify.
     force: true
   when:
     - apt_signed_repo_when
@@ -115,9 +129,9 @@
     - apt_signed_repo_when
     - apt_signed_repo_keyring_mode | length > 0
 
-- name: Clean up downloaded signing key
+- name: Clean up the key staging directory
   ansible.builtin.file:
-    path: "{{ apt_signed_repo_tmp_key }}"
+    path: "{{ apt_signed_repo_stage_dir }}"
     state: absent
   when:
     - apt_signed_repo_when

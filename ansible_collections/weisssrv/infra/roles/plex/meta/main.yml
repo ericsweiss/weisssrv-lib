@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  role_name: plex
+  namespace: weisssrv
+  author: Eric Weiss
+  description: Plex Media Server with GPU transcoding and a custom-certificate hook
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+
+# Ordering is the playbook's job, so the role stays unit-testable in isolation.
+# A real deploy runs a base role (networking, packages) first, and the guest
+# itself is created by proxmox_lxc with its bind mounts and GPU devices.
+dependencies: []

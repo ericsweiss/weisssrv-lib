@@ -57,24 +57,29 @@
       }}
   tags: [proxmox_ha_replication]
 
-- name: Build list of desired job IDs for this node
+# The enabled jobs sourced from this node, selected once and reused by every
+# pass below. `enabled` defaults to true, so the two arms are "explicitly
+# enabled" plus "no enabled key".
+- name: Select the enabled jobs sourced from this node
   ansible.builtin.set_fact:
-    # Collect job IDs where enabled=true OR enabled is not defined (defaults to true)
-    proxmox_ha_desired_job_ids: >-
+    proxmox_ha_desired_jobs: >-
       {{
         (proxmox_ha_replication_jobs | default([])
           | selectattr('source_node', 'equalto', inventory_hostname)
           | selectattr('enabled', 'defined')
           | selectattr('enabled')
-          | map(attribute='id')
           | list)
         +
         (proxmox_ha_replication_jobs | default([])
           | selectattr('source_node', 'equalto', inventory_hostname)
           | rejectattr('enabled', 'defined')
-          | map(attribute='id')
           | list)
       }}
+  tags: [proxmox_ha_replication]
+
+- name: Build list of desired job IDs for this node
+  ansible.builtin.set_fact:
+    proxmox_ha_desired_job_ids: "{{ proxmox_ha_desired_jobs | map(attribute='id') | list }}"
   tags: [proxmox_ha_replication]
 
 # Get local VMIDs early - needed for both job creation (source drift skip) and later detection
@@ -96,9 +101,9 @@
     proxmox_ha_local_vmids: "{{ proxmox_ha_local_vmids_raw.stdout_lines | default([]) | map('trim') | select() | list }}"
   tags: [proxmox_ha_replication]
 
-# Detect jobs with target drift (job exists but targets wrong node)
-# These need to be deleted and recreated since pvesr update can't change target
-- name: Check for target drift in existing jobs
+# A job that targets the wrong node must be deleted and recreated — `pvesr
+# update` cannot change a job's target.
+- name: Initialize target-drift tracking
   ansible.builtin.set_fact:
     proxmox_ha_drifted_job_ids: []
   tags: [proxmox_ha_replication]
@@ -106,23 +111,11 @@
 - name: Detect target drift for each desired job
   vars:
     _vmid: "{{ item.id.split('-')[0] }}"
-    # Desired vs live target SETS for this job's VMID. Proxmox reassigns
-    # job-ID<->target pairings when a guest migrates (IDs permute while the
-    # target set stays intact), so a per-ID mismatch is only real drift when
-    # the sets differ — otherwise delete+recreate would force a full ZFS
-    # resync per touched target for nothing.
+    # Desired vs live target SETS for this job's VMID: a per-ID mismatch is
+    # only real drift when the sets differ (see the file header).
     _desired_vmid_targets: >-
       {{
-        ((proxmox_ha_replication_jobs | default([])
-          | selectattr('source_node', 'equalto', inventory_hostname)
-          | selectattr('enabled', 'defined')
-          | selectattr('enabled')
-          | list)
-         +
-         (proxmox_ha_replication_jobs | default([])
-          | selectattr('source_node', 'equalto', inventory_hostname)
-          | rejectattr('enabled', 'defined')
-          | list))
+        proxmox_ha_desired_jobs
         | selectattr('id', 'match', _vmid ~ '-')
         | map(attribute='target_node') | sort | list
       }}
@@ -169,7 +162,6 @@
   when: proxmox_ha_drifted_job_ids | length > 0
   tags: [proxmox_ha_replication]
 
-# Delete jobs with target drift (must delete before recreate since pvesr update can't change target)
 - name: Delete replication jobs with target drift
   ansible.builtin.command: pvesr delete {{ item }}
   loop: "{{ proxmox_ha_drifted_job_ids | default([]) }}"
@@ -238,14 +230,9 @@
     - "'does not exist' not in proxmox_ha_source_drift_delete_result.stderr | default('')"
   tags: [proxmox_ha_replication]
 
-# Create storage replication jobs (includes new jobs AND jobs corrected for target drift)
-# IMPORTANT: Only create jobs if the VM is actually on this node (proxmox_ha_local_vmids check).
-# If VM has migrated via HA, jobs must be created from the NEW source node, not the configured one.
-#
-# Create conditions (any of these triggers creation):
-# 1. Job doesn't exist anywhere in the cluster
-# 2. Job had target drift and was deleted (needs recreation)
-# 3. Job had source drift and was deleted (needs recreation on new source)
+# Creates jobs that are absent cluster-wide plus the ones the drift passes above
+# just deleted. Gated on the guest residing here: `pvesr create-local-job` can
+# only be run from the node the guest is on.
 - name: Create storage replication jobs
   ansible.builtin.command: >-
     pvesr create-local-job {{ item.id }} {{ item.target_node }}
@@ -327,16 +314,10 @@
     - "'does not exist' not in proxmox_ha_replication_job_remove_result.stderr | default('')"
   tags: [proxmox_ha_replication]
 
-# Clean up orphaned jobs that exist on this node but are not in the desired config
-# This handles migration from single-target to multi-target replication
-#
-# IMPORTANT: We must only consider jobs that ORIGINATE from this node as potential orphans.
-# The `pvesr list` command returns ALL cluster-wide jobs, but each node should only
-# manage jobs where it is the source_node.
+# `pvesr list` returns ALL cluster-wide jobs, but a node may only manage the
+# ones it sources — so orphan detection considers only those.
 - name: Build list of current job IDs originating from this node
   ansible.builtin.set_fact:
-    # Filter proxmox_ha_current_replication_jobs to only those where this node is the source
-    # Each job in pvesr list has a 'source' field with the source node name
     proxmox_ha_current_local_job_ids: >-
       {{
         proxmox_ha_current_replication_jobs | default([])
@@ -364,21 +345,13 @@
   when: proxmox_ha_orphaned_job_ids | length > 0
   tags: [proxmox_ha_replication]
 
-# Note: Orphaned job cleanup is intentionally NOT automatic.
-# This prevents accidental deletion when config is incomplete.
-# To clean up orphaned jobs, manually run: pvesr delete <job_id>
+# Orphan cleanup stays manual on purpose: an incomplete config would otherwise
+# delete jobs nobody has codified yet.
 
-# SOURCE DRIFT DETECTION
-# Detect when VMs have migrated to a different node than where their replication
-# jobs are configured. This happens when HA fails over a VM but the config
-# still points to the old source node.
-#
-# For each job configured for this node, check if the VMID actually resides here.
-# If the VM is NOT on this node, the jobs can't run and need config update.
-# (proxmox_ha_local_vmids was already collected earlier for job creation filtering)
-
-# Extract VMID from job ID (format: "VMID-N" e.g., "150-0" -> "150")
-- name: Check for source drift (VM not on configured source node)
+# A job configured here whose guest lives elsewhere (post-failover/migration)
+# cannot run — report it so the inventory or the guest gets moved back. Job IDs
+# are "<VMID>-<n>", so the VMID is the part before the first dash.
+- name: Initialize migrated-guest reporting
   ansible.builtin.set_fact:
     proxmox_ha_source_drift_jobs: []
   tags: [proxmox_ha_replication]
@@ -416,10 +389,10 @@
 
       ACTION REQUIRED:
       1. Determine where VMID(s) {{ proxmox_ha_source_drift_jobs | map(attribute='vmid') | unique | join(', ') }} currently reside
-      2. Update proxmox_ha_replication_jobs in group_vars/all.yml:
+      2. In the inventory's proxmox_ha_replication_jobs:
          - Change source_node to the node where the VM currently runs
          - OR migrate the VM back to the configured source_node
-      3. Run task proxmox:ha again to reconcile
+      3. Re-run this role to reconcile
 
       NOTE: Replication jobs can only be created/managed on the node where the VM resides.
   when: proxmox_ha_source_drift_jobs | length > 0

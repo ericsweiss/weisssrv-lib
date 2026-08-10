@@ -1,18 +1,15 @@
-# Role: zvol_mount
+# weisssrv.infra.zvol_mount
 
-Mounts ZFS zvol-backed block devices inside Proxmox guests via UUID-based
-fstab entries. Used by guests that need persistent ZFS-backed storage
-attached as a virtual disk (k3s VMs that host hostPath PVs, the GitLab VM's
-repo storage, the Authentik/Mealie Postgres zvols).
+Mounts zvol-backed block devices inside a guest via UUID-based fstab entries —
+for any guest that needs persistent host-side storage attached as a virtual
+disk (database volumes, repository storage, hostPath PV backing).
 
-Linux device naming (`/dev/sdX`) is not deterministic across reboots — this
-role discovers each disk by its stable QEMU SCSI ID
-(`/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi{N}`), formats once
-(only when no filesystem exists) using `lsblk -no FSTYPE` to detect prior
-formatting, then writes `UUID=<id>` entries to `/etc/fstab` so mounts
-survive device renumbering. The role also detects + corrects disks mounted
-at the wrong location (controlled by `zvol_mount_fix_wrong_locations`,
-default `true`).
+`/dev/sdX` is not deterministic across reboots, so the role addresses each disk
+by `zvol_mount_device_id_prefix` + its SCSI slot, formats it once (only when
+`lsblk -no FSTYPE` shows no filesystem), then writes `UUID=<id>` entries to
+`/etc/fstab` so mounts survive device renumbering. It also detects and corrects
+disks mounted at the wrong location (`zvol_mount_fix_wrong_locations`, default
+`true`).
 
 ## Inputs
 
@@ -22,15 +19,15 @@ populated alongside `proxmox_vm_additional_disks` in `host_vars`:
 ```yaml
 # Per-host: declared in inventory (host_vars), consumed here.
 zvol_mount_disks:
-  - name: authentik-postgres
+  - name: app-postgres
     mount_point: /mnt/postgres-data
     fstype: ext4
-    # scsi_slot: 1   # optional; defaults to loop index + 1 (so first entry
-                     # maps to scsi1, second to scsi2, ...). Set explicitly
-                     # when VM hardware edits could reorder slots.
-  - name: mealie-postgres
-    mount_point: /mnt/mealie-postgres-data
+    scsi_slot: 1     # optional; defaults to loop index + 1. Set it explicitly
+                     # whenever VM hardware edits could reorder slots.
+  - name: app-data
+    mount_point: /mnt/app-data
     fstype: ext4
+    scsi_slot: 2
 ```
 
 Per entry:

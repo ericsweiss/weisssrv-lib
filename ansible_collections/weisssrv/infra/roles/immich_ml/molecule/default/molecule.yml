@@ -1,0 +1,26 @@
+---
+# Render/contract scenario: immich_ml_skip_install skips the GPU guard, the
+# Docker install and all service management, so the compose file and the
+# systemd unit are rendered and asserted without a container runtime or a GPU
+# device.
+platforms:
+  - name: immich-ml-test
+    image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        timezone: America/Los_Angeles
+        # The site-wide release pin immich_ml_version defaults to.
+        immich_version: v3.0.3

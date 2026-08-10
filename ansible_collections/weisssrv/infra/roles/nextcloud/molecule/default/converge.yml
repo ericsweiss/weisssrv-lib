@@ -1,0 +1,10 @@
+---
+# Converge: render the templates + manage the directories/units. The live Docker
+# stack and occ are skipped via nextcloud_skip_install (set in molecule.yml).
+- name: Converge
+  hosts: all
+  become: true
+  tasks:
+    - name: Apply the nextcloud role
+      ansible.builtin.include_role:
+        name: weisssrv.infra.nextcloud

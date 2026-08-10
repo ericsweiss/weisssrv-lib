@@ -11,6 +11,14 @@ certificate-verified STARTTLS to a central relay.
 - `/etc/mailname`
 - `sasl_passwd` (+ `postmap`, mode `0600`) and `/etc/aliases`
 - optional `virtual` alias table, removed again when the variable goes away
+- repair of the **compiled** maps (`tasks/repair-compiled-maps.yml`, run before
+  postfix starts): both sources are templated with `notify:`, so a run that dies
+  before `flush_handlers` leaves a correct source next to a stale `.db` — and
+  postfix reads the `.db`. The checks compare the compiled value against the
+  configured one, because a `.db` serving a retired alias target or a revoked
+  credential still satisfies a "resolves to something" test. `smtp_relay`
+  includes the same file (`tasks_from: repair-compiled-maps.yml`) with
+  `postfix_null_client_maps_root_alias` set to its own root target.
 
 ## Variables
 

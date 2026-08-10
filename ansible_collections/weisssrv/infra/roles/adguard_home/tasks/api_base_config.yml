@@ -109,9 +109,8 @@
     success_msg: "AdGuard DNS configuration applied"
   when: not ansible_check_mode
 
-# Check if TLS certificates exist before attempting TLS configuration
-# Certificates are deployed by acme_certs role which runs AFTER adguard_home
-# On first deployment, skip TLS config; it will be configured on subsequent runs
+# acme_certs delivers the certs AFTER this role, so the TLS block self-skips on
+# a first deployment and applies on the next run.
 - name: Check if TLS certificate exists
   ansible.builtin.stat:
     path: "{{ adguard_home_cert_path }}/fullchain.pem"

@@ -46,9 +46,6 @@
         fail_msg: ".zshrc missing Oh My Zsh configuration"
         success_msg: ".zshrc has Oh My Zsh configuration"
 
-    # Verify specific plugins are configured in .zshrc
-    # Note: The molecule test configures these plugins but they may not all be installed
-    # We verify the plugins array is present and has the expected format
     - name: Verify .zshrc has plugins array configured
       ansible.builtin.assert:
         that:

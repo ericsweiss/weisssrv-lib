@@ -101,6 +101,23 @@ provisioner:
           - /mnt/tank/backups/apps/home-assistant
         nas_storage_backup_apps_base: /mnt/tank/backups/apps
         nas_storage_backup_artifact_metrics_enabled: true
+        # Site data (default []). verify.yml drives the collector against these:
+        # the gitlab entry pins the sidecar-vs-artefact split (the pattern must
+        # exclude gitlab.rb/gitlab-secrets.json) and the companion metrics.
+        nas_storage_backup_artifact_apps:
+          - name: gitlab
+            pattern: "*_gitlab_backup.tar"
+            companions:
+              - "gitlab-secrets.json"
+          - name: home-assistant
+            pattern: "Automatic_backup_*.tar"
+          - name: pve-cluster
+            pattern: "etc-pve-*.tar.gz"
+        # /etc/pve archive. The container has no pmxcfs, so verify points the
+        # script at a synthetic SRC to exercise the real tar/validate/retention
+        # path (and asserts the absent-source arm fails loudly).
+        nas_storage_pve_cluster_backup_enabled: true
+        nas_storage_pve_cluster_backup_keep: 2
         # Site data (default []), but verify.yml asserts the per-app dirs are
         # created with the squash owner — the scenario supplies its own list.
         nas_storage_appdata_dirs:

@@ -2,3 +2,4 @@
 # callback records the raw failure, and CI's sanitize-junit step downgrades
 # EXACTLY these names. Job status is the arbiter.
 Assert the kube-vip interface exists on this server
+Validate required k3s variables

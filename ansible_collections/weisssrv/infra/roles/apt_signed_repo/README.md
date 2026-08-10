@@ -52,8 +52,18 @@ would regress that behavior.
 | `apt_signed_repo_when` | Extra gate threaded through every task (e.g. a skip flag) | no (default `true`) |
 | `apt_signed_repo_install_gnupg` | Install gnupg on every run (the existing-keyring re-verify also needs gpg) when nothing else guarantees it | no (default `false`) |
 | `apt_signed_repo_keyring_mode` | Explicit keyring mode; empty leaves gpg's default | no (default `""`) |
-| `apt_signed_repo_tmp_key` | Staging path for the download | no (default `/tmp/<keyring-basename>.download`) |
+| `apt_signed_repo_stage_dir` | Root-only directory the key is staged in | no (default `/run/apt-signed-repo`) |
+| `apt_signed_repo_tmp_key` | Staging path for the download | no (default `<stage_dir>/<keyring-basename>.download`) |
 | `apt_signed_repo_update_cache` | Refresh the apt cache when the repo is added; set `false` for hermetic tests/staged rollouts | no (default `true`) |
+
+## Staging path
+
+Fingerprint verification and dearmor are separate SSH invocations against the
+downloaded file, so anything that can rewrite that file in between chooses which
+key apt trusts. The role therefore stages into a root-owned `0700` directory
+under a non-world-writable parent, and removes it after dearmor. Override
+`apt_signed_repo_stage_dir` only with a path holding the same property —
+`/tmp/...` does not.
 
 ## See also
 

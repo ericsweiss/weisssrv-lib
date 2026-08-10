@@ -97,12 +97,10 @@
   loop_control:
     label: "{{ item.interface }}"
 
-# Compare-then-set against the feature table, not a blind `ethtool -K`: a
-# renamed interface, a typo'd feature or a driver that rejects the change must
-# fail the play instead of leaving the offload silently on — this role exists to
-# keep NICs out of a driver deadlock/TX hang. The `ethtool -k` diff is what
-# reports `changed`; ethtool itself is silent on both a real apply and a no-op,
-# and exits non-zero when it could not apply the request.
+# Compare-then-set so `changed` reflects a real kernel transition (ethtool is
+# silent on both a real apply and a no-op). Failures are NOT raised here: the
+# read-back assert below owns the diagnosis, and it is also the only thing that
+# catches an exit-0 apply the driver silently ignored.
 - name: Apply ethtool overrides now (compare-then-set)
   ansible.builtin.shell: |
     set -euo pipefail
@@ -117,21 +115,23 @@
     label: "{{ item.0.interface }} {{ item.1.feature }}={{ item.1.value }}"
   register: nic_tuning_ethtool_apply
   changed_when: "'CHANGED' in nic_tuning_ethtool_apply.stdout"
+  failed_when: false
 
-# active-backup bond MAC-flap guard
-# Force all_slaves_active=0 on active-backup bonds so the inactive backup leg's
-# reflected frames are dropped instead of poisoning the bridge FDB. THREE layers,
-# because the value is really decided at module-load, not by the interfaces file:
-#   1. /etc/modprobe.d/bonding.conf — the ACTUAL boot-time control. The bonding
-#      module option sets every bond's default when the module loads (before
-#      ifupdown2 runs). A stale `all_slaves_active=1` here is why the guard does
-#      not survive a reboot on its own: ifupdown2 does NOT honor the
-#      `bond-all_slaves_active` interfaces stanza, so that rewrite left the kernel
-#      value at the module default (1) after every boot.
-#   2. /etc/network/interfaces stanza (surgical, no reload) — belt-and-suspenders
-#      for any ifupdown2 that does honor it; harmless where it does not.
-#   3. runtime sysfs — applies the fix live now, without a reboot.
-# See defaults/main.yml and README.md.
+# Without this the role that exists to stop a driver deadlock / TX hang can go
+# fully green with the offloads still on: the apply above swallows failures, the
+# ifup drop-in's only failure signal is a syslog line, and node_exporter's
+# ethtool collector is off by default. A renamed interface or a driver that
+# refuses the feature is exactly the silent no-op this catches.
+- name: Verify the applied NIC offload overrides took effect
+  ansible.builtin.include_tasks: verify-offloads.yml
+  when:
+    - nic_tuning_verify_offloads | bool
+    - nic_tuning_overrides | length > 0
+
+# active-backup bond MAC-flap guard, in three layers because the value is really
+# decided at module load: /etc/modprobe.d/bonding.conf (the boot-time authority —
+# ifupdown2 ignores the interfaces stanza), the interfaces stanza itself, and
+# runtime sysfs for the live fix. Rationale: README.
 - name: Stat /etc/network/interfaces for the bond all_slaves_active guard
   ansible.builtin.stat:
     path: /etc/network/interfaces
@@ -158,13 +158,10 @@
   when: nic_tuning_bond_asa_guard | bool
 
 - name: Force all_slaves_active=0 in the bonding module options (boot-time control)
-  # Surgically flip a stale `all_slaves_active=1` to `=0`, preserving fail_over_mac
-  # and any other module options. This is what actually decides the value at boot:
-  # the module default applies when bonding loads, before ifupdown2 runs. Only
-  # touches an existing file — a host with no bonding.conf already gets the kernel
-  # default (0), so there is nothing to force. Takes effect on the next module
-  # load (reboot); the runtime task below applies it live now. No initramfs
-  # rebuild needed: bonding loads at network-up from the live /etc/modprobe.d.
+  # Surgical flip of a stale `all_slaves_active=1`, preserving fail_over_mac and
+  # any other module options. Only touches an existing file — without one the
+  # module default is already 0. Takes effect at the next module load; no
+  # initramfs rebuild, since bonding loads at network-up from /etc/modprobe.d.
   ansible.builtin.replace:
     path: /etc/modprobe.d/bonding.conf
     regexp: '(\ball_slaves_active=)1\b'

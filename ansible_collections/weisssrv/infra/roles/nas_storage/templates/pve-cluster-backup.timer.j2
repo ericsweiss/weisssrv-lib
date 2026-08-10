@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Nightly /etc/pve cluster-identity archive
+
+[Timer]
+# Default 02:15 — well before the archive replication picks the landing zone up,
+# and outside the usual overnight vzdump slice.
+OnCalendar={{ nas_storage_pve_cluster_backup_schedule }}
+RandomizedDelaySec={{ nas_storage_pve_cluster_backup_random_delay }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

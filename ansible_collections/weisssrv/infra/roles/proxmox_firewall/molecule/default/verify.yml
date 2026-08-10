@@ -28,6 +28,14 @@
       ansible.builtin.set_fact:
         cluster_fw_text: "{{ cluster_fw_content.content | b64decode }}"
 
+    # Index cluster.fw by section header ("group sg-dns", "IPSET pve_hosts", …)
+    # so a rule or address is asserted to be in the RIGHT section: a bare
+    # substring test passes even when every rule inside a group is gone.
+    - name: Index cluster.fw sections by header
+      ansible.builtin.set_fact:
+        cluster_fw_sections: >-
+          {{ dict(cluster_fw_text | regex_findall('^\[([^\]]+)\]\n([\s\S]*?)(?=^\[|\Z)', multiline=True)) }}
+
     - name: Cluster.fw has [OPTIONS] + default policies + built-in IPSets
       ansible.builtin.assert:
         that:
@@ -48,43 +56,62 @@
           [ALIASES] must carry the alias derived from dns-01's firewall_alias
           and the non-host entry from proxmox_firewall_extra_aliases.
 
-    - name: Cluster.fw renders security groups
+    # Role-owned groups: assert the RULE LINES, not just the headers. Emptying a
+    # group, or widening a source to 0.0.0.0/0, must fail here.
+    - name: Cluster.fw role-owned groups carry their rules
+      vars:
+        sg_dns: "{{ cluster_fw_sections.get('group sg-dns', '') }}"
+        sg_host_admin: "{{ cluster_fw_sections.get('group sg-host-admin', '') }}"
+        sg_metrics: "{{ cluster_fw_sections.get('group sg-metrics', '') }}"
+        sg_ingress_pub: "{{ cluster_fw_sections.get('group sg-k3s-ingress-pub', '') }}"
       ansible.builtin.assert:
         that:
-          - "'[group sg-host-admin]' in cluster_fw_text"
-          - "'[group sg-pve-cluster]' in cluster_fw_text"
-          - "'[group sg-dns]' in cluster_fw_text"
-          - "'[group sg-vm-admin]' in cluster_fw_text"
-          - "'[group sg-smtp-relay]' in cluster_fw_text"
-
-    # The groups above are literal in cluster.fw.j2; the ones below come from
-    # the proxmox_firewall_security_groups loop, whose sg-immich-ml entry
-    # supplies `rules` as a Jinja expression that must evaluate to a LIST — a
-    # string would iterate character-by-character into the file.
-    - name: Cluster.fw renders the default (example) security-group set
-      ansible.builtin.assert:
-        that:
-          - "'[group sg-gitlab]' in cluster_fw_text"
-          - "'[group sg-nextcloud]' in cluster_fw_text"
-          - "'[group sg-immich]' in cluster_fw_text"
-          - "'[group sg-immich-ml]' in cluster_fw_text"
-          - "'[group sg-haos]' in cluster_fw_text"
-          - "'[group sg-plex]' in cluster_fw_text"
-          - "'[group sg-windows]' in cluster_fw_text"
-          # Derived from proxmox_firewall_immich_ml_clients (molecule.yml).
-          - >-
-            'IN ACCEPT -source 192.168.0.157 -p tcp -dport 3003 -log nolog'
-            in cluster_fw_text
+          # Admin access is source-scoped to the two admin sets, never open.
+          - "'IN ACCEPT -source +dc/admin_ts -p tcp -dport 8006 -log nolog' in sg_host_admin"
+          - "'IN ACCEPT -source +dc/admin_lan -p tcp -dport 8006 -log nolog' in sg_host_admin"
+          - "'IN ACCEPT -source +dc/admin_ts -p tcp -dport 22 -log nolog' in sg_host_admin"
+          - "'IN ACCEPT -source +dc/admin_lan -p tcp -dport 22 -log nolog' in sg_host_admin"
+          - "'IN ACCEPT -p tcp -dport 22 -log nolog' not in sg_host_admin"
+          # sg-dns: DoT, the resolver ports, and the admin API — including the
+          # explicit k3s_nodes:3000 rule the in-cluster exporter scrapes, which
+          # must not depend on admin_lan happening to cover the cluster nodes.
+          - "'IN ACCEPT -source +dc/admin_lan -p udp -dport 853 -log nolog' in sg_dns"
+          - "'IN ACCEPT -source +dc/admin_lan -p udp -dport 53 -log nolog' in sg_dns"
+          - "'IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 3000 -log nolog' in sg_dns"
+          - "'IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 443 -log nolog' in sg_dns"
+          # sg-metrics scrape targets stay scoped to the cluster nodes.
+          - "'IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9100 -log nolog' in sg_metrics"
+          - "'IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9101 -log nolog' in sg_metrics"
+          - "'IN ACCEPT -source +dc/core-cluster -p tcp -dport 31100 -log nolog' in sg_metrics"
+          # The WAN WireGuard rule is -dest-scoped to the VIP, so the node's own
+          # :51820/udp (flannel) is never opened to the WAN.
+          - "'IN ACCEPT -dest 192.168.0.99 -p udp -dport 51820 -log nolog' in sg_ingress_pub"
+          - "'IN ACCEPT -p udp -dport 51820 -log nolog' not in sg_ingress_pub"
         fail_msg: >-
-          proxmox_firewall_security_groups did not render its 7 example groups,
-          or sg-immich-ml's derived rules expression did not evaluate to a list
-          of rule lines.
+          A role-owned security group lost or widened a rule — check the
+          [group …] blocks in templates/cluster.fw.j2.
 
-    # Override case: the same loop fed a site's own list must emit that group
-    # and NOTHING from the example set, while the role-owned literal groups
-    # (sg-dns et al.) are untouched. Rendered standalone because the converge
-    # already committed the default set to cluster.fw.
-    - name: Render cluster.fw with a site-supplied security-group list
+    # Per-application groups come from proxmox_firewall_security_groups
+    # (molecule.yml supplies a stand-in site list). One entry's `rules` is an
+    # expression that must evaluate to a LIST — a string would iterate
+    # character-by-character into the file.
+    - name: Cluster.fw renders the supplied per-application groups verbatim
+      vars:
+        sg_web: "{{ cluster_fw_sections.get('group sg-example-web', '') }}"
+        sg_authless: "{{ cluster_fw_sections.get('group sg-example-authless', '') }}"
+      ansible.builtin.assert:
+        that:
+          - "'# ingress -> app TLS' in sg_web"
+          - "'IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 443 -log nolog' in sg_web"
+          - "'IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog' in sg_web"
+          - "'IN ACCEPT -source 192.168.0.157 -p tcp -dport 3003 -log nolog' in sg_authless"
+        fail_msg: >-
+          proxmox_firewall_security_groups did not render its groups verbatim,
+          or a `rules` expression did not evaluate to a list of rule lines.
+
+    # Default case: with no site list, the role must render NO per-application
+    # group — never another deployment's rules — while its own groups stand.
+    - name: Render cluster.fw with the default (empty) security-group list
       vars:
         # Role templates dir, derived without '../' (playbook_dir is
         # <role>/molecule/default).
@@ -93,51 +120,52 @@
         proxmox_firewall_admin_ts_cidrs: ["100.64.0.0/10"]
         proxmox_firewall_smb_client_cidrs: ["192.168.0.0/24"]
         proxmox_firewall_cluster_rules: []
-        proxmox_firewall_security_groups:
-          - name: sg-custom-app
-            rules:
-              - "# site-owned group"
-              - "IN ACCEPT -source +dc/admin_lan -p tcp -dport 9999 -log nolog"
+        proxmox_firewall_security_groups: []
       ansible.builtin.template:
         src: "{{ firewall_role_templates }}/cluster.fw.j2"
-        dest: /tmp/cluster.fw.custom-groups
+        dest: /tmp/cluster.fw.no-app-groups
         mode: "0644"
 
-    - name: Read the site-supplied render
+    - name: Read the default-list render
       ansible.builtin.slurp:
-        src: /tmp/cluster.fw.custom-groups
-      register: cluster_fw_custom
+        src: /tmp/cluster.fw.no-app-groups
+      register: cluster_fw_default
 
-    - name: Assert the site list replaces the example set wholesale
+    - name: Assert an empty list emits no per-application group
       vars:
-        custom_text: "{{ cluster_fw_custom.content | b64decode }}"
+        default_text: "{{ cluster_fw_default.content | b64decode }}"
       ansible.builtin.assert:
         that:
-          - "'[group sg-custom-app]' in custom_text"
-          - >-
-            'IN ACCEPT -source +dc/admin_lan -p tcp -dport 9999 -log nolog'
-            in custom_text
-          - "'# site-owned group' in custom_text"
-          - "'[group sg-gitlab]' not in custom_text"
-          - "'[group sg-immich-ml]' not in custom_text"
-          - "'[group sg-plex]' not in custom_text"
-          # Role-owned literal groups survive the override.
-          - "'[group sg-dns]' in custom_text"
-          - "'[group sg-host-admin]' in custom_text"
+          - "'[group sg-example-web]' not in default_text"
+          - "'[group sg-example-authless]' not in default_text"
+          # Role-owned groups are unaffected by the site list.
+          - "'[group sg-dns]' in default_text"
+          - "'[group sg-host-admin]' in default_text"
+          - "'[group sg-metrics]' in default_text"
         fail_msg: >-
           proxmox_firewall_security_groups is not the sole source of the
-          per-application groups — a site list must replace the shipped example
-          set entirely and leave the role-owned groups in place.
+          per-application groups — an empty list must emit none of them and
+          leave the role-owned groups in place.
 
-    - name: Dynamic IPSets include sample inventory IPs
+    - name: Dynamic IPSets carry each inventory IP in its own set
+      vars:
+        pve_hosts: "{{ cluster_fw_sections.get('IPSET pve_hosts', '') }}"
+        core_cluster: "{{ cluster_fw_sections.get('IPSET core-cluster', '') }}"
+        k3s_nodes: "{{ cluster_fw_sections.get('IPSET k3s_nodes', '') }}"
+        admin_lan: "{{ cluster_fw_sections.get('IPSET admin_lan', '') }}"
       ansible.builtin.assert:
         that:
-          - "'[IPSET pve_hosts]' in cluster_fw_text"
-          - "'[IPSET core-cluster]' in cluster_fw_text"
-          - "'192.168.0.102' in cluster_fw_text"   # pve-nas-01
-          - "'192.168.0.103' in cluster_fw_text"   # pve-laptop-01
-          - "'192.168.0.150' in cluster_fw_text"   # dns-01 (LXC)
-          - "'192.168.0.151' in cluster_fw_text"   # smtp-relay (LXC)
+          - "'192.168.0.102' in pve_hosts"          # pve-nas-01
+          - "'192.168.0.103' in pve_hosts"          # pve-laptop-01
+          - "'192.168.0.150' in core_cluster"       # dns-01 (LXC)
+          - "'192.168.0.151' in core_cluster"       # smtp-relay (LXC)
+          # Guests are not Proxmox hosts, and the special entry lands in k3s_nodes.
+          - "'192.168.0.150' not in pve_hosts"
+          - "'192.168.0.161' in k3s_nodes"          # API VIP (special entry)
+          - "'192.168.0.0/24' in admin_lan"
+        fail_msg: >-
+          An inventory address rendered into the wrong IPSet — check
+          firewall_ipsets / firewall_ipset_special_entries and templates/ipsets.j2.
 
     - name: Host.fw exists
       ansible.builtin.stat:
@@ -150,12 +178,25 @@
         src: "{{ host_fw }}"
       register: host_fw_content
 
-    - name: Host.fw enables firewall and references base groups (real check)
+    - name: Host.fw enables the firewall and references the right groups
+      vars:
+        host_fw_text: "{{ host_fw_content.content | b64decode }}"
       ansible.builtin.assert:
         that:
-          - "'enable: 1' in (host_fw_content.content | b64decode)"
-          - "'GROUP sg-pve-cluster' in (host_fw_content.content | b64decode)"
-          - "'GROUP sg-host-admin' in (host_fw_content.content | b64decode)"
+          - "'enable: 1' in host_fw_text"
+          - "'log_level_in: nolog' in host_fw_text"
+          - "'GROUP sg-pve-cluster' in host_fw_text"
+          - "'GROUP sg-host-admin' in host_fw_text"
+          - "'GROUP sg-metrics' in host_fw_text"
+          # proxmox_role: nas on this platform adds the file-server groups.
+          - "'GROUP sg-nfs-server' in host_fw_text"
+          - "'GROUP sg-smb-server' in host_fw_text"
+          # Egress filtering is off by default: no allowlist, no trailing DROP.
+          - "'GROUP sg-host-egress' not in host_fw_text"
+          - "'OUT DROP' not in host_fw_text"
+        fail_msg: >-
+          host.fw is missing a base group reference, or rendered the egress
+          default-deny while proxmox_firewall_egress_filtering is false.
 
     - name: Per-guest 100.fw exists
       ansible.builtin.stat:
@@ -177,16 +218,9 @@
           - "'GROUP sg-dns' in (guest_fw_content.content | b64decode)"
           - "'GROUP sg-metrics' in (guest_fw_content.content | b64decode)"
 
-    # Regression guard for the vmid-collision bug fixed in 4f596aa: the
-    # molecule platform deliberately uses vmid 100 to avoid sharing
-    # /tmp/pve-firewall-test/firewall/<vmid>.fw with dns-01 (vmid 150)
-    # and smtp-relay (vmid 151). If a future edit bumps the platform's
-    # vmid back to 150 or 151, the guest task's `delegate_to` would have
-    # both hosts writing the same file every converge, breaking
-    # idempotence AND letting one host's render overwrite another's.
-    # The check below asserts the docker platform's render is on its
-    # own file AND that dns-01's render exists on a separate file AND
-    # that the docker platform's render doesn't carry dns-01's name.
+    # Each guest must render to its OWN <vmid>.fw: the platform uses vmid 100 so
+    # it never shares a file with dns-01 (150) or smtp-relay (151), where two
+    # hosts would overwrite each other's render every converge.
     - name: Verify per-vmid file separation (vmid-collision regression guard)
       ansible.builtin.stat:
         path: "/tmp/pve-firewall-test/firewall/150.fw"
@@ -254,12 +288,10 @@
           just 'proxmox-firewall-test'. The local-connection placeholder
           hosts can't see files written via docker-exec to the container.
 
-    # Cross-play run-once guard: the second converge play recorded the value of
-    # _proxmox_firewall_cluster_done as seen BEFORE it re-included the role. It must already
-    # be true — set by the first play on groups['proxmox'][0] via delegate_facts —
-    # proving later plays read the fact from hostvars and skip re-deploying
-    # cluster.fw. (The _proxmox_firewall_pveum_done twin can't be tested here: it's only set
-    # when proxmox_firewall_skip_pveum is false, and molecule forces it true.)
+    # Cross-play run-once guard: the second converge play captured
+    # _proxmox_firewall_cluster_done BEFORE re-including the role, so it must
+    # already be true — later plays read it from hostvars and skip cluster.fw.
+    # (Its pveum twin is untestable here: molecule forces skip_pveum true.)
     - name: Read cross-play guard capture
       ansible.builtin.slurp:
         src: /tmp/pve-firewall-test/cross-play-guard.json

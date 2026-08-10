@@ -9,17 +9,17 @@
     state: present
   when: ansible_facts['os_family'] == "Debian"
 
-- name: Ensure media group exists
+- name: Ensure the shared media group exists
   ansible.builtin.group:
-    name: media
-    gid: 2000
+    name: "{{ nas_storage_media_group }}"
+    gid: "{{ nas_storage_media_gid }}"
     state: present
 
 - name: Ensure nas user exists
   ansible.builtin.user:
     name: nas
     comment: "Samba NAS user"
-    groups: media
+    groups: "{{ nas_storage_media_group }}"
     append: true
     shell: /usr/sbin/nologin
     create_home: false

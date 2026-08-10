@@ -1,0 +1,278 @@
+---
+# Verify the rendered artefacts + the config contract.
+- name: Verify
+  hosts: all
+  become: true
+  vars:
+    nextcloud_compose_file: /mnt/nextcloud-app/compose/docker-compose.yml
+    nextcloud_env_file: /mnt/nextcloud-app/compose/.env
+  tasks:
+    - name: Read the rendered compose file
+      ansible.builtin.slurp:
+        src: "{{ nextcloud_compose_file }}"
+      register: nextcloud_compose_raw
+
+    - name: Parse the compose file as YAML (structural validity)
+      ansible.builtin.set_fact:
+        nextcloud_compose_doc: "{{ nextcloud_compose_raw.content | b64decode | from_yaml }}"
+
+    - name: Assert the compose file defines every expected service
+      ansible.builtin.assert:
+        that:
+          - "'nextcloud' in nextcloud_compose_doc.services"
+          - "'nextcloud-cron' in nextcloud_compose_doc.services"
+          - "'nextcloud-db' in nextcloud_compose_doc.services"
+          - "'nextcloud-redis' in nextcloud_compose_doc.services"
+          - "'nextcloud-exporter' in nextcloud_compose_doc.services"
+        fail_msg: "compose file is missing an expected service"
+
+    - name: Assert the image tags resolved from the version pins
+      ansible.builtin.assert:
+        that:
+          - nextcloud_compose_doc.services.nextcloud.image == 'nextcloud:34.0.1-apache'
+          - nextcloud_compose_doc.services['nextcloud-db'].image == 'postgres:18.4-trixie'
+          # Redis resolves through the nextcloud_redis_version alias of redis_version.
+          - nextcloud_compose_doc.services['nextcloud-redis'].image == 'redis:8.8.0-alpine'
+          - "nextcloud_compose_doc.services['nextcloud-exporter'].image == 'ghcr.io/xperimental/nextcloud-exporter:0.9.1'"
+        fail_msg: "an image tag did not resolve from its version pin"
+
+    - name: Assert the web port is loopback-bound and the exporter is exposed
+      ansible.builtin.assert:
+        that:
+          - "'127.0.0.1:8080:80' in nextcloud_compose_doc.services.nextcloud.ports"
+          - "'9205:9205' in nextcloud_compose_doc.services['nextcloud-exporter'].ports"
+        fail_msg: "port bindings are wrong"
+
+    - name: Assert the hostnames derived from the domain inputs
+      ansible.builtin.assert:
+        that:
+          # Trusted domains: both derived hosts + the exporter's service name.
+          - "'cloud.ericsweiss.test' in nextcloud_compose_doc.services.nextcloud.environment.NEXTCLOUD_TRUSTED_DOMAINS"
+          - "'cloud.esweiss.test' in nextcloud_compose_doc.services.nextcloud.environment.NEXTCLOUD_TRUSTED_DOMAINS"
+          - "'nextcloud' in nextcloud_compose_doc.services.nextcloud.environment.NEXTCLOUD_TRUSTED_DOMAINS"
+          - nextcloud_compose_doc.services.nextcloud.environment.OVERWRITECLIURL == 'https://cloud.ericsweiss.test'
+        fail_msg: "derived hostnames did not reach the compose environment"
+
+    - name: Assert trusted proxies are only the immediate hop (no LAN range)
+      ansible.builtin.assert:
+        that:
+          # nginx resolves the real client IP and replaces XFF, so the container
+          # trusts only loopback + the compose bridge gateway.
+          - "'127.0.0.1' in nextcloud_compose_doc.services.nextcloud.environment.TRUSTED_PROXIES"
+          - "'172.28.0.0/16' in nextcloud_compose_doc.services.nextcloud.environment.TRUSTED_PROXIES"
+          # Regression guard for the XFF-spoofing fix: a LAN range or pod CIDR
+          # must never be trusted at the container level.
+          - "'192.168.0.0/24' not in nextcloud_compose_doc.services.nextcloud.environment.TRUSTED_PROXIES"
+          - "'10.42.0.0/16' not in nextcloud_compose_doc.services.nextcloud.environment.TRUSTED_PROXIES"
+        fail_msg: "container-level TRUSTED_PROXIES must be the immediate hop only"
+
+    - name: Stat the secret env file
+      ansible.builtin.stat:
+        path: "{{ nextcloud_env_file }}"
+      register: nextcloud_env_stat
+
+    - name: Assert the .env is root-only (0600)
+      ansible.builtin.assert:
+        that:
+          - nextcloud_env_stat.stat.exists
+          - nextcloud_env_stat.stat.mode == '0600'
+        fail_msg: ".env must exist with mode 0600"
+
+    - name: Read the .env
+      ansible.builtin.slurp:
+        src: "{{ nextcloud_env_file }}"
+      register: nextcloud_env_raw
+
+    - name: Assert the .env carries the interpolated secret keys (double-quoted)
+      ansible.builtin.assert:
+        that:
+          # Double-quoted so compose-go dotenv treats the value literally (no
+          # $-interpolation of a generated password).
+          - "'NEXTCLOUD_POSTGRES_PASSWORD=\"' in (nextcloud_env_raw.content | b64decode)"
+          - "'NEXTCLOUD_ADMIN_PASSWORD=\"' in (nextcloud_env_raw.content | b64decode)"
+          - "'NEXTCLOUD_SERVERINFO_TOKEN=\"' in (nextcloud_env_raw.content | b64decode)"
+
+    - name: Stat the compose systemd unit
+      ansible.builtin.stat:
+        path: /etc/systemd/system/nextcloud-compose.service
+      register: nextcloud_unit_stat
+
+    - name: Read the compose systemd unit
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/nextcloud-compose.service
+      register: nextcloud_unit_raw
+
+    - name: Assert the unit orders on the data mounts
+      ansible.builtin.assert:
+        that:
+          - nextcloud_unit_stat.stat.exists
+          - "'RequiresMountsFor=/mnt/nextcloud-app /mnt/nextcloud-postgres /mnt/nextcloud-data' in (nextcloud_unit_raw.content | b64decode)"
+
+    - name: Read the nginx site
+      ansible.builtin.slurp:
+        src: /etc/nginx/sites-available/nextcloud.conf
+      register: nextcloud_nginx_raw
+
+    - name: Assert the nginx site proxies with unlimited body size + real_ip
+      ansible.builtin.assert:
+        that:
+          - "'proxy_pass http://127.0.0.1:8080;' in (nextcloud_nginx_raw.content | b64decode)"
+          - "'client_max_body_size 0;' in (nextcloud_nginx_raw.content | b64decode)"
+          - "'server_name cloud.ericsweiss.test cloud.esweiss.test;' in (nextcloud_nginx_raw.content | b64decode)"
+          # real_ip trusts exactly the configured proxy sources, then replaces
+          # XFF with the single resolved value.
+          - "'set_real_ip_from 192.0.2.11;' in (nextcloud_nginx_raw.content | b64decode)"
+          - "'set_real_ip_from 192.0.2.12;' in (nextcloud_nginx_raw.content | b64decode)"
+          - "'real_ip_recursive on;' in (nextcloud_nginx_raw.content | b64decode)"
+          - "'proxy_set_header X-Forwarded-For $remote_addr;' in (nextcloud_nginx_raw.content | b64decode)"
+          # Regression guard: the append-the-whole-chain form must not return.
+          - "'$proxy_add_x_forwarded_for' not in (nextcloud_nginx_raw.content | b64decode)"
+          # TLS 1.3 floor: 1.2 dropped.
+          - "'ssl_protocols TLSv1.3;' in (nextcloud_nginx_raw.content | b64decode)"
+          - "'TLSv1.2' not in (nextcloud_nginx_raw.content | b64decode)"
+
+    - name: Read the backup wrapper
+      ansible.builtin.slurp:
+        src: /usr/local/sbin/nextcloud-backup-run.sh
+      register: nextcloud_backup_raw
+
+    - name: Assert the backup wrapper keeps its per-app dump logic + sources the shared lib
+      ansible.builtin.assert:
+        that:
+          - "'pg_dump' in (nextcloud_backup_raw.content | b64decode)"
+          # Both pipeline stages (pg_dump AND gzip) must gate promotion, so a
+          # gzip/disk-full failure cannot ship a truncated dump as a success.
+          - "'pipe_status[1]' in (nextcloud_backup_raw.content | b64decode)"
+          # Metric-writing is the sourced shared lib, called with the
+          # nextcloud_backup prefix (proves the metric series is unchanged).
+          - "'source /usr/local/lib/nextcloud-backup-lib.sh' in (nextcloud_backup_raw.content | b64decode)"
+          - "'write_prom_metrics nextcloud_backup' in (nextcloud_backup_raw.content | b64decode)"
+          # The metrics dir comes from the role's own var, not another role's.
+          - "'PROM_DIR=\"/var/lib/node_exporter\"' in (nextcloud_backup_raw.content | b64decode)"
+          # Fail-closed NFS guard: when the landing zone is the offsite export,
+          # a missing mount must abort with success=0 rather than dump locally.
+          - "'mountpoint -q' in (nextcloud_backup_raw.content | b64decode)"
+          - "'NFS-backed but not mounted' in (nextcloud_backup_raw.content | b64decode)"
+
+    # The metric-name series lives in the sourced helper library.
+    - name: Read the shared backup-metrics helper library
+      ansible.builtin.slurp:
+        src: /usr/local/lib/nextcloud-backup-lib.sh
+      register: nextcloud_backup_lib
+
+    - name: Assert the helper library defines the prefixed metric series + the size noun
+      ansible.builtin.assert:
+        that:
+          - (nextcloud_backup_lib.content | b64decode) is search('write_prom_metrics\(\)')
+          - (nextcloud_backup_lib.content | b64decode) is search('\$\{prefix\}_last_run_success')
+          - (nextcloud_backup_lib.content | b64decode) is search('\$\{prefix\}_last_success_timestamp_seconds')
+          - (nextcloud_backup_lib.content | b64decode) is search('Size of the most recent dump in bytes')
+
+    # Run the wrapper end to end (mocked docker) and assert the EMITTED .prom:
+    # the backup-staleness alerts key on those exact metric names.
+    - name: Run the backup wrapper (success path)
+      ansible.builtin.command: /usr/local/sbin/nextcloud-backup-run.sh
+      changed_when: false
+
+    - name: Read nextcloud_backup.prom after success
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/nextcloud_backup.prom
+      register: nextcloud_prom_ok
+
+    - name: Assert all metrics present on success
+      ansible.builtin.assert:
+        that:
+          - "'nextcloud_backup_last_run_success 1' in (nextcloud_prom_ok.content | b64decode)"
+          - "'nextcloud_backup_last_run_duration_seconds ' in (nextcloud_prom_ok.content | b64decode)"
+          - "'nextcloud_backup_last_success_timestamp_seconds ' in (nextcloud_prom_ok.content | b64decode)"
+          - "'nextcloud_backup_last_size_bytes ' in (nextcloud_prom_ok.content | b64decode)"
+        fail_msg: "nextcloud_backup.prom missing expected metrics on success"
+        success_msg: "nextcloud_backup.prom emits all metrics on success"
+
+    - name: Capture the success timestamp (to assert preservation on failure)
+      ansible.builtin.shell: >-
+        awk '/^nextcloud_backup_last_success_timestamp_seconds/ {print $2}'
+        /var/lib/node_exporter/nextcloud_backup.prom
+      register: nextcloud_ts_ok
+      changed_when: false
+
+    # A failed dump must NOT report 0 bytes while good dumps sit in the landing
+    # zone: 0 means "no artefact at all", whose runbook describes a landing-path
+    # fault. Seeded at a known size (and newest by mtime) so the fallback is
+    # asserted on an exact number.
+    - name: Seed a known-size prior dump for the failure path
+      ansible.builtin.command:
+        cmd: dd if=/dev/zero of=/mnt/nextcloud-app/backups/nextcloud-db-20200101-000000.sql.gz bs=4096 count=1
+        creates: /mnt/nextcloud-app/backups/nextcloud-db-20200101-000000.sql.gz
+
+    - name: Arm the backup failure
+      ansible.builtin.file:
+        path: /tmp/nextcloud-backup-fail
+        state: touch
+        mode: "0644"
+
+    - name: Run the backup wrapper (failure path)
+      ansible.builtin.command: /usr/local/sbin/nextcloud-backup-run.sh
+      register: nextcloud_backup_fail
+      changed_when: false
+      failed_when: nextcloud_backup_fail.rc == 0
+
+    - name: Read nextcloud_backup.prom after failure
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/nextcloud_backup.prom
+      register: nextcloud_prom_fail
+
+    - name: Assert failure records success=0 and preserves the prior timestamp
+      ansible.builtin.assert:
+        that:
+          - "'nextcloud_backup_last_run_success 0' in (nextcloud_prom_fail.content | b64decode)"
+          - >-
+            'nextcloud_backup_last_success_timestamp_seconds ' ~ nextcloud_ts_ok.stdout
+            in (nextcloud_prom_fail.content | b64decode)
+          # Sized from the seeded prior dump, not 0 — see the seed task above.
+          - "'nextcloud_backup_last_size_bytes 4096' in (nextcloud_prom_fail.content | b64decode)"
+        fail_msg: >-
+          failure path did not record success=0, lost the prior success
+          timestamp, or reported 0 bytes while a good dump was in the landing
+          zone (a false empty-artefact page)
+        success_msg: "failure path records success=0, keeps the timestamp, and sizes the newest existing dump"
+
+    - name: Disarm the backup failure
+      ansible.builtin.file:
+        path: /tmp/nextcloud-backup-fail
+        state: absent
+
+    - name: Assert the backup timer + service exist
+      ansible.builtin.stat:
+        path: "/etc/systemd/system/{{ item }}"
+      loop:
+        - nextcloud-backup.service
+        - nextcloud-backup.timer
+      register: nextcloud_backup_units
+      failed_when: not nextcloud_backup_units.stat.exists
+
+    - name: Read the backup service unit
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/nextcloud-backup.service
+      register: nextcloud_backup_service_raw
+
+    - name: Assert the backup unit orders on the local landing dir (NFS off)
+      ansible.builtin.assert:
+        that:
+          - "'RequiresMountsFor=/mnt/nextcloud-app/backups' in (nextcloud_backup_service_raw.content | b64decode)"
+        fail_msg: "backup unit must order on the resolved landing directory"
+
+    # Only when a real Docker CLI is available (it isn't in the CI molecule
+    # image) validate the compose file semantically.
+    - name: Detect the docker CLI
+      ansible.builtin.command: which docker
+      register: nextcloud_docker_cli
+      changed_when: false
+      failed_when: false
+
+    - name: Validate the compose file with docker compose config
+      ansible.builtin.command:
+        cmd: docker compose config -q
+        chdir: /mnt/nextcloud-app/compose
+      changed_when: false
+      when: nextcloud_docker_cli.rc == 0
