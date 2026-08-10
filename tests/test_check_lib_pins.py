@@ -735,3 +735,31 @@ def test_a_string_include_is_reported_not_iterated_character_wise(
     problems = clp.check(p)
     assert len(problems) == 1
     assert "no `eric/weisssrv-lib` include entries found" in problems[0]
+
+
+def test_fix_refuses_duplicate_top_level_include_keys(tmp_path: Path) -> None:
+    """check() reads the LAST duplicate; rewriting the first would disagree.
+
+    PyYAML silently keeps the last duplicate key, so an earlier `include:` is
+    ignored by both GitLab and check(). Rewriting it would edit a dead block
+    and still pass verification against the live one.
+    """
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.2"
+        include:
+          - project: eric/weisssrv-lib
+            ref: v0.1.1
+            file: /ci/ignored.yml
+        include:
+          - project: eric/weisssrv-lib
+            ref: v0.3.2
+            file: /ci/live.yml
+        """
+    )
+    p = _write(tmp_path, content)
+    before = p.read_text()
+    with pytest.raises(SystemExit):
+        clp.fix(p)
+    assert p.read_text() == before

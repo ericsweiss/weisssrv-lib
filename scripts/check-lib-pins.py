@@ -172,17 +172,24 @@ def _ref_key_lines(text: str, project: str) -> set[int]:
     if not isinstance(root, yaml.MappingNode):
         return set()
 
-    include_pair = next(
-        (
-            (key, value)
-            for key, value in root.value
-            if isinstance(key, yaml.ScalarNode) and key.value == "include"
-        ),
-        None,
-    )
-    if include_pair is None:
+    include_pairs = [
+        (key, value)
+        for key, value in root.value
+        if isinstance(key, yaml.ScalarNode) and key.value == "include"
+    ]
+    if not include_pairs:
         return set()
-    include_key, include_node = include_pair
+    if len(include_pairs) > 1:
+        # PyYAML keeps the LAST duplicate key, so check() reads that one while
+        # taking the first here would rewrite a block GitLab and the gate both
+        # ignore — and the post-write verification would then pass against the
+        # other block. The two halves must agree on which block they mean.
+        raise SystemExit(
+            "multiple top-level `include:` keys make the rewrite ambiguous "
+            "(YAML keeps the last, so the others are silently ignored); "
+            "merge them into one block and retry"
+        )
+    include_key, include_node = include_pairs[0]
 
     # An ALIAS resolves to its anchored node, so a `ref` reached through
     # `include: *shared` carries source marks pointing at the ANCHOR — which may
