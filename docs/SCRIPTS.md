@@ -260,6 +260,40 @@ holds no `*.test.yaml`.
 
 ## CI invariants
 
+### `check-lib-pins.py` (PyYAML)
+
+Asserts every `include:` entry pinning this library agrees with the consumer's
+single source (`variables.WEISSSRV_LIB_REF`) and that the value is a release
+TAG.
+
+The copies are not avoidable: GitLab resolves `include:` at pipeline-CREATION
+time, before the `variables:` block exists, so `ref: $WEISSSRV_LIB_REF` silently
+does not work. A project/group CI/CD variable *is* readable there, but it moves
+the pin out of git, where a bump no longer appears in a diff and cannot be
+reverted as an MR. So each entry repeats the tag and this keeps them honest.
+
+Both failures it catches are otherwise silent. A stale ref on one entry runs
+that job from a different library version — a changed input default altering the
+pipeline with nothing red to show for it. A **branch** ref is worse, and is the
+one [VERSIONING.md](VERSIONING.md) forbids: a branch deleted after merge takes
+the include with it, and until then the pipeline can change behaviour with no
+commit in the consuming repo at all.
+
+- **Flags:** `--ci-file PATH` (default `<repo root>/.gitlab-ci.yml`),
+  `--project` (default `eric/weisssrv-lib`), `--ref-var` (default
+  `WEISSSRV_LIB_REF`), `--fix`.
+- **`--fix`** rewrites the literals to the single source, line-level so comments
+  and formatting survive, and touches only entries whose `project:` matches. A
+  bump is one edit plus one command.
+- **Exit codes:** 0 consistent, 1 on drift / branch ref / missing variable /
+  **no matching include entries at all** — an empty set is reported rather than
+  passing, so restructuring the includes out from under the gate is visible.
+- **Handles a `file:` list**, the form that shares one `ref:` across several
+  templates, and names every affected template rather than just the entry.
+- **Consumers vendor it** and run it from their own tree (their `python-tests`
+  job, plus `task lint`). Point that job's `changes` at `.gitlab-ci.yml` so the
+  guard fires on its own subject.
+
 ### `check-deploy-coverage.sh` (PyYAML for the CI parse)
 
 Fails an MR when a changed Ansible role/playbook/inventory file matches no
