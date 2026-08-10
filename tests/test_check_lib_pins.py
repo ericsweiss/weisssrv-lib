@@ -711,3 +711,27 @@ def test_a_file_removed_after_the_guard_starts_still_exits_two(
     rc = clp.main(["--ci-file", str(p)])
     assert rc == 2
     assert "could not read" in capsys.readouterr().err
+
+
+def test_a_scalar_include_is_reported_not_crashed(tmp_path, capsys) -> None:
+    """`include: 5` iterated a non-iterable and raised TypeError.
+
+    A string include (`include: local.yml`) hid this — strings ARE iterable, so
+    it degraded to an empty result by accident rather than by design.
+    """
+    p = tmp_path / ".gitlab-ci.yml"
+    p.write_text('variables:\n  WEISSSRV_LIB_REF: "v0.5.2"\ninclude: 5\n')
+    rc = clp.main(["--ci-file", str(p)])
+    assert rc == 1
+    assert "no `eric/weisssrv-lib` include entries found" in capsys.readouterr().err
+
+
+def test_a_string_include_is_reported_not_iterated_character_wise(
+    tmp_path,
+) -> None:
+    """One local file is a valid `include:`; it simply pins no project."""
+    p = tmp_path / ".gitlab-ci.yml"
+    p.write_text('variables:\n  WEISSSRV_LIB_REF: "v0.5.2"\ninclude: local.yml\n')
+    problems = clp.check(p)
+    assert len(problems) == 1
+    assert "no `eric/weisssrv-lib` include entries found" in problems[0]

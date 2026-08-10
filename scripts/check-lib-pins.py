@@ -89,7 +89,13 @@ def lib_includes(doc: dict, project: str = LIB_PROJECT) -> list[dict]:
     """The include entries that pin the library."""
     includes = doc.get("include") or []
     if isinstance(includes, dict):
-        includes = [includes]
+        includes = [includes]        # a single entry, written unwrapped
+    elif not isinstance(includes, list):
+        # `include:` may legitimately be one string (a local file), and when
+        # malformed can be any scalar. None of those carries a project pin —
+        # and iterating a non-iterable scalar raised TypeError, which reached
+        # the caller as a traceback instead of a reported problem.
+        includes = []
     return [
         i for i in includes if isinstance(i, dict) and i.get("project") == project
     ]
