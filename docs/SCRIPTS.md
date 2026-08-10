@@ -36,6 +36,17 @@ JSON renderers.
   `--service`, `--category`, `--list`, `--update NAME`, `--update-all`,
   `--check-coverage` (fails when a `*_version` pin has no registry entry and is
   not in `untracked_allowlist`), `--no-cache`, `--clear-cache`, `--repo-root`.
+- **The CLI is argparse**, so error wording is argparse's
+  (`unrecognized arguments: …`, `argument --config: expected one argument`);
+  exit code 2 for a usage error is unchanged. `--category` is validated against
+  the known set at parse time rather than failing later, and a registry entry
+  whose category is unknown lands in an explicit **"Other"** bucket in the table
+  instead of vanishing from it.
+- **Pins are read AND written anchored at column 0.** An indented `*_version:`
+  key is not a pin — it is a nested value in some other structure — so it is
+  neither reported as current nor rewritten by `--update`/`--update-all` (both
+  report "could not find" for a var that exists only nested). Writes preserve
+  the line's existing indentation.
 - **Example:** [`version-registry.example.py`](../examples/version-registry.example.py).
 
 ### `version-check-ci.py`
@@ -256,6 +267,107 @@ extract-prometheus-config.py alertmanager <out> [--am-config PATH] [--dummy K=V]
 `HELM_RELEASE`, `AM_CONFIG`. The unit-test step is skipped when `RULE_TESTS_DIR`
 holds no `*.test.yaml`.
 
+### `flux-render.sh` (PyYAML)
+
+The two shared halves of `ci/validate/flux-lint.yml`'s substitute mode: turn the
+cluster-versions ConfigMap into shell exports, and derive the kubeconform schema
+version from it. It does **not** own the per-Kustomization build + kubeconform
+loop — that stays in the template.
+
+```
+VARS=$(scripts/flux-render.sh export-versions "$CM") || exit 1
+eval "$VARS"                                  # every .data key + FLUX_ENVSUBST_VARS
+K8S_VER=$(scripts/flux-render.sh k8s-version "$CM")
+```
+
+- `export-versions` emits one `export <key>=<shell-quoted value>` per `.data`
+  key, plus `FLUX_ENVSUBST_VARS` — the `${name}` allowlist envsubst is given, so
+  substitution can never reach a variable the ConfigMap did not declare.
+- **Keys are validated before they are emitted, because the caller `eval`s the
+  output.** A key that is not a valid POSIX shell name is an error, and so is a
+  **reserved** one: `PATH`, `HOME`, `IFS`, `PWD`, `SHELL`, `TMPDIR`, `CI`,
+  `CLUSTER_DIR`, `SKIPPED_SCRIPT`, `FLUX_RENDER_SCRIPT`, `VERSIONS_CONFIGMAP`,
+  `FAILED`, `RENDER_ALL`, `K8S_VER`, `VARS`, `FLUX_ENVSUBST_VARS`, or anything
+  ending `_SHA256`. Those are the calling job's own variables; exporting one
+  would rewrite the job's environment mid-run. Generated keys are lowercase, so
+  no current consumer trips this.
+- `k8s-version` parses `k3s_version` out of `.data` **with PyYAML** and reduces
+  it to `major.minor.patch`. A missing or unparseable key is a hard **failure**,
+  not a fallback — it previously defaulted to a version nobody chose and
+  validated the whole cluster against it. A consumer whose ConfigMap has no such
+  key passes the template's `k8s_version` input instead.
+- An empty or unreadable ConfigMap path, and a ConfigMap with no `.data`, are
+  both errors.
+- **Dual-maintained:** weisssrv vendors this file and the flux-lint template
+  takes the path from the consumer tree, so the vendored copy is the one CI runs.
+
+### `kubeconform-skipped.py`
+
+Reads `kubeconform -output json` on stdin and prints the distinct
+`apiVersion/Kind` pairs kubeconform **skipped** — the CRs whose CRD schema is
+absent from the catalog. flux-lint runs kubeconform with
+`-ignore-missing-schemas`, so without this a new CRD-backed kind starts shipping
+with zero schema validation and no signal at review time.
+
+```
+kubeconform ... -output json | scripts/kubeconform-skipped.py
+```
+
+Informational only: flux-lint pipes it with `|| true`, and unparseable input
+prints a note and exits 0. The per-Kustomization kubeconform passes remain the
+actual gate — this only makes the gap visible. Dual-maintained with weisssrv.
+
+---
+
+## Docs and Taskfile gates
+
+### `check-doc-links.py`
+
+Offline checker for relative Markdown cross-links: resolves every relative `.md`
+link target against the filesystem and fails on a missing one. A renamed or
+deleted doc otherwise rots every link pointing at it, silently.
+
+```
+scripts/check-doc-links.py            # scan every tracked *.md in the repo
+scripts/check-doc-links.py <root>...  # scan explicit roots
+```
+
+- **Scan scope: every *git-tracked* `*.md` in the repo.** Role, app and agent
+  READMEs cross-link into `docs/` too, so a docs-only scan gated the wrong half
+  of the link graph. Tracked-only is deliberate — untracked scratch Markdown is
+  not ours to gate, and including it would make the check fail differently on
+  every machine.
+- **Fallback (not a git checkout):** everything under `docs/` plus the files
+  named in `$CHECK_DOC_LINKS_EXTRA` (default `README.md CLAUDE.md`).
+- **What is NOT checked:** URLs, `mailto:`/`tel:`, in-page anchors, and non-`.md`
+  targets are all ignored, and the anchor part of a `file.md#section` link is not
+  validated — only the file is.
+- Stdlib-only and network-free, which is what lets every consumer vendor it.
+- **Consumer note:** widening the scan did not widen `ci/lint/docs-link-check.yml`'s
+  default `changes` list, which still covers `docs/` + the two top-level READMEs.
+  A repo with Markdown elsewhere passes its own `changes` (weisssrv passes
+  `**/*.md`) or the job runs on fewer merge requests than it now covers.
+
+### `check-taskfile.sh`
+
+Asserts every `scripts/<name>.{sh,py}` a Taskfile references exists on disk,
+plus each `dotenv:` target. go-task compiles command templates lazily and never
+stats a referenced file, so a renamed script is invisible to `task --list` — and
+a missing dotenv file makes go-task fail hard at load time, taking every task
+with it.
+
+```
+scripts/check-taskfile.sh [Taskfile.yml]     # default: <repo-root>/Taskfile.yml
+```
+
+- **Env:** `CHECK_TASKFILE_DOTENV` — space-separated dotenv targets to require
+  when the Taskfile references them. Default `scripts/hosts.env`; set it to the
+  consumer's own generated env file(s), or to an empty string for a Taskfile
+  with none.
+- The dotenv match is on the bare path anywhere in the file, not just a same-line
+  `dotenv:`, so the YAML multi-line list form is caught too.
+- Dual-maintained with weisssrv.
+
 ---
 
 ## CI invariants
@@ -327,6 +439,12 @@ reporting "no changes".
   entries. **Every entry needs a trailing `# rationale`** — the script exits 2
   otherwise, so the "why is this unmapped" rule is machine-enforced rather than
   prose.
+- **The check runs one way, deliberately.** It asks "is every changed path
+  covered by some deploy job?", never "does every deploy job's `changes:` list
+  point at a path that exists?". The reverse direction would fail on a job that
+  legitimately guards a path the repo has not created yet, and the failure mode
+  it would catch (a dead glob) is inert, where the direction implemented here
+  catches the live one: a change that deploys nothing.
 - **Example:** [`deploy-coverage.example.conf`](../examples/deploy-coverage.example.conf).
 
 ### `check-molecule-matrix-coverage.sh` (PyYAML)
@@ -365,6 +483,12 @@ generate-molecule-pipeline.py [BASE_SHA | --diff-base SHA | --changed-files-from
   `MOLECULE_JOBS_INCLUDE` are triggers too. A repo with no integration suite just
   omits the `integration-tests` job from `CI_FILE`; a job that IS present with a
   broken matrix still fails loudly.
+- **`$MOLECULE_GLOBAL_TRIGGERS` must be paired with the plan job's `changes:`.**
+  A path listed here forces a full matrix *once the plan job runs* — but if that
+  path is not also in the `changes:` list that creates the plan job, an MR
+  touching only that path creates no plan job at all and the full matrix never
+  happens. The two lists are one setting expressed in two places; change them
+  together.
 - Wired by `ci/internal/molecule-matrix.gitlab-ci.yml`.
 
 ### `molecule-retry.sh`
@@ -406,7 +530,7 @@ confirmation required; a bad lifecycle rule can expire the only offsite copy).
 
 | Script | Contract |
 |---|---|
-| `shell-lib.sh` | function-only (safe to source under `set -e`): `timeout_cmd <secs> <cmd…>`, `ssh_probe <target> <cmd>` |
+| `shell-lib.sh` | function-only (safe to source under `set -e`): `timeout_cmd <secs> <cmd…>`, `ssh_probe <target> <cmd>`. With neither `timeout` nor `gtimeout` on `PATH` it warns **once per shell** on stderr that probes will run unbounded, rather than silently dropping the bound — anything parsing stderr from the two finders below sees that line |
 | `find-reachable-host.sh` | prints the first reachable SSH target from its args, exit 1 if none |
 | `find-pve-host-for-vm.sh` | prints which Proxmox host runs a VMID (ha-manager → `pvesh /cluster/resources` → per-host `qm status`) |
 | `resolve-tool.sh` | prints how to invoke a Python dev tool (`PATH` → `python3 -m <module>` → validated pyenv glob) |
@@ -419,9 +543,6 @@ per-host `qm status` scan is exempt, since that branch returns a target from the
 caller's own list. Set it to `""` when the two already agree; leaving it at the
 default on a site whose nodes are named otherwise returns a hostname that does
 not resolve.
-
-Plus the pre-existing `check-doc-links.py`, `check-taskfile.sh`,
-`flux-render.sh`, `kubeconform-skipped.py`.
 
 ---
 
