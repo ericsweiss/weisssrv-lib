@@ -221,3 +221,37 @@ def test_fix_reports_failure_when_the_result_still_violates(
     rc = clp.main(["--ci-file", str(p), "--fix"])
     assert rc == 1
     assert "FAILED after rewrite" in capsys.readouterr().err
+
+
+def test_fix_ignores_project_ref_pairs_outside_the_include_block(
+    tmp_path: Path,
+) -> None:
+    """--fix must only touch `include:`, the one thing check() reads.
+
+    A job whose variables happen to carry `project:` and `ref:` keys is not an
+    include entry. Rewriting it would edit a value the gate never verifies, and
+    the post-fix check() cannot catch it either — check() only ever looks at the
+    parsed include list.
+    """
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.0"
+        include:
+          - project: eric/weisssrv-lib
+            ref: v0.3.2
+            file: /ci/lint/yaml-lint.yml
+        mirror-job:
+          variables:
+            project: eric/weisssrv-lib
+            ref: v0.1.1
+          script:
+            - echo "$ref"
+        """
+    )
+    p = _write(tmp_path, content)
+    assert clp.fix(p) == 1  # the include entry only
+    doc = clp.load_ci(p)
+    assert doc["include"][0]["ref"] == "v0.5.0"
+    assert doc["mirror-job"]["variables"]["ref"] == "v0.1.1"
+    assert clp.check(p) == []

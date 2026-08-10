@@ -130,9 +130,20 @@ def fix(path: Path, project: str = LIB_PROJECT, ref_var: str = REF_VAR) -> int:
     # line that opens the block.
     lines = path.read_text().splitlines(keepends=True)
     in_lib_entry = False
+    in_include_block = False
     changed = 0
     for n, line in enumerate(lines):
         stripped = line.strip()
+        # Track the top-level key, and only rewrite inside `include:`. Without
+        # this, ANY `project:`/`ref:` pair in the file — a job's variables, a
+        # nested input — looks like an include entry, and --fix would edit a ref
+        # that check() (which reads the parsed `include:` list) never verifies.
+        if line[:1] not in (" ", "\t", "\n", "#", "") and ":" in line:
+            in_include_block = line.split(":", 1)[0].strip() == "include"
+            in_lib_entry = False
+            continue
+        if not in_include_block:
+            continue
         if stripped.startswith("- project:") or stripped.startswith("project:"):
             # EXACT value equality, matching check(). A suffix test would treat
             # `acme/eric/weisssrv-lib` as ours and rewrite a ref that check()
