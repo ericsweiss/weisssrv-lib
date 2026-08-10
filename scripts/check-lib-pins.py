@@ -297,6 +297,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
+    # An unreadable or malformed input is an OPERATOR error (wrong path, bad
+    # permissions, broken YAML), not a pin finding — exit 2 so CI can tell the
+    # two apart, and print one line rather than a traceback. Same contract as
+    # check-kubectl-version-pin.py. SystemExit from fix() is deliberately not
+    # caught here: those are its own refusals, already worded for the caller.
+    try:
+        load_ci(args.ci_file)
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"ERROR: could not read {args.ci_file}: {exc}", file=sys.stderr)
+        return 2
+    except yaml.YAMLError as exc:
+        print(f"ERROR: {args.ci_file} is not valid YAML: {exc}", file=sys.stderr)
+        return 2
+
     if args.fix:
         changed = fix(args.ci_file, args.project, args.ref_var)
         # Verify the result rather than trusting the rewrite. --fix cannot

@@ -526,3 +526,39 @@ def test_check_names_an_entry_that_has_no_file_key(tmp_path: Path) -> None:
     problems = clp.check(_write(tmp_path, content))
     assert problems and "None pins" not in problems[0]
     assert "<entry with no file:>" in problems[0]
+
+
+class TestCliErrors:
+    """Operator errors exit 2 with one line, matching the sibling checkers.
+
+    CI has to tell "this file has drifted pins" (1) from "I could not read the
+    file you pointed me at" (2); a traceback says neither clearly.
+    """
+
+    def test_missing_file_exits_two_without_traceback(self, tmp_path, capsys):
+        rc = clp.main(["--ci-file", str(tmp_path / "nope.yml")])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "could not read" in err
+        assert "Traceback" not in err
+
+    def test_directory_argument_exits_two(self, tmp_path, capsys):
+        rc = clp.main(["--ci-file", str(tmp_path)])
+        assert rc == 2
+        assert "could not read" in capsys.readouterr().err
+
+    def test_malformed_yaml_exits_two(self, tmp_path, capsys):
+        p = tmp_path / ".gitlab-ci.yml"
+        p.write_text("include: [\n  - project: unclosed\n")
+        rc = clp.main(["--ci-file", str(p)])
+        assert rc == 2
+        assert "not valid YAML" in capsys.readouterr().err
+
+    def test_unknown_flag_is_rejected(self):
+        with pytest.raises(SystemExit):
+            clp.main(["--nope"])
+
+    def test_help_exits_zero(self):
+        with pytest.raises(SystemExit) as e:
+            clp.main(["--help"])
+        assert e.value.code == 0

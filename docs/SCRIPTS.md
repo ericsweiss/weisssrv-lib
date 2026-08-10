@@ -299,6 +299,8 @@ commit in the consuming repo at all.
 - **Exit codes:** 0 consistent, 1 on drift / branch ref / missing variable /
   **no matching include entries at all** — an empty set is reported rather than
   passing, so restructuring the includes out from under the gate is visible.
+  **2** for an operator error (unreadable path, malformed YAML), one line and no
+  traceback, so CI can tell "the pins drifted" from "I could not read the file".
 - **Handles a `file:` list**, the form that shares one `ref:` across several
   templates, and names every affected template rather than just the entry.
 - **Consumers vendor it** and run it from their own tree (their `python-tests`
