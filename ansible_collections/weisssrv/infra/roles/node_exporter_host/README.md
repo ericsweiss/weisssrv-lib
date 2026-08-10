@@ -151,7 +151,14 @@ node_exporter_host_port: 9101              # 9101 to avoid a k3s DaemonSet on 91
 node_exporter_host_textfile_dir: /var/lib/node_exporter
 node_exporter_host_proxmox: false          # true on bare-metal Proxmox hosts
 node_exporter_host_healthcheck_interval: 5min   # liveness-gate probe period
+node_exporter_host_zpool_collector: "{{ node_exporter_host_proxmox }}"
 ```
+
+`node_exporter_host_zpool_collector` carves the one ZFS-specific collector out
+of the Proxmox block: set it false on a Proxmox host backed by Ceph or LVM-thin
+and the zpool script, unit and timer are not deployed. The corosync, SMART and
+vzdump collectors stay on the `node_exporter_host_proxmox` gate — they are
+hypervisor facts, not storage-backend ones.
 
 The `prometheus-node-exporter` package is installed with `state: present`
 (unpinned) and `update_cache: true` (with `cache_valid_time: 3600` to skip a

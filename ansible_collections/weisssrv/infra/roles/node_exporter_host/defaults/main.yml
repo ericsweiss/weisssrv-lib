@@ -16,3 +16,9 @@ node_exporter_host_healthcheck_interval: 5min
 # (and the modprobe fails) in an unprivileged LXC or a guest VM. Set it from the
 # site's hypervisor group.
 node_exporter_host_proxmox: false
+
+# Storage-backend seam: the zpool-status collector is the one collector in the
+# Proxmox block that is ZFS-specific. It follows node_exporter_host_proxmox by
+# default; set false on a Proxmox host whose storage is not ZFS (Ceph, LVM-thin)
+# so the timer is not deployed at all rather than sampling an absent `zpool`.
+node_exporter_host_zpool_collector: "{{ node_exporter_host_proxmox }}"

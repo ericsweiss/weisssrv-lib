@@ -1,10 +1,10 @@
 """Tests for scripts/check-kubectl-version-pin.py (the kubectl/k3s skew gate).
 
 Exercises the version extraction, the +/-1 minor skew classification, the CLI
-path resolution against throwaway files, and the argparse surface: the two
-positional paths are optional (defaults apply), a bad argument is rejected
-rather than treated as a filename, and an unreadable input exits 2 with a
-one-line error instead of a traceback.
+path resolution against throwaway files, the $CI_FILE default-retarget seam, and
+the argparse surface: the two positional paths are optional (defaults apply), a
+bad argument is rejected rather than treated as a filename, and an unreadable
+input exits 2 with a one-line error instead of a traceback.
 """
 from __future__ import annotations
 
@@ -21,6 +21,18 @@ _spec = importlib.util.spec_from_file_location("check_kubectl_version_pin", _SCR
 assert _spec and _spec.loader
 ckp = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ckp)
+
+
+def _reimport():
+    """Re-exec the module so CI_YAML is recomputed from the current environment.
+
+    CI_YAML is a module-level constant, so the env var is read once at import —
+    which is what a CLI invocation does anyway.
+    """
+    spec = importlib.util.spec_from_file_location("check_kubectl_version_pin_env", _SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def _ci(major: int, minor: int) -> str:
@@ -156,3 +168,46 @@ class TestCliErrors:
             ckp.main(["prog", "--help"])
         assert exc.value.code == 0
         assert "ci_yaml" in capsys.readouterr().out
+
+
+class TestCiFileEnv:
+    """$CI_FILE retargets the first positional's default (portability seam)."""
+
+    def test_unset_keeps_the_conventional_default(self, monkeypatch):
+        monkeypatch.delenv("CI_FILE", raising=False)
+        assert _reimport().CI_YAML == REPO / ".gitlab-ci.yml"
+
+    def test_empty_keeps_the_conventional_default(self, monkeypatch):
+        monkeypatch.setenv("CI_FILE", "")
+        assert _reimport().CI_YAML == REPO / ".gitlab-ci.yml"
+
+    def test_relative_value_is_repo_relative(self, monkeypatch):
+        monkeypatch.setenv("CI_FILE", ".github/workflows/ci.yml")
+        assert _reimport().CI_YAML == REPO / ".github/workflows/ci.yml"
+
+    def test_absolute_value_is_used_as_is(self, monkeypatch, tmp_path):
+        target = tmp_path / "workflow.yml"
+        monkeypatch.setenv("CI_FILE", str(target))
+        assert _reimport().CI_YAML == target
+
+    def test_retargeted_default_is_what_main_reads(self, monkeypatch, tmp_path, capsys):
+        """End to end: no positionals, the pin comes from the $CI_FILE path."""
+        ci = tmp_path / "workflow.yml"
+        ci.write_text(_ci(1, 33))
+        cm = tmp_path / "cm.yaml"
+        cm.write_text(_cm(1, 33))
+        monkeypatch.setenv("CI_FILE", str(ci))
+        mod = _reimport()
+        monkeypatch.setattr(mod, "VERSIONS_CM", cm)
+        assert mod.main(["prog"]) == 0
+        assert "within the supported" in capsys.readouterr().out
+
+    def test_the_extraction_is_format_agnostic(self):
+        """The pin is regexed out of text, so an Actions workflow parses fine."""
+        workflow = (
+            "jobs:\n  lint:\n    steps:\n"
+            "      - run: curl -sSLO https://dl.k8s.io/release/v1.33.4/bin/linux/amd64/kubectl\n"
+        )
+        code, msg = ckp.check(workflow, _cm(1, 33))
+        assert code == 0
+        assert "within the supported" in msg

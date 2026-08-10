@@ -100,6 +100,41 @@
       ansible.builtin.script: files/zfs-load-key-behavior.sh
       changed_when: false
 
+    # 3b. Secrets-backend seam (zfs_encryption_key_command), side-rendered in
+    # converge. The default above is the Connect script; this asserts the other
+    # branch drops the Connect code entirely rather than layering on top of it.
+    - name: Read the key-command render
+      ansible.builtin.slurp:
+        src: /tmp/zfs-load-key-keycmd.sh
+      register: keycmd_script_content
+
+    - name: Assert the key-command branch replaces the Connect fetch
+      ansible.builtin.assert:
+        that:
+          # The operator's command is what produces the passphrase.
+          - >-
+            (keycmd_script_content.content | b64decode)
+            is search('PASSPHRASE=\$\(printf')
+          # The locators the command is contracted to receive.
+          - (keycmd_script_content.content | b64decode) is search('export ZFS_ENCRYPTION_POOL=')
+          - (keycmd_script_content.content | b64decode) is search('export ZFS_ENCRYPTION_ITEM=')
+          - (keycmd_script_content.content | b64decode) is search('export ZFS_ENCRYPTION_FIELD=')
+          # No Connect code is rendered at all — not the URL, not the token
+          # file, not the curl that carries the bearer token.
+          - (keycmd_script_content.content | b64decode) is not search('CONNECT_URL')
+          - (keycmd_script_content.content | b64decode) is not search('TOKEN_FILE')
+          - (keycmd_script_content.content | b64decode) is not search('-H @-')
+          # Shared scaffolding survives the swap.
+          - (keycmd_script_content.content | b64decode) is search('set -euo pipefail')
+          - (keycmd_script_content.content | b64decode) is search('Exit codes:')
+          - (keycmd_script_content.content | b64decode) is search('zfs load-key')
+        fail_msg: "the key-command branch did not fully replace the Connect fetch"
+        success_msg: "zfs_encryption_key_command renders a Connect-free unlock script"
+
+    - name: Assert the key-command render is syntactically valid bash
+      ansible.builtin.command: bash -n /tmp/zfs-load-key-keycmd.sh
+      changed_when: false
+
     # 4. Systemd template unit
     - name: Stat /etc/systemd/system/zfs-load-key@.service
       ansible.builtin.stat:

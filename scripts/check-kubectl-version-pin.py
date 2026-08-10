@@ -12,18 +12,24 @@ supported +/-1 minor skew of the cluster's k3s_version.
 
 The defaults assume the conventional layout (`.gitlab-ci.yml` +
 `kubernetes/infrastructure/sources/versions-configmap.yaml` under the repo root);
-pass both paths when the consumer's layout differs.
+pass both paths when the consumer's layout differs. $CI_FILE (repo-relative or
+absolute, same name as the molecule scripts) retargets the first default, e.g.
+a repo whose kubectl pin lives in a GitHub Actions workflow.
+
+The check itself is forge-neutral: it regexes a `dl.k8s.io` download pin out of
+whatever text it is given.
 """
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 import re
 
 REPO = Path(__file__).resolve().parent.parent
-CI_YAML = REPO / ".gitlab-ci.yml"
+CI_YAML = REPO / (os.environ.get("CI_FILE") or ".gitlab-ci.yml")
 VERSIONS_CM = REPO / "kubernetes/infrastructure/sources/versions-configmap.yaml"
 
 _KUBECTL_RE = re.compile(r"dl\.k8s\.io/release/v(\d+)\.(\d+)\.\d+/bin")

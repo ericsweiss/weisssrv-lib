@@ -447,6 +447,17 @@ Behaviour that changes on first converge, in rough order of blast radius:
   `deploy-gitlab` `changes:` list must now cover the `compose_app` role path too,
   or a library change stops redeploying gitlab.
 
+New optional inputs (both default `""`, which omits the `gitlab.rb` line and
+leaves the Omnibus defaults — the exporter on, bound to `localhost:9187`):
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `gitlab_postgres_exporter_enabled` | `postgres_exporter['enable']`; set `true`/`false` only to override Omnibus | `""` (line omitted) |
+| `gitlab_postgres_exporter_listen_address` | `postgres_exporter['listen_address']`; set e.g. `0.0.0.0:9187` to scrape from off-host | `""` (line omitted) |
+
+Publishing it exposes **unauthenticated** database metrics: scope the port at
+the firewall.
+
 ### home_assistant
 
 New role. Consumer API is unchanged — every `home_assistant_*` input keeps its
@@ -501,6 +512,19 @@ Values that must be supplied, with a note each:
   from `immich_nginx_real_ip_groups` (default `[k3s_servers, k3s_agents]`) via
   `map('extract', groups)` → `ansible_host`, so it tracks a node being added or
   renumbered. A group name that does not exist yields `[]` rather than an error.
+
+New optional inputs — a `postgres-exporter` compose sidecar for database-level
+metrics, off by default (nothing is added to the stack until it is switched on):
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `immich_postgres_exporter_enabled` | Add the sidecar | `false` |
+| `immich_postgres_exporter_version` / `_digest` | Image pin; asserted (as a resolved tag/digest) when enabled | `""` / `""` |
+| `immich_postgres_exporter_image` | Full reference, derived from the two above; override for another registry or build | `quay.io/prometheuscommunity/postgres-exporter:<version>` |
+| `immich_postgres_exporter_port` | Host port | `9187` |
+
+It reuses the stack's own `DB_USERNAME`/`DB_PASSWORD` from `.env` (no new
+secret) and the endpoint is **unauthenticated**: scope the port at the firewall.
 
 ### immich_ml
 
@@ -624,6 +648,20 @@ What does need supplying:
   the k3s groups rather than pasting node IPs — the README carries the
   expression.
 - `nextcloud_backup_nfs_server` / `_export` when the NFS backup is enabled.
+
+New optional inputs — a `nextcloud-postgres-exporter` compose sidecar for
+database-level metrics (the existing `nextcloud-exporter` is application-level),
+off by default:
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `nextcloud_postgres_exporter_enabled` | Add the sidecar | `false` |
+| `nextcloud_postgres_exporter_version` | Image pin; asserted (as a resolved tag) when enabled | `""` |
+| `nextcloud_postgres_exporter_image` | Full reference, derived from the version; override for another registry or build | `quay.io/prometheuscommunity/postgres-exporter:<version>` |
+| `nextcloud_postgres_exporter_port` | Host port | `9187` |
+
+It reuses the stack's own DB user and `NEXTCLOUD_POSTGRES_PASSWORD` (no new
+secret) and the endpoint is **unauthenticated**: scope the port at the firewall.
 
 New fail-fast asserts: the four image pins non-empty; at least one of
 `nextcloud_external_host`/`_internal_host`; the NFS pair; `nextcloud_mail_domain`

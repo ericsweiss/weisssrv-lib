@@ -65,7 +65,7 @@ examples/      copy-and-edit config files for the helper scripts
 cli/           weisssrv-new-project — tenant scaffolding (rename/prune/wire/
                verify) plus new-cluster, the copier wrapper
 docs/          the include contract, the scripts contract, versioning policy,
-               the consumer registry
+               the consumer registry, the extensibility seam map
 tests/         pytest for scripts/ (the CLI has its own cli/tests/)
 ```
 
@@ -233,6 +233,14 @@ Renovate** anywhere — version bumps come from
 `ci/maintenance/version-bump-bot.yml`, which each CONSUMER schedules against its
 own version-check command and config. This library ships the template but does
 not run it on itself: it tracks no upstream versions of its own.
+
+A consumer whose backends differ from weisssrv's — Ceph instead of ZFS, a
+secrets store other than 1Password, GitHub instead of GitLab — is meant to be
+served by the same tag. Roles that *are* a backend are skipped and replaced by a
+sibling family in the same flat FQCN namespace; roles that merely use one carry
+a seam variable defaulting to today's behaviour, and the CI scripts keep their
+forge calls behind a `--platform` flag. The seam map and the contract for adding
+an alternative are in [docs/EXTENSIBILITY.md](docs/EXTENSIBILITY.md).
 
 The application-guest roles (`gitlab`, `plex`, `nextcloud`, `immich`,
 `immich_ml`, `home_assistant`) **are** in scope as of this release. They were

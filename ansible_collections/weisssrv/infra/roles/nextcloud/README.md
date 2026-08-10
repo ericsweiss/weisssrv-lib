@@ -13,7 +13,9 @@ a host nginx that terminates TLS and proxies to the loopback-bound web port.
    `compose_app` → `docker_engine`; container logs go to journald.
 3. **The compose stack** — `docker-compose.yml` plus a mode-`0600` `.env` that
    holds every secret, run by the shared `compose_app` systemd unit
-   (`nextcloud-compose.service`), which orders on the data mounts.
+   (`nextcloud-compose.service`), which orders on the data mounts. An opt-in
+   `postgres-exporter` sidecar adds database-level metrics alongside the
+   application-level `nextcloud-exporter`.
 4. **Host nginx** — the shared `compose_app` nginx flow with this role's site
    template (TLS 1.3 only, unlimited body size, websockets, DAV discovery
    redirects, `real_ip` resolution). A self-signed placeholder is seeded until
@@ -41,6 +43,9 @@ a host nginx that terminates TLS and proxies to the loopback-bound web port.
 | `nextcloud_nginx_real_ip_trusted_addresses` | Proxy sources whose `X-Forwarded-For` nginx trusts | no (`[]`) |
 | `nextcloud_nginx_enabled` / `_nginx_cert_dir` / `_nginx_ssl_certificate(_key)` / `_nginx_server_names` | Host TLS front end | no |
 | `nextcloud_http_bind_address` / `_http_bind_port` / `_exporter_port` | Published ports | no (`127.0.0.1:8080`, `9205`) |
+| `nextcloud_postgres_exporter_enabled` | Add a `postgres-exporter` sidecar (DB-level metrics) | no (`false`) |
+| `nextcloud_postgres_exporter_version` / `_image` | Its image pin; the image derives from the version, or override it outright | when enabled |
+| `nextcloud_postgres_exporter_port` | Host port for that exporter (unauthenticated — scope it at the firewall) | no (`9187`) |
 | `nextcloud_php_memory_limit` / `_php_upload_limit` | PHP tuning | no (`1024M`, `16G`) |
 | `nextcloud_oidc_enabled` | Wire OIDC SSO through the `user_oidc` app | no (`false`) |
 | `nextcloud_oidc_discovery_uri` / `_client_id` / `_client_secret` | Provider discovery + credentials | when OIDC |

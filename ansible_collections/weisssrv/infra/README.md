@@ -182,6 +182,19 @@ defaults to `node_exporter_host_textfile_dir`, so a guest running both roles
 publishes its backup metrics where the exporter reads them without restating the
 path.
 
+## Consumers that differ from weisssrv
+
+A consumer whose backends are not weisssrv's — Ceph instead of ZFS, a secrets
+store that is not 1Password, a forge that is not GitLab — does not fork the
+collection. Roles that *are* a backend (`zfs_*`, `nas_storage`, the `proxmox_*`
+family) are skipped and replaced by a sibling family in the same flat FQCN
+namespace; roles that merely *use* one expose a seam variable whose default is
+today's behaviour (`zfs_encryption_key_command`, `proxmox_storage_defaults`,
+`restic_offsite_bind_mode`, `node_exporter_host_zpool_collector`,
+`acme_certs_dns_hook`, `zvol_mount_device_id_prefix`). The full seam map, the
+by-design list, and the contract for contributing an alternative are in
+[docs/EXTENSIBILITY.md](../../../docs/EXTENSIBILITY.md).
+
 ## Migrating from un-prefixed in-tree roles
 
 **[MIGRATING.md](MIGRATING.md) is the master old → new map** and the list a

@@ -157,9 +157,9 @@
     - acme_certs_enabled | bool
     - not acme_certs_installed.stat.exists
 
-- name: Check the dns_cf hook is installed
+- name: Check the DNS-01 hook is installed
   ansible.builtin.stat:
-    path: /root/.acme.sh/dnsapi/dns_cf.sh
+    path: "/root/.acme.sh/dnsapi/{{ acme_certs_dns_hook }}.sh"
   register: acme_certs_dnsapi_hook
   when: acme_certs_enabled | bool
 
@@ -168,11 +168,12 @@
     that:
       - acme_certs_dnsapi_hook.stat.exists
     fail_msg: >-
-      /root/.acme.sh/dnsapi/dns_cf.sh is missing — this acme.sh install has
-      no DNS hooks, so Cloudflare DNS-01 issuance/renewal cannot work.
-      Remove /root/.acme.sh and re-run this role to reinstall from the
-      pinned release tarball (which ships dnsapi/).
-    success_msg: "acme.sh dnsapi hooks are present (dns_cf)"
+      /root/.acme.sh/dnsapi/{{ acme_certs_dns_hook }}.sh is missing — this
+      acme.sh install has no DNS hook for {{ acme_certs_dns_hook }}, so DNS-01
+      issuance/renewal cannot work. Remove /root/.acme.sh and re-run this role
+      to reinstall from the pinned release tarball (which ships dnsapi/), or
+      set acme_certs_dns_hook to a hook that tarball provides.
+    success_msg: "acme.sh dnsapi hooks are present ({{ acme_certs_dns_hook }})"
   when:
     - acme_certs_enabled | bool
     # In check mode on a fresh host the install above is skipped, so only
@@ -338,13 +339,13 @@
       To issue certificates manually:
 
       1. Export the DNS provider credentials the acme.sh hook expects
-         (CF_Token / CF_Account_ID for the Cloudflare dns_cf hook).
+         (for the default dns_cf hook: CF_Token / CF_Account_ID).
 
       2. Issue the wildcard certificate. --keylength ec-256 issues ECC,
          stored under {{ acme_certs_domain }}_ecc/ — the directory the
          stat-check and --install-cert (--ecc) expect. --server is passed
          explicitly even though the install pinned the default CA:
-         /root/.acme.sh/acme.sh --issue --dns dns_cf --server letsencrypt \
+         /root/.acme.sh/acme.sh --issue --dns {{ acme_certs_dns_hook }} --server letsencrypt \
            --keylength ec-256 \
            -d "{{ acme_certs_domain }}" \
            -d "*.{{ acme_certs_domain }}"

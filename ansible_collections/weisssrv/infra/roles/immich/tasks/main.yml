@@ -56,6 +56,21 @@
     success_msg: "Offsite backup landing inputs present"
   when: immich_backup_nfs_enabled | bool
 
+- name: Validate the Postgres exporter image pin
+  ansible.builtin.assert:
+    that:
+      # Must end in a tag or digest, and must not be the ":@" an empty version
+      # beside a digest would produce.
+      - immich_postgres_exporter_image is search('[:@][^:@/]+$')
+      - immich_postgres_exporter_image is not search(':@')
+    fail_msg: >-
+      immich_postgres_exporter_enabled needs a pinned exporter image: set
+      immich_postgres_exporter_version (optionally
+      immich_postgres_exporter_digest), or override
+      immich_postgres_exporter_image.
+    success_msg: "Postgres exporter image pinned"
+  when: immich_postgres_exporter_enabled | bool
+
 # Persistent storage (block devices attached by the hypervisor role)
 - name: Mount additional persistent disks
   ansible.builtin.include_role:

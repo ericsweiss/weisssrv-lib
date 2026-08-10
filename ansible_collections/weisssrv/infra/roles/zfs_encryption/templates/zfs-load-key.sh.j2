@@ -3,26 +3,41 @@
 #
 # zfs-load-key.sh <pool> [<1p-item-title> [field]]
 #
+{% if zfs_encryption_key_command %}
+# Fetches a ZFS pool encryption passphrase from the operator's key command
+# (zfs_encryption_key_command) and loads it via `zfs load-key`. Invoked by
+# zfs-load-key@<pool>.service. Mounting is left to zfs-mount-encrypted.service
+# (role README, "Boot ordering").
+#
+{% else %}
 # Fetches a ZFS pool encryption passphrase from 1Password Connect and loads it
 # via `zfs load-key`. Invoked by zfs-load-key@<pool>.service. Mounting is left
 # to zfs-mount-encrypted.service (role README, "Boot ordering").
 #
-# The bearer token at /etc/onepassword-connect/token (0400 root) goes to curl on
+# The bearer token at {{ zfs_encryption_token_path }} (0400 root) goes to curl on
 # stdin (`-H @-`), never on argv, so it never appears in /proc/<pid>/cmdline.
 #
+{% endif %}
 # The exit codes below are a contract: zfs-load-key@.service lists 1/3/4/7 in
 # RestartPreventExitStatus, so renumbering here changes retry behaviour.
 #
 # Exit codes:
 #   0 — key loaded (or already loaded); zfs-mount-encrypted.service handles mounting
 #   1 — config / arg / token error
+{% if zfs_encryption_key_command %}
+#   2 — key command exited non-zero (treated as transient; the unit retries)
+#   3 — key command printed nothing (config error; the unit stops)
+{% else %}
 #   2 — Connect unreachable beyond fetch_timeout
 #   3 — vault/item/field not found
+{% endif %}
 #   4 — `zfs load-key` failed (wrong passphrase, kernel error, etc.)
 #   5 — pool not imported after waiting fetch_timeout, does not exist, or its
 #       encryption roots could not be enumerated (transient ioctl error — not
 #       in RestartPreventExitStatus, so the unit retries)
+{% if not zfs_encryption_key_command %}
 #   7 — Connect returned 401/403 (auth failure; no point retrying)
+{% endif %}
 
 set -euo pipefail
 
@@ -32,18 +47,21 @@ FIELD="${ZFS_ENCRYPTION_FIELD:-${3:-passphrase}}"
 
 [[ -n "$ITEM_TITLE" ]] || { echo "ZFS_ENCRYPTION_ITEM unset; pass title as 2nd arg or via env" >&2; exit 1; }
 
+{% if not zfs_encryption_key_command %}
 CONNECT_URL="{{ zfs_encryption_connect_url }}"
 # `VAULT_REF` is either a vault NAME (e.g. "Homelab") that we resolve to a
 # UUID at runtime, or a literal 26-char UUID we use directly. The Connect
 # REST API requires UUID in /v1/vaults/<X>/items paths — the `op` CLI does
 # client-side name→UUID resolution; we replicate that here.
 VAULT_REF="{{ zfs_encryption_connect_vault }}"
-TOKEN_FILE="/etc/onepassword-connect/token"
+TOKEN_FILE="{{ zfs_encryption_token_path }}"
+{% endif %}
 FETCH_TIMEOUT="{{ zfs_encryption_fetch_timeout_seconds }}"
 RETRY_SLEEP="{{ zfs_encryption_fetch_retry_seconds }}"
 
 log() { logger -t "zfs-load-key[${POOL}]" -s -- "$*"; }
 
+{% if not zfs_encryption_key_command %}
 # Connect response bodies land in a /dev/shm temp file, and the item fetch's
 # body carries the passphrase. Track the current file and clear it from a single
 # EXIT trap so an errexit abort or a signal cannot leave plaintext in tmpfs.
@@ -72,6 +90,7 @@ connect_get() {
             "${CONNECT_URL}${path}") || code=000
     printf '%s' "$code"
 }
+{% endif %}
 
 # zfs-import.target normally imports the pool before this unit runs, but a late
 # import must be WAITED for, not fast-failed: an instant exit 5 cycles at
@@ -98,6 +117,25 @@ if [[ "$key_status" == "available" ]]; then
     exit 0
 fi
 
+{% if zfs_encryption_key_command %}
+# Operator-supplied key command (zfs_encryption_key_command). It prints the
+# passphrase on stdout; item/field are passed through as opaque locators for
+# whatever backend it talks to. Retry/timeout are the command's own business —
+# a non-zero exit is reported as transient (rc 2) so the unit keeps retrying.
+export ZFS_ENCRYPTION_POOL="$POOL"
+export ZFS_ENCRYPTION_ITEM="$ITEM_TITLE"
+export ZFS_ENCRYPTION_FIELD="$FIELD"
+
+if ! PASSPHRASE=$({{ zfs_encryption_key_command }}); then
+    log "key command failed for pool $POOL; will retry"
+    exit 2
+fi
+
+if [[ -z "$PASSPHRASE" ]]; then
+    log "key command printed nothing for pool $POOL (item '$ITEM_TITLE', field '$FIELD')"
+    exit 3
+fi
+{% else %}
 # Resolve VAULT_REF to a UUID. 1Password Connect REST paths require UUID
 # in the {vaultUUID} slot — only the GET /v1/vaults?filter=name eq
 # endpoint accepts a name. If VAULT_REF is already a 26-char lowercase
@@ -242,6 +280,7 @@ if [[ -z "$PASSPHRASE" ]]; then
     log "field '$FIELD' (matching id or label) is missing or empty on item '$ITEM_TITLE'"
     exit 3
 fi
+{% endif %}
 
 # One encryption root at a time: `zfs load-key -r` reads the passphrase from
 # stdin ONCE, so with more than one root it satisfies the first and fails the

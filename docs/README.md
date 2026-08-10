@@ -10,6 +10,10 @@
 - [VERSIONING.md](VERSIONING.md) — what one tag covers, the conventional-commit
   release automation, the protected-tag prerequisite, the full pin surface a
   consumer bump has to walk, and this repo's release checklist.
+- [EXTENSIBILITY.md](EXTENSIBILITY.md) — how a consumer whose backends are not
+  weisssrv's (Ceph, a non-1Password secrets store, GitHub) adopts the library:
+  the seam map, what is backend-specific by design, and the contract for adding
+  an alternative.
 - [CONSUMERS.yml](CONSUMERS.yml) — the registry of every repo that pins this
   library and every place it holds a pin. Read it before cutting a release.
 

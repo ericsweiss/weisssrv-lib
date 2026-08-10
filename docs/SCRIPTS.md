@@ -11,6 +11,30 @@ changed default is a MAJOR bump for scripts, exactly as for a CI template input.
 
 Example configs for every script live in [`../examples/`](../examples/).
 
+## Forge coupling
+
+**Every script here is forge-neutral except the seven below**, which carry a
+**Forge** line in their own section. Neutral means stdlib/PyYAML, the filesystem
+and `git` — no forge API, no CI-YAML parsing, no `CI_*` variable it cannot run
+without — so a GitHub-hosted consumer runs it unchanged from an Actions step.
+(`check-versions.py` calls the GitHub *releases* API as a version SOURCE; that
+says nothing about where the consumer is hosted.)
+
+| Script | Forge | Why |
+|---|---|---|
+| `check-deploy-coverage.sh` | gitlab-only | parses deploy jobs' `changes:` out of `.gitlab-ci.yml`; base ref from `CI_MERGE_REQUEST_DIFF_BASE_SHA` |
+| `check-molecule-matrix-coverage.sh` | gitlab-only | parses `parallel:matrix` out of the CI file |
+| `generate-molecule-pipeline.py` | gitlab-only | emits a GitLab child-pipeline YAML |
+| `check-lib-pins.py` | gitlab-only | its subject is `include:` — GitHub consumers vendor workflows instead |
+| `version-bump-mr.py` | gitlab-only | Merge Requests API |
+| `semantic-release.py` | dual | `--platform gitlab` (default) or `github` |
+| `version-check-ci.py` | neutral core | the report runs anywhere; only the MR comment is GitLab, and it is skipped when the `CI_*` env is absent |
+
+GitHub consumers have no `include:` equivalent for a private library, so they
+vendor workflows — see
+[`../ci/release/github-release-workflow.example.yml`](../ci/release/github-release-workflow.example.yml)
+and the note in [INCLUDE-CONTRACT.md](INCLUDE-CONTRACT.md#who-includes-what).
+
 ---
 
 ## Version tracking
@@ -59,6 +83,11 @@ created), and posts/updates an MR comment when there are actionable
 - **Env:** `CHECK_VERSIONS_CMD` (default `./scripts/check-versions.py`),
   `CHECK_VERSIONS_LOCAL` (command named in the comment footer),
   `VERSION_CHECK_TIMEOUT` (default 600), `GITLAB_API_TOKEN`.
+- **Forge: neutral core, GitLab-only comment.** The run + summary + artifact
+  need no forge; the comment needs `CI_API_V4_URL` + `CI_PROJECT_ID` +
+  `CI_MERGE_REQUEST_IID` + `GITLAB_API_TOKEN` and is skipped (silently outside
+  an MR pipeline, with a warning inside one) when they are absent — so a GitHub
+  consumer gets the report and no comment.
 
 ---
 
@@ -83,6 +112,7 @@ semantic-release.py [--platform gitlab|github] [--repo-dir DIR] [--tag-prefix v]
     [--output release.json] [--dry-run]
 ```
 
+- **Forge: dual.** `--platform gitlab|github`, one vendored copy for both.
 - **`--platform`** picks the forge; everything above the two API calls (commit
   parsing, the bump decision, the notes) is forge-neutral, so one vendored copy
   serves both. **`gitlab` is the default**, so a consumer that passes nothing is
@@ -158,6 +188,8 @@ version-bump-mr.py [--repo-dir DIR] [--branch bot/version-bumps]
     [--dry-run]
 ```
 
+- **Forge: gitlab-only.** The branch half is plain `git`; the MR half is the
+  GitLab Merge Requests API, with no `--platform` counterpart.
 - **Env:** the `--token-env` variable (default `BOT_TOKEN`; needs `api` +
   `write_repository` — a job token cannot do this), `CI_API_V4_URL`,
   `CI_PROJECT_ID`, `CI_SERVER_HOST` + `CI_PROJECT_PATH` (default `--remote-url`),
@@ -251,6 +283,14 @@ Asserts a CI `kubectl` pin stays within Kubernetes' supported ±1 minor of the
 cluster's `k3s_version`. Defaults to `.gitlab-ci.yml` +
 `kubernetes/infrastructure/sources/versions-configmap.yaml`; pass both paths
 positionally for another layout.
+
+- **Env:** `CI_FILE` retargets the first default (repo-relative or absolute,
+  same name as the two molecule scripts), for a consumer whose kubectl pin
+  lives somewhere other than `.gitlab-ci.yml`. The extraction is a `dl.k8s.io`
+  regex over whatever text it is handed, so the file's format is irrelevant —
+  but the two failure messages still name `.gitlab-ci.yml` /
+  `versions-configmap.yaml`, which is the conventional layout, not the resolved
+  path.
 
 ### `extract-prometheus-config.py` + `lint-prometheus-config.sh` (PyYAML)
 
@@ -391,6 +431,9 @@ one [VERSIONING.md](VERSIONING.md) forbids: a branch deleted after merge takes
 the include with it, and until then the pipeline can change behaviour with no
 commit in the consuming repo at all.
 
+- **Forge: gitlab-only** — its subject is the `include:` block. A GitHub
+  consumer has no `include:` to drift (it vendors workflows), so the gate has
+  nothing to guard there and is simply not wired.
 - **Flags:** `--ci-file PATH` (default `<repo root>/.gitlab-ci.yml`),
   `--project` (default `eric/weisssrv-lib`), `--ref-var` (default
   `WEISSSRV_LIB_REF`), `--fix`.
@@ -433,6 +476,10 @@ credit, so a lint job mentioning the same path cannot fake it. Deletions are
 excluded (`--diff-filter=d`); an invalid or unrelated base ref exits 2 instead of
 reporting "no changes".
 
+- **Forge: gitlab-only.** It reads job names, `stage:` and `changes:` out of
+  GitLab CI YAML, and takes its diff base from `CI_MERGE_REQUEST_DIFF_BASE_SHA`
+  / `CI_COMMIT_BEFORE_SHA` (a base ref may also be passed as `$1`, which is how
+  it runs locally).
 - **Config** (`scripts/deploy-coverage.conf`, or `$DEPLOY_COVERAGE_CONFIG`):
   `[settings]` (`roles_dir`, `playbooks_dir`, `inventory_dir`, `ci_file`,
   `job_prefix`, `job_stage`) plus `[roles]` / `[playbooks]` / `[inventory]`
@@ -456,6 +503,8 @@ that `needs:` every entry hits GitLab's hard 50-needs-per-job limit).
 
 - **Env:** `CI_FILE`, `ROLES_DIR`, `INTEGRATION_DIR`, `MOLECULE_JOB`,
   `INTEGRATION_JOB`, `UNTESTED_ROLES`, `MAX_MATRIX_ENTRIES`.
+- **Forge: gitlab-only** — the disk half is neutral, the matrix it compares
+  against is `parallel:matrix` in a GitLab CI file.
 
 ### `generate-molecule-pipeline.py` (PyYAML)
 
@@ -470,6 +519,9 @@ generate-molecule-pipeline.py [BASE_SHA | --diff-base SHA | --changed-files-from
     [-o out.yml] [--repo DIR] [--print-graph]
 ```
 
+- **Forge: gitlab-only** — it reads a GitLab `parallel:matrix` and emits a
+  GitLab child-pipeline YAML. The dependency graph it derives (roles →
+  scenarios → affected set) is forge-neutral and lives in `compute_affected`.
 - **Env:** `CI_FILE`, `ROLES_DIR`, `INTEGRATION_DIR` — repo-relative locations,
   same names as `check-molecule-matrix-coverage.sh`, so one CI `variables:` block
   configures both (e.g. `ROLES_DIR=ansible_collections/<ns>/<name>/roles` for a

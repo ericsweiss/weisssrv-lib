@@ -116,6 +116,32 @@
         fail_msg: "TLS branch of gitlab.rb.j2 did not render nginx TLS settings (cert paths or TLS 1.3 floor)"
         success_msg: "TLS branch renders listen_https=true, the cert paths, and the TLS 1.3-only floor"
 
+    - name: Verify the postgres_exporter lines are omitted by default
+      ansible.builtin.assert:
+        that:
+          # Empty vars must emit nothing, so Omnibus keeps its own defaults
+          # (exporter on, localhost:9187).
+          - gitlab_config is not search('postgres_exporter')
+        fail_msg: "the opt-in postgres_exporter overrides leaked into the default render"
+        success_msg: "postgres_exporter is left to the Omnibus defaults by default"
+
+    - name: Read the postgres-exporter branch render
+      ansible.builtin.slurp:
+        src: /tmp/gitlab.rb.pgexporter
+      register: gitlab_rb_pgexporter_content
+
+    - name: Verify the postgres_exporter branch renders enable + listen_address
+      ansible.builtin.assert:
+        that:
+          - >-
+            (gitlab_rb_pgexporter_content.content | b64decode)
+            is search("(?m)^postgres_exporter\\['enable'\\] = true$")
+          - >-
+            (gitlab_rb_pgexporter_content.content | b64decode)
+            is search("(?m)^postgres_exporter\\['listen_address'\\] = \"0.0.0.0:9187\"$")
+        fail_msg: "postgres_exporter overrides did not render as Ruby literals"
+        success_msg: "postgres_exporter renders enable + a published listen_address"
+
     - name: Verify Let's Encrypt is disabled
       ansible.builtin.assert:
         that:

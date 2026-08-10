@@ -43,6 +43,46 @@
           - "'9205:9205' in nextcloud_compose_doc.services['nextcloud-exporter'].ports"
         fail_msg: "port bindings are wrong"
 
+    - name: Assert the opt-in postgres exporter is absent by default
+      ansible.builtin.assert:
+        that:
+          - "'nextcloud-postgres-exporter' not in nextcloud_compose_doc.services"
+          - (nextcloud_compose_raw.content | b64decode) is not search('9187')
+        fail_msg: "the opt-in postgres exporter leaked into the default compose file"
+
+    # Enabled branch (side-rendered in converge).
+    - name: Read the postgres-exporter compose render
+      ansible.builtin.slurp:
+        src: /tmp/nextcloud-compose-pgexporter.yml
+      register: nextcloud_pgexporter_raw
+
+    - name: Parse the postgres-exporter render as YAML (structural validity)
+      ansible.builtin.set_fact:
+        nextcloud_pgexporter_doc: "{{ nextcloud_pgexporter_raw.content | b64decode | from_yaml }}"
+
+    - name: Assert the enabled branch adds a pinned exporter wired to the stack DB
+      ansible.builtin.assert:
+        that:
+          - "'nextcloud-postgres-exporter' in nextcloud_pgexporter_doc.services"
+          - >-
+            nextcloud_pgexporter_doc.services['nextcloud-postgres-exporter'].image
+            == 'quay.io/prometheuscommunity/postgres-exporter:0.19.0'
+          - "'9187:9187' in nextcloud_pgexporter_doc.services['nextcloud-postgres-exporter'].ports"
+          # Credentials reuse the stack's .env, split across URI/USER/PASS.
+          - >-
+            nextcloud_pgexporter_doc.services['nextcloud-postgres-exporter'].environment.DATA_SOURCE_URI
+            == 'nextcloud-db:5432/nextcloud?sslmode=disable'
+          - >-
+            nextcloud_pgexporter_doc.services['nextcloud-postgres-exporter'].environment.DATA_SOURCE_USER
+            == 'nextcloud'
+          - >-
+            nextcloud_pgexporter_doc.services['nextcloud-postgres-exporter'].environment.DATA_SOURCE_PASS
+            == '${NEXTCLOUD_POSTGRES_PASSWORD}'
+          # The rest of the stack is unchanged by the toggle.
+          - "'nextcloud' in nextcloud_pgexporter_doc.services"
+          - "'nextcloud-exporter' in nextcloud_pgexporter_doc.services"
+        fail_msg: "the enabled postgres exporter did not render as a pinned, DB-wired service"
+
     - name: Assert the hostnames derived from the domain inputs
       ansible.builtin.assert:
         that:

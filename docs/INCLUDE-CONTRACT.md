@@ -49,6 +49,13 @@ bind per entry and therefore need an entry each. `docker-build`, `pr-agent`,
 NOT included by weisssrv — it keeps local equivalents or has no need — so a
 change to those six cannot regress weisssrv's pipeline.
 
+**A GitHub-hosted consumer includes nothing.** Actions has no equivalent of
+`include: project:` for a private library, so such a consumer (the app
+template's CI shape B) VENDORS workflows and re-vendors deliberately — see
+`ci/release/semantic-release.yml` below for the one reference workflow this repo
+ships. The scripts those workflows run are shared unchanged; which of them are
+forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
+
 ## Conventions shared by every template
 
 - **`tags` (array)** — runner tag(s). Default `["infrastructure"]` (weisssrv's

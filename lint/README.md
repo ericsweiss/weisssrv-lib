@@ -30,6 +30,10 @@ Two pairs must be vendored together or they do nothing:
   points the analyzer at your gitleaks config. Vendoring only the first gives a
   scan with none of your allowlist entries, which now **fails** the job
   (`allow_failure: false`).
+  `secret-detection-ruleset.toml` is the only forge-coupled file in this
+  directory: it exists to configure GitLab's managed analyzer. A GitHub
+  consumer vendors `gitleaks.toml` alone and runs gitleaks itself; every other
+  config here is tool config and is forge-neutral.
 - **`ruff.toml` + `ci/lint/python-lint.yml`'s `config` input.** With an empty
   `config` ruff uses its own discovery, which will not find a file at
   `lint/ruff.toml` — pass the full argument or put the file where ruff looks.

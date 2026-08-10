@@ -93,6 +93,19 @@ nextcloud_http_bind_port: 8080
 nextcloud_exporter_port: 9205
 nextcloud_serverinfo_token: "{{ lookup('ansible.builtin.env', 'NEXTCLOUD_SERVERINFO_TOKEN', default='') }}"
 
+# Opt-in postgres_exporter sidecar: database-level metrics, which the
+# application-level nextcloud-exporter above does not carry. Off by default, so
+# nothing is added to the stack unless a site asks for it. It reuses the stack's
+# own DB credentials from .env, so it introduces no new secret. Enabling it
+# requires a pinned image — set the version, or override
+# nextcloud_postgres_exporter_image for a different registry or build.
+nextcloud_postgres_exporter_enabled: false
+nextcloud_postgres_exporter_version: ""
+nextcloud_postgres_exporter_image: "quay.io/prometheuscommunity/postgres-exporter:{{ nextcloud_postgres_exporter_version }}"
+# Host port, published on all interfaces like the app exporter above — the
+# endpoint is unauthenticated, so scope it with the guest firewall.
+nextcloud_postgres_exporter_port: 9187
+
 # Host nginx TLS front end. The site's cert distributor (acme_certs) delivers
 # the real cert to these paths and reloads nginx; a self-signed placeholder is
 # seeded on a fresh guest so nginx can start before the first push.

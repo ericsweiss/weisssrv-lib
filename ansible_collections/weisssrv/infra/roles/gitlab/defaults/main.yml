@@ -109,6 +109,15 @@ gitlab_nginx_real_ip_trusted_addresses: []
 gitlab_monitoring_whitelist:
   - 127.0.0.1
 
+# Omnibus's bundled postgres_exporter (part of prometheus_monitoring). Both are
+# EMPTY by default, which omits the gitlab.rb lines entirely and leaves the
+# Omnibus defaults in force: the exporter runs, bound to localhost:9187.
+# Set the listen address to publish it for an off-host Prometheus — the endpoint
+# is unauthenticated, so scope it with the guest firewall. Set the enable flag
+# (true/false) only to override Omnibus's own choice.
+gitlab_postgres_exporter_enabled: ""
+gitlab_postgres_exporter_listen_address: ""
+
 # Backup landing zone. The default is a local path on the root disk (host-image
 # snapshots are then the only DR copy).
 gitlab_backup_path: "/var/opt/gitlab/backups"

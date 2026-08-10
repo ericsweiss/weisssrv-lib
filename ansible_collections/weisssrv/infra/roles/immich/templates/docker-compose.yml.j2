@@ -76,6 +76,25 @@ services:
       start_period: 60s
     restart: always
 
+{% if immich_postgres_exporter_enabled %}
+  # Opt-in database-level metrics. The credentials are the stack's own, split
+  # across URI/USER/PASS rather than a single DSN so a password with URL-unsafe
+  # characters needs no percent-encoding.
+  postgres-exporter:
+    image: {{ immich_postgres_exporter_image }}
+    environment:
+      DATA_SOURCE_URI: "database:5432/{{ immich_db_database_name }}?sslmode=disable"
+      DATA_SOURCE_USER: ${DB_USERNAME}
+      DATA_SOURCE_PASS: ${DB_PASSWORD}
+    ports:
+      # Unauthenticated: scope access at the site firewall.
+      - "{{ immich_postgres_exporter_port }}:9187"
+    depends_on:
+      database:
+        condition: service_healthy
+    restart: always
+
+{% endif %}
 # Fixed subnet AND gateway so IMMICH_TRUSTED_PROXIES names a guaranteed hop.
 # The host nginx proxies to immich-server on 127.0.0.1; docker-proxy rewrites
 # that source to this network's gateway, so immich-server's REMOTE_ADDR is the

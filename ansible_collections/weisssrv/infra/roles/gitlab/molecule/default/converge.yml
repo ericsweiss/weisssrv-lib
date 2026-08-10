@@ -41,6 +41,17 @@
         gitlab_nginx_listen_https: true
         gitlab_nginx_listen_port: 443
 
+    # The opt-in postgres_exporter overrides. The converged file covers the
+    # default (both empty -> no lines, Omnibus defaults stand).
+    - name: Render gitlab.rb with the postgres exporter published  # noqa: no-relative-paths
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/gitlab.rb.j2"
+        dest: /tmp/gitlab.rb.pgexporter
+        mode: "0600"
+      vars:
+        gitlab_postgres_exporter_enabled: true
+        gitlab_postgres_exporter_listen_address: "0.0.0.0:9187"
+
     # Whitespace-stripping contract: an overridden gitlab_backup_skip containing
     # spaces must render to a single comma-separated SKIP value.
     - name: Render backup wrapper with a spaced SKIP override  # noqa: no-relative-paths

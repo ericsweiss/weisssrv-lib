@@ -230,3 +230,16 @@ prometheus_monitoring['enable'] = true
 # matches the real_ip from X-Forwarded-For, so a proxied probe is matched on its
 # real client address.
 gitlab_rails['monitoring_whitelist'] = {{ rb(gitlab_monitoring_whitelist) }}
+{# The blank line separating each block below is INSIDE it: with both inputs
+   empty the render must be byte-identical to the pre-seam file, or every
+   consumer's first converge notifies a full `gitlab-ctl reconfigure`. #}
+{% if gitlab_postgres_exporter_enabled | string | length > 0 %}
+
+postgres_exporter['enable'] = {{ gitlab_postgres_exporter_enabled | bool | lower }}
+{% endif %}
+{% if gitlab_postgres_exporter_listen_address %}
+
+# Unauthenticated database metrics. Anything beyond localhost is reachable by
+# every host the firewall lets through — scope it there.
+postgres_exporter['listen_address'] = {{ rb(gitlab_postgres_exporter_listen_address) }}
+{% endif %}

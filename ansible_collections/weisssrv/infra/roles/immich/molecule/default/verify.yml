@@ -35,6 +35,48 @@
         fail_msg: "docker-compose.yml missing expected image pins / telemetry / network config"
         success_msg: "docker-compose.yml pins images and wires metrics, config, trusted proxy, network"
 
+    - name: Verify the postgres exporter is absent by default
+      ansible.builtin.assert:
+        that:
+          - (immich_compose.content | b64decode) is not search('postgres-exporter')
+          - (immich_compose.content | b64decode) is not search('9187')
+        fail_msg: "the opt-in postgres exporter leaked into the default compose file"
+        success_msg: "docker-compose.yml carries no postgres exporter by default"
+
+    # Enabled branch (side-rendered in converge).
+    - name: Slurp the postgres-exporter compose render
+      ansible.builtin.slurp:
+        src: /tmp/immich-compose-pgexporter.yml
+      register: immich_pgexporter_raw
+
+    - name: Parse the postgres-exporter render as YAML (structural validity)
+      ansible.builtin.set_fact:
+        immich_pgexporter_doc: "{{ immich_pgexporter_raw.content | b64decode | from_yaml }}"
+
+    - name: Verify the enabled branch adds a pinned exporter wired to the stack DB
+      ansible.builtin.assert:
+        that:
+          - "'postgres-exporter' in immich_pgexporter_doc.services"
+          - >-
+            immich_pgexporter_doc.services['postgres-exporter'].image
+            == 'quay.io/prometheuscommunity/postgres-exporter:0.19.0'
+          - "'9187:9187' in immich_pgexporter_doc.services['postgres-exporter'].ports"
+          # Credentials reuse the stack's .env, split across URI/USER/PASS.
+          - >-
+            immich_pgexporter_doc.services['postgres-exporter'].environment.DATA_SOURCE_URI
+            == 'database:5432/immich?sslmode=disable'
+          - >-
+            immich_pgexporter_doc.services['postgres-exporter'].environment.DATA_SOURCE_USER
+            == '${DB_USERNAME}'
+          - >-
+            immich_pgexporter_doc.services['postgres-exporter'].environment.DATA_SOURCE_PASS
+            == '${DB_PASSWORD}'
+          # The rest of the stack is unchanged by the toggle.
+          - "'immich-server' in immich_pgexporter_doc.services"
+          - "'database' in immich_pgexporter_doc.services"
+        fail_msg: "the enabled postgres exporter did not render as a pinned, DB-wired service"
+        success_msg: "enabling the postgres exporter adds a pinned service on 9187 using the stack's own credentials"
+
     # Compose .env (secret) — perms + content
     - name: Stat the compose .env
       ansible.builtin.stat:

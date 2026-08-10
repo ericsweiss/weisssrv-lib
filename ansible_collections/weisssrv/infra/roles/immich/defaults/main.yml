@@ -78,6 +78,22 @@ immich_telemetry_include: all
 immich_api_metrics_port: 8081
 immich_microservices_metrics_port: 8082
 
+# Opt-in postgres_exporter sidecar: database-level metrics, which the telemetry
+# above (application-level) does not carry. Off by default, so nothing is added
+# to the stack unless a site asks for it. It reads the stack's own DB
+# credentials from .env, so it introduces no new secret. Enabling it requires a
+# pinned image — set the version (and optionally the digest), or override
+# immich_postgres_exporter_image outright for a different registry or build.
+immich_postgres_exporter_enabled: false
+immich_postgres_exporter_version: ""
+immich_postgres_exporter_digest: ""
+immich_postgres_exporter_image: >-
+  quay.io/prometheuscommunity/postgres-exporter:{{ immich_postgres_exporter_version
+  }}{{ ('@' ~ immich_postgres_exporter_digest) if immich_postgres_exporter_digest else '' }}
+# Host port, published on all interfaces like the metrics ports above — the
+# endpoint is unauthenticated, so scope it with the guest firewall.
+immich_postgres_exporter_port: 9187
+
 # SSO (OIDC). The issuer is the provider's application URL — Immich appends
 # /.well-known/openid-configuration itself. Required.
 immich_oauth_issuer_url: ""

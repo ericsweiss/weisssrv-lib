@@ -16,7 +16,8 @@ compose scaffolding is `weisssrv.infra.compose_app`.
    `database` (Immich's release-pinned Postgres image with the vector
    extensions) and `redis` (Valkey). The app binds loopback only; native
    Prometheus metrics are published on `immich_api_metrics_port` /
-   `immich_microservices_metrics_port`. Lifecycle: `immich-compose.service`.
+   `immich_microservices_metrics_port`, and an opt-in `postgres-exporter`
+   sidecar adds database-level metrics. Lifecycle: `immich-compose.service`.
 4. **System config** (`immich-config.json`) — the `IMMICH_CONFIG_FILE`
    declaring OIDC, `machineLearning.urls` and `backup.database.enabled: false`.
    With this file present, the admin UI settings become read-only.
@@ -54,6 +55,9 @@ credentials are asserted `no_log`.
 | `immich_compose_subnet` / `immich_compose_gateway` | Fixed compose bridge (the gateway is `IMMICH_TRUSTED_PROXIES`) | `172.28.0.0/16`, `172.28.0.1` |
 | `immich_db_username` / `immich_db_database_name` | Postgres superuser + database | `postgres`, `immich` |
 | `immich_telemetry_include`, `immich_api_metrics_port`, `immich_microservices_metrics_port` | Native Prometheus telemetry | `all`, `8081`, `8082` |
+| `immich_postgres_exporter_enabled` | Add the `postgres-exporter` sidecar (DB-level metrics) | `false` |
+| `immich_postgres_exporter_version` / `_digest` / `_image` | Its image pin; the image derives from the version + optional digest, or override it outright | `""`, `""`, `quay.io/prometheuscommunity/postgres-exporter:<version>` |
+| `immich_postgres_exporter_port` | Host port for the exporter (unauthenticated — scope it at the firewall) | `9187` |
 | `immich_oauth_scope` / `_button_text` / `_storage_label_claim` | OIDC presentation + claims | `openid email profile`, `Sign in with SSO`, `preferred_username` |
 | `immich_oauth_auto_register` / `_auto_launch` | Provision on first login / skip the login page | `true` / `true` |
 | `immich_oauth_default_storage_quota` | Per-user quota in GiB for new accounts; empty = unlimited | `""` |

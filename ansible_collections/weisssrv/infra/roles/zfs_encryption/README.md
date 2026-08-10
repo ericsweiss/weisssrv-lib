@@ -126,6 +126,35 @@ go `failed` on a locked boot and needs no `reset-failed`.
 | `zfs_encryption_fetch_timeout_seconds` | no | Per-phase deadline inside one script invocation (120). |
 | `zfs_encryption_fetch_retry_seconds` | no | Sleep between Connect retries (5); jittered. |
 | `zfs_encryption_install_zfsutils` | no | Set false only in CI images without `zfsutils-linux`; also skips the pool-is-encrypted assert. |
+| `zfs_encryption_token_path` | no | Where the Connect bearer token lands (`/etc/onepassword-connect/token`); its parent directory is created `0700`. |
+| `zfs_encryption_key_command` | no | Secrets-backend seam — see below. Empty (default) = 1Password Connect. |
+
+## Using a secrets backend other than 1Password Connect
+
+`zfs_encryption_key_command` replaces the Connect fetch with any command that
+prints the passphrase on stdout. It is a **template-level** switch: with it empty
+the rendered `zfs-load-key.sh` is byte-identical to the Connect-only script, and
+with it set the Connect code is not rendered at all — no `curl` to an access
+point, no token deployed (an existing one is removed), and
+`zfs_encryption_connect_url` / `_token` are neither required nor asserted.
+
+```yaml
+zfs_encryption_key_command: >-
+  vault kv get -field="$ZFS_ENCRYPTION_FIELD" "secret/zfs/$ZFS_ENCRYPTION_POOL"
+```
+
+The command runs as root from `zfs-load-key@<pool>.service` with
+`ZFS_ENCRYPTION_POOL`, `ZFS_ENCRYPTION_ITEM` and `ZFS_ENCRYPTION_FIELD` exported
+— item/field are opaque locators, so the same `zfs_encryption_pools` shape
+addresses a Vault path or an SOPS key. Everything around the fetch is unchanged:
+pool-import wait, the already-unlocked short-circuit, per-encryption-root
+`zfs load-key`, and the mount/guest-start ordering units.
+
+Two obligations come with it. The command owns its own retry and timeout
+(`zfs_encryption_fetch_*` do not apply to it) — a non-zero exit is reported as
+rc 2, which the unit retries, and empty output as rc 3, which stops it. And it
+must work at **boot**, before any encrypted dataset is mounted: keep its binary
+and credentials on the root filesystem.
 
 ## Required 1Password items
 

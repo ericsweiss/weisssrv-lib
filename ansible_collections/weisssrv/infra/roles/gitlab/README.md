@@ -54,6 +54,7 @@ writes into both when they are present.
 | `gitlab_nginx_listen_https` / `_listen_port` / `_ssl_certificate` / `_ssl_certificate_key` / `_ssl_protocols` | Web-UI TLS | no |
 | `gitlab_nginx_real_ip_trusted_addresses` | Proxy CIDRs whose `X-Forwarded-For` is trusted; empty omits the directive | no (`[]`) |
 | `gitlab_monitoring_whitelist` | Sources allowed on the unauthenticated monitoring endpoints | no (`["127.0.0.1"]`) |
+| `gitlab_postgres_exporter_enabled` / `_listen_address` | Omnibus's bundled `postgres_exporter`; **empty omits the line**, leaving the Omnibus defaults (on, `localhost:9187`). Set the listen address (e.g. `0.0.0.0:9187`) to publish unauthenticated DB metrics — scope them at the firewall | no (`""` / `""`) |
 | `gitlab_backup_path` / `_keep_time` / `_skip` | Landing zone, retention, `SKIP=` list | no |
 | `gitlab_backup_nfs_enabled` + `_nfs_server` / `_nfs_export` / `_nfs_options` / `_mountpoint` | NFS-backed landing zone | no (`false`) |
 | `gitlab_backup_oncalendar` / `_timer_random_delay` / `_service_timeout` | Backup schedule and ceiling | no |

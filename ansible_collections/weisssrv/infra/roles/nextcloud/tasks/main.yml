@@ -60,6 +60,18 @@
     quiet: true
   when: nextcloud_backup_nfs_enabled | default(false)
 
+- name: Assert the Postgres exporter image pin is present
+  ansible.builtin.assert:
+    that:
+      # Must end in a tag or digest — an unset version leaves a trailing ":".
+      - nextcloud_postgres_exporter_image is search('[:@][^:@/]+$')
+    fail_msg: >-
+      nextcloud_postgres_exporter_enabled is set, so
+      nextcloud_postgres_exporter_version (or a fully pinned
+      nextcloud_postgres_exporter_image) is required.
+    quiet: true
+  when: nextcloud_postgres_exporter_enabled | default(false)
+
 - name: Assert the outgoing-mail inputs are present
   ansible.builtin.assert:
     that:

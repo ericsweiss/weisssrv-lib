@@ -34,3 +34,15 @@
         mode: "0640"
       vars:
         immich_bootstrap_mode: true
+
+    # Branch coverage for the opt-in postgres exporter. The default (off) state
+    # is asserted on the converged compose file; this render covers the enabled
+    # one without adding a service to it.
+    - name: Render the compose file with the postgres exporter on  # noqa: no-relative-paths
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/docker-compose.yml.j2"
+        dest: /tmp/immich-compose-pgexporter.yml
+        mode: "0640"
+      vars:
+        immich_postgres_exporter_enabled: true
+        immich_postgres_exporter_version: "0.19.0"

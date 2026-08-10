@@ -34,7 +34,9 @@
       zfs_encryption_connect_url is empty — set it, or set
       zfs_encryption_internal_domain (alias: internal_domain) that it derives
       from. Without it every per-pool unlock unit curls an empty URL forever.
-  when: zfs_encryption_pools | default([]) | length > 0
+  when:
+    - zfs_encryption_pools | default([]) | length > 0
+    - zfs_encryption_key_command | default('') | length == 0
 
 - name: Validate Connect token is present
   ansible.builtin.assert:
@@ -43,22 +45,28 @@
       zfs_encryption_connect_token is empty. Run with `op run -- env
       ZFS_ENCRYPTION_CONNECT_TOKEN="$(op read 'op://Homelab/ZFS Encryption Connect Token/credential')"
       ansible-playbook ...`.
-  when: zfs_encryption_pools | default([]) | length > 0
+  when:
+    - zfs_encryption_pools | default([]) | length > 0
+    - zfs_encryption_key_command | default('') | length == 0
 
 # Token deploy is gated on zfs_encryption_pools: a host that never loads a key
-# has no business holding the Connect credential (blast radius).
-- name: Ensure /etc/onepassword-connect directory exists
+# has no business holding the Connect credential (blast radius). It is also
+# skipped when zfs_encryption_key_command replaces the Connect fetch — the
+# rendered script then has no Connect code to authenticate.
+- name: Ensure the Connect token directory exists
   ansible.builtin.file:
-    path: /etc/onepassword-connect
+    path: "{{ zfs_encryption_token_path | dirname }}"
     state: directory
     owner: root
     group: root
     mode: "0700"
-  when: zfs_encryption_pools | default([]) | length > 0
+  when:
+    - zfs_encryption_pools | default([]) | length > 0
+    - zfs_encryption_key_command | default('') | length == 0
 
 - name: Deploy 1Password Connect access token
   ansible.builtin.copy:
-    dest: /etc/onepassword-connect/token
+    dest: "{{ zfs_encryption_token_path }}"
     content: "{{ zfs_encryption_connect_token }}\n"
     owner: root
     group: root
@@ -66,16 +74,19 @@
   when:
     - zfs_encryption_connect_token | length > 0
     - zfs_encryption_pools | default([]) | length > 0
+    - zfs_encryption_key_command | default('') | length == 0
   no_log: true
 
 # Fail-closed cleanup: this role is the sole deployer/consumer of the token, so
-# emptying zfs_encryption_pools takes the credential off the host.
+# emptying zfs_encryption_pools — or moving to another backend — takes the
+# credential off the host.
 - name: Remove stale Connect token on non-encryption hosts
   ansible.builtin.file:
-    path: /etc/onepassword-connect/token
+    path: "{{ zfs_encryption_token_path }}"
     state: absent
-  when:
-    - zfs_encryption_pools | default([]) | length == 0
+  when: >-
+    zfs_encryption_pools | default([]) | length == 0
+    or zfs_encryption_key_command | default('') | length > 0
 
 - name: Ensure /etc/zfs/encryption/pools directory exists
   ansible.builtin.file:

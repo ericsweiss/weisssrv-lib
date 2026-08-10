@@ -19,6 +19,21 @@ zfs_encryption_connect_vault: "Homelab"
 # a non-empty zfs_encryption_pools.
 zfs_encryption_connect_token: ""
 
+# Where the Connect bearer token lands on the host. The script reads it 0400
+# root and pipes it to curl on stdin; the parent directory is created 0700.
+zfs_encryption_token_path: /etc/onepassword-connect/token
+
+# SECRETS-BACKEND SEAM. Empty (default) = fetch each passphrase from 1Password
+# Connect, as described above. Set to a shell command that PRINTS the passphrase
+# on stdout to use any other backend; the Connect code is then not rendered into
+# zfs-load-key.sh at all, and no Connect URL/token/vault is required or deployed.
+# The command runs as root from the per-pool unit with $ZFS_ENCRYPTION_POOL,
+# $ZFS_ENCRYPTION_ITEM and $ZFS_ENCRYPTION_FIELD in the environment (item/field
+# are opaque locators — a Vault path, an SOPS key, whatever the backend uses).
+# It owns its own retry/timeout: a non-zero exit maps to rc 2 (transient, the
+# unit retries), empty output to rc 3 (config error, the unit stops). See README.
+zfs_encryption_key_command: ""
+
 # Per-host list of encrypted pools and their 1Password items.
 # Format:
 #   - name: tank          # ZFS pool name

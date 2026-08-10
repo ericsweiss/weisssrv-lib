@@ -19,6 +19,13 @@ acme_certs_email: ""
 acme_certs_sh_version: "3.1.2"
 acme_certs_sh_tarball_sha256: "a51511ad0e2912be45125cf189401e4ae776ca1a29d5768f020a1e35a9560186"
 
+# DNS-provider seam: the acme.sh dnsapi hook DNS-01 issuance uses. The role
+# checks the hook is present and names it in the issuance instructions; the
+# provider credentials are exported by the operator at issuance time, so any
+# hook the pinned tarball ships (dns_route53, dns_gandi_livedns, …) works by
+# setting this alone.
+acme_certs_dns_hook: dns_cf
+
 # Where the issued cert lands on this host, and the group that may read it.
 acme_certs_local_cert_dir: /etc/ssl/private
 acme_certs_local_cert_group: root

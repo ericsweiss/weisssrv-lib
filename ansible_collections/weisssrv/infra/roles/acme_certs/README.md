@@ -34,6 +34,7 @@ the role is a no-op.
 | `acme_certs_skip_distribution` | Skip the proactive push at the end | no (`false`) |
 | `acme_certs_receiver_path` | Receiver path on each sudo target | no (`/usr/local/sbin/cert-receive`) |
 | `acme_certs_sh_version` / `_sh_tarball_sha256` | Pinned acme.sh release | no |
+| `acme_certs_dns_hook` | acme.sh dnsapi hook used for DNS-01 (any hook the pinned tarball ships) | no (`dns_cf`) |
 | `acme_certs_distribution_targets` | Target list (schema below) | no (`[]`) |
 
 ### Target schema
@@ -127,6 +128,10 @@ export CF_Account_ID=...
   --keylength ec-256 \
   -d "<domain>" -d "*.<domain>"
 ```
+
+Another DNS provider is `acme_certs_dns_hook` plus that hook's own credential
+environment: the role checks for the hook, names it in these instructions, and
+does not otherwise care which provider signs the challenge.
 
 `--server letsencrypt` is passed explicitly so the command also works against a
 pre-existing acme.sh install that this role did not pin (acme.sh 3.x otherwise
