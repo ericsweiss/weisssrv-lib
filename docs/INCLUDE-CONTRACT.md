@@ -381,6 +381,58 @@ Conventions shared by every template:
   (`release` stage, `tags: []`), so the tag every consumer pins is cut by the
   merge that earns it and the template is exercised by the MR that changes it.
 
+## ci/maintenance/version-check.yml
+
+- **New capability.** The read-only half of the version pair: reports available
+  updates and publishes a report artifact, changing nothing. `version-bump-bot`
+  is the other half — it rewrites pins and raises the MR. A repo wants BOTH:
+  this one so an MR author sees drift while they are already looking, the bot so
+  drift is acted on when nobody is.
+- **Inputs:** `job_name` (version-check), `stage` (lint), `image` (python:3.11),
+  `tags`, `setup_command` (`true` — a no-op, matching `python-tests`),
+  `check_command` (**required** — the
+  command that reports and writes the report), `report_path`
+  (`version-report.json`), `changes` (MR-rule filter, defaulting to `["**/*"]` —
+  NOT `[]`, which matches nothing and would delete the job silently). There is
+  deliberately no credential input; see below.
+- **The template installs nothing, deliberately.** `setup_command` defaults to a
+  no-op because the tools a checker needs are a property of that checker, which
+  the library cannot see — the same reason `check_command` has no default. A
+  guessed default would have to float or rot, and floating is the worse failure
+  here: soft-fail means a checker that stops importing after an upstream release
+  produces no report, and "no report" reads as "no updates". Install what your
+  checker needs, pinned, in your own `setup_command`.
+- **Soft-fail on every trigger, deliberately.** Most checkers signal "updates
+  found" with rc=1, which is information rather than a defect — a scheduled or
+  MR pipeline must not go red because upstream shipped a release.
+- **`when: always` publishes a report that exists; it does not create one.** It
+  means a non-zero exit will not suppress a report the check already wrote — not
+  that a report appears regardless. A `check_command` that dies before writing
+  `report_path` leaves nothing to upload, and the job goes green-ish (soft-fail)
+  with no artifact at all. Write the report as early as the data allows, and
+  treat "no artifact" as a check that failed before reporting rather than as a
+  clean run.
+- **`when: manual` carries its own `allow_failure: true`.** A rules-based manual
+  job defaults to `allow_failure: false`, which leaves every web pipeline sitting
+  "blocked" on a job nobody intended to play.
+- **No credential retrieval in this job, by design.** `setup_command` and
+  `check_command` both come from the `.gitlab-ci.yml` of the ref being tested, so
+  on a merge request they *are* the code under review, sharing one shell. Any
+  credential this job fetched would be readable by that code, and any guard
+  around the fetch is defeatable by the step that runs first — an earlier
+  `setup_command` can export `CI_COMMIT_REF_PROTECTED=true`, or eval the fetch
+  command itself. A gate the attacker controls is not a gate. A consumer needing
+  a token passes it as a masked CI variable, scoped to what it would tolerate
+  leaking: an MR comment needs only Reporter + `api`, which can comment and read
+  but not push. Vault-wide or user tokens do not belong here.
+- **Credential handling and report creation are the CHECKER's job, not this
+  template's.** The template runs `check_command` and uploads `report_path`; it
+  does not fetch, validate or fall back on anything. So "it degrades gracefully
+  without a token" is a property a consumer's checker either has or does not —
+  `version-check-ci.py` in weisssrv skips its MR comment and still writes the
+  report, but an arbitrary checker may just as easily exit before writing
+  anything, and this job cannot rescue that.
+
 ## ci/maintenance/version-bump-bot.yml
 
 - **New capability.** A scheduled job that runs the consumer's own version-check

@@ -1,0 +1,109 @@
+spec:
+  inputs:
+    job_name:
+      default: version-check
+    stage:
+      default: lint
+    image:
+      default: python:3.11
+    tags:
+      type: array
+      default: ["infrastructure"]
+      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+    setup_command:
+      default: 'true'
+      description: >-
+        Shell command run before the check, to install whatever `check_command`
+        needs. Defaults to a no-op and deliberately guesses NOTHING: the tools
+        required are a property of the checker, which this template cannot see —
+        the same reason `check_command` has no default. A guessed default would
+        also have to float or rot, and a floating install is the worse of the
+        two here: the job is soft-fail, so a checker that stops importing after
+        an upstream release reports nothing at all, and "no report" is easy to
+        read as "no updates". PIN what you install.
+    check_command:
+      description: >-
+        REQUIRED. Shell command that reports available updates and writes
+        `report_path`. It may exit 1 to signal "updates found"; this job is
+        soft-fail on every trigger, so that is reported rather than fatal.
+    report_path:
+      default: "version-report.json"
+      description: "Artifact the check writes; published on every outcome."
+    changes:
+      type: array
+      default: ["**/*"]
+      description: >-
+        `changes:` filter for the merge-request rule; the default matches every
+        merge request. NOT an empty list: `changes` is an OR over the paths it
+        lists, so `[]` has nothing to match and the job is simply never created —
+        a report that silently stops existing is worse than one that runs too
+        often. Pass narrower paths to filter it.
+---
+# Reports dependency/pin updates that are available, WITHOUT changing anything.
+#
+# This is the read-only half of the pair. ci/maintenance/version-bump-bot.yml is
+# the other half: a scheduled job that rewrites pins and raises the MR. A repo
+# wants BOTH — this one so an MR author sees drift while they are already
+# looking, the bot so drift gets acted on when nobody is looking.
+#
+# NO CREDENTIAL RETRIEVAL HERE, deliberately. `check_command` and
+# `setup_command` both come from the .gitlab-ci.yml of the ref being tested, so
+# on a merge request they ARE the code under review, running in one shell. A
+# credential fetched by this job is therefore readable by that code, and any
+# guard around the fetch is defeatable by the step that runs before it — an
+# earlier `setup_command` can export CI_COMMIT_REF_PROTECTED=true, or simply
+# eval the fetch command itself. A gate the attacker controls is not a gate.
+#
+# So a consumer that needs a token here passes it as a masked CI VARIABLE and
+# accepts that branch code can read it — which means scoping it to what you
+# would tolerate leaking. Posting an MR comment needs only Reporter and `api`;
+# a project access token at that level can comment and read, and cannot push.
+# Anything broader (a vault-wide secrets-manager token, a user PAT) does not
+# belong in a job that executes branch-controlled commands. If privileged work
+# is genuinely required, run it in a separate job triggered from a trusted ref.
+#
+# SOFT-FAIL ON EVERY TRIGGER, deliberately. "Updates are available" is rc=1 from
+# most checkers, and that is information, not a defect: a scheduled or MR
+# pipeline must not go red because upstream shipped a release. The artifact is
+# published `when: always` so the report survives whatever the exit code was.
+#
+# `when: manual` on web pipelines needs its own `allow_failure: true`: a
+# rules-based manual job defaults to allow_failure FALSE, which leaves every web
+# pipeline sitting "blocked" on a job nobody intended to play.
+"$[[ inputs.job_name ]]":
+  # Starts immediately rather than waiting out a build stage it has no
+  # dependency on. Soft-fail everywhere, so an earlier start is free.
+  needs: []
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.image ]]
+  tags: $[[ inputs.tags ]]
+  variables:
+    REPORT_PATH: "$[[ inputs.report_path ]]"
+  script:
+    # Block scalars, not bare interpolation — matching version-bump-bot: an
+    # unquoted command can otherwise be parsed as a YAML scalar of the wrong
+    # type before it ever reaches the shell.
+    - |
+      $[[ inputs.setup_command ]]
+    - |
+      $[[ inputs.check_command ]]
+  artifacts:
+    paths:
+      - "$[[ inputs.report_path ]]"
+    expire_in: 7 days
+    when: always
+  rules:
+    # Scheduled: the weekly sweep. Soft-fail — rc=1 only means updates exist.
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      allow_failure: true
+    # Web: manual, and explicitly soft-fail (see the note above).
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    # Merge requests: informational for whoever is already reading the diff.
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: $[[ inputs.changes ]]
+      allow_failure: true
+    # main: informational.
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      allow_failure: true
