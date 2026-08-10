@@ -134,7 +134,11 @@ def fix(path: Path, project: str = LIB_PROJECT, ref_var: str = REF_VAR) -> int:
     for n, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith("- project:") or stripped.startswith("project:"):
-            in_lib_entry = stripped.endswith(project)
+            # EXACT value equality, matching check(). A suffix test would treat
+            # `acme/eric/weisssrv-lib` as ours and rewrite a ref that check()
+            # never policed — a --fix that edits what it does not verify.
+            value = stripped.split(":", 1)[1].strip().strip("\"'")
+            in_lib_entry = value == project
             continue
         if in_lib_entry and stripped.startswith("ref:"):
             current = stripped.split(":", 1)[1].strip()

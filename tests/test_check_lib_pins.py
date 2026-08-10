@@ -152,3 +152,37 @@ def test_project_and_ref_var_are_overridable(tmp_path: Path) -> None:
     assert clp.check(p, project="acme/my-lib", ref_var="MY_LIB_REF") == []
     # Defaults would look at eric/weisssrv-lib, which has no MY_LIB_REF.
     assert clp.check(p) != []
+
+
+def test_fix_does_not_rewrite_a_project_whose_path_merely_ends_with_ours(
+    tmp_path: Path,
+) -> None:
+    """`--fix` must edit exactly what check() verifies, not a suffix match.
+
+    `acme/eric/weisssrv-lib` ends with the library's path but is a different
+    project. check() compares the whole value, so it never reports that entry —
+    a fix() that rewrote it would be editing a pin nothing verifies.
+    """
+    content = textwrap.dedent(
+        """\
+        variables:
+          WEISSSRV_LIB_REF: "v0.5.0"
+        include:
+          - project: acme/eric/weisssrv-lib
+            ref: v9.9.9
+            file: /ci/lint/yaml-lint.yml
+          - project: eric/weisssrv-lib
+            ref: v0.3.2
+            file: /ci/lint/shellcheck.yml
+        """
+    )
+    p = _write(tmp_path, content)
+    assert clp.fix(p) == 1  # only ours
+    refs = {
+        i["project"]: i["ref"]
+        for i in clp.load_ci(p)["include"]
+        if isinstance(i, dict) and i.get("project")
+    }
+    assert refs["eric/weisssrv-lib"] == "v0.5.0"
+    assert refs["acme/eric/weisssrv-lib"] == "v9.9.9"
+    assert clp.check(p) == []
