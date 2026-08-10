@@ -77,6 +77,11 @@ def parse_ci(text: str) -> dict:
         # operator-error path (exit 2) rather than reaching `doc.get(...)` and
         # surfacing as an AttributeError traceback.
         raise yaml.YAMLError("the top-level CI document must be a mapping")
+    variables = doc.get("variables")
+    if variables is not None and not isinstance(variables, dict):
+        # Same hole one level down: `variables: invalid` cleared the check
+        # above and then reached `.get(ref_var)` on a string.
+        raise yaml.YAMLError("`variables:` must be a mapping")
     return doc
 
 
@@ -340,10 +345,15 @@ def main(argv: list[str] | None = None) -> int:
     # An unreadable or malformed input is an OPERATOR error (wrong path, bad
     # permissions, broken YAML), not a pin finding — exit 2 so CI can tell the
     # two apart, and print one line rather than a traceback. Same contract as
-    # check-kubectl-version-pin.py. SystemExit from fix() is deliberately not
-    # caught here: those are its own refusals, already worded for the caller.
+    # check-kubectl-version-pin.py.
+    #
+    # This wraps the REAL calls rather than a preflight read: a preflight only
+    # proves the file was readable a moment ago, and the work re-reads it
+    # afterwards, outside the guard. SystemExit from fix() passes through
+    # untouched — it inherits BaseException, and those refusals are already
+    # worded for the caller.
     try:
-        load_ci(args.ci_file)
+        return _run(args)
     except (OSError, UnicodeDecodeError) as exc:
         print(f"ERROR: could not read {args.ci_file}: {exc}", file=sys.stderr)
         return 2
@@ -351,6 +361,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {args.ci_file} is not valid YAML: {exc}", file=sys.stderr)
         return 2
 
+
+def _run(args: argparse.Namespace) -> int:
     if args.fix:
         changed = fix(args.ci_file, args.project, args.ref_var)
         # Verify the result rather than trusting the rewrite. --fix cannot

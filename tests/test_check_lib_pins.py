@@ -677,3 +677,37 @@ def test_fix_refuses_an_anchor_defined_inside_the_include_block(
     with pytest.raises(SystemExit):
         clp.fix(p)
     assert p.read_text() == before
+
+
+def test_non_mapping_variables_is_an_operator_error(tmp_path, capsys) -> None:
+    """`variables: invalid` cleared the document check, then hit .get() on a str."""
+    p = tmp_path / ".gitlab-ci.yml"
+    p.write_text(
+        "variables: invalid\n"
+        "include:\n"
+        "  - project: eric/weisssrv-lib\n"
+        "    ref: v0.3.2\n"
+        "    file: /ci/a.yml\n"
+    )
+    rc = clp.main(["--ci-file", str(p)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "not valid YAML" in err
+    assert "Traceback" not in err
+
+
+def test_a_file_removed_after_the_guard_starts_still_exits_two(
+    tmp_path, capsys
+) -> None:
+    """The handler must wrap the REAL read, not a preflight that proved nothing.
+
+    A preflight only shows the file was readable a moment ago; the work
+    re-reads it afterwards. Deleting between the two is the cheap way to prove
+    the guard covers the read that matters.
+    """
+    p = tmp_path / ".gitlab-ci.yml"
+    p.write_text("include: []\n")
+    p.unlink()
+    rc = clp.main(["--ci-file", str(p)])
+    assert rc == 2
+    assert "could not read" in capsys.readouterr().err
