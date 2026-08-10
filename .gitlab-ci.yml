@@ -159,11 +159,16 @@ include:
     inputs:
       tags: []
       job_name: version-check-selftest
-      setup_command: "true"
+      # setup_command runs FIRST and in the same shell as check_command, so an
+      # export here is observable in the report below. That is the point: it
+      # proves the input is threaded, which `true` (now also the default) could
+      # not distinguish from the input being dropped entirely.
+      setup_command: 'export SELFTEST_SETUP=ran'
       # Writes the artifact and exits 0. `printf` rather than `echo` for the
       # literal, and REPORT_PATH rather than a hard-coded name so the job proves
-      # the input actually reaches the script.
-      check_command: 'printf ''{"selftest": true}\n'' > "$REPORT_PATH"'
+      # that input reaches the script too — a hard-coded name would still pass
+      # while REPORT_PATH went nowhere.
+      check_command: 'printf ''{"selftest": "%s"}\n'' "${SELFTEST_SETUP:-MISSING}" > "$REPORT_PATH"'
       changes:
         - "ci/maintenance/version-check.yml"
         - ".gitlab-ci.yml"

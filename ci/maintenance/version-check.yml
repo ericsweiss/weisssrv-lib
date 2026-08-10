@@ -11,11 +11,16 @@ spec:
       default: ["infrastructure"]
       description: Runner tag(s); pass `[]` for the tag-less tenant runner.
     setup_command:
-      default: 'pip install --quiet pyyaml requests'
+      default: 'true'
       description: >-
-        Shell command run before the check (tool install). Pin versions here
-        rather than floating — a checker that breaks on a new pyyaml reports
-        "no updates available", which is the wrong answer delivered quietly.
+        Shell command run before the check, to install whatever `check_command`
+        needs. Defaults to a no-op and deliberately guesses NOTHING: the tools
+        required are a property of the checker, which this template cannot see —
+        the same reason `check_command` has no default. A guessed default would
+        also have to float or rot, and a floating install is the worse of the
+        two here: the job is soft-fail, so a checker that stops importing after
+        an upstream release reports nothing at all, and "no report" is easy to
+        read as "no updates". PIN what you install.
     check_command:
       description: >-
         REQUIRED. Shell command that reports available updates and writes
