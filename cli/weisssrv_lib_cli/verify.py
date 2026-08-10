@@ -7,6 +7,9 @@ Checks (all offline, no cluster access):
   * every resource listed in kustomization.yaml exists on disk;
   * every non-opt-in manifest on disk is referenced by the kustomization
     (an orphaned manifest would silently never deploy);
+  * every opt-in manifest under kubernetes/flux/optional/ is listed in that
+    directory's own kustomization, which is what CI builds to validate the
+    switched-off manifests;
   * optionally, `kustomize build kubernetes/flux` succeeds (skipped with a note
     if the kustomize binary is not on PATH).
 """
@@ -161,7 +164,11 @@ def verify(root: Path, run_kustomize: bool = True) -> tuple[bool, list[str]]:
         if not (fdir / name).exists():
             problems.append(f"kustomization lists '{name}' but it is missing on disk")
 
-    # 4. Non-opt-in manifests on disk are referenced.
+    # 4. Non-opt-in manifests on disk are referenced. Opt-in manifests live one
+    # level down in optional/, which this flat scan does not reach; the basename
+    # comparison only matters for a project scaffolded before that move, whose
+    # opt-in manifests still sit here.
+    opt_in_names = {name.rsplit("/", 1)[-1] for name in tree.OPT_IN_MANIFESTS}
     on_disk = {
         p.name
         for p in fdir.iterdir()
@@ -169,9 +176,26 @@ def verify(root: Path, run_kustomize: bool = True) -> tuple[bool, list[str]]:
     }
     referenced = set(resources)
     for name in sorted(on_disk - referenced):
-        if name in tree.OPT_IN_MANIFESTS:
+        if name in opt_in_names:
             continue
         problems.append(f"manifest '{name}' is on disk but not referenced by the kustomization")
+
+    # 4b. Opt-in manifests are reachable from optional/kustomization.yaml — the
+    # only thing that builds them while they are switched off, so one missing
+    # there rots unnoticed until the day a tenant enables it.
+    odir = tree.optional_dir(root)
+    okpath = odir / tree.KUSTOMIZATION
+    if odir.is_dir() and okpath.is_file():
+        opt_listed = set(kz.list_resources(okpath.read_text(encoding="utf-8")))
+        for p in sorted(odir.iterdir()):
+            if p.suffix not in (".yaml", ".yml") or p.name == tree.KUSTOMIZATION:
+                continue
+            if p.name not in opt_listed:
+                problems.append(
+                    f"opt-in manifest '{tree.OPTIONAL_DIR}/{p.name}' is not listed "
+                    f"in {tree.OPTIONAL_DIR}/{tree.KUSTOMIZATION}, so nothing "
+                    "validates it"
+                )
 
     # 5. Optional kustomize build.
     if run_kustomize:

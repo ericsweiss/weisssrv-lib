@@ -10,9 +10,9 @@ Two editing strategies are used deliberately:
     (removing the deployment secret env block, dropping `replicas`, making the
     VPA memory-only) — configured (sequence=4, offset=2, explicit_start) to
     preserve the template's `---` starts, 2-space list offset, and comments.
-  * line-based edits for the kustomization resource list and for UNCOMMENTING
-    opt-in blocks — those touch comments, which are not data ruamel can move, so
-    text surgery is both simpler and loss-free here.
+  * line-based edits for the kustomization resource list, including the
+    commented `# - optional/<file>` opt-in lines — those touch comments, which
+    are not data ruamel can move, so text surgery is both simpler and loss-free.
 """
 from __future__ import annotations
 
@@ -23,12 +23,37 @@ from pathlib import Path
 from ruamel.yaml import YAML, YAMLError
 
 FLUX_DIR = "kubernetes/flux"
+# Opt-in manifests live in their own subdirectory of FLUX_DIR. They are real,
+# schema-validated files (optional/kustomization.yaml lists them all so CI can
+# build and kubeconform them while they are switched off), commented out of the
+# LIVE kustomization one `# - optional/<file>` line at a time.
+OPTIONAL_DIR = "optional"
 KUSTOMIZATION = "kustomization.yaml"
 DEPLOYMENT = "deployment.yaml"
 
-# Manifests present in the scaffold but NOT listed in kustomization resources by
-# default (opt-in). `verify` must not flag these as orphaned.
-OPT_IN_MANIFESTS = frozenset({"hpa.yaml"})
+
+def _optional(name: str) -> str:
+    """An opt-in manifest's path relative to FLUX_DIR — exactly how the live
+    kustomization spells it on the resource line that enables it."""
+    return f"{OPTIONAL_DIR}/{name}"
+
+
+HPA_MANIFEST = _optional("hpa.yaml")
+# `wire internal-ingress` enables BOTH: the route serves TLS from the secret the
+# certificate issues, so one without the other is a half-wired hostname.
+INTERNAL_INGRESS_MANIFESTS = (
+    _optional("ingressroute-internal.yaml"),
+    _optional("certificate-internal.yaml"),
+)
+# Every opt-in manifest the scaffold ships, as a FLUX_DIR-relative path.
+OPT_IN_MANIFESTS = frozenset(
+    {
+        HPA_MANIFEST,
+        *INTERNAL_INGRESS_MANIFESTS,
+        _optional("externalsecret-registry.yaml"),
+        _optional("externalsecret-gitlab.yaml"),
+    }
+)
 
 # --- CI shapes -------------------------------------------------------------
 # The template ships all three CI shapes (docs/CI-SHAPES.md) and a project keeps
@@ -112,7 +137,13 @@ def flux_dir(root: Path) -> Path:
 
 
 def flux_file(root: Path, name: str) -> Path:
+    """A manifest under FLUX_DIR. `name` is the path the kustomization uses, so
+    an opt-in manifest is passed as `optional/<file>`."""
     return root / FLUX_DIR / name
+
+
+def optional_dir(root: Path) -> Path:
+    return root / FLUX_DIR / OPTIONAL_DIR
 
 
 def is_binary(path: Path) -> bool:

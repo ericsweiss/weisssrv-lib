@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from conftest import needs_optional_layout
 
 from weisssrv_lib_cli.cli import main
 from weisssrv_lib_cli import kustomization as kz, tree
@@ -109,11 +110,12 @@ class TestPruneWireCommands:
         assert "unknown CI shape" in capsys.readouterr().err
         assert (scaffold / tree.GITLAB_CI).is_file()
 
+    @needs_optional_layout
     def test_wire_hpa(self, scaffold):
         rc = main(["wire", "hpa", "--root", str(scaffold)])
         assert rc == 0
         k = _flux(scaffold, "kustomization.yaml").read_text()
-        assert "hpa.yaml" in kz.list_resources(k)
+        assert tree.HPA_MANIFEST in kz.list_resources(k)
 
 
 class TestVerifyCommand:

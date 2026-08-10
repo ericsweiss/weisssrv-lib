@@ -1,9 +1,9 @@
 """Binds the bundled scaffold fixture to the real app-template repo.
 
 The CLI hardcodes the template's layout: directory paths, manifest filenames,
-kustomization opt-in lines, document names, commented opt-in markers and the
-placeholder tokens. Nothing else checks that those literals still describe the
-template, so a template change could silently break every scaffold run.
+the `# - optional/<file>` opt-in lines, document names and the placeholder
+tokens. Nothing else checks that those literals still describe the template, so
+a template change could silently break every scaffold run.
 
 These tests assert one contract against BOTH trees — the fixture (always) and a
 real template checkout (when reachable) — plus byte-equality between them, so
@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import needs_optional_layout
 
 from weisssrv_lib_cli import kustomization as kz, prune, tree, wire
 
@@ -99,7 +101,14 @@ def _fixture_files() -> list[str]:
 
 
 def _flux_names(root: Path) -> set[str]:
-    return {p.name for p in (root / tree.FLUX_DIR).glob("*.yaml")}
+    """Every manifest under kubernetes/flux, as FLUX_DIR-relative paths.
+
+    Recursive on purpose: the opt-in manifests moved into optional/, and a
+    top-level-only glob would report a set that matches while that whole
+    directory drifted.
+    """
+    flux = root / tree.FLUX_DIR
+    return {str(p.relative_to(flux)) for p in flux.rglob("*.yaml")}
 
 
 def _assert_cli_contract(root: Path) -> None:
@@ -111,10 +120,30 @@ def _assert_cli_contract(root: Path) -> None:
     active = set(kz.list_resources(ktext))
     assert active == set(_ACTIVE_RESOURCES)
 
+    # Opt-in manifests are real files under optional/, switched off by leaving
+    # their resource line commented. `wire` uncomments that exact line, so its
+    # spelling — `optional/<file>` — is part of the contract.
+    optional = tree.optional_dir(root)
+    assert optional.is_dir(), f"{tree.FLUX_DIR}/{tree.OPTIONAL_DIR} missing"
     for name in tree.OPT_IN_MANIFESTS:
+        assert name.startswith(f"{tree.OPTIONAL_DIR}/"), f"{name} is not an opt-in path"
         assert (flux / name).exists(), f"opt-in manifest {name} missing"
         assert name not in active, f"{name} must ship commented out"
         assert kz.uncomment_resource(ktext, name)[1], f"no `# - {name}` opt-in line"
+
+    # optional/kustomization.yaml is what CI builds to validate the switched-off
+    # manifests, so every file there must be listed in it (and `prune hpa`
+    # removes an entry from it).
+    opt_ktext = (optional / tree.KUSTOMIZATION).read_text(encoding="utf-8")
+    opt_listed = set(kz.list_resources(opt_ktext))
+    opt_on_disk = {
+        p.name for p in optional.glob("*.yaml") if p.name != tree.KUSTOMIZATION
+    }
+    assert opt_on_disk == opt_listed, (
+        f"{tree.OPTIONAL_DIR}/{tree.KUSTOMIZATION} lists {sorted(opt_listed)} but "
+        f"the directory holds {sorted(opt_on_disk)}"
+    )
+    assert {n.rsplit("/", 1)[-1] for n in tree.OPT_IN_MANIFESTS} == opt_on_disk
 
     for name in (tree.DEPLOYMENT, "vpa.yaml", "pdb.yaml", "externalsecret.yaml",
                  "servicemonitor.yaml", "networkpolicy.yaml", "ingressroute.yaml",
@@ -139,15 +168,20 @@ def _assert_cli_contract(root: Path) -> None:
         tree.flux_file(root, "networkpolicy.yaml")
     ), f"networkpolicy.yaml has no allow-scrape-from-observability document ({len(npol)}B)"
 
-    # prune external-ingress keys off the `-internal` name suffix, and refuses
-    # unless `wire internal-ingress` can activate an internal variant first.
+    # prune external-ingress keys off the `-internal` name suffix: the live
+    # files carry the public documents, the optional/ variants carry the
+    # internal ones, and it refuses until `wire internal-ingress` enables those.
     for name in ("ingressroute.yaml", "certificate.yaml"):
-        text = tree.flux_file(root, name).read_text(encoding="utf-8")
         docs = tree.read_document_names(tree.flux_file(root, name))
-        assert any(not d.endswith("-internal") for d in docs), f"{name}: no public doc"
-        assert any(
-            line.strip() == "# ---" for line in text.splitlines()
-        ), f"{name}: no commented internal block (`# ---` marker)"
+        assert docs, f"{name}: no document"
+        assert not any(d.endswith("-internal") for d in docs), (
+            f"{name}: an internal variant lives here, not in {tree.OPTIONAL_DIR}/"
+        )
+    for name in tree.INTERNAL_INGRESS_MANIFESTS:
+        docs = tree.read_document_names(tree.flux_file(root, name))
+        assert docs and all(d.endswith("-internal") for d in docs), (
+            f"{name}: prune external-ingress keys off the `-internal` suffix"
+        )
 
     # wire sso uncomments this exact middleware pair in the public route.
     ing = tree.flux_file(root, "ingressroute.yaml").read_text(encoding="utf-8")
@@ -358,6 +392,7 @@ class TestFixtureMatchesTemplate:
 
 
 class TestCliContract:
+    @needs_optional_layout
     def test_fixture_satisfies_contract(self):
         _assert_cli_contract(_FIXTURE)
 
@@ -366,29 +401,63 @@ class TestCliContract:
         _assert_cli_contract(_TEMPLATE)
 
 
-class TestCommentedAlternates:
-    """The scaffold ships alternate manifests commented out (`wire` and the
-    operator uncomment them). Each block must still be valid YAML when
-    uncommented, or the documented opt-in produces a broken tree."""
+class TestOptionalManifests:
+    """The alternates used to ship as commented-out blocks, which nothing
+    parsed, built or validated — so an opt-in could rot until the day someone
+    enabled it. They are real files under optional/ now, and these tests are the
+    translation of that old guarantee: nothing in the flux tree is a commented
+    resource any more, and every optional manifest builds and validates.
+    """
 
-    ALTERNATES = (
-        "externalsecret.yaml",
-        "ingressroute.yaml",
-        "certificate.yaml",
-    )
-
-    @pytest.mark.parametrize("name", ALTERNATES)
-    def test_uncommented_alternate_parses(self, name):
-        yaml = pytest.importorskip("yaml")
-        text = (_FIXTURE / tree.FLUX_DIR / name).read_text(encoding="utf-8")
-        marker = "# ---"
-        assert marker in text, f"{name} no longer carries a commented alternate"
-        block = text[text.index(marker):]
-        uncommented = "\n".join(
-            line[2:] if line.startswith("# ") else ("" if line.strip() == "#" else line)
-            for line in block.splitlines()
+    @_needs_template
+    def test_no_manifest_ships_a_commented_out_resource(self):
+        # `# apiVersion:` and a commented `---` are what a commented-out
+        # document looks like. The `# - optional/<file>` lines in the
+        # kustomization are commented REFERENCES, not resources, and stay.
+        offenders = []
+        for rel in sorted(_flux_names(_TEMPLATE)):
+            text = (_TEMPLATE / tree.FLUX_DIR / rel).read_text(encoding="utf-8")
+            for i, line in enumerate(text.splitlines(), start=1):
+                stripped = line.strip()
+                if re.match(r"#\s*apiVersion:", stripped) or stripped == "# ---":
+                    offenders.append(f"{rel}:{i}")
+        assert not offenders, (
+            "commented-out resources, which nothing parses, builds or validates: "
+            + ", ".join(offenders)
+            + f" — make each a real manifest under {tree.OPTIONAL_DIR}/ or delete it"
         )
-        docs = [d for d in yaml.safe_load_all(uncommented) if d]
-        assert docs, f"{name}'s commented alternate yielded no document"
-        for doc in docs:
-            assert doc.get("kind"), f"{name}'s alternate has no kind"
+
+    @_needs_template
+    @pytest.mark.parametrize("name", sorted(tree.OPT_IN_MANIFESTS))
+    def test_optional_manifest_is_a_real_document(self, name):
+        docs = tree._safe_load_all(
+            (_TEMPLATE / tree.FLUX_DIR / name).read_text(encoding="utf-8")
+        )
+        real = [d for d in docs if d]
+        assert real, f"{name} yielded no document"
+        for doc in real:
+            assert doc.get("apiVersion") and doc.get("kind"), f"{name}: not a resource"
+            assert (doc.get("metadata") or {}).get("name"), f"{name}: no metadata.name"
+
+    @_needs_template
+    def test_optional_dir_builds_and_validates(self):
+        """`kustomize build optional/ | kubeconform` — the same pair CI runs, so
+        a switched-off manifest cannot rot into one that fails when enabled."""
+        for tool in ("kustomize", "kubeconform"):
+            if not shutil.which(tool):
+                pytest.skip(f"{tool} not on PATH")
+        built = subprocess.run(
+            ["kustomize", "build", str(_TEMPLATE / tree.FLUX_DIR / tree.OPTIONAL_DIR)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert built.returncode == 0, built.stderr
+        checked = subprocess.run(
+            ["kubeconform", "-strict", "-ignore-missing-schemas", "-summary", "-"],
+            input=built.stdout,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert checked.returncode == 0, checked.stdout + checked.stderr

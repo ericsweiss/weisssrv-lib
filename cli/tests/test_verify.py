@@ -162,13 +162,29 @@ class TestStructure:
         assert not ok
         assert any("orphan.yaml" in p and "not referenced" in p for p in problems)
 
-    def test_optin_hpa_not_flagged_as_orphan(self, scaffold):
-        # hpa.yaml ships on disk but is opt-in (not in resources) — must NOT be
-        # reported as an orphan.
+    def test_optin_manifests_not_flagged_as_orphans(self, scaffold):
+        # Opt-in manifests ship on disk unreferenced on purpose (in optional/,
+        # which the flat scan does not reach) — never reported as orphans.
         _configured(scaffold)
         ok, problems = verify.verify(scaffold, run_kustomize=False)
         assert ok, problems
         assert not any("hpa.yaml" in p for p in problems)
+
+    def test_unlisted_optional_manifest_flagged(self, scaffold):
+        # Nothing but optional/kustomization.yaml builds a switched-off
+        # manifest, so one missing from it rots unnoticed.
+        _configured(scaffold)
+        odir = scaffold / tree.FLUX_DIR / tree.OPTIONAL_DIR
+        odir.mkdir(parents=True, exist_ok=True)
+        (odir / tree.KUSTOMIZATION).write_text(
+            "---\napiVersion: kustomize.config.k8s.io/v1beta1\n"
+            "kind: Kustomization\nresources: []\n",
+            encoding="utf-8",
+        )
+        (odir / "stray.yaml").write_text("---\nkind: ConfigMap\n", encoding="utf-8")
+        ok, problems = verify.verify(scaffold, run_kustomize=False)
+        assert not ok
+        assert any("stray.yaml" in p and "nothing validates it" in p for p in problems)
 
 
 class TestKustomizeNote:
