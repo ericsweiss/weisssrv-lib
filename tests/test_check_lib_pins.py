@@ -222,8 +222,9 @@ def test_fix_refuses_a_branch_source_without_touching_the_file(
     """
     p = _write(tmp_path, _ci("main", ("v0.4.0", "v0.4.0")))
     before = p.read_text()
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as excinfo:
         clp.fix(p)
+    assert "must be a release tag" in str(excinfo.value)
     assert p.read_text() == before
 
 
@@ -407,13 +408,19 @@ def test_fix_refuses_a_block_scalar_ref_and_leaves_the_file_alone(
     )
     p = _write(tmp_path, content)
     before = p.read_text()
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as excinfo:
         clp.fix(p)
+    assert "did not land cleanly" in str(excinfo.value)
     assert p.read_text() == before
 
 
-def test_fix_refuses_a_value_yaml_would_retype(tmp_path: Path) -> None:
-    """`ref: on` parses back as True, not the string that was written."""
+def test_fix_refuses_a_source_value_yaml_would_retype(tmp_path: Path) -> None:
+    """`on` would parse back as True rather than the string written.
+
+    It is now caught EARLIER than the outcome guard — by the release-tag
+    validation, since `on` is not vX.Y.Z — so this asserts that message rather
+    than claiming to exercise the rewrite verification.
+    """
     content = textwrap.dedent(
         """\
         variables:
@@ -426,8 +433,9 @@ def test_fix_refuses_a_value_yaml_would_retype(tmp_path: Path) -> None:
     )
     p = _write(tmp_path, content)
     before = p.read_text()
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as excinfo:
         clp.fix(p)
+    assert "must be a release tag" in str(excinfo.value)
     assert p.read_text() == before
 
 
@@ -472,8 +480,9 @@ def test_fix_ignores_a_ref_reached_through_an_alias_outside_include(
     before = p.read_text()
     # Nothing inside include: to rewrite — and rather than report that as a
     # clean 0, fix() says it cannot repair the file and leaves it alone.
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as excinfo:
         clp.fix(p)
+    assert "anchor or alias" in str(excinfo.value)
     assert p.read_text() == before  # the anchor is untouched
 
 
@@ -489,8 +498,9 @@ def test_fix_refuses_a_flow_style_entry_it_cannot_rewrite(tmp_path: Path) -> Non
     )
     p = _write(tmp_path, content)
     before = p.read_text()
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as excinfo:
         clp.fix(p)
+    assert "could not repair" in str(excinfo.value)
     assert p.read_text() == before
 
 
@@ -507,8 +517,9 @@ def test_fix_refuses_an_entry_with_no_ref_to_rewrite(tmp_path: Path) -> None:
     )
     p = _write(tmp_path, content)
     before = p.read_text()
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as excinfo:
         clp.fix(p)
+    assert "could not repair" in str(excinfo.value)
     assert p.read_text() == before
 
 
@@ -592,8 +603,9 @@ def test_fix_refuses_an_alias_anchored_inside_the_include_block(
     )
     p = _write(tmp_path, content)
     before = p.read_text()
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as excinfo:
         clp.fix(p)
+    assert "anchor or alias" in str(excinfo.value)
     assert p.read_text() == before
 
 
@@ -674,8 +686,9 @@ def test_fix_refuses_an_anchor_defined_inside_the_include_block(
     )
     p = _write(tmp_path, content)
     before = p.read_text()
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as excinfo:
         clp.fix(p)
+    assert "anchor or alias" in str(excinfo.value)
     assert p.read_text() == before
 
 
@@ -760,6 +773,11 @@ def test_fix_refuses_duplicate_top_level_include_keys(tmp_path: Path) -> None:
     )
     p = _write(tmp_path, content)
     before = p.read_text()
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as excinfo:
         clp.fix(p)
+    # The MESSAGE matters, not just that it raised. Without the ambiguity
+    # guard, fix() rewrites the dead block and the outcome check then rejects
+    # the result against the live one — also a SystemExit, for a different
+    # reason, which would let this test pass while the defect remained.
+    assert "multiple top-level `include:`" in str(excinfo.value)
     assert p.read_text() == before
