@@ -89,8 +89,12 @@ if _TEMPLATE is None and os.environ.get("WEISSSRV_TEMPLATE_REQUIRED"):
         "WEISSSRV_TEMPLATE_REQUIRED is set but no template checkout was found"
     )
 _needs_template = pytest.mark.skipif(
-    _TEMPLATE is None,
-    reason="no template checkout (set WEISSSRV_TEMPLATE_ROOT)",
+    _TEMPLATE is None
+    or not (_TEMPLATE / tree.FLUX_DIR / tree.OPTIONAL_DIR).is_dir(),
+    reason="no template checkout (set WEISSSRV_TEMPLATE_ROOT), or the checkout "
+    f"predates {tree.FLUX_DIR}/{tree.OPTIONAL_DIR}/ — every fixture-vs-template "
+    "comparison false-fails across that transition, so the re-synced fixture "
+    "suite carries the contract until the template adopts the layout",
 )
 
 
