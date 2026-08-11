@@ -62,6 +62,29 @@
   ansible.builtin.include_tasks: pve_cluster_backup.yml
   when: nas_storage_pve_cluster_backup_enabled | default(false)
 
+# Turning the feature off must also stand the timer down — an armed unit would
+# keep archiving /etc/pve key material indefinitely.
+- name: Reconcile the /etc/pve cluster-config backup away when disabled
+  when: not (nas_storage_pve_cluster_backup_enabled | default(false))
+  block:
+    - name: Stop + disable the pve-cluster-backup timer if present
+      ansible.builtin.systemd:
+        name: pve-cluster-backup.timer
+        enabled: false
+        state: stopped
+      failed_when: false
+      when: not ansible_check_mode
+
+    - name: Remove the pve-cluster-backup units and script
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/pve-cluster-backup.timer
+        - /etc/systemd/system/pve-cluster-backup.service
+        - /usr/local/sbin/pve-cluster-backup.sh
+      notify: Reload systemd
+
 - name: Include backup-artifact metrics tasks
   ansible.builtin.include_tasks: backup_metrics.yml
   when: nas_storage_backup_artifact_metrics_enabled | default(false)

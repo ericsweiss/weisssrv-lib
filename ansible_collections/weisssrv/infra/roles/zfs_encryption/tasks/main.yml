@@ -256,10 +256,14 @@
     daemon_reload: true
   when: zfs_encryption_pools | length > 0
 
-- name: Disable zfs-mount-encrypted.service on hosts with no encrypted pools
+# Stopped as well as disabled: disable only removes boot enablement, and a
+# live (or activating-retry) unit would keep running with the old pool set
+# after the feature is removed.
+- name: Stop and disable zfs-mount-encrypted.service on hosts with no encrypted pools
   ansible.builtin.systemd:
     name: zfs-mount-encrypted.service
     enabled: false
+    state: stopped
   failed_when: false   # unit already absent on a host that never had pools
   when: zfs_encryption_pools | length == 0
 

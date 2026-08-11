@@ -20,6 +20,8 @@
       It seeds the root account on the package's first install.
     success_msg: "GitLab root password present"
   no_log: true
+  # Config-only convergence never consumes the install-time seed.
+  when: not (gitlab_skip_install | default(false))
 
 - name: Validate the enabled feature blocks have their inputs
   ansible.builtin.assert:
