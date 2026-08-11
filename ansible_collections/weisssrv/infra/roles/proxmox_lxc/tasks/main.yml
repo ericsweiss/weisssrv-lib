@@ -554,8 +554,13 @@
     cmd: |
       set -euo pipefail
       CONF_FILE="/etc/pve/lxc/{{ proxmox_lxc_id }}.conf"
-      if ! grep -q "lxc.cgroup2.devices.allow" "$CONF_FILE"; then
+      # Each managed line is checked individually: an unrelated devices.allow
+      # rule (e.g. USB passthrough) must not suppress the DRM entries.
+      if ! grep -qF "lxc.cgroup2.devices.allow: c 226:* rwm" "$CONF_FILE"; then
         echo "lxc.cgroup2.devices.allow: c 226:* rwm" >> "$CONF_FILE"
+        echo CHANGED
+      fi
+      if ! grep -qF "lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir" "$CONF_FILE"; then
         echo "lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir" >> "$CONF_FILE"
         echo CHANGED
       fi

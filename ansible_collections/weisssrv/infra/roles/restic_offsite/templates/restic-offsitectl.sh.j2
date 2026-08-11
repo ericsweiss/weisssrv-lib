@@ -527,10 +527,23 @@ cleanup() {
 repo_init_if_needed() {
   # restic_ro: a stale exclusive lock must not turn "is this repo initialised?"
   # into a 15-minute wait that then falls through to `restic init` on an
-  # already-initialised repository.
-  if ! restic_ro cat config >/dev/null 2>&1; then
+  # already-initialised repository. And init must run ONLY for a genuinely
+  # absent repository: initialising on an auth/transport/corruption failure
+  # would create a fresh empty repo and silently fork backup continuity.
+  local probe_err probe_rc=0
+  probe_err="$(restic_ro cat config 2>&1 >/dev/null)" || probe_rc=$?
+  if [[ "$probe_rc" -eq 0 ]]; then
+    return 0
+  fi
+  if [[ "$probe_rc" -eq 10 ]] \
+     || grep -qi 'repository does not exist\|Is there a repository at the following location' \
+        <<<"$probe_err"; then
     log "restic repository not initialized; running restic init"
     restic init
+  else
+    log "cannot read the restic repository config (rc=${probe_rc}) and it does not look uninitialised — refusing to init over it"
+    printf '%s\n' "$probe_err" >&2
+    return 1
   fi
 }
 
