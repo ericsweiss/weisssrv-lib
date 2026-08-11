@@ -97,29 +97,58 @@ restic_ro() {
 # run). Without it an interrupted run wedges every exclusive operation —
 # forget/prune and check — until a human notices. `restic unlock` applies its
 # own staleness test too, so a live holder is never removed.
+#
+# Every non-match is LOGGED with its reason and counted: an operator sent here
+# by an rc=11 hint or an alert annotation needs to know whether the lock is
+# another host's, a live run's, or simply younger than the threshold — silence
+# reads as "it worked", which is how a live run gets force-unlocked. The counts
+# are what cmd_unlock turns into a verdict.
+_REAPED_LOCKS=0
+_SKIPPED_LOCKS=0
 reap_stale_locks() {
   local ids id meta lock_host lock_pid lock_time epoch age min_age me
+  _REAPED_LOCKS=0
+  _SKIPPED_LOCKS=0
   min_age=$(( STALE_LOCK_MIN_AGE_H * 3600 ))
   me="${HOSTNAME:-$(uname -n)}"
   ids="$(restic_ro list locks 2>/dev/null || true)"
   [[ -n "$ids" ]] || return 0
   for id in $ids; do
     meta="$(restic_ro cat lock "$id" 2>/dev/null || true)"
-    [[ -n "$meta" ]] || continue
+    if [[ -z "$meta" ]]; then
+      log "stale-lock: ${id} left alone — its metadata could not be read"
+      _SKIPPED_LOCKS=$(( _SKIPPED_LOCKS + 1 ))
+      continue
+    fi
     lock_host="$(printf '%s\n' "$meta" | sed -n 's/.*"hostname"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
     lock_pid="$(printf '%s\n' "$meta" | sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1)"
     lock_time="$(printf '%s\n' "$meta" | sed -n 's/.*"time"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
-    [[ "$lock_host" == "$me" ]] || continue
+    if [[ "$lock_host" != "$me" ]]; then
+      log "stale-lock: ${id} left alone — held by ${lock_host:-an unknown host}, not this one (${me})"
+      _SKIPPED_LOCKS=$(( _SKIPPED_LOCKS + 1 ))
+      continue
+    fi
     if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
+      log "stale-lock: ${id} left alone — pid ${lock_pid} is still running here, so a live operation holds it"
+      _SKIPPED_LOCKS=$(( _SKIPPED_LOCKS + 1 ))
       continue
     fi
     epoch="$(date -d "$lock_time" +%s 2>/dev/null || true)"
-    [[ -n "$epoch" ]] || continue
+    if [[ -z "$epoch" ]]; then
+      log "stale-lock: ${id} left alone — its timestamp (${lock_time:-unset}) could not be parsed, so its age is unknown"
+      _SKIPPED_LOCKS=$(( _SKIPPED_LOCKS + 1 ))
+      continue
+    fi
     age=$(( $(date +%s) - epoch ))
-    (( age > min_age )) || continue
+    if (( age <= min_age )); then
+      log "stale-lock: ${id} left alone — age ${age}s is within the ${min_age}s (${STALE_LOCK_MIN_AGE_H}h) staleness threshold"
+      _SKIPPED_LOCKS=$(( _SKIPPED_LOCKS + 1 ))
+      continue
+    fi
     log "stale-lock: ${id} (host ${lock_host}, pid ${lock_pid:-unknown} not running, age ${age}s > ${min_age}s) — running restic unlock"
     if restic unlock; then
       log "stale-lock: removed"
+      _REAPED_LOCKS=$(( _REAPED_LOCKS + 1 ))
     else
       log "stale-lock: restic unlock FAILED — exclusive operations will stay blocked"
     fi
@@ -187,9 +216,17 @@ run_forget() {
 # restic_offsite_retention_blocked/_pending and the run still succeeds, because
 # the snapshot did land. Every OTHER non-zero rc is a real retention failure —
 # a dry-run that could not be read, or a `forget --prune` that ran and died —
-# and fails the run, so it reaches the operator as ResticOffsiteFailed rather
-# than as a "raise the ceiling" suggestion for something the ceiling had nothing
-# to do with.
+# and fails the run rather than being reported as a "raise the ceiling"
+# suggestion for something the ceiling had nothing to do with.
+#
+# Which alert catches it: ResticOffsitePruneFailed at 24h, via
+# restic_offsite_last_prune_success. NOT ResticOffsiteFailed at 1h — that rule's
+# restic_offsite_last_run_success arm is suppressed by
+# `unless on (instance) restic_offsite_last_backup_success`, and this path
+# always leaves the backup gauge at success (the snapshot landed), so
+# restic_offsite_last_run_success=0 alone never pages. Keep that in mind before
+# reaching for run_success as an escalation lever: today it has no live
+# consumer.
 apply_forget_rc() {
   local forget_rc="$1"
   case "$forget_rc" in
@@ -750,6 +787,7 @@ cmd_drill() {
   need_lock_or_die
   reap_stale_locks
   local work restore_dir rc=0 compared=0 mismatched=0 skipped=0 total=0
+  local glob_skipped=0 glob_note=""
   local snap_json snap_time snap_epoch size path cmp_src restored src_mtime i
   local includes=() sample_paths=() sample_srcs=() sample_mtimes=()
 
@@ -759,6 +797,15 @@ cmd_drill() {
 
   mkdir -p "$PROM_DIR"
 
+  # Reachability first: its message is the one an operator needs when B2 or the
+  # credentials are the problem, and every parse below would otherwise report
+  # that same outage as a parse failure.
+  if ! restic_ro ls --json latest > "${work}/ls.json" 2>/dev/null; then
+    log "drill FAILED: could not list the newest snapshot (is the repository reachable?)"
+    write_drill_metrics 0 0
+    return 1
+  fi
+
   # The snapshot's own time is the SELECTION filter below: only files whose
   # comparand predates the snapshot are sampled, so any difference found later
   # is a real one and there is no "it probably just changed" excuse to weaken
@@ -767,9 +814,12 @@ cmd_drill() {
   snap_time="$(printf '%s' "$snap_json" | grep -o '"time":"[^"]*"' | head -1 | sed 's/.*:"//; s/"$//' || true)"
   snap_epoch="$(date -d "$snap_time" +%s 2>/dev/null || echo 0)"
   case "$snap_epoch" in ''|*[!0-9]*) snap_epoch=0 ;; esac
-
-  if ! restic_ro ls --json latest > "${work}/ls.json" 2>/dev/null; then
-    log "drill FAILED: could not list the newest snapshot (is the repository reachable?)"
+  # An unreadable snapshot time must FAIL, not silently disable the filter. With
+  # the filter off, a file legitimately rewritten after the snapshot is sampled
+  # and then reported as a MISMATCH — i.e. a parse problem turns into a false
+  # corruption verdict, the one outcome this drill must never produce.
+  if [[ "$snap_epoch" -le 0 ]]; then
+    log "drill FAILED: could not read the newest snapshot's time (got '${snap_time:-}') — the churn filter cannot be applied, and without it a legitimately-changed file would be reported as corruption"
     write_drill_metrics 0 0
     return 1
   fi
@@ -781,9 +831,39 @@ cmd_drill() {
     | sed -n 's/.*"path":"\([^"\\]*\)".*"size":\([0-9][0-9]*\).*/\2 \1/p' \
     | sort -n -k1,1 > "${work}/candidates" || true
 
+  # An empty candidate list is a PARSE failure, not "nothing here maps to this
+  # host" — the two used to share the message below and send the operator after
+  # a path-mapping problem that did not exist.
+  if [[ ! -s "${work}/candidates" ]]; then
+    if [[ -s "${work}/ls.json" ]]; then
+      log "drill FAILED: could not parse any file entry out of 'restic ls --json' — restic's output shape changed and the sampler needs updating"
+    else
+      log "drill FAILED: 'restic ls --json latest' returned no entries — the newest snapshot appears to be empty"
+    fi
+    write_drill_metrics 0 0
+    return 1
+  fi
+
   while read -r size path; do
     [[ -n "${path:-}" ]] || continue
     [[ "$size" -gt 0 ]] || continue
+    # restic matches an --include with filepath.Match semantics per path
+    # component, so * ? [ ] and \ inside a real filename are GLOB SYNTAX rather
+    # than literals: `foo[1].txt` as a pattern does not match the file named
+    # foo[1].txt (and an unclosed `[` is an invalid pattern restic rejects
+    # outright), the file is never restored, and the comparison loop below would
+    # report a MISSING that is really a sampler bug — a FALSE critical drill
+    # failure. Escaping is not portable enough to rely on here (the rules differ
+    # between restic's filter and Go's filepath.Match, and `\` is a separator on
+    # Windows builds), so such candidates are SKIPPED with a note: a sampler may
+    # skip an awkward name, it may not manufacture a corruption verdict.
+    case "$path" in
+      *'*'*|*'?'*|*'['*|*']'*|*'\'*)
+        log "drill: skipping '${path}' — the path contains a glob metacharacter and cannot be passed as a literal --include pattern"
+        glob_skipped=$(( glob_skipped + 1 ))
+        continue
+        ;;
+    esac
     cmp_src="$(drill_compare_path "$path")"
     [[ -n "$cmp_src" ]] || continue
     src_mtime="$(stat -c %Y "$cmp_src" 2>/dev/null || echo 0)"
@@ -791,8 +871,9 @@ cmd_drill() {
     # Skip anything written after the snapshot: it legitimately differs, and
     # sampling it would either produce a false MISMATCH or force a soft
     # "probably fine" verdict. Pick a stable file instead — the list is sorted
-    # by size, so this just walks on.
-    if [[ "$snap_epoch" -gt 0 && "$src_mtime" -gt "$snap_epoch" ]]; then continue; fi
+    # by size, so this just walks on. snap_epoch is guaranteed > 0 by the guard
+    # above; the filter is never conditionally disabled.
+    if [[ "$src_mtime" -gt "$snap_epoch" ]]; then continue; fi
     if [[ $(( total + size )) -gt "$DRILL_MAX_BYTES" ]]; then continue; fi
     includes+=( --include "$path" )
     sample_paths+=( "$path" )
@@ -803,7 +884,11 @@ cmd_drill() {
   done < "${work}/candidates"
 
   if [[ "${#sample_paths[@]}" -eq 0 ]]; then
-    log "drill FAILED: no file in the newest snapshot maps to a stable, comparable path on this host — nothing was proven"
+    glob_note=""
+    if [[ "$glob_skipped" -gt 0 ]]; then
+      glob_note=" (${glob_skipped} candidate(s) skipped for glob metacharacters in their path)"
+    fi
+    log "drill FAILED: no file in the newest snapshot maps to a stable, comparable path on this host — nothing was proven${glob_note}"
     write_drill_metrics 0 0
     return 1
   fi
@@ -872,10 +957,37 @@ cmd_prune() {
   run_forget "$max_remove"
 }
 
+# Three runbook paths send an operator here (the rc=11 hints above, the alert
+# annotations, docs). It used to exit 0 having done nothing whenever the lock
+# was not reapable — the COMMON case (another host's lock, a live run, a lock
+# younger than the threshold) — and a silent success reads as "the lock is
+# gone", which is how someone talks themselves into force-unlocking a live run.
+# Print a verdict, and return non-zero when locks remain.
+count_locks() {
+  restic_ro list locks 2>/dev/null | grep -c . || true
+}
+
 cmd_unlock() {
+  local before after
   need_lock_or_die
+  before="$(count_locks)"
   reap_stale_locks
+  after="$(count_locks)"
+  echo "--- restic locks (after reaping) ---"
   restic_ro list locks || true
+  if [[ "$after" -eq 0 ]]; then
+    if [[ "$_REAPED_LOCKS" -gt 0 ]]; then
+      log "unlock: removed $(( before - after )) stale lock(s); the repository is now unlocked"
+    else
+      log "unlock: no locks on the repository — nothing to remove"
+    fi
+    return 0
+  fi
+  if [[ "$_REAPED_LOCKS" -gt 0 ]]; then
+    log "unlock: removed $(( before - after )) stale lock(s), ${after} still held"
+  fi
+  log "unlock: ${after} lock(s) remain and none met the staleness test (other host / live pid / age <= ${STALE_LOCK_MIN_AGE_H}h) — the per-lock reason is logged above. Do NOT force-unlock a live run; wait for it, or stop the unit that holds it."
+  return 1
 }
 
 # restic_ro throughout: `status` is what an operator runs WHILE the repo is
@@ -921,7 +1033,10 @@ Commands:
                                than N snapshots (default {% endraw %}{{ restic_offsite_forget_max_remove | default(3) }}{% raw %}) — name the count
                                to accept a deliberate retention/grouping change.
   unlock                       Remove a stale repository lock left by a crashed
-                               run on this host, then list remaining locks
+                               run on this host, then list remaining locks and
+                               print a verdict. Exits 1 when locks remain (each
+                               one's skip reason — other host / live pid / too
+                               young — is logged); never force-unlocks a live run.
   status                       Timer/service status + snapshots + repo stats
 USAGE
 }

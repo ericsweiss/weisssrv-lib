@@ -193,6 +193,26 @@ Both patterns use `[.]` instead of `\.`: the value is written into a systemd
 `ExecStart=` line, where a backslash opens a C escape sequence and an
 unrecognised one makes systemd reject the command outright.
 
+### Proving the collector actually ran
+
+An HTTP 200 is **not** a per-collector gate. node_exporter answers 200 even when
+a collector errors on every scrape: it omits that collector's series and sets
+`node_scrape_collector_success{collector="..."}` to `0`. So the role's `/metrics`
+health check and `node-exporter-healthcheck.sh` both pass while `node_systemd_*`
+is entirely absent — and every alert built on it is *dead*, which looks exactly
+like *quiet*.
+
+Two layers close that:
+
+- **Deploy time (this role):** after the health check, an `assert` requires
+  `node_systemd_unit_state{` in the scrape body whenever
+  `node_exporter_host_systemd_collector` is true. A converge cannot leave a host
+  exporting nothing.
+- **Runtime (metrics side, not this role):** alert on
+  `node_scrape_collector_success{job="<host exporter job>", collector="systemd"} == 0`
+  for ~30m at `warning`. It is the only per-collector failure signal node_exporter
+  emits, and it names the collector, so it survives relabelling.
+
 The `prometheus-node-exporter` package is installed with `state: present`
 (unpinned) and `update_cache: true` (with `cache_valid_time: 3600` to skip a
 redundant apt refresh when the cache is under an hour old), so it tracks

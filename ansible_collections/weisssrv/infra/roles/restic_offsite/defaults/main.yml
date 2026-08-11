@@ -102,6 +102,19 @@ restic_offsite_restore_drill_enabled: true
 # extra here: repo-wide bit-rot is the rotating deep verify's job.
 restic_offsite_restore_drill_sample_files: 5
 restic_offsite_restore_drill_max_bytes: 8388608   # 8 MiB
+# Run ONE drill when the units are newly installed or changed. A Persistent=true
+# timer does NOT fire on first enable — with no stamp under
+# /var/lib/systemd/timers, systemd computes the next elapse from the unit's
+# activation time, so a quarterly OnCalendar leaves up to a full quarter in which
+# backup_restore_drill_last_success_seconds (written only by a PASSING drill)
+# does not exist and a staleness alert's absent() arm fires on a healthy system.
+# Seeding also proves the drill inside the deploy that installed it.
+#
+# The seed FAILS the play when the drill fails — including on a repository that
+# has no snapshot yet, which is a legitimate first-converge state. Set this false
+# for that first converge (or for any host where the nightly backup has never
+# run) and back to true once a snapshot exists.
+restic_offsite_restore_drill_seed: true
 # 05:00 on the 5th of Jan/Apr/Jul/Oct — a quarter, offset well clear of both the
 # nightly backup window and the Sunday deep verify.
 restic_offsite_restore_drill_timer_calendar: "*-01,04,07,10-05 05:00:00"

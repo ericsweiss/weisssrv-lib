@@ -361,6 +361,11 @@ class TestFixtureMatchesTemplate:
             ".dockerignore",
             "Dockerfile",
             "CODEOWNERS",
+            # ruff.toml is CI surface, not repo cosmetics: the python-lint
+            # include passes no `config:` input, so ruff DISCOVERS this file,
+            # and the same file backs `task python-lint` and the github shape's
+            # step. A drifted copy changes what all three enforce.
+            "ruff.toml",
         }
         for p in (_TEMPLATE / ".github" / "workflows").glob("*.y*ml"):
             ci_rel.add(str(p.relative_to(_TEMPLATE)))

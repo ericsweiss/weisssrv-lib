@@ -98,11 +98,19 @@ spec:
         # roles). `find ... | while ...` would mask failures: the pipeline's
         # exit code is the while loop's, i.e. the rc of its LAST iteration — a
         # shellcheck failure on any earlier file goes green. `-exec ... {} +`
-        # returns non-zero if shellcheck fails on ANY file, so the job fails
-        # correctly.
+        # returns non-zero if shellcheck fails on ANY file.
+        #
+        # That rc must be CAPTURED, not left to fall out of the block: the
+        # runner checks only the exit status of the block's LAST command, and
+        # since the `linted` accounting was added the last command is an
+        # assignment, which always succeeds. Capturing it and exiting
+        # explicitly keeps both — the accounting and the failure — the way the
+        # direct-glob and *.sh.j2 blocks already do.
+        rc=0
         find "$FIND_DIR" -name '*.sh' -type f \
-          -exec shellcheck --severity=$[[ inputs.severity ]] --exclude=$[[ inputs.exclude ]] {} +
+          -exec shellcheck --severity=$[[ inputs.severity ]] --exclude=$[[ inputs.exclude ]] {} + || rc=1
         linted=$((linted + $(find "$FIND_DIR" -name '*.sh' -type f | wc -l)))
+        [ "$rc" -eq 0 ] || { echo "ShellCheck failed on one or more role shell scripts"; exit "$rc"; }
       fi
     - |
       FIND_DIR="$[[ inputs.find_dir ]]"

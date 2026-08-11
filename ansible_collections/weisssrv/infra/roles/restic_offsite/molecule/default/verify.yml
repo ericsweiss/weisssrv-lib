@@ -254,6 +254,59 @@
       ansible.builtin.command: grep -q 'restic-offsitectl drill' /etc/systemd/system/backup-restore-drill.service
       changed_when: false
 
+    # journald tags stdout with the ExecStart basename unless told otherwise, so
+    # without this the drill's journal is filed under `restic-offsitectl` with
+    # the nightly run's and the alert/runbook command
+    # `journalctl -t backup-restore-drill` returns NOTHING during the incident
+    # it is prescribed for.
+    - name: Assert the drill service pins its journal identifier
+      ansible.builtin.command: grep -q '^SyslogIdentifier=backup-restore-drill$' /etc/systemd/system/backup-restore-drill.service
+      changed_when: false
+
+    # A sampled path with a glob metacharacter would be passed to restic as an
+    # --include PATTERN (filepath.Match semantics), never match the literal
+    # file, and surface as a MISSING -> a FALSE critical drill failure. The
+    # container's seeded tree has no such name, so pin the guard statically.
+    - name: Assert the drill skips glob-metacharacter paths instead of failing on them
+      ansible.builtin.command: grep -q 'contains a glob metacharacter' /usr/local/sbin/restic-offsitectl
+      changed_when: false
+
+    # An unreadable snapshot time must FAIL the drill, not silently disable the
+    # churn filter — with the filter off a legitimately-changed file is sampled
+    # and reported as corruption.
+    - name: Assert an unreadable snapshot time fails the drill loudly
+      ansible.builtin.command: grep -q 'the churn filter cannot be applied' /usr/local/sbin/restic-offsitectl
+      changed_when: false
+
+    # A parse miss and "nothing on this host maps to the snapshot" used to share
+    # one message, sending the operator after a path-mapping problem that did
+    # not exist.
+    - name: Assert a restic ls parse miss is reported as its own failure
+      ansible.builtin.command: grep -q "restic's output shape changed" /usr/local/sbin/restic-offsitectl
+      changed_when: false
+
+    # `unlock` is what three runbook paths tell an operator to run. It used to
+    # exit 0 having printed nothing whenever the lock was not reapable, which
+    # reads as "the lock is gone". It must always state an outcome.
+    - name: Run restic-offsitectl unlock on an unlocked repository
+      ansible.builtin.shell: |
+        set -a; . /etc/restic-offsite/env; set +a
+        restic-offsitectl unlock
+      args:
+        executable: /bin/bash
+      register: restic_offsite_unlock
+      changed_when: false
+
+    - name: Assert unlock states an outcome instead of exiting silently
+      ansible.builtin.assert:
+        that:
+          - restic_offsite_unlock.rc == 0
+          - restic_offsite_unlock.stdout is search('no locks on the repository')
+        fail_msg: >-
+          `restic-offsitectl unlock` returned no verdict — an operator sent here
+          by an rc=11 hint cannot tell "nothing to do" from "it did nothing".
+        success_msg: "unlock reports a verdict on a repository with no locks"
+
     - name: Run restic-offsitectl drill
       ansible.builtin.shell: |
         set -a; . /etc/restic-offsite/env; set +a

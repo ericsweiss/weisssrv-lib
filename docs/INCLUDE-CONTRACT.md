@@ -27,7 +27,7 @@ input default: a default is only "safe" relative to the consumers that take it.
 | `ci/lint/yaml-lint.yml` | ● | ● | ● |
 | `ci/lint/shellcheck.yml` | ● | ● | ● |
 | `ci/lint/docs-link-check.yml` | ● | ● | ● |
-| `ci/lint/python-lint.yml` | ● | | ● |
+| `ci/lint/python-lint.yml` | ● | ● | ● |
 | `ci/lint/ansible-lint.yml` | ● | | ● |
 | `ci/validate/terraform.yml` | ● | | ● |
 | `ci/validate/flux-lint.yml` | ● | ●● | ● |
@@ -173,8 +173,11 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
 
 - **Reproduces:** nothing — the family had no Python linter before this
   template. This library self-applies it; weisssrv includes it over `scripts/`
-  with the shared profile vendored to its repo root as `ruff.toml`, and the
-  cluster template includes it.
+  with the shared profile vendored to its repo root as `ruff.toml`; the app
+  template includes it over `scripts tests` with the same profile vendored to
+  its root (no `config:` input, so ruff's discovery finds it — which is what
+  makes the GitLab job, the `github` shape's step and `task python-lint` report
+  identically); and the cluster template includes it.
 - **Inputs:** `job_name` (python-lint), `stage` (lint), `image`
   (python:3.11-slim), `tags`, `ruff_version` (0.16.0), `config` (empty → ruff's
   own discovery; pass the FULL argument, e.g. `--config lint/ruff.toml`),

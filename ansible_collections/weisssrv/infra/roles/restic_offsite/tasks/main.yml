@@ -236,6 +236,7 @@
         - backup-restore-drill.service
         - backup-restore-drill.timer
       when: restic_offsite_restore_drill_enabled | bool
+      register: restic_offsite_drill_units
       notify: Reload systemd for restic-offsite
 
     - name: Enable the quarterly restore-drill timer
@@ -247,6 +248,34 @@
       when:
         - restic_offsite_restore_drill_enabled | bool
         - not ansible_check_mode
+
+    # Seed the FIRST drill at install time. A Persistent=true timer does NOT
+    # fire when it is first enabled: with no /var/lib/systemd/timers stamp yet,
+    # systemd computes the next elapse from the unit's activation time, so a
+    # quarterly OnCalendar means the first drill is up to three months out. The
+    # proof metric (backup_restore_drill_last_success_seconds) is written only
+    # by a PASSING drill, so until then the staleness alert has nothing to read
+    # and its absent() arm pages on a system that is in fact fine.
+    #
+    # Gated on the template task's `changed`, not run unconditionally: a re-run
+    # of the role on an unchanged host must not re-spend B2 egress. It also
+    # proves the drill end-to-end inside the deploy that installed it — a
+    # failure here is a real one (unreachable repo, wrong password, no
+    # comparable path) and is worth failing the deploy for, which is exactly
+    # what the quarterly alert would otherwise report weeks later. A repository
+    # with no snapshot yet is the one legitimate failure: set
+    # restic_offsite_restore_drill_seed false for that first converge.
+    - name: Seed the first restore drill so the proof metric exists
+      ansible.builtin.systemd:
+        name: backup-restore-drill.service
+        state: started
+      when:
+        - restic_offsite_restore_drill_enabled | bool
+        - restic_offsite_restore_drill_seed | bool
+        - restic_offsite_drill_units is changed
+        - not ansible_check_mode
+      tags:
+        - molecule-notest
 
     - name: Stop the restore-drill timer when the drill is disabled
       ansible.builtin.systemd:

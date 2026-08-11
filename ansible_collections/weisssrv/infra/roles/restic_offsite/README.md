@@ -148,6 +148,15 @@ lock owned by a **dead PID on this host** that is older than
 `restic-offsitectl unlock` runs the same reaper on demand. rc=11 from restic is
 reported as "repository lock" so the journal line is actionable.
 
+`unlock` **reports a verdict and exits non-zero when locks remain.** Every lock
+it declines to reap is logged with the reason — held by another host, its PID is
+still running here, its timestamp is unparseable, or its age is inside the
+staleness threshold — and the summary line is `removed N stale lock(s)` /
+`N lock(s) remain and none met the staleness test`. It used to exit 0 having
+done nothing in exactly the common case (a live run holds the lock), which reads
+as "the lock is gone" and is how someone talks themselves into force-unlocking a
+run that is still working.
+
 The reaper's own probes go through a separate `--no-lock`, no-`--retry-lock`
 wrapper (`restic_ro`: `list locks`, `cat lock`, `cat config`, and the read-only
 `snapshots`/`stats` in `status`). restic opens the repository with a read lock
@@ -193,6 +202,43 @@ removed, not just left unstarted).
 
 Only file sources are drillable: a zvol source's filesystem is mounted only
 during a run, so there is nothing to compare against between runs.
+
+A sampled path containing a glob metacharacter (`* ? [ ] \`) is **skipped with a
+logged note**, not drilled: restic matches an `--include` with `filepath.Match`
+semantics per path component, so such a path is a pattern rather than a literal,
+the file never restores, and the comparison would report a MISSING that is only
+a sampler artefact. A drill failure is therefore always a real one.
+
+### First converge runs one drill (deliberate)
+
+The role starts `backup-restore-drill.service` **once**, when the drill units are
+newly installed or changed (`restic_offsite_restore_drill_seed`, default `true`).
+This is not belt-and-braces: a `Persistent=true` timer does **not** fire when it
+is first enabled. With no stamp file under `/var/lib/systemd/timers`, systemd
+computes the next elapse from the unit's *activation* time, so a quarterly
+`OnCalendar` leaves up to a full quarter in which
+`backup_restore_drill_last_success_seconds` — written only by a **passing** drill
+— does not exist at all, and a staleness alert's `absent()` arm pages
+continuously on a system that is fine.
+
+Consequences to expect:
+
+- The deploy that installs the units spends one drill's worth of B2 egress
+  (bounded by `restic_offsite_restore_drill_max_bytes`, 8 MiB by default) and
+  takes as long as that restore.
+- Re-running the role on an unchanged host does **not** re-drill: the seed is
+  gated on the template task's `changed`.
+- The seed **fails the play** when the drill fails, which is the point — an
+  offsite repository this host cannot restore from is worth stopping for. The
+  one legitimate failure is a repository with no snapshot yet (a genuinely first
+  converge, before any nightly backup): set
+  `restic_offsite_restore_drill_seed: false` for that run and back to `true`
+  once a snapshot exists.
+
+Read the seed drill's journal with `journalctl -t backup-restore-drill` — the
+unit sets `SyslogIdentifier=backup-restore-drill`, so its lines are separable
+from the nightly run's and the weekly verify's (both tagged
+`restic-offsitectl`).
 
 ## Metrics (node_exporter textfile)
 

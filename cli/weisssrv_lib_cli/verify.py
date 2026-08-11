@@ -211,6 +211,18 @@ def verify(root: Path, run_kustomize: bool = True) -> tuple[bool, list[str]]:
                         f"in {tree.OPTIONAL_DIR}/{tree.KUSTOMIZATION}, so nothing "
                         "validates it"
                     )
+            # The other direction, mirroring step 3 for kubernetes/flux/. A
+            # listed-but-absent resource is what actually breaks the build:
+            # `kustomize build optional/` errors on the missing file, so CI is
+            # red while `verify` reported clean — the two trees have to be
+            # checked the same way or verify is trusted for a guarantee it
+            # never made.
+            for name in sorted(opt_listed):
+                if not (odir / name).exists():
+                    problems.append(
+                        f"{tree.OPTIONAL_DIR}/{tree.KUSTOMIZATION} lists '{name}' "
+                        "but it is missing on disk"
+                    )
 
     # 5. Optional kustomize build.
     if run_kustomize:

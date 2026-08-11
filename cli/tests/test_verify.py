@@ -186,6 +186,33 @@ class TestStructure:
         assert not ok
         assert any("stray.yaml" in p and "nothing validates it" in p for p in problems)
 
+    def test_optional_kustomization_listing_a_missing_file_flagged(self, scaffold):
+        # The direction that actually breaks the build: `kustomize build
+        # optional/` errors on a resource that is not on disk, so CI goes red
+        # while verify used to report clean. Step 3 makes exactly this check
+        # for kubernetes/flux/; the two trees are checked the same way.
+        _configured(scaffold)
+        odir = scaffold / tree.FLUX_DIR / tree.OPTIONAL_DIR
+        odir.mkdir(parents=True, exist_ok=True)
+        for p in list(odir.iterdir()):
+            if p.name != tree.KUSTOMIZATION:
+                p.unlink()
+        (odir / "hpa.yaml").write_text(
+            "---\nkind: HorizontalPodAutoscaler\n", encoding="utf-8"
+        )
+        (odir / tree.KUSTOMIZATION).write_text(
+            "---\napiVersion: kustomize.config.k8s.io/v1beta1\n"
+            "kind: Kustomization\nresources:\n  - hpa.yaml\n  - vpa.yaml\n",
+            encoding="utf-8",
+        )
+        ok, problems = verify.verify(scaffold, run_kustomize=False)
+        assert not ok
+        assert any(
+            "vpa.yaml" in p and "missing on disk" in p for p in problems
+        ), problems
+        # hpa.yaml is listed AND present — it must not be reported.
+        assert not any("hpa.yaml" in p for p in problems), problems
+
     def test_missing_optional_kustomization_flagged(self, scaffold):
         # Worse than one unlisted manifest: with the kustomization gone NOTHING
         # builds or kubeconforms any opt-in manifest. Skipping the check here

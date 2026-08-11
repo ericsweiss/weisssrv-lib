@@ -119,12 +119,16 @@ consumers:
       ci_includes:
         single_source: .gitlab-ci.yml -> variables.WEISSSRV_LIB_REF
         enforced_by: scripts/check-lib-pins.py (vendored) + its own tests/
-        # 9 template files across 10 entries — flux-lint is included TWICE.
+        # 10 template files across 11 entries — flux-lint is included TWICE.
         templates:
           - /ci/lint/yaml-lint.yml
           - /ci/validate/flux-lint.yml       # substitute: false (non-root)
           - /ci/validate/flux-lint.yml       # again as flux-lint-optional, over kubernetes/flux/optional
           - /ci/lint/shellcheck.yml
+          # targets "scripts tests"; NO config: input — ruff discovers the
+          # vendored root ruff.toml, the same file `task python-lint` and the
+          # github shape resolve. changes: **/*.py, ruff.toml, .gitlab-ci.yml
+          - /ci/lint/python-lint.yml
           - /ci/lint/docs-link-check.yml
           - /ci/test/python-tests.yml
           - /ci/security/secret-detection.yml
@@ -134,7 +138,6 @@ consumers:
         not_consumed:
           - /ci/validate/terraform.yml       # absent entirely (tenants ship no Terraform)
           - /ci/lint/ansible-lint.yml
-          - /ci/lint/python-lint.yml
           - /ci/maintenance/version-check.yml
           - /ci/maintenance/version-bump-bot.yml
           - /ci/templates/*
@@ -230,18 +233,43 @@ pin_surfaces:
   - id: ci_include_ref
     enforced: scripts/check-lib-pins.py
   - id: ansible_collection_version
-    enforced: false
+    # SCOPED: enforced in some consumers, still a manual walk in others. Do not
+    # read "enforced" as fleet-wide.
+    enforced: >-
+      weisssrv-cluster-template
+      template/tests/test_lib_pins.py::test_collection_and_taskfile_pin_the_same_ref
+      (in the GENERATED repo) + weisssrv scripts/test_site_configs.py
+      (requirements.yml vs variables.WEISSSRV_LIB_REF)
+    note: >-
+      SCOPE — cluster-template gates the pin inside the repos it generates, and
+      weisssrv gates its own ansible/requirements.yml. The app template ships no
+      Ansible, so there is nothing to gate there. If the weisssrv gate is not in
+      the tree you are releasing from, treat this row as a manual walk for
+      weisssrv.
   - id: terraform_module_ref
-    enforced: false
+    enforced: >-
+      weisssrv-cluster-template
+      template/tests/test_lib_pins.py::test_terraform_module_sources_pin_the_lib_ref
+    note: >-
+      SCOPE — cluster-template only, and only for the `?ref=` in the modules it
+      renders. weisssrv's terraform/ is NOT gated: bump its module refs by hand
+      and confirm with `terraform init -upgrade` before the plan.
   - id: vendored_script_copies
     enforced: >-
       weisssrv scripts/test_vendored_byte_identity.py (never skips) +
       weisssrv-app-template tests/test_vendored_scripts.py +
       weisssrv-cluster-template tests/validate_render.py:check_vendored
     note: >-
-      Each gate compares against the library at the ref its consumer pins, and
-      falls back to the checkout's working tree when that tag is not cut yet —
-      which is what makes lib merge -> tag -> consumer MRs the workable order.
+      The three gates read the library DIFFERENTLY, so "green" means three
+      different things. weisssrv reads blobs at the pinned ref
+      (`git show <ref>:scripts/<name>`) and falls back to the checkout's working
+      tree when the tag is not cut yet — which is what makes the
+      lib merge -> tag -> consumer MRs order workable. The app template REFUSES
+      to compare unless the checkout is provably AT the pinned ref (it reports
+      unavailable rather than comparing against the wrong file). The cluster
+      template compares against the working tree of whatever `--lib-path` points
+      at, which its CI clones at the fixture's lib_ref. Only the weisssrv gate
+      is pre-tag-tolerant.
   - id: cli_install_spec
     enforced: false
   - id: molecule_image_tag
