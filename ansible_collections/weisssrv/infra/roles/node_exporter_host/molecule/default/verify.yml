@@ -59,17 +59,25 @@
     # The flags parsing is not enough: an unsupported flag name would leave the
     # exporter dead, and a filter that matches nothing would leave the series
     # empty. Assert the two series the NodeSystemd* alerts select actually
-    # appear, for a unit that exists in every systemd container.
+    # appear, for a unit that exists in every systemd container. The
+    # collector_success line is asserted first so the two failure modes stay
+    # distinguishable: 0 = the collector errored (no D-Bus system bus is the
+    # usual cause, since the Debian unit runs as `prometheus` and only root can
+    # use systemd's private socket), 1 with no series = the unit filter matched
+    # nothing.
     - name: Assert the systemd collector emits the series the alerts select
       ansible.builtin.assert:
         that:
+          - "'node_scrape_collector_success{collector=\"systemd\"} 1' in node_exporter_host_metrics.content"
           - "'node_systemd_unit_state{' in node_exporter_host_metrics.content"
           - "'node_systemd_service_restart_total{' in node_exporter_host_metrics.content"
           - "'state=\"failed\"' in node_exporter_host_metrics.content"
         fail_msg: >-
-          node_systemd_unit_state / node_systemd_service_restart_total are absent
-          from /metrics — the NodeSystemdServiceFailed and
-          NodeSystemdServiceCrashlooping alerts have no emitter.
+          The systemd collector produced nothing usable — node_systemd_unit_state
+          / node_systemd_service_restart_total are absent from /metrics, so the
+          NodeSystemdServiceFailed and NodeSystemdServiceCrashlooping alerts have
+          no emitter. Check node_scrape_collector_success{collector="systemd"}
+          and `journalctl -u prometheus-node-exporter`.
         success_msg: "node_systemd_unit_state + node_systemd_service_restart_total are exported"
 
     - name: Verify service is enabled

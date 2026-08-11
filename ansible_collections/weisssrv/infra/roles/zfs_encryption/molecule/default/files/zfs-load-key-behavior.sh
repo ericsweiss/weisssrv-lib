@@ -10,7 +10,32 @@ SRC="${1:-/usr/local/sbin/zfs-load-key.sh}"
 PORT="${2:-18099}"
 [ -x "$SRC" ] || { echo >&2 "zfs-load-key.sh not rendered at $SRC"; exit 1; }
 
-WORK="$(mktemp -d)"
+# The work dir holds the copy of the script under test and the stub binaries it
+# execs, so it has to live on a filesystem that permits exec. `mktemp -d` would
+# land in /tmp, which this scenario mounts as a Docker tmpfs — noexec by
+# default, so a 0755 copy there still fails with rc 126. Probe the candidates
+# instead of hardcoding one, and say so loudly if none can exec.
+work_root() {
+    local candidate probe
+    for candidate in /var/tmp /root "${TMPDIR:-/tmp}"; do
+        [ -d "$candidate" ] || continue
+        probe="$(mktemp "${candidate}/execprobe.XXXXXX" 2>/dev/null)" || continue
+        printf '#!/bin/sh\nexit 0\n' > "$probe"
+        chmod 0755 "$probe"
+        if "$probe" >/dev/null 2>&1; then
+            rm -f "$probe"
+            printf '%s' "$candidate"
+            return 0
+        fi
+        rm -f "$probe"
+    done
+    return 1
+}
+WORK_ROOT="$(work_root)" || {
+    echo >&2 "no exec-capable temp directory (every candidate is mounted noexec)"
+    exit 1
+}
+WORK="$(mktemp -d "${WORK_ROOT}/zfs-load-key-behavior.XXXXXX")"
 BIN="$WORK/bin"
 MODE_FILE="$WORK/mode"
 REQ_LOG="$WORK/requests.log"

@@ -48,29 +48,50 @@
         executable: /bin/bash
       changed_when: false
 
-    # Numeric IDs are written directly to avoid depending on shadow-utils; the
-    # gitlab-shell log dir is what the fail2ban jail path expects to exist.
+    # Omnibus creates git:git on install; gitlab_skip_install means the scenario
+    # has to. The IDs are system-allocated, never a hardcoded 998:998 appended
+    # to /etc/passwd: that ID is already taken in the image (systemd-network),
+    # and with a duplicate, getpwuid()/getgrgid() resolve to the earlier entry's
+    # name instead of `git` — which the role's ownership guard reads as
+    # permanent drift, re-chowning on every run (an idempotence failure that
+    # says nothing about the role).
+    - name: Create the mock git group
+      ansible.builtin.group:
+        name: git
+        system: true
+
+    - name: Create the mock git user
+      ansible.builtin.user:
+        name: git
+        group: git
+        system: true
+        home: /var/opt/gitlab
+        create_home: false
+        shell: /bin/sh
+
+    # The gitlab-shell log dir is what the fail2ban jail path expects to exist.
+    # Keep apostrophes out of this block: raw args are shlex-split, so a single
+    # unbalanced quote (even in a comment) fails the task at parse time.
     - name: Create mock GitLab environment
       ansible.builtin.raw: |
-        if ! grep -q '^git:' /etc/group; then
-          echo 'git:x:998:' >> /etc/group
-        fi
-        if ! grep -q '^git:' /etc/passwd; then
-          echo 'git:x:998:998:GitLab:/var/opt/gitlab:/bin/sh' >> /etc/passwd
-        fi
-
         mkdir -p /etc/gitlab
         mkdir -p /opt/gitlab/bin
         mkdir -p /var/opt/gitlab/backups
         mkdir -p /mnt/gitlab-repos/git-data/repositories
         mkdir -p /var/log/gitlab/gitlab-shell
 
-        chown -R 998:998 /var/opt/gitlab/backups
-        chown -R 998:998 /mnt/gitlab-repos
-        chown -R 998:998 /var/log/gitlab
+        chown -R git:git /var/opt/gitlab/backups
+        chown -R git:git /mnt/gitlab-repos
+        chown -R git:git /var/log/gitlab
         chmod 700 /var/opt/gitlab/backups
         chmod 700 /mnt/gitlab-repos/git-data
         chmod 700 /mnt/gitlab-repos/git-data/repositories
+
+        # Seed the drift the ownership guard exists for: a git-data tree that
+        # predates the git user. Converge must chown it once (reporting changed,
+        # as a multi-thousand-inode rewrite should) and then leave it alone,
+        # which the idempotence re-run proves.
+        chown root:root /mnt/gitlab-repos/git-data
 
         cat > /opt/gitlab/bin/gitlab-ctl << 'EOF'
         #!/bin/bash

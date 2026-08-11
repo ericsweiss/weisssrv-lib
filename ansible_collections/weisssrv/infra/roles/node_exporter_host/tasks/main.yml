@@ -108,8 +108,10 @@
       --collector.systemd is enabled
       (node_exporter_host_systemd_collector={{ node_exporter_host_systemd_collector }})
       yet produced nothing — check `journalctl -u prometheus-node-exporter` for a
-      collector error, and that the unit can reach systemd's private D-Bus
-      socket. Left unfixed, every node_systemd_* alert is dead, not quiet.
+      collector error, and that dbus.service is running: the exporter runs as
+      `prometheus` and reaches systemd over the D-Bus SYSTEM bus (the private
+      socket is root-only). Left unfixed, every node_systemd_* alert is dead,
+      not quiet.
     success_msg: "systemd collector is exporting node_systemd_unit_state"
   when:
     - not ansible_check_mode

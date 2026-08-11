@@ -1,0 +1,32 @@
+---
+# Prepare the test container for the systemd collector. Everything else the
+# role needs is already in the molecule test image.
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Apply the shared systemd-wait + temp-dir prep
+      ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/prepare-base.yml
+
+    # node_exporter's systemd collector talks to the D-Bus SYSTEM bus and only
+    # falls back to systemd's private socket when it runs as root — which the
+    # Debian unit never does (User=prometheus). With no bus running, every
+    # scrape fails the collector, /metrics comes back 200 with node_systemd_*
+    # entirely absent, and verify.yml's collector proof has nothing to find.
+    # Real Proxmox hosts always have the bus; a bare test container may not.
+    - name: Ensure the D-Bus system bus is installed
+      ansible.builtin.apt:
+        name: dbus
+        state: present
+
+    - name: Ensure the D-Bus system bus is running
+      ansible.builtin.systemd:
+        name: dbus.service
+        state: started
+
+    # Fail here, with an obvious cause, rather than three plays later on a
+    # missing metric.
+    - name: Wait for the system bus socket to appear
+      ansible.builtin.wait_for:
+        path: /run/dbus/system_bus_socket
+        timeout: 30
