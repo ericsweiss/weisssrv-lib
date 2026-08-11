@@ -56,7 +56,18 @@ def _enable_optional(root: Path, resource: str, changed: list[Path]) -> bool:
         return False
     text = kpath.read_text(encoding="utf-8")
     if kz.has_resource(text, resource):
-        return True  # already enabled
+        # An active line whose manifest is gone must not count as enabled —
+        # paired edits (like dropping spec.replicas for an HPA) would then
+        # reshape the workload for a resource that will never deploy.
+        if tree.flux_file(root, resource).exists():
+            return True  # already enabled
+        print(
+            f"warning: {tree.FLUX_DIR}/{tree.KUSTOMIZATION} lists {resource} "
+            f"but {tree.FLUX_DIR}/{resource} is missing — restore the manifest "
+            "or remove the stale entry",
+            file=sys.stderr,
+        )
+        return False
     if not tree.flux_file(root, resource).exists():
         print(
             f"warning: {tree.FLUX_DIR}/{resource} is not in this tree — "

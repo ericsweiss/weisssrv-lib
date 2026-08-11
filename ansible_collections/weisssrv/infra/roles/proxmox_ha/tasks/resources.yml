@@ -54,6 +54,10 @@
     _sid: "{{ item.type }}:{{ item.vmid }}"
     # This resource's block from the index above.
     _stdout: "{{ proxmox_ha_current_resource_config[_sid] | default('') }}"
+    # state compared as an exact field: a substring search over the whole block
+    # would let a comment containing "state started" mask a real state drift.
+    _current_state_match: "{{ _stdout | regex_search('(?m)^\\s*state\\s+(\\S+)\\s*$', '\\1') }}"
+    _current_state: "{{ _current_state_match[0] | default('') if _current_state_match else '' }}"
     # Numeric values, matched to a whitespace/end-of-line boundary.
     _current_max_restart_match: "{{ _stdout | regex_search('max_restart\\s+(\\d+)(?:\\s|$)', '\\1') }}"
     _current_max_restart: "{{ _current_max_restart_match[0] | default('') if _current_max_restart_match else '' }}"
@@ -77,11 +81,10 @@
     # Only update on real drift — including a field REMOVED from config that is
     # still set live (comment / max_restart / max_relocate).
     - >-
-      ('state ' ~ (item.state | default('started'))) not in _stdout
+      _current_state != (item.state | default('started') | string)
       or (item.max_restart is defined and _current_max_restart != (item.max_restart | string))
       or (item.max_relocate is defined and _current_max_relocate != (item.max_relocate | string))
-      or (item.comment is defined and ('comment ' ~ item.comment) not in _stdout)
-      or (item.comment is not defined and _current_comment | length > 0)
+      or _current_comment != (item.comment | default('') | string)
       or (item.max_restart is not defined and _current_max_restart | length > 0)
       or (item.max_relocate is not defined and _current_max_relocate | length > 0)
   loop: "{{ proxmox_ha_resources }}"

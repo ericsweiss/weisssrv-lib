@@ -174,3 +174,25 @@ class TestIdempotency:
         route = _docs(scaffold, "ingressroute.yaml")[0]
         names = [m["name"] for m in route["spec"]["routes"][0]["middlewares"]]
         assert names.count("authentik-auth") == 1
+
+
+def test_stale_active_line_with_missing_manifest_refuses_paired_edits(scaffold):
+    """An active hpa.yaml entry whose manifest was deleted must not strip
+    spec.replicas — the HPA will never deploy to take over the count."""
+    import shutil
+    from weisssrv_lib_cli import tree, wire
+
+    kpath = tree.flux_file(scaffold, tree.KUSTOMIZATION)
+    text = kpath.read_text(encoding="utf-8")
+    new, did = __import__("weisssrv_lib_cli.kustomization", fromlist=["k"]).uncomment_resource(
+        text, tree.HPA_MANIFEST
+    )
+    assert did
+    kpath.write_text(new, encoding="utf-8")
+    (tree.flux_file(scaffold, tree.HPA_MANIFEST)).unlink()
+
+    dep_before = tree.flux_file(scaffold, tree.DEPLOYMENT).read_text(encoding="utf-8")
+    changed: list = []
+    wire._wire_hpa(scaffold, changed)
+    assert changed == []
+    assert tree.flux_file(scaffold, tree.DEPLOYMENT).read_text(encoding="utf-8") == dep_before
