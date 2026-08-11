@@ -143,6 +143,24 @@
     - gitlab_registry_default_store.stat.exists | default(false)
     - gitlab_registry_default_store.stat.isdir | default(false)
 
+# A populated default store alongside an existing target is ambiguous: relocating
+# would clobber the target, skipping strands the default store's blobs invisibly.
+- name: Registry relocation | Refuse an ambiguous existing target
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (gitlab_registry_target_store.stat.exists | default(false)
+             and (gitlab_registry_default_contents.matched | default(0)) > 0)
+    fail_msg: >-
+      Both {{ gitlab_registry_data_dir }} and a populated default registry store
+      exist. Merge or remove one side manually before rerunning — relocation
+      refuses to guess which blob store is authoritative.
+  when:
+    - gitlab_registry_enabled | bool
+    - gitlab_registry_data_dir != '/var/opt/gitlab/gitlab-rails/shared/registry'
+    - gitlab_registry_default_store.stat.exists | default(false)
+    - gitlab_registry_default_store.stat.isdir | default(false)
+
 - name: Registry relocation | Move the blob store onto external storage
   when:
     - gitlab_registry_enabled | bool

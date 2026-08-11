@@ -9,7 +9,7 @@
   ansible.builtin.assert:
     that:
       - k3s_audit_policy is mapping
-      - (k3s_audit_policy.apiVersion | default('')) is match('audit\.k8s\.io/')
+      - (k3s_audit_policy.apiVersion | default('')) == 'audit.k8s.io/v1'
       - (k3s_audit_policy.kind | default('')) == 'Policy'
       - (k3s_audit_policy.rules | default([])) | length > 0
     fail_msg: >-
