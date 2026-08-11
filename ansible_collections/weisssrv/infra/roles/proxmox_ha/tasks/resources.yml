@@ -3,13 +3,14 @@
 # one unindented `<type>:<vmid>` line per resource, followed by that resource's
 # indented `key value` properties. Everything below reads that single capture.
 
+# A failed read must abort: treating it as an empty index would fire `add` for
+# every resource, whose tolerated "already exists" then hides real drift behind
+# a green play.
 - name: Get the current HA resource configuration
   ansible.builtin.command: ha-manager config
   register: proxmox_ha_config_raw
   changed_when: false
-  # An unreadable index leaves every resource looking absent; the `add` path
-  # then fails loud on its own rather than this task aborting the play.
-  failed_when: false
+  failed_when: proxmox_ha_config_raw.rc != 0
   check_mode: false  # Must run to determine current state
   tags: [proxmox_ha_resources]
 

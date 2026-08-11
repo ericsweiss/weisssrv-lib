@@ -116,8 +116,16 @@ if [[ -r "$PLEX_PREFS" ]]; then
         | head -1 | cut -d'"' -f2) || CERT_DOMAIN=""
 fi
 CERT_DOMAIN="${CERT_DOMAIN:-{{ plex_cert_domain }}}"
+# The swap already happened, so an unverifiable domain must revert it — exiting
+# here would leave an unverified certificate active while reporting failure.
 if [[ -z "$CERT_DOMAIN" ]]; then
-    echo "cannot determine Plex customCertificateDomain; refusing to verify blind" >&2
+    echo "cannot determine Plex customCertificateDomain; reverting the unverified certificate swap" >&2
+    if [[ -f "$PFX_PREV" ]]; then
+        cp -p "$PFX_PREV" "$PFX_FILE"
+        chown "root:$PLEX_GROUP" "$PFX_FILE"
+        chmod 0640 "$PFX_FILE"
+        systemctl restart plexmediaserver || true
+    fi
     exit 1
 fi
 SERVED_FP=""
