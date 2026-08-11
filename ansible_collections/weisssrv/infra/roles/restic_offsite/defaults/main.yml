@@ -161,4 +161,10 @@ restic_offsite_zvol_sources: []
 # (<restic_offsite_bind_root>/<source name>/...). Site data: what is
 # regenerable, what has its own retention, and which zvol mountpoint dirs are
 # empty in the walk are all deployment-specific.
+#
+# A `**/*.partial` entry is worth carrying: the backup wrappers stream each dump
+# to `<final-name>.partial` and rename it only after validation, so a partial in
+# the walk is a dump that was in flight — never a restorable artefact. Excluding
+# it is an upload-size choice, not a correctness one: the final name only ever
+# appears complete.
 restic_offsite_excludes: []

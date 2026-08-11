@@ -460,14 +460,21 @@
     # filesystem, report success with a non-zero size, and the artefact collector
     # would read the same shadowed dir. Rendered off in the container; forced on
     # here to test the fail-closed path.
+    # A stale archive is seeded under the (redirected) DEST_DIR on purpose: with
+    # the landing zone unmounted, everything under it is a shadow copy on the
+    # root filesystem, so the run must NOT size it into a healthy-looking
+    # last_size_bytes — that would suppress the very empty-landing-zone signal
+    # this guard exists to raise.
     - name: An unmounted landing zone must fail closed, not shadow-write the source
       ansible.builtin.shell: |
         set -o pipefail
         sed -e 's#^SRC=.*#SRC="/tmp/fake-pve-guard"#' \
+            -e 's#^DEST_DIR=.*#DEST_DIR="/tmp/pvecb-shadow"#' \
             -e 's#^REQUIRE_MOUNT=.*#REQUIRE_MOUNT=1#' \
             /usr/local/sbin/pve-cluster-backup.sh > /tmp/pvecb-guard.sh
-        mkdir -p /tmp/fake-pve-guard/priv
+        mkdir -p /tmp/fake-pve-guard/priv /tmp/pvecb-shadow
         echo 'FAKE-CA' > /tmp/fake-pve-guard/priv/pve-root-ca.pem
+        dd if=/dev/zero of=/tmp/pvecb-shadow/etc-pve-20200101-000000.tar.gz bs=4096 count=1 2>/dev/null
         bash /tmp/pvecb-guard.sh
       args:
         executable: /bin/bash
@@ -488,6 +495,24 @@
       register: nas_storage_pve_cluster_unmounted_state
       changed_when: false
       failed_when: nas_storage_pve_cluster_unmounted_state.stdout_lines != ['1', '0']
+
+    - name: Read the metrics written by the unmounted-landing-zone run
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/pve_cluster_backup.prom
+      register: nas_storage_pve_cluster_prom_unmounted
+
+    - name: The unmounted run reports size 0, not the shadow archive's size
+      ansible.builtin.assert:
+        that:
+          - "'pve_cluster_backup_last_size_bytes 0'
+             in (nas_storage_pve_cluster_prom_unmounted.content | b64decode)"
+          - "'pve_cluster_backup_last_size_bytes 4096'
+             not in (nas_storage_pve_cluster_prom_unmounted.content | b64decode)"
+        fail_msg: >-
+          The unmounted-landing-zone run sized a shadow archive on the root
+          filesystem — BackupArtifactEmpty would stay green for a landing zone
+          nothing can reach.
+        success_msg: "The unmounted-landing-zone run distrusts shadow archives and reports size 0"
 
     # Source-side mount guard, the mirror of the one above. /etc/pve is FUSE:
     # with pve-cluster.service down the path still exists as an empty directory
@@ -522,14 +547,21 @@
       changed_when: false
       failed_when: nas_storage_pve_cluster_src_unmounted_state.stdout_lines != ['1', '0']
 
-    - name: Seed a synthetic pmxcfs tree
+    # The REAL pmxcfs layout: the CA certificate sits at the root and only the
+    # private half lives under priv/. The script refuses to publish an archive
+    # missing any of nas_storage_pve_cluster_backup_required_files, so a fixture
+    # with invented paths would test a guard that can never pass on a real host.
+    - name: Seed a synthetic pmxcfs tree (real cluster-identity paths)
       ansible.builtin.shell: |
         set -eo pipefail
         rm -rf /tmp/fake-pve
         mkdir -p /tmp/fake-pve/priv
         echo 'user:root@pam:1:0:::::' > /tmp/fake-pve/user.cfg
         echo 'totem { cluster_name: molecule }' > /tmp/fake-pve/corosync.conf
-        echo 'FAKE-CA' > /tmp/fake-pve/priv/pve-root-ca.pem
+        echo 'FAKE-CA-CERT' > /tmp/fake-pve/pve-root-ca.pem
+        echo 'FAKE-AUTHKEY-PUB' > /tmp/fake-pve/authkey.pub
+        echo 'FAKE-CA-KEY' > /tmp/fake-pve/priv/pve-root-ca.key
+        echo 'FAKE-AUTHKEY' > /tmp/fake-pve/priv/authkey.key
       args:
         executable: /bin/bash
       changed_when: false
@@ -587,10 +619,91 @@
         executable: /bin/bash
       register: nas_storage_pve_cluster_listing
       changed_when: false
-      failed_when: >-
-        'user.cfg' not in nas_storage_pve_cluster_listing.stdout
-        or 'corosync.conf' not in nas_storage_pve_cluster_listing.stdout
-        or 'priv/pve-root-ca.pem' not in nas_storage_pve_cluster_listing.stdout
+
+    - name: Every declared cluster-identity file is in the published archive
+      ansible.builtin.assert:
+        that:
+          - "'tmp/fake-pve/' ~ item in nas_storage_pve_cluster_listing.stdout_lines"
+        fail_msg: >-
+          The published archive is missing {{ item }} — a restore cannot rebuild
+          the cluster identity from it.
+      loop:
+        - user.cfg
+        - corosync.conf
+        - pve-root-ca.pem
+        - priv/pve-root-ca.key
+        - authkey.pub
+        - priv/authkey.key
+
+    # The content guard's destructive direction: a source that tars perfectly
+    # (non-empty, `tar -tzf`-readable) but is missing one identity file is a
+    # degraded/empty pmxcfs, and publishing it would retire a real archive per
+    # night through retention. It must refuse and leave the landing zone alone.
+    - name: Count the archives before the missing-identity-file run
+      ansible.builtin.find:
+        paths: /mnt/tank/backups/apps/pve-cluster
+        patterns: "etc-pve-*.tar.gz"
+      register: nas_storage_pve_cluster_before_degraded
+
+    - name: A readable archive missing an identity file must not be published
+      ansible.builtin.shell: |
+        set -o pipefail
+        rm -rf /tmp/fake-pve-degraded
+        mkdir -p /tmp/fake-pve-degraded/priv
+        echo 'user:root@pam:1:0:::::' > /tmp/fake-pve-degraded/user.cfg
+        echo 'totem { cluster_name: molecule }' > /tmp/fake-pve-degraded/corosync.conf
+        echo 'FAKE-CA-CERT' > /tmp/fake-pve-degraded/pve-root-ca.pem
+        echo 'FAKE-AUTHKEY-PUB' > /tmp/fake-pve-degraded/authkey.pub
+        echo 'FAKE-CA-KEY' > /tmp/fake-pve-degraded/priv/pve-root-ca.key
+        # priv/authkey.key deliberately absent.
+        sed 's#^SRC=.*#SRC="/tmp/fake-pve-degraded"#' \
+          /usr/local/sbin/pve-cluster-backup.sh > /tmp/pvecb-degraded.sh
+        bash /tmp/pvecb-degraded.sh
+      args:
+        executable: /bin/bash
+      register: nas_storage_pve_cluster_degraded
+      changed_when: false
+      failed_when: nas_storage_pve_cluster_degraded.rc == 0
+
+    - name: Count the archives after the missing-identity-file run
+      ansible.builtin.find:
+        paths: /mnt/tank/backups/apps/pve-cluster
+        patterns: "etc-pve-*.tar.gz"
+      register: nas_storage_pve_cluster_after_degraded
+
+    - name: The refused run published nothing and named the missing file
+      ansible.builtin.assert:
+        that:
+          - nas_storage_pve_cluster_after_degraded.matched
+            == nas_storage_pve_cluster_before_degraded.matched
+          - "'priv/authkey.key' in nas_storage_pve_cluster_degraded.stdout"
+        fail_msg: >-
+          An archive missing priv/authkey.key was published (or the refusal did
+          not say which file was missing) — retention would age a real archive
+          out behind a backup that cannot restore the cluster identity.
+        success_msg: "A readable archive of an incomplete pmxcfs is refused, not published"
+
+    # …and the non-destructive direction of the size fallback: with the landing
+    # zone MOUNTED (REQUIRE_MOUNT=0 here), a failed run must still size the
+    # newest existing archive, because 0 bytes means "no artefact at all" and
+    # has a different runbook from "tonight's run failed".
+    - name: Read the metrics written by the refused run
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/pve_cluster_backup.prom
+      register: nas_storage_pve_cluster_prom_degraded
+
+    - name: A failed run over a reachable landing zone sizes the newest archive
+      ansible.builtin.assert:
+        that:
+          - "'pve_cluster_backup_last_run_success 0'
+             in (nas_storage_pve_cluster_prom_degraded.content | b64decode)"
+          - "'pve_cluster_backup_last_size_bytes 0'
+             not in (nas_storage_pve_cluster_prom_degraded.content | b64decode)"
+        fail_msg: >-
+          A failed run reported 0 bytes while good archives sit in a mounted
+          landing zone — that is the "no artefact at all" page, for the wrong
+          fault.
+        success_msg: "A failed run over a mounted landing zone still sizes the newest archive"
 
     - name: Check if Samba is installed
       ansible.builtin.package:

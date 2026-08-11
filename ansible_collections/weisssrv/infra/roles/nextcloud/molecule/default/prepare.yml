@@ -31,7 +31,11 @@
         mode: "0755"
 
     # Mock `docker` so the wrapper's pg_dump pipe can be exercised on both the
-    # success and failure paths. /tmp/nextcloud-backup-fail arms the failure.
+    # success and failure paths. /tmp/nextcloud-backup-fail arms the failure;
+    # /tmp/nextcloud-backup-tiny arms a truncated (too-small) dump.
+    # NEXTCLOUD_INFLIGHT_PROBE snapshots the landing zone WHILE the dump
+    # streams, which is the only way to prove the in-progress file is not
+    # visible under the final dump name.
     - name: Install mock docker for the backup-wrapper test
       ansible.builtin.copy:
         dest: /usr/local/bin/docker
@@ -41,12 +45,23 @@
           if [ "$1" = "compose" ]; then
             for a in "$@"; do
               if [ "$a" = "pg_dump" ]; then
+                if [ -n "${NEXTCLOUD_INFLIGHT_PROBE:-}" ]; then
+                  ls -1 "${NEXTCLOUD_INFLIGHT_DIR:-/nonexistent}"/nextcloud-db-*.sql.gz \
+                    > "$NEXTCLOUD_INFLIGHT_PROBE" 2>/dev/null
+                  ls -1 "${NEXTCLOUD_INFLIGHT_DIR:-/nonexistent}"/nextcloud-db-*.sql.gz.partial \
+                    > "${NEXTCLOUD_INFLIGHT_PROBE}.partial" 2>/dev/null
+                fi
                 if [ -f /tmp/nextcloud-backup-fail ]; then
                   echo "mock pg_dump FAILED" >&2
                   exit 1
                 fi
-                # Incompressible data, so the gzipped dump is non-empty and
-                # passes the wrapper's `[ -s ]` guard.
+                if [ -f /tmp/nextcloud-backup-tiny ]; then
+                  # Under the wrapper's 1000-byte floor: a truncated dump.
+                  echo "tiny"
+                  exit 0
+                fi
+                # Incompressible data, so the gzipped dump clears the wrapper's
+                # size floor.
                 head -c 8192 /dev/urandom | base64
                 exit 0
               fi

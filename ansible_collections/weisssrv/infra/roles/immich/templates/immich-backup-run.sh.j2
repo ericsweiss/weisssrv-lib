@@ -30,9 +30,21 @@ fi
 PROM_FILE="${PROM_DIR}/immich_backup.prom"
 START_TS="$(date +%s)"
 DUMP_FILE="${BACKUP_DIR}/immich-$(date +%Y%m%d-%H%M%S).sql.gz"
+# The dump streams into a .partial name and is renamed into DUMP_FILE only once
+# the pipeline AND the size check passed. The FINAL name is what the NAS
+# artefact collector and the offsite file walk key on, so it must only ever
+# appear complete: writing straight to it publishes an in-progress dump as
+# tonight's backup, and a killed run leaves a truncated one there indefinitely.
+# `.partial` is excluded by the collector (and by ARTIFACT_GLOB below), and the
+# rename is atomic within the same directory.
+DUMP_TMP="${DUMP_FILE}.partial"
+# Best-effort cleanup on an interrupted run (a SIGKILL cannot fire it — the
+# stale-partial sweep after retention covers that).
+trap 'rm -f -- "$DUMP_TMP"' EXIT
 # Passed to write_prom_metrics so a run that produced nothing still reports the
 # newest EXISTING dump's size: 0 means "no artefact at all", which is a
-# different alert from "tonight's dump failed".
+# different alert from "tonight's dump failed". Matches the final name only, so
+# an in-progress .partial can never be sized as a healthy artefact.
 ARTIFACT_GLOB="${BACKUP_DIR}/immich-*.sql.gz"
 
 mkdir -p "$PROM_DIR"
@@ -58,27 +70,37 @@ mkdir -p "$BACKUP_DIR"
 # the local socket, so no password is needed.
 docker compose --project-directory "$COMPOSE_DIR" exec -T database \
   pg_dumpall --clean --if-exists "--username=${DB_USER}" \
-  | gzip > "$DUMP_FILE"
+  | gzip > "$DUMP_TMP"
 rc=$?
 
 # Validate the dump: rc 0 with a plausibly-sized file. A truncated/empty gzip
-# (e.g. the container was mid-restart) must NOT report a healthy backup.
+# (e.g. the container was mid-restart) must NOT report a healthy backup — and
+# must never be published under the final name, so the rename is the LAST step
+# and only a validated dump reaches it.
 size=0
-if [ "$rc" -eq 0 ] && [ -f "$DUMP_FILE" ]; then
-  size="$(stat -c %s "$DUMP_FILE" 2>/dev/null || echo 0)"
+if [ "$rc" -eq 0 ] && [ -f "$DUMP_TMP" ]; then
+  size="$(stat -c %s "$DUMP_TMP" 2>/dev/null || echo 0)"
   if [ "$size" -lt 1000 ]; then
+    rc=1
+  elif ! mv -f -- "$DUMP_TMP" "$DUMP_FILE"; then
     rc=1
   fi
 fi
 
 if [ "$rc" -ne 0 ]; then
-  rm -f "$DUMP_FILE"
+  # Only the .partial can exist here: DUMP_FILE is created by the rename above,
+  # which is the last thing that can fail (and leaves the .partial in place).
+  size=0
+  rm -f -- "$DUMP_TMP"
 fi
 
 # Prune old dumps only after a successful run (never delete the last good copy
 # because a fresh run failed).
 if [ "$rc" -eq 0 ]; then
   find "$BACKUP_DIR" -name 'immich-*.sql.gz' -type f -mtime "+${KEEP_DAYS}" -delete 2>/dev/null || true
+  # Retention matches the FINAL name only, so a SIGKILLed run's .partial would
+  # otherwise sit in the landing zone forever.
+  find "$BACKUP_DIR" -name 'immich-*.sql.gz.partial' -type f -mtime +1 -delete 2>/dev/null || true
 fi
 
 end_ts="$(date +%s)"

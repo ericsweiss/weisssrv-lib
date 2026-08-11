@@ -29,7 +29,9 @@ PROM_FILE="${PROM_DIR}/nextcloud_backup.prom"
 START_TS="$(date +%s)"
 # Passed to write_prom_metrics so a run that produced nothing still reports the
 # newest EXISTING dump's size: 0 means "no artefact at all" (a landing-path
-# fault), not "tonight's dump failed" — that is the success metric's job.
+# fault), not "tonight's dump failed" — that is the success metric's job. It
+# matches the FINAL dump name only, so the in-progress .partial below can never
+# be sized as a healthy artefact.
 ARTIFACT_GLOB="${BACKUP_DIR}/nextcloud-db-*.sql.gz"
 
 mkdir -p "$PROM_DIR"
@@ -51,7 +53,15 @@ mkdir -p "$BACKUP_DIR"
 cd "$COMPOSE_DIR" || exit 1
 
 OUT="${BACKUP_DIR}/nextcloud-db-$(date +%Y%m%d-%H%M%S).sql.gz"
+# The dump streams into .partial and is renamed into OUT only once the pipeline
+# AND the size check passed: the FINAL name is what the NAS artefact collector
+# and the offsite file walk key on, so it must only ever appear complete.
+# `.partial` is excluded by both (and by ARTIFACT_GLOB above); the rename is
+# atomic within the same directory.
 TMP="${OUT}.partial"
+# Best-effort cleanup on an interrupted run (a SIGKILL cannot fire it — the
+# stale-partial sweep after retention covers that).
+trap 'rm -f -- "$TMP"' EXIT
 
 # pg_dump inside the db container -> gzip on the host. --clean --if-exists makes
 # the dump idempotently restorable over an existing schema. BOTH stages' exit
@@ -61,16 +71,30 @@ docker compose exec -T nextcloud-db \
   pg_dump -U "$DB_USER" -d "$DB_NAME" --clean --if-exists 2>/dev/null | gzip -c > "$TMP"
 pipe_status=("${PIPESTATUS[@]}")
 
+# A plausibility floor, not just `[ -s ]`: a gzip header alone is ~20 bytes, so
+# an empty/truncated stream can be non-empty and still be no backup at all. The
+# size is taken from the .partial, BEFORE promotion, so only a validated dump
+# ever reaches the final name.
+rc=1
 size=0
-if [ "${pipe_status[0]}" -eq 0 ] && [ "${pipe_status[1]}" -eq 0 ] && [ -s "$TMP" ]; then
-  mv "$TMP" "$OUT"
-  rc=0
-  size="$(stat -c %s "$OUT" 2>/dev/null || echo 0)"
-  # Prune old dumps only after a successful new one.
-  find "$BACKUP_DIR" -maxdepth 1 -name 'nextcloud-db-*.sql.gz' -mtime "+${KEEP_DAYS}" -delete 2>/dev/null || true
-else
-  rc=1
-  rm -f "$TMP"
+if [ "${pipe_status[0]}" -eq 0 ] && [ "${pipe_status[1]}" -eq 0 ] && [ -f "$TMP" ]; then
+  size="$(stat -c %s "$TMP" 2>/dev/null || echo 0)"
+  if [ "$size" -ge 1000 ] && mv -f -- "$TMP" "$OUT"; then
+    rc=0
+    # Prune old dumps only after a successful new one.
+    find "$BACKUP_DIR" -maxdepth 1 -name 'nextcloud-db-*.sql.gz' -mtime "+${KEEP_DAYS}" -delete 2>/dev/null || true
+    # Retention matches the FINAL name only, so a SIGKILLed run's .partial would
+    # otherwise sit in the landing zone forever.
+    find "$BACKUP_DIR" -maxdepth 1 -name 'nextcloud-db-*.sql.gz.partial' -mtime +1 -delete 2>/dev/null || true
+  fi
+fi
+
+if [ "$rc" -ne 0 ]; then
+  # Only the .partial can exist here (the rename is the last step that can
+  # fail), and its size is not a backup — report 0 so write_prom_metrics falls
+  # back to the newest COMPLETE dump instead.
+  size=0
+  rm -f -- "$TMP"
 fi
 
 end_ts="$(date +%s)"

@@ -717,6 +717,13 @@ The render-group membership is now gated on `getent group render` instead of a
 blanket `failed_when: false`, so a genuine failure (a missing plex user) fails
 the play rather than being swallowed.
 
+The bind-mount preflight is stricter than the in-tree role's: `plex_config_dir`,
+`plex_transcode_dir` **and** `plex_media_dir` must each pass `mountpoint -q`, not
+merely exist (a stale mountpoint directory sends the library to the guest's root
+filesystem). A consumer whose media path is a plain directory by design, or a
+test container with no bind mounts, sets `plex_skip_service: true` — the single
+escape, which also skips the enable/start/readiness steps.
+
 ### postfix_null_client
 
 | Old | New |

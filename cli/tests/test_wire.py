@@ -81,6 +81,53 @@ class TestInternalIngress:
         resources = _resources(scaffold)
         assert "ingressroute.yaml" in resources and "certificate.yaml" in resources
 
+    @needs_optional_layout
+    def test_missing_certificate_manifest_enables_neither(self, scaffold, capsys):
+        # The pair is one logical change: enabling the route and THEN finding the
+        # certificate has no manifest would persist exactly the half-wired state
+        # `prune external-ingress` refuses to act on. Preflight, then write once.
+        _flux(scaffold, tree.INTERNAL_INGRESS_MANIFESTS[1]).unlink()
+        before = _flux(scaffold, "kustomization.yaml").read_text()
+        wire.wire(scaffold, ["internal-ingress"])
+        assert _flux(scaffold, "kustomization.yaml").read_text() == before
+        assert not set(tree.INTERNAL_INGRESS_MANIFESTS) & set(_resources(scaffold))
+        assert "warning" in capsys.readouterr().err
+
+    @needs_optional_layout
+    def test_missing_certificate_enable_line_enables_neither(self, scaffold, capsys):
+        # Same guarantee when the manifest exists but its `# - optional/…` line
+        # was deleted from the kustomization: nothing is invented, and the route
+        # is not left enabled on its own.
+        kpath = _flux(scaffold, "kustomization.yaml")
+        cert = tree.INTERNAL_INGRESS_MANIFESTS[1]
+        kpath.write_text(
+            "".join(
+                line
+                for line in kpath.read_text(encoding="utf-8").splitlines(keepends=True)
+                if cert not in line
+            ),
+            encoding="utf-8",
+        )
+        before = kpath.read_text(encoding="utf-8")
+        wire.wire(scaffold, ["internal-ingress"])
+        assert kpath.read_text(encoding="utf-8") == before
+        assert not set(tree.INTERNAL_INGRESS_MANIFESTS) & set(_resources(scaffold))
+        assert "warning" in capsys.readouterr().err
+
+    @needs_optional_layout
+    def test_a_half_wired_tree_is_completed_not_refused(self, scaffold):
+        # The preflight must not block the repair path: a tree where only the
+        # route is active (hand-edited, or wired by an older CLI) still gets the
+        # certificate enabled, ending BOTH-active.
+        kpath = _flux(scaffold, "kustomization.yaml")
+        text, did = kz.uncomment_resource(
+            kpath.read_text(encoding="utf-8"), tree.INTERNAL_INGRESS_MANIFESTS[0]
+        )
+        assert did
+        kpath.write_text(text, encoding="utf-8")
+        wire.wire(scaffold, ["internal-ingress"])
+        assert set(tree.INTERNAL_INGRESS_MANIFESTS) <= set(_resources(scaffold))
+
 
 class TestSso:
     def test_authentik_middleware_activated(self, scaffold):

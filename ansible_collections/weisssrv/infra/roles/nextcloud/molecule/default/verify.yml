@@ -324,6 +324,105 @@
         path: /tmp/nextcloud-backup-fail
         state: absent
 
+    # Atomic publication. The NAS artefact collector and the offsite file walk
+    # key on the FINAL `nextcloud-db-*.sql.gz` name, so a dump must never appear
+    # under it before it is complete and validated. Run against a dedicated
+    # landing zone (the assertions above pin the real one's contents) with the
+    # mock docker snapshotting that directory mid-stream.
+    - name: Stage a dedicated landing zone for the atomic-publish test
+      ansible.builtin.shell: |
+        set -eo pipefail
+        rm -rf /tmp/nextcloud-partial /tmp/nextcloud-partial-prom
+        rm -f /tmp/nextcloud-inflight.txt /tmp/nextcloud-inflight.txt.partial
+        mkdir -p /tmp/nextcloud-partial /tmp/nextcloud-partial-prom
+        sed -e 's|^BACKUP_DIR=.*|BACKUP_DIR="/tmp/nextcloud-partial"|' \
+            -e 's|^PROM_DIR=.*|PROM_DIR="/tmp/nextcloud-partial-prom"|' \
+            /usr/local/sbin/nextcloud-backup-run.sh > /tmp/nextcloud-backup-run-partial.sh
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Run the wrapper with the in-flight probe armed (success path)
+      ansible.builtin.command: bash /tmp/nextcloud-backup-run-partial.sh
+      environment:
+        NEXTCLOUD_INFLIGHT_PROBE: /tmp/nextcloud-inflight.txt
+        NEXTCLOUD_INFLIGHT_DIR: /tmp/nextcloud-partial
+      changed_when: false
+
+    - name: Collect the in-flight and post-run landing-zone state
+      ansible.builtin.shell: |
+        set -o pipefail
+        wc -l < /tmp/nextcloud-inflight.txt | tr -d '[:space:]'
+        echo
+        wc -l < /tmp/nextcloud-inflight.txt.partial | tr -d '[:space:]'
+        echo
+        find /tmp/nextcloud-partial -maxdepth 1 -name 'nextcloud-db-*.sql.gz' | wc -l | tr -d '[:space:]'
+        echo
+        find /tmp/nextcloud-partial -maxdepth 1 -name '*.partial' | wc -l | tr -d '[:space:]'
+        echo
+      args:
+        executable: /bin/bash
+      register: nextcloud_partial_state
+      changed_when: false
+
+    - name: Assert the dump was invisible under the final name while it streamed
+      ansible.builtin.assert:
+        that:
+          # 0 final-name files mid-stream, 1 .partial being written…
+          - nextcloud_partial_state.stdout_lines[0] == '0'
+          - nextcloud_partial_state.stdout_lines[1] == '1'
+          # …and exactly one COMPLETE dump afterwards, with no .partial litter.
+          - nextcloud_partial_state.stdout_lines[2] == '1'
+          - nextcloud_partial_state.stdout_lines[3] == '0'
+        fail_msg: >-
+          The dump was visible under its final name while pg_dump was still
+          streaming (or a .partial was left behind) — the collector and the
+          offsite walk would treat an in-progress dump as tonight's backup.
+        success_msg: "The dump streams to .partial and is renamed in only after validation"
+
+    # The destructive direction: a dump under the size floor (a gzip header is
+    # non-empty, so `[ -s ]` alone would promote it) must leave NOTHING behind —
+    # no final-name artefact for the collector to trust, no .partial litter.
+    - name: Arm a truncated dump
+      ansible.builtin.file:
+        path: /tmp/nextcloud-backup-tiny
+        state: touch
+        mode: "0644"
+
+    - name: Run the wrapper with a truncated dump (must fail)
+      ansible.builtin.command: bash /tmp/nextcloud-backup-run-partial.sh
+      register: nextcloud_backup_tiny
+      changed_when: false
+      failed_when: nextcloud_backup_tiny.rc == 0
+
+    - name: Collect the landing-zone state after the truncated dump
+      ansible.builtin.shell: |
+        set -o pipefail
+        find /tmp/nextcloud-partial -maxdepth 1 -name 'nextcloud-db-*.sql.gz' | wc -l | tr -d '[:space:]'
+        echo
+        find /tmp/nextcloud-partial -maxdepth 1 -name '*.partial' | wc -l | tr -d '[:space:]'
+        echo
+      args:
+        executable: /bin/bash
+      register: nextcloud_tiny_state
+      changed_when: false
+
+    - name: Assert the truncated dump was never published and left no litter
+      ansible.builtin.assert:
+        that:
+          # Still only the earlier COMPLETE dump; the truncated one is gone.
+          - nextcloud_tiny_state.stdout_lines[0] == '1'
+          - nextcloud_tiny_state.stdout_lines[1] == '0'
+        fail_msg: >-
+          A truncated dump reached the final name (or its .partial survived) —
+          the collector would size a dump that cannot restore.
+        success_msg: "A truncated dump is never published and leaves no .partial behind"
+
+    - name: Disarm the truncated dump
+      ansible.builtin.file:
+        path: /tmp/nextcloud-backup-tiny
+        state: absent
+
     - name: Assert the backup timer + service exist
       ansible.builtin.stat:
         path: "/etc/systemd/system/{{ item }}"

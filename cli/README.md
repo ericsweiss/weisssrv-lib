@@ -72,13 +72,14 @@ kustomization entry, and cleans cross-references):
 | `ci:<shape>`       | keep one CI shape (`gitlab`, `github`, `none`), delete the others' files |
 
 All requested features are validated up front — an unknown feature name (or an
-`external-ingress` prune that would empty a file because no internal variant is
-active) raises before any file is touched, so a typo never half-mutates the repo.
+`external-ingress` prune that would empty a file while the internal route and
+certificate are not BOTH active and present on disk) raises before any file is
+touched, so a typo never half-mutates the repo.
 
 ```bash
 weisssrv-new-project prune metrics single-replica
 # internal-only: wire the internal route first, then drop the public one
-# (prune external-ingress refuses if the internal variant isn't active yet)
+# (prune external-ingress refuses until BOTH internal variants are active)
 weisssrv-new-project wire internal-ingress && weisssrv-new-project prune external-ingress
 ```
 

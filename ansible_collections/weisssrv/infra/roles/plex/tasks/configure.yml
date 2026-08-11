@@ -88,29 +88,12 @@
         group: root
         mode: "0750"
 
-- name: Verify Plex config directory exists (bind mount)
-  ansible.builtin.stat:
-    path: "{{ plex_config_dir }}"
-  register: plex_config_stat
-
-- name: Fail if Plex config directory is not mounted
-  ansible.builtin.fail:
-    msg: >-
-      Plex config directory {{ plex_config_dir }} does not exist. Create the
-      host directory and configure the bind mount before deploying.
-  when: not plex_config_stat.stat.exists
-
-- name: Verify Plex transcode directory exists (bind mount)
-  ansible.builtin.stat:
-    path: "{{ plex_transcode_dir }}"
-  register: plex_transcode_stat
-
-- name: Fail if Plex transcode directory is not mounted
-  ansible.builtin.fail:
-    msg: >-
-      Plex transcode directory {{ plex_transcode_dir }} does not exist. Create
-      the host directory and configure the bind mount before deploying.
-  when: not plex_transcode_stat.stat.exists
+# config, transcode AND media must exist and be really mounted before the
+# service is touched — a stale mountpoint directory passes an existence check
+# and sends the library to the guest root disk. Own file so the molecule
+# scenario can drive it in both directions.
+- name: Verify the Plex bind mounts
+  ansible.builtin.include_tasks: assert-mounts.yml
 
 - name: Check if Plex preferences exist
   ansible.builtin.stat:

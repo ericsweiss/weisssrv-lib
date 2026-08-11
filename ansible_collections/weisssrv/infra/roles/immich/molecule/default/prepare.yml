@@ -37,7 +37,10 @@
 
     # Mock `docker` so the backup wrapper's pg_dumpall pipe can be exercised end
     # to end (success + failure metric paths). /tmp/immich-backup-fail arms the
-    # failure path.
+    # failure path; /tmp/immich-backup-tiny arms a truncated (too-small) dump.
+    # IMMICH_INFLIGHT_PROBE snapshots the landing zone WHILE the dump streams,
+    # which is the only way to prove the in-progress file is not visible under
+    # the final dump name.
     - name: Install mock docker for the backup-wrapper test
       ansible.builtin.copy:
         dest: /usr/local/bin/docker
@@ -47,9 +50,20 @@
           if [ "$1" = "compose" ]; then
             for a in "$@"; do
               if [ "$a" = "pg_dumpall" ]; then
+                if [ -n "${IMMICH_INFLIGHT_PROBE:-}" ]; then
+                  ls -1 "${IMMICH_INFLIGHT_DIR:-/nonexistent}"/immich-*.sql.gz \
+                    > "$IMMICH_INFLIGHT_PROBE" 2>/dev/null
+                  ls -1 "${IMMICH_INFLIGHT_DIR:-/nonexistent}"/immich-*.sql.gz.partial \
+                    > "${IMMICH_INFLIGHT_PROBE}.partial" 2>/dev/null
+                fi
                 if [ -f /tmp/immich-backup-fail ]; then
                   echo "mock pg_dumpall FAILED" >&2
                   exit 1
+                fi
+                if [ -f /tmp/immich-backup-tiny ]; then
+                  # Under the wrapper's 1000-byte floor: a truncated dump.
+                  echo "tiny"
+                  exit 0
                 fi
                 # Emit a fake dump that gzips to > the wrapper's 1000-byte floor.
                 # Must be incompressible: repetitive text gzips ~100:1, so use

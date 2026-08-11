@@ -25,6 +25,14 @@ REQUIRE_MOUNT={{ '1' if (nas_storage_backup_require_mounted_dataset | default(tr
 REQUIRE_SRC_MOUNT={{ '1' if (nas_storage_pve_cluster_backup_require_src_mount | default(true) | bool) else '0' }}
 KEEP="{{ nas_storage_pve_cluster_backup_keep }}"
 PROM_DIR="{{ nas_storage_backup_artifact_metrics_dir | default(node_exporter_host_textfile_dir | default('/var/lib/node_exporter')) }}"
+# Files (relative to SRC) that must be INSIDE the archive before it is published
+# — the content half of the two mount guards below. See
+# nas_storage_pve_cluster_backup_required_files.
+REQUIRED_FILES=(
+{% for required in nas_storage_pve_cluster_backup_required_files %}
+  {{ required | quote }}
+{% endfor %}
+)
 {% raw %}
 PROM_FILE="${PROM_DIR}/pve_cluster_backup.prom"
 
@@ -32,6 +40,12 @@ log() { echo "[$(date -Is)] $*"; }
 
 run_success=0
 run_size=0
+# Whether archives already in DEST_DIR may be sized when this run produced none.
+# Cleared the moment the landing zone proves unreachable: everything under an
+# unmounted mountpoint is a shadow copy on the root filesystem, so sizing it
+# would report a healthy artefact for a landing zone nothing can reach — the
+# exact state the empty-artifact alert exists to catch.
+trust_existing_archives=1
 _START_TS="$(date +%s)"
 
 write_prom_metrics() {
@@ -43,7 +57,7 @@ write_prom_metrics() {
   # archives sit in the landing zone, firing the empty-artifact alert for a
   # fault this producer cannot have. run_success=0 stays the failure signal;
   # 0 bytes means what the alert says — no artefact exists at all.
-  if [ "$run_size" -eq 0 ]; then
+  if [ "$run_size" -eq 0 ] && [ "$trust_existing_archives" -eq 1 ]; then
     # shellcheck disable=SC2012 # ls -t for mtime order; names are generated + safe
     newest="$(ls -1t "${DEST_DIR}"/etc-pve-*.tar.gz 2>/dev/null | head -1 || true)"
     if [ -n "$newest" ] && [ -f "$newest" ]; then
@@ -108,6 +122,10 @@ fi
 # shadowed directory). Those archives are then orphaned under the mountpoint
 # once the dataset returns, invisible to the KEEP retention.
 if [ "$REQUIRE_MOUNT" = "1" ] && ! mountpoint -q "$BACKUPS_MOUNT"; then
+  # Distrust whatever is under DEST_DIR before the EXIT trap writes metrics: a
+  # stale shadow archive there must not be sized into a healthy-looking
+  # *_last_size_bytes and suppress the empty-landing-zone signal.
+  trust_existing_archives=0
   log "landing zone ${BACKUPS_MOUNT} is not a mounted dataset — refusing to archive ${SRC} onto the root filesystem"
   exit 1
 fi
@@ -139,11 +157,27 @@ if [ ! -s "$tmp" ]; then
   rm -f "$tmp"
   exit 1
 fi
-if ! tar -tzf "$tmp" >/dev/null 2>&1; then
+if ! listing="$(tar -tzf "$tmp" 2>/dev/null)"; then
   log "produced an unreadable archive — refusing to publish it"
   rm -f "$tmp"
   exit 1
 fi
+
+# Valid framing is not evidence of a restorable backup: a mounted but degraded
+# pmxcfs (or a source that is not pmxcfs at all) tars into a readable archive of
+# nothing, which publishes as success and ages a real archive out per night.
+# Every declared cluster-identity file must be IN it. Entries are stored
+# relative to / (tar runs -C / with "${SRC#/}"), so the check is an exact match
+# on that prefixed path — and reads from the listing already in hand, no second
+# decompression.
+archive_root="${SRC#/}"
+for required in "${REQUIRED_FILES[@]}"; do
+  if ! grep -Fxq -- "${archive_root}/${required}" <<<"$listing"; then
+    log "archive is missing required cluster identity file ${required} — refusing to publish it"
+    rm -f "$tmp"
+    exit 1
+  fi
+done
 
 chmod 0600 "$tmp"
 mv "$tmp" "$out"

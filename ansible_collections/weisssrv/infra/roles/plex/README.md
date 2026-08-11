@@ -37,13 +37,18 @@ Ordering is the playbook's job — run a base role first, and create the guest
 | `plex_pfx_passphrase` | PKCS#12 passphrase (secret); asserted when the hook is on | yes, with the hook |
 | `plex_cert_domain` | Fallback SNI for the cert probe | no (`""`) |
 | `plex_skip_gpu_drivers` | Skip non-free repos + VA-API drivers | no (`false`) |
-| `plex_skip_service` | Skip enable/start/readiness | no (`false`) |
+| `plex_skip_service` | Skip enable/start/readiness **and the bind-mount check** (test containers) | no (`false`) |
 | `plex_service_after` | Units the service is ordered after and pulls in | no (`[network-online.target]`) |
 
 ## Bind mounts
 
-`plex_config_dir` and `plex_transcode_dir` must already be mounted — the role
-fails loudly rather than creating a local directory that masks the mount. It
+`plex_config_dir`, `plex_transcode_dir` and `plex_media_dir` must already be
+mounted — the role fails loudly rather than creating a local directory that
+masks the mount. Existence is not enough: `tasks/assert-mounts.yml` runs
+`mountpoint -q` on all three, because a failed or removed mount leaves the
+mountpoint directory behind, and Plex would then fill the guest's root
+filesystem with a library nothing on the host backs up. `plex_skip_service`
+(a container with no real bind mounts) is the only escape from that check. It
 deliberately does **not** chown any of the three: they arrive from the host with
 UID/GID passthrough, and chowning from inside an unprivileged container rewrites
 the host side to high-mapped UIDs, breaking access for everything else. Own them

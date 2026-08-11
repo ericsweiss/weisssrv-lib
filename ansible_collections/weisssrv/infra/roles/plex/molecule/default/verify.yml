@@ -347,6 +347,70 @@
         - /tmp/plex-config
         - /tmp/plex-transcode
 
+    # The bind-mount preflight is the one guard between a broken mount and Plex
+    # filling the guest's root disk with a library nothing backs up. The
+    # converge runs with plex_skip_service=true (a container has no real bind
+    # mounts), so drive tasks/assert-mounts.yml directly, in BOTH directions,
+    # with the escape switched off. privileged + SYS_ADMIN allow `mount --bind`.
+    - name: Bind-mount the three required Plex paths
+      ansible.builtin.shell: |
+        set -e
+        for p in config transcode media; do
+          mkdir -p "/tmp/plex-backing-$p" "/tmp/plex-$p"
+          mountpoint -q "/tmp/plex-$p" || mount --bind "/tmp/plex-backing-$p" "/tmp/plex-$p"
+        done
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Mount preflight | really-mounted paths pass
+      ansible.builtin.include_role:
+        name: weisssrv.infra.plex
+        tasks_from: assert-mounts.yml
+      vars:
+        plex_skip_service: false
+
+    - name: Unmount the transcode path to leave a stale mountpoint directory
+      ansible.builtin.command: umount /tmp/plex-transcode
+      changed_when: true
+
+    - name: Mount preflight | a stale mountpoint directory must fail
+      block:
+        - name: Mount preflight | drive the assert over the unmounted path
+          ansible.builtin.include_role:
+            name: weisssrv.infra.plex
+            tasks_from: assert-mounts.yml
+          vars:
+            plex_skip_service: false
+
+        - name: Mount preflight | the unmounted path did NOT fail
+          ansible.builtin.fail:
+            msg: >-
+              assert-mounts.yml passed with /tmp/plex-transcode unmounted — the
+              role would let Plex write persistent data to the guest root
+              filesystem.
+      rescue:
+        - name: Mount preflight | the unmounted path correctly failed
+          ansible.builtin.debug:
+            msg: "assert-mounts.yml fails when a required path exists but is not mounted"
+
+    # …and the escape the role already had must still work, or every container
+    # scenario (this one included) would be unable to converge.
+    - name: Mount preflight | plex_skip_service skips the mount check
+      ansible.builtin.include_role:
+        name: weisssrv.infra.plex
+        tasks_from: assert-mounts.yml
+      vars:
+        plex_skip_service: true
+
+    - name: Restore the transcode bind mount
+      ansible.builtin.shell: |
+        set -e
+        mountpoint -q /tmp/plex-transcode || mount --bind /tmp/plex-backing-transcode /tmp/plex-transcode
+      args:
+        executable: /bin/bash
+      changed_when: true
+
     - name: Display test results
       ansible.builtin.debug:
         msg:
@@ -354,5 +418,6 @@
           - "Plex Media Server installed: {{ plex_version_check.stdout }}"
           - "Systemd override verified (support dir, TMPDIR, Restart, Group=media, SupplementaryGroups=plex, UMask, no claim token)"
           - "Cert hook verified: artefact modes, first-install build, and revert on a served-cert mismatch"
+          - "Bind-mount preflight verified: mounted paths pass, a stale mountpoint dir fails, plex_skip_service still escapes"
           - "plex user is a member of media (gid 2000) and video{{ '; render present' if plex_render_group_members.rc == 0 else '; no render group in this environment' }}"
           - "GPU drivers skipped (plex_skip_gpu_drivers=true); service lifecycle skipped (plex_skip_service=true)"

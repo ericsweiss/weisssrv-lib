@@ -135,6 +135,20 @@ nas_storage_pve_cluster_backup_src: /etc/pve
 # retention then retires the real archives behind. Never set false on a real
 # PVE host.
 nas_storage_pve_cluster_backup_require_src_mount: "{{ not (nas_storage_skip_zfs_operations | default(false)) }}"
+# CONTENT guard, paths relative to _src. A mounted but degraded pmxcfs still
+# tars into a non-empty, `tar -tzf`-readable archive, so framing checks alone
+# cannot tell a cluster-identity backup from an archive of nothing — and
+# publishing that one retires a real archive per night through retention. The
+# archive is refused unless every file here is in it. These are exactly the
+# files a cluster-identity restore needs; shorten it only for a deployment that
+# genuinely lacks one (e.g. a standalone node has no corosync.conf).
+nas_storage_pve_cluster_backup_required_files:
+  - user.cfg
+  - corosync.conf
+  - pve-root-ca.pem
+  - priv/pve-root-ca.key
+  - authkey.pub
+  - priv/authkey.key
 nas_storage_pve_cluster_backup_schedule: "*-*-* 02:15:00"
 nas_storage_pve_cluster_backup_random_delay: 300
 nas_storage_pve_cluster_backup_keep: 14

@@ -79,10 +79,51 @@ def _enable_optional(root: Path, resource: str, changed: list[Path]) -> bool:
 
 
 def _wire_internal_ingress(root: Path, changed: list[Path]) -> None:
-    """Enable the internal route AND its certificate: the route serves TLS from
-    the secret the certificate issues, so neither works alone."""
+    """Enable the internal route AND its certificate as ONE logical change: the
+    route serves TLS from the secret the certificate issues, so neither works
+    alone.
+
+    Every edit is made in memory and the file is written only once all of them
+    succeeded. Enabling them one at a time (`_enable_optional` per resource)
+    could persist the route and then discover the certificate has no manifest or
+    no enable line, leaving exactly the half-wired state `prune
+    external-ingress` now refuses to act on — from a command that reported only
+    a warning.
+    """
+    kpath = tree.flux_file(root, tree.KUSTOMIZATION)
+    if not kpath.is_file():
+        print(
+            f"warning: {tree.FLUX_DIR}/{tree.KUSTOMIZATION} is missing — "
+            "nothing to enable",
+            file=sys.stderr,
+        )
+        return
+
+    original = kpath.read_text(encoding="utf-8")
+    new = original
     for resource in tree.INTERNAL_INGRESS_MANIFESTS:
-        _enable_optional(root, resource, changed)
+        if not tree.flux_file(root, resource).is_file():
+            print(
+                f"warning: {tree.FLUX_DIR}/{resource} is not in this tree — "
+                "internal ingress was not enabled",
+                file=sys.stderr,
+            )
+            return
+        if kz.has_resource(new, resource):
+            continue  # already enabled
+        new, did = kz.uncomment_resource(new, resource)
+        if not did:
+            print(
+                f"warning: no `# - {resource}` line in {tree.FLUX_DIR}/"
+                f"{tree.KUSTOMIZATION} — internal ingress was not enabled",
+                file=sys.stderr,
+            )
+            return
+
+    if new != original:
+        kpath.write_text(new, encoding="utf-8")
+        if kpath not in changed:
+            changed.append(kpath)
 
 
 def _wire_sso(root: Path, changed: list[Path]) -> None:

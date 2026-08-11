@@ -1,0 +1,65 @@
+---
+# Bind-mount preflight for the three paths Plex must never write to the guest's
+# own root filesystem: config (the library database), transcode (scratch) and
+# media (the library itself).
+#
+# `stat` alone cannot establish that: a failed or removed mount leaves the
+# mountpoint DIRECTORY behind, which exists, is a directory, and is writable —
+# so Plex happily fills the guest root disk with a library that no host backup
+# or replication ever sees. `mountpoint -q` is the check that actually proves
+# the host filesystem is attached.
+#
+# plex_skip_service is the role's existing container/test escape (a container
+# has neither a working systemd nor real bind mounts); it gates the mount check
+# only, so the existence assertion still runs everywhere.
+
+- name: Inspect the required Plex paths
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ plex_config_dir }}"
+    - "{{ plex_transcode_dir }}"
+    - "{{ plex_media_dir }}"
+  register: plex_required_path_stats
+
+- name: Assert the required Plex paths exist
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isdir
+    fail_msg: >-
+      Required Plex path {{ item.item }} does not exist (or is not a directory).
+      Create the host directory and configure the bind mount before deploying.
+    success_msg: "{{ item.item }} exists"
+  loop: "{{ plex_required_path_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Check whether the required Plex paths are mounted  # noqa: command-instead-of-module
+  ansible.builtin.command:
+    argv:
+      - mountpoint
+      - -q
+      - "{{ item }}"
+  loop: "{{ plex_required_path_stats.results | map(attribute='item') | list }}"
+  loop_control:
+    label: "{{ item }}"
+  register: plex_mountpoint_checks
+  changed_when: false
+  # Reported by the assert below, which can say WHICH path and what to do.
+  failed_when: false
+  when: not (plex_skip_service | bool)
+
+- name: Assert the required Plex paths are real mounts, not stale directories
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+    fail_msg: >-
+      Plex path {{ item.item }} exists but is not a mount point. Plex would
+      write to the guest's root filesystem instead of the host dataset — mount
+      it (or set plex_skip_service for a test container) before deploying.
+    success_msg: "{{ item.item }} is a real mount"
+  loop: "{{ plex_mountpoint_checks.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not (item.skipped | default(false))

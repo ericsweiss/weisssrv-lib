@@ -67,17 +67,27 @@ def _has_active_content(text: str) -> bool:
 
 
 def _internal_ingress_active(root: Path) -> bool:
-    """Whether an internal route/certificate is enabled in the kustomization.
+    """Whether the internal route AND its certificate are both really deploying.
 
     The internal variants are opt-in manifests of their own now, so "active"
     means their `optional/…` resource line is uncommented — `wire
     internal-ingress` is what does that.
+
+    EVERY manifest must be active AND present on disk, not just one: this gates
+    the destructive `prune external-ingress`, and a half-wired tree (only the
+    route enabled, or a line enabled for a file someone deleted) would otherwise
+    authorise deleting the public route + cert and leave the workload with no
+    usable TLS route at all.
     """
     kpath = tree.flux_file(root, tree.KUSTOMIZATION)
     if not kpath.exists():
         return False
     text = kpath.read_text(encoding="utf-8")
-    return any(kz.has_resource(text, r) for r in tree.INTERNAL_INGRESS_MANIFESTS)
+    return all(
+        kz.has_resource(text, resource)
+        and tree.flux_file(root, resource).is_file()
+        for resource in tree.INTERNAL_INGRESS_MANIFESTS
+    )
 
 
 def _external_ingress_would_empty(root: Path) -> list[str]:
@@ -212,10 +222,10 @@ def _validate_features(root: Path, features: list[str]) -> None:
             raise PruneError(
                 "prune external-ingress would empty "
                 + " and ".join(offenders)
-                + " (no internal variant is active) while it stays listed in the "
-                "kustomization. Run `wire internal-ingress` first, then prune — "
-                "or use `prune manifest:<file>` to delete the file and its "
-                "kustomization entry."
+                + " (the internal route and certificate are not BOTH active and "
+                "present) while it stays listed in the kustomization. Run `wire "
+                "internal-ingress` first, then prune — or use `prune "
+                "manifest:<file>` to delete the file and its kustomization entry."
             )
 
 

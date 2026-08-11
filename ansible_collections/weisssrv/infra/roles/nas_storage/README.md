@@ -123,7 +123,16 @@ and every archive are root-only (0700/0600) and it has no NFS export.
 Both ends fail closed: it refuses to run when `/etc/pve` is not a mounted pmxcfs
 (a stopped `pve-cluster.service` leaves an empty directory that tars into a
 valid, tiny archive of nothing) and when the landing-zone dataset is not mounted
-(which would write key material onto the root filesystem and report success).
+(which would write key material onto the root filesystem and report success) —
+and in that second case it also stops sizing the archives already under the
+unmounted path, so a stale shadow copy cannot report a healthy artefact for a
+landing zone nothing can reach.
+
+The archive itself is verified before it is published: it must be non-empty,
+readable, **and** contain every path in
+`nas_storage_pve_cluster_backup_required_files`. Framing checks alone cannot
+tell a cluster-identity backup from a readable archive of nothing, and
+publishing that one retires a real archive per night through retention.
 
 ### Backup-artifact collector
 Independent NAS-side evidence that each app's dump actually **landed** —
@@ -200,6 +209,7 @@ unmonitored.
 | `nas_storage_pve_cluster_backup_enabled` | `false` | Deploy the `/etc/pve` archive. |
 | `nas_storage_pve_cluster_backup_src` | `/etc/pve` | Source (pmxcfs mountpoint). |
 | `nas_storage_pve_cluster_backup_require_src_mount` | `not skip_zfs_operations` | Fail-closed guard on the source. |
+| `nas_storage_pve_cluster_backup_required_files` | `user.cfg`, `corosync.conf`, `pve-root-ca.pem`, `priv/pve-root-ca.key`, `authkey.pub`, `priv/authkey.key` | Paths (relative to `_src`) that must be in the archive before it is published. |
 | `nas_storage_pve_cluster_backup_schedule` / `_random_delay` / `_keep` / `_nice` | `*-*-* 02:15:00` / `300` / `14` / `10` | Timer + retention. |
 | `nas_storage_skip_zfs_operations` | `false` | Skip all real-ZFS work (also disables both mount guards). Test use. |
 | `nas_storage_skip_mergerfs` | `false` | Skip MergerFS mount management. |
