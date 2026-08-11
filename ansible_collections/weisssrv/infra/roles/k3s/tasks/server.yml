@@ -72,6 +72,13 @@
     k3s_join_existing: "{{ (k3s_vip_probe.status | default(-1)) != -1 }}"
   when: k3s_vip_probe is not skipped
 
+# Opt-in, servers only. Ordered BEFORE the config template on purpose: that
+# config gains a kube-apiserver-arg block pointing at the policy file, and the
+# apiserver exits at startup if it is not there.
+- name: Configure kube-apiserver audit logging
+  ansible.builtin.include_tasks: audit.yml
+  when: k3s_audit_enabled | bool
+
 - name: Deploy k3s server config
   ansible.builtin.template:
     src: k3s-server-config.yaml.j2

@@ -1,0 +1,44 @@
+---
+# kube-apiserver audit logging (servers only). Included from server.yml when
+# k3s_audit_enabled, and deliberately BEFORE the server config template: that
+# config's kube-apiserver-arg block points at the policy file, and an apiserver
+# whose --audit-policy-file is missing exits at startup — on all three servers,
+# since the config rolls out to each of them.
+
+- name: Assert the audit policy is a well-formed audit/v1 Policy
+  ansible.builtin.assert:
+    that:
+      - k3s_audit_policy is mapping
+      - (k3s_audit_policy.apiVersion | default('')) is match('audit\.k8s\.io/')
+      - (k3s_audit_policy.kind | default('')) == 'Policy'
+      - (k3s_audit_policy.rules | default([])) | length > 0
+    fail_msg: >-
+      k3s_audit_policy must be an audit.k8s.io/v1 Policy object with at least one
+      rule. The apiserver refuses to start on a malformed --audit-policy-file, so
+      a bad override here would take the control plane down rather than merely
+      disable auditing.
+    success_msg: "k3s_audit_policy is a well-formed audit/v1 Policy"
+
+# Root-only: audit events name principals, namespaces and object names, and the
+# apiserver runs as root. 0700 keeps the directory listing off non-root eyes even
+# though lumberjack would create it 0755 on first write.
+- name: Create the kube-apiserver audit log directory
+  ansible.builtin.file:
+    path: "{{ k3s_audit_log_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Deploy the kube-apiserver audit policy
+  ansible.builtin.template:
+    src: k3s-audit-policy.yaml.j2
+    dest: "{{ k3s_audit_policy_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  # Same handler pair as the server config: the apiserver reads the policy once
+  # at startup, so a policy edit is inert until k3s restarts.
+  notify:
+    - Restart k3s
+    - Wait for k3s API healthy

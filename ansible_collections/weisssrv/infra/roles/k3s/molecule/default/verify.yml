@@ -70,6 +70,116 @@
         fail_msg: "k3s server config missing secrets-encryption/agent-token/flannel-backend"
         success_msg: "secrets-encryption, agent-token, and wireguard-native flannel render"
 
+    # kube-apiserver audit logging. Enabled on k3s-server-test only
+    # (molecule.yml host_vars), so both branches are exercised in one scenario.
+    - name: Verify an audit-enabled server renders the kube-apiserver audit args
+      ansible.builtin.assert:
+        that:
+          - "'kube-apiserver-arg:' in k3s_config_text"
+          - "'audit-log-path=/var/lib/rancher/k3s/server/logs/audit.log' in k3s_config_text"
+          - "'audit-policy-file=/var/lib/rancher/k3s/server/audit-policy.yaml' in k3s_config_text"
+          - "'audit-log-maxage=30' in k3s_config_text"
+          - "'audit-log-maxbackup=10' in k3s_config_text"
+          - "'audit-log-maxsize=100' in k3s_config_text"
+        fail_msg: "k3s_audit_enabled did not render the kube-apiserver audit args"
+        success_msg: "audit args render: log path, policy file, and all three rotation bounds"
+      when: k3s_audit_enabled | default(false) | bool
+
+    # The byte-parity contract: a consumer that has not opted in must get a
+    # server config with no trace of auditing in it.
+    - name: Verify an audit-disabled server renders no audit config at all
+      ansible.builtin.assert:
+        that:
+          - "'kube-apiserver-arg' not in k3s_config_text"
+          - "'audit-' not in k3s_config_text"
+        fail_msg: >-
+          The audit block leaked into a server config with k3s_audit_enabled
+          false — the k3s-server-config.yaml.j2 render is no longer byte-stable
+          for consumers that have not opted in.
+        success_msg: "audit-disabled server config carries no audit keys"
+      when: not (k3s_audit_enabled | default(false) | bool)
+
+    - name: Check the audit policy file presence matches k3s_audit_enabled
+      ansible.builtin.stat:
+        path: /var/lib/rancher/k3s/server/audit-policy.yaml
+      register: k3s_audit_policy_file
+      failed_when:
+        k3s_audit_policy_file.stat.exists != (k3s_audit_enabled | default(false) | bool)
+
+    - name: Verify the audit policy is root-owned and not world-readable
+      ansible.builtin.assert:
+        that:
+          - k3s_audit_policy_file.stat.mode == '0600'
+          - k3s_audit_policy_file.stat.pw_name == 'root'
+        fail_msg: "audit policy file is not root-owned 0600"
+        success_msg: "audit policy file is root-owned 0600"
+      when: k3s_audit_enabled | default(false) | bool
+
+    - name: Read the audit policy
+      ansible.builtin.slurp:
+        src: /var/lib/rancher/k3s/server/audit-policy.yaml
+      register: k3s_audit_policy_content
+      when: k3s_audit_enabled | default(false) | bool
+
+    - name: Verify the audit policy parses as an audit/v1 Policy with the expected rules
+      vars:
+        _policy: "{{ k3s_audit_policy_content.content | b64decode | from_yaml }}"
+        _levels: "{{ _policy.rules | map(attribute='level') | list }}"
+        # Every {group, resources} entry across every rule, flattened.
+        _groups: >-
+          {{ _policy.rules | selectattr('resources', 'defined')
+             | map(attribute='resources') | flatten | list }}
+        _resources: "{{ _groups | map(attribute='resources') | flatten | list }}"
+        _rr_entries: >-
+          {{ _policy.rules | selectattr('level', 'equalto', 'RequestResponse')
+             | selectattr('resources', 'defined') | map(attribute='resources')
+             | flatten | list }}
+        _rr_groups: "{{ _rr_entries | map(attribute='group') | list }}"
+        _rr_resources: "{{ _rr_entries | map(attribute='resources') | flatten | list }}"
+      ansible.builtin.assert:
+        that:
+          - _policy.apiVersion == 'audit.k8s.io/v1'
+          - _policy.kind == 'Policy'
+          - "'RequestReceived' in (_policy.omitStages | default([]))"
+          # First match wins, so the None rules must lead.
+          - _levels[0] == 'None'
+          - _levels[1] == 'None'
+          - "'RequestResponse' in _levels"
+          - "'Metadata' in _levels"
+          # Credential objects captured (metadata only — never their bodies).
+          - "'secrets' in _resources"
+          - "'configmaps' in _resources"
+          - "'serviceaccounts' in _resources"
+          # ...and NEVER at a body-carrying level: a RequestResponse rule on
+          # secrets would write Secret contents into a plaintext log file.
+          - "'secrets' not in _rr_resources"
+          # Privilege grants captured in full.
+          - "'clusterroles' in _resources"
+          - "'clusterrolebindings' in _resources"
+          - "'rbac.authorization.k8s.io' in _rr_groups"
+        fail_msg: "rendered audit policy is not a valid audit/v1 Policy with the expected rules"
+        success_msg: >-
+          audit policy is audit/v1 with None-first noise rules, RequestResponse on
+          RBAC, and Metadata on secrets/configmaps/serviceaccounts
+      when: k3s_audit_enabled | default(false) | bool
+
+    - name: Stat the audit log directory
+      ansible.builtin.stat:
+        path: /var/lib/rancher/k3s/server/logs
+      register: k3s_audit_log_dir
+
+    - name: Verify the audit log directory exists and is root-only
+      ansible.builtin.assert:
+        that:
+          - k3s_audit_log_dir.stat.isdir | default(false)
+          - k3s_audit_log_dir.stat.mode == '0700'
+          - k3s_audit_log_dir.stat.pw_name == 'root'
+        fail_msg: >-
+          The audit log directory is missing or readable beyond root — audit
+          events name principals, namespaces and object names.
+        success_msg: "audit log directory exists, root-owned 0700"
+      when: k3s_audit_enabled | default(false) | bool
+
     - name: Verify the first server renders the bootstrap branch (cluster-init)
       ansible.builtin.assert:
         that:
@@ -335,4 +445,5 @@
           - "kube-vip interface assert rejects a nonexistent NIC"
           - "version assert rejects an empty kube-vip pin"
           - "metrics-server override renders on the first server only"
+          - "audit args + audit/v1 policy render on the audit-enabled server only"
           - "(k3s binary install skipped in container testing)"

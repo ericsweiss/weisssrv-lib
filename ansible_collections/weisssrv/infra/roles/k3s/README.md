@@ -40,6 +40,7 @@ placement.
   (`k3s_storage_host_pins`)
 - Node label application
 - Node taint application
+- kube-apiserver audit logging (opt-in, servers only) — see below
 - Off-node etcd snapshot copy (opt-in, servers only): a systemd timer that
   copies the newest local etcd snapshot to an NFS export (by hostname, over
   TLS) and emits an `etcd_snapshot_last_copy_timestamp_seconds`
@@ -186,6 +187,76 @@ disable the packaged component (`k3s_disable`) and ship a full replacement
 manifest. The same trap applies to CoreDNS, which is why a replica pin for it is
 an in-cluster HPA rather than a `HelmChartConfig`.
 
+## kube-apiserver audit logging (`k3s_audit_enabled`)
+
+k3s ships apiserver audit logging **off**, so by default nothing in the cluster
+records who read a Secret, who granted themselves a ClusterRole, or which
+identity did it. Setting `k3s_audit_enabled: true` writes an audit policy to
+each server and points the apiserver at it.
+
+```yaml
+k3s_audit_enabled: true
+# Defaults, all overridable:
+k3s_audit_log_path: /var/lib/rancher/k3s/server/logs/audit.log
+k3s_audit_policy_path: /var/lib/rancher/k3s/server/audit-policy.yaml
+k3s_audit_maxage: 30        # days
+k3s_audit_maxbackup: 10     # rotated files kept
+k3s_audit_maxsize: 100      # MB per file
+k3s_audit_policy: {...}     # the full audit/v1 Policy — see defaults/main.yml
+```
+
+### What is logged
+
+Rules are evaluated **in order, first match wins**, and the shipped policy has
+**no catch-all** — an event matching no rule is not logged at all. That is what
+keeps a security control from becoming a disk-space incident.
+
+| Rule | Level | Why |
+|---|---|---|
+| `/healthz*`, `/livez*`, `/readyz*`, `/version`, `/metrics`, `/openapi/*` | `None` | probe traffic, several times a second, forever |
+| `coordination.k8s.io/leases` in `kube-system` | `None` | leader-election renewals — a write every couple of seconds, no signal |
+| `rbac.authorization.k8s.io` roles/clusterroles/(cluster)rolebindings, **write verbs** | `RequestResponse` | a privilege grant is the one case where the body *is* the evidence |
+| the same RBAC resources, any other verb | `Metadata` | enumerating permissions is reconnaissance worth recording, but a `RequestResponse` on `list clusterroles` would dump the whole RBAC tree on every controller resync |
+| core `secrets`, `configmaps`, `serviceaccounts` | `Metadata` | who touched which credential object, when, as whom — **never** the body, which would write Secret contents into a plaintext log |
+
+The two `None` rules are noise suppression *and* a deny-first guard: they are
+redundant while there is no catch-all, and load-bearing the moment anyone
+appends one. Keep them first if you override `k3s_audit_policy`.
+
+### Where it lands, and rotation
+
+The log is written to `k3s_audit_log_path` on **that server's local disk** and
+rotated by the apiserver itself (`maxsize` MB per file, `maxbackup` files kept,
+anything older than `maxage` days discarded) — worst case
+`maxsize x (maxbackup + 1)` ≈ 1.1 GB per server at the defaults. The role
+creates the parent directory `0700` and writes the policy `0600`, both
+root-owned: audit events name principals, namespaces and object names.
+
+Nothing ships it off-node. `weisssrv.infra.alloy_host` reads **journald only**
+(`loki.source.journal`), and the apiserver writes this file directly, so it is
+not picked up by the existing log pipeline. Shipping it would need a
+`loki.source.file` component that this role deliberately does not build — treat
+the log as node-local forensic material, read with `jq` on the server.
+
+### Restart implication
+
+The policy file and the `kube-apiserver-arg` block in
+`/etc/rancher/k3s/config.yaml` are both read **once at apiserver startup**, so
+enabling — or editing the policy afterwards — notifies `Restart k3s` +
+`Wait for k3s API healthy`. On a multi-server cluster that is a rolling
+control-plane bounce with an API-VIP failover per node; run it in a deliberate
+window with a healthy etcd quorum, and keep the servers play `serial: 1`.
+
+The ordering matters and the role enforces it: `tasks/audit.yml` runs **before**
+the server config template, because an apiserver whose `--audit-policy-file` is
+missing or unparseable **exits at startup**. For the same reason the role
+asserts `k3s_audit_policy` is an `audit.k8s.io/v1` `Policy` with at least one
+rule before writing it — a malformed override should fail the play, not roll the
+control plane into a crash loop.
+
+Turning it back off removes the args from the config (another restart) and
+leaves the now-unreferenced policy file behind, inert.
+
 ## Task Flow
 
 ```
@@ -211,10 +282,12 @@ an in-cluster HPA rather than a `HelmChartConfig`.
 - `tasks/agent.yml` - Agent installation (incl. agent-token migration)
 - `tasks/install-script.yml` - Shared version detection + installer staging
 - `tasks/gpu.yml` - NVIDIA driver/toolkit enablement (included when `k3s_gpu_node`)
+- `tasks/audit.yml` - kube-apiserver audit policy (opt-in, servers only)
 - `tasks/etcd-snapshot-offnode.yml` - Off-node etcd snapshot copy (opt-in)
 - `tasks/metrics-server-override.yml` - metrics-server replicas/resources (opt-in)
 - `templates/k3s-server-config.yaml.j2` - Server configuration
 - `templates/k3s-agent-config.yaml.j2` - Agent configuration
+- `templates/k3s-audit-policy.yaml.j2` - kube-apiserver audit policy
 - `templates/kube-vip-manifest.yaml.j2` - Kube-vip DaemonSet
 - `templates/metrics-server-helmchartconfig.yaml.j2` - metrics-server override
 - `templates/k3s-etcd-snapshot-copy.{sh,service,timer}.j2` - Off-node snapshot copy

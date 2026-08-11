@@ -4,7 +4,11 @@
    reword here buys every existing consumer that bounce for nothing, so keep
    this file byte-stable — including the `(see docs/11-firewall.md)` pointers,
    which are load-bearing only in that they are already on disk. Role narrative
-   belongs in README.md. #}
+   belongs in README.md.
+
+   Corollary for new content: gate it on a variable that is OFF by default, so
+   the rendered bytes are unchanged for every consumer that has not opted in.
+   The kube-apiserver-arg block at the bottom is the worked example. #}
 # {{ ansible_managed }}
 # K3s server configuration
 
@@ -92,4 +96,18 @@ kubelet-arg:
 {% for arg in k3s_kubelet_args %}
   - "{{ arg }}"
 {% endfor %}
+{% endif %}
+{% if k3s_audit_enabled | default(false) | bool %}
+
+# kube-apiserver audit log. The policy file is written by tasks/audit.yml BEFORE
+# this config, because the apiserver exits at startup if --audit-policy-file is
+# missing or unparseable. The log stays on THIS node's local disk and is rotated
+# by the apiserver itself (maxsize MB x maxbackup files, discarded after maxage
+# days) — nothing ships it off-node.
+kube-apiserver-arg:
+  - "audit-log-path={{ k3s_audit_log_path }}"
+  - "audit-policy-file={{ k3s_audit_policy_path }}"
+  - "audit-log-maxage={{ k3s_audit_maxage }}"
+  - "audit-log-maxbackup={{ k3s_audit_maxbackup }}"
+  - "audit-log-maxsize={{ k3s_audit_maxsize }}"
 {% endif %}

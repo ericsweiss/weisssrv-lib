@@ -40,6 +40,12 @@ platforms:
 provisioner:
   inventory:
     host_vars:
+      # Audit logging ON here and left at its default (off) on the join platform,
+      # so this one scenario covers BOTH renders: verify.yml asserts the args +
+      # policy file here, and asserts the disabled server emits NOTHING there
+      # (the byte-parity guarantee the server-config template is built around).
+      k3s-server-test:
+        k3s_audit_enabled: true
       k3s-server-join-test:
         k3s_is_first_server: false
     group_vars:
