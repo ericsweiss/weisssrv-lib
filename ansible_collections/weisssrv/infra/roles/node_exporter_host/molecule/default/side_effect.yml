@@ -1,0 +1,39 @@
+---
+# The zpool-collector state toggle, run AFTER the idempotence check because a
+# toggle inside converge is non-idempotent by construction. Off-state is the
+# Ceph/LVM-thin configuration the README advertises: the enable+start list must
+# not name the zpool timer, and a previously deployed collector must be
+# reconciled away, not merely left unmanaged.
+- name: Side effect — zpool collector off, then back on
+  hosts: all
+  become: true
+  tasks:
+    - name: Apply the role with the zpool collector switched off
+      ansible.builtin.include_role:
+        name: weisssrv.infra.node_exporter_host
+      vars:
+        node_exporter_host_zpool_collector: false
+
+    - name: Stat the artifacts the off-state must remove
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/systemd/system/zpool-status-collector.timer
+        - /etc/systemd/system/zpool-status-collector.service
+        - /usr/local/sbin/zpool-status-collector.sh
+        - /var/lib/node_exporter/zfs_pool_status.prom
+      register: node_exporter_host_zpool_leftovers
+
+    - name: Assert the zpool collector was reconciled away
+      ansible.builtin.assert:
+        that: node_exporter_host_zpool_leftovers.results | map(attribute='stat.exists') | select | length == 0
+        fail_msg: >-
+          Switching node_exporter_host_zpool_collector off left collector
+          artifacts behind: a host migrated off ZFS would keep running the
+          timer and serving stale zpool metrics.
+
+    - name: Apply the role with the zpool collector back on
+      ansible.builtin.include_role:
+        name: weisssrv.infra.node_exporter_host
+      vars:
+        node_exporter_host_zpool_collector: true
