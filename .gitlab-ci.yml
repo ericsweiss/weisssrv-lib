@@ -148,7 +148,7 @@ include:
   - local: /ci/lint/yaml-lint.yml
     inputs:
       tags: []
-      image: python:3.13
+      image: python:3.13-slim
       yamllint_version: "1.38.0"
       config: "-c .yamllint"
       targets: "ci/ lint/ taskfiles/ ansible_collections/ .gitlab/ .gitlab-ci.yml"
@@ -187,7 +187,7 @@ include:
   - local: /ci/lint/docs-link-check.yml
     inputs:
       tags: []
-      image: python:3.13-slim
+      image: python:3.13
       # AGENTS.md and cli/README.md are deliberately absent: the checker's
       # default roots are docs/ + top-level README.md/CLAUDE.md, so triggering
       # on them would imply coverage the job does not have.
