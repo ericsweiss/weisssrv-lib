@@ -146,7 +146,9 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
 
 - **Reproduces:** weisssrv `docs-link-check`.
 - **Inputs:** `job_name` (docs-link-check), `stage` (lint), `image`
-  (python:3.11-slim), `tags`, `script_path` (`scripts/check-doc-links.py`),
+  (python:3.11 — the checker enumerates tracked Markdown with git and fails
+  loud in a checkout without it, so a slim image cannot silently shrink the
+  scan), `tags`, `script_path` (`scripts/check-doc-links.py`),
   `roots` (empty → the checker's own default scope), `default_branch` (main),
   `changes` (`docs/**/*`, `README.md`, `CLAUDE.md`,
   `scripts/check-doc-links.py`, `scripts/test_check_doc_links.py`).

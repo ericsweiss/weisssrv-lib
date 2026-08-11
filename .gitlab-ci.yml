@@ -148,7 +148,7 @@ include:
   - local: /ci/lint/yaml-lint.yml
     inputs:
       tags: []
-      image: python:3.13-slim
+      image: python:3.13
       yamllint_version: "1.38.0"
       config: "-c .yamllint"
       targets: "ci/ lint/ taskfiles/ ansible_collections/ .gitlab/ .gitlab-ci.yml"

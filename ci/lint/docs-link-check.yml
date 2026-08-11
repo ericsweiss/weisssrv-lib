@@ -5,7 +5,7 @@ spec:
     stage:
       default: lint
     image:
-      default: python:3.11-slim
+      default: python:3.11
     tags:
       type: array
       default: ["infrastructure"]
