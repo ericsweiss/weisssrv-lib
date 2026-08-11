@@ -9,7 +9,11 @@ policy_out: ACCEPT
 
 [ALIASES]
 
-{#- Host-backed aliases come from inventory: any host setting `firewall_alias`
+{# NOTE: opens with `{#`, not `{#-`. A leading `-` here strips the trailing
+   whitespace of the preceding text node — i.e. the blank line that separates
+   the `[ALIASES]` section header from its first entry — and renders
+   `[ALIASES]<first-alias>` on one line, which pve-firewall will not parse.
+   Host-backed aliases come from inventory: any host setting `firewall_alias`
     contributes one, pointing at the same address the IPSets use. That keeps the
     alias list from duplicating (and drifting from) the host addresses. Aliases
     for things that are not inventory hosts (VIPs, off-cluster peers) go in

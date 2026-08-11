@@ -1,3 +1,10 @@
+{# Deployed content (/etc/rancher/k3s/config.yaml). The writing task notifies
+   `Restart k3s` + `Wait for k3s API healthy`, which on a multi-server cluster
+   is a rolling control-plane bounce and an API-VIP failover per node. A comment
+   reword here buys every existing consumer that bounce for nothing, so keep
+   this file byte-stable — including the `(see docs/11-firewall.md)` pointers,
+   which are load-bearing only in that they are already on disk. Role narrative
+   belongs in README.md. #}
 # {{ ansible_managed }}
 # K3s server configuration
 
@@ -5,7 +12,7 @@ cluster-cidr: "{{ k3s_cluster_cidr }}"
 service-cidr: "{{ k3s_service_cidr }}"
 # The apiserver listens on ALL interfaces (incl. any mgmt/Tailscale iface).
 # Access to 6443 is gated solely by the Proxmox firewall, which restricts it to
-# the k3s_nodes/admin IP sets. A firewall relaxation
+# the k3s_nodes/admin IP sets (see docs/11-firewall.md). A firewall relaxation
 # or an unexpected new interface silently widens API exposure.
 bind-address: "0.0.0.0"
 
@@ -75,7 +82,7 @@ secrets-encryption: true
 # Serve etcd's Prometheus metrics on :2381 (0.0.0.0, unauthenticated HTTP) so
 # kube-prometheus-stack's kubeEtcd target can scrape the 3 server nodes. Exposure
 # is gated solely by the Proxmox firewall, which restricts :2381 to the
-# monitoring/k3s_nodes IP sets — same trust model as the
+# monitoring/k3s_nodes IP sets (see docs/11-firewall.md) — same trust model as the
 # apiserver bind above. Without this the kube-etcd targets stay down and
 # etcdMembersDown/TargetDown fire.
 etcd-expose-metrics: true

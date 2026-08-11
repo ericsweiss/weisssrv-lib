@@ -1,21 +1,38 @@
+{# The `#` prose below is DEPLOYED CONTENT: it lands in
+   /etc/systemd/system/nfs-server.service.d/zfs-encrypted.conf, and the task
+   that writes it notifies `Restart nfs-server for ordering` — a restart the
+   handler itself flags as entering a stop path known to hang under live NFS
+   clients. Reword it only in an MR that owns that restart. That is also why
+   the paragraph below still names the pre-collection input
+   `nas_encrypted_bind_sources`; renaming it in the prose is a content change
+   that bounces nfsd on every existing consumer. Role-level narrative belongs
+   in README.md, which is free to change. #}
 # {{ ansible_managed }}
 #
 # Drop-in: gate nfsd on the encrypted ZFS datasets being unlocked + mounted.
 #
-# Exporting an encrypted dataset before it is mounted serves the empty/locked
-# mountpoint and wedges the NFS-over-TLS data path for NEW client mounts. Any
-# route that starts nfsd ahead of the mounts (a forced
-# `--job-mode=ignore-dependencies` start, for instance) reproduces it.
+# nfsd must not start exporting the encrypted datasets until they are mounted,
+# otherwise it serves the empty/locked mountpoint and the NFS-over-TLS data
+# path wedges for NEW client mounts (observed 2026-06-21 when nfsd was
+# force-started ahead of the mounts via `systemctl start --job-mode=
+# ignore-dependencies`). Ordering after the late zfs-mount-encrypted.service
+# (the anchor that mounts encrypted datasets once keys load) plus a
+# RequiresMountsFor on each encrypted export's bind path gives nfsd the real
+# datasets on a clean ordered start.
 #
-# RequiresMountsFor is SCOPED to encrypted exports only: a hard
-# RequiresMountsFor on the mergerfs /media mount (no nofail) would block nfsd,
-# and plaintext bind mounts aren't gated on the unlock anyway.
+# RequiresMountsFor is SCOPED to ENCRYPTED exports only (bind_source in
+# nas_encrypted_bind_sources): a hard RequiresMountsFor on the mergerfs /media
+# mount (no nofail) would block nfsd, and plaintext export bind mounts aren't
+# gated on the encrypted unlock.
 #
-# Accepted trade-off: nfsd is a SINGLE daemon, so the daemon-wide
-# After=zfs-mount-encrypted delays ALL exports — plaintext included — until the
-# encrypted pools mount. Seconds on a normal boot; until the operator unlocks
-# on a Connect-down cold boot. Per-export independence isn't possible with one
-# nfsd, and serving encrypted exports off empty bind targets is worse.
+# NOTE: nfsd is a SINGLE daemon, so the daemon-wide After=zfs-mount-encrypted
+# (added when any encrypted export exists) necessarily delays ALL exports —
+# including the plaintext /media — until the encrypted pools unlock + mount.
+# That is the accepted trade-off: serving the encrypted exports off empty/stale
+# bind targets (the NFS-over-TLS wedge this drop-in fixes) is worse than a
+# bounded startup delay for the plaintext exports, and per-export independence
+# isn't possible with one nfsd. On a normal boot this is seconds; on a
+# Connect-down cold boot the plaintext exports wait until the operator unlocks.
 {% set _enc_exports = nas_storage_exports | selectattr('bind_source', 'defined') | selectattr('bind_source', 'in', nas_storage_encrypted_bind_sources | default([])) | list %}
 [Unit]
 {% if _enc_exports | length > 0 %}

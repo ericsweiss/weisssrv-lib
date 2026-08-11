@@ -1,3 +1,8 @@
+{# Deployed content (/etc/modprobe.d/zfs.conf), and the writing task notifies
+   `Update initramfs`. A comment reword here costs every existing consumer an
+   initramfs rebuild on its next converge, so keep this byte-stable — including
+   the trailing reference to the PRE-collection input name `zfs_arc_max_bytes`
+   — and put narrative in README.md. #}
 # {{ ansible_managed }}
 # ZFS kernel module parameters (managed by the nas_storage role).
 #
@@ -5,5 +10,5 @@
 # the data pools import from the initramfs at early boot, so the value is baked
 # into the initramfs (update-initramfs handler) — otherwise the ARC would grow
 # to the ~half-RAM default before this file is read and swap-thrash the pinned
-# guests on a memory-over-committed host.
+# guests on this memory-over-committed host. Value comes from zfs_arc_max_bytes.
 options zfs zfs_arc_max={{ nas_storage_zfs_arc_max_bytes }}

@@ -47,14 +47,27 @@
           - "'[IPSET admin_ts]' in cluster_fw_text"
           - "'[IPSET smb_clients]' in cluster_fw_text"
 
-    - name: Cluster.fw renders inventory-derived and extra aliases
+    # LINE-ANCHORED, not substring. `[ALIASES]dns-01 192.168.0.150 # Primary DNS
+    # server` — one line, produced by a whitespace-stripping `{#-` on the aliases
+    # preamble — satisfies every substring test in this file while being a
+    # section header pve-firewall will not parse. Both anchors below reject it:
+    # the section index requires `[HEADER]\n`, so a glued header drops ALIASES
+    # from cluster_fw_sections entirely, and the standalone-header count goes to
+    # zero. Asserting each alias is a whole LINE of that section also catches two
+    # aliases being glued to each other.
+    - name: Cluster.fw renders inventory-derived and extra aliases, each on its own line
+      vars:
+        alias_lines: "{{ (cluster_fw_sections.get('ALIASES', '') | trim).splitlines() | map('trim') | list }}"
       ansible.builtin.assert:
         that:
-          - "'dns-01 192.168.0.150 # Primary DNS server' in cluster_fw_text"
-          - "'api-vip 192.168.0.161 # k3s API VIP' in cluster_fw_text"
+          - "'ALIASES' in cluster_fw_sections"
+          - "cluster_fw_text | regex_findall('^\\[ALIASES\\]$', multiline=True) | length == 1"
+          - "'dns-01 192.168.0.150 # Primary DNS server' in alias_lines"
+          - "'api-vip 192.168.0.161 # k3s API VIP' in alias_lines"
         fail_msg: >-
-          [ALIASES] must carry the alias derived from dns-01's firewall_alias
-          and the non-host entry from proxmox_firewall_extra_aliases.
+          [ALIASES] must be a parsable section — the header alone on its own
+          line — carrying the alias derived from dns-01's firewall_alias and the
+          non-host entry from proxmox_firewall_extra_aliases, one per line.
 
     # Role-owned groups: assert the RULE LINES, not just the headers. Emptying a
     # group, or widening a source to 0.0.0.0/0, must fail here.
