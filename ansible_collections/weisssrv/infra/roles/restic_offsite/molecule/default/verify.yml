@@ -278,6 +278,15 @@
       ansible.builtin.command: grep -q 'the churn filter cannot be applied' /usr/local/sbin/restic-offsitectl
       changed_when: false
 
+    # ...and the EMPTY time must trip the same guard. It does not reach the
+    # epoch arm on its own: GNU `date -d ''` is not an error, it resolves to
+    # today at 00:00:00, so a parse miss that yields an empty time produces a
+    # plausible-looking but WRONG cutoff that is comfortably > 0. Pinned
+    # statically because the container cannot make restic emit malformed JSON.
+    - name: Assert an EMPTY snapshot time trips the same guard as an unparseable one
+      ansible.builtin.command: grep -Fq '[[ -z "${snap_time//[[:space:]]/}" || "$snap_epoch" -le 0 ]]' /usr/local/sbin/restic-offsitectl
+      changed_when: false
+
     # A parse miss and "nothing on this host maps to the snapshot" used to share
     # one message, sending the operator after a path-mapping problem that did
     # not exist.
@@ -306,6 +315,35 @@
           `restic-offsitectl unlock` returned no verdict — an operator sent here
           by an rc=11 hint cannot tell "nothing to do" from "it did nothing".
         success_msg: "unlock reports a verdict on a repository with no locks"
+
+    # ...and an UNREADABLE repository must not be reported as "no locks". The
+    # lock count used to swallow restic's rc, so a repository that could not be
+    # read at all counted as zero locks and unlock exited 0 saying "no locks on
+    # the repository — nothing to remove". That is the worst possible verdict:
+    # the operator is here because something is stuck, and the command tells
+    # them the lock cleared while hiding a total outage.
+    - name: Run restic-offsitectl unlock against an unreadable repository
+      ansible.builtin.shell: |
+        set -a; . /etc/restic-offsite/env; set +a
+        export RESTIC_REPOSITORY=/tmp/restic-molecule-nonexistent-repo
+        restic-offsitectl unlock
+      args:
+        executable: /bin/bash
+      register: restic_offsite_unlock_unreadable
+      changed_when: false
+      failed_when: false
+
+    - name: Assert an unreadable repository is its own loud, non-zero verdict
+      ansible.builtin.assert:
+        that:
+          - restic_offsite_unlock_unreadable.rc != 0
+          - restic_offsite_unlock_unreadable.stdout is search('NOT .no locks.')
+          - not (restic_offsite_unlock_unreadable.stdout is search('nothing to remove'))
+        fail_msg: >-
+          `restic-offsitectl unlock` reported an unreadable repository as an
+          unlocked one — a swallowed restic rc counts as zero locks and turns a
+          total outage into a green "nothing to remove".
+        success_msg: "unlock distinguishes an unreadable repository from an unlocked one"
 
     - name: Run restic-offsitectl drill
       ansible.builtin.shell: |
@@ -396,6 +434,51 @@
       args:
         executable: /bin/bash
       changed_when: false
+
+    # A repository with NO SNAPSHOT YET is the one legitimate seed failure the
+    # role documents (set restic_offsite_restore_drill_seed false for that first
+    # converge). Both it and a genuine outage make `restic ls latest` fail, and
+    # they used to share the "is the repository reachable?" message — which
+    # sends the operator to check B2 credentials that are perfectly fine. The
+    # two repos below pin the split. Run AFTER the success/mismatch asserts:
+    # each failing drill rewrites backup_restore_drill.prom.
+    - name: Run the drill against a reachable repository holding no snapshot
+      ansible.builtin.shell: |
+        set -a; . /etc/restic-offsite/env; set +a
+        export RESTIC_REPOSITORY=/tmp/restic-molecule-empty-repo
+        restic init >/dev/null 2>&1 || true
+        restic-offsitectl drill
+      args:
+        executable: /bin/bash
+      register: restic_offsite_drill_empty
+      changed_when: false
+      failed_when: false
+
+    - name: Run the drill against a repository that does not exist at all
+      ansible.builtin.shell: |
+        set -a; . /etc/restic-offsite/env; set +a
+        export RESTIC_REPOSITORY=/tmp/restic-molecule-nonexistent-repo
+        restic-offsitectl drill
+      args:
+        executable: /bin/bash
+      register: restic_offsite_drill_unreachable
+      changed_when: false
+      failed_when: false
+
+    - name: Assert an empty repository is not reported as a reachability failure
+      ansible.builtin.assert:
+        that:
+          - restic_offsite_drill_empty.rc != 0
+          - restic_offsite_drill_empty.stdout is search('holds no snapshot yet')
+          - not (restic_offsite_drill_empty.stdout is search('is the repository reachable'))
+          - restic_offsite_drill_unreachable.rc != 0
+          - restic_offsite_drill_unreachable.stdout is search('is the repository reachable')
+          - not (restic_offsite_drill_unreachable.stdout is search('holds no snapshot yet'))
+        fail_msg: >-
+          The drill conflates "no snapshot yet" with "repository unreachable" —
+          the documented first-converge state sends the operator after B2
+          credentials that are fine.
+        success_msg: "The drill names an empty repository and an unreachable one differently"
 
     # FRESHNESS-GUARD abort: age the appdata source's snapshot into the past so
     # its parsed timestamp exceeds the max age; a run must abort with success=0

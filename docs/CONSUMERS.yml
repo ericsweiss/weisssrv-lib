@@ -70,9 +70,19 @@ consumers:
         # templates take the script PATH from the consumer tree, so these copies
         # are the ones that actually run. Re-vendor them on every bump.
         #
-        # SOURCE OF TRUTH: scripts/test_vendored_byte_identity.py::VENDORED in
-        # weisssrv — it gates all 22 against the library at the pinned ref and
-        # never skips. Keep this list in step with it.
+        # SOURCE OF TRUTH: scripts/test_vendored_byte_identity.py in weisssrv,
+        # which carries TWO registries and this list must mirror both — it gates
+        # every entry against the library at the pinned ref and never skips.
+        #   VENDORED       — scripts/ copies, where both sides share the path
+        #                    (the `scripts/*` entries below).
+        #   VENDORED_PATHS — copies vendored to a DIFFERENT path here than in
+        #                    the library, because the tool discovers them by
+        #                    their conventional name at the repo root. Listing
+        #                    such a file under VENDORED would look for it at
+        #                    scripts/<name> upstream and fail; it needs the
+        #                    explicit local->library mapping instead (the
+        #                    non-scripts/ entry below).
+        - ruff.toml  # <- lint/ruff.toml upstream; gated via VENDORED_PATHS, not VENDORED
         - scripts/b2-bucket-drift.py
         - scripts/check-deploy-coverage.sh
         - scripts/check-doc-links.py
@@ -249,7 +259,7 @@ pin_surfaces:
   - id: terraform_module_ref
     enforced: >-
       weisssrv-cluster-template
-      template/tests/test_lib_pins.py::test_terraform_module_sources_pin_the_lib_ref
+      template/tests/test_lib_pins.py::test_terraform_module_sources_pin_the_same_ref
     note: >-
       SCOPE — cluster-template only, and only for the `?ref=` in the modules it
       renders. weisssrv's terraform/ is NOT gated: bump its module refs by hand

@@ -102,7 +102,7 @@ restic_offsite_restore_drill_enabled: true
 # extra here: repo-wide bit-rot is the rotating deep verify's job.
 restic_offsite_restore_drill_sample_files: 5
 restic_offsite_restore_drill_max_bytes: 8388608   # 8 MiB
-# Run ONE drill when the units are newly installed or changed. A Persistent=true
+# Run ONE drill until one PASSES. A Persistent=true
 # timer does NOT fire on first enable — with no stamp under
 # /var/lib/systemd/timers, systemd computes the next elapse from the unit's
 # activation time, so a quarterly OnCalendar leaves up to a full quarter in which
@@ -110,10 +110,17 @@ restic_offsite_restore_drill_max_bytes: 8388608   # 8 MiB
 # does not exist and a staleness alert's absent() arm fires on a healthy system.
 # Seeding also proves the drill inside the deploy that installed it.
 #
+# The gate is LEVEL-triggered, not edge-triggered: the seed runs whenever the
+# units changed OR that proof metric is still absent, so a seed that failed once
+# is retried on the next converge instead of being skipped forever behind
+# unchanged units. Once a drill has passed, both arms are false and no re-run
+# re-spends B2 egress.
+#
 # The seed FAILS the play when the drill fails — including on a repository that
-# has no snapshot yet, which is a legitimate first-converge state. Set this false
-# for that first converge (or for any host where the nightly backup has never
-# run) and back to true once a snapshot exists.
+# has no snapshot yet, which is a legitimate first-converge state (the drill
+# names that case explicitly rather than reporting it as unreachable). Set this
+# false for that first converge (or for any host where the nightly backup has
+# never run) and back to true once a snapshot exists.
 restic_offsite_restore_drill_seed: true
 # 05:00 on the 5th of Jan/Apr/Jul/Oct — a quarter, offset well clear of both the
 # nightly backup window and the Sunday deep verify.

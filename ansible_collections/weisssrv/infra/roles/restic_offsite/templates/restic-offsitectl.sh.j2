@@ -789,6 +789,7 @@ cmd_drill() {
   local work restore_dir rc=0 compared=0 mismatched=0 skipped=0 total=0
   local glob_skipped=0 glob_note=""
   local snap_json snap_time snap_epoch size path cmp_src restored src_mtime i
+  local snaps_probe=""
   local includes=() sample_paths=() sample_srcs=() sample_mtimes=()
 
   work="$(mktemp -d)"
@@ -800,8 +801,28 @@ cmd_drill() {
   # Reachability first: its message is the one an operator needs when B2 or the
   # credentials are the problem, and every parse below would otherwise report
   # that same outage as a parse failure.
+  #
+  # `ls latest` also fails on a REACHABLE repository that simply has no snapshot
+  # yet — the one legitimate first-converge state, and the documented reason to
+  # set restic_offsite_restore_drill_seed false. Reporting that as a
+  # reachability problem sends the operator after B2 credentials that are fine,
+  # so re-probe with `snapshots --json` and split the verdict: a readable but
+  # empty snapshot list is "nothing to drill yet", anything else is the outage.
+  # Both `[]` and `null` count as empty — restic has emitted each for a
+  # snapshot-less repository across versions, and treating `null` as "not
+  # empty" would put the legitimate case back under the outage message.
   if ! restic_ro ls --json latest > "${work}/ls.json" 2>/dev/null; then
-    log "drill FAILED: could not list the newest snapshot (is the repository reachable?)"
+    if restic_ro snapshots --json > "${work}/snaps.json" 2>/dev/null; then
+      snaps_probe="$(tr -d '[:space:]' < "${work}/snaps.json" 2>/dev/null || true)"
+    fi
+    case "$snaps_probe" in
+      '[]'|'null')
+        log "drill FAILED: the offsite repository is reachable but holds no snapshot yet — there is nothing to restore from. Run a backup first (restic-offsitectl run), or set restic_offsite_restore_drill_seed false for this first converge."
+        ;;
+      *)
+        log "drill FAILED: could not list the newest snapshot (is the repository reachable?)"
+        ;;
+    esac
     write_drill_metrics 0 0
     return 1
   fi
@@ -818,7 +839,13 @@ cmd_drill() {
   # the filter off, a file legitimately rewritten after the snapshot is sampled
   # and then reported as a MISMATCH — i.e. a parse problem turns into a false
   # corruption verdict, the one outcome this drill must never produce.
-  if [[ "$snap_epoch" -le 0 ]]; then
+  #
+  # The EMPTY snap_time is checked separately from the epoch, because it does
+  # not reach the epoch guard: GNU `date -d ''` is not an error — it resolves to
+  # today at 00:00:00 — so a parse miss that yields an empty time silently
+  # substitutes a plausible-looking, WRONG churn-filter cutoff instead of
+  # tripping the -le 0 arm. Fold it in so both parse misses fail identically.
+  if [[ -z "${snap_time//[[:space:]]/}" || "$snap_epoch" -le 0 ]]; then
     log "drill FAILED: could not read the newest snapshot's time (got '${snap_time:-}') — the churn filter cannot be applied, and without it a legitimately-changed file would be reported as corruption"
     write_drill_metrics 0 0
     return 1
@@ -963,16 +990,32 @@ cmd_prune() {
 # younger than the threshold) — and a silent success reads as "the lock is
 # gone", which is how someone talks themselves into force-unlocking a live run.
 # Print a verdict, and return non-zero when locks remain.
+#
+# count_locks PROPAGATES restic's rc rather than folding it into a count: an
+# unreadable repository (B2 down, wrong password, repo gone) makes `list locks`
+# fail, and a swallowed failure counts as ZERO locks — which cmd_unlock then
+# reports as "no locks on the repository" and exits 0. That is the single worst
+# verdict this command can give: the operator was sent here BECAUSE something is
+# stuck, and a green "nothing to remove" reads as "the lock cleared", hiding a
+# total outage behind a success. Keep the count and the probe failure distinct.
 count_locks() {
-  restic_ro list locks 2>/dev/null | grep -c . || true
+  local out
+  out="$(restic_ro list locks 2>/dev/null)" || return 1
+  printf '%s\n' "$out" | grep -c . || true
 }
 
 cmd_unlock() {
   local before after
   need_lock_or_die
-  before="$(count_locks)"
+  if ! before="$(count_locks)"; then
+    log "unlock: could not read the repository's lock list at all — this is NOT 'no locks'. The repository is unreachable, the credentials/password are wrong, or the repo no longer exists. Diagnose that first (restic-offsitectl status); nothing was reaped."
+    return 1
+  fi
   reap_stale_locks
-  after="$(count_locks)"
+  if ! after="$(count_locks)"; then
+    log "unlock: the lock list became unreadable after reaping — the repository is unreachable, the credentials/password are wrong, or the repo no longer exists. The lock state is UNKNOWN, not clear. Diagnose that first (restic-offsitectl status)."
+    return 1
+  fi
   echo "--- restic locks (after reaping) ---"
   restic_ro list locks || true
   if [[ "$after" -eq 0 ]]; then

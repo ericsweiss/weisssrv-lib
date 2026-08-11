@@ -157,6 +157,13 @@ done nothing in exactly the common case (a live run holds the lock), which reads
 as "the lock is gone" and is how someone talks themselves into force-unlocking a
 run that is still working.
 
+A repository it cannot **read at all** is its own verdict, not "no locks". The
+lock count propagates restic's exit status instead of folding a failed probe
+into a count of zero, so an unreachable bucket, a rotated repo password or a
+deleted repository prints `this is NOT 'no locks'` with the diagnosis to run
+next, and exits non-zero — the operator is here because something is stuck, and
+a green "nothing to remove" would hide a total outage behind a success.
+
 The reaper's own probes go through a separate `--no-lock`, no-`--retry-lock`
 wrapper (`restic_ro`: `list locks`, `cat lock`, `cat config`, and the read-only
 `snapshots`/`stats` in `status`). restic opens the repository with a read lock
@@ -211,11 +218,14 @@ a sampler artefact. A drill failure is therefore always a real one.
 
 ### First converge runs one drill (deliberate)
 
-The role starts `backup-restore-drill.service` **once**, when the drill units are
-newly installed or changed (`restic_offsite_restore_drill_seed`, default `true`).
-This is not belt-and-braces: a `Persistent=true` timer does **not** fire when it
-is first enabled. With no stamp file under `/var/lib/systemd/timers`, systemd
-computes the next elapse from the unit's *activation* time, so a quarterly
+The role starts `backup-restore-drill.service` until **one drill passes** — the
+gate is the drill units being new/changed **or**
+`backup_restore_drill_last_success_seconds` still being absent from
+`backup_restore_drill.prom` (`restic_offsite_restore_drill_seed`, default
+`true`). This is not belt-and-braces: a `Persistent=true` timer does **not**
+fire when it is first enabled. With no stamp file under
+`/var/lib/systemd/timers`, systemd computes the next elapse from the unit's
+*activation* time, so a quarterly
 `OnCalendar` leaves up to a full quarter in which
 `backup_restore_drill_last_success_seconds` — written only by a **passing** drill
 — does not exist at all, and a staleness alert's `absent()` arm pages
@@ -226,12 +236,22 @@ Consequences to expect:
 - The deploy that installs the units spends one drill's worth of B2 egress
   (bounded by `restic_offsite_restore_drill_max_bytes`, 8 MiB by default) and
   takes as long as that restore.
-- Re-running the role on an unchanged host does **not** re-drill: the seed is
-  gated on the template task's `changed`.
+- Re-running the role on a host whose drill has already **passed** does not
+  re-drill: the proof metric is present, both gate arms are false, and no B2
+  egress is re-spent.
+- A seed that **failed** is retried on the next converge. The gate is
+  level-triggered on the proof metric rather than edge-triggered on the
+  template's `changed` alone, because that made the seed single-shot: one failed
+  seed (repo unreachable that minute, a deploy interrupted between the templates
+  and the service) and every later converge found the units unchanged, skipped
+  the seed forever, and went green with the proof metric permanently absent —
+  the exact state the seed exists to prevent, whose alert arm is `absent()`.
 - The seed **fails the play** when the drill fails, which is the point — an
   offsite repository this host cannot restore from is worth stopping for. The
   one legitimate failure is a repository with no snapshot yet (a genuinely first
-  converge, before any nightly backup): set
+  converge, before any nightly backup); the drill names that case explicitly
+  ("reachable but holds no snapshot yet") rather than reporting it as a
+  reachability problem, so it is not confused with a broken bucket. Set
   `restic_offsite_restore_drill_seed: false` for that run and back to `true`
   once a snapshot exists.
 
