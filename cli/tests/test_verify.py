@@ -186,6 +186,33 @@ class TestStructure:
         assert not ok
         assert any("stray.yaml" in p and "nothing validates it" in p for p in problems)
 
+    def test_missing_optional_kustomization_flagged(self, scaffold):
+        # Worse than one unlisted manifest: with the kustomization gone NOTHING
+        # builds or kubeconforms any opt-in manifest. Skipping the check here
+        # would report clean on the very case it exists to catch.
+        _configured(scaffold)
+        odir = scaffold / tree.FLUX_DIR / tree.OPTIONAL_DIR
+        odir.mkdir(parents=True, exist_ok=True)
+        (odir / "hpa.yaml").write_text("---\nkind: HorizontalPodAutoscaler\n", encoding="utf-8")
+        (odir / tree.KUSTOMIZATION).unlink(missing_ok=True)
+        ok, problems = verify.verify(scaffold, run_kustomize=False)
+        assert not ok
+        assert any(
+            tree.KUSTOMIZATION in p and "nothing validates the opt-in manifests" in p
+            for p in problems
+        )
+
+    def test_empty_optional_dir_without_kustomization_is_fine(self, scaffold):
+        # No opt-in manifests means there is nothing left unvalidated, so an
+        # absent kustomization there is a layout fact, not a problem.
+        _configured(scaffold)
+        odir = scaffold / tree.FLUX_DIR / tree.OPTIONAL_DIR
+        for p in list(odir.iterdir()) if odir.is_dir() else []:
+            p.unlink()
+        odir.mkdir(parents=True, exist_ok=True)
+        ok, problems = verify.verify(scaffold, run_kustomize=False)
+        assert ok, problems
+
 
 class TestKustomizeNote:
     def test_kustomize_missing_is_advisory(self, scaffold, monkeypatch):

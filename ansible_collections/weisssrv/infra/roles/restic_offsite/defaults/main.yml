@@ -25,7 +25,9 @@ restic_offsite_repo: ""
 # restic metadata cache. REQUIRED, deliberately without a default: it holds the
 # repo index — including file PATHS — in PLAINTEXT, so it must be placed on an
 # encrypted, non-exported dataset deliberately. Keep it out of any
-# snapshotted/replicated dataset too: pure churn, zero restore value (README).
+# snapshotted/replicated dataset too: high churn, zero restore value. That is a
+# ZFS-side constraint — restic's CACHEDIR.TAG/--exclude-caches only keeps the
+# cache out of the UPLOAD, never out of a snapshot or a `zfs send` (README).
 # restic_offsite_cache_dir: /path/on/an/encrypted/unreplicated/dataset
 
 # Stable path roots: file sources bind their latest snapshot subtree here; the
@@ -85,6 +87,24 @@ restic_offsite_retry_lock: 15m
 restic_offsite_stale_lock_min_age_h: 6
 # Pack groups the rotating deep verify cycles through (one per verify run).
 restic_offsite_verify_groups: 12
+
+# Quarterly restore drill. `restic check` proves the repository is internally
+# consistent; it does NOT prove this host can still decrypt and restore it — a
+# rotated repo password, a broken env file or a restore path that no longer maps
+# all pass check and fail the day they are needed. The drill restores the
+# smallest few files of the newest snapshot and byte-compares them against the
+# ZFS snapshot subtree they came from, emitting
+# backup_restore_drill_last_success_seconds / _last_run_seconds /
+# _files_compared. Set enabled false to drop the units entirely (they are also
+# removed on the next run, so the flag is a real off switch, not a no-op).
+restic_offsite_restore_drill_enabled: true
+# Sample size + hard byte cap. B2 egress is billed and volume proves nothing
+# extra here: repo-wide bit-rot is the rotating deep verify's job.
+restic_offsite_restore_drill_sample_files: 5
+restic_offsite_restore_drill_max_bytes: 8388608   # 8 MiB
+# 05:00 on the 5th of Jan/Apr/Jul/Oct — a quarter, offset well clear of both the
+# nightly backup window and the Sunday deep verify.
+restic_offsite_restore_drill_timer_calendar: "*-01,04,07,10-05 05:00:00"
 
 # systemd load-shaping: deferential under contention.
 restic_offsite_nice: 10

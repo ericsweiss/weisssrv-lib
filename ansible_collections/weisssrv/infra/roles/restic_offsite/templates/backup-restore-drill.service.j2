@@ -1,0 +1,22 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Quarterly offsite restore drill (restore a sample and byte-compare it)
+# The comparands are files inside the source pools' ZFS snapshots, so the mount
+# passes must have completed; the control script's shared flock keeps it from
+# interleaving with a mid-run nightly backup (it fails fast and Persistent=true
+# catches up).
+After=zfs-mount.service zfs-mount-encrypted.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile={{ restic_offsite_config_dir }}/env
+# Fails the unit on mismatch by design: the metric answers "when did a drill
+# last PASS", and a failed unit is what puts the failure in the journal next to
+# the mismatching path.
+ExecStart=/usr/local/sbin/restic-offsitectl drill
+Nice={{ restic_offsite_nice }}
+IOSchedulingClass={{ restic_offsite_io_class }}
+IOSchedulingPriority={{ restic_offsite_io_priority }}
+CPUWeight={{ restic_offsite_cpu_weight }}
+IOWeight={{ restic_offsite_io_weight }}

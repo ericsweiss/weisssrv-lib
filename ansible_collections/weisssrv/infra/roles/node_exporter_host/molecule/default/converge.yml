@@ -14,5 +14,25 @@
         executable: /bin/bash
       changed_when: false
       when: ansible_os_family == "Debian"
-  roles:
-    - role: weisssrv.infra.node_exporter_host
+  tasks:
+    # Pass 1 — Proxmox host WITHOUT the ZFS-specific collector (the Ceph /
+    # LVM-thin configuration the README advertises). The zpool script, unit and
+    # timer are not deployed, so the enable+start step must not name that timer:
+    # a fixed three-timer list dies here with "Could not find the requested
+    # service zpool-status-collector.timer" and aborts the whole play. This pass
+    # IS the regression test — it is why the enable+start task is no longer
+    # molecule-notest.
+    - name: Apply the role with the zpool collector switched off
+      ansible.builtin.include_role:
+        name: weisssrv.infra.node_exporter_host
+      vars:
+        node_exporter_host_zpool_collector: false
+
+    # Pass 2 — the default (ZFS) configuration everything in verify.yml checks.
+    # Deliberately no "zpool units are absent" assertion between the passes: the
+    # role never removes them, so it would fail molecule's idempotence re-run.
+    - name: Apply the role with the zpool collector on
+      ansible.builtin.include_role:
+        name: weisssrv.infra.node_exporter_host
+      vars:
+        node_exporter_host_zpool_collector: true

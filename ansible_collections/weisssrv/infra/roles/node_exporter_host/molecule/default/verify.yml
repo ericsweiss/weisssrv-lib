@@ -36,6 +36,42 @@
         fail_msg: "systemd override is missing required listen-address or textfile flags"
         success_msg: "systemd override pins port 9101 and textfile collector"
 
+    # The systemd collector is default-OFF upstream: without these flags
+    # node_systemd_* is emitted by nothing and any "unit X failed" alert is dead
+    # on arrival. enable-restarts-metrics is the separate flag that produces
+    # node_systemd_service_restart_total (the crash-loop series).
+    - name: Verify the override enables the systemd collector with unit filters
+      ansible.builtin.assert:
+        that:
+          - "'--collector.systemd ' in (override_content.content | b64decode)"
+          - "'--collector.systemd.unit-include=' in (override_content.content | b64decode)"
+          - "'--collector.systemd.unit-exclude=' in (override_content.content | b64decode)"
+          - "'--collector.systemd.enable-restarts-metrics' in (override_content.content | b64decode)"
+        fail_msg: "systemd override does not enable the systemd collector — node_systemd_* has no emitter"
+        success_msg: "systemd override enables the filtered systemd collector"
+
+    - name: Scrape /metrics for the systemd collector series
+      ansible.builtin.uri:
+        url: "http://localhost:9101/metrics"
+        return_content: true
+      register: node_exporter_host_metrics
+
+    # The flags parsing is not enough: an unsupported flag name would leave the
+    # exporter dead, and a filter that matches nothing would leave the series
+    # empty. Assert the two series the NodeSystemd* alerts select actually
+    # appear, for a unit that exists in every systemd container.
+    - name: Assert the systemd collector emits the series the alerts select
+      ansible.builtin.assert:
+        that:
+          - "'node_systemd_unit_state{' in node_exporter_host_metrics.content"
+          - "'node_systemd_service_restart_total{' in node_exporter_host_metrics.content"
+          - "'state=\"failed\"' in node_exporter_host_metrics.content"
+        fail_msg: >-
+          node_systemd_unit_state / node_systemd_service_restart_total are absent
+          from /metrics — the NodeSystemdServiceFailed and
+          NodeSystemdServiceCrashlooping alerts have no emitter.
+        success_msg: "node_systemd_unit_state + node_systemd_service_restart_total are exported"
+
     - name: Verify service is enabled
       ansible.builtin.systemd:
         name: prometheus-node-exporter
@@ -91,17 +127,24 @@
           - corosync_timer.stat.mode == "0644"
         fail_msg: "corosync-health-collector.timer missing or has wrong perms"
 
-    # The role's enable+start task is `molecule-notest`-tagged because
-    # `systemctl start` is unreliable in privileged-container systemd, so we
-    # don't assert UnitFileState here — the file's existence + perms +
-    # contents prove the role's deploy contract. The end-to-end script
-    # invocation below exercises the actual textfile-collector path which is
-    # the operationally-important guarantee.
+    # The role's enable+start step runs for real here (converge.yml's first pass
+    # is what proves the timer list follows node_exporter_host_zpool_collector
+    # instead of naming a unit that was never rendered), so all three timers
+    # must be enabled.
+    - name: Check the collector timers are enabled  # noqa command-instead-of-module
+      ansible.builtin.command: "systemctl is-enabled {{ item }}"
+      register: node_exporter_host_timer_enabled
+      changed_when: false
+      failed_when: node_exporter_host_timer_enabled.stdout | trim != 'enabled'
+      loop:
+        - corosync-health-collector.timer
+        - zpool-status-collector.timer
+        - smartmon-collector.timer
 
-    # End-to-end smoke: run the script directly (timer's enable+start task is
-    # gated `molecule-notest`, so we invoke it once here). corosync is absent
-    # in CI, but the script's `set +e` guard handles that and still emits a
-    # well-formed .prom file with cpu=0 + last_success sentinel.
+    # End-to-end smoke: run the script directly rather than waiting out the
+    # timer. corosync is absent in CI, but the script's `set +e` guard handles
+    # that and still emits a well-formed .prom file with cpu=0 + last_success
+    # sentinel.
     - name: Invoke corosync collector once to produce textfile metric
       ansible.builtin.command: /usr/local/sbin/corosync-health-collector.sh
       changed_when: false

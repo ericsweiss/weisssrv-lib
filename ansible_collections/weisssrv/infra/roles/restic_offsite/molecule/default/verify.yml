@@ -239,6 +239,111 @@
           a failed week would be skipped for a full cycle.
         success_msg: "The rotating deep verify advances a persisted group cursor"
 
+    # RESTORE DRILL: `restic check` proves the repository is self-consistent; it
+    # does NOT prove this host can decrypt and restore it. The drill restores the
+    # smallest few files of the newest snapshot and byte-compares them against
+    # the ZFS snapshot subtree they came from. Runs BEFORE the staleness block
+    # below, which renames the appdata snapshot out from under the comparand.
+    - name: Check the quarterly restore-drill timer is enabled  # noqa command-instead-of-module
+      ansible.builtin.command: systemctl is-enabled backup-restore-drill.timer
+      register: restic_offsite_drill_timer_enabled
+      changed_when: false
+      failed_when: restic_offsite_drill_timer_enabled.stdout | trim != 'enabled'
+
+    - name: Assert the drill service runs the drill subcommand
+      ansible.builtin.command: grep -q 'restic-offsitectl drill' /etc/systemd/system/backup-restore-drill.service
+      changed_when: false
+
+    - name: Run restic-offsitectl drill
+      ansible.builtin.shell: |
+        set -a; . /etc/restic-offsite/env; set +a
+        restic-offsitectl drill
+      args:
+        executable: /bin/bash
+      register: restic_offsite_drill
+      changed_when: false
+
+    - name: Read the restore-drill metric file
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/backup_restore_drill.prom
+      register: prom_drill
+
+    - name: Assert the drill compared real files and recorded success
+      ansible.builtin.assert:
+        that:
+          - restic_offsite_drill.stdout is search('drill OK')
+          - "'backup_restore_drill_last_success_seconds ' in (prom_drill.content | b64decode)"
+          - "'backup_restore_drill_last_run_seconds ' in (prom_drill.content | b64decode)"
+          - not ('backup_restore_drill_files_compared 0' in (prom_drill.content | b64decode))
+        fail_msg: >-
+          The restore drill did not byte-compare anything — a drill that samples
+          nothing is a green light for an untested backup.
+        success_msg: "The restore drill restored a sample and byte-compared it against source"
+
+    # The drill must be able to FAIL: corrupt the comparand and assert it says
+    # so, fails the unit, and PRESERVES the previous success timestamp (that is
+    # what BackupRestoreDrillStale measures).
+    - name: Record the drill's last-success timestamp
+      ansible.builtin.shell: |
+        set -o pipefail
+        awk '$1=="backup_restore_drill_last_success_seconds"{print $2}' \
+          /var/lib/node_exporter/backup_restore_drill.prom
+      args:
+        executable: /bin/bash
+      register: restic_offsite_drill_ok_ts
+      changed_when: false
+
+    - name: Corrupt a comparand so the restored bytes no longer match
+      ansible.builtin.shell: |
+        set -eo pipefail
+        snap="$(ls -1 /tmp/molsrc/appdata/.zfs/snapshot/ | grep '^archsync-' | tail -1)"
+        f="/tmp/molsrc/appdata/.zfs/snapshot/${snap}/payload.txt"
+        printf 'tampered payload that is not what was backed up\n' > "$f"
+        touch -d '2020-01-01 00:00:00' "$f"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Run restic-offsitectl drill against the corrupted comparand
+      ansible.builtin.shell: |
+        set -a; . /etc/restic-offsite/env; set +a
+        restic-offsitectl drill
+      args:
+        executable: /bin/bash
+      register: restic_offsite_drill_bad
+      changed_when: false
+      failed_when: restic_offsite_drill_bad.rc == 0
+
+    - name: Read the drill's last-success timestamp after the mismatch
+      ansible.builtin.shell: |
+        set -o pipefail
+        awk '$1=="backup_restore_drill_last_success_seconds"{print $2}' \
+          /var/lib/node_exporter/backup_restore_drill.prom
+      args:
+        executable: /bin/bash
+      register: restic_offsite_drill_bad_ts
+      changed_when: false
+
+    - name: Assert a mismatch fails loudly and preserves the last-success timestamp
+      ansible.builtin.assert:
+        that:
+          - restic_offsite_drill_bad.stdout is search('MISMATCH')
+          - (restic_offsite_drill_ok_ts.stdout | trim) | length > 0
+          - (restic_offsite_drill_bad_ts.stdout | trim) == (restic_offsite_drill_ok_ts.stdout | trim)
+        fail_msg: >-
+          A byte mismatch did not fail the drill, or it overwrote the
+          last-success timestamp the staleness alert reads.
+        success_msg: "A byte mismatch fails the drill and preserves the last-success timestamp"
+
+    - name: Restore the corrupted comparand
+      ansible.builtin.shell: |
+        set -eo pipefail
+        snap="$(ls -1 /tmp/molsrc/appdata/.zfs/snapshot/ | grep '^archsync-' | tail -1)"
+        echo "molecule appdata payload" > "/tmp/molsrc/appdata/.zfs/snapshot/${snap}/payload.txt"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
     # FRESHNESS-GUARD abort: age the appdata source's snapshot into the past so
     # its parsed timestamp exceeds the max age; a run must abort with success=0
     # BEFORE touching the repo.

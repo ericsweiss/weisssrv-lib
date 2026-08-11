@@ -22,3 +22,24 @@ node_exporter_host_proxmox: false
 # default; set false on a Proxmox host whose storage is not ZFS (Ceph, LVM-thin)
 # so the timer is not deployed at all rather than sampling an absent `zpool`.
 node_exporter_host_zpool_collector: "{{ node_exporter_host_proxmox }}"
+
+# systemd collector. Default-OFF upstream, so node_systemd_* exists nowhere
+# unless it is asked for — and a "unit X failed" alert with no emitter is a gate
+# that can never fire. On here, with the unit set filtered: the collector's
+# unfiltered default enumerates every loaded unit (mounts, slices, scopes,
+# devices, sockets), which is a large, churny label set for no alerting value.
+# The include pattern is what bounds cardinality; the exclude mirrors upstream's
+# default as a second guard.
+#
+# Emits node_systemd_unit_state{name,state,type},
+# node_systemd_service_restart_total{name} (from
+# --collector.systemd.enable-restarts-metrics), node_systemd_units{state},
+# node_systemd_timer_last_trigger_seconds{name}, node_systemd_system_running and
+# node_systemd_version. Set false to drop the collector and its flags entirely.
+#
+# The patterns use `[.]` rather than `\.` on purpose: the value lands in a
+# systemd ExecStart= line, where a backslash starts a C escape sequence and an
+# unrecognised one makes systemd reject the whole command.
+node_exporter_host_systemd_collector: true
+node_exporter_host_systemd_unit_include: ".+[.](service|timer)"
+node_exporter_host_systemd_unit_exclude: ".+[.](automount|device|mount|scope|slice)"

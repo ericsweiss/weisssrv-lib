@@ -17,12 +17,41 @@ the role asserts the first two when enabled:
 | Variable | Meaning |
 |---|---|
 | `restic_offsite_repo` | e.g. `rclone:b2:<bucket>/<path>` |
-| `restic_offsite_cache_dir` | **must sit on an encrypted dataset**: the cache holds repository PATHS in plaintext even though the blobs are client-encrypted. Keep it OUT of any snapshotted/replicated dataset — it is pure churn with zero restore value, and it is regenerable, so relocating it needs no migration beyond deleting the old directory |
+| `restic_offsite_cache_dir` | **must sit on an encrypted dataset**, and outside any snapshotted or replicated one — see below |
 | `restic_offsite_sources` | `[{name, mountpoint}]`, empty by default |
 | `restic_offsite_zvol_sources` | `[{name, zvol, fstype, mount_opts}]`, empty by default |
 | `restic_offsite_excludes` | restic patterns against `<bind_root>/<source>/…`, empty by default |
 | `restic_offsite_repo_password` | restic repository password |
 | `restic_offsite_b2_key_id` / `restic_offsite_b2_application_key` | rclone B2 credentials |
+
+### Where the cache goes
+
+`restic_offsite_cache_dir` has two independent constraints:
+
+- **Encrypted.** The cache holds the repository index — including file
+  **paths** — in plaintext, even though every blob in B2 is client-encrypted.
+- **Not snapshotted, not replicated.** It is high-churn, regenerable, and worth
+  nothing in a restore, so snapshotting it just pins dead space and replicating
+  it just ships it over and over.
+
+The second constraint is about **ZFS**, and `--exclude-caches` does not satisfy
+it: restic's `CACHEDIR.TAG` keeps the cache out of the restic *upload*, and has
+no bearing on `zfs-auto-snapshot` or on a `zfs send` of the dataset it sits in.
+
+Two ways to satisfy it, and which one is available depends on the layout:
+
+- If the cache can be **excluded from the replication source list**, do that —
+  no new dataset, no move.
+- If replication is a raw `zfs send -w` of the parent dataset, exclusion is not
+  expressible (a raw send is dataset-granular — a directory inside it cannot be
+  left out), so the cache has to move to its own dataset with
+  `com.sun:auto-snapshot=false` that the source list omits. Relocating needs no
+  migration beyond deleting the old directory: restic rebuilds the cache.
+- If the send is **recursive** (`-R`) and every encrypted dataset is inside a
+  replicated encryption root, neither form is available without minting a new
+  encryption root — disproportionate for a regenerable cache. Keep the cache
+  inside the encrypted root and accept the replication churn as a documented
+  exception: the encryption constraint is the hard one, this one is only waste.
 
 ## How it reads a consistent snapshot
 
@@ -57,8 +86,9 @@ walked source.
 ## Control script — `restic-offsitectl`
 
 `run [--force]` (timer/OnSuccess target), `restore <name> [snap] [dir]`,
-`verify [--full|--auto-subset]`, `snapshots`, `prune [--max-remove N]`,
-`unlock`, `status`. Single-instance `flock`; every subcommand shares the lock.
+`verify [--full|--auto-subset]`, `drill`, `snapshots`,
+`prune [--max-remove N]`, `unlock`, `status`. Single-instance `flock`; every
+subcommand shares the lock.
 
 `run` carries two guards:
 
@@ -90,6 +120,23 @@ still succeeds and records `restic_offsite_retention_blocked 1` with
 self-raising; alert on the blocked/pending gauges so a wedged retention is
 visible within a day or two.
 
+The refusal exits **90**, not 2. `run_forget` also returns whatever
+`restic forget --prune` exits with, and restic documents 2 as a go runtime
+error — sharing the code made a *crashed* prune indistinguishable from a
+deliberate refusal, so the run recorded `retention_blocked 1`, reported success
+and exited 0. Now only 90 is the refusal:
+
+| `run_forget` | `_last_prune_success` | `_retention_blocked` | `_last_run_success` | unit |
+|---|:-:|:-:|:-:|:-:|
+| `0` — pruned | 1 | 0 | 1 | ok |
+| `90` — ceiling refusal | 0 | 1 | 1 | ok |
+| `1` — dry-run unusable | 0 | 0 | 0 | **fails** |
+| anything else — prune crashed | 0 | 0 | 0 | **fails** |
+
+So `retention_blocked` means a ceiling refusal and nothing else, and a crashed
+prune reaches the operator as a failed run rather than as a "raise the ceiling"
+suggestion for something the ceiling had nothing to do with.
+
 ### Repository locks
 
 An interrupted run leaves a repository lock that wedges every exclusive
@@ -101,6 +148,15 @@ lock owned by a **dead PID on this host** that is older than
 `restic-offsitectl unlock` runs the same reaper on demand. rc=11 from restic is
 reported as "repository lock" so the journal line is actionable.
 
+The reaper's own probes go through a separate `--no-lock`, no-`--retry-lock`
+wrapper (`restic_ro`: `list locks`, `cat lock`, `cat config`, and the read-only
+`snapshots`/`stats` in `status`). restic opens the repository with a read lock
+even for `cat`, and it does not ignore stale locks while acquiring — so with a
+locking probe the exact scenario the reaper exists for, a stale **exclusive**
+lock, made `cat lock` wait out the full `--retry-lock` and then fail, the loop
+skipped every lock, and nothing was ever reaped. `restic unlock` itself still
+goes through the normal wrapper.
+
 ### Deep verify
 
 `verify --auto-subset` read-verifies one pack group per run, so the whole repo
@@ -109,6 +165,34 @@ fraction of the egress of a full `--read-data`. The group cursor is **persisted*
 in the verify metrics file and advances only on success (`next = last % N + 1`),
 so a failed or skipped week is retried instead of being dropped for a full
 cycle.
+
+### Restore drill
+
+`restic check` proves the repository is internally consistent. It does **not**
+prove this host can still get bytes out of it: a rotated repo password, a broken
+env file or a restore path that no longer maps all pass `check` and fail on the
+day they are needed. `restic-offsitectl drill` — wired to a quarterly
+`backup-restore-drill.timer` (`Persistent=true`, so a missed quarter catches up
+instead of silently lapsing) — closes that gap:
+
+1. Take the newest snapshot's file list and sort it by size ascending.
+2. Sample the smallest files whose comparand on this host **predates the
+   snapshot**, up to `restic_offsite_restore_drill_sample_files` and a hard
+   `restic_offsite_restore_drill_max_bytes` cap.
+3. Restore just those into a temp dir and `cmp` them against the ZFS snapshot
+   subtree they were taken from — immutable, so any difference is corruption,
+   not churn. (The only tolerated difference is a comparand rewritten *during*
+   the drill, detected by an mtime re-read.)
+
+It is deliberately tiny: B2 egress is billed and volume proves nothing extra
+here — repo-wide bit-rot is the rotating deep verify's job. A mismatch, a failed
+restore, or a run that could sample **nothing** all fail the unit and leave
+`backup_restore_drill_last_success_seconds` at its previous value. Set
+`restic_offsite_restore_drill_enabled: false` to drop the units (they are
+removed, not just left unstarted).
+
+Only file sources are drillable: a zvol source's filesystem is mounted only
+during a run, so there is nothing to compare against between runs.
 
 ## Metrics (node_exporter textfile)
 
@@ -125,10 +209,20 @@ cycle.
 
 `restic_offsite_verify.prom`: `restic_offsite_last_verify_success`,
 `restic_offsite_last_verify_timestamp_seconds`, `restic_offsite_verify_group`,
-`restic_offsite_verify_groups`. Timestamps are preserved across a failed
-attempt, so staleness alerts measure time-since-last-success. Alert the
-backup pair for "the offsite tier is down" and the retention/verify metrics
-separately — conflating them turns a retention decision into a data-loss page.
+`restic_offsite_verify_groups`.
+
+`backup_restore_drill.prom`:
+
+| Metric | Meaning |
+|---|---|
+| `backup_restore_drill_last_run_seconds` | last drill ATTEMPT (advances on failure too) |
+| `backup_restore_drill_last_success_seconds` | last drill in which every compared file matched — the one a staleness alert (~100 days, one quarter plus slack) should read |
+| `backup_restore_drill_files_compared` | files byte-compared in the last run; `0` means nothing was proven and the unit failed |
+
+Timestamps are preserved across a failed attempt, so staleness alerts measure
+time-since-last-success. Alert the backup pair for "the offsite tier is down"
+and the retention/verify/drill metrics separately — conflating them turns a
+retention decision into a data-loss page.
 
 ## Security (three independent at-rest layers)
 

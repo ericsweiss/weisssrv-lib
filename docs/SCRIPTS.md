@@ -582,7 +582,7 @@ confirmation required; a bad lifecycle rule can expire the only offsite copy).
 
 | Script | Contract |
 |---|---|
-| `shell-lib.sh` | function-only (safe to source under `set -e`): `timeout_cmd <secs> <cmd…>`, `ssh_probe <target> <cmd>`. With neither `timeout` nor `gtimeout` on `PATH` it warns **once per shell** on stderr that probes will run unbounded, rather than silently dropping the bound — anything parsing stderr from the two finders below sees that line |
+| `shell-lib.sh` | function-only (safe to source under `set -e`): `timeout_cmd <secs> <cmd…>`, `ssh_probe <target> <cmd>`. With neither `timeout` nor `gtimeout` on `PATH` it warns **once per shell** on stderr that probes will run unbounded, rather than silently dropping the bound — anything parsing stderr from a sourcing script (the two finders below here; consumers source it from their own scripts too) sees that line |
 | `find-reachable-host.sh` | prints the first reachable SSH target from its args, exit 1 if none |
 | `find-pve-host-for-vm.sh` | prints which Proxmox host runs a VMID (ha-manager → `pvesh /cluster/resources` → per-host `qm status`) |
 | `resolve-tool.sh` | prints how to invoke a Python dev tool (`PATH` → `python3 -m <module>` → validated pyenv glob) |

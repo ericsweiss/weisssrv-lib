@@ -95,10 +95,17 @@ missing_snap="$(latest_file_snap "$WORK/empty-src")"
 [ -z "$missing_snap" ] || fail "latest_file_snap invented a snapshot ($missing_snap)"
 
 # --- retention guard, driven through a stub restic ---------------------------
+# PRUNE_RC drives the DESTRUCTIVE pass separately from the dry-run so the
+# ceiling sentinel can be told apart from restic's own exit codes.
 STUB_MODE=blocked
+PRUNE_RC=0
 restic() {
   case "$1 ${2:-}" in
     "forget --keep-last")
+      # The destructive pass is the one carrying --prune.
+      for a in "$@"; do
+        if [ "$a" = "--prune" ]; then return "$PRUNE_RC"; fi
+      done
       case "$STUB_MODE" in
         blocked) printf 'keep 8 snapshots:\nID\n\nremove 25 snapshots:\nID\n' ;;
         under)   printf 'keep 8 snapshots:\nID\n\nremove 1 snapshots:\nID\n' ;;
@@ -112,7 +119,8 @@ restic() {
 }
 
 rc=0; run_forget >/dev/null || rc=$?
-[ "$rc" = "2" ] || fail "a delete set above the ceiling must return 2, not prune (got $rc)"
+[ "$rc" = "90" ] || fail "a delete set above the ceiling must return the 90 sentinel (got $rc)"
+[ "$rc" = "$FORGET_RC_CEILING" ] || fail "the ceiling sentinel drifted from FORGET_RC_CEILING"
 [ "$retention_pending" = "25" ] || fail "pending removals not recorded ($retention_pending)"
 
 STUB_MODE=under; rc=0; run_forget >/dev/null || rc=$?
@@ -133,28 +141,91 @@ STUB_MODE=locked; rc=0; out="$(run_forget 2>/dev/null)" || rc=$?
 printf '%s\n' "$out" | grep -q 'rc=11 is a repository lock' \
   || fail "rc=11 was not reported as a repository lock"
 
+# A `forget --prune` that CRASHES must surface as restic's own rc, not as the
+# ceiling sentinel. rc 2 is restic's documented "go runtime error" — the exact
+# code the ceiling refusal used to reuse.
+STUB_MODE=under; PRUNE_RC=2; rc=0; run_forget >/dev/null || rc=$?
+[ "$rc" = "2" ] || fail "a crashed forget --prune must return restic's rc 2 (got $rc)"
+PRUNE_RC=0
+
+# --- run verdict + retention gauges per forget rc -----------------------------
+# The mapping that used to conflate a crashed prune with a deliberate refusal:
+# blocked ONLY on the ceiling sentinel, and only the ceiling keeps the run green.
+# Redirect to a file, never `$(...)`: a command substitution would run
+# apply_forget_rc in a SUBSHELL and none of the gauges it sets would come back.
+_reset_run_state() { prune_success=0; retention_blocked=0; run_success=0; retention_pending=7; }
+VERDICT_LOG="$WORK/verdict.log"
+
+_reset_run_state; apply_forget_rc 0 > "$VERDICT_LOG"
+[ "$prune_success" = "1" ] || fail "a pruned run must record last_prune_success 1"
+[ "$retention_blocked" = "0" ] || fail "a pruned run must not record retention_blocked"
+[ "$run_success" = "1" ] || fail "a pruned run must succeed"
+
+_reset_run_state; apply_forget_rc 90 > "$VERDICT_LOG"
+[ "$prune_success" = "0" ] || fail "a ceiling refusal did not clear last_prune_success"
+[ "$retention_blocked" = "1" ] || fail "a ceiling refusal must record retention_blocked 1"
+[ "$run_success" = "1" ] || fail "a ceiling refusal must NOT fail the run — the backup landed"
+grep -q 'retention blocked' "$VERDICT_LOG" || fail "the ceiling refusal was not logged as blocked"
+
+_reset_run_state; apply_forget_rc 2 > "$VERDICT_LOG"
+[ "$retention_blocked" = "0" ] \
+  || fail "a CRASHED prune (restic rc 2) was recorded as a ceiling block — the operator would be told to raise the ceiling"
+[ "$prune_success" = "0" ] || fail "a crashed prune must record last_prune_success 0"
+[ "$run_success" = "0" ] || fail "a crashed prune must FAIL the run"
+grep -q 'retention FAILED (rc=2)' "$VERDICT_LOG" \
+  || fail "a crashed prune was not logged as a retention failure"
+
+_reset_run_state; apply_forget_rc 1 > "$VERDICT_LOG"
+[ "$retention_blocked" = "0" ] || fail "an unusable dry-run must not read as a ceiling block"
+[ "$run_success" = "0" ] || fail "an unusable dry-run must fail the run"
+
 # --- stale-lock reaper --------------------------------------------------------
 # Same host + dead pid + old enough => unlock. Anything else must be left alone.
+#
+# The stub models the repository as ACTUALLY HELD EXCLUSIVELY, which is the only
+# state the reaper exists for: any LOCKING restic call (the plain `restic`
+# wrapper, which also carries --retry-lock) fails the way restic does, and only
+# the --no-lock probes (`restic_ro`) can read the lock metadata. A reaper whose
+# probes take a lock therefore reaps nothing here — the regression this pins.
 DEAD_PID=4194302
 if kill -0 "$DEAD_PID" 2>/dev/null; then fail "test pid $DEAD_PID is alive; pick another"; fi
 LOCK_HOST="${HOSTNAME:-$(uname -n)}"
 LOCK_PID="$DEAD_PID"
 LOCK_TIME="$(date -d '48 hours ago' -Is)"
 UNLOCKED="$WORK/unlocked"
+_lock_meta() {
+  printf '{\n  "time": "%s",\n  "exclusive": true,\n  "hostname": "%s",\n  "username": "root",\n  "pid": %s\n}\n' \
+    "$LOCK_TIME" "$LOCK_HOST" "$LOCK_PID"
+}
 restic() {
   case "$1 ${2:-}" in
-    "list locks") echo "deadbeef" ;;
-    "cat lock")
-      printf '{\n  "time": "%s",\n  "exclusive": true,\n  "hostname": "%s",\n  "username": "root",\n  "pid": %s\n}\n' \
-        "$LOCK_TIME" "$LOCK_HOST" "$LOCK_PID"
-      ;;
+    # `unlock` removes stale locks and is the ONE locking call that must still
+    # work while an exclusive lock is held.
     "unlock ") : > "$UNLOCKED"; echo "successfully removed 1 locks" ;;
-    *) echo "stub restic $*" ;;
+    *)
+      echo "repository is already locked exclusively by another process" >&2
+      return 11
+      ;;
+  esac
+}
+restic_ro() {
+  case "$1 ${2:-}" in
+    "list locks") echo "deadbeef" ;;
+    "cat lock") _lock_meta ;;
+    "cat config") echo '{"version":2}' ;;
+    *) echo "stub restic --no-lock $*" ;;
   esac
 }
 out="$(reap_stale_locks)"
-[ -f "$UNLOCKED" ] || fail "a stale same-host lock was not reaped: $out"
+[ -f "$UNLOCKED" ] || fail "a stale EXCLUSIVE same-host lock was not reaped: $out"
 printf '%s\n' "$out" | grep -q 'stale-lock: deadbeef' || fail "the reaped lock was not logged"
+
+# The same exclusive hold must not make repo_init_if_needed think the repository
+# is uninitialised and re-run `restic init` (which fails and kills the run).
+repo_init_if_needed > "$WORK/init.log" 2>&1
+if grep -q 'not initialized' "$WORK/init.log"; then
+  fail "an exclusive lock made repo_init_if_needed try to re-init the repository"
+fi
 
 rm -f "$UNLOCKED"; LOCK_PID="$$"
 reap_stale_locks >/dev/null

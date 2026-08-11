@@ -221,3 +221,49 @@
         state: started
         daemon_reload: true
       when: not ansible_check_mode
+
+    # Quarterly restore drill. Split from the verify units so the off switch is
+    # a real one: flipping restic_offsite_restore_drill_enabled false stops and
+    # removes them rather than leaving an armed timer behind.
+    - name: Deploy the quarterly restore-drill systemd units
+      ansible.builtin.template:
+        src: "{{ item }}.j2"
+        dest: "/etc/systemd/system/{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - backup-restore-drill.service
+        - backup-restore-drill.timer
+      when: restic_offsite_restore_drill_enabled | bool
+      notify: Reload systemd for restic-offsite
+
+    - name: Enable the quarterly restore-drill timer
+      ansible.builtin.systemd:
+        name: backup-restore-drill.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+      when:
+        - restic_offsite_restore_drill_enabled | bool
+        - not ansible_check_mode
+
+    - name: Stop the restore-drill timer when the drill is disabled
+      ansible.builtin.systemd:
+        name: backup-restore-drill.timer
+        enabled: false
+        state: stopped
+      when:
+        - not (restic_offsite_restore_drill_enabled | bool)
+        - not ansible_check_mode
+      failed_when: false
+
+    - name: Remove the restore-drill units when the drill is disabled
+      ansible.builtin.file:
+        path: "/etc/systemd/system/{{ item }}"
+        state: absent
+      loop:
+        - backup-restore-drill.service
+        - backup-restore-drill.timer
+      when: not (restic_offsite_restore_drill_enabled | bool)
+      notify: Reload systemd for restic-offsite

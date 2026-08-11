@@ -29,25 +29,37 @@ consumers:
         single_source: .gitlab-ci.yml -> variables.WEISSSRV_LIB_REF
         enforced_by: scripts/check-lib-pins.py (vendored; --fix rewrites)
         # `include:` is resolved before `variables:` exists, so every entry
-        # repeats the tag as a literal. Four entries share one `file:` list
-        # because they pass no inputs; the rest bind inputs per entry.
+        # repeats the tag as a literal. 14 files across 11 entries: TWO entries
+        # share a `file:` list because those five files pass no inputs; the
+        # other nine bind inputs per entry.
         templates:
-          - /ci/lint/yaml-lint.yml           # defaults verbatim
-          - /ci/lint/shellcheck.yml          # defaults verbatim
-          - /ci/validate/terraform.yml       # defaults verbatim (emits TWO jobs)
-          - /ci/security/secret-detection.yml  # defaults verbatim
+          - /ci/templates/dep-cache.yml          # defaults verbatim (shared entry)
+          - /ci/templates/install-1password.yml  # defaults verbatim (shared entry)
+          - /ci/templates/terraform-http-backend.yml  # defaults verbatim (shared entry)
+          - /ci/validate/terraform.yml       # defaults verbatim (shared entry; emits TWO jobs)
+          - /ci/security/secret-detection.yml  # defaults verbatim (shared entry)
+          - /ci/lint/yaml-lint.yml           # inputs: targets, changes
+          - /ci/lint/shellcheck.yml          # inputs: direct_globs, find_dir (""), changes
+          - /ci/lint/ansible-lint.yml        # inputs: targets, galaxy_requirements, changes
+          - /ci/lint/python-lint.yml         # inputs: targets, config (vendored ruff.toml), changes
           - /ci/lint/docs-link-check.yml     # inputs: changes -> **/*.md
           - /ci/maintenance/version-check.yml  # inputs: setup_command, check_command
-          - /ci/test/python-tests.yml        # inputs: changes -> ~28 traced paths
+          - /ci/test/python-tests.yml        # inputs: pins, setup_command (lib clone), ~28 traced paths
           - /ci/validate/flux-lint.yml       # inputs: pins + extra_validation
+          - /ci/review/pr-agent.yml          # inputs: secrets_source, gate, needs
+        not_consumed:
+          # The ONLY three templates outside this pipeline — treat every other
+          # input-default change as consumer-visible in weisssrv.
+          - /ci/build/docker-build.yml
+          - /ci/release/semantic-release.yml
+          - /ci/maintenance/version-bump-bot.yml  # weisssrv runs a local bump job
       ansible_collection:
         file: ansible/requirements.yml
         status: >-
-          Adoption in flight. weisssrv still carries all 40 roles in-tree under
-          ansible/roles/; the collection now covers the same 40, so the
-          migration deletes the in-tree tree and switches every playbook to the
-          weisssrv.infra.<role> FQCN. The inventory rename must land in the SAME
-          MR (ansible_collections/weisssrv/infra/MIGRATING.md).
+          Adopted (v0.6.0). ansible/roles/ is deleted, every playbook addresses
+          roles as weisssrv.infra.<role>, and the inventory carries the renamed
+          variable API. Bumping the pin here changes what runs on the hosts, so
+          every deploy-ansible-* job keys on ansible/requirements.yml.
       terraform_modules:
         status: >-
           Not consumed. weisssrv's terraform/{cloudflare,tailscale,authentik}
@@ -57,16 +69,44 @@ consumers:
         # Each copy carries a DUAL-MAINTAINED banner naming the library. The CI
         # templates take the script PATH from the consumer tree, so these copies
         # are the ones that actually run. Re-vendor them on every bump.
+        #
+        # SOURCE OF TRUTH: scripts/test_vendored_byte_identity.py::VENDORED in
+        # weisssrv — it gates all 22 against the library at the pinned ref and
+        # never skips. Keep this list in step with it.
+        - scripts/b2-bucket-drift.py
+        - scripts/check-deploy-coverage.sh
         - scripts/check-doc-links.py
+        - scripts/check-hpa-vpa-invariant.py
+        - scripts/check-kubectl-version-pin.py
         - scripts/check-lib-pins.py
         - scripts/check-taskfile.sh
+        - scripts/check-versions.py
+        - scripts/find-pve-host-for-vm.sh
+        - scripts/find-reachable-host.sh
         - scripts/flux-render.sh
+        - scripts/generate-hosts-env.py
+        - scripts/generate-versions-configmap.py
         - scripts/kubeconform-skipped.py
+        - scripts/lint-prometheus-config.sh
+        - scripts/molecule-retry.sh
+        - scripts/resolve-tool.sh
+        - scripts/sanitize-junit-expected-failures.py
+        - scripts/shell-lib.sh
+        - scripts/validate-helm-values.py
+        - scripts/version-bump-mr.py
+        - scripts/version-check-ci.py
+      forked_scripts:
+        # Declared forks (test_vendored_byte_identity.py::FORKED): NOT compared,
+        # and re-converged by getting the difference upstream.
+        - scripts/extract-prometheus-config.py  # unions observability/rules/* with the HelmRelease
       cli: not installed
       molecule_images: >-
-        Builds its own docker/molecule-{ci,test} today. Migration target: pull
-        the library's published :vX.Y.Z images instead, which needs weisssrv on
-        this project's CI/CD job-token allowlist.
+        Pulls the library's published
+        $CI_REGISTRY/eric/weisssrv-lib/molecule-{ci,test}:$WEISSSRV_LIB_REF
+        images; weisssrv's own docker/ now holds only the app images
+        (hermes-agent, camofox-browser). The image tag is therefore a fifth pin
+        surface that moves with WEISSSRV_LIB_REF, and it only resolves once the
+        release tag exists.
 
   - name: weisssrv-app-template
     url: https://git.ericsweiss.com/eric/weisssrv-app-template
@@ -79,9 +119,11 @@ consumers:
       ci_includes:
         single_source: .gitlab-ci.yml -> variables.WEISSSRV_LIB_REF
         enforced_by: scripts/check-lib-pins.py (vendored) + its own tests/
+        # 9 template files across 10 entries — flux-lint is included TWICE.
         templates:
           - /ci/lint/yaml-lint.yml
           - /ci/validate/flux-lint.yml       # substitute: false (non-root)
+          - /ci/validate/flux-lint.yml       # again as flux-lint-optional, over kubernetes/flux/optional
           - /ci/lint/shellcheck.yml
           - /ci/lint/docs-link-check.yml
           - /ci/test/python-tests.yml
@@ -89,20 +131,31 @@ consumers:
           - /ci/build/docker-build.yml       # needs a privileged runner
           - /ci/release/semantic-release.yml
           - /ci/review/pr-agent.yml
-          - /ci/validate/terraform.yml       # present but commented out
+        not_consumed:
+          - /ci/validate/terraform.yml       # absent entirely (tenants ship no Terraform)
+          - /ci/lint/ansible-lint.yml
+          - /ci/lint/python-lint.yml
+          - /ci/maintenance/version-check.yml
+          - /ci/maintenance/version-bump-bot.yml
+          - /ci/templates/*
       ansible_collection: not consumed (tenants ship no Ansible)
       terraform_modules: not consumed
       vendored_scripts:
+        # Gated by tests/test_vendored_scripts.py, which compares every file in
+        # scripts/ that is not in its LOCAL set against the library at the
+        # pinned ref (WEISSSRV_REQUIRE_CLI=1 in CI, so it cannot skip).
         - scripts/check-doc-links.py
         - scripts/check-lib-pins.py
         - scripts/semantic-release.py
         - .github/workflows/release.yml   # from ci/release/github-release-workflow.example.yml
       cli:
-        file: scripts/rename.sh -> LIB_REF default
+        files:
+          - scripts/rename.sh -> LIB_REF default
+          - scripts/select-ci.sh -> LIB_REF default
         note: >-
-          A SECOND literal of the same tag, outside the include block, so
-          check-lib-pins.py does not see it. The wrapper pip-installs the CLI
-          from git at that ref; a stale value scaffolds with an old CLI.
+          TWO more literals of the same tag, both outside the include block, so
+          check-lib-pins.py does not see either. The wrappers pip-install the
+          CLI from git at that ref; a stale value scaffolds with an old CLI.
       contract_tests: >-
         cli/tests/test_template_contract.py (in THIS repo) asserts the library's
         scaffold fixture is byte-identical to this template's files. A change to
@@ -125,6 +178,8 @@ consumers:
       single_source: copier.yml -> lib_ref (default), plus lib_url and lib_project
       ci_includes:
         file: "template/.gitlab-ci.yml.jinja — `ref: {{ lib_ref }}` on every entry"
+        # 16 files; 15 unconditional, semantic-release copier-gated on
+        # enable_semantic_release.
         templates:
           - /ci/lint/yaml-lint.yml
           - /ci/lint/ansible-lint.yml
@@ -138,7 +193,7 @@ consumers:
           - /ci/review/pr-agent.yml
           - /ci/maintenance/version-check.yml
           - /ci/maintenance/version-bump-bot.yml
-          - /ci/release/semantic-release.yml
+          - /ci/release/semantic-release.yml   # copier-gated: enable_semantic_release
           - /ci/templates/dep-cache.yml
           - /ci/templates/install-1password.yml
           - /ci/templates/terraform-http-backend.yml
@@ -153,9 +208,14 @@ consumers:
           - template/terraform/{% if vpn_tailscale %}tailscale{% endif %}/main.tf.jinja  # tailscale-acl
       vendored_scripts:
         note: >-
-          Fetched, not committed: `task lib:sync` clones the library at
-          Taskfile LIB_REF into a gitignored .weisssrv-lib/ checkout, so the
-          generated repo has no stale copies to re-vendor.
+          COMMITTED, not fetched: template/scripts/ holds ~26 tracked files —
+          the vendored library scripts plus this cluster's site-data configs
+          (deploy-coverage.conf, helm-values-releases.yaml,
+          autoscaling-policy.yaml, hosts.env, hosts-env-map.yml) and the one
+          locally-written flux-env.sh. They must be committed: the generated
+          repo's tests/ import check-lib-pins.py at module scope. Byte-identity
+          is gated by tests/validate_render.py:check_vendored, over BOTH the
+          render's scripts/ and this template repo's own scripts/.
         file: template/Taskfile.yml.jinja -> LIB_REF
       cli:
         note: >-
@@ -174,10 +234,19 @@ pin_surfaces:
   - id: terraform_module_ref
     enforced: false
   - id: vendored_script_copies
-    enforced: false
-    note: the include contract CLAIMS byte-identity; nothing verifies it
+    enforced: >-
+      weisssrv scripts/test_vendored_byte_identity.py (never skips) +
+      weisssrv-app-template tests/test_vendored_scripts.py +
+      weisssrv-cluster-template tests/validate_render.py:check_vendored
+    note: >-
+      Each gate compares against the library at the ref its consumer pins, and
+      falls back to the checkout's working tree when that tag is not cut yet —
+      which is what makes lib merge -> tag -> consumer MRs the workable order.
   - id: cli_install_spec
     enforced: false
   - id: molecule_image_tag
     enforced: false
-    note: :vX.Y.Z tags exist only from the release that added publish-molecule-image-tags
+    note: >-
+      :vX.Y.Z tags exist only from the release that added
+      publish-molecule-image-tags. weisssrv now pulls molecule-{ci,test} at
+      $WEISSSRV_LIB_REF, so its molecule jobs cannot run until the tag is cut.

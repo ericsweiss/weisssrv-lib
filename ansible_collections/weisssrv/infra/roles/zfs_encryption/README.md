@@ -85,6 +85,15 @@ The token is narrower than a 1Password Service Account token: it reads only the
 configured Connect server's vault, and only where that Connect endpoint is
 reachable — keep it on an internal-only ingress.
 
+**Changing `zfs_encryption_token_path` orphans the old token.** The role's
+fail-closed cleanup — emptying `zfs_encryption_pools`, or setting
+`zfs_encryption_key_command` — removes the token at the **currently configured**
+path, which is the only path it knows. Repoint the variable and the credential
+stays behind at the previous location, readable by root, outliving every
+rotation the role performs and invisible to `--check`. Delete the old file by
+hand in the same change (and rotate the token if it sat somewhere it should not
+have).
+
 Every pool left out of `zfs_encryption_pools` is unencrypted at rest, including
 any pool holding VM root disks and any swap that is not itself a crypt device.
 Treat that as a deliberate residual with a drive-wipe SOP as the compensating
@@ -126,7 +135,7 @@ go `failed` on a locked boot and needs no `reset-failed`.
 | `zfs_encryption_fetch_timeout_seconds` | no | Per-phase deadline inside one script invocation (120). |
 | `zfs_encryption_fetch_retry_seconds` | no | Sleep between Connect retries (5); jittered. |
 | `zfs_encryption_install_zfsutils` | no | Set false only in CI images without `zfsutils-linux`; also skips the pool-is-encrypted assert. |
-| `zfs_encryption_token_path` | no | Where the Connect bearer token lands (`/etc/onepassword-connect/token`); its parent directory is created `0700`. |
+| `zfs_encryption_token_path` | no | Where the Connect bearer token lands (`/etc/onepassword-connect/token`); its parent directory is created `0700`. **Changing it strands the old file** — see below. |
 | `zfs_encryption_key_command` | no | Secrets-backend seam — see below. Empty (default) = 1Password Connect. |
 
 ## Using a secrets backend other than 1Password Connect

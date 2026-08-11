@@ -152,13 +152,46 @@ node_exporter_host_textfile_dir: /var/lib/node_exporter
 node_exporter_host_proxmox: false          # true on bare-metal Proxmox hosts
 node_exporter_host_healthcheck_interval: 5min   # liveness-gate probe period
 node_exporter_host_zpool_collector: "{{ node_exporter_host_proxmox }}"
+node_exporter_host_systemd_collector: true
+node_exporter_host_systemd_unit_include: ".+[.](service|timer)"
+node_exporter_host_systemd_unit_exclude: ".+[.](automount|device|mount|scope|slice)"
 ```
 
 `node_exporter_host_zpool_collector` carves the one ZFS-specific collector out
 of the Proxmox block: set it false on a Proxmox host backed by Ceph or LVM-thin
-and the zpool script, unit and timer are not deployed. The corosync, SMART and
-vzdump collectors stay on the `node_exporter_host_proxmox` gate — they are
-hypervisor facts, not storage-backend ones.
+and the zpool script, unit and timer are not deployed — including its entry in
+the enable+start timer list, which is built from this flag rather than fixed.
+The corosync, SMART and vzdump collectors stay on the
+`node_exporter_host_proxmox` gate — they are hypervisor facts, not
+storage-backend ones.
+
+## systemd collector
+
+node_exporter's systemd collector is **default-off upstream**, so a cluster that
+alerts on "unit X failed" without enabling it has an alert with no emitter.
+`node_exporter_host_systemd_collector` (default `true`) passes
+`--collector.systemd`, `--collector.systemd.enable-restarts-metrics` and the
+include/exclude unit filters into the drop-in, producing:
+
+| Metric | Use |
+|---|---|
+| `node_systemd_unit_state{name,state,type}` | `state="failed"` == 1 is the unit-failed signal |
+| `node_systemd_service_restart_total{name}` | crash-loop detection (`increase(...[5m])`); needs the `enable-restarts-metrics` flag, which is passed |
+| `node_systemd_units{state}` | per-state unit counts |
+| `node_systemd_timer_last_trigger_seconds{name}` | timer staleness |
+| `node_systemd_system_running` | `systemctl is-system-running` as a gauge |
+| `node_systemd_version` | collector/systemd version info |
+
+`node_exporter_host_systemd_unit_include` is what bounds cardinality: the
+collector's unfiltered default enumerates every loaded unit — mounts, slices,
+scopes, devices, sockets — which is a large, churny label set with no alerting
+value. The default keeps `*.service` and `*.timer`; widen it deliberately if a
+rule needs sockets or targets. `node_exporter_host_systemd_unit_exclude` mirrors
+upstream's own default as a second guard (both filters are applied).
+
+Both patterns use `[.]` instead of `\.`: the value is written into a systemd
+`ExecStart=` line, where a backslash opens a C escape sequence and an
+unrecognised one makes systemd reject the command outright.
 
 The `prometheus-node-exporter` package is installed with `state: present`
 (unpinned) and `update_cache: true` (with `cache_valid_time: 3600` to skip a

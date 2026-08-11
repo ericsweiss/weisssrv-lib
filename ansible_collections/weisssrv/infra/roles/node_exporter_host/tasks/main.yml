@@ -222,19 +222,21 @@
         textfile_collector_on_unit_inactive_sec: 5min
         textfile_collector_accuracy_sec: 30s
 
+    # The zpool timer is only in this list when its unit was rendered above:
+    # with node_exporter_host_zpool_collector false the unit does not exist and
+    # systemd would fail the whole play with "Could not find the requested
+    # service zpool-status-collector.timer".
     - name: Enable + start the collector timers
       ansible.builtin.systemd:
         name: "{{ item }}"
         enabled: true
         state: started
         daemon_reload: true
-      loop:
-        - corosync-health-collector.timer
-        - zpool-status-collector.timer
-        - smartmon-collector.timer
+      loop: >-
+        {{ ['corosync-health-collector.timer', 'smartmon-collector.timer']
+           + (['zpool-status-collector.timer']
+              if node_exporter_host_zpool_collector | bool else []) }}
       when: not ansible_check_mode
-      tags:
-        - molecule-notest
 
 # Deliberately no auto-clean when node_exporter_host_proxmox flips to false: a
 # wrong cleanup on a real Proxmox host is worse than stale files on a demoted

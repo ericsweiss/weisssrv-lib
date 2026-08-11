@@ -185,17 +185,32 @@ def verify(root: Path, run_kustomize: bool = True) -> tuple[bool, list[str]]:
     # there rots unnoticed until the day a tenant enables it.
     odir = tree.optional_dir(root)
     okpath = odir / tree.KUSTOMIZATION
-    if odir.is_dir() and okpath.is_file():
-        opt_listed = set(kz.list_resources(okpath.read_text(encoding="utf-8")))
-        for p in sorted(odir.iterdir()):
-            if p.suffix not in (".yaml", ".yml") or p.name == tree.KUSTOMIZATION:
-                continue
-            if p.name not in opt_listed:
+    if odir.is_dir():
+        opt_manifests = [
+            p
+            for p in sorted(odir.iterdir())
+            if p.suffix in (".yaml", ".yml") and p.name != tree.KUSTOMIZATION
+        ]
+        if not okpath.is_file():
+            # A MISSING kustomization is strictly worse than one missing entry:
+            # nothing builds or kubeconforms ANY opt-in manifest. Skipping here
+            # would report clean on the worst case the check exists to catch.
+            if opt_manifests:
                 problems.append(
-                    f"opt-in manifest '{tree.OPTIONAL_DIR}/{p.name}' is not listed "
-                    f"in {tree.OPTIONAL_DIR}/{tree.KUSTOMIZATION}, so nothing "
-                    "validates it"
+                    f"{tree.OPTIONAL_DIR}/ holds "
+                    f"{len(opt_manifests)} manifest(s) but "
+                    f"{tree.OPTIONAL_DIR}/{tree.KUSTOMIZATION} is missing — "
+                    "nothing validates the opt-in manifests"
                 )
+        else:
+            opt_listed = set(kz.list_resources(okpath.read_text(encoding="utf-8")))
+            for p in opt_manifests:
+                if p.name not in opt_listed:
+                    problems.append(
+                        f"opt-in manifest '{tree.OPTIONAL_DIR}/{p.name}' is not listed "
+                        f"in {tree.OPTIONAL_DIR}/{tree.KUSTOMIZATION}, so nothing "
+                        "validates it"
+                    )
 
     # 5. Optional kustomize build.
     if run_kustomize:

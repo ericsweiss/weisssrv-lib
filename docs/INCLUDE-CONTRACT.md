@@ -27,27 +27,38 @@ input default: a default is only "safe" relative to the consumers that take it.
 | `ci/lint/yaml-lint.yml` | ● | ● | ● |
 | `ci/lint/shellcheck.yml` | ● | ● | ● |
 | `ci/lint/docs-link-check.yml` | ● | ● | ● |
-| `ci/lint/python-lint.yml` | | | ● |
-| `ci/lint/ansible-lint.yml` | | | ● |
-| `ci/validate/terraform.yml` | ● | (commented) | ● |
-| `ci/validate/flux-lint.yml` | ● | ● | ● |
+| `ci/lint/python-lint.yml` | ● | | ● |
+| `ci/lint/ansible-lint.yml` | ● | | ● |
+| `ci/validate/terraform.yml` | ● | | ● |
+| `ci/validate/flux-lint.yml` | ● | ●● | ● |
 | `ci/security/secret-detection.yml` | ● | ● | ● |
 | `ci/test/python-tests.yml` | ● | ● | ● |
 | `ci/build/docker-build.yml` | | ● | |
-| `ci/review/pr-agent.yml` | | ● | ● |
-| `ci/release/semantic-release.yml` | | ● | ● |
+| `ci/review/pr-agent.yml` | ● | ● | ● |
+| `ci/release/semantic-release.yml` | | ● | ●* |
 | `ci/maintenance/version-check.yml` | ● | | ● |
 | `ci/maintenance/version-bump-bot.yml` | | | ● |
-| `ci/templates/*` (3 fragments) | | | ● |
+| `ci/templates/*` (3 fragments) | ● | | ● |
 
-**weisssrv consumes eight templates.** Four of them (yaml-lint, shellcheck,
-terraform, secret-detection) take the defaults verbatim and share a single
-include entry with a `file:` list; the other four (docs-link-check,
-version-check, python-tests, flux-lint) each pass their own `inputs:`, which
-bind per entry and therefore need an entry each. `docker-build`, `pr-agent`,
-`semantic-release`, `version-bump-bot`, `python-lint` and `ansible-lint` are
-NOT included by weisssrv — it keeps local equivalents or has no need — so a
-change to those six cannot regress weisssrv's pipeline.
+●● = included twice (the app template runs `flux-lint` over `kubernetes/flux`
+and a second `flux-lint-optional` over `kubernetes/flux/optional`).
+●* = copier-gated (`enable_semantic_release`); the other 15 cluster-template
+entries are unconditional.
+
+**weisssrv consumes 14 template files across 11 `include:` entries.** Five of
+them take the defaults verbatim and share two entries with a `file:` list — the
+three `ci/templates/*` fragments in one, `terraform` + `secret-detection` in the
+other. The remaining nine (yaml-lint, shellcheck, ansible-lint, python-lint,
+docs-link-check, version-check, python-tests, flux-lint, pr-agent) each pass
+their own `inputs:`, which bind per entry and therefore need an entry each.
+
+Only **three** templates are outside weisssrv's pipeline: `docker-build`,
+`semantic-release` and `version-bump-bot` (weisssrv runs a local version-bump
+job and cuts no releases). Everything else in this library is live in the
+cluster repo, so treat an input-default change as consumer-visible there by
+default — including `pr-agent`, `python-lint` and `ansible-lint`, which weisssrv
+adopted in v0.6.0 and which earlier revisions of this document listed as safe to
+change freely.
 
 **A GitHub-hosted consumer includes nothing.** Actions has no equivalent of
 `include: project:` for a private library, so such a consumer (the app
@@ -67,7 +78,9 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
   templates ship a default that is deliberately narrower than what weisssrv
   needs, and both say so in their parity note.
 - **`default_branch` (string, default `main`)** — the branch the post-merge
-  rule compares against, on every template that has such a rule (10 of them).
+  rule compares against, on every template that has such a rule (11 of them:
+  yaml-lint, shellcheck, docs-link-check, python-lint, ansible-lint, terraform,
+  flux-lint, secret-detection, python-tests, version-check, docker-build).
   It must be a **literal** name. The value is interpolated into a quoted
   `rules:if` string, and GitLab does not expand variables inside quotes, so
   `$CI_DEFAULT_BRANCH` would be compared as literal text and never match — a
@@ -151,14 +164,17 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
   fewer merge requests than it covers. weisssrv passes
   `["**/*.md", "scripts/check-doc-links.py", "scripts/test_check_doc_links.py"]`.
 - Tenants vendor the stdlib-only checker from `scripts/check-doc-links.py` (no
-  network, no dependencies). Re-vendor it at each tag bump: the include contract
-  claims the copies are byte-identical, and nothing checks that automatically.
+  network, no dependencies). Re-vendor it at each tag bump — all three consumers
+  now FAIL their own test suite on a drifted copy (see "A vendored script is a
+  pin too" below), so a skipped re-vendor is loud rather than silent.
 - **Tenant:** `inputs: { tags: [] }` (after vendoring the script).
 
 ## ci/lint/python-lint.yml
 
-- **Reproduces:** nothing in weisssrv — the family had no Python linter before
-  this template. This library self-applies it; the cluster template includes it.
+- **Reproduces:** nothing — the family had no Python linter before this
+  template. This library self-applies it; weisssrv includes it over `scripts/`
+  with the shared profile vendored to its repo root as `ruff.toml`, and the
+  cluster template includes it.
 - **Inputs:** `job_name` (python-lint), `stage` (lint), `image`
   (python:3.11-slim), `tags`, `ruff_version` (0.16.0), `config` (empty → ruff's
   own discovery; pass the FULL argument, e.g. `--config lint/ruff.toml`),
@@ -174,9 +190,12 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
 
 ## ci/lint/ansible-lint.yml
 
-- **Reproduces:** weisssrv's inline `ansible-lint` job. This library
-  self-applies it over the `weisssrv.infra` collection; the cluster template
-  includes it for the generated repo's own `ansible/` tree.
+- **Reproduces:** weisssrv's inline `ansible-lint` job, which now includes this
+  template instead (`targets: ansible/`, `galaxy_requirements:
+  ansible/requirements.yml` so the collection the playbooks address by FQCN is
+  installed first). This library also self-applies it over the `weisssrv.infra`
+  collection, and the cluster template includes it for the generated repo's own
+  `ansible/` tree.
 - **Inputs:** `job_name` (ansible-lint), `stage` (lint), `image`
   (python:3.13-slim), `tags`, `ansible_lint_version` (25.12.2 — keep in step
   with `docker/molecule-ci/requirements.txt` so lint and molecule agree),
@@ -406,8 +425,9 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
 ## ci/review/pr-agent.yml
 
 - **Reproduces:** the `pr-agent-review` job that was copy-pasted into weisssrv,
-  this library and the app template — with the 0.40.0 upgrade folded in.
-  weisssrv keeps its own local copy and does not include this one.
+  this library and the app template — with the 0.40.0 upgrade folded in. All
+  three consumers now include it; weisssrv deleted its local copy in v0.6.0 and
+  passes `secrets_source: env`, its own `gate` and a lint-only `needs` list.
 - **Inputs:** `job_name` (pr-agent-review), `stage` (ai-review), `image`
   (`pragent/pr-agent:0.40.0@sha256:08c42a2b…`, the multi-arch index digest),
   `tags`, `needs` (`[]`), `model` (gpt-5.6), `reasoning_effort` (high),
@@ -773,10 +793,22 @@ deploy paths, the chart-native HPA targets, the helm releases to render, and the
 B2 bucket identity all live in the consumer's repo.
 
 **A vendored script is a pin too.** Bumping the `include: ref:` does not update
-a copy sitting in a consumer's `scripts/`; the two drift silently and nothing
-compares them automatically. The per-consumer list of vendored files is in
-[CONSUMERS.yml](CONSUMERS.yml), and re-vendoring is part of the upgrade
-procedure in [VERSIONING.md](VERSIONING.md#upgrading-a-consumer).
+a copy sitting in a consumer's `scripts/` — the CI templates take the script
+PATH from the consumer tree, so the copy is what actually runs. Since v0.6.0 all
+three consumers gate byte-identity against the library at their pinned ref, so a
+skipped re-vendor fails their pipeline instead of drifting silently:
+
+| Consumer | Gate | Scope |
+|---|---|---|
+| weisssrv | `scripts/test_vendored_byte_identity.py` (never skips) | 22 vendored scripts + 1 declared fork |
+| weisssrv-app-template | `tests/test_vendored_scripts.py` (`WEISSSRV_REQUIRE_CLI=1` in CI) | every non-LOCAL file in `scripts/` |
+| weisssrv-cluster-template | `tests/validate_render.py:check_vendored` | the render's `scripts/` + the template repo's own |
+
+Each gate reads the library at the ref the consumer pins, falling back to the
+checkout's working tree when that tag is not cut yet — which is what makes the
+lib-merge → tag → consumer-MR order workable. The per-consumer list of vendored
+files is in [CONSUMERS.yml](CONSUMERS.yml), and re-vendoring is part of the
+upgrade procedure in [VERSIONING.md](VERSIONING.md#upgrading-a-consumer).
 
 ## What is NOT here
 

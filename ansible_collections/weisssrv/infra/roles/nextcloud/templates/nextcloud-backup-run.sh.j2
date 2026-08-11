@@ -39,7 +39,12 @@ mkdir -p "$PROM_DIR"
 # dir — silently un-offsited.
 if [ "$NFS_ENABLED" = "1" ] && ! mountpoint -q "$BACKUP_DIR"; then
   echo "nextcloud-backup: BACKUP_DIR ${BACKUP_DIR} is NFS-backed but not mounted — aborting" >&2
-  write_prom_metrics nextcloud_backup 0 0 0 "$PROM_FILE" "$ARTIFACT_GLOB"
+  # No ARTIFACT_GLOB here (matching the gitlab wrapper): the glob points INSIDE
+  # the unmounted mountpoint, so it would size a shadow directory on the root
+  # disk — exactly the un-offsited state this guard refuses to trust — and a
+  # healthy-looking size would suppress BackupArtifactEmpty. Size 0 is the truth
+  # for a landing zone nothing can reach.
+  write_prom_metrics nextcloud_backup 0 0 0 "$PROM_FILE"
   exit 1
 fi
 mkdir -p "$BACKUP_DIR"

@@ -189,10 +189,11 @@ The procedure:
    generates them per tag; this repo keeps no CHANGELOG file.
 2. Bump every `ref:` / `version:` / `?ref=` in one MR (`check-lib-pins.py --fix`
    does surface 1).
-3. **Re-vendor the scripts** the consumer copies. The include contract claims
-   they are byte-identical to the library's; nothing checks that, so a bump that
-   skips this leaves the consumer running last release's gate under this
-   release's template.
+3. **Re-vendor the scripts** the consumer copies. All three consumers gate
+   byte-identity against the library at their pinned ref (see "A vendored
+   script is a pin too" in [INCLUDE-CONTRACT.md](INCLUDE-CONTRACT.md)), so
+   skipping this fails their pipeline rather than quietly leaving them on last
+   release's gate under this release's template.
 4. If a template's inputs changed, update the consumer's `inputs:` accordingly —
    read the parity note per template in
    [INCLUDE-CONTRACT.md](INCLUDE-CONTRACT.md).

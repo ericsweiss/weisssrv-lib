@@ -194,6 +194,48 @@
           - "'mountpoint -q' in (nextcloud_backup_raw.content | b64decode)"
           - "'NFS-backed but not mounted' in (nextcloud_backup_raw.content | b64decode)"
 
+    # …and the guard must also report an EMPTY landing zone. A shadow dump left
+    # under an unmounted mountpoint sits on the root disk and is not offsite:
+    # sizing it would report a healthy artefact for a landing zone nothing can
+    # reach and suppress BackupArtifactEmpty. Rendered copy with NFS_ENABLED=1
+    # over a plain (non-mountpoint) directory holding exactly such a dump.
+    - name: Seed a shadow dump under a non-mountpoint landing zone
+      ansible.builtin.shell: |
+        set -eo pipefail
+        mkdir -p /tmp/nextcloud-nfs-guard /tmp/nextcloud-nfs-guard-prom
+        dd if=/dev/zero of=/tmp/nextcloud-nfs-guard/nextcloud-db-20200101-000000.sql.gz bs=4096 count=1
+        sed -e 's|^BACKUP_DIR=.*|BACKUP_DIR="/tmp/nextcloud-nfs-guard"|' \
+            -e 's|^PROM_DIR=.*|PROM_DIR="/tmp/nextcloud-nfs-guard-prom"|' \
+            -e 's|^NFS_ENABLED=.*|NFS_ENABLED="1"|' \
+            /usr/local/sbin/nextcloud-backup-run.sh > /tmp/nextcloud-backup-run-nfs.sh
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    # Invoked via bash: /tmp is a noexec tmpfs here, and a bare rc != 0 check
+    # would accept the 126 that direct execution returns. rc must be exactly 1.
+    - name: Run the wrapper against an unmounted landing zone
+      ansible.builtin.command: bash /tmp/nextcloud-backup-run-nfs.sh
+      register: nextcloud_backup_nfs_run
+      changed_when: false
+      failed_when: nextcloud_backup_nfs_run.rc != 1
+
+    - name: Read the fail-closed guard's metric
+      ansible.builtin.slurp:
+        src: /tmp/nextcloud-nfs-guard-prom/nextcloud_backup.prom
+      register: nextcloud_backup_nfs_prom
+
+    - name: Assert the unmounted abort reports success=0 AND size 0
+      ansible.builtin.assert:
+        that:
+          - "'nextcloud_backup_last_run_success 0' in (nextcloud_backup_nfs_prom.content | b64decode)"
+          - "'nextcloud_backup_last_size_bytes 0' in (nextcloud_backup_nfs_prom.content | b64decode)"
+        fail_msg: >-
+          The unmounted-landing-zone abort sized a shadow dump on the root disk
+          instead of reporting 0 — BackupArtifactEmpty would stay green for a
+          backup that is not offsite.
+        success_msg: "The unmounted-landing-zone abort reports success=0 and size 0"
+
     # The metric-name series lives in the sourced helper library.
     - name: Read the shared backup-metrics helper library
       ansible.builtin.slurp:

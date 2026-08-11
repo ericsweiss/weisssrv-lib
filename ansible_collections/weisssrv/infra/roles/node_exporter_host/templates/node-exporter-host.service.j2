@@ -1,14 +1,20 @@
 # {{ ansible_managed }}
-# Overrides the Debian-packaged prometheus-node-exporter unit. Only two flags
+# Overrides the Debian-packaged prometheus-node-exporter unit. Three things
 # change behaviour: --web.listen-address (port {{ node_exporter_host_port }},
-# avoiding the k3s DaemonSet on 9100) and --collector.textfile.directory. The
-# bare --collector.hwmon/thermal_zone/textfile flags are explicit-intent no-ops
-# (all default-on), and --collector.disable-defaults is deliberately NOT passed,
-# so the default collectors stay on without being listed.
+# avoiding the k3s DaemonSet on 9100), --collector.textfile.directory, and the
+# systemd collector, which is default-OFF upstream and is the only emitter of
+# node_systemd_*. The bare --collector.hwmon/thermal_zone/textfile flags are
+# explicit-intent no-ops (all default-on), and --collector.disable-defaults is
+# deliberately NOT passed, so the default collectors stay on without being
+# listed.
 #
 # Metrics are unauthenticated plaintext HTTP on all interfaces — the Proxmox
 # firewall limiting the scrape port to cluster scrapers is the ONLY access
 # control on this endpoint.
+#
+# The systemd-collector `{% raw %}{% if %}{% endraw %}` tags carry the next line's text rather than
+# standing alone: a blank line inside the `\` continuation would break the
+# ExecStart, and this way the render is identical with or without trim_blocks.
 
 [Service]
 ExecStart=
@@ -16,5 +22,9 @@ ExecStart=/usr/bin/prometheus-node-exporter \
   --web.listen-address=:{{ node_exporter_host_port }} \
   --collector.hwmon \
   --collector.thermal_zone \
-  --collector.textfile \
+{% if node_exporter_host_systemd_collector | bool %}  --collector.systemd \
+  --collector.systemd.unit-include={{ node_exporter_host_systemd_unit_include }} \
+  --collector.systemd.unit-exclude={{ node_exporter_host_systemd_unit_exclude }} \
+  --collector.systemd.enable-restarts-metrics \
+{% endif %}  --collector.textfile \
   --collector.textfile.directory={{ node_exporter_host_textfile_dir }}
