@@ -341,6 +341,7 @@
   when:
     - not ansible_check_mode
     - proxmox_vm_balloon is defined
+    - proxmox_vm_exists.rc == 0 or not (proxmox_vm_skip_create | default(false))
 
 # Without this, proxmox_vm_memory would only ever be applied by `qm create`, so
 # changing it in inventory for an existing guest would reach nothing — not even
@@ -363,6 +364,7 @@
   when:
     - not ansible_check_mode
     - proxmox_vm_memory is defined
+    - proxmox_vm_exists.rc == 0 or not (proxmox_vm_skip_create | default(false))
 
 - name: Import cloud image disk
   delegate_to: "{{ proxmox_host }}"

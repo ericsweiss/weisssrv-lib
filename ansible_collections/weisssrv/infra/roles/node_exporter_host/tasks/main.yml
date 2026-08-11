@@ -268,6 +268,29 @@
               if node_exporter_host_zpool_collector | bool else []) }}
       when: not ansible_check_mode
 
+    # A host switched off ZFS must not keep the previously deployed timer
+    # running or serve its stale zpool metrics.
+    - name: Reconcile the zpool collector away when disabled
+      when: not node_exporter_host_zpool_collector | bool
+      block:
+        - name: Stop + disable the zpool collector timer if present
+          ansible.builtin.systemd:
+            name: zpool-status-collector.timer
+            enabled: false
+            state: stopped
+          failed_when: false
+          when: not ansible_check_mode
+
+        - name: Remove the zpool collector unit, timer, script and metrics
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /etc/systemd/system/zpool-status-collector.timer
+            - /etc/systemd/system/zpool-status-collector.service
+            - /usr/local/sbin/zpool-status-collector.sh
+            - "{{ node_exporter_host_textfile_dir }}/zfs_pool_status.prom"
+
 # Deliberately no auto-clean when node_exporter_host_proxmox flips to false: a
 # wrong cleanup on a real Proxmox host is worse than stale files on a demoted
 # one. Remove them by hand in that rare case (the collector scripts under
