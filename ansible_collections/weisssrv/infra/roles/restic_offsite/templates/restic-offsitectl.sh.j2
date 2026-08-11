@@ -145,6 +145,15 @@ reap_stale_locks() {
       _SKIPPED_LOCKS=$(( _SKIPPED_LOCKS + 1 ))
       continue
     fi
+    # `restic unlock` is repository-wide — it removes every lock restic itself
+    # deems stale, not just the one verified above. Only safe when the verified
+    # lock is the repository's sole lock; otherwise a coexisting writer's lock
+    # could be swept along with it.
+    if [[ "$(wc -w <<<"$ids")" -ne 1 ]]; then
+      log "stale-lock: ${id} is reapable, but other repository locks exist — refusing repository-wide unlock"
+      _SKIPPED_LOCKS=$(( _SKIPPED_LOCKS + 1 ))
+      return 0
+    fi
     log "stale-lock: ${id} (host ${lock_host}, pid ${lock_pid:-unknown} not running, age ${age}s > ${min_age}s) — running restic unlock"
     if restic unlock; then
       log "stale-lock: removed"

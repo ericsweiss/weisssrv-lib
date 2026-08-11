@@ -348,24 +348,54 @@
     apt_signed_repo_keyring_mode: "0644"
     apt_signed_repo_when: "{{ not (gitlab_skip_install | bool) }}"
 
-# allow_change_held_packages upgrades through the apt hold in one step.
-# allow_downgrade is deliberately NOT set: Omnibus does not support downgrades
+# The install env is staged in a root-only file and sourced by the shell —
+# a task-level `environment:` rides the remote command line, putting the root
+# password in /proc/<pid>/cmdline for the whole multi-minute install.
+# allow-change-held-packages upgrades through the apt hold in one step.
+# Downgrades are deliberately not enabled: Omnibus does not support them
 # (older code against a newer schema can corrupt the DB), so a lower
-# gitlab_version fails the task instead of silently downgrading.
+# gitlab_version fails instead of silently downgrading.
 # EXTERNAL_URL/GITLAB_ROOT_PASSWORD apply to the initial install only.
 - name: Install/upgrade GitLab EE (pinned version)
-  ansible.builtin.apt:
-    name: "gitlab-ee={{ gitlab_version }}"
-    state: present
-    update_cache: true
-    allow_change_held_packages: true
-  environment:
-    EXTERNAL_URL: "{{ gitlab_external_url }}"
-    GITLAB_ROOT_PASSWORD: "{{ gitlab_root_password }}"
-  no_log: true
   when: not (gitlab_skip_install | bool)
-  notify:
-    - Reconfigure gitlab
+  block:
+    - name: Stage the GitLab install environment
+      ansible.builtin.copy:
+        dest: /root/.gitlab-install.env
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          EXTERNAL_URL={{ gitlab_external_url | quote }}
+          GITLAB_ROOT_PASSWORD={{ gitlab_root_password | quote }}
+      no_log: true
+
+    - name: Install/upgrade gitlab-ee via the staged environment
+      ansible.builtin.shell: |
+        set -euo pipefail
+        current="$(dpkg-query -W -f '${Version}' gitlab-ee 2>/dev/null || true)"
+        if [ "$current" = "{{ gitlab_version }}" ]; then
+          exit 0
+        fi
+        apt-get update -q
+        set -a
+        . /root/.gitlab-install.env
+        set +a
+        DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          --allow-change-held-packages "gitlab-ee={{ gitlab_version }}"
+        echo CHANGED
+      args:
+        executable: /bin/bash
+      register: gitlab_install_result
+      changed_when: "'CHANGED' in (gitlab_install_result.stdout | default(''))"
+      no_log: true
+      notify:
+        - Reconfigure gitlab
+  always:
+    - name: Remove the staged install environment
+      ansible.builtin.file:
+        path: /root/.gitlab-install.env
+        state: absent
 
 # Not a handler: the apt task is a no-op once the pinned version is installed,
 # so a handler would never fire and the package would stay unheld.
