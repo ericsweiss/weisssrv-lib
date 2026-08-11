@@ -11,7 +11,6 @@ galaxy_info:
       versions:
         - trixie
 
-dependencies:
-  # In production, adguard_home should be installed first
-  # In molecule testing, we skip this by not using this role's dependencies
-  []
+# Ordering is the playbook's job: weisssrv.infra.adguard_home must have run on
+# the primary before the first sync tick.
+dependencies: []

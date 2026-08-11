@@ -1,0 +1,858 @@
+---
+# GitLab EE (Omnibus) installation and configuration.
+
+- name: Validate the required GitLab inputs
+  ansible.builtin.assert:
+    that:
+      - gitlab_external_url | default('') | length > 0
+      - (gitlab_skip_install | bool) or (gitlab_version | default('') | length > 0)
+    fail_msg: >-
+      gitlab_external_url and gitlab_version are required (the version only when
+      the package install is not skipped).
+    success_msg: "Required GitLab inputs are present"
+
+- name: Validate the GitLab root password is set
+  ansible.builtin.assert:
+    that:
+      - gitlab_root_password | default('') | length > 0
+    fail_msg: >-
+      gitlab_root_password is empty — supply it from the site's secret store.
+      It seeds the root account on the package's first install.
+    success_msg: "GitLab root password present"
+  no_log: true
+  # Config-only convergence never consumes the install-time seed.
+  when: not (gitlab_skip_install | default(false))
+
+- name: Validate the enabled feature blocks have their inputs
+  ansible.builtin.assert:
+    that:
+      - not (gitlab_registry_enabled | bool) or gitlab_registry_external_url | length > 0
+      - not (gitlab_pages_enabled | bool) or gitlab_pages_external_url | length > 0
+      - not (gitlab_smtp_enabled | bool) or gitlab_smtp_address | length > 0
+      - not (gitlab_saml_enabled | bool) or gitlab_saml_idp_sso_url | length > 0
+      - not (gitlab_ssh_allowusers_enabled | bool) or gitlab_ssh_allowed_users | length > 0
+      - gitlab_ssh_host | length > 0
+    fail_msg: >-
+      An enabled feature block is missing its input: registry/pages need their
+      external URL, SMTP needs gitlab_smtp_address, SAML needs
+      gitlab_saml_idp_sso_url, the sshd restriction needs a non-empty
+      gitlab_ssh_allowed_users (an empty list would lock every account out), and
+      gitlab_ssh_host must resolve from gitlab_external_url or be set directly.
+    success_msg: "Enabled feature blocks have their inputs"
+
+- name: Validate the SMTP credentials
+  ansible.builtin.assert:
+    that:
+      - gitlab_smtp_user | default('') | length > 0
+      - gitlab_smtp_password | default('') | length > 0
+    fail_msg: "gitlab_smtp_user and gitlab_smtp_password are required when SMTP is enabled"
+    success_msg: "SMTP credentials present"
+  no_log: true
+  when: gitlab_smtp_enabled | bool
+
+- name: Validate the SAML IdP certificate fingerprint
+  ansible.builtin.assert:
+    that:
+      - gitlab_saml_idp_cert_fingerprint | default('') | length > 0
+    fail_msg: >-
+      gitlab_saml_idp_cert_fingerprint is required when SAML is enabled — it is
+      the SHA1 fingerprint of the IdP's signing certificate. Set
+      gitlab_saml_enabled false to skip SSO configuration.
+    success_msg: "SAML certificate fingerprint present"
+  no_log: true
+  when: gitlab_saml_enabled | bool
+
+# Auto-created SAML users are unblocked and auto sign-in is on, so an empty
+# required_groups list provisions an account for every IdP user.
+- name: Refuse an unrestricted SAML sign-up unless it is explicit
+  ansible.builtin.assert:
+    that:
+      - (gitlab_saml_required_groups | length > 0) or (gitlab_saml_allow_all_users | bool)
+    fail_msg: >-
+      gitlab_saml_required_groups is empty, which lets ANY user in the IdP sign
+      in and be auto-provisioned. List the permitted groups, or set
+      gitlab_saml_allow_all_users true to accept that deliberately.
+    success_msg: "SAML sign-in is restricted to the listed groups"
+  when: gitlab_saml_enabled | bool
+
+# The wrapper and the systemd unit both fail closed by testing that
+# gitlab_backup_path itself is a mountpoint, so a subdirectory of the export
+# would silently defeat the guard.
+- name: Validate the NFS-backed backup landing zone
+  ansible.builtin.assert:
+    that:
+      - gitlab_backup_nfs_server | length > 0
+      - gitlab_backup_nfs_export | length > 0
+      - gitlab_backup_path == gitlab_backup_mountpoint
+    fail_msg: >-
+      An NFS-backed backup needs gitlab_backup_nfs_server and
+      gitlab_backup_nfs_export, and gitlab_backup_path must equal
+      gitlab_backup_mountpoint ({{ gitlab_backup_mountpoint }}).
+    success_msg: "NFS-backed backup landing zone is consistent"
+  when: gitlab_backup_nfs_enabled | bool
+
+- name: Mount additional persistent disks
+  ansible.builtin.include_role:
+    name: weisssrv.infra.zvol_mount
+  vars:
+    zvol_mount_disks: "{{ gitlab_additional_disks }}"
+  when: gitlab_additional_disks | length > 0
+
+# The git user (created by the package) owns these; ownership is set further
+# down, once the package exists.
+- name: Create git-data directories on external storage
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0700"
+  loop:
+    - "{{ gitlab_git_data_dir }}"
+    - "{{ gitlab_git_data_dir }}/repositories"
+  when: gitlab_git_data_dir != '/var/opt/gitlab/git-data'
+  notify: Reconfigure gitlab
+
+# One-time relocation of the Container Registry blob store, the largest
+# Omnibus-managed component, off the root disk: stop the registry, rename the
+# directory (preserving registry:registry ownership), and let the notified
+# reconfigure repoint and restart it. A fresh deploy has no old store to move
+# and after the move the source is gone, so re-runs skip. Deliberately not
+# gated on gitlab_skip_install — host config still converges there.
+- name: Registry relocation | Stat the default (on-disk) registry store
+  ansible.builtin.stat:
+    path: /var/opt/gitlab/gitlab-rails/shared/registry
+  register: gitlab_registry_default_store
+  when:
+    - gitlab_registry_enabled | bool
+    - gitlab_registry_data_dir != '/var/opt/gitlab/gitlab-rails/shared/registry'
+
+- name: Registry relocation | Stat the target store on external storage
+  ansible.builtin.stat:
+    path: "{{ gitlab_registry_data_dir }}"
+  register: gitlab_registry_target_store
+  when:
+    - gitlab_registry_enabled | bool
+    - gitlab_registry_data_dir != '/var/opt/gitlab/gitlab-rails/shared/registry'
+
+- name: Registry relocation | Check whether the default store has contents
+  ansible.builtin.find:
+    paths: /var/opt/gitlab/gitlab-rails/shared/registry
+    file_type: any
+    hidden: true
+  register: gitlab_registry_default_contents
+  when:
+    - gitlab_registry_enabled | bool
+    - gitlab_registry_data_dir != '/var/opt/gitlab/gitlab-rails/shared/registry'
+    - gitlab_registry_default_store.stat.exists | default(false)
+    - gitlab_registry_default_store.stat.isdir | default(false)
+
+# A populated default store alongside an existing target is ambiguous: relocating
+# would clobber the target, skipping strands the default store's blobs invisibly.
+- name: Registry relocation | Refuse an ambiguous existing target
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (gitlab_registry_target_store.stat.exists | default(false)
+             and (gitlab_registry_default_contents.matched | default(0)) > 0)
+    fail_msg: >-
+      Both {{ gitlab_registry_data_dir }} and a populated default registry store
+      exist. Merge or remove one side manually before rerunning — relocation
+      refuses to guess which blob store is authoritative.
+  when:
+    - gitlab_registry_enabled | bool
+    - gitlab_registry_data_dir != '/var/opt/gitlab/gitlab-rails/shared/registry'
+    - gitlab_registry_default_store.stat.exists | default(false)
+    - gitlab_registry_default_store.stat.isdir | default(false)
+
+- name: Registry relocation | Move the blob store onto external storage
+  when:
+    - gitlab_registry_enabled | bool
+    - gitlab_registry_data_dir != '/var/opt/gitlab/gitlab-rails/shared/registry'
+    - gitlab_registry_default_store.stat.exists | default(false)
+    - gitlab_registry_default_store.stat.isdir | default(false)
+    - (gitlab_registry_default_contents.matched | default(0)) > 0
+    - not (gitlab_registry_target_store.stat.exists | default(false))
+  block:
+    - name: Registry relocation | Stop the registry before moving its store
+      ansible.builtin.command: /opt/gitlab/bin/gitlab-ctl stop registry
+      changed_when: true
+
+    # `creates:` guards the target so a re-run (or a converge after a partial
+    # move) never re-moves.
+    - name: Registry relocation | Move the store to the external path
+      ansible.builtin.command:
+        cmd: mv /var/opt/gitlab/gitlab-rails/shared/registry {{ gitlab_registry_data_dir }}
+        creates: "{{ gitlab_registry_data_dir }}"
+      notify: Reconfigure gitlab
+
+# /etc/gitlab/ssl is the canonical Omnibus location for TLS material; the cert
+# distributor drops fullchain.pem + privkey.pem here on every renewal. Mode 0700
+# matches Omnibus's own default: nginx reads the pair as its root master process
+# before forking workers, so no group access is required.
+- name: Ensure /etc/gitlab/ssl exists with secure mode
+  ansible.builtin.file:
+    path: /etc/gitlab/ssl
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# Fresh-deploy guard: assert the cert pair exists before the notified
+# reconfigure renders TLS — the web UI when listen_https is true, and
+# registry/pages nginx unconditionally. Without it the Chef run crashes inside
+# the nginx::ssl recipe with a confusing error.
+- name: Verify SSL cert exists when any nginx terminates TLS
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ gitlab_nginx_ssl_certificate }}"
+    - "{{ gitlab_nginx_ssl_certificate_key }}"
+  register: gitlab_ssl_files
+  when: >-
+    (gitlab_nginx_listen_https | bool)
+    or (gitlab_registry_enabled | bool)
+    or (gitlab_pages_enabled | bool)
+
+- name: Assert SSL cert files are present
+  ansible.builtin.assert:
+    that: item.stat.exists
+    fail_msg: >-
+      {{ item.item }} missing — distribute the certificate first, or set
+      gitlab_nginx_listen_https, gitlab_registry_enabled and
+      gitlab_pages_enabled all false for the initial deploy and flip them back
+      after the first push (registry/pages nginx always terminate TLS with this
+      cert).
+  loop: "{{ gitlab_ssl_files.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: >-
+    (gitlab_nginx_listen_https | bool)
+    or (gitlab_registry_enabled | bool)
+    or (gitlab_pages_enabled | bool)
+
+- name: Install prerequisites
+  ansible.builtin.apt:
+    name:
+      - curl
+      - ca-certificates
+      - openssh-server
+      - perl
+      - tzdata
+      - cron
+      - gnupg
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: not (gitlab_skip_install | bool)
+
+# Two knobs upstream Redis requires that Omnibus does not manage itself:
+#
+#   1. vm.overcommit_memory=1 — RDB BGSAVE forks the server, and under the
+#      kernel default the COW child's allocation accounting can be refused,
+#      killing the child. That trips `stop-writes-on-bgsave-error`, turning
+#      every GitLab write into a 500 ("Internal API unreachable").
+#   2. transparent_hugepage=never — under THP=always, COW faults in the forked
+#      child can promote to 2MB pages and segfault inside libc. Same outcome.
+#      THP has no sysctl, so a systemd oneshot writes the sysfs file at boot.
+#
+# Both are gated only on gitlab_kernel_tuning_enabled, deliberately independent
+# of gitlab_skip_install: the tuning is required on any host already running the
+# Omnibus stack.
+- name: Install sysctl drop-in for Redis memory overcommit
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-gitlab-redis.conf
+    content: |
+      # Managed by Ansible gitlab role.
+      # Redis RDB BGSAVE forks the server; the COW child's allocation
+      # accounting is refused by the default heuristic (0) under common
+      # conditions, killing the child and tripping stop-writes-on-bgsave-error.
+      vm.overcommit_memory=1
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload sysctl gitlab-redis
+  when: gitlab_kernel_tuning_enabled | bool
+
+- name: Install systemd unit to disable Transparent Huge Pages
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/disable-transparent-hugepages.service
+    content: |
+      # Managed by Ansible gitlab role.
+      # THP=always makes the Redis BGSAVE child segfault inside libc when COW
+      # faults promote to 2MB hugepages. No sysctl knob — write the sysfs file
+      # at boot. Reapply at runtime with `systemctl restart
+      # disable-transparent-hugepages.service`; `start` is a no-op while
+      # RemainAfterExit holds the unit active.
+      [Unit]
+      Description=Disable Transparent Huge Pages (Redis recommendation)
+      DefaultDependencies=no
+      After=sysinit.target local-fs.target
+      Before=basic.target
+
+      [Service]
+      Type=oneshot
+      # Both writes are attempted, but each rc is tracked so a kernel rename
+      # (one sysfs path missing) fails the unit; `sh -c "a ; b"` would return
+      # only b's rc. `$$` escapes a literal `$` past systemd's own expansion,
+      # which would otherwise strip a bare `$?`/`$rc` before sh sees it.
+      ExecStart=/bin/sh -c 'rc=0; \
+          echo never > /sys/kernel/mm/transparent_hugepage/enabled || rc=$$?; \
+          echo never > /sys/kernel/mm/transparent_hugepage/defrag || rc=$$?; \
+          exit $$rc'
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=basic.target
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for THP unit
+  when: gitlab_kernel_tuning_enabled | bool
+
+# Keeps the unit enabled + active on a stable host. It intentionally duplicates
+# the handler's enable/start; the handler additionally restarts on a unit-FILE
+# change, which `state: started` cannot do for an active oneshot.
+- name: Enable + start THP-disable service (also applies at runtime)
+  ansible.builtin.systemd:
+    name: disable-transparent-hugepages.service
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: gitlab_kernel_tuning_enabled | bool
+
+# The .asc keyring form conflicts with the .gpg one ("Conflicting values set
+# for option Signed-By").
+- name: Remove old GitLab keyring files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /usr/share/keyrings/gitlab-ee.asc
+    - /etc/apt/sources.list.d/gitlab_gitlab-ee.list
+  when: not (gitlab_skip_install | bool)
+
+# Shared stat -> download -> verify-fingerprint -> dearmor -> set-perms ->
+# add-repo pipeline; gnupg comes from the prerequisites task above. Rotate the
+# key by deleting the keyring first.
+- name: Add GitLab EE signed APT repository
+  ansible.builtin.include_role:
+    name: weisssrv.infra.apt_signed_repo
+  vars:
+    apt_signed_repo_key_url: https://packages.gitlab.com/gpg.key
+    apt_signed_repo_fingerprint: F6403F6544A38863DAA0B6E03F01618A51312F3F
+    apt_signed_repo_keyring_path: /usr/share/keyrings/gitlab-ee.gpg
+    apt_signed_repo_repo_line: >-
+      deb [signed-by=/usr/share/keyrings/gitlab-ee.gpg]
+      https://packages.gitlab.com/gitlab/gitlab-ee/debian/
+      {{ ansible_distribution_release }} main
+    apt_signed_repo_filename: gitlab-ee
+    apt_signed_repo_keyring_mode: "0644"
+    apt_signed_repo_when: "{{ not (gitlab_skip_install | bool) }}"
+
+# The install env is staged in a root-only file and sourced by the shell —
+# a task-level `environment:` rides the remote command line, putting the root
+# password in /proc/<pid>/cmdline for the whole multi-minute install.
+# allow-change-held-packages upgrades through the apt hold in one step.
+# Downgrades are deliberately not enabled: Omnibus does not support them
+# (older code against a newer schema can corrupt the DB), so a lower
+# gitlab_version fails instead of silently downgrading.
+# EXTERNAL_URL/GITLAB_ROOT_PASSWORD apply to the initial install only.
+- name: Install/upgrade GitLab EE (pinned version)
+  when: not (gitlab_skip_install | bool)
+  block:
+    - name: Stage the GitLab install environment
+      ansible.builtin.copy:
+        dest: /root/.gitlab-install.env
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          EXTERNAL_URL={{ gitlab_external_url | quote }}
+          GITLAB_ROOT_PASSWORD={{ gitlab_root_password | quote }}
+      no_log: true
+
+    - name: Install/upgrade gitlab-ee via the staged environment
+      ansible.builtin.shell: |
+        set -euo pipefail
+        current="$(dpkg-query -W -f '${Version}' gitlab-ee 2>/dev/null || true)"
+        if [ "$current" = "{{ gitlab_version }}" ]; then
+          exit 0
+        fi
+        apt-get update -q
+        set -a
+        . /root/.gitlab-install.env
+        set +a
+        DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          --allow-change-held-packages "gitlab-ee={{ gitlab_version }}"
+        echo CHANGED
+      args:
+        executable: /bin/bash
+      register: gitlab_install_result
+      changed_when: "'CHANGED' in (gitlab_install_result.stdout | default(''))"
+      no_log: true
+      notify:
+        - Reconfigure gitlab
+  always:
+    - name: Remove the staged install environment
+      ansible.builtin.file:
+        path: /root/.gitlab-install.env
+        state: absent
+
+# Not a handler: the apt task is a no-op once the pinned version is installed,
+# so a handler would never fire and the package would stay unheld.
+- name: Hold GitLab package to prevent unintended upgrades
+  ansible.builtin.dpkg_selections:
+    name: gitlab-ee
+    selection: hold
+  when: not (gitlab_skip_install | bool)
+
+# Only the top-level directory's ownership is probed: subdirectory drift needs
+# manual intervention to occur, and `gitlab-rake gitlab:check` reports it.
+- name: Check git-data directory ownership
+  ansible.builtin.stat:
+    path: "{{ gitlab_git_data_dir }}"
+  register: gitlab_git_data_stat
+  when: gitlab_git_data_dir != '/var/opt/gitlab/git-data'
+
+- name: Set ownership on git-data directory (non-recursive)
+  ansible.builtin.file:
+    path: "{{ gitlab_git_data_dir }}"
+    state: directory
+    owner: git
+    group: git
+    mode: "0700"
+  when:
+    - gitlab_git_data_dir != '/var/opt/gitlab/git-data'
+    - gitlab_git_data_stat.stat.exists
+
+# Rare, but not free: when the guard fires it rewrites thousands of inodes, so
+# it reports changed.
+- name: Set recursive ownership on git-data directory (only if needed)
+  ansible.builtin.command:
+    cmd: chown -R git:git "{{ gitlab_git_data_dir }}"
+  changed_when: true
+  when:
+    - gitlab_git_data_dir != '/var/opt/gitlab/git-data'
+    - gitlab_git_data_stat.stat.exists
+    - gitlab_git_data_stat.stat.pw_name != 'git' or gitlab_git_data_stat.stat.gr_name != 'git'
+
+# ORDERING (do not move below the gitlab.rb template): a mount failure here must
+# not land one task after the template reported changed, because Ansible does
+# not flush handlers on a failed play and the idempotent template never
+# re-notifies — leaving gitlab.rb's new backup_path permanently unapplied.
+# Mounting first also stops `gitlab-ctl reconfigure` creating a local directory
+# that masks the mountpoint.
+- name: Mount the offsite backup NFS export
+  ansible.posix.mount:
+    path: "{{ gitlab_backup_mountpoint }}"
+    src: "{{ gitlab_backup_nfs_server }}:{{ gitlab_backup_nfs_export }}"
+    fstype: nfs4
+    opts: "{{ gitlab_backup_nfs_options }}"
+    state: mounted
+  when: gitlab_backup_nfs_enabled | bool
+  tags:
+    - molecule-notest
+
+# When NFS-backed, the export owns the landing directory (ownership there is
+# whatever the export squashes writes to), so the role must not chown it.
+- name: Create backup directory (local, non-NFS)
+  ansible.builtin.file:
+    path: "{{ gitlab_backup_path }}"
+    state: directory
+    owner: git
+    group: git
+    mode: '0700'
+  when: not (gitlab_backup_nfs_enabled | bool)
+
+# Omnibus ships its own ruby; the host has none. Used to syntax-check gitlab.rb
+# before it lands. Absent on a pre-install run, where validation is skipped.
+- name: Check for the Omnibus embedded ruby (gitlab.rb validation)
+  ansible.builtin.stat:
+    path: /opt/gitlab/embedded/bin/ruby
+  register: gitlab_embedded_ruby
+
+- name: Deploy gitlab.rb configuration
+  ansible.builtin.template:
+    src: gitlab.rb.j2
+    dest: /etc/gitlab/gitlab.rb
+    owner: root
+    group: root
+    mode: '0600'
+    # gitlab.rb is executed as Ruby by `gitlab-ctl reconfigure`; a syntax error
+    # would otherwise surface mid-Chef-run on a live GitLab.
+    validate: "{{ '/opt/gitlab/embedded/bin/ruby -c %s' if gitlab_embedded_ruby.stat.exists else omit }}"
+  no_log: true
+  notify: Reconfigure gitlab
+
+# gitlab.rb is inert until `gitlab-ctl reconfigure` renders it into the Rails
+# config, and the template above only NOTIFIES that handler — so a later failure
+# in this play drops the reconfigure, and the idempotent template never
+# re-notifies. These tasks compare the CONVERGED state instead of trusting a
+# notify to survive, then flush immediately.
+# Nothing between the template above and the flush below may fail the play, so
+# the guard runs in a block whose rescue falls through to the flush: losing the
+# guard costs a drift check, losing the flush costs the reconfigure.
+- name: Check gitlab.rb -> Rails convergence (best effort)
+  tags:
+    - molecule-notest
+  block:
+    - name: Read the effective Rails configuration (backup-path convergence guard)
+      ansible.builtin.slurp:
+        src: "{{ gitlab_effective_rails_config }}"
+      register: gitlab_effective_rails_raw
+      failed_when: false
+      changed_when: false
+
+    - name: Extract the effective Rails backup path
+      ansible.builtin.set_fact:
+        gitlab_effective_backup_path: >-
+          {{ ((gitlab_effective_rails_raw.content | b64decode | from_yaml).production.backup.path)
+             | default('', true) }}
+      when: gitlab_effective_rails_raw.content is defined
+
+    - name: Re-run reconfigure when the effective backup path drifted from gitlab.rb
+      ansible.builtin.debug:
+        msg: >-
+          Rails backup path is '{{ gitlab_effective_backup_path }}' but gitlab.rb sets
+          '{{ gitlab_backup_path }}' — a previous reconfigure never ran. Reconfiguring.
+      changed_when: true
+      notify: Reconfigure gitlab
+      when:
+        - gitlab_effective_backup_path is defined
+        - gitlab_effective_backup_path | length > 0
+        - gitlab_effective_backup_path != gitlab_backup_path
+  rescue:
+    - name: Report that the convergence guard could not be evaluated
+      ansible.builtin.debug:
+        msg: >-
+          Could not read the effective Rails backup path from
+          {{ gitlab_effective_rails_config }} — skipping the drift check and
+          continuing to the reconfigure flush. Re-run once GitLab has rendered a
+          complete gitlab.yml if the backup path is in doubt.
+
+- name: Apply pending GitLab configuration before continuing
+  ansible.builtin.meta: flush_handlers
+
+# Shared write_prom_metrics library the backup wrapper sources, so the
+# freshness-metric shape stays identical across every backup wrapper in the
+# collection.
+- name: Deploy the shared backup-metrics library
+  ansible.builtin.include_role:
+    name: weisssrv.infra.compose_app
+    tasks_from: backup_lib.yml
+  vars:
+    compose_app_backup_lib_dest: "{{ gitlab_backup_lib_path }}"
+    compose_app_backup_size_help_object: "backup tarball"
+
+# The wrapper runs the backup, copies gitlab-secrets.json + gitlab.rb on success
+# (a restore needs them to decrypt CI variables, 2FA and runner tokens), and
+# emits the node_exporter textfile metrics the backup alerts consume.
+- name: Deploy GitLab backup wrapper (runs backup + emits metrics)
+  ansible.builtin.template:
+    src: gitlab-backup-run.sh.j2
+    dest: /usr/local/sbin/gitlab-backup-run.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+# A timer, not root cron: the service carries RequiresMountsFor on the NFS
+# landing zone and a bounded TimeoutStartSec, and a failed run surfaces in the
+# unit's own status alongside the textfile metric.
+- name: Remove the legacy GitLab backup root cron job
+  ansible.builtin.cron:
+    name: "GitLab backup"
+    state: absent
+    user: root
+
+- name: Deploy GitLab backup systemd service
+  ansible.builtin.template:
+    src: gitlab-backup.service.j2
+    dest: /etc/systemd/system/gitlab-backup.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for gitlab-backup
+
+- name: Deploy GitLab backup systemd timer
+  ansible.builtin.template:
+    src: gitlab-backup.timer.j2
+    dest: /etc/systemd/system/gitlab-backup.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for gitlab-backup
+
+- name: Enable GitLab backup timer
+  ansible.builtin.systemd:
+    name: gitlab-backup.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Check if GitLab is installed (for check mode safety)
+  ansible.builtin.stat:
+    path: /opt/gitlab/bin/gitlab-ctl
+  register: gitlab_ctl_check
+
+- name: Ensure GitLab is running
+  ansible.builtin.command: /opt/gitlab/bin/gitlab-ctl status
+  register: gitlab_status
+  changed_when: false
+  failed_when: false
+  when:
+    - not ansible_check_mode
+    - gitlab_ctl_check.stat.exists
+
+- name: Start GitLab if not running
+  ansible.builtin.command: /opt/gitlab/bin/gitlab-ctl start
+  when:
+    - not ansible_check_mode
+    - gitlab_ctl_check.stat.exists
+    - gitlab_status.rc is defined
+    - gitlab_status.rc != 0
+  changed_when: true
+
+- name: Install iptables-persistent for saving rules
+  ansible.builtin.apt:
+    name: iptables-persistent
+    state: present
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+# Git SSH terminates on the system sshd: gitlab_ssh_port is REDIRECTed to 22 in
+# both NAT chains. Ensures exactly one managed rule per chain, cleaning drifted
+# variants first.
+- name: Configure SSH redirect rules per NAT chain
+  ansible.builtin.include_tasks: ssh-redirect.yml
+  loop:
+    - { chain: PREROUTING }
+    - { chain: OUTPUT, out_interface: lo }
+  loop_control:
+    loop_var: gitlab_ssh_redirect
+    label: "{{ gitlab_ssh_redirect.chain }}"
+
+# Single presence probe for fail2ban, shared with the Restart fail2ban handler.
+# fail2ban itself is installed by the base role or the image, never here.
+- name: Check whether fail2ban is installed
+  ansible.builtin.stat:
+    path: /lib/systemd/system/fail2ban.service
+  register: gitlab_fail2ban_service_file
+
+# GitLab manages the git user's authorized_keys through gitlab-shell (the opt-in
+# OpenSSH AuthorizedKeysCommand fast lookup is not configured), so auth failures
+# are logged by sshd to the journal, not gitlab-shell.log — hence the stock sshd
+# filter on the systemd backend.
+- name: Create fail2ban jail for GitLab SSH
+  ansible.builtin.copy:
+    dest: /etc/fail2ban/jail.d/gitlab-ssh.conf
+    content: |
+      # Managed by Ansible gitlab role — brute-force protection for Git SSH.
+      # sshd logs auth failures to the systemd journal, not gitlab-shell.log.
+      [gitlab-ssh]
+      enabled = true
+      port = 22,{{ gitlab_ssh_port }}
+      filter = sshd[mode=aggressive]
+      backend = systemd
+      journalmatch = _SYSTEMD_UNIT=ssh.service + _COMM=sshd
+      maxretry = 5
+      findtime = 10m
+      bantime = 1h
+      banaction = iptables-multiport
+    mode: "0644"
+    owner: root
+    group: root
+  notify: Restart fail2ban
+  when:
+    - gitlab_fail2ban_enabled | bool
+    - gitlab_fail2ban_service_file.stat.exists
+
+# Superseded by the built-in sshd filter above.
+- name: Remove obsolete gitlab-shell filter
+  ansible.builtin.file:
+    path: /etc/fail2ban/filter.d/gitlab-shell.conf
+    state: absent
+  notify: Restart fail2ban
+  when:
+    - gitlab_fail2ban_enabled | bool
+    - gitlab_fail2ban_service_file.stat.exists
+
+# 60- sorts after a base-role hardening drop-in; AllowUsers is not set there, so
+# first-match-wins precedence is not in play. `validate` runs sshd -t against
+# the candidate, so a bad pattern never lands on disk to break the next restart.
+- name: Restrict sshd logins to the listed users
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/60-gitlab-allowusers.conf
+    content: |
+      # Managed by Ansible gitlab role.
+      # Port {{ gitlab_ssh_port }} is WAN-open and REDIRECTed to this sshd, so
+      # without this list any local account accepts internet pubkey auth
+      # attempts regardless of the firewall's source rules on 22.
+      AllowUsers {{ gitlab_ssh_allowed_users | join(' ') }}
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Restart sshd
+  when: gitlab_ssh_allowusers_enabled | bool
+
+- name: Remove the sshd login restriction when disabled
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/60-gitlab-allowusers.conf
+    state: absent
+  notify: Restart sshd
+  when: not (gitlab_ssh_allowusers_enabled | bool)
+
+# Web IDE Application Settings (no Omnibus key exists for these on the pinned
+# release — re-check on major bumps). Sequenced so the extension host domain is
+# configured BEFORE the single-origin fallback is removed. Every call runs from
+# the controller so it uses the operator's network path to the external URL, not
+# the guest's outbound connectivity.
+- name: Web IDE | Apply Application Settings
+  when:
+    - not (gitlab_skip_install | bool)
+    - gitlab_web_ide_settings_enabled | bool
+  block:
+    - name: Web IDE | Assert GitLab API token is present
+      ansible.builtin.assert:
+        that:
+          - gitlab_api_token | default('') | length > 0
+          - not (gitlab_api_token | default('') | string).startswith('op://')
+        fail_msg: >-
+          gitlab_api_token is empty or unresolved (still a secret-store
+          reference). The Web IDE settings have no gitlab.rb equivalent, so the
+          extension-host isolation cannot be applied without an admin PAT
+          carrying the `api` scope.
+        success_msg: "GitLab API token present"
+      no_log: true
+
+    # `vars:` forces a local connection and disables become on each delegated
+    # task: inventory-level `ansible_become` is a connection var that propagates
+    # through delegate_to and is not overridden by task-level `become: false`,
+    # so without this the controller would try to sudo.
+    # Retries cover a reconfigure in flight after a version bump; 20 x 15s.
+    - name: Web IDE | Read current GitLab application settings
+      ansible.builtin.uri:
+        url: "{{ gitlab_external_url }}/api/v4/application/settings"
+        method: GET
+        headers:
+          PRIVATE-TOKEN: "{{ gitlab_api_token }}"
+        return_content: true
+        status_code: 200
+      register: gitlab_app_settings
+      delegate_to: localhost
+      vars:
+        ansible_connection: local
+        ansible_become: false
+      no_log: true
+      retries: 20
+      delay: 15
+      until: gitlab_app_settings.status == 200
+
+    - name: Web IDE | Set extension host domain
+      ansible.builtin.uri:
+        url: "{{ gitlab_external_url }}/api/v4/application/settings"
+        method: PUT
+        headers:
+          PRIVATE-TOKEN: "{{ gitlab_api_token }}"
+        body_format: form-urlencoded
+        body:
+          vscode_extension_marketplace_extension_host_domain: "{{ gitlab_web_ide_extension_host_domain }}"
+        status_code: 200
+      delegate_to: localhost
+      vars:
+        ansible_connection: local
+        ansible_become: false
+      no_log: true
+      when: >-
+        gitlab_app_settings.json.vscode_extension_marketplace_extension_host_domain | default(none)
+        != gitlab_web_ide_extension_host_domain
+
+    # failed_when:false plus the two tasks below classify the result: 400/403 is
+    # an accepted tier rejection, anything else (including a connection error,
+    # which sets `failed` with no `status`) aborts with the body.
+    - name: Web IDE | Enable VS Code extension marketplace (best-effort)
+      ansible.builtin.uri:
+        url: "{{ gitlab_external_url }}/api/v4/application/settings"
+        method: PUT
+        headers:
+          PRIVATE-TOKEN: "{{ gitlab_api_token }}"
+        body_format: form-urlencoded
+        body:
+          vscode_extension_marketplace_enabled: "{{ gitlab_web_ide_marketplace_enabled | string | lower }}"
+      register: gitlab_marketplace_result
+      failed_when: false
+      delegate_to: localhost
+      vars:
+        ansible_connection: local
+        ansible_become: false
+      no_log: true
+      when: >-
+        gitlab_app_settings.json.vscode_extension_marketplace_enabled | default(none)
+        != gitlab_web_ide_marketplace_enabled
+
+    - name: Web IDE | Surface marketplace enable result on failure or non-200
+      ansible.builtin.debug:
+        msg: >-
+          Marketplace enable
+          HTTP {{ gitlab_marketplace_result.status | default('connection error') }}
+          ({{ gitlab_marketplace_result.msg | default('no msg') }}).
+          Body: {{ gitlab_marketplace_result.json
+                  | default(gitlab_marketplace_result.content | default('-')) }}
+      when:
+        - gitlab_marketplace_result is defined
+        - (gitlab_marketplace_result.failed | default(false))
+          or (gitlab_marketplace_result.status | default(200) != 200)
+      changed_when: false
+
+    - name: Web IDE | Fail loudly on unexpected marketplace API status
+      ansible.builtin.fail:
+        msg: >-
+          Marketplace enable failed:
+          HTTP {{ gitlab_marketplace_result.status | default('connection error') }}.
+          Expected 200 (success) or 400/403 (tier rejection).
+          See the debug output above for the body / error message, then
+          investigate token scope, a GitLab field rename, or the network path.
+      when:
+        - gitlab_marketplace_result is defined
+        - not (gitlab_marketplace_result.skipped | default(false))
+        - (gitlab_marketplace_result.failed | default(false))
+          or (gitlab_marketplace_result.status | default(200) not in [200, 400, 403])
+
+    # Pre-flight only in the dangerous direction (DISABLING the fallback);
+    # re-enabling it as a rollback does not need the host reachable.
+    - name: Web IDE | Verify extension host route is reachable before disabling fallback
+      ansible.builtin.uri:
+        url: "https://probe.{{ gitlab_web_ide_extension_host_domain }}/-/health"
+        method: GET
+        status_code: 200
+      register: gitlab_web_ide_probe
+      delegate_to: localhost
+      vars:
+        ansible_connection: local
+        ansible_become: false
+      retries: 10
+      delay: 15
+      until: gitlab_web_ide_probe.status == 200
+      changed_when: false
+      when:
+        - not gitlab_web_ide_single_origin_fallback
+        - gitlab_app_settings.json.vscode_extension_marketplace_single_origin_fallback_enabled | default(none)
+          != gitlab_web_ide_single_origin_fallback
+
+    - name: Web IDE | Apply the single-origin fallback setting
+      ansible.builtin.uri:
+        url: "{{ gitlab_external_url }}/api/v4/application/settings"
+        method: PUT
+        headers:
+          PRIVATE-TOKEN: "{{ gitlab_api_token }}"
+        body_format: form-urlencoded
+        body:
+          vscode_extension_marketplace_single_origin_fallback_enabled: "{{ gitlab_web_ide_single_origin_fallback | string | lower }}"
+        status_code: 200
+      delegate_to: localhost
+      vars:
+        ansible_connection: local
+        ansible_become: false
+      no_log: true
+      when: >-
+        gitlab_app_settings.json.vscode_extension_marketplace_single_origin_fallback_enabled | default(none)
+        != gitlab_web_ide_single_origin_fallback

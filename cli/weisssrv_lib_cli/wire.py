@@ -1,15 +1,21 @@
 """`wire` — enable opt-in scaffold components.
 
-These operations uncomment blocks the template ships commented out (the HPA
-resource, the internal IngressRoute/Certificate, the Authentik SSO middleware)
-and make the paired data edits (drop `replicas` when the HPA owns scaling, make
-the VPA memory-only). Uncommenting is line-based text surgery — the content is
-comments, not data ruamel can move — while the paired data edits use ruamel
-round-trip. Idempotent where practical.
+Enabling an opt-in MANIFEST (the HPA, the internal IngressRoute/Certificate) is
+uncommenting its `# - optional/<file>` line in the live kustomization: the file
+itself is already a real, schema-validated manifest under
+`kubernetes/flux/optional/`. The SSO middleware is the one thing still shipped
+as a commented block, inside the public route. Both are line-based text surgery
+— the content is comments, not data ruamel can move — while the paired data
+edits (drop `replicas` when the HPA owns scaling, make the VPA memory-only) use
+ruamel round-trip. Idempotent where practical.
+
+A missing enable line is reported, never invented: writing a resource line for a
+file the tree does not have produces a kustomization that cannot build.
 """
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 from . import tree
@@ -22,7 +28,6 @@ class WireError(ValueError):
     pass
 
 
-_COMMENT_LINE_RE = re.compile(r"^\s*#")
 # Strip exactly one leading "# " (or "#") after the indentation, preserving the
 # indentation AND the YAML content's own indentation (which follows the "# ").
 _STRIP_RE = re.compile(r"^(\s*)#\s?(.*)$")
@@ -36,34 +41,100 @@ def _strip_comment(line: str) -> str:
     return f"{m.group(1)}{m.group(2)}\n"
 
 
-def _uncomment_block_from_marker(text: str, marker: str = "# ---") -> tuple[str, bool]:
-    """Uncomment from the first line equal to `marker` (a commented doc-start)
-    through end of file, stripping the leading `# ` from each comment line and
-    leaving blank lines untouched. Returns (text, changed)."""
-    lines = text.splitlines(keepends=True)
-    start = None
-    for i, line in enumerate(lines):
-        if line.strip() == marker:
-            start = i
-            break
-    if start is None:
-        return text, False
-    for j in range(start, len(lines)):
-        if _COMMENT_LINE_RE.match(lines[j]):
-            lines[j] = _strip_comment(lines[j])
-    return "".join(lines), True
+def _enable_optional(root: Path, resource: str, changed: list[Path]) -> bool:
+    """Uncomment the `# - <resource>` line in the live kustomization.
+
+    `resource` is a FLUX_DIR-relative `optional/<file>` path. Both halves are
+    checked first — the manifest on disk and the commented line — because
+    `kz.uncomment_resource` can only act on a line that is already there, and a
+    silent no-op would read as "already enabled". Returns whether the resource
+    is active afterwards, so a caller can hold back paired edits that only make
+    sense once the manifest is really deploying.
+    """
+    kpath = tree.flux_file(root, tree.KUSTOMIZATION)
+    if not kpath.exists():
+        return False
+    text = kpath.read_text(encoding="utf-8")
+    if kz.has_resource(text, resource):
+        # An active line whose manifest is gone must not count as enabled —
+        # paired edits (like dropping spec.replicas for an HPA) would then
+        # reshape the workload for a resource that will never deploy.
+        if tree.flux_file(root, resource).exists():
+            return True  # already enabled
+        print(
+            f"warning: {tree.FLUX_DIR}/{tree.KUSTOMIZATION} lists {resource} "
+            f"but {tree.FLUX_DIR}/{resource} is missing — restore the manifest "
+            "or remove the stale entry",
+            file=sys.stderr,
+        )
+        return False
+    if not tree.flux_file(root, resource).exists():
+        print(
+            f"warning: {tree.FLUX_DIR}/{resource} is not in this tree — "
+            "nothing to enable",
+            file=sys.stderr,
+        )
+        return False
+    new, did = kz.uncomment_resource(text, resource)
+    if not did:
+        print(
+            f"warning: no `# - {resource}` line in {tree.FLUX_DIR}/"
+            f"{tree.KUSTOMIZATION} — add the resource by hand",
+            file=sys.stderr,
+        )
+        return False
+    kpath.write_text(new, encoding="utf-8")
+    if kpath not in changed:
+        changed.append(kpath)
+    return True
 
 
 def _wire_internal_ingress(root: Path, changed: list[Path]) -> None:
-    for fname in ("ingressroute.yaml", "certificate.yaml"):
-        path = tree.flux_file(root, fname)
-        if not path.exists():
-            continue
-        text = path.read_text(encoding="utf-8")
-        new, did = _uncomment_block_from_marker(text)
-        if did:
-            path.write_text(new, encoding="utf-8")
-            changed.append(path)
+    """Enable the internal route AND its certificate as ONE logical change: the
+    route serves TLS from the secret the certificate issues, so neither works
+    alone.
+
+    Every edit is made in memory and the file is written only once all of them
+    succeeded. Enabling them one at a time (`_enable_optional` per resource)
+    could persist the route and then discover the certificate has no manifest or
+    no enable line, leaving exactly the half-wired state `prune
+    external-ingress` now refuses to act on — from a command that reported only
+    a warning.
+    """
+    kpath = tree.flux_file(root, tree.KUSTOMIZATION)
+    if not kpath.is_file():
+        print(
+            f"warning: {tree.FLUX_DIR}/{tree.KUSTOMIZATION} is missing — "
+            "nothing to enable",
+            file=sys.stderr,
+        )
+        return
+
+    original = kpath.read_text(encoding="utf-8")
+    new = original
+    for resource in tree.INTERNAL_INGRESS_MANIFESTS:
+        if not tree.flux_file(root, resource).is_file():
+            print(
+                f"warning: {tree.FLUX_DIR}/{resource} is not in this tree — "
+                "internal ingress was not enabled",
+                file=sys.stderr,
+            )
+            return
+        if kz.has_resource(new, resource):
+            continue  # already enabled
+        new, did = kz.uncomment_resource(new, resource)
+        if not did:
+            print(
+                f"warning: no `# - {resource}` line in {tree.FLUX_DIR}/"
+                f"{tree.KUSTOMIZATION} — internal ingress was not enabled",
+                file=sys.stderr,
+            )
+            return
+
+    if new != original:
+        kpath.write_text(new, encoding="utf-8")
+        if kpath not in changed:
+            changed.append(kpath)
 
 
 def _wire_sso(root: Path, changed: list[Path]) -> None:
@@ -88,23 +159,17 @@ def _wire_sso(root: Path, changed: list[Path]) -> None:
 
 
 def _wire_hpa(root: Path, changed: list[Path]) -> None:
-    # 1. Add hpa.yaml to the kustomization (uncomments the opt-in line).
-    kpath = tree.flux_file(root, tree.KUSTOMIZATION)
-    if kpath.exists():
-        text = kpath.read_text(encoding="utf-8")
-        new, did = kz.add_resource(text, "hpa.yaml")
-        if did:
-            kpath.write_text(new, encoding="utf-8")
-            changed.append(kpath)
-    # 2. Uncomment the HPA resource in hpa.yaml.
-    hpath = tree.flux_file(root, "hpa.yaml")
-    if hpath.exists():
-        text = hpath.read_text(encoding="utf-8")
-        new, did = _uncomment_block_from_marker(text)
-        if did:
-            hpath.write_text(new, encoding="utf-8")
-            changed.append(hpath)
-    # 3. Drop `replicas` from the deployment so Flux SSA doesn't fight the HPA.
+    """Enable optional/hpa.yaml and make the two paired edits its header asks
+    for: drop `replicas` from the deployment (Flux server-side apply would
+    otherwise fight the HPA over the replica count) and make the VPA
+    memory-only (so the VPA and the HPA do not both drive CPU). Each is
+    announced, because both silently change how the workload scales — and
+    neither is applied unless the HPA is really enabled, or the deployment would
+    be left with no replica count and nothing to set one."""
+    # 1. Uncomment the opt-in line in the kustomization.
+    if not _enable_optional(root, tree.HPA_MANIFEST, changed):
+        return
+    # 2. Drop `replicas` from the deployment so Flux SSA doesn't fight the HPA.
     dep = tree.flux_file(root, tree.DEPLOYMENT)
     if dep.exists():
         data = tree.load_yaml(dep)
@@ -112,7 +177,11 @@ def _wire_hpa(root: Path, changed: list[Path]) -> None:
             del data["spec"]["replicas"]
             tree.dump_yaml(data, dep)
             changed.append(dep)
-    # 4. Make the VPA memory-only so HPA (CPU) and VPA don't fight.
+            print(
+                f"note: removed spec.replicas from {tree.DEPLOYMENT} — the HPA "
+                "owns the replica count now"
+            )
+    # 3. Make the VPA memory-only so HPA (CPU) and VPA don't fight.
     vpath = tree.flux_file(root, "vpa.yaml")
     if vpath.exists():
         data = tree.load_yaml(vpath)
@@ -129,6 +198,10 @@ def _wire_hpa(root: Path, changed: list[Path]) -> None:
             if changed_vpa:
                 tree.dump_yaml(data, vpath)
                 changed.append(vpath)
+                print(
+                    "note: set vpa.yaml controlledResources to [memory] — the "
+                    "HPA owns CPU now"
+                )
 
 
 def _validate_features(features: list[str]) -> None:

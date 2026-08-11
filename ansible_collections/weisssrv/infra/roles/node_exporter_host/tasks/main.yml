@@ -5,7 +5,10 @@
 
 - name: Install prometheus-node-exporter
   ansible.builtin.apt:
-    name: prometheus-node-exporter
+    name:
+      - prometheus-node-exporter
+      # curl is the liveness gate's probe; not guaranteed on a minimal LXC.
+      - curl
     state: present
     update_cache: true
     cache_valid_time: 3600
@@ -76,12 +79,77 @@
 - name: Verify node_exporter is listening on port {{ node_exporter_host_port }}
   ansible.builtin.uri:
     url: "http://localhost:{{ node_exporter_host_port }}/metrics"
-    return_content: false
+    # The body is needed by the collector assertion below; a 200 alone does not
+    # prove a collector produced anything.
+    return_content: true
     status_code: 200
   register: node_exporter_host_health
   retries: 5
   delay: 3
   until: node_exporter_host_health.status == 200
+  when: not ansible_check_mode
+  tags:
+    - molecule-notest
+
+# HTTP 200 is NOT a per-collector gate. node_exporter answers 200 even when a
+# collector errors on every scrape — it just omits that collector's series and
+# sets node_scrape_collector_success{collector="..."} to 0. So the check above
+# and files/node-exporter-healthcheck.sh both pass while node_systemd_* is
+# entirely absent, and every alert built on it (unit-failed, service-restarting)
+# is silently dead rather than firing. Assert the series the alerts key on is
+# actually in the payload at deploy time; the RUNTIME signal is an alert on
+# node_scrape_collector_success{collector="systemd"} == 0 on the metrics side.
+- name: Assert the systemd collector actually emits node_systemd_unit_state
+  ansible.builtin.assert:
+    that:
+      - "'node_systemd_unit_state{' in node_exporter_host_health.content"
+    fail_msg: >-
+      node_exporter answered 200 but exported no node_systemd_unit_state series.
+      --collector.systemd is enabled
+      (node_exporter_host_systemd_collector={{ node_exporter_host_systemd_collector }})
+      yet produced nothing — check `journalctl -u prometheus-node-exporter` for a
+      collector error, and that dbus.service is running: the exporter runs as
+      `prometheus` and reaches systemd over the D-Bus SYSTEM bus (the private
+      socket is root-only). Left unfixed, every node_systemd_* alert is dead,
+      not quiet.
+    success_msg: "systemd collector is exporting node_systemd_unit_state"
+  when:
+    - not ansible_check_mode
+    - node_exporter_host_systemd_collector | bool
+  tags:
+    - molecule-notest
+
+# Liveness gate. The check above is deploy-time only; at RUNTIME the exporter can
+# die in a way systemd cannot see — a zombie process keeps its listener bound and
+# systemd keeps reporting "active (running)", so no Restart= policy ever fires.
+# WatchdogSec cannot cover a Type=simple process that never sd_notifies, so probe
+# /metrics the way Prometheus does and restart on a sustained failure.
+- name: Install node_exporter healthcheck script
+  ansible.builtin.copy:
+    src: node-exporter-healthcheck.sh
+    dest: /usr/local/sbin/node-exporter-healthcheck.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy node_exporter healthcheck unit + timer
+  ansible.builtin.template:
+    src: "node-exporter-healthcheck.{{ item }}.j2"
+    dest: "/etc/systemd/system/node-exporter-healthcheck.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - service
+    - timer
+  notify: Restart node_exporter_host_healthcheck_timer
+
+- name: Enable and start the node_exporter healthcheck timer
+  ansible.builtin.systemd:
+    name: node-exporter-healthcheck.timer
+    enabled: true
+    state: started
+    daemon_reload: true
   when: not ansible_check_mode
   tags:
     - molecule-notest
@@ -126,10 +194,12 @@
         owner: root
         group: root
         mode: "0755"
+      when: node_exporter_host_zpool_collector | bool
 
     - name: Deploy zpool status collector unit + timer
       ansible.builtin.include_role:
         name: weisssrv.infra.textfile_collector
+      when: node_exporter_host_zpool_collector | bool
       vars:
         textfile_collector_name: zpool-status-collector
         textfile_collector_service_description: Sample zpool status to node_exporter textfile collector
@@ -140,14 +210,12 @@
           - zfs-import.target
         textfile_collector_timeout_start_sec: 30s
 
-    # vzdump backup metrics hookscript: referenced by the proxmox_backup
-    # vzdump job's `script` property. jobs.cfg is clustered, so the `all` job
-    # runs on every node for its local guests and vzdump invokes this hook on
-    # each — it must exist fleet-wide or the run aborts on any node that lacks
-    # it. Deployed here (not in proxmox_backup, which reconciles the single
-    # clustered config on one node). Each node writes its own
-    # /var/lib/node_exporter/vzdump_backup.prom, distinguished by the instance
-    # label at scrape time; feeds VzdumpBackupFailed/Stale.
+    # vzdump backup metrics hookscript, referenced by the proxmox_backup job's
+    # `script` property. jobs.cfg is clustered, so the `all` job runs on every
+    # node and invokes this hook there — it must exist fleet-wide or that node's
+    # run aborts. Hence deployed here, not in proxmox_backup (which reconciles
+    # the single clustered config on one node). Each node writes its own .prom,
+    # distinguished by the instance label at scrape time.
     - name: Install vzdump metrics hookscript
       ansible.builtin.copy:
         src: vzdump-metrics-hook.sh
@@ -184,19 +252,44 @@
         textfile_collector_on_unit_inactive_sec: 5min
         textfile_collector_accuracy_sec: 30s
 
+    # The zpool timer is only in this list when its unit was rendered above:
+    # with node_exporter_host_zpool_collector false the unit does not exist and
+    # systemd would fail the whole play with "Could not find the requested
+    # service zpool-status-collector.timer".
     - name: Enable + start the collector timers
       ansible.builtin.systemd:
         name: "{{ item }}"
         enabled: true
         state: started
         daemon_reload: true
-      loop:
-        - corosync-health-collector.timer
-        - zpool-status-collector.timer
-        - smartmon-collector.timer
+      loop: >-
+        {{ ['corosync-health-collector.timer', 'smartmon-collector.timer']
+           + (['zpool-status-collector.timer']
+              if node_exporter_host_zpool_collector | bool else []) }}
       when: not ansible_check_mode
-      tags:
-        - molecule-notest
+
+    # A host switched off ZFS must not keep the previously deployed timer
+    # running or serve its stale zpool metrics.
+    - name: Reconcile the zpool collector away when disabled
+      when: not node_exporter_host_zpool_collector | bool
+      block:
+        - name: Stop + disable the zpool collector timer if present
+          ansible.builtin.systemd:
+            name: zpool-status-collector.timer
+            enabled: false
+            state: stopped
+          failed_when: false
+          when: not ansible_check_mode
+
+        - name: Remove the zpool collector unit, timer, script and metrics
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /etc/systemd/system/zpool-status-collector.timer
+            - /etc/systemd/system/zpool-status-collector.service
+            - /usr/local/sbin/zpool-status-collector.sh
+            - "{{ node_exporter_host_textfile_dir }}/zfs_pool_status.prom"
 
 # Deliberately no auto-clean when node_exporter_host_proxmox flips to false: a
 # wrong cleanup on a real Proxmox host is worse than stale files on a demoted

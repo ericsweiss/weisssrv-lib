@@ -9,15 +9,29 @@
         src: /etc/resolv.conf
       register: resolv_conf_content
 
+    - name: Decode resolv.conf
+      ansible.builtin.set_fact:
+        resolv_conf_text: "{{ resolv_conf_content.content | b64decode }}"
+
     - name: Verify resolv.conf contains the configured nameservers + search domain
       ansible.builtin.assert:
         that:
-          - "'nameserver 192.168.0.150' in (resolv_conf_content.content | b64decode)"
-          - "'nameserver 192.168.0.160' in (resolv_conf_content.content | b64decode)"
-          - "'search example.test' in (resolv_conf_content.content | b64decode)"
-          - "'domain example.test' in (resolv_conf_content.content | b64decode)"
+          - "'nameserver 192.0.2.10' in resolv_conf_text"
+          - "'nameserver 192.0.2.11' in resolv_conf_text"
+          - "'search test.local' in resolv_conf_text"
+          - "'domain test.local' in resolv_conf_text"
         fail_msg: "resolv.conf is missing expected nameservers or search domain"
         success_msg: "resolv.conf has correct nameservers and search domain"
+
+    # musl reads only the first `options` line, so the two settings must share
+    # one line rather than being split across two.
+    - name: Verify the resolver options are on a single line
+      ansible.builtin.assert:
+        that:
+          - "'options timeout:2 attempts:2' in resolv_conf_text"
+          - (resolv_conf_text | regex_findall('(?m)^options ') | length) == 1
+        fail_msg: "resolv.conf options line is missing or split"
+        success_msg: "resolv.conf carries one combined options line"
 
     - name: Check file mode
       ansible.builtin.stat:

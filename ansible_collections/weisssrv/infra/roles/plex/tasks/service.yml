@@ -1,0 +1,47 @@
+---
+# Plex Media Server service management.
+
+# Version bumps (install.yml) and override/group changes (configure.yml) notify
+# "Restart plex"; flushing here means the readiness check below validates the
+# restarted daemon rather than the still-running old one. This also flushes the
+# notified "Reload systemd", so no separate daemon-reload task is needed.
+- name: Apply pending restarts before health check
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable Plex service
+  ansible.builtin.systemd:
+    name: plexmediaserver
+    enabled: true
+  when:
+    - not ansible_check_mode
+    - not (plex_skip_service | bool)
+
+- name: Start Plex service
+  ansible.builtin.systemd:
+    name: plexmediaserver
+    state: started
+  when:
+    - not ansible_check_mode
+    - not (plex_skip_service | bool)
+
+- name: Wait for Plex to start
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ plex_port }}/identity"
+    status_code: 200
+    timeout: 5
+  register: plex_health
+  retries: 12
+  delay: 5
+  until: plex_health.status == 200
+  when:
+    - not ansible_check_mode
+    - not (plex_skip_service | bool)
+
+- name: Display Plex server info
+  ansible.builtin.debug:
+    msg: "Plex server started: {{ plex_health.json.MediaContainer.machineIdentifier | default('unknown') }}"
+  when:
+    - not ansible_check_mode
+    - not (plex_skip_service | bool)
+    - plex_health is defined
+    - plex_health.json is defined

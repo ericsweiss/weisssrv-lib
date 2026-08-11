@@ -3,8 +3,6 @@
 The group -> variable mapping is consumer data (an export map), so the suite
 drives the engine with a synthetic inventory plus the shipped example map
 (examples/hosts-env-map.example.yml) — which therefore stays proven-loadable.
-
-Run via `python3 -m pytest tests`.
 """
 from __future__ import annotations
 

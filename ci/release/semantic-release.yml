@@ -70,8 +70,10 @@ spec:
       - runner_system_failure
       - scheduler_failure
   # Serializes rapid merges so two pipelines can't race to compute (and create)
-  # the same next tag.
+  # the same next tag; not interruptible for the same reason — a release must
+  # not be cancelled mid-API-call by the next push.
   resource_group: $[[ inputs.job_name ]]
+  interruptible: false
   variables:
     # The commit range is `<last tag>..HEAD`; a shallow clone can lack the tag's
     # commit, which would make the range unresolvable.

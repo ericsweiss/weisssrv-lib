@@ -10,17 +10,38 @@ Build contexts for the two images the molecule CI toolkit consumes.
 Both bases are pinned by manifest-list digest; bump deliberately with
 `docker buildx imagetools inspect <image>:<tag>`.
 
-## Building them
+## Consuming the published images
 
-Use this library's own `ci/build/docker-build.yml` template — it is the extracted
-`build_and_push` helper (sha-pinned static docker CLI, dind wait, registry layer
-cache + inline cache, bounded retry, `:<sha>` always + `:latest` on the default
-branch):
+This library's own pipeline builds and pushes both images to its project
+registry, so a consumer does not need these build contexts at all:
+
+| Tag | Written by | Use it for |
+|---|---|---|
+| `:<short-sha>` | every build (MR + default branch) | the exact image one pipeline built |
+| `:latest` | default-branch builds only | "current", mutable |
+| `:vX.Y.Z` | `publish-molecule-image-tags`, on every release | **pinning** — same tag a consumer already pins its `include: ref:` at |
+
+```yaml
+variables:
+  MOLECULE_CI_IMAGE: "$CI_REGISTRY/eric/weisssrv-lib/molecule-ci:$WEISSSRV_LIB_REF"
+  MOLECULE_TEST_IMAGE: "$CI_REGISTRY/eric/weisssrv-lib/molecule-test:$WEISSSRV_LIB_REF"
+```
+
+Cross-project pulls need weisssrv-lib to allow the consumer project on its
+CI/CD job-token allowlist (Settings > CI/CD > Job token permissions).
+
+## Building them yourself
+
+A consumer that needs different pins builds from its own context with this
+library's `ci/build/docker-build.yml` template — the extracted `build_and_push`
+helper (sha-pinned static docker CLI, digest-pinned DinD, dind wait, registry
+layer cache + inline cache, bounded retry, `:<sha>` always + `:latest` on the
+default branch):
 
 ```yaml
 include:
   - project: eric/weisssrv-lib
-    ref: v0.2.0
+    ref: v0.6.0
     file: /ci/build/docker-build.yml
     inputs:
       job_name: build-molecule-ci

@@ -1,10 +1,10 @@
 ---
 # NFS server configuration
 
-- name: Ensure media group exists
+- name: Ensure the shared media group exists
   ansible.builtin.group:
-    name: media
-    gid: 2000
+    name: "{{ nas_storage_media_group }}"
+    gid: "{{ nas_storage_media_gid }}"
     state: present
 
 - name: Install NFS server packages
@@ -176,11 +176,8 @@
     mode: "0644"
   notify: Reload NFS exports
 
-# nfsd must not begin exporting the encrypted datasets until they are unlocked
-# and mounted — otherwise it serves the empty/locked mountpoint and the
-# NFS-over-TLS data path wedges for NEW client mounts (observed 2026-06-21,
-# when nfsd was force-started ahead of the mounts via --job-mode). Order nfsd
-# after the late mount anchor + require the encrypted export bind mounts.
+# Ordering drop-in: nfsd must not export the encrypted datasets before they are
+# unlocked and mounted. Rationale in the template itself.
 - name: Ensure nfs-server drop-in directory exists
   ansible.builtin.file:
     path: /etc/systemd/system/nfs-server.service.d

@@ -21,9 +21,11 @@
         src: /etc/modprobe.d/zfs.conf
       register: zfs_conf_content
 
+    # The scenario sets only the inventory-wide `zfs_arc_max_bytes`, so this
+    # also proves the alias in defaults/main.yml resolves.
     - name: Assert the ARC cap value is present
       ansible.builtin.assert:
         that:
           - "'options zfs zfs_arc_max=8589934592' in (zfs_conf_content.content | b64decode)"
         fail_msg: "zfs.conf is missing the expected `options zfs zfs_arc_max=8589934592` line"
-        success_msg: "zfs.conf caps the ARC at the expected byte count"
+        success_msg: "zfs.conf caps the ARC at the expected byte count (via the zfs_arc_max_bytes alias)"

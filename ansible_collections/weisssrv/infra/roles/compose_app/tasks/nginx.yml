@@ -1,10 +1,10 @@
 ---
 # Shared host-nginx TLS-terminator task flow for compose app guests. Installs
 # nginx, seeds a self-signed placeholder cert until the site's cert distribution
-# delivers the real one, deploys the caller's site template (kept per-app for its
-# security-sensitive proxy/real-IP/TLS directives — passed by absolute path),
-# disables the packaged default vhost, validates with `nginx -t`, and reloads.
-# Every value that diverges between apps is a compose_app_nginx_* parameter.
+# delivers the real one, validates then deploys the caller's site template (kept
+# per-app for its security-sensitive proxy/real-IP/TLS directives — passed by
+# absolute path), disables the packaged default vhost, and reloads. Every value
+# that diverges between apps is a compose_app_nginx_* parameter.
 
 - name: Install nginx
   ansible.builtin.apt:
@@ -47,14 +47,72 @@
     mode: "0600"
   when: compose_app_nginx_bootstrap_cert | default(true)
 
-- name: Deploy the nginx site
-  ansible.builtin.template:
-    src: "{{ compose_app_nginx_site_template }}"
-    dest: "/etc/nginx/sites-available/{{ compose_app_nginx_site_name }}"
-    owner: root
-    group: root
-    mode: "0644"
-  notify: Reload nginx (compose_app)
+# Validate the site BEFORE installing it: render a candidate into a temp dir,
+# `nginx -t` a copy of nginx.conf whose sites-enabled include points at that temp
+# dir, and only then copy the candidate into place. Validating after install
+# would leave a broken .conf enabled, so the next nginx start (reboot, node
+# reboot controller) could not bring the guest back.
+- name: Create temp dir for nginx site validation
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: nginx-validate
+  register: compose_app_nginx_validate_dir
+  changed_when: false
+  check_mode: false
+
+- name: Validate the nginx site, then install it
+  block:
+    - name: Render the nginx site candidate
+      ansible.builtin.template:
+        src: "{{ compose_app_nginx_site_template }}"
+        dest: "{{ compose_app_nginx_validate_dir.path }}/candidate.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      changed_when: false
+      check_mode: false
+
+    - name: Validate the candidate against the merged nginx configuration
+      ansible.builtin.shell: |
+        set -euo pipefail
+        tmp={{ compose_app_nginx_validate_dir.path | quote }}
+        site={{ compose_app_nginx_site_name | quote }}
+        mkdir -p "$tmp/sites-enabled"
+        if [ -d /etc/nginx/sites-enabled ]; then
+          cp -aL /etc/nginx/sites-enabled/. "$tmp/sites-enabled/" 2>/dev/null || true
+        fi
+        rm -f "$tmp/sites-enabled/default"
+        cp "$tmp/candidate.conf" "$tmp/sites-enabled/$site"
+        awk -v inc="$tmp/sites-enabled" '
+          /^[[:space:]]*include[[:space:]]+\/etc\/nginx\/sites-enabled\// { next }
+          { print }
+          !seen && /^[[:space:]]*http[[:space:]]*\{/ { print "    include " inc "/*;"; seen = 1 }
+        ' /etc/nginx/nginx.conf > "$tmp/nginx.conf"
+        grep -q "include $tmp/sites-enabled/\*;" "$tmp/nginx.conf" \
+          || { echo "nginx.conf has no http{} block to inject the candidate into" >&2; exit 1; }
+        nginx -t -c "$tmp/nginx.conf"
+      args:
+        executable: /bin/bash
+      changed_when: false
+      check_mode: false
+      when: not (compose_app_skip_install | default(false))
+
+    - name: Install the validated nginx site
+      ansible.builtin.copy:
+        src: "{{ compose_app_nginx_validate_dir.path }}/candidate.conf"
+        dest: "/etc/nginx/sites-available/{{ compose_app_nginx_site_name }}"
+        owner: root
+        group: root
+        mode: "0644"
+        remote_src: true
+      notify: Reload nginx (compose_app)
+  always:
+    - name: Clean up the nginx validation temp dir
+      ansible.builtin.file:
+        path: "{{ compose_app_nginx_validate_dir.path }}"
+        state: absent
+      changed_when: false
+      check_mode: false
 
 - name: Enable the nginx site
   ansible.builtin.file:
@@ -71,8 +129,8 @@
     state: absent
   notify: Reload nginx (compose_app)
 
-# Validate the rendered config against the running nginx before the reload
-# handler fires, so a broken template fails the play instead of the reload.
+# Whole-config backstop: the pre-install check covers the candidate, this covers
+# everything else on the guest before the reload handler fires.
 - name: Validate the nginx configuration
   ansible.builtin.command: nginx -t
   changed_when: false

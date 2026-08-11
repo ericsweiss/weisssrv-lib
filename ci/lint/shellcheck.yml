@@ -22,15 +22,23 @@ spec:
     direct_globs:
       default: "scripts/*.sh ansible/*.sh"
       description: >-
-        Space-separated files/globs shellchecked directly. Default reproduces
-        weisssrv (scripts/ + ansible-root helper scripts). A repo with only
-        scripts/ passes `scripts/*.sh`.
+        Space-separated files/globs shellchecked directly; a glob that matches
+        nothing is skipped with a note. A repo with only scripts/ passes
+        `scripts/*.sh`.
     find_dir:
       default: "ansible/roles"
       description: >-
         Directory recursively searched for *.sh and *.sh.j2 (the Jinja shell
-        templates get the neutralizer treatment). Empty string skips both find
-        loops — set it empty for a repo with no such tree.
+        templates get the neutralizer treatment). Empty — or a directory this
+        repo does not have — skips both find loops with a note.
+    default_branch:
+      default: "main"
+      description: >-
+        Consumer's default branch as a LITERAL name (`main`, `master`, `trunk`)
+        for the post-merge rule. NOT `$CI_DEFAULT_BRANCH`: the value lands
+        inside a quoted `rules:if` string, which GitLab does not expand, so the
+        comparison would never match and the job would silently stop running
+        post-merge.
     changes:
       type: array
       default:
@@ -38,7 +46,7 @@ spec:
         - "ansible/*.sh"
         - "ansible/roles/**/*.sh"
         - "ansible/roles/**/*.sh.j2"
-      description: Path list for the MR/main `changes:` rules (weisssrv .paths-shellcheck).
+      description: Path list for the MR / default-branch `changes:` rules.
 ---
 "$[[ inputs.job_name ]]":
   needs: []
@@ -52,6 +60,13 @@ spec:
       - scheduler_failure
   script:
     - echo "Running ShellCheck..."
+    # `linted` is carried across these script blocks (the runner concatenates
+    # them into ONE shell script) and checked at the end: a green job that
+    # checked nothing is exactly the silent pass this gate exists to prevent —
+    # the same guard ci/lint/yaml-lint.yml applies to its targets. Which is also
+    # why neither find block may `exit 0` early any more: that would skip the
+    # accounting along with the checks.
+    - linted=0
     - |
       # Direct files/globs (scripts/ + any repo-root helper scripts). Iterate
       # the globs and lint only files that actually exist: a tenant whose tree
@@ -64,6 +79,7 @@ spec:
       for f in $[[ inputs.direct_globs ]]; do
         if [ -e "$f" ]; then
           shellcheck --severity=$[[ inputs.severity ]] --exclude=$[[ inputs.exclude ]] "$f" || rc=1
+          linted=$((linted + 1))
         else
           echo "no files match '$f' — skipping"
         fi
@@ -71,61 +87,88 @@ spec:
       [ "$rc" -eq 0 ] || { echo "ShellCheck failed on one or more direct files"; exit "$rc"; }
     - |
       FIND_DIR="$[[ inputs.find_dir ]]"
-      [ -n "$FIND_DIR" ] || { echo "no find_dir set — skipping role shell + template checks"; exit 0; }
-      # Also lint shell scripts shipped under the find dir (e.g. Ansible roles).
-      # `find ... | while ...` would mask failures: the pipeline's exit code is
-      # the while loop's, i.e. the rc of its LAST iteration — a shellcheck
-      # failure on any earlier file goes green. `-exec ... {} +` returns
-      # non-zero if shellcheck fails on ANY file, so the job fails correctly.
-      find "$FIND_DIR" -name '*.sh' -type f \
-        -exec shellcheck --severity=$[[ inputs.severity ]] --exclude=$[[ inputs.exclude ]] {} +
+      # Unset OR absent skips: a set-but-missing dir would make `find` exit
+      # non-zero, failing a consumer that simply does not have that tree.
+      if [ -z "$FIND_DIR" ]; then
+        echo "no find_dir set — skipping role shell + template checks"
+      elif [ ! -d "$FIND_DIR" ]; then
+        echo "no such find_dir '$FIND_DIR' — skipping role shell + template checks"
+      else
+        # Also lint shell scripts shipped under the find dir (e.g. Ansible
+        # roles). `find ... | while ...` would mask failures: the pipeline's
+        # exit code is the while loop's, i.e. the rc of its LAST iteration — a
+        # shellcheck failure on any earlier file goes green. `-exec ... {} +`
+        # returns non-zero if shellcheck fails on ANY file.
+        #
+        # That rc must be CAPTURED, not left to fall out of the block: the
+        # runner checks only the exit status of the block's LAST command, and
+        # since the `linted` accounting was added the last command is an
+        # assignment, which always succeeds. Capturing it and exiting
+        # explicitly keeps both — the accounting and the failure — the way the
+        # direct-glob and *.sh.j2 blocks already do.
+        rc=0
+        find "$FIND_DIR" -name '*.sh' -type f \
+          -exec shellcheck --severity=$[[ inputs.severity ]] --exclude=$[[ inputs.exclude ]] {} + || rc=1
+        linted=$((linted + $(find "$FIND_DIR" -name '*.sh' -type f | wc -l)))
+        [ "$rc" -eq 0 ] || { echo "ShellCheck failed on one or more role shell scripts"; exit "$rc"; }
+      fi
     - |
       FIND_DIR="$[[ inputs.find_dir ]]"
-      [ -n "$FIND_DIR" ] || exit 0
-      # Lint shell-script Jinja templates (*.sh.j2) shipped in roles (incl. the
-      # boot-time crypto-unlock units). We can't render real values, so
-      # neutralize Jinja first. The {# #} comment-RANGE delete eats bash
-      # ${#arr[@]} and corrupts the body, so {% raw %}-wrapped scripts (literal
-      # bash) instead delete only FULL-LINE {# ... #} comments (anchored, can't
-      # touch a mid-line ${#...}); plain templates keep the full neutralizer.
-      # CONSTRAINT: a multi-line/inline {# #} in the out-of-raw header of a raw-
-      # wrapped template isn't stripped — keep header comments to single lines.
-      #
-      # Accumulate rc (not `find | while`, whose exit status is only the last
-      # iteration's) via a list file — not a pipe or process substitution, since
-      # this job's shell is ash/sh — so the loop runs in the current shell and
-      # rc survives. `rc=1` on any failure + the final `exit $rc` fails the job.
-      rendered=$(mktemp)
-      tmpl_list=$(mktemp)
-      rc=0
-      find "$FIND_DIR" -name '*.sh.j2' -type f > "$tmpl_list"
-      while read -r tmpl; do
-        echo "Checking: $tmpl"
-        if grep -Eq '^[[:space:]]*\{%-?[[:space:]]*raw[[:space:]]*-?%\}[[:space:]]*$' "$tmpl"; then
-          sed -E \
-            -e '/^[[:space:]]*\{#.*#\}[[:space:]]*$/d' \
-            -e '/\{%.*%\}/d' \
-            -e 's/\{\{"\{"\}\}/{/g' \
-            -e 's/\{\{"\}"\}\}/}/g' \
-            -e 's/\{\{[^}]*\}\}/JINJA/g' "$tmpl" > "$rendered"
-        else
-          sed -E \
-            -e '/\{#/,/#\}/d' \
-            -e '/\{%.*%\}/d' \
-            -e 's/\{\{"\{"\}\}/{/g' \
-            -e 's/\{\{"\}"\}\}/}/g' \
-            -e 's/\{\{[^}]*\}\}/JINJA/g' "$tmpl" > "$rendered"
-        fi
-        shellcheck --severity=$[[ inputs.severity ]] --exclude=$[[ inputs.exclude ]] "$rendered" || rc=1
-      done < "$tmpl_list"
-      rm -f "$rendered" "$tmpl_list"
-      [ "$rc" -eq 0 ] || { echo "ShellCheck failed on one or more *.sh.j2 templates"; exit "$rc"; }
-    - echo "ShellCheck passed"
+      if [ -z "$FIND_DIR" ] || [ ! -d "$FIND_DIR" ]; then
+        echo "no usable find_dir — skipping *.sh.j2 template checks"
+      else
+        # Lint shell-script Jinja templates (*.sh.j2): real values can't be
+        # rendered, so Jinja is neutralized first. A {# #} comment-RANGE delete
+        # would eat bash ${#arr[@]}, so {% raw %}-wrapped templates (literal bash)
+        # drop only FULL-LINE {# ... #} comments; plain ones keep the full
+        # neutralizer. CONSTRAINT: an inline/multi-line {# #} in the out-of-raw
+        # header of a raw-wrapped template is NOT stripped — keep those single-line.
+        #
+        # rc is accumulated via a list file, not `find | while` (whose status is
+        # only the last iteration's) and not a pipe/process substitution (this
+        # job's shell is ash), so the loop runs in the current shell.
+        rendered=$(mktemp)
+        tmpl_list=$(mktemp)
+        rc=0
+        find "$FIND_DIR" -name '*.sh.j2' -type f > "$tmpl_list"
+        while read -r tmpl; do
+          echo "Checking: $tmpl"
+          if grep -Eq '^[[:space:]]*\{%-?[[:space:]]*raw[[:space:]]*-?%\}[[:space:]]*$' "$tmpl"; then
+            sed -E \
+              -e '/^[[:space:]]*\{#.*#\}[[:space:]]*$/d' \
+              -e '/\{%.*%\}/d' \
+              -e 's/\{\{"\{"\}\}/{/g' \
+              -e 's/\{\{"\}"\}\}/}/g' \
+              -e 's/\{\{[^}]*\}\}/JINJA/g' "$tmpl" > "$rendered"
+          else
+            sed -E \
+              -e '/\{#/,/#\}/d' \
+              -e '/\{%.*%\}/d' \
+              -e 's/\{\{"\{"\}\}/{/g' \
+              -e 's/\{\{"\}"\}\}/}/g' \
+              -e 's/\{\{[^}]*\}\}/JINJA/g' "$tmpl" > "$rendered"
+          fi
+          shellcheck --severity=$[[ inputs.severity ]] --exclude=$[[ inputs.exclude ]] "$rendered" || rc=1
+          linted=$((linted + 1))
+        done < "$tmpl_list"
+        rm -f "$rendered" "$tmpl_list"
+        [ "$rc" -eq 0 ] || { echo "ShellCheck failed on one or more *.sh.j2 templates"; exit "$rc"; }
+      fi
+    - |
+      # An individual skip is a layout difference between consumers; ALL of them
+      # skipping means `direct_globs` and `find_dir` describe a tree this repo
+      # does not have, and the job would otherwise report "ShellCheck passed"
+      # having read no file at all.
+      [ "$linted" -gt 0 ] || {
+        echo "ERROR: shellcheck matched no files — direct_globs and find_dir cover nothing in this repo"
+        exit 1
+      }
+      echo "ShellCheck passed ($linted file(s) checked)"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes: $[[ inputs.changes ]]
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "$[[ inputs.default_branch ]]"'
       changes: $[[ inputs.changes ]]
     - if: '$CI_PIPELINE_SOURCE == "web"'

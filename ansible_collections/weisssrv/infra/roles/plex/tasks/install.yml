@@ -1,0 +1,115 @@
+---
+# Plex Media Server package installation.
+
+- name: Install required packages
+  ansible.builtin.apt:
+    name:
+      - apt-transport-https
+      - curl
+      - gnupg
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# The Intel media driver ships in non-free, so the components are enabled before
+# the driver install below (which refreshes the cache itself).
+- name: Enable non-free and non-free-firmware repositories
+  ansible.builtin.apt_repository:
+    repo: "{{ item }}"
+    state: present
+    update_cache: false
+  loop:
+    - "deb https://deb.debian.org/debian {{ ansible_distribution_release }} non-free non-free-firmware"
+    - "deb https://deb.debian.org/debian {{ ansible_distribution_release }}-updates non-free non-free-firmware"
+  when: not (plex_skip_gpu_drivers | bool)
+
+# Drops superseded plaintext entries from hosts provisioned before the https
+# switch, so apt no longer fetches non-free over http.
+- name: Remove legacy plaintext non-free repositories
+  ansible.builtin.apt_repository:
+    repo: "{{ item }}"
+    state: absent
+    update_cache: false
+  loop:
+    - "deb http://deb.debian.org/debian {{ ansible_distribution_release }} non-free non-free-firmware"
+    - "deb http://deb.debian.org/debian {{ ansible_distribution_release }}-updates non-free non-free-firmware"
+
+- name: Update apt cache after adding non-free repos
+  ansible.builtin.apt:
+    update_cache: true
+  when: not (plex_skip_gpu_drivers | bool)
+
+- name: Install Intel GPU drivers for hardware transcoding
+  ansible.builtin.apt:
+    name:
+      - intel-media-va-driver-non-free  # VA-API media driver (incl. Arc)
+      - vainfo                          # VA-API capability check
+      - intel-gpu-tools                 # GPU monitoring
+    state: present
+  when: not (plex_skip_gpu_drivers | bool)
+
+# Plex repository v2 (Plex v1.43.0+); the v1 keyring and sources files conflict
+# with it, so they are removed first.
+- name: Remove legacy Plex repository configuration
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/apt/sources.list.d/plexmediaserver.list
+    - /etc/apt/sources.list.d/plexmediaserver.sources
+    - /etc/apt/apt.conf.d/99allow-plex-sha1
+    - /usr/share/keyrings/plex-archive-keyring.gpg
+    - /usr/share/keyrings/plexmediaserver.gpg
+
+# Shared stat -> download -> verify-fingerprint -> dearmor -> add-repo pipeline;
+# gnupg comes from the first task above.
+- name: Add Plex v2 signed APT repository
+  ansible.builtin.include_role:
+    name: weisssrv.infra.apt_signed_repo
+  vars:
+    apt_signed_repo_key_url: https://downloads.plex.tv/plex-keys/PlexSign.v2.key
+    apt_signed_repo_fingerprint: 6EFFEB478A6559D75C7C4FE706C521790B9CFFDE
+    apt_signed_repo_keyring_path: /etc/apt/keyrings/plexmediaserver.v2.gpg
+    apt_signed_repo_repo_line: "deb [signed-by=/etc/apt/keyrings/plexmediaserver.v2.gpg] https://repo.plex.tv/deb/ public main"
+    apt_signed_repo_filename: plex
+
+- name: Install Plex Media Server (pinned version)
+  ansible.builtin.apt:
+    name: "plexmediaserver={{ plex_version }}"
+    state: present
+    allow_downgrade: true
+    allow_change_held_packages: true
+  when: plex_version != 'latest'
+  notify: Restart plex
+
+- name: Install Plex Media Server (latest)  # noqa package-latest
+  ansible.builtin.apt:
+    name: plexmediaserver
+    state: latest
+    allow_change_held_packages: true
+  when: plex_version == 'latest'
+  notify: Restart plex
+
+# The Plex repo continuously serves newer builds, so a pinned version is held
+# against a manual `apt upgrade`. Not a handler: the install task is a no-op
+# once the pin is installed, so a handler would never fire on a re-run.
+- name: Hold Plex package to prevent unintended upgrades
+  ansible.builtin.dpkg_selections:
+    name: plexmediaserver
+    selection: hold
+  when: plex_version != 'latest'
+
+- name: Unhold Plex package (auto-update mode)
+  ansible.builtin.dpkg_selections:
+    name: plexmediaserver
+    selection: install
+  when: plex_version == 'latest'
+
+- name: Verify Plex package version
+  ansible.builtin.command: dpkg-query -W -f='${Version}' plexmediaserver
+  register: plex_installed_version
+  changed_when: false
+
+- name: Display installed Plex version
+  ansible.builtin.debug:
+    msg: "Plex Media Server version: {{ plex_installed_version.stdout }}"

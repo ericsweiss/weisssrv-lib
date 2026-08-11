@@ -1,13 +1,26 @@
 ---
-# Manage Proxmox HA resources
+# `ha-manager config` takes NO resource argument — it prints the whole index:
+# one unindented `<type>:<vmid>` line per resource, followed by that resource's
+# indented `key value` properties. Everything below reads that single capture.
 
-- name: Get current HA resources
-  ansible.builtin.shell:
-    cmd: "set -o pipefail && ha-manager config | grep -E '^(vm|ct):' | awk -F: '{print $1\":\"$2}' || true"
-    executable: /bin/bash
-  register: proxmox_ha_current_ha_resources
+# A failed read must abort: treating it as an empty index would fire `add` for
+# every resource, whose tolerated "already exists" then hides real drift behind
+# a green play.
+- name: Get the current HA resource configuration
+  ansible.builtin.command: ha-manager config
+  register: proxmox_ha_config_raw
   changed_when: false
+  failed_when: proxmox_ha_config_raw.rc != 0
   check_mode: false  # Must run to determine current state
+  tags: [proxmox_ha_resources]
+
+- name: Index the current HA resources by SID
+  vars:
+    _blocks: "{{ proxmox_ha_config_raw.stdout | default('') | regex_findall('(?m)^(?:vm|ct):\\S+[^\\n]*(?:\\n[ \\t]+[^\\n]*)*') }}"
+  ansible.builtin.set_fact:
+    # {"vm:150": "vm:150\n\tstate started\n\tmax_restart 3", ...}
+    proxmox_ha_current_resource_config: >-
+      {{ dict(_blocks | map('regex_search', '^[^\n]+') | map('trim') | zip(_blocks)) }}
   tags: [proxmox_ha_resources]
 
 - name: Add HA resources
@@ -18,9 +31,11 @@
     {% if item.max_relocate is defined %}--max_relocate {{ item.max_relocate }}{% endif %}
     {% if item.comment is defined %}--comment "{{ item.comment }}"{% endif %}
   when:
-    - item.type + ':' + (item.vmid | string) not in proxmox_ha_current_ha_resources.stdout_lines
+    - item.type + ':' + (item.vmid | string) not in proxmox_ha_current_resource_config
     - item.enabled | default(true)
   loop: "{{ proxmox_ha_resources }}"
+  loop_control:
+    label: "{{ item.type }}:{{ item.vmid }}"
   register: proxmox_ha_resource_add_result
   changed_when: proxmox_ha_resource_add_result.rc == 0
   failed_when:
@@ -28,63 +43,54 @@
     - "'already exists' not in proxmox_ha_resource_add_result.stderr"
   tags: [proxmox_ha_resources]
 
-- name: Get current HA resource config for updates
-  ansible.builtin.shell:
-    cmd: "ha-manager config {{ item.type }}:{{ item.vmid }} 2>/dev/null || true"
-    executable: /bin/bash
-  when:
-    - item.type + ':' + (item.vmid | string) in proxmox_ha_current_ha_resources.stdout_lines
-    - item.enabled | default(true)
-  loop: "{{ proxmox_ha_resources }}"
-  register: proxmox_ha_resource_current_config
-  changed_when: false
-  check_mode: false
-  tags: [proxmox_ha_resources]
-
 - name: Update HA resources
   ansible.builtin.command: >-
-    ha-manager set {{ item.item.type }}:{{ item.item.vmid }}
-    --state {{ item.item.state | default('started') }}
-    {% if item.item.max_restart is defined %}--max_restart {{ item.item.max_restart }}{% endif %}
-    {% if item.item.max_relocate is defined %}--max_relocate {{ item.item.max_relocate }}{% endif %}
+    ha-manager set {{ item.type }}:{{ item.vmid }}
+    --state {{ item.state | default('started') }}
+    {% if item.max_restart is defined %}--max_restart {{ item.max_restart }}{% endif %}
+    {% if item.max_relocate is defined %}--max_relocate {{ item.max_relocate }}{% endif %}
     {% if _needs_comment_arg %}--comment "{{ _comment_value }}"{% endif %}
     {% if _delete_keys | length > 0 %}--delete {{ _delete_keys | join(',') }}{% endif %}
   vars:
-    # Extract numeric field values using regex with word boundary (whitespace or end-of-line)
-    _stdout: "{{ item.stdout | default('') }}"
-    # Match "max_restart <digits>" where digits are followed by whitespace or end-of-string
+    _sid: "{{ item.type }}:{{ item.vmid }}"
+    # This resource's block from the index above.
+    _stdout: "{{ proxmox_ha_current_resource_config[_sid] | default('') }}"
+    # state compared as an exact field: a substring search over the whole block
+    # would let a comment containing "state started" mask a real state drift.
+    _current_state_match: "{{ _stdout | regex_search('(?m)^\\s*state\\s+(\\S+)\\s*$', '\\1') }}"
+    _current_state: "{{ _current_state_match[0] | default('') if _current_state_match else '' }}"
+    # Numeric values, matched to a whitespace/end-of-line boundary.
     _current_max_restart_match: "{{ _stdout | regex_search('max_restart\\s+(\\d+)(?:\\s|$)', '\\1') }}"
     _current_max_restart: "{{ _current_max_restart_match[0] | default('') if _current_max_restart_match else '' }}"
     _current_max_relocate_match: "{{ _stdout | regex_search('max_relocate\\s+(\\d+)(?:\\s|$)', '\\1') }}"
     _current_max_relocate: "{{ _current_max_relocate_match[0] | default('') if _current_max_relocate_match else '' }}"
-    # Current comment (rest of its line). Used so a comment REMOVED from config is
-    # cleared with an explicit --comment "" instead of persisting forever and
-    # re-firing drift every run (same pattern as rules.yml/replication.yml).
+    # A comment REMOVED from config is cleared with an explicit --comment ""
+    # instead of persisting and re-firing drift forever (same pattern as
+    # rules.yml / replication.yml).
     _current_comment_match: "{{ _stdout | regex_search('(?m)^\\s*comment\\s+(.*?)\\s*$', '\\1') }}"
     _current_comment: "{{ _current_comment_match[0] if _current_comment_match else '' }}"
-    _needs_comment_arg: "{{ (item.item.comment is defined) or (_current_comment | length > 0) }}"
-    _comment_value: "{{ item.item.comment | default('') }}"
+    _needs_comment_arg: "{{ (item.comment is defined) or (_current_comment | length > 0) }}"
+    _comment_value: "{{ item.comment | default('') }}"
     # max_restart/max_relocate removed from config but still set live must be
     # unset with --delete; `ha-manager set` only writes options it is given.
     _delete_keys: >-
-      {{ (['max_restart'] if (item.item.max_restart is not defined and _current_max_restart | length > 0) else [])
-         + (['max_relocate'] if (item.item.max_relocate is not defined and _current_max_relocate | length > 0) else []) }}
+      {{ (['max_restart'] if (item.max_restart is not defined and _current_max_restart | length > 0) else [])
+         + (['max_relocate'] if (item.max_relocate is not defined and _current_max_relocate | length > 0) else []) }}
   when:
-    - item.item.type + ':' + (item.item.vmid | string) in proxmox_ha_current_ha_resources.stdout_lines
-    - item.item.enabled | default(true)
-    # Only update when drift is detected — including a field REMOVED from config
-    # that is still set live (comment / max_restart / max_relocate).
+    - _sid in proxmox_ha_current_resource_config
+    - item.enabled | default(true)
+    # Only update on real drift — including a field REMOVED from config that is
+    # still set live (comment / max_restart / max_relocate).
     - >-
-      ('state ' ~ (item.item.state | default('started'))) not in _stdout
-      or (item.item.max_restart is defined and _current_max_restart != (item.item.max_restart | string))
-      or (item.item.max_relocate is defined and _current_max_relocate != (item.item.max_relocate | string))
-      or (item.item.comment is defined and ('comment ' ~ item.item.comment) not in _stdout)
-      or (item.item.comment is not defined and _current_comment | length > 0)
-      or (item.item.max_restart is not defined and _current_max_restart | length > 0)
-      or (item.item.max_relocate is not defined and _current_max_relocate | length > 0)
-  loop: "{{ proxmox_ha_resource_current_config.results }}"
+      _current_state != (item.state | default('started') | string)
+      or (item.max_restart is defined and _current_max_restart != (item.max_restart | string))
+      or (item.max_relocate is defined and _current_max_relocate != (item.max_relocate | string))
+      or _current_comment != (item.comment | default('') | string)
+      or (item.max_restart is not defined and _current_max_restart | length > 0)
+      or (item.max_relocate is not defined and _current_max_relocate | length > 0)
+  loop: "{{ proxmox_ha_resources }}"
   loop_control:
-    label: "{{ item.item.type }}:{{ item.item.vmid | default('N/A') }}"
+    label: "{{ item.type }}:{{ item.vmid }}"
   register: proxmox_ha_resource_update_result
   changed_when: proxmox_ha_resource_update_result.rc == 0
   tags: [proxmox_ha_resources]
@@ -92,9 +98,16 @@
 - name: Remove HA resources
   ansible.builtin.command: ha-manager remove {{ item.type }}:{{ item.vmid }}
   when:
-    - item.type + ':' + (item.vmid | string) in proxmox_ha_current_ha_resources.stdout_lines
+    - item.type + ':' + (item.vmid | string) in proxmox_ha_current_resource_config
     - not (item.enabled | default(true))
   loop: "{{ proxmox_ha_resources }}"
+  loop_control:
+    label: "{{ item.type }}:{{ item.vmid }}"
   register: proxmox_ha_resource_remove_result
   changed_when: proxmox_ha_resource_remove_result.rc == 0
+  # Tolerate a removal that raced the index read (cf. rules.yml, replication.yml).
+  failed_when:
+    - proxmox_ha_resource_remove_result.rc != 0
+    - "'does not exist' not in (proxmox_ha_resource_remove_result.stderr | default(''))"
+    - "'not found' not in (proxmox_ha_resource_remove_result.stderr | default(''))"
   tags: [proxmox_ha_resources]

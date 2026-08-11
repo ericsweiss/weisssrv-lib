@@ -4,17 +4,22 @@ unbound_port: 5335
 # Filename of the role-managed drop-in under /etc/unbound/unbound.conf.d/.
 unbound_dropin_name: managed.conf
 
-# Drop-ins this role previously owned, removed on every run (the current
-# unbound_dropin_name is never removed). unbound merges the drop-in dir with a
-# SORTED glob, so a leftover file that sorts after the managed one silently wins
-# every duplicated server: scalar; list any name the role has ever written here.
+# Drop-ins this role previously owned; removed on every run (never the current
+# unbound_dropin_name). unbound merges the drop-in dir with a SORTED glob, so a
+# leftover that sorts after the managed file wins every duplicated scalar.
 unbound_legacy_dropins:
   - weisssrv.conf
-unbound_interface: 127.0.0.1
 
+# Listen addresses. unbound_interface is the readiness-probe target and the sole
+# default entry; add ::1 to unbound_interfaces to also serve IPv6 loopback, and
+# pair it with a matching unbound_access_control entry.
+unbound_interface: 127.0.0.1
+unbound_interfaces: "{{ [unbound_interface] }}"
+
+# Matches unbound_interfaces — nothing listens on ::1 by default, so no ACL is
+# emitted for it. unbound refuses every netblock not listed here.
 unbound_access_control:
   - "127.0.0.0/8 allow"
-  - "::1 allow"
 
 # Performance tuning
 unbound_num_threads: 2

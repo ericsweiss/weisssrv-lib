@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  role_name: immich_ml
+  namespace: weisssrv
+  author: Eric Weiss
+  description: Immich machine learning (OpenVINO, Intel GPU) compose stack in a GPU guest
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+
+# Dependencies stay in the playbook so the role can be unit-tested in isolation.
+# compose_app (which itself includes docker_engine) is included from
+# tasks/main.yml for the Docker install and the compose systemd unit.
+dependencies: []

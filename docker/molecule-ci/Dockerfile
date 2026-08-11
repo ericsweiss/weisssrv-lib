@@ -1,13 +1,10 @@
-# CI runner image for molecule test jobs. Pre-installs docker-cli, molecule,
-# ansible, and all pip dependencies so the before_script drops from ~2 min
-# (apt + pip + galaxy) to ~5s (docker login only).
+# The JOB image molecule CI jobs run the script in (not the MOLECULE image the
+# scenarios spin up): docker-cli, molecule, ansible and the pinned pip deps are
+# baked in, so a job's before_script is a docker login rather than ~2 min of
+# apt + pip + galaxy.
 #
-# This is the JOB image (what CI runs the script in), not the MOLECULE image
-# (the container molecule spins up to test roles).
-#
-# The build context is THIS directory: requirements.txt + requirements.yml sit
-# next to the Dockerfile so the image is self-contained. A consumer that wants
-# its own pins builds with its own context (see docker/README.md).
+# The build context is THIS directory — requirements.txt + requirements.yml sit
+# next to the Dockerfile, so the image is self-contained (docker/README.md).
 #
 #   docker build -t <registry>/molecule-ci:latest docker/molecule-ci/
 # Pinned by manifest-list digest (multi-arch index — this image builds for

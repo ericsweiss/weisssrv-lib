@@ -1,9 +1,10 @@
 """Line-based edits to a kustomize `resources:` list.
 
 Line surgery (not ruamel) is deliberate here: the list is trivial (`  - x.yaml`
-lines) and the file carries opt-in COMMENTS (`# - hpa.yaml   # opt-in ...`) that
-ruamel's round-trip drops when the adjacent item is removed. Line edits preserve
-every comment, the `---` start, and the exact 2-space offset.
+lines) and the file carries the opt-in COMMENTS (`# - optional/hpa.yaml   # …`)
+that enable a manifest, which ruamel's round-trip drops when the adjacent item
+is removed. Line edits preserve every comment, the `---` start, and the exact
+2-space offset.
 """
 from __future__ import annotations
 
@@ -69,6 +70,24 @@ def remove_resource(text: str, name: str) -> tuple[str, bool]:
     return "".join(kept), changed
 
 
+def remove_commented_resource(text: str, name: str) -> tuple[str, bool]:
+    """Drop the commented `# - <name>   # note` opt-in line from `resources:`.
+
+    Pairs with remove_resource when an opt-in manifest is DELETED: leaving the
+    enable line behind advertises a file that is gone, so uncommenting it later
+    breaks the build. Returns (text, changed).
+    """
+    pat = re.compile(_COMMENTED_RE_T.format(name=re.escape(name)))
+    lines = text.splitlines(keepends=True)
+    kept, changed = [], False
+    for line, in_res in zip(lines, _in_resources_flags(lines)):
+        if in_res and pat.match(line.rstrip("\n")):
+            changed = True
+            continue
+        kept.append(line)
+    return "".join(kept), changed
+
+
 def uncomment_resource(text: str, name: str) -> tuple[str, bool]:
     """Turn the first `  # - <name>   # note` in the `resources:` block into
     `  - <name>`.
@@ -120,6 +139,10 @@ def add_resource(text: str, name: str) -> tuple[str, bool]:
     block (after its last comment, or the `resources:` header itself) rather than
     at EOF past a sibling top-level key; when the file has no `resources:` key at
     all the block is created. Returns (text, changed). No-op if already active.
+
+    NOT what enables an opt-in manifest: `wire` uncomments the existing line and
+    nothing else, because the insert fallback here would happily list a file the
+    tree does not have.
     """
     if has_resource(text, name):
         return text, False

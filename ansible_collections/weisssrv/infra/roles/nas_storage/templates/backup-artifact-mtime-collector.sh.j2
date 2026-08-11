@@ -1,10 +1,19 @@
 #!/bin/sh
 # {{ ansible_managed }}
-# NAS-side backup-artifact freshness collector: emits the mtime of the newest
-# file under each per-app backup subdir (backup_artifact_last_mtime_seconds{app},
-# plus a collector sentinel). Catches the "green wrapper metric, no file on the
-# NAS" failure mode — a broken mount or wrong path — independently of the
-# VM/k8s wrappers' own metrics.
+# NAS-side backup-artifact collector: for each declared app, stats the newest
+# RESTORABLE artefact under <base>/<app> and emits
+#
+#   backup_artifact_last_mtime_seconds{app}          mtime of that artefact (0 = none)
+#   backup_artifact_last_size_bytes{app}             its size in bytes (0 = none)
+#   backup_artifact_companion_present{app,file}      1/0 per declared companion glob
+#   backup_artifact_companion_size_bytes{app,file}   size of that companion (0 = absent)
+#   backup_artifact_collector_last_success_seconds   collector sentinel
+#
+# This is the signal that stays honest when an app's OWN backup metrics go green
+# without the dump ever reaching the landing zone (broken mount, wrong path).
+# RESTORABLE is the operative word: only files matching the app's declared
+# pattern count, so an app's nightly config/sidecar copies can never satisfy
+# "a restorable dump landed".
 #
 # Atomic write (.tmp + rename) so node_exporter never reads a half-written file.
 set -eu
@@ -16,26 +25,112 @@ TMP="$OUT.tmp"
 BASE="{{ nas_storage_backup_apps_base }}"
 mkdir -p "$OUT_DIR"
 
+# app<TAB>glob, rendered from nas_storage_backup_artifact_apps so the pattern
+# list is inventory-controlled, not baked into this script.
+APP_PATTERNS="$(cat <<'APP_PATTERNS_EOF'
+{% for app in nas_storage_backup_artifact_apps %}
+{{ app.name }}	{{ app.pattern }}
+{% endfor %}
+APP_PATTERNS_EOF
+)"
+
+# app<TAB>companion-glob, one line per companion (files required to RESTORE the
+# artefact but deliberately excluded from the artefact pattern).
+APP_COMPANIONS="$(cat <<'APP_COMPANIONS_EOF'
+{% for app in nas_storage_backup_artifact_apps %}
+{% for companion in app.companions | default([]) %}
+{{ app.name }}	{{ companion }}
+{% endfor %}
+{% endfor %}
+APP_COMPANIONS_EOF
+)"
+
+# The independence this collector advertises only holds while the landing zone
+# is a real mounted dataset. With it unmounted, $BASE is a plain directory on
+# the root filesystem where a NAS-local producer would have shadow-written its
+# artefacts, which this collector would then read as fresh. Emit NO per-app
+# series in that state, so every per-app absent() alert arm fires: nothing
+# offsite-eligible is reachable, which is the truth.
+BACKUPS_MOUNT="{{ nas_storage_backup_apps_base | dirname }}"
+REQUIRE_MOUNT={{ '1' if (nas_storage_backup_require_mounted_dataset | default(true) | bool) else '0' }}
+backups_mounted=1
+if [ "$REQUIRE_MOUNT" = "1" ]; then
+  mountpoint -q "$BACKUPS_MOUNT" || backups_mounted=0
+fi
+
+# app<TAB>mtime<TAB>size for every app that has a directory. Collected once, up
+# front, because the Prometheus text format requires each metric family to be
+# emitted as one contiguous block.
+collect_apps() {
+  [ "$backups_mounted" -eq 1 ] || return 0
+  echo "$APP_PATTERNS" | while IFS='	' read -r app pattern; do
+    [ -n "$app" ] || continue
+    dir="$BASE/$app"
+    # A missing dir emits NO series, which is what the per-app absent() alert
+    # arms key on (a present-but-empty dir emits 0 and trips freshness instead).
+    [ -d "$dir" ] || continue
+    # GNU find %T@ = epoch.frac, %s = bytes; newest wins. `set +e` per app so a
+    # vanished dir cannot kill the run. Partial/temp files are excluded on top
+    # of the pattern: a dump written as "$out.tmp" and renamed leaves a fresh
+    # .tmp behind on failure, which would otherwise mask staleness.
+    set +e
+    newest="$(find "$dir" -type f -name "$pattern" \
+      ! -name '*.tmp' ! -name '*.partial' ! -name '*.part' \
+      -printf '%T@\t%s\n' 2>/dev/null | sort -n | tail -1)"
+    set -e
+    mtime="${newest%%	*}"
+    mtime="${mtime%%.*}"
+    size="${newest##*	}"
+    case "$mtime" in ''|*[!0-9]*) mtime=0 ;; esac
+    case "$size" in ''|*[!0-9]*) size=0 ;; esac
+    printf '%s\t%s\t%s\n' "$app" "$mtime" "$size"
+  done
+}
+
+# app<TAB>glob<TAB>present<TAB>size for every declared companion.
+collect_companions() {
+  [ "$backups_mounted" -eq 1 ] || return 0
+  echo "$APP_COMPANIONS" | while IFS='	' read -r app glob; do
+    [ -n "$app" ] || continue
+    dir="$BASE/$app"
+    [ -d "$dir" ] || continue
+    set +e
+    size="$(find "$dir" -maxdepth 1 -type f -name "$glob" \
+      -printf '%s\n' 2>/dev/null | sort -n | tail -1)"
+    set -e
+    case "$size" in ''|*[!0-9]*) size=0; present=0 ;; *) present=1 ;; esac
+    printf '%s\t%s\t%s\t%s\n' "$app" "$glob" "$present" "$size"
+  done
+}
+
+APP_STATS="$(collect_apps)"
+COMPANION_STATS="$(collect_companions)"
+
 {
-  printf '# HELP backup_artifact_last_mtime_seconds Unix mtime of the newest file under tank/backups/apps/<app> (0 = no artifact present).\n'
+  printf '# HELP backup_artifact_last_mtime_seconds Unix mtime of the newest restorable artifact under <backups-apps>/<app> (0 = none matching the app pattern).\n'
   printf '# TYPE backup_artifact_last_mtime_seconds gauge\n'
-  if [ -d "$BASE" ]; then
-    for dir in "$BASE"/*/; do
-      [ -d "$dir" ] || continue
-      app="$(basename "$dir")"
-      # Newest file mtime under the app dir (GNU find %T@ = epoch.frac). 0 when
-      # the dir is empty. `set +e` per app so a vanished dir can't kill the run.
-      set +e
-      # Partial/temp files are NOT restorable artifacts: the pg-dump jobs write
-      # "$out.tmp" then rename, so a failed dump leaves a fresh .tmp that would
-      # otherwise mask BackupArtifactStale.
-      mtime="$(find "$dir" -type f ! -name '*.tmp' ! -name '*.partial' ! -name '*.part' -printf '%T@\n' 2>/dev/null | sort -n | tail -1)"
-      set -e
-      mtime="${mtime%%.*}"
-      case "$mtime" in ''|*[!0-9]*) mtime=0 ;; esac
-      printf 'backup_artifact_last_mtime_seconds{app="%s"} %s\n' "$app" "$mtime"
-    done
-  fi
+  echo "$APP_STATS" | while IFS='	' read -r app mtime size; do
+    [ -n "$app" ] || continue
+    printf 'backup_artifact_last_mtime_seconds{app="%s"} %s\n' "$app" "$mtime"
+  done
+  printf '# HELP backup_artifact_last_size_bytes Size in bytes of the newest restorable artifact under <backups-apps>/<app> (0 = none, or a truncated dump).\n'
+  printf '# TYPE backup_artifact_last_size_bytes gauge\n'
+  echo "$APP_STATS" | while IFS='	' read -r app mtime size; do
+    [ -n "$app" ] || continue
+    printf 'backup_artifact_last_size_bytes{app="%s"} %s\n' "$app" "$size"
+  done
+  printf '# HELP backup_artifact_companion_present Whether a file required to restore the app artifact is present (1/0).\n'
+  printf '# TYPE backup_artifact_companion_present gauge\n'
+  echo "$COMPANION_STATS" | while IFS='	' read -r app glob present size; do
+    [ -n "$app" ] || continue
+    printf 'backup_artifact_companion_present{app="%s",file="%s"} %s\n' "$app" "$glob" "$present"
+  done
+  printf '# HELP backup_artifact_companion_size_bytes Size in bytes of a file required to restore the app artifact (0 = absent).\n'
+  printf '# TYPE backup_artifact_companion_size_bytes gauge\n'
+  echo "$COMPANION_STATS" | while IFS='	' read -r app glob present size; do
+    [ -n "$app" ] || continue
+    printf 'backup_artifact_companion_size_bytes{app="%s",file="%s"} %s\n' "$app" "$glob" "$size"
+  done
   printf '# HELP backup_artifact_collector_last_success_seconds Unix time the backup-artifact collector last completed (staleness = collector broken).\n'
   printf '# TYPE backup_artifact_collector_last_success_seconds gauge\n'
   printf 'backup_artifact_collector_last_success_seconds %s\n' "$(date +%s)"

@@ -27,20 +27,20 @@ fi
 ts="$(date +%s)"
 tmp="${PROM_FILE}.$$"
 {
-  echo "# HELP adguard_sync_last_run_success Whether the last adguardhome-sync run succeeded (1=success, 0=failure)"
-  echo "# TYPE adguard_sync_last_run_success gauge"
-  echo "adguard_sync_last_run_success ${success}"
+  echo "# HELP adguardhome_sync_last_run_success Whether the last adguardhome-sync run succeeded (1=success, 0=failure)"
+  echo "# TYPE adguardhome_sync_last_run_success gauge"
+  echo "adguardhome_sync_last_run_success ${success}"
   # Preserve the last-known success timestamp on failure so a staleness alert
   # measures time-since-last-success, not time-since-last-attempt.
   if [ "$success" -eq 1 ]; then
     sval="$ts"
   else
-    sval="$(awk '/^adguard_sync_last_success_timestamp_seconds/ {print $2}' "$PROM_FILE" 2>/dev/null || true)"
+    sval="$(awk '/^adguardhome_sync_last_success_timestamp_seconds/ {print $2}' "$PROM_FILE" 2>/dev/null || true)"
   fi
   if [ -n "${sval:-}" ]; then
-    echo "# HELP adguard_sync_last_success_timestamp_seconds Unix timestamp of last successful sync"
-    echo "# TYPE adguard_sync_last_success_timestamp_seconds gauge"
-    echo "adguard_sync_last_success_timestamp_seconds ${sval}"
+    echo "# HELP adguardhome_sync_last_success_timestamp_seconds Unix timestamp of last successful sync"
+    echo "# TYPE adguardhome_sync_last_success_timestamp_seconds gauge"
+    echo "adguardhome_sync_last_success_timestamp_seconds ${sval}"
   fi
 } > "$tmp" 2>/dev/null || { rm -f "$tmp"; exit 0; }
 mv "$tmp" "$PROM_FILE" 2>/dev/null || rm -f "$tmp"

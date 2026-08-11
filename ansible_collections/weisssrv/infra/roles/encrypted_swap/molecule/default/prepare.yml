@@ -1,6 +1,8 @@
 ---
-# Prepare: shared systemd/apt prep + seed a plaintext swap fstab line for the
-# backing device so verify can confirm the role removes it.
+# Prepare: shared systemd/apt prep, plus two fixtures — a plaintext swap fstab
+# line (verify asserts the deferred shape KEEPS it) and an obsolete live-switch
+# script (verify asserts the role purges it). Seeded here, not in converge, so
+# the idempotence re-run does not ping-pong with the role.
 - name: Prepare
   hosts: all
   gather_facts: false
@@ -19,3 +21,11 @@
         owner: root
         group: root
         mode: "0644"
+
+    - name: Seed the obsolete live-switch script (the role must purge it)
+      ansible.builtin.copy:
+        dest: /usr/local/sbin/encrypted-swap-switch.sh
+        content: "# obsolete live-switch script fixture\n"
+        owner: root
+        group: root
+        mode: "0755"

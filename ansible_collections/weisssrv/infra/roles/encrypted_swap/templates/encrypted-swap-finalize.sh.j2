@@ -5,13 +5,12 @@
 # and systemd-cryptsetup@ both want the same backing LV at boot, and either can
 # win. Run after swap.target (both contenders have been attempted):
 #   - mapper ACTIVE as swap  -> drop the plaintext fallback (finalize).
-#   - mapper NOT active      -> the plaintext line won the race (cryptsetup
-#     open failed on the busy LV). Boot-time is the SAFE moment to fix that:
-#     memory is empty, so swapoff of the plaintext device cannot OOM anything.
-#     Complete the switch here (swapoff dev -> open mapper -> swapon mapper),
-#     verify, THEN finalize. Any failure keeps the plaintext fallback and
-#     exits green — the host must never end up swapless; NASSwapGone /
-#     deploy-verification surface a persistently unactivated mapper.
+#   - mapper NOT active      -> the plaintext line won the race. Boot-time is the
+#     SAFE moment to fix that: memory is empty, so swapoff of the plaintext
+#     device cannot OOM anything. Complete the switch here (swapoff dev -> open
+#     mapper -> swapon mapper), verify, THEN finalize. Any failure restores the
+#     plaintext fallback and exits green — the host must never end up swapless;
+#     a swap-absence alert surfaces a persistently unactivated mapper.
 # Idempotent: a no-op once the plaintext line is already commented.
 set -uo pipefail
 

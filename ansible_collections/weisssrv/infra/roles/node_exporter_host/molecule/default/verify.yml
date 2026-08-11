@@ -36,6 +36,50 @@
         fail_msg: "systemd override is missing required listen-address or textfile flags"
         success_msg: "systemd override pins port 9101 and textfile collector"
 
+    # The systemd collector is default-OFF upstream: without these flags
+    # node_systemd_* is emitted by nothing and any "unit X failed" alert is dead
+    # on arrival. enable-restarts-metrics is the separate flag that produces
+    # node_systemd_service_restart_total (the crash-loop series).
+    - name: Verify the override enables the systemd collector with unit filters
+      ansible.builtin.assert:
+        that:
+          - "'--collector.systemd ' in (override_content.content | b64decode)"
+          - "'--collector.systemd.unit-include=' in (override_content.content | b64decode)"
+          - "'--collector.systemd.unit-exclude=' in (override_content.content | b64decode)"
+          - "'--collector.systemd.enable-restarts-metrics' in (override_content.content | b64decode)"
+        fail_msg: "systemd override does not enable the systemd collector — node_systemd_* has no emitter"
+        success_msg: "systemd override enables the filtered systemd collector"
+
+    - name: Scrape /metrics for the systemd collector series
+      ansible.builtin.uri:
+        url: "http://localhost:9101/metrics"
+        return_content: true
+      register: node_exporter_host_metrics
+
+    # The flags parsing is not enough: an unsupported flag name would leave the
+    # exporter dead, and a filter that matches nothing would leave the series
+    # empty. Assert the two series the NodeSystemd* alerts select actually
+    # appear, for a unit that exists in every systemd container. The
+    # collector_success line is asserted first so the two failure modes stay
+    # distinguishable: 0 = the collector errored (no D-Bus system bus is the
+    # usual cause, since the Debian unit runs as `prometheus` and only root can
+    # use systemd's private socket), 1 with no series = the unit filter matched
+    # nothing.
+    - name: Assert the systemd collector emits the series the alerts select
+      ansible.builtin.assert:
+        that:
+          - "'node_scrape_collector_success{collector=\"systemd\"} 1' in node_exporter_host_metrics.content"
+          - "'node_systemd_unit_state{' in node_exporter_host_metrics.content"
+          - "'node_systemd_service_restart_total{' in node_exporter_host_metrics.content"
+          - "'state=\"failed\"' in node_exporter_host_metrics.content"
+        fail_msg: >-
+          The systemd collector produced nothing usable — node_systemd_unit_state
+          / node_systemd_service_restart_total are absent from /metrics, so the
+          NodeSystemdServiceFailed and NodeSystemdServiceCrashlooping alerts have
+          no emitter. Check node_scrape_collector_success{collector="systemd"}
+          and `journalctl -u prometheus-node-exporter`.
+        success_msg: "node_systemd_unit_state + node_systemd_service_restart_total are exported"
+
     - name: Verify service is enabled
       ansible.builtin.systemd:
         name: prometheus-node-exporter
@@ -91,17 +135,24 @@
           - corosync_timer.stat.mode == "0644"
         fail_msg: "corosync-health-collector.timer missing or has wrong perms"
 
-    # The role's enable+start task is `molecule-notest`-tagged because
-    # `systemctl start` is unreliable in privileged-container systemd, so we
-    # don't assert UnitFileState here — the file's existence + perms +
-    # contents prove the role's deploy contract. The end-to-end script
-    # invocation below exercises the actual textfile-collector path which is
-    # the operationally-important guarantee.
+    # The role's enable+start step runs for real here (converge.yml's first pass
+    # is what proves the timer list follows node_exporter_host_zpool_collector
+    # instead of naming a unit that was never rendered), so all three timers
+    # must be enabled.
+    - name: Check the collector timers are enabled  # noqa command-instead-of-module
+      ansible.builtin.command: "systemctl is-enabled {{ item }}"
+      register: node_exporter_host_timer_enabled
+      changed_when: false
+      failed_when: node_exporter_host_timer_enabled.stdout | trim != 'enabled'
+      loop:
+        - corosync-health-collector.timer
+        - zpool-status-collector.timer
+        - smartmon-collector.timer
 
-    # End-to-end smoke: run the script directly (timer's enable+start task is
-    # gated `molecule-notest`, so we invoke it once here). corosync is absent
-    # in CI, but the script's `set +e` guard handles that and still emits a
-    # well-formed .prom file with cpu=0 + last_success sentinel.
+    # End-to-end smoke: run the script directly rather than waiting out the
+    # timer. corosync is absent in CI, but the script's `set +e` guard handles
+    # that and still emits a well-formed .prom file with cpu=0 + last_success
+    # sentinel.
     - name: Invoke corosync collector once to produce textfile metric
       ansible.builtin.command: /usr/local/sbin/corosync-health-collector.sh
       changed_when: false
@@ -299,3 +350,120 @@
         that:
           - "'vzdump_backup_last_run_success 0' in (vzdump_prom_fail.content | b64decode)"
         fail_msg: "backup-abort did not downgrade job-end to vzdump_backup_last_run_success 0"
+
+    # ── node_exporter liveness gate ───────────────────────────────────────
+    # The failure this guards is a zombie exporter that systemd still reports as
+    # active, so the deploy contract is only half the test: the probe must also
+    # be able to FAIL. Both directions run against the live exporter here.
+
+    - name: Verify healthcheck script is present and executable
+      ansible.builtin.stat:
+        path: /usr/local/sbin/node-exporter-healthcheck.sh
+      register: healthcheck_script
+
+    - name: Assert healthcheck script is mode 0755 root:root
+      ansible.builtin.assert:
+        that:
+          - healthcheck_script.stat.exists
+          - healthcheck_script.stat.mode == "0755"
+          - healthcheck_script.stat.pw_name == "root"
+          - healthcheck_script.stat.gr_name == "root"
+        fail_msg: "node-exporter-healthcheck.sh missing or has wrong perms"
+
+    - name: Verify healthcheck unit + timer are present
+      ansible.builtin.stat:
+        path: "/etc/systemd/system/node-exporter-healthcheck.{{ item }}"
+      register: healthcheck_units
+      loop:
+        - service
+        - timer
+
+    - name: Assert healthcheck units are mode 0644
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.mode == "0644"
+        fail_msg: "node-exporter-healthcheck unit missing or has wrong perms"
+      loop: "{{ healthcheck_units.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Read healthcheck service unit
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/node-exporter-healthcheck.service
+      register: healthcheck_svc_content
+
+    - name: Assert the unit probes the configured port
+      ansible.builtin.assert:
+        that:
+          - "'node-exporter-healthcheck.sh 9101' in (healthcheck_svc_content.content | b64decode)"
+        fail_msg: "healthcheck unit does not probe port 9101"
+
+    - name: Probe-only run against the live exporter reports healthy
+      ansible.builtin.command: /usr/local/sbin/node-exporter-healthcheck.sh --probe-only 9101
+      changed_when: false
+
+    # The negative case: a port nothing is listening on must be detected, not
+    # silently passed. Without this, a probe that always succeeds (wrong URL,
+    # swallowed curl error) would look identical to a working gate.
+    - name: Probe-only run against a dead port must fail
+      ansible.builtin.command: /usr/local/sbin/node-exporter-healthcheck.sh --probe-only 19999
+      register: healthcheck_dead_port
+      changed_when: false
+      failed_when: healthcheck_dead_port.rc == 0
+
+    - name: Record the exporter's main PID before the restart path runs
+      ansible.builtin.systemd:
+        name: prometheus-node-exporter
+      register: exporter_state_before
+
+    # Full run against the dead port with the unit still "active" reproduces the
+    # zombie signature (systemd says up, nothing answers) and must restart it.
+    - name: Full run against a dead port restarts the exporter
+      ansible.builtin.command: /usr/local/sbin/node-exporter-healthcheck.sh 19999
+      changed_when: true
+
+    - name: Record the exporter's main PID after the restart path ran
+      ansible.builtin.systemd:
+        name: prometheus-node-exporter
+      register: exporter_state_after
+
+    - name: Assert the exporter was actually restarted
+      ansible.builtin.assert:
+        that:
+          - exporter_state_before.status.MainPID != exporter_state_after.status.MainPID
+          - exporter_state_after.status.MainPID | int > 0
+        fail_msg: >-
+          healthcheck did not restart prometheus-node-exporter
+          (MainPID {{ exporter_state_before.status.MainPID }} unchanged)
+
+    - name: Read the restart marker the healthcheck writes
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/node_exporter_healthcheck.prom
+      register: healthcheck_prom
+
+    - name: Assert the restart is visible as a scrapable metric
+      ansible.builtin.assert:
+        that:
+          - "'node_exporter_healthcheck_last_restart_timestamp_seconds ' in (healthcheck_prom.content | b64decode)"
+        fail_msg: "healthcheck restart did not emit its timestamp metric"
+
+    - name: Stopped exporter must be left alone (no fighting a deliberate stop)
+      ansible.builtin.systemd:
+        name: prometheus-node-exporter
+        state: stopped
+
+    - name: Full run against a stopped exporter exits clean without restarting
+      ansible.builtin.command: /usr/local/sbin/node-exporter-healthcheck.sh 9101
+      changed_when: false
+
+    - name: Confirm the exporter is still stopped
+      ansible.builtin.systemd:
+        name: prometheus-node-exporter
+      register: exporter_state_stopped
+      failed_when: exporter_state_stopped.status.ActiveState == "active"
+
+    - name: Restore the exporter for any later checks
+      ansible.builtin.systemd:
+        name: prometheus-node-exporter
+        state: started

@@ -48,8 +48,26 @@ active-backup bond MAC-flap guard is needed.
   line"), which would leave the drop-in inert at boot.
 
   The live apply is **compare-then-set**: the task diffs `ethtool -k` around the
-  change to report `changed` honestly, and a missing interface, unknown feature
-  or driver refusal **fails the play** rather than leaving the offload on.
+  change so `changed` reflects a real kernel transition. The apply itself does
+  not fail the play — the read-back below owns that.
+- `nic_tuning_verify_offloads` (default `true`) — after applying, re-read
+  `ethtool --show-features` for every overridden interface and **fail the play**
+  when a requested value is not live. This is the gate that catches the silent
+  modes: a driver that accepts and ignores the request, a renamed interface, a
+  feature the driver refuses. Without it the role can go green with the offload
+  still on, because the boot-time drop-in's only failure signal is a syslog
+  line. Set `false` only in a container test where the ethtool feature ioctls do
+  not exist.
+- `nic_tuning_feature_names` (default: the standard `ethtool` table) — maps the
+  short names `ethtool -K` takes (`gro`, `tso`, …) to the long names
+  `ethtool --show-features` prints, which is what the read-back compares. A
+  short name used in `nic_tuning_overrides` with no entry here fails the assert
+  with exactly that message. Extend it for a feature the table does not cover.
+
+  Adding an override for an unfamiliar NIC/driver adds a case this gate has
+  never seen — read the feature back by hand first
+  (`ethtool --show-features <iface>`) and confirm the long name appears with the
+  value you are asking for, rather than discovering it as a red fleet deploy.
 - `nic_tuning_bond_asa_guard` (default `true`) — force `all_slaves_active=0` on
   every `active-backup` bond, across three layers:
   - **`/etc/modprobe.d/bonding.conf`** module option — the *real* boot-time

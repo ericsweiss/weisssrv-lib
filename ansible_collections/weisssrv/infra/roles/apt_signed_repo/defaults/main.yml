@@ -21,9 +21,13 @@ apt_signed_repo_install_gnupg: false
 # keeps whatever gpg --dearmor created); set e.g. "0644" to pin it.
 apt_signed_repo_keyring_mode: ""
 
-# Staging path for the downloaded key before verification + dearmor. Cleaned up
-# after dearmor; the exact name is irrelevant.
-apt_signed_repo_tmp_key: "/tmp/{{ apt_signed_repo_keyring_path | basename }}.download"
+# Staging area for the downloaded key between verification and dearmor. Must be
+# a root-owned 0700 directory under a non-world-writable parent: verify and
+# dearmor are separate SSH invocations, so a path a local user can write is a
+# TOCTOU window in which the verified key is swapped for another. Created (and
+# removed again) by tasks/main.yml.
+apt_signed_repo_stage_dir: /run/apt-signed-repo
+apt_signed_repo_tmp_key: "{{ apt_signed_repo_stage_dir }}/{{ apt_signed_repo_keyring_path | basename }}.download"
 
 # Refresh the apt cache when adding the repo. Left true so every real caller
 # picks up the new repo immediately; the molecule scenario sets it false to keep

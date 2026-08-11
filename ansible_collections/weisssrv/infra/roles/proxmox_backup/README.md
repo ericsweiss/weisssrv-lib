@@ -1,9 +1,16 @@
 # weisssrv.infra.proxmox_backup
 
 Declaratively manages Proxmox storage entries (`storage.cfg`) and vzdump
-backup jobs (`jobs.cfg`) via `pvesh`, so the nightly-backup configuration
-lives in git instead of only in the GUI. Owns the `tank-proxmox` NFS backup
-target and its nightly vzdump job.
+backup jobs (`jobs.cfg`) via `pvesh`, so the backup configuration lives in git
+instead of only in the GUI.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `proxmox_backup_storage` | `[]` | Storage entries to reconcile (schema below) |
+| `proxmox_backup_vzdump_jobs` | `[]` | vzdump backup jobs to reconcile (schema below) |
+
+Both files live on the clustered `/etc/pve`, so run this role against exactly
+one node. It no-ops while both lists are empty.
 
 ## What This Role Manages
 
@@ -24,7 +31,11 @@ target and its nightly vzdump job.
   node_exporter textfile dir (feeding the `VzdumpBackupFailed`/`Stale` alerts).
   The script is deployed to **every** Proxmox host by `node_exporter_host` — a
   cluster-wide `all` job runs on each node for its local guests and invokes the
-  hook there, so it must exist fleet-wide, not only where this role runs.
+  hook there, so it must exist fleet-wide, not only where this role runs. When
+  a job sets `script`, this role first runs
+  `weisssrv.infra.node_exporter_host` with `tasks_from: vzdump_hook`, because
+  `pvesh` validates the path at save time and `node_exporter_host` usually runs
+  later in a play.
 
 ## Configuration
 
@@ -57,10 +68,9 @@ proxmox_backup_vzdump_jobs:
 (`pvesh get /cluster/backup --output-format json`) and mirror the live values
 — the role then reconciles instead of creating a duplicate.
 
-**Migrating a storage entry from a legacy IP to hostname+TLS** (done for
-`tank-proxmox` on 2026-07-14; keep for the next entry that needs it — one-time,
-outside a backup window; the fixed-property assert enforces that this has
-happened before the role converges):
+**Migrating a storage entry from a legacy IP to hostname+TLS** — `server` is
+create-fixed, so the fixed-property assert blocks the run until the entry is
+recreated by hand, outside a backup window:
 
 ```bash
 ssh <node> "sudo pvesh delete /storage/tank-proxmox"  # config entry only, data untouched
@@ -70,13 +80,6 @@ ssh <node> "sudo pvesh delete /storage/tank-proxmox"  # config entry only, data 
 Prerequisite for `xprtsec=tls`: the nas_storage export for `/tank-proxmox`
 must allow TLS and tlshd must run on the mounting host (see the nfs_tls
 role); mount by **hostname** — a wildcard cert has no IP SAN.
-
-## Deployment
-
-Cluster-wide config (`/etc/pve`) — wire the role into a play that targets a
-single node. The role no-ops while both variable lists are empty.
-The node-local metrics hookscript a job's `script` key references is deployed
-separately, to every Proxmox host, by `node_exporter_host`.
 
 ## Files
 

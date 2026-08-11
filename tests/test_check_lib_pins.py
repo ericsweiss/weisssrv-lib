@@ -4,9 +4,11 @@ Exercises the drift, branch-ref and missing-include cases against synthetic CI
 files, plus the --project / --ref-var overrides a consumer needs when it pins a
 fork or names its variable differently.
 
-This library's OWN .gitlab-ci.yml uses `local:` includes rather than pinning
-itself, so there is no self-check here — the gate ships for CONSUMERS to vendor,
-and each one asserts its real file (see weisssrv scripts/test_check_lib_pins.py).
+CANONICAL SUITE. The library's own .gitlab-ci.yml uses `local:` includes rather
+than pinning itself, so there is no self-check here. A consumer that vendors
+check-lib-pins.py vendors this file too, and adds only its own smoke test
+asserting the real .gitlab-ci.yml passes — behavioural cases belong here, not in
+a consumer's copy.
 """
 
 from __future__ import annotations

@@ -4,9 +4,6 @@
 Both claims rot silently — a new script ships documented but ungated, or gated
 but undocumented, and nothing notices until a consumer hits the gap. This is the
 gate that keeps the sentence honest.
-
-Run with pytest:
-    python3 -m pytest tests/test_scripts_have_tests.py -v
 """
 
 import os

@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Immich nightly database backup (pg_dumpall)
+Requires=docker.service
+After=docker.service immich-compose.service
+# The landing dir must be mounted before the dump runs — the app volume by
+# default, or the NFS export (nofail, pulled on demand) when enabled.
+RequiresMountsFor={{ immich_backup_dir }}
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/immich-backup-run.sh

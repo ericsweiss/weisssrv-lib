@@ -67,11 +67,8 @@ class TestCiShape:
         assert any("gitlab CI shape is selected but" in p for p in problems)
 
     def test_symlinked_gitlab_ruleset_is_flagged(self, scaffold, tmp_path):
-        # verify and prune must agree about the SAME tree. verify used
-        # `.exists()`, which follows symlinks, so a symlinked ruleset verified
-        # clean while `prune ci:gitlab` called the shape unsatisfiable and
-        # refused to keep it — one of the two was lying. git tracks the link,
-        # not a runnable file at that path.
+        # A symlinked .gitleaks.toml must read as absent in verify, matching
+        # prune: git tracks the link, not a runnable file at that path.
         _configured(scaffold, "gitlab")
         ruleset = scaffold / tree.GITLAB_CI_EXTRA[0]
         target = tmp_path / "elsewhere.toml"
@@ -165,13 +162,83 @@ class TestStructure:
         assert not ok
         assert any("orphan.yaml" in p and "not referenced" in p for p in problems)
 
-    def test_optin_hpa_not_flagged_as_orphan(self, scaffold):
-        # hpa.yaml ships on disk but is opt-in (not in resources) — must NOT be
-        # reported as an orphan.
+    def test_optin_manifests_not_flagged_as_orphans(self, scaffold):
+        # Opt-in manifests ship on disk unreferenced on purpose (in optional/,
+        # which the flat scan does not reach) — never reported as orphans.
         _configured(scaffold)
         ok, problems = verify.verify(scaffold, run_kustomize=False)
         assert ok, problems
         assert not any("hpa.yaml" in p for p in problems)
+
+    def test_unlisted_optional_manifest_flagged(self, scaffold):
+        # Nothing but optional/kustomization.yaml builds a switched-off
+        # manifest, so one missing from it rots unnoticed.
+        _configured(scaffold)
+        odir = scaffold / tree.FLUX_DIR / tree.OPTIONAL_DIR
+        odir.mkdir(parents=True, exist_ok=True)
+        (odir / tree.KUSTOMIZATION).write_text(
+            "---\napiVersion: kustomize.config.k8s.io/v1beta1\n"
+            "kind: Kustomization\nresources: []\n",
+            encoding="utf-8",
+        )
+        (odir / "stray.yaml").write_text("---\nkind: ConfigMap\n", encoding="utf-8")
+        ok, problems = verify.verify(scaffold, run_kustomize=False)
+        assert not ok
+        assert any("stray.yaml" in p and "nothing validates it" in p for p in problems)
+
+    def test_optional_kustomization_listing_a_missing_file_flagged(self, scaffold):
+        # The direction that actually breaks the build: `kustomize build
+        # optional/` errors on a resource that is not on disk, so CI goes red
+        # while verify used to report clean. Step 3 makes exactly this check
+        # for kubernetes/flux/; the two trees are checked the same way.
+        _configured(scaffold)
+        odir = scaffold / tree.FLUX_DIR / tree.OPTIONAL_DIR
+        odir.mkdir(parents=True, exist_ok=True)
+        for p in list(odir.iterdir()):
+            if p.name != tree.KUSTOMIZATION:
+                p.unlink()
+        (odir / "hpa.yaml").write_text(
+            "---\nkind: HorizontalPodAutoscaler\n", encoding="utf-8"
+        )
+        (odir / tree.KUSTOMIZATION).write_text(
+            "---\napiVersion: kustomize.config.k8s.io/v1beta1\n"
+            "kind: Kustomization\nresources:\n  - hpa.yaml\n  - vpa.yaml\n",
+            encoding="utf-8",
+        )
+        ok, problems = verify.verify(scaffold, run_kustomize=False)
+        assert not ok
+        assert any(
+            "vpa.yaml" in p and "missing on disk" in p for p in problems
+        ), problems
+        # hpa.yaml is listed AND present — it must not be reported.
+        assert not any("hpa.yaml" in p for p in problems), problems
+
+    def test_missing_optional_kustomization_flagged(self, scaffold):
+        # Worse than one unlisted manifest: with the kustomization gone NOTHING
+        # builds or kubeconforms any opt-in manifest. Skipping the check here
+        # would report clean on the very case it exists to catch.
+        _configured(scaffold)
+        odir = scaffold / tree.FLUX_DIR / tree.OPTIONAL_DIR
+        odir.mkdir(parents=True, exist_ok=True)
+        (odir / "hpa.yaml").write_text("---\nkind: HorizontalPodAutoscaler\n", encoding="utf-8")
+        (odir / tree.KUSTOMIZATION).unlink(missing_ok=True)
+        ok, problems = verify.verify(scaffold, run_kustomize=False)
+        assert not ok
+        assert any(
+            tree.KUSTOMIZATION in p and "nothing validates the opt-in manifests" in p
+            for p in problems
+        )
+
+    def test_empty_optional_dir_without_kustomization_is_fine(self, scaffold):
+        # No opt-in manifests means there is nothing left unvalidated, so an
+        # absent kustomization there is a layout fact, not a problem.
+        _configured(scaffold)
+        odir = scaffold / tree.FLUX_DIR / tree.OPTIONAL_DIR
+        for p in list(odir.iterdir()) if odir.is_dir() else []:
+            p.unlink()
+        odir.mkdir(parents=True, exist_ok=True)
+        ok, problems = verify.verify(scaffold, run_kustomize=False)
+        assert ok, problems
 
 
 class TestKustomizeNote:

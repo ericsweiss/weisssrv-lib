@@ -1,113 +1,108 @@
-# Proxmox HA Role
+# weisssrv.infra.proxmox_ha
 
-Configures Proxmox VE High Availability for VMs and containers. Manages HA rules (node affinity), HA resources, and ZFS storage replication.
+Configures Proxmox VE High Availability for VMs and containers: HA rules
+(node affinity), HA resources, and ZFS storage replication jobs.
 
 ## What This Role Manages
 
-- **HA Rules** (Proxmox 9+): Node-affinity rules that restrict which nodes can run specific VMs/containers
-- **HA Resources**: Registers VMs/containers with the HA manager for automatic restart and migration on failure
-- **Storage Replication**: ZFS replication jobs for multi-target data replication (fast failover)
+- **HA rules** (Proxmox 9+): node-affinity rules restricting which nodes may
+  run a given guest. Only `type: node-affinity` is supported — the role
+  asserts this and fails loud on any other type.
+- **HA resources**: registers guests with the HA manager (auto restart and
+  relocation on failure), reconciling `state`, `max_restart`, `max_relocate`
+  and `comment`, including fields *removed* from config.
+- **Storage replication**: `pvesr` jobs, one per `<VMID>-<n>` id, with
+  multi-target support so a guest can fail over to any node holding a replica.
 
-## Requirements
+`tasks/main.yml` runs the rules + resources reconciliation. Replication is
+**not** included there — run it in a separate play against the source nodes
+with `tasks_from: replication`, or it executes once per host in the group.
 
-- Proxmox VE cluster must be configured and quorate
-- Run from any cluster member
-- For replication: All target nodes must have matching ZFS storage (e.g., local-ssd)
+## Variables
 
-## Configuration
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `proxmox_ha_rules` | `[]` | Node-affinity rules (schema below) |
+| `proxmox_ha_resources` | `[]` | Guests HA manages (schema below) |
+| `proxmox_ha_replication_jobs` | `[]` | `pvesr` replication jobs (schema below) |
+| `proxmox_ha_host_group` | `proxmox` | Inventory group whose membership is asserted before touching HA state |
 
-`proxmox_ha_rules`, `proxmox_ha_resources` and `proxmox_ha_replication_jobs`
-are pure inventory data (all default to `[]`).
-`proxmox_ha_host_group` (default `proxmox`) names the inventory group whose
-membership the role asserts before touching HA state. Representative shapes:
+Every entry supports `enabled` (default `true`); setting it to `false` removes
+the rule / resource / job.
 
 ```yaml
-# HA Rules - one node-affinity rule PER SERVICE (Proxmox 9+).
-# Nodes carry explicit priorities: the ":2" home wins whenever it's available
-# (fail-back after an outage), the ":1" entries are ranked fallbacks.
+# One node-affinity rule per service. Nodes may carry explicit priorities: the
+# ":2" home wins whenever it is available (fail-back after an outage), ":1"
+# entries are ranked fallbacks. A bare node name means priority 0.
 proxmox_ha_rules:
   - name: affinity-dns-01
     type: node-affinity
     resources:
-      - ct:150  # dns-01
+      - ct:150
     nodes:
-      - "pve-opt-01:2"  # home — service fails back here when available
-      - "pve-opt-02:1"
-      - "pve-opt-03:1"
-      - "pve-prec-01:1"
-    strict: false  # Allow pve-nas-01 only if ALL listed nodes are unavailable
-    comment: "dns-01 home pve-opt-01; never pve-nas-01"
+      - "node-a:2"   # home
+      - "node-b:1"
+      - "node-c:1"
+    strict: false     # false: allow an unlisted node if none listed is available
+    comment: "dns-01 home node-a"
     enabled: true
 
-# HA Resources - VMs/containers managed by HA
 proxmox_ha_resources:
-  - type: ct
+  - type: ct          # ct | vm
     vmid: 150
     state: started
+    max_restart: 2    # optional: restart attempts on the current node
+    max_relocate: 1   # optional: relocation attempts to another node
     comment: "dns-01 (AdGuard Home primary)"
     enabled: true
 
-# Storage Replication - Multi-target ZFS replication.
-# Schedules are explicit staggered minute lists (not "*/15") so each service
-# gets a deterministic offset and the four services never replicate at once.
+# Job ids are "<VMID>-<n>"; one entry per target. Prefer explicit staggered
+# minute lists over "*/15" so services do not all replicate at once.
 proxmox_ha_replication_jobs:
   - id: "150-0"
-    source_node: pve-laptop-01
-    target_node: pve-opt-01
-    schedule: "0,15,30,45"   # dns-01 slots; the next service uses "3,18,33,48"
-    comment: "dns-01 -> pve-opt-01"
+    source_node: node-a
+    target_node: node-b
+    schedule: "0,15,30,45"
+    comment: "dns-01 -> node-b"
     enabled: true
 ```
 
-Only `type: node-affinity` rules are supported — the role asserts this and
-fails loud on any other rule type.
+## Behaviour worth knowing
+
+- **`ha-manager config` takes no resource argument.** It prints the whole
+  index (a `<type>:<vmid>` line plus that resource's indented properties), so
+  the role reads it once per run and splits it per SID. A per-resource
+  `ha-manager config <sid>` call is rejected by PVE.
+- **Replication drift.** Proxmox permutes job-id↔target pairings when a guest
+  migrates. Only a differing target *set* is treated as drift (delete +
+  recreate); permuted ids with an equal set are left alone, because churning
+  them forces a full ZFS resync per target. A job's `--comment` may therefore
+  name a stale target — read the live target from `pvesr list`.
+- **Deletes only where they can be repaired.** Jobs are deleted only while the
+  guest is local, so a job that could not be recreated here is never removed.
+- **Orphaned jobs are reported, never deleted** — an incomplete config would
+  otherwise destroy jobs that are simply not codified yet.
+- **Source drift is reported, not corrected**: a guest that migrated away
+  needs either the inventory updated or the guest migrated back.
+
+## Requirements
+
+- Quorate Proxmox VE cluster (rules require PVE 9+); run from any member.
+- Replication targets need matching ZFS storage on every target node.
 
 ## Files
 
-- `tasks/main.yml` - Main orchestration (validates cluster, includes sub-tasks)
-- `tasks/rules.yml` - Manages HA rules (node-affinity)
-- `tasks/resources.yml` - Manages HA resources (VMs/containers)
-- `tasks/replication.yml` - Manages storage replication jobs
-- `defaults/main.yml` - Default empty lists for all variables
+- `tasks/main.yml` — cluster/quorum gate, then rules + resources
+- `tasks/rules.yml` — node-affinity rules
+- `tasks/resources.yml` — HA resources
+- `tasks/replication.yml` — `pvesr` replication jobs (`tasks_from: replication`)
 
-## Manual Commands
-
-For troubleshooting or manual operations:
+## Troubleshooting
 
 ```bash
-# Check HA status
-ssh pve-nas-01 "sudo ha-manager status"
-
-# List HA rules
-ssh pve-nas-01 "sudo ha-manager rules list"
-
-# View HA config
-ssh pve-nas-01 "sudo ha-manager config"
-
-# Manual migration
-ssh pve-nas-01 "sudo ha-manager migrate ct:150 pve-laptop-01"
-
-# Check replication
-ssh pve-nas-01 "sudo pvesr status"
+ha-manager status          # HA state of every resource
+ha-manager rules list      # current node-affinity rules
+ha-manager config          # the resource index this role parses
+ha-manager migrate ct:150 <node>
+pvesr status               # replication job health
 ```
-
-## Design Decisions
-
-**Why multi-target replication?**
-- Each service replicates to ALL other nodes with local-ssd storage
-- HA can failover to ANY available node, not just one designated backup
-- 15-minute schedule balances data freshness vs. overhead
-
-**Why exclude pve-nas-01?**
-- NAS workloads (ZFS, NFS, Samba) cause I/O contention
-- Critical services (DNS, SMTP, HA) run better on dedicated compute nodes
-- `strict: false` allows NAS as last resort if all compute nodes fail
-
-**Why not HA for Plex or k3s VMs?**
-- Plex depends on NAS bind mounts (cannot run elsewhere)
-- k3s handles node failures at the application layer (pod rescheduling)
-
-## Dependencies
-
-- Proxmox VE cluster must be quorate
-- ZFS storage pools must exist on all replication targets

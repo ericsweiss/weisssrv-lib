@@ -1,0 +1,127 @@
+---
+# Plex Media Server configuration: group membership, the custom-certificate
+# hook, bind-mount checks and the systemd override.
+
+- name: Ensure media group exists
+  ansible.builtin.group:
+    name: "{{ plex_media_group }}"
+    gid: "{{ plex_media_gid }}"
+    state: present
+
+- name: Add plex user to media group
+  ansible.builtin.user:
+    name: "{{ plex_user }}"
+    groups: "{{ plex_media_group }}"
+    append: true
+  notify: Restart plex
+
+- name: Add plex user to video group (GPU access)
+  ansible.builtin.user:
+    name: "{{ plex_user }}"
+    groups: video
+    append: true
+  notify: Restart plex
+
+# The render group only exists where a DRM render node is present. Probing it
+# keeps a genuine failure (e.g. a missing plex user) visible, which a blanket
+# failed_when: false would have hidden while GPU transcode silently degraded.
+- name: Check whether the render group exists
+  ansible.builtin.command: getent group render
+  register: plex_render_group
+  changed_when: false
+  failed_when: false
+
+- name: Add plex user to render group (GPU access)
+  ansible.builtin.user:
+    name: "{{ plex_user }}"
+    groups: render
+    append: true
+  notify: Restart plex
+  when: plex_render_group.rc == 0
+
+# The bind-mounted directories (/config, /transcode, /media) are deliberately
+# NOT chowned: they come from the host with UID/GID passthrough, and changing
+# ownership from inside an unprivileged container rewrites the host side to
+# high-mapped UIDs, breaking access for every other process.
+
+# Custom-certificate hook: an external distributor drops fullchain.pem +
+# privkey.pem into plex_cert_dir, and plex-cert-reload.sh converts the pair into
+# the PKCS#12 bundle Plex's "Custom certificate location" requires.
+- name: Deploy the Plex custom-certificate hook
+  when: plex_custom_cert_enabled | bool
+  block:
+    # root-owned, plex-group-readable: a compromised plex account must not be
+    # able to swap files that root's cert-reload script later consumes.
+    - name: Ensure the Plex cert directory exists
+      ansible.builtin.file:
+        path: "{{ plex_cert_dir }}"
+        state: directory
+        owner: root
+        group: "{{ plex_user }}"
+        mode: "0750"
+
+    # The reload script refuses to run without the passphrase file, so a missing
+    # value would silently break every subsequent renewal.
+    - name: Validate that the PFX passphrase was supplied
+      ansible.builtin.assert:
+        that: plex_pfx_passphrase | length > 0
+        fail_msg: >-
+          plex_pfx_passphrase is empty. Supply it from the site's secret store —
+          it must match the value set under Plex Settings -> Network -> "Custom
+          certificate encryption key" — or set plex_custom_cert_enabled false.
+      no_log: true
+
+    - name: Deploy the PFX passphrase
+      ansible.builtin.copy:
+        dest: "{{ plex_cert_dir }}/pfx-passphrase"
+        content: "{{ plex_pfx_passphrase }}\n"
+        owner: root
+        group: "{{ plex_user }}"
+        mode: "0640"
+      no_log: true
+
+    - name: Deploy plex-cert-reload.sh
+      ansible.builtin.template:
+        src: plex-cert-reload.sh.j2
+        dest: /usr/local/sbin/plex-cert-reload.sh
+        owner: root
+        group: root
+        mode: "0750"
+
+# config, transcode AND media must exist and be really mounted before the
+# service is touched — a stale mountpoint directory passes an existence check
+# and sends the library to the guest root disk. Own file so the molecule
+# scenario can drive it in both directions.
+- name: Verify the Plex bind mounts
+  ansible.builtin.include_tasks: assert-mounts.yml
+
+- name: Check if Plex preferences exist
+  ansible.builtin.stat:
+    path: "{{ plex_config_dir }}/Library/Application Support/Plex Media Server/Preferences.xml"
+  register: plex_preferences
+
+- name: Display Plex preferences status
+  ansible.builtin.debug:
+    msg: "Plex preferences {{ 'exist' if plex_preferences.stat.exists else 'do not exist (fresh install)' }}"
+
+- name: Create Plex systemd override directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/plexmediaserver.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# 0640 + no_log: the override embeds PLEX_CLAIM when set. The token is
+# short-lived but should not sit world-readable or land in --diff output.
+- name: Deploy Plex systemd override
+  ansible.builtin.template:
+    src: plex-override.conf.j2
+    dest: /etc/systemd/system/plexmediaserver.service.d/override.conf
+    owner: root
+    group: root
+    mode: "0640"
+  no_log: true
+  notify:
+    - Reload systemd
+    - Restart plex

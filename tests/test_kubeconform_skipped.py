@@ -1,6 +1,4 @@
 """Tests for scripts/kubeconform-skipped.py (flux-lint's unvalidated-kind tracker).
-
-Run via `pytest scripts/` (the python-tests CI job runs this automatically).
 """
 from __future__ import annotations
 

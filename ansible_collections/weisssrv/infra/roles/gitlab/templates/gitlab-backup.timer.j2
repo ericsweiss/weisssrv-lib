@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Daily GitLab backup
+
+[Timer]
+OnCalendar={{ gitlab_backup_oncalendar }}
+RandomizedDelaySec={{ gitlab_backup_timer_random_delay }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

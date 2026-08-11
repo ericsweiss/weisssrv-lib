@@ -5,7 +5,7 @@ galaxy_info:
   author: Eric Weiss
   description: >-
     Shared pinned Docker Engine (CE) install: apt repo + held engine/plugins +
-    journald daemon.json for the docker-compose app VMs
+    journald daemon.json for docker-compose app guests
   license: MIT
   min_ansible_version: "2.15"
   platforms:

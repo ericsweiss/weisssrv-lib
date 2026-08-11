@@ -41,9 +41,8 @@ tasks:
   doc-links:
     desc: Resolve relative Markdown cross-links offline (skipped if the script is absent).
     cmds:
-      # NOT `[ -f x ] && python3 x || echo skip`: in that form the `||` also
-      # fires when the CHECKER fails, printing "skipping" over a real failure
-      # and exiting 0 — the gate could never fail.
+      # An `if`, not `[ -f x ] && … || echo skip`: the `||` form also fires
+      # when the checker itself fails, masking a real failure.
       - |
         if [ -f {{.DOC_LINK_SCRIPT}} ]; then
           python3 {{.DOC_LINK_SCRIPT}}

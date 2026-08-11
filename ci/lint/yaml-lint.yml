@@ -8,27 +8,34 @@ spec:
       description: Pipeline stage the job runs in.
     image:
       default: python:3.11-slim
-      description: Base image (must have pip). Default matches weisssrv.
+      description: Base image (must have pip).
     tags:
       type: array
       default: ["infrastructure"]
-      description: >-
-        Runner tag(s). Default targets weisssrv's privileged runner; pass `[]`
-        for the shared tag-less tenant runner.
+      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
     yamllint_version:
       default: "1.38.0"
       description: yamllint pip pin (kept in step with the CI image).
     config:
       default: "-d relaxed"
       description: >-
-        yamllint config argument. `-d relaxed` (weisssrv baseline) or `-c
-        <path>` to load a config file (e.g. `-c .yamllint`).
+        yamllint config argument: `-d relaxed`, or `-c <path>` to load a config
+        file (e.g. `-c .yamllint`; this library ships two profiles in lint/).
     targets:
       default: "ansible/ kubernetes/ .gitlab-ci.yml .gitlab/ci/"
       description: >-
         Space-separated paths to lint; each is passed to a separate yamllint
-        invocation. Default reproduces weisssrv's four targets. Tenant repos
-        typically pass `.` (the whole tree, with `config: -c .yamllint`).
+        invocation. A target that does not exist is SKIPPED with a note, so the
+        defaults degrade on a repo laid out differently. Tenant repos typically
+        pass `.` (the whole tree, with `config: -c .yamllint`).
+    default_branch:
+      default: "main"
+      description: >-
+        Consumer's default branch as a LITERAL name (`main`, `master`, `trunk`)
+        for the post-merge rule. NOT `$CI_DEFAULT_BRANCH`: the value lands
+        inside a quoted `rules:if` string, which GitLab does not expand, so the
+        comparison would never match and the job would silently stop running
+        post-merge.
     changes:
       type: array
       default:
@@ -36,7 +43,7 @@ spec:
         - "kubernetes/**/*"
         - ".gitlab-ci.yml"
         - ".gitlab/ci/**/*"
-      description: Path list for the MR/main `changes:` rules (weisssrv .paths-yaml-lint).
+      description: Path list for the MR / default-branch `changes:` rules.
 ---
 "$[[ inputs.job_name ]]":
   needs: []
@@ -61,18 +68,28 @@ spec:
     - |
       set -e
       # shellcheck disable=SC2043,SC2086  # word-split the space-separated
-      # `targets` input into one yamllint invocation per path (weisssrv runs
-      # `yamllint -d relaxed ansible/`, `... kubernetes/`, etc. as separate
-      # lines — this reproduces those exact invocations).
+      # `targets` input into one yamllint invocation per path. A target absent
+      # from this consumer's tree is skipped rather than failing the job, the
+      # same way shellcheck's direct globs skip.
+      linted=0
       for target in $[[ inputs.targets ]]; do
+        if [ ! -e "$target" ]; then
+          echo "no such target '$target' — skipping"
+          continue
+        fi
         echo "$YAMLLINT_BIN $[[ inputs.config ]] $target"
         "$YAMLLINT_BIN" $[[ inputs.config ]] "$target"
+        linted=$((linted + 1))
       done
+      # A skipped target is a layout difference; ALL of them missing is a
+      # misconfigured `targets` input, and a green job that linted nothing is
+      # exactly the silent pass this gate exists to prevent.
+      [ "$linted" -gt 0 ] || { echo "ERROR: none of the configured targets exist"; exit 1; }
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes: $[[ inputs.changes ]]
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "$[[ inputs.default_branch ]]"'
       changes: $[[ inputs.changes ]]
     - if: '$CI_PIPELINE_SOURCE == "web"'

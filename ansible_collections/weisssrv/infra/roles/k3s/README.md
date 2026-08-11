@@ -16,7 +16,7 @@ placement.
   pool. Without it, a fresh molecule CI container's systemd PID 1 intermittently
   dies at boot with *"Failed to allocate manager object: Too many open files"*
   and the job fails at molecule's *"Wait for systemd to be ready"* prepare step.
-  Toggle with `k3s_inotify_tuning`; see the note below and the role README
+  Toggle with `k3s_inotify_tuning`.
 
 ### Persistent Storage
 - Additional disk formatting (passthrough block devices, e.g. ZFS zvols)
@@ -27,23 +27,49 @@ placement.
 ### K3s Installation
 - Version checking and upgrading (pinned installer script, optional sha256 pin
   via `k3s_install_script_checksum`)
-- Server installation (with embedded etcd, `secrets-encryption: true`,
-  WireGuard flannel backend — see the role README)
-- Agent installation (connects to API VIP with the lower-privilege agent
-  token; existing agents are migrated off the server token — see the role README)
-- Kube-vip manifest deployment (first server only)
+- Server installation (embedded etcd, `secrets-encryption: true`, WireGuard
+  flannel backend)
+- Agent installation (connects to the API VIP with the lower-privilege agent
+  token; existing agents are migrated off the server token)
+- Kube-vip manifest deployment (first server only), pinned
+  `system-node-critical` with a memory limit so the pod owning the API VIP is
+  neither preemptible nor BestEffort
+- metrics-server override (first server only, opt-in — see below)
 - /etc/hosts pins: container-registry hostname → internal Traefik VIP
   (`k3s_registry_host_pins`) and NAS storage hostname for NFS-over-TLS PVs
   (`k3s_storage_host_pins`)
 - Node label application
 - Node taint application
+- kube-apiserver audit logging (opt-in, servers only) — see below
 - Off-node etcd snapshot copy (opt-in, servers only): a systemd timer that
   copies the newest local etcd snapshot to an NFS export (by hostname, over
   TLS) and emits an `etcd_snapshot_last_copy_timestamp_seconds`
   textfile metric for the `EtcdSnapshotStale` alert — off by default via
-  `k3s_etcd_snapshot_offnode_enabled` (see the role README and defaults for the
-  companion NFS export + `node_exporter_host` + `nfs_tls`/tlshd on the servers
-  it needs — the `xprtsec=tls` mount hangs without the TLS handshake daemon)
+  `k3s_etcd_snapshot_offnode_enabled` (see defaults for the companion NFS export
+  + `node_exporter_host` + `nfs_tls`/tlshd on the servers it needs — the
+  `xprtsec=tls` mount hangs without the TLS handshake daemon)
+
+## Required variables
+
+The role ships **no** version pins and **no** site addresses: a role-local
+duplicate of a site's pin silently deploys the stale value the day the two
+drift. These are asserted, so a dropped inventory var fails the run.
+
+| Variable | Aliases | Required on | Notes |
+|---|---|---|---|
+| `k3s_token` | — | all nodes | server/cluster join token; a secret |
+| `k3s_version` | — | all nodes | e.g. `v1.36.3+k3s1` |
+| `k3s_api_vip` | — | all nodes | the kube-vip API address |
+| `k3s_kube_vip_version` | `kube_vip_version` | servers | kube-vip image tag |
+| `k3s_gpu_*` (4 pins) | `nvidia_*` | GPU agents | see the GPU section |
+
+Everything else has a working default. The ones a site almost always sets:
+`k3s_agent_token` (falls back to `k3s_token`, which is fine for a test run and
+wrong for production — an agent token cannot promote a node),
+`k3s_kube_vip_interface` (alias `kube_vip_interface`, default `eth0`),
+`k3s_registry_host_pins` / `k3s_storage_host_pins` (both `[]`),
+`k3s_etcd_snapshot_nfs_server` (empty; required once the off-node copy is on),
+`k3s_disable`, `k3s_labels`, `k3s_taints`.
 
 ## Configuration
 
@@ -52,6 +78,8 @@ placement.
 k3s_api_vip: "10.0.0.161"          # required — the kube-vip API address
 k3s_token: "<server/cluster join token>"
 k3s_agent_token: "<lower-privilege agent join token>"
+k3s_version: "v1.36.3+k3s1"
+k3s_kube_vip_version: "v1.2.2"     # required on servers
 k3s_server_group: k3s_servers      # inventory group holding the servers
 
 # Extra apiserver-certificate SANs, on top of k3s_api_vip, inventory_hostname
@@ -134,6 +162,101 @@ network/package task (and the assert above) — the escape hatch molecule and
 check-mode runs use. `k3s_gpu_debian_sources_path` retargets the deb822 sources
 file whose `Components:` line is normalized.
 
+## metrics-server override (`k3s_metrics_server_override_enabled`)
+
+k3s packages metrics-server as a single replica with no memory limit, and it is
+the only metric source every HPA and the VPA recommender read: if that one pod
+OOMs, HPAs freeze on their last replica count and look healthy. Enabling this
+writes a `HelmChartConfig` into the first server's manifests dir raising the
+replica count and bounding memory:
+
+```yaml
+k3s_metrics_server_override_enabled: true
+k3s_metrics_server_replicas: 2                 # default
+k3s_metrics_server_resources:                  # default
+  requests: {cpu: 25m, memory: 128Mi}
+  limits: {memory: 256Mi}
+```
+
+A `HelmChartConfig` only reaches the component where k3s packages it as a
+HelmChart. Where k3s ships metrics-server as a static wrangler AddOn, the
+override applies cleanly and changes nothing — so the role probes for
+`HelmChart/metrics-server` in `kube-system` first and fails with that diagnosis
+rather than leaving an inert file behind. On such a k3s the alternative is to
+disable the packaged component (`k3s_disable`) and ship a full replacement
+manifest. The same trap applies to CoreDNS, which is why a replica pin for it is
+an in-cluster HPA rather than a `HelmChartConfig`.
+
+## kube-apiserver audit logging (`k3s_audit_enabled`)
+
+k3s ships apiserver audit logging **off**, so by default nothing in the cluster
+records who read a Secret, who granted themselves a ClusterRole, or which
+identity did it. Setting `k3s_audit_enabled: true` writes an audit policy to
+each server and points the apiserver at it.
+
+```yaml
+k3s_audit_enabled: true
+# Defaults, all overridable:
+k3s_audit_log_path: /var/lib/rancher/k3s/server/logs/audit.log
+k3s_audit_policy_path: /var/lib/rancher/k3s/server/audit-policy.yaml
+k3s_audit_maxage: 30        # days
+k3s_audit_maxbackup: 10     # rotated files kept
+k3s_audit_maxsize: 100      # MB per file
+k3s_audit_policy: {...}     # the full audit/v1 Policy — see defaults/main.yml
+```
+
+### What is logged
+
+Rules are evaluated **in order, first match wins**, and the shipped policy has
+**no catch-all** — an event matching no rule is not logged at all. That is what
+keeps a security control from becoming a disk-space incident.
+
+| Rule | Level | Why |
+|---|---|---|
+| `/healthz*`, `/livez*`, `/readyz*`, `/version`, `/metrics`, `/openapi/*` | `None` | probe traffic, several times a second, forever |
+| `coordination.k8s.io/leases` in `kube-system` | `None` | leader-election renewals — a write every couple of seconds, no signal |
+| `rbac.authorization.k8s.io` roles/clusterroles/(cluster)rolebindings, **write verbs** | `RequestResponse` | a privilege grant is the one case where the body *is* the evidence |
+| the same RBAC resources, any other verb | `Metadata` | enumerating permissions is reconnaissance worth recording, but a `RequestResponse` on `list clusterroles` would dump the whole RBAC tree on every controller resync |
+| core `secrets`, `configmaps`, `serviceaccounts` | `Metadata` | who touched which credential object, when, as whom — **never** the body, which would write Secret contents into a plaintext log |
+
+The two `None` rules are noise suppression *and* a deny-first guard: they are
+redundant while there is no catch-all, and load-bearing the moment anyone
+appends one. Keep them first if you override `k3s_audit_policy`.
+
+### Where it lands, and rotation
+
+The log is written to `k3s_audit_log_path` on **that server's local disk** and
+rotated by the apiserver itself (`maxsize` MB per file, `maxbackup` files kept,
+anything older than `maxage` days discarded) — worst case
+`maxsize x (maxbackup + 1)` ≈ 1.1 GB per server at the defaults. The role
+creates the parent directory `0700` and writes the policy `0600`, both
+root-owned: audit events name principals, namespaces and object names.
+
+Nothing ships it off-node. `weisssrv.infra.alloy_host` reads **journald only**
+(`loki.source.journal`), and the apiserver writes this file directly, so it is
+not picked up by the existing log pipeline. Shipping it would need a
+`loki.source.file` component that this role deliberately does not build — treat
+the log as node-local forensic material, read with `jq` on the server.
+
+### Restart implication
+
+The policy file and the `kube-apiserver-arg` block in
+`/etc/rancher/k3s/config.yaml` are both read **once at apiserver startup**, so
+enabling — or editing the policy afterwards — notifies `Restart k3s` +
+`Wait for k3s API healthy`. On a multi-server cluster that is a rolling
+control-plane bounce with an API-VIP failover per node; run it in a deliberate
+window with a healthy etcd quorum, and keep the servers play `serial: 1`.
+
+The ordering matters and the role enforces it: `tasks/audit.yml` runs **before**
+the server config template, because an apiserver whose `--audit-policy-file` is
+missing or unparseable **exits at startup**. For the same reason the role
+asserts `k3s_audit_policy` is an `audit.k8s.io/v1` `Policy` with at least one
+rule before writing it — a malformed override should fail the play, not roll the
+control plane into a crash loop.
+
+Turning it back off removes the args from the config (another restart) and
+leaves the now-unreferenced policy file behind, inert.
+
 ## Task Flow
 
 ```
@@ -159,10 +282,14 @@ file whose `Components:` line is normalized.
 - `tasks/agent.yml` - Agent installation (incl. agent-token migration)
 - `tasks/install-script.yml` - Shared version detection + installer staging
 - `tasks/gpu.yml` - NVIDIA driver/toolkit enablement (included when `k3s_gpu_node`)
+- `tasks/audit.yml` - kube-apiserver audit policy (opt-in, servers only)
 - `tasks/etcd-snapshot-offnode.yml` - Off-node etcd snapshot copy (opt-in)
+- `tasks/metrics-server-override.yml` - metrics-server replicas/resources (opt-in)
 - `templates/k3s-server-config.yaml.j2` - Server configuration
 - `templates/k3s-agent-config.yaml.j2` - Agent configuration
+- `templates/k3s-audit-policy.yaml.j2` - kube-apiserver audit policy
 - `templates/kube-vip-manifest.yaml.j2` - Kube-vip DaemonSet
+- `templates/metrics-server-helmchartconfig.yaml.j2` - metrics-server override
 - `templates/k3s-etcd-snapshot-copy.{sh,service,timer}.j2` - Off-node snapshot copy
 - `defaults/main.yml` - Default values
 - `handlers/main.yml` - Service restart + Ready-gate handlers
@@ -190,8 +317,6 @@ systemctl status k3s          # servers
 systemctl status k3s-agent    # agents
 journalctl -u k3s -f
 kubectl get nodes
-
-```bash
 kubectl get pods -A --field-selector spec.nodeName=<node>
 ```
 

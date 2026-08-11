@@ -49,6 +49,36 @@ class TestScoping:
         assert kz.list_resources(new).count("hpa.yaml") == 1
 
 
+class TestCommentedResourceRemoval:
+    """`prune` of an opt-in manifest takes its enable line with it — otherwise
+    uncommenting it later names a file that is gone."""
+
+    def test_commented_optin_line_removed(self):
+        new, changed = kz.remove_commented_resource(_SCOPED, "hpa.yaml")
+        assert changed
+        assert "hpa.yaml" not in new
+        # The active entries are untouched.
+        assert kz.list_resources(new) == ["deployment.yaml", "service.yaml"]
+
+    def test_absent_line_is_a_no_op(self):
+        new, changed = kz.remove_commented_resource(_SCOPED, "pdb.yaml")
+        assert not changed
+        assert new == _SCOPED
+
+    def test_path_style_optin_line_removed(self):
+        text = "resources:\n  - deployment.yaml\n  # - optional/hpa.yaml   # note\n"
+        new, changed = kz.remove_commented_resource(text, "optional/hpa.yaml")
+        assert changed
+        assert new == "resources:\n  - deployment.yaml\n"
+
+    def test_a_commented_line_outside_resources_survives(self):
+        new, changed = kz.remove_commented_resource(
+            _SCOPED + "patches:\n  # - hpa.yaml\n", "hpa.yaml"
+        )
+        assert changed  # the resources-block line went
+        assert "  # - hpa.yaml" in new.split("patches:")[1]
+
+
 class TestAppendBranch:
     def test_append_when_no_active_resource(self):
         # last_idx is None branch: resources block has only a commented entry.

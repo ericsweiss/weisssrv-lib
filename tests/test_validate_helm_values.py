@@ -6,9 +6,6 @@ placeholder resolution and manifest parsing that gate helm-template validation.
 A regression here (e.g. silently dropping an unresolved placeholder, or picking
 the wrong document out of a multi-doc manifest) would let a broken release slip
 through, so they are unit-tested independently of the network-bound `helm` path.
-
-Run with pytest:
-    python3 -m pytest tests/test_validate_helm_values.py -v
 """
 
 from __future__ import annotations
@@ -211,21 +208,21 @@ class TestRenderedCpuLimitPolicy:
 
     def test_shared_module_loaded(self):
         assert hasattr(vhv, "_hpa")
-        assert callable(vhv._hpa._cpu_limit_violations)
+        assert callable(vhv._hpa.cpu_limit_violations)
         assert isinstance(vhv._hpa.Policy().cpu_limit_allowlist, set)
 
     def test_flags_rendered_cpu_limit(self):
-        v = vhv._hpa._cpu_limit_violations(_deploy({"cpu": "500m"}))
+        v = vhv._hpa.cpu_limit_violations(_deploy({"cpu": "500m"}))
         assert len(v) == 1
         assert "ns/Deployment/app" in v[0] and "limits.cpu=500m" in v[0]
 
     def test_memory_only_and_null_cpu_are_clean(self):
-        assert vhv._hpa._cpu_limit_violations(_deploy({"memory": "256Mi"})) == []
-        assert vhv._hpa._cpu_limit_violations(_deploy({"cpu": None})) == []
+        assert vhv._hpa.cpu_limit_violations(_deploy({"memory": "256Mi"})) == []
+        assert vhv._hpa.cpu_limit_violations(_deploy({"cpu": None})) == []
 
     def test_allowlist_suppresses_violation(self):
         allowlist = {"ns/Deployment/app"}
-        assert vhv._hpa._cpu_limit_violations(_deploy({"cpu": "250m"}), allowlist) == []
+        assert vhv._hpa.cpu_limit_violations(_deploy({"cpu": "250m"}), allowlist) == []
 
 
 if __name__ == "__main__":

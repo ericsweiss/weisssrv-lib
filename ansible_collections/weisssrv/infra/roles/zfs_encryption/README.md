@@ -1,141 +1,180 @@
 # zfs_encryption
 
-Boot-time unlock of ZFS-native encrypted pools by fetching the
-passphrase from 1Password Connect.
+Boot-time unlock of ZFS-native encrypted pools on bare-metal Proxmox hosts,
+fetching each pool's passphrase from a 1Password Connect instance.
 
 ## What it deploys
 
 Per host:
 
-- `/etc/onepassword-connect/token` (mode 0400, root) — Connect access
-  token used by the unlock script.
-- `/etc/zfs/encryption/pools/<pool>.conf` (mode 0400, root) — env file
-  loaded by the systemd unit, containing `ZFS_ENCRYPTION_ITEM=<title>`
-  and `ZFS_ENCRYPTION_FIELD=passphrase` for each pool.
-- `/usr/local/sbin/zfs-load-key.sh` (mode 0750) — fetches passphrase
-  from Connect and runs `zfs load-key`. Mounting is handled by
-  `zfs-mount-encrypted.service` (below); calling `zfs mount -a` from
-  inside the key-load unit would race across parallel-running pool
-  instances and couldn't propagate mounts outside its
-  ProtectSystem=strict namespace anyway.
-- `/etc/systemd/system/zfs-load-key@.service` — template unit, **off the
-  early-boot critical path** (reworked 2026-06). Ordered
-  `After=zfs-import.target network-online.target` (+`Wants=`) so it can
-  reach Connect, and `WantedBy=zfs-mount-encrypted.service` (best-effort —
-  a failed pool unlock no longer fails any mount or boot target). It is
-  deliberately NOT `Before=zfs-mount.service` / `RequiredBy=zfs-mount.service`
-  anymore: those two edges put a network-dependent unlock in the early
-  `local-fs` path and closed an ordering cycle. `Restart=on-failure`,
-  `StartLimitIntervalSec=3600s` / `StartLimitBurst=60`; each ExecStart does
-  two sequential Connect calls (~240s worst case) so only ~13 attempts fit
-  the 1h window — it retries continuously rather than tripping to failed.
-- `/usr/local/sbin/zfs-mount-encrypted.sh` + `zfs-mount-encrypted.service`
-  — the **late, retrying mount anchor**. `WantedBy=multi-user.target`,
-  `After=zfs-mount.service network-online.target`, and `Wants=` (pull, **not**
-  `After=`) each `zfs-load-key@<pool>.service` — an `After=` on the key-loads
-  would keep this unit queued behind a restarting key-fetch (Connect down)
-  instead of running its own keystatus retry. **Never `Before=` any boot
-  target**. Its `ExecStart` is an `until <script>; do sleep 30; done` loop
-  (with `TimeoutStartSec=0`): each pass mounts the ready pools (`zfs mount -a`,
-  skipping still-locked ones) and exits non-zero until every encryption root
-  reports `keystatus=available`, so the unit stays **`activating`** (never
-  `failed`) until storage is truly ready. That is deliberate — a plain
-  oneshot's *first failed* start would complete the start job and **release**
-  units ordered `After=` it (nfsd, the guest starter), and cascade `Requires=`
-  failures onto the export `.mount` units (none of which retry), so a degraded
-  cold boot could leave nfsd/guests down until manual recovery. The loop holds
-  those dependents queued until the mount succeeds. (`Restart=on-failure` +
-  `StartLimitIntervalSec=0` remain only as a backstop for the bash wrapper
-  itself dying.) This is the single anchor that nfsd and the encrypted-storage
-  guests order `After=`.
+- `/etc/onepassword-connect/token` (0400 root) — Connect access token, only on
+  hosts with a non-empty `zfs_encryption_pools`.
+- `/etc/zfs/encryption/pools/<pool>.conf` (0400 root) — env file read by the
+  unit: `ZFS_ENCRYPTION_ITEM=<1P item title>` and `ZFS_ENCRYPTION_FIELD=`.
+- `/usr/local/sbin/zfs-load-key.sh` (0750) — fetches the passphrase from
+  Connect and runs `zfs load-key` on every encryption root under the pool. It
+  does **not** mount: a `zfs mount -a` here would race sibling per-pool
+  instances and could not propagate out of the unit's `ProtectSystem=strict`
+  mount namespace.
+- `/etc/systemd/system/zfs-load-key@.service` — per-pool template unit, enabled
+  for each entry in `zfs_encryption_pools`.
+- `/usr/local/sbin/zfs-mount-encrypted.sh` + `zfs-mount-encrypted.service` —
+  the late, retrying mount anchor. Rendered and enabled only where pools are
+  configured; removed again if the list is emptied.
 - `/usr/local/sbin/zfs-start-encrypted-guests.sh` +
-  `pve-start-encrypted-guests.service` — starts the Proxmox guests whose
-  disks live on encrypted pools (`zfs_encryption_guest_vmids` /
-  `_ctids`), but only once `zfs-mount-encrypted.service` is active. Gates +
-  retries; idempotent (`grep -q running`). Does NOT touch `pve-guests`, so
-  ungated guests (e.g. the etcd VM) start early on their normal onboot path.
-- `zfs-load-key@<pool>.service` enabled per pool listed in
-  `zfs_encryption_pools`; `zfs-mount-encrypted.service` enabled where any
-  pool is listed; `pve-start-encrypted-guests.service` enabled where a guest
-  cohort is configured. The role also **unconditionally sweeps** the legacy
-  `/etc/systemd/system/zfs-mount.service.requires/zfs-load-key@*.service`
-  symlinks left by the old `RequiredBy=` form.
+  `pve-start-encrypted-guests.service` — starts the guest cohort once the
+  anchor is active. Enabled only where a cohort is configured.
+
+De-listing a pool is reconciled: its env file and its `.wants` symlink are
+removed on the next run.
+
+## Boot ordering
+
+The design goal is that the host **always boots to a usable state — ssh and
+Tailscale up — whether or not the unlock ever succeeds**. Only the encrypted
+data, nfsd's encrypted exports and the gated guests come up late.
+
+- `zfs-load-key@<pool>` is `After=zfs-import.target network-online.target`
+  (Connect is reachable only once the network is up) and
+  `WantedBy=zfs-mount-encrypted.service`.
+- It is **never** `Before=` or `RequiredBy=zfs-mount.service`. That pair closed
+  an ordering cycle (`zfs-mount` → `local-fs` → `network-online`) and put a
+  network-dependent unlock in the early boot path. Stock `zfs-mount.service`
+  still runs early; its `zfs mount -a` simply skips the locked datasets and
+  exits 0.
+- `WantedBy` (not `RequiredBy`) the anchor: one pool failing to unlock must not
+  fail the anchor, the other pools, or any boot target.
+- `zfs-mount-encrypted.service` is `WantedBy=multi-user.target`, `Wants=` (not
+  `After=`) each key-load, and its `ExecStart` is an
+  `until <script>; do sleep 30; done` loop under `TimeoutStartSec=0`. It
+  therefore stays **`activating`** — never `failed` — until every encryption
+  root reports `keystatus=available`. That is what holds `After=` dependents
+  (nfsd, the guest starter) queued instead of releasing them onto locked
+  storage: a plain oneshot's *first* failed start completes the start job and
+  cascades `Requires=` failures onto export `.mount` units, none of which retry.
+
+### Retry budget
+
+Every retryable path in `zfs-load-key.sh` (waiting for the pool import, then
+the vault / item-id / item-field lookups) burns a full
+`zfs_encryption_fetch_timeout_seconds` before exiting, so one `ExecStart` is
+worst-case ~4× that plus `RestartSec` — far inside `StartLimitBurst=60` per
+`StartLimitIntervalSec=3600s`. Those paths retry indefinitely. The one fast
+failure is exit 5 (`zfs get encryptionroot` enumeration), which fires right
+after a successful fetch and so trips the burst limit in roughly half an hour —
+the intended "a real misconfiguration eventually surfaces as `failed`".
+
+### Guest cohort
+
+`pve-start-encrypted-guests.service` gates **only** the VMIDs/CTIDs listed in
+`zfs_encryption_guest_vmids` / `_ctids`; it never touches `pve-guests.service`.
+Leave out any guest that must start early on its normal onboot path — a
+control-plane/etcd member whose quorum must not wait on this host's unlock, for
+instance. Guests in the cohort should carry `onboot=0`, since membership here
+is what starts them.
 
 ## Threat model
 
-Encryption protects against **disk-leaves-building** scenarios: RMA,
-disposal, theft of an offline drive. It does NOT protect against
-running-system theft — anyone with root on the running host can
-extract the Connect token and use it (over LAN) to fetch the same
-passphrase. Storing the literal key on disk would have the same
-exposure with one fewer indirection.
+Encryption protects against **disk-leaves-building** scenarios: RMA, disposal,
+theft of an offline drive. It does not protect a running system — anyone with
+root on the live host can read the Connect token and fetch the same passphrase.
+Storing the key on disk would have the same exposure with one fewer
+indirection.
 
-The Connect token is strictly more limited than a 1Password Service
-Account token: it can only read items from the configured Connect
-server's vault (`Homelab`), and only over the LAN since
-The Connect endpoint must be reachable from the host at boot.
+The token is narrower than a 1Password Service Account token: it reads only the
+configured Connect server's vault, and only where that Connect endpoint is
+reachable — keep it on an internal-only ingress.
 
-## Cold-cluster boot (boot never hangs)
+**Changing `zfs_encryption_token_path` orphans the old token.** The role's
+fail-closed cleanup — emptying `zfs_encryption_pools`, or setting
+`zfs_encryption_key_command` — removes the token at the **currently configured**
+path, which is the only path it knows. Repoint the variable and the credential
+stays behind at the previous location, readable by root, outliving every
+rotation the role performs and invisible to `--check`. Delete the old file by
+hand in the same change (and rotate the token if it sat somewhere it should not
+have).
 
-The key property of the reworked ordering: **the host always boots to a
-usable state — ssh + Tailscale up — regardless of whether the unlock ever
-succeeds.** Boot reaches `multi-user.target` on the plaintext datasets alone
-(stock early `zfs-mount.service` runs `zfs mount -a`, which skips the locked
-encrypted datasets and returns 0). Only the *encrypted data*, nfsd's
-encrypted exports, and the encrypted-storage guests come up late.
+Every pool left out of `zfs_encryption_pools` is unencrypted at rest, including
+any pool holding VM root disks and any swap that is not itself a crypt device.
+Treat that as a deliberate residual with a drive-wipe SOP as the compensating
+control, or encrypt it.
 
-If everything power-cycles together and Connect (in k8s) isn't up yet, the
-`zfs-load-key@<pool>.service` units retry continuously, and
-`zfs-mount-encrypted.service` stays `activating` (its `until` loop retries every
-30s) until keys load — keeping nfsd and the gated guests queued behind it rather
-than letting them fail early. When Connect comes up, every layer converges on
-its own: keys load → datasets mount → the anchor goes `active` → nfsd starts
-ordered after it → the gated guests start. No operator action required.
+## Cold-cluster boot
 
-If Connect never comes up (or a passphrase rotated), an operator
-hand-unlocks over Tailscale and the retrying units close the loop
-automatically:
+If everything power-cycles together and Connect is not up yet, the per-pool
+units retry continuously and the anchor stays `activating`, so nfsd and the
+gated guests wait rather than fail. When Connect appears, every layer converges
+on its own: keys load → datasets mount → anchor active → nfsd → guests. No
+operator action required.
+
+If Connect never comes up (or a passphrase was rotated), unlock by hand and the
+retrying units close the loop:
 
 ```bash
-ssh <host>                   # always reachable — sshd/tailscaled are on the
-                             # unencrypted root, with no ZFS ordering edges
-sudo zfs load-key tank
-sudo zfs load-key ssd        # paste passphrases from the 1P mobile app
-# nothing else needed: zfs-mount-encrypted.service mounts on its next retry,
-# then nfsd + pve-start-encrypted-guests.service converge. To not wait for
-# the 30s retry cadence, nudge them:
+ssh <host>                 # always reachable: sshd/tailscaled are on the
+                           # unencrypted root, with no ZFS ordering edges
+sudo zfs load-key <pool>   # paste the passphrase from the 1P mobile app
+# Nothing else is required — the anchor mounts on its next 30s retry. To skip
+# the wait:
 sudo systemctl start zfs-mount-encrypted.service pve-start-encrypted-guests.service
 ```
 
-There is no longer a `RequiredBy=zfs-mount.service` edge, so `zfs-mount.service`
-does NOT go to a failed state on a locked boot and needs no `reset-failed`.
+There is no `RequiredBy=zfs-mount.service` edge, so `zfs-mount.service` does not
+go `failed` on a locked boot and needs no `reset-failed`.
 
 ## Variables
 
-See `defaults/main.yml`. Key ones:
-
 | Variable | Required | Notes |
 |----------|----------|-------|
-| `zfs_encryption_connect_token` | yes (host with pools) | Provide via `op read` at runtime |
-| `zfs_encryption_pools` | yes | List of `{name, item, field}` per pool |
-| `zfs_encryption_connect_url` | yes (host with pools) | Derived from `zfs_encryption_internal_domain` as `https://connect.<domain>`; asserted non-empty |
-| `zfs_encryption_internal_domain` | no | Aliases the inventory-wide `internal_domain` |
-| `zfs_encryption_connect_vault` | no | Defaults to `Homelab` |
+| `zfs_encryption_pools` | yes (to do anything) | List of `{name, item, field}`. Empty = deploy the scripts + template unit only: no token, no enabled units, no mount anchor. |
+| `zfs_encryption_connect_token` | yes, where pools are set | Injected at runtime from 1Password; asserted non-empty. |
+| `zfs_encryption_connect_url` | yes, where pools are set | Defaults to `https://connect.<zfs_encryption_internal_domain>`; asserted non-empty. |
+| `zfs_encryption_internal_domain` | no | Aliases the inventory-wide `internal_domain`. |
+| `zfs_encryption_connect_vault` | no | Vault holding the passphrase items (`Homelab`). A 26-char lowercase id is used as a vault UUID directly; anything else is resolved by name at runtime. |
+| `zfs_encryption_guest_vmids` / `_ctids` | no | Guest cohort started after the mount anchor. |
+| `zfs_encryption_fetch_timeout_seconds` | no | Per-phase deadline inside one script invocation (120). |
+| `zfs_encryption_fetch_retry_seconds` | no | Sleep between Connect retries (5); jittered. |
+| `zfs_encryption_install_zfsutils` | no | Set false only in CI images without `zfsutils-linux`; also skips the pool-is-encrypted assert. |
+| `zfs_encryption_token_path` | no | Where the Connect bearer token lands (`/etc/onepassword-connect/token`); its parent directory is created `0700`. **Changing it strands the old file** — see below. |
+| `zfs_encryption_key_command` | no | Secrets-backend seam — see below. Empty (default) = 1Password Connect. |
 
-### Deliberate changes from the pre-collection role
+## Using a secrets backend other than 1Password Connect
 
-- `zfs-load-key.sh` clears its `/dev/shm` response file from a single
-  `EXIT`/`INT`/`TERM` trap instead of per call site, so an errexit abort or a
-  signal between `mktemp` and `rm` cannot leave the passphrase in tmpfs.
-- `zfs-mount-encrypted.service` renders `ExecStart=/bin/true` when
-  `zfs_encryption_pools` is empty. The mount script exits 1 on its usage guard
-  with no arguments, and `TimeoutStartSec=0` would make the `until` loop spin
-  forever — a manual `systemctl start` on such a host is now a clean no-op.
-  Hosts with pools render exactly as before.
+`zfs_encryption_key_command` replaces the Connect fetch with any command that
+prints the passphrase on stdout. It is a **template-level** switch: with it empty
+the rendered `zfs-load-key.sh` is byte-identical to the Connect-only script, and
+with it set the Connect code is not rendered at all — no `curl` to an access
+point, no token deployed (an existing one is removed), and
+`zfs_encryption_connect_url` / `_token` are neither required nor asserted.
+
+```yaml
+zfs_encryption_key_command: >-
+  vault kv get -field="$ZFS_ENCRYPTION_FIELD" "secret/zfs/$ZFS_ENCRYPTION_POOL"
+```
+
+The command runs as root from `zfs-load-key@<pool>.service` with
+`ZFS_ENCRYPTION_POOL`, `ZFS_ENCRYPTION_ITEM` and `ZFS_ENCRYPTION_FIELD` exported
+— item/field are opaque locators, so the same `zfs_encryption_pools` shape
+addresses a Vault path or an SOPS key. Everything around the fetch is unchanged:
+pool-import wait, the already-unlocked short-circuit, per-encryption-root
+`zfs load-key`, and the mount/guest-start ordering units.
+
+Two obligations come with it. The command owns its own retry and timeout
+(`zfs_encryption_fetch_*` do not apply to it) — a non-zero exit is reported as
+rc 2, which the unit retries, and empty output as rc 3, which stops it. And it
+must work at **boot**, before any encrypted dataset is mounted: keep its binary
+and credentials on the root filesystem.
 
 ## Required 1Password items
 
-Per pool, create a `Password` item in `Homelab` vault with field
-`passphrase`. Title should match `zfs_encryption_pools[*].item`.
-Naming convention: `ZFS Pool <pool> Passphrase` (e.g. `ZFS Pool tank
-Passphrase`).
+One `Password` item per pool in the configured vault, with a field matching
+`zfs_encryption_pools[*].field` (default `passphrase`) and a title matching
+`zfs_encryption_pools[*].item`. Convention: `ZFS Pool <pool> Passphrase`.
+
+## Upgrading
+
+Hosts first configured before the mount-anchor layout may still carry
+`/etc/systemd/system/zfs-mount.service.requires/zfs-load-key@*.service` symlinks
+from the old `RequiredBy=` `[Install]`. The role no longer sweeps them; delete
+any that exist (`systemctl disable` will not, it only removes the current link)
+and `systemctl daemon-reload`, or the next boot fails `zfs-mount.service`.

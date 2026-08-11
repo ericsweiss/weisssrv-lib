@@ -26,10 +26,31 @@ provisioner:
         proxmox_firewall_skip_pveum: true
         proxmox_firewall_admin_lan_cidrs:
           - 192.168.0.0/24
-        proxmox_firewall_immich_ml_clients:
-          - 192.168.0.157
         proxmox_firewall_wan_wireguard_vips:
           - 192.168.0.99
+        # Stands in for a site's per-application groups (the role default is
+        # empty). Exercises verbatim rule/comment emission and a `rules` value
+        # supplied as an expression, which must evaluate to a LIST.
+        molecule_authless_api_clients:
+          - 192.168.0.157
+        proxmox_firewall_security_groups:
+          - name: sg-example-web
+            rules:
+              - "# ingress -> app TLS"
+              - "IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 443 -log nolog"
+              - "IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog"
+          - name: sg-example-authless
+            # Escaped as `$$`: molecule runs this whole file (comments included)
+            # through a string.Template pass — the one that resolves
+            # ${MOLECULE_TEST_IMAGE} above — BEFORE the YAML parse, and a bare
+            # dollar there is an invalid placeholder that aborts the scenario.
+            # The escape collapses back to the single end-of-string anchor the
+            # regex_replace needs.
+            rules: >-
+              {{ molecule_authless_api_clients
+                 | map('regex_replace', '^', 'IN ACCEPT -source ')
+                 | map('regex_replace', '$$', ' -p tcp -dport 3003 -log nolog')
+                 | list }}
         proxmox_firewall_extra_aliases:
           - name: api-vip
             cidr: 192.168.0.161

@@ -2,8 +2,6 @@
 
 Invokes the script as a subprocess (the same way Taskfile + CI call it) and
 checks the eval-able export output and the derived kubeconform version.
-
-Run via `task scripts:test` (pytest).
 """
 from __future__ import annotations
 
@@ -88,6 +86,15 @@ class TestExportVersions:
         assert "invalid shell variable name" in r.stderr
         assert "export bad-key=" not in r.stdout
 
+    def test_reserved_key_fails(self, tmp_path: Path):
+        # A key named after one of the calling job's own variables would
+        # clobber it at eval time.
+        p = tmp_path / "reserved.yaml"
+        p.write_text("data:\n  PATH: /nope\n")
+        r = _run(["export-versions", str(p)])
+        assert r.returncode != 0
+        assert "reserved variable name" in r.stderr
+
 
 class TestK8sVersion:
     def test_derives_major_minor_zero(self, cm: Path):
@@ -95,11 +102,14 @@ class TestK8sVersion:
         assert r.returncode == 0
         assert r.stdout.strip() == "1.36.0"
 
-    def test_defaults_when_no_k3s_version(self, tmp_path: Path):
+    def test_missing_k3s_version_fails_loudly(self, tmp_path: Path):
+        # No hardcoded default: local lint and CI must not silently validate
+        # against different schema versions.
         p = tmp_path / "cm.yaml"
         p.write_text("data:\n  traefik_version: '1.0.0'\n")
         r = _run(["k8s-version", str(p)])
-        assert r.stdout.strip() == "1.36.0"
+        assert r.returncode != 0
+        assert "could not derive k3s_version" in r.stderr
 
 
 class TestCli:

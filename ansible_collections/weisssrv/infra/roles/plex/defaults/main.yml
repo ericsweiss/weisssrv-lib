@@ -1,0 +1,59 @@
+---
+# Plex Media Server on a Debian guest (typically an LXC with bind-mounted
+# library, config and transcode directories).
+
+# Package version. "latest" tracks the Plex repo and leaves the package
+# unheld; any other value is installed exactly and held.
+plex_version: latest
+
+# Service account created by the plexmediaserver package. The package also
+# creates a group of the same name, which owns the TLS material below.
+plex_user: plex
+
+# Group that owns the media tree; Plex runs with it as its PRIMARY group. Keep
+# it in step with the fileserver's own media group (nas_storage_media_group).
+plex_media_group: media
+plex_media_gid: 2000
+
+# Paths as seen by Plex. On an LXC these are the container-side bind-mount
+# targets; the role fails loudly when config or transcode is not mounted.
+plex_config_dir: /config
+plex_transcode_dir: /transcode
+plex_media_dir: /media
+
+# Plex's HTTP/TLS port; used by the readiness check and the cert probe.
+plex_port: 32400
+
+# Claim token for linking a fresh server to a Plex account. It is rendered into
+# the systemd override only while non-empty, so re-run the role WITHOUT it once
+# the server is claimed to remove it.
+plex_claim: ""
+
+# Custom-certificate hook. Plex's "Custom certificate location" takes a PKCS#12
+# bundle, so the role deploys a script that converts the distributed PEM pair
+# and swaps it in. Disable on a deployment that does not push its own cert.
+plex_custom_cert_enabled: true
+plex_cert_dir: /etc/ssl/plex
+# Passphrase for the generated PKCS#12 bundle (secret). The SAME value must be
+# set by an operator under Plex Settings -> Network -> "Custom certificate
+# encryption key"; the hook refuses to run without it.
+plex_pfx_passphrase: ""
+# FALLBACK only for the cert-reload probe's SNI. Plex serves the custom
+# certificate exclusively to handshakes whose SNI matches its
+# customCertificateDomain preference — everything else gets the *.plex.direct
+# fallback — so the probe must send that name to verify the swap took effect.
+# The script reads the live value from Preferences.xml and only falls back to
+# this when Plex has not written the key yet; an empty value there makes the
+# script refuse to verify blind rather than guess.
+plex_cert_domain: ""
+
+# Skip the non-free apt components and the VA-API driver packages (no GPU
+# passed through, or a test container).
+plex_skip_gpu_drivers: false
+
+# Skip the enable/start/readiness steps (a container with no working systemd).
+plex_skip_service: false
+
+# Units the plexmediaserver service is ordered after (and pulls in).
+plex_service_after:
+  - network-online.target

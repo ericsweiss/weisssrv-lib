@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+# metrics-server is the single metric source every HPA and the VPA recommender
+# read; k3s packages it as one replica with no memory limit. valuesContent is
+# MERGED over the packaged chart's values, so only these keys change.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: metrics-server
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    replicas: {{ k3s_metrics_server_replicas }}
+    resources:
+{{ k3s_metrics_server_resources | to_nice_yaml(indent=2) | trim | indent(6, true) }}

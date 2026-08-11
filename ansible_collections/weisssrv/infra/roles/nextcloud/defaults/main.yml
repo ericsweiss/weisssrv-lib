@@ -1,0 +1,172 @@
+---
+# Nextcloud (docker compose) on a dedicated Debian guest.
+#
+# Required inputs (empty here — tasks/main.yml asserts each where it is used):
+#   nextcloud_version / _postgres_version / _redis_version / _exporter_version
+#   nextcloud_external_host and/or nextcloud_internal_host
+#   the secrets below (env lookups by default; supply from the site's store)
+# Every optional block (OIDC SSO, outgoing SMTP, the NFS-backed backup landing)
+# is off/empty by default and asserts its own inputs when switched on.
+
+# Image pins. No default: a stale pin here would silently move a live stack.
+nextcloud_version: ""
+nextcloud_postgres_version: ""
+# Aliases the conventional inventory-wide `redis_version` pin.
+nextcloud_redis_version: "{{ redis_version | default('') }}"
+nextcloud_exporter_version: ""
+nextcloud_image: "nextcloud:{{ nextcloud_version }}-apache"
+nextcloud_postgres_image: "postgres:{{ nextcloud_postgres_version }}"
+nextcloud_redis_image: "redis:{{ nextcloud_redis_version }}"
+nextcloud_exporter_image: "ghcr.io/xperimental/nextcloud-exporter:{{ nextcloud_exporter_version }}"
+
+# Render-only escape hatch: skips everything that needs a live Docker daemon and
+# a running Nextcloud (engine install, compose up, occ). The alias keeps the
+# legacy unprefixed `skip_nextcloud_deploy` switch working.
+nextcloud_skip_install: "{{ skip_nextcloud_deploy | default(false) }}"
+
+# Filesystem layout. Three separate paths so each can be its own volume: app dir
+# (compose + html + local backups), PGDATA, and bulk user data.
+nextcloud_app_dir: /mnt/nextcloud-app
+nextcloud_postgres_dir: /mnt/nextcloud-postgres
+nextcloud_data_mount: /mnt/nextcloud-data
+nextcloud_compose_dir: "{{ nextcloud_app_dir }}/compose"
+nextcloud_html_dir: "{{ nextcloud_app_dir }}/html"
+nextcloud_data_dir: "{{ nextcloud_data_mount }}/data"
+# Extra block devices mounted before anything else (zvol_mount schema).
+nextcloud_additional_disks: "{{ vm_additional_disks | default([]) }}"
+
+# The container runs as www-data (33): the bind-mounted html + data dirs must be
+# owned by that uid for PHP to write.
+nextcloud_uid: 33
+nextcloud_gid: 33
+
+# Database
+nextcloud_db_name: nextcloud
+nextcloud_db_user: nextcloud
+nextcloud_db_password: "{{ lookup('ansible.builtin.env', 'NEXTCLOUD_POSTGRES_PASSWORD', default='') }}"
+
+# Admin account (break-glass when SSO is the normal login path).
+nextcloud_admin_user: admin
+nextcloud_admin_password: "{{ lookup('ansible.builtin.env', 'NEXTCLOUD_ADMIN_PASSWORD', default='') }}"
+
+# User-facing hostnames. The defaults derive the conventional `cloud.<domain>`
+# names from nextcloud_external_domain / _internal_domain (which alias the
+# inventory-wide external_domain / internal_domain); set either host directly
+# when the name differs. At least one must resolve non-empty.
+nextcloud_external_domain: "{{ external_domain | default('') }}"
+nextcloud_internal_domain: "{{ internal_domain | default('') }}"
+nextcloud_external_host: "{{ ('cloud.' ~ nextcloud_external_domain) if nextcloud_external_domain else '' }}"
+nextcloud_internal_host: "{{ ('cloud.' ~ nextcloud_internal_domain) if nextcloud_internal_domain else '' }}"
+
+# Trusted domains: the user-facing hosts + the compose service name (the
+# exporter reaches Nextcloud as http://nextcloud) + localhost for occ/CLI.
+nextcloud_trusted_domains: >-
+  {{ (([nextcloud_external_host, nextcloud_internal_host] | select | list)
+      + ['nextcloud', 'localhost']) | join(' ') }}
+# overwritehost is deliberately NOT forced, so the served host tracks the
+# incoming Host header and both names work; only protocol and CLI URL are fixed.
+nextcloud_overwrite_protocol: https
+nextcloud_overwrite_cli_url: "{{ ('https://' ~ nextcloud_external_host) if nextcloud_external_host else '' }}"
+
+# Compose bridge subnet. Fixed so nextcloud_trusted_proxies can name the gateway
+# that docker-proxy presents as the client of the loopback-published web port.
+nextcloud_docker_subnet: "172.28.0.0/16"
+# The container's only hop is the host nginx, which arrives via that gateway
+# (plus loopback for occ). It must NOT trust a whole LAN: a directly connected
+# client could then forge X-Forwarded-For and spoof the audited client IP.
+nextcloud_trusted_proxies: "127.0.0.1 {{ nextcloud_docker_subnet }}"
+# Proxy sources whose X-Forwarded-For the host nginx trusts for real_ip
+# resolution — the ingress/proxy node addresses, nothing else. Empty renders no
+# set_real_ip_from directive, so $remote_addr stays the connecting address.
+nextcloud_nginx_real_ip_trusted_addresses: []
+
+# PHP tuning. The upload ceiling only bounds single-request uploads; clients
+# chunk by default.
+nextcloud_php_memory_limit: "1024M"
+nextcloud_php_upload_limit: "16G"
+
+# Web port: loopback-only, since the host nginx terminates TLS and proxies here.
+nextcloud_http_bind_address: "127.0.0.1"
+nextcloud_http_bind_port: 8080
+# Exporter port: published on all interfaces for an off-host Prometheus; scope
+# it with the guest firewall.
+nextcloud_exporter_port: 9205
+nextcloud_serverinfo_token: "{{ lookup('ansible.builtin.env', 'NEXTCLOUD_SERVERINFO_TOKEN', default='') }}"
+
+# Opt-in postgres_exporter sidecar: database-level metrics, which the
+# application-level nextcloud-exporter above does not carry. Off by default, so
+# nothing is added to the stack unless a site asks for it. It reuses the stack's
+# own DB credentials from .env, so it introduces no new secret. Enabling it
+# requires a pinned image — set the version, or override
+# nextcloud_postgres_exporter_image for a different registry or build.
+nextcloud_postgres_exporter_enabled: false
+nextcloud_postgres_exporter_version: ""
+nextcloud_postgres_exporter_image: "quay.io/prometheuscommunity/postgres-exporter:{{ nextcloud_postgres_exporter_version }}"
+# Host port, published on all interfaces like the app exporter above — the
+# endpoint is unauthenticated, so scope it with the guest firewall.
+nextcloud_postgres_exporter_port: 9187
+
+# Host nginx TLS front end. The site's cert distributor (acme_certs) delivers
+# the real cert to these paths and reloads nginx; a self-signed placeholder is
+# seeded on a fresh guest so nginx can start before the first push.
+nextcloud_nginx_enabled: true
+nextcloud_nginx_cert_dir: /etc/ssl/nextcloud
+nextcloud_nginx_ssl_certificate: "{{ nextcloud_nginx_cert_dir }}/fullchain.pem"
+nextcloud_nginx_ssl_certificate_key: "{{ nextcloud_nginx_cert_dir }}/privkey.pem"
+nextcloud_nginx_server_names: "{{ [nextcloud_external_host, nextcloud_internal_host] | select | join(' ') }}"
+
+# OIDC SSO via the user_oidc app. Enabling it requires the discovery URI and the
+# client credentials; SSO-only hides the local login form (?direct=1 bypasses it
+# for the break-glass admin).
+nextcloud_oidc_enabled: false
+nextcloud_oidc_provider_id: authentik
+nextcloud_oidc_discovery_uri: ""
+nextcloud_oidc_client_id: "{{ lookup('ansible.builtin.env', 'NEXTCLOUD_OIDC_CLIENT_ID', default='') }}"
+nextcloud_oidc_client_secret: "{{ lookup('ansible.builtin.env', 'NEXTCLOUD_OIDC_CLIENT_SECRET', default='') }}"
+nextcloud_oidc_scope: "openid email profile groups"
+nextcloud_oidc_mapping_uid: preferred_username
+nextcloud_oidc_mapping_display_name: name
+nextcloud_oidc_mapping_email: email
+nextcloud_oidc_mapping_groups: groups
+nextcloud_oidc_group_provisioning: 1
+# 0 = use the uid claim verbatim as the Nextcloud user id (not a hash).
+nextcloud_oidc_unique_uid: 0
+nextcloud_oidc_sso_only: true
+# Nextcloud's SSRF guard blocks server-side fetches to private addresses, which
+# breaks OIDC discovery whenever the provider resolves to one (split-horizon
+# DNS). Widens every server-side fetch surface — see the README.
+nextcloud_oidc_allow_local_remote_servers: true
+
+# Outgoing mail. An empty relay host skips the whole occ mail pass.
+nextcloud_smtp_host: ""
+nextcloud_smtp_enabled: "{{ nextcloud_smtp_host | length > 0 }}"
+nextcloud_smtp_port: "25"
+# Empty = no encryption (a LAN relay on 25); "tls" or "ssl" otherwise.
+nextcloud_smtp_secure: ""
+nextcloud_mail_from_address: nextcloud
+nextcloud_mail_domain: "{{ nextcloud_external_domain }}"
+
+# Nightly pg_dump timer + node_exporter textfile metrics.
+nextcloud_backup_enabled: true
+nextcloud_backup_keep_days: 3
+nextcloud_backup_oncalendar: "*-*-* 02:30:00"
+# Where compose_app's sourceable write_prom_metrics helper lands, and where the
+# wrapper writes nextcloud_backup_*.prom.
+nextcloud_backup_lib_path: /usr/local/lib/nextcloud-backup-lib.sh
+nextcloud_backup_metrics_dir: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
+
+# NFS-backed backup landing: relocates the dump onto a fileserver export so it
+# rides an offsite file walk. Both the systemd unit and the wrapper fail closed
+# on an unmounted export. Mount by hostname when the export requires TLS — a
+# wildcard cert has no IP SAN.
+nextcloud_backup_nfs_enabled: false
+nextcloud_backup_nfs_server: ""
+nextcloud_backup_nfs_export: ""
+nextcloud_backup_mountpoint: /mnt/backups-offsite
+nextcloud_backup_nfs_options: "vers=4.2,rw,hard,noatime,_netdev,nofail,xprtsec=tls"
+# Resolved from the toggle so a site flips one variable.
+nextcloud_backup_dir: "{{ nextcloud_backup_mountpoint if nextcloud_backup_nfs_enabled else nextcloud_app_dir + '/backups' }}"
+
+# Readiness wait for first-install completion before occ runs.
+nextcloud_install_wait_retries: 60
+nextcloud_install_wait_delay: 10

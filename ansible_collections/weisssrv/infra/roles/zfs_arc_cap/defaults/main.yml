@@ -5,11 +5,12 @@
 # ~half-RAM default) AND written live to /sys/module/zfs/parameters/zfs_arc_max
 # so a change needs no reboot. Empty ("") makes the role a total no-op.
 #
-# The COMPUTE counterpart to nas_storage's zfs_arc_max_bytes (a different
-# playbook lifecycle owns the NAS cap). It exists because a VFIO-passthrough
-# guest's RAM is host-pinned and non-reclaimable, so an uncapped ARC collides
-# with the pinned VM and thrashes.
-zfs_arc_cap_max_bytes: ""
+# Aliased to the conventional inventory-wide `zfs_arc_max_bytes`, which
+# weisssrv.infra.nas_storage (the NAS-host counterpart of the same knob) also
+# reads; set zfs_arc_cap_max_bytes directly to decouple. The cap matters most
+# where a VFIO-passthrough guest's RAM is host-pinned and non-reclaimable, so
+# an uncapped ARC collides with the pinned VM and thrashes.
+zfs_arc_cap_max_bytes: "{{ zfs_arc_max_bytes | default('') }}"
 
 # Skip the update-initramfs handler (molecule / check-mode). The modprobe.d file
 # still renders; only the initramfs rebuild — which needs a real /boot kernel —

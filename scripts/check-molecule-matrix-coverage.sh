@@ -3,36 +3,19 @@
 # from the scenario directories on disk.
 #
 # Two parallel:matrix blocks in the CI file enumerate which tests run:
-#
 #   molecule-tests    — ROLE/SCENARIO pairs, one per <roles>/*/molecule/*/
 #   integration-tests — a TEST list, one per <integration-tests>/*/
+#
+# Fails when a scenario/test exists on disk with no matrix entry, when a role
+# has no molecule scenario at all (unless allowlisted in $UNTESTED_ROLES), or
+# when the molecule matrix exceeds $MAX_MATRIX_ENTRIES (an aggregate job that
+# `needs:` every entry hits GitLab's 50-needs limit). Contract + rationale:
+# docs/SCRIPTS.md.
 #
 # Environment overrides (all optional):
 #   CI_FILE, ROLES_DIR, INTEGRATION_DIR, MOLECULE_JOB, INTEGRATION_JOB
 #   UNTESTED_ROLES      space-separated roles allowed to ship with no scenario
 #   MAX_MATRIX_ENTRIES  cap on molecule-matrix size (default 45)
-#
-# A new molecule scenario dir (or a new integration-tests dir) that nobody
-# adds to the matrix runs in NO CI job — a brand-new role's tests would
-# silently never execute, and the gap is invisible at review time. This check
-# fails loudly when a scenario/test exists on disk with no matching matrix
-# entry, naming the missing entries and where to add them. It ALSO fails when
-# a role under ansible/roles/ has no molecule scenario at all (a role committed
-# without molecule/ would otherwise ship permanently untested), unless the role
-# is named in the UNTESTED_ROLES allowlist with a rationale.
-#
-# It also caps the molecule matrix at MAX_MATRIX_ENTRIES: an aggregate job that
-# `needs:` every matrix entry hits GitLab's hard 50-needs-per-job limit and
-# breaks pipeline creation outright, so the cap fails while there is headroom.
-#
-# Direction is deliberately one-way: we flag on-disk scenarios MISSING from
-# the matrix (the dangerous drift — untested code). A matrix entry pointing at
-# a now-deleted scenario dir is caught at runtime (molecule errors on a missing
-# scenario), so we don't duplicate that here.
-#
-# Delegates the actual parsing to a small embedded Python program (PyYAML) so
-# the matrix is read structurally — a `grep` over job rules would mis-match
-# ROLE:/SCENARIO: strings that appear in comments or unrelated blocks.
 
 set -euo pipefail
 

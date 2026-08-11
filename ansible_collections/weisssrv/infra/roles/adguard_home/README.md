@@ -31,20 +31,61 @@ needs its own upstreams and TLS:
 - Custom filtering rules (reverse PTR records)
 - Reconciliation: adds missing, deletes orphaned
 
-### Via file edit (upstream limitation)
+### Admin password (upstream limitation)
 
-The admin password hash is reconciled by rewriting `AdGuardHome.yaml`: AdGuard
-Home has no password API (`/control/profile/update` takes only
-name/language/theme). The role **parses** the document, replaces
-`users[?name == adguard_home_admin_user].password` and writes the whole file
-back — a line-oriented edit would target "the last password line", i.e. a
-different account's the moment a second user exists. The rewrite is gated on the
-existing hash failing verification, so a converged host is untouched.
+AdGuard Home has no password API (`/control/profile/update` takes only
+name/language/theme), so the admin's bcrypt hash is reconciled in
+`AdGuardHome.yaml` by `files/adguard-admin-hash.py`, installed on the host at
+`adguard_home_hash_helper_path`:
+
+```bash
+adguard-admin-hash.py --config <install_path>/AdGuardHome.yaml --user <user> read
+printf '%s' "$password" | adguard-admin-hash.py --config … --user <user> reconcile
+```
+
+- it **parses** the document to locate
+  `users[?name == adguard_home_admin_user].password`. A line-oriented edit
+  (`grep`/`lineinfile` for an indented `password:`) means "the last password key
+  in the file" — a different account's the moment a second user exists.
+- it rewrites **only that one line** (temp file + atomic replace, mode/uid/gid
+  preserved) and re-parses the result before committing. AdGuard owns this file
+  at runtime; re-emitting it from parsed YAML would reformat everything the role
+  did not write.
+- it prints `UNCHANGED` when the stored hash already verifies against the
+  password, so a converged host is untouched and nothing restarts. `CHANGED`
+  notifies the restart handler. (Compare those verdicts exactly — `UNCHANGED`
+  contains `CHANGED`.)
+- the password arrives on **stdin**, never in argv or `environment:` (Ansible
+  prefixes environment assignments onto the remote command string, where they
+  are readable in `/proc` for the length of the run).
 
 ### Not managed
 
 - HTTP/DNS port changes after setup (they need a service restart)
 - Filter lists (managed in the UI)
+
+## Variables
+
+| Variable | Meaning | Required |
+|---|---|---|
+| `adguard_home_version` | Pinned AdGuard Home release | yes |
+| `adguard_home_admin_password` | Admin password (secret store) | yes |
+| `adguard_home_tls_server_name` | DoT/DoH/DoQ server name; must match the distributed cert. Asserted at role entry when TLS is enabled | yes when `adguard_home_tls_enabled` |
+| `adguard_home_admin_user` | Admin account name in `users[]` | no (`admin`) |
+| `adguard_home_is_primary` | Reconcile rewrites + filtering rules here (exactly one instance) | no (`false`) |
+| `adguard_home_tls_enabled` | Configure TLS once certs are present | no (`true`) |
+| `adguard_home_cert_path` | Where `acme_certs` delivers `fullchain.pem` / `privkey.pem` | no (`<install_path>/certs`) |
+| `adguard_home_upstream_dns` | Upstream resolvers | no (`127.0.0.1:5335`) |
+| `adguard_home_rewrites` / `_user_rules` | Primary-only API-managed records; empty means "manage none" | no (`[]`) |
+| `adguard_home_skip_api_config` | Skip password + API reconciliation | no (`false`) |
+| `adguard_home_skip_resolv_conf_update` | Leave `/etc/resolv.conf` alone | no (`false`) |
+| `adguard_home_user` / `_group` / `_install_path` | Service identity and prefix | no (`adguard`, `adguard`, `/opt/AdGuardHome`) |
+| `adguard_home_hash_helper_path` | Where the password helper is installed | no (`/usr/local/sbin/adguard-admin-hash.py`) |
+| `adguard_home_settle_seconds` | Pause between config rewrite and restart (container harnesses only) | no (`0`) |
+| `adguard_home_use_private_tmp` / `_use_protect_system` | systemd sandboxing (disable in containers) | no (`true`) |
+
+The remaining knobs (ports, cache, rate limiting, DHCP, DNSSEC, fallbacks) are
+listed with their defaults in `defaults/main.yml`.
 
 ## Configuration
 
@@ -71,7 +112,7 @@ adguard_home_disable_ipv6: false
 
 # TLS/Encryption configuration
 adguard_home_tls_enabled: true
-adguard_home_tls_server_name: "dns.{{ internal_domain }}"   # must match the cert
+adguard_home_tls_server_name: "dns.example.net"   # must match the distributed cert
 adguard_home_cert_path: "{{ adguard_home_install_path }}/certs"
 
 # Cache configuration
@@ -90,12 +131,12 @@ adguard_home_dhcp_enabled: false
 
 # DNS rewrites (managed via API)
 adguard_home_rewrites:
-  - domain: "example.{{ internal_domain }}"
-    answer: "10.0.0.x"
+  - domain: "app.example.net"
+    answer: "10.0.0.20"
 
 # Custom filtering rules (managed via API)
 adguard_home_user_rules:
-  - '||192.0.168.192.in-addr.arpa^$dnsrewrite=NOERROR;PTR;example.{{ internal_domain }}.'
+  - '||10.0.0.5.in-addr.arpa^$dnsrewrite=NOERROR;PTR;app.example.net.'
 ```
 
 ## Architecture
@@ -124,11 +165,12 @@ replica  (base settings reconciled locally; rewrites/rules arrive by sync)
 
 ## Files
 
-- `tasks/main.yml` - Main task orchestration
-- `tasks/api_base_config.yml` - Base settings management via API
-- `tasks/api_config.yml` - DNS records management via API
-- `templates/adguardhome.service.j2` - Systemd service
-- `handlers/main.yml` - Service restart handler
+- `tasks/main.yml` - install, service, admin password, orchestration
+- `tasks/api_base_config.yml` - base settings management via API
+- `tasks/api_config.yml` - DNS records management via API (primary only)
+- `files/adguard-admin-hash.py` - reads/reconciles the admin's bcrypt hash
+- `templates/adguardhome.service.j2` - systemd service
+- `handlers/main.yml` - service restart handler
 
 ## Dependencies
 

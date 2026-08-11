@@ -2,33 +2,34 @@
 
 // Read system journal
 loki.source.journal "system" {
+  // Forward STRAIGHT to loki.write, passing the rules by reference. The
+  // __journal_* metadata only exists inside the source's own relabel pass, so
+  // routing entries through loki.relabel as well applies the rules a second
+  // time against absent source labels, which sets each target_label to ""
+  // (i.e. deletes it).
   forward_to    = [loki.write.default.receiver]
   relabel_rules = loki.relabel.journal.rules
+  // Loki only accepts out-of-order writes within max_chunk_age/2 of a stream's
+  // newest entry; a re-read from further back is pushed and then rejected
+  // `too_far_behind`. Keep this inside that window.
+  max_age = {{ alloy_host_journal_max_age | to_json }}
   labels = {
     job  = "journal",
     host = "{{ inventory_hostname }}",
   }
 }
 
-// Label definitions only: the rules are consumed by loki.source.journal above,
-// which applies them while the __journal_* metadata still exists. forward_to
-// MUST stay empty — routing the entries through this component as well would
-// apply the same rules a second time, after the source has dropped the
-// __-prefixed metadata, and each target_label would be set to "" (deleted).
+// Rules holder only — nothing pushes INTO this component, hence forward_to = [].
+// `unit` only: every rule here becomes a Loki STREAM label, so each one
+// multiplies the chunks the ingester holds open for up to max_chunk_age. Adding
+// one (priority, hostname, ...) is a cardinality decision — re-check
+// max_global_streams_per_user and the ingester memory limit first.
 loki.relabel "journal" {
   forward_to = []
 
   rule {
     source_labels = ["__journal__systemd_unit"]
     target_label  = "unit"
-  }
-  rule {
-    source_labels = ["__journal_priority_keyword"]
-    target_label  = "priority"
-  }
-  rule {
-    source_labels = ["__journal__hostname"]
-    target_label  = "hostname"
   }
 }
 
@@ -45,14 +46,9 @@ loki.write "default" {
   }
 {% if alloy_host_wal_enabled %}
 
-  // On-disk WAL — resilience against the host->Loki circular dependency.
-  // Loki lives in the k3s cluster this host helps observe; during a Loki /
-  // Traefik / cluster outage the WAL buffers journald entries to disk and
-  // replays them when Loki recovers, instead of dropping them once the
-  // in-memory queue fills. max_segment_age bounds replay lag and disk use.
-  // The WAL is written under Alloy's --storage.path (packaged-unit default
-  // /var/lib/alloy/data — this role does not override it in CUSTOM_ARGS); a
-  // future package change to that default would relocate the WAL.
+  // Buffers journald to disk during a Loki/ingress outage and replays on
+  // recovery. Written under Alloy's --storage.path (packaged default
+  // /var/lib/alloy/data — this role does not override it in CUSTOM_ARGS).
   wal {
     enabled         = true
     max_segment_age = {{ alloy_host_wal_max_segment_age | to_json }}

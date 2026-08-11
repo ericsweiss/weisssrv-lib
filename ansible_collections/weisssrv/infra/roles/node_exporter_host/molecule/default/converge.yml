@@ -14,5 +14,13 @@
         executable: /bin/bash
       changed_when: false
       when: ansible_os_family == "Debian"
-  roles:
-    - role: weisssrv.infra.node_exporter_host
+  tasks:
+    # Normal Proxmox state (zpool collector on). The off-state toggle — the
+    # Ceph/LVM-thin regression test AND the reconcile-away cleanup — lives in
+    # side_effect.yml, which molecule runs AFTER the idempotence check: a
+    # state toggle inside converge can never be idempotent.
+    - name: Apply the role
+      ansible.builtin.include_role:
+        name: weisssrv.infra.node_exporter_host
+      vars:
+        node_exporter_host_zpool_collector: true

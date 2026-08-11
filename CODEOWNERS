@@ -1,7 +1,9 @@
 # Code ownership for merge-request review routing.
+#
+# One rule, and that is not an oversight. Every path in this repo is a pinned
+# surface for at least one consumer — a lint config, a script, a role default
+# and a template input all ripple the same way on a tag bump — so a per-path
+# split would imply some paths are lower-stakes than others, and there is only
+# one reviewer to route to either way. Add a narrower rule when a second
+# maintainer exists, not before.
 * @eric
-
-# The include contract and CLI are the load-bearing surfaces — every consumer
-# pins a tag of these, so changes here ripple into weisssrv + every tenant repo.
-/ci/   @eric
-/cli/  @eric

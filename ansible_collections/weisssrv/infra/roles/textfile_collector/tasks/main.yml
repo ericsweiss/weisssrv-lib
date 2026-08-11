@@ -4,9 +4,22 @@
 # prometheus_exporter wrapper pattern: callers include_role this with vars.
 #
 # Scope: this helper owns ONLY the unit/timer scaffold. The collector SCRIPT and
-# the enable/start of the timer stay in the calling role — the enable/start
-# carries each role's own molecule gating (node_exporter_host tags it
-# molecule-notest; smtp_relay starts + asserts the timer live).
+# the enable/start of the timer stay in the calling role, whose own molecule
+# gating rides on the enable/start task.
+
+# Named here rather than left to a mid-render undefined-variable error.
+- name: Assert the required per-collector vars are supplied
+  ansible.builtin.assert:
+    that:
+      - textfile_collector_name | default('') | length > 0
+      - textfile_collector_service_description | default('') | length > 0
+      - textfile_collector_timer_description | default('') | length > 0
+      - textfile_collector_script | default('') | length > 0
+      - textfile_collector_textfile_dir | default('') | length > 0
+    fail_msg: >-
+      textfile_collector requires textfile_collector_name, _service_description,
+      _timer_description, _script and _textfile_dir from the calling role.
+    quiet: true
 
 - name: Install collector service unit for {{ textfile_collector_name }}
   ansible.builtin.template:

@@ -100,14 +100,11 @@
     # Current rule from the parsed JSON lookup.
     _current: "{{ proxmox_ha_current_ha_rules_lookup.get(item.name, {}) }}"
     # PVE9 `ha-manager rules list --output-format=json` returns `nodes` and
-    # `resources` as HASHES, not comma strings:
-    #   nodes:     {"pve-opt-01": {"priority": 1}, ...}
-    #   resources: {"ct:150": {}, "vm:101": {}}
-    # The old code split() these dicts as strings, so the comparison never matched
-    # and the rule was re-`set` on every run. Normalize BOTH sides to a canonical
-    # sorted string (node priority defaults to 0 on each side). The `is mapping`
-    # guards keep this exception-safe if a future PVE returns the older string form
-    # (it then falls back to the previous split() behaviour).
+    # `resources` as HASHES ({"node": {"priority": 1}} / {"ct:150": {}}), not
+    # comma strings — normalize BOTH sides to a canonical sorted string (node
+    # priority defaults to 0 on each side) or the comparison never matches and
+    # the rule is re-`set` every run. The `is mapping` guards fall back to a
+    # comma-string split if a future PVE returns the older form.
     _desired_nodes: "{{ item.nodes | map('regex_replace', '^([^:]+)$', '\\1:0') | sort | join(',') }}"
     _desired_resources: "{{ item.resources | sort | join(',') }}"
     _desired_strict: "{{ '1' if item.strict | default(false) else '0' }}"

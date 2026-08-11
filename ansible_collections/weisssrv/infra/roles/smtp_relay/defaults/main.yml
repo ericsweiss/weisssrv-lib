@@ -1,8 +1,7 @@
 ---
 smtp_relay_tls_cert_dir: /etc/postfix/tls
 
-# Identity + smarthost of the relay. These feed the DEFAULT smtp_relay_config
-# below; a deployment that overrides that dict wholesale sets them there.
+# Identity + smarthost of the relay. These feed smtp_relay_default_config below.
 # smtp_relay_internal_domain aliases the conventional inventory-wide
 # `internal_domain`; unset, the two derived names stay empty and the role's
 # effective-config assert names them rather than rendering `relayhost = ` (which
@@ -17,7 +16,12 @@ smtp_relay_upstream: ""
 # than duplicating the path.
 smtp_relay_textfile_dir: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
 
-smtp_relay_config:
+# Site overrides, merged OVER smtp_relay_default_config into
+# smtp_relay_effective_config (vars/main.yml) — set only the keys that differ,
+# so a hardening default added below still reaches every deployment.
+smtp_relay_config: {}
+
+smtp_relay_default_config:
   myhostname: "{{ smtp_relay_hostname }}"
   myorigin: "{{ smtp_relay_origin }}"
   mydestination: "$myhostname, localhost.$mydomain, localhost"
@@ -33,11 +37,9 @@ smtp_relay_config:
   relayhost: "{{ smtp_relay_upstream }}"
   smtpd_relay_restrictions: "permit_sasl_authenticated, reject_unauth_destination"
 
-  # TLS for incoming connections (from null clients). The acme_certs
-  # cert-reload script deploys fullchain.pem + privkey.pem into smtp_relay_tls_cert_dir
-  # (default /etc/postfix/tls), so the defaults must point at those names to be
-  # usable standalone — a partial smtp_relay_config override should not be
-  # required just to get working TLS paths.
+  # TLS for incoming connections (from null clients). acme_certs' cert-reload
+  # script deploys fullchain.pem + privkey.pem into smtp_relay_tls_cert_dir, so
+  # these point at those names and the role is usable with no TLS override.
   smtpd_tls_cert_file: "{{ smtp_relay_tls_cert_dir }}/fullchain.pem"
   smtpd_tls_key_file: "{{ smtp_relay_tls_cert_dir }}/privkey.pem"
   smtpd_tls_security_level: "may"
@@ -70,8 +72,8 @@ smtp_relay_config:
   smtpd_sasl_local_domain: "$myhostname"
   broken_sasl_auth_clients: "yes"
 
-# Local aliases; root mail is forwarded to admin_email (all.yml defines the
-# same map for the null clients — keep the shapes in sync).
+# Local aliases; root mail is forwarded to admin_email. The compiled
+# /etc/aliases.db is compared against the root target on every run.
 smtp_relay_aliases:
   postmaster: root
   nobody: root

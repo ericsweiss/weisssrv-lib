@@ -4,9 +4,6 @@ delegated deploy runs first. It decides WHICH host a subsequent command targets,
 so a regression here mis-selects silently rather than failing.
 
 An `ssh` stub on PATH decides which targets answer; $UP lists them.
-
-Run with pytest:
-    python3 -m pytest tests/test_find_reachable_host.py -v
 """
 
 import os

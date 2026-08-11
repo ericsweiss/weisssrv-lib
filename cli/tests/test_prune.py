@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from conftest import needs_optional_layout
 
 from weisssrv_lib_cli import prune, tree
 from weisssrv_lib_cli import kustomization as kz
@@ -96,11 +97,12 @@ class TestReplicas:
         assert dep["spec"]["replicas"] == 1
 
 
+@needs_optional_layout
 class TestExternalIngress:
     def test_fresh_scaffold_refuses_and_leaves_files_intact(self, scaffold):
-        # On a fresh scaffold the only ACTIVE documents are the public route +
-        # cert; dropping them would empty both files while they stay listed in
-        # the kustomization. prune must REFUSE and touch nothing.
+        # On a fresh scaffold the public route + cert are the only documents and
+        # no internal variant is enabled, so dropping them leaves the workload
+        # with no route at all. prune must REFUSE and touch nothing.
         before_ir = _flux(scaffold, "ingressroute.yaml").read_text()
         before_cert = _flux(scaffold, "certificate.yaml").read_text()
         with pytest.raises(prune.PruneError) as exc:
@@ -110,16 +112,77 @@ class TestExternalIngress:
         assert _flux(scaffold, "certificate.yaml").read_text() == before_cert
 
     def test_internal_only_workflow(self, scaffold):
-        # The meaningful path: wire internal first, then drop the public docs —
-        # leaving exactly the internal IngressRoute + Certificate active.
+        # The meaningful path: wire internal first, then drop the public files —
+        # leaving exactly the internal IngressRoute + Certificate enabled. The
+        # emptied public files are deleted, not left listed and empty.
         from weisssrv_lib_cli import wire
 
         wire.wire(scaffold, ["internal-ingress"])
         prune.prune(scaffold, ["external-ingress"])
-        routes = _docs(scaffold, "ingressroute.yaml")
-        certs = _docs(scaffold, "certificate.yaml")
-        assert [r["metadata"]["name"] for r in routes] == ["changeme-app-internal"]
-        assert [c["metadata"]["name"] for c in certs] == ["changeme-app-tls-internal"]
+        assert not _flux(scaffold, "ingressroute.yaml").exists()
+        assert not _flux(scaffold, "certificate.yaml").exists()
+        resources = kz.list_resources(_kustomization(scaffold))
+        assert "ingressroute.yaml" not in resources
+        assert "certificate.yaml" not in resources
+        assert set(tree.INTERNAL_INGRESS_MANIFESTS) <= set(resources)
+        route = _docs(scaffold, tree.INTERNAL_INGRESS_MANIFESTS[0])
+        assert [d["metadata"]["name"] for d in route] == ["changeme-app-internal"]
+
+    def test_half_wired_route_only_still_refuses(self, scaffold):
+        # The destructive direction of the same gate: with ONLY the internal
+        # route active (someone uncommented one line by hand, or a pre-preflight
+        # `wire` half-applied), deleting the public route + cert would leave the
+        # workload with a route whose TLS secret nothing issues. `any` let this
+        # through; `all` must refuse and touch nothing.
+        from weisssrv_lib_cli import wire
+
+        wire.wire(scaffold, ["internal-ingress"])
+        kpath = _flux(scaffold, "kustomization.yaml")
+        text, dropped = kz.remove_resource(
+            kpath.read_text(encoding="utf-8"), tree.INTERNAL_INGRESS_MANIFESTS[1]
+        )
+        assert dropped
+        kpath.write_text(text, encoding="utf-8")
+        before_ir = _flux(scaffold, "ingressroute.yaml").read_text()
+        before_cert = _flux(scaffold, "certificate.yaml").read_text()
+        with pytest.raises(prune.PruneError) as exc:
+            prune.prune(scaffold, ["external-ingress"])
+        assert "wire internal-ingress" in str(exc.value)
+        assert _flux(scaffold, "ingressroute.yaml").read_text() == before_ir
+        assert _flux(scaffold, "certificate.yaml").read_text() == before_cert
+
+    def test_active_line_for_a_deleted_manifest_still_refuses(self, scaffold):
+        # "Enabled" is not the same as "deploying": a resource line pointing at a
+        # file someone deleted builds nothing (it fails `kustomize build`), so it
+        # must not authorise the prune either.
+        from weisssrv_lib_cli import wire
+
+        wire.wire(scaffold, ["internal-ingress"])
+        _flux(scaffold, tree.INTERNAL_INGRESS_MANIFESTS[1]).unlink()
+        before_ir = _flux(scaffold, "ingressroute.yaml").read_text()
+        with pytest.raises(prune.PruneError):
+            prune.prune(scaffold, ["external-ingress"])
+        assert _flux(scaffold, "ingressroute.yaml").read_text() == before_ir
+
+    def test_a_file_holding_both_variants_is_rewritten_not_deleted(self, scaffold):
+        # A tenant who kept both variants in one file keeps that file, minus the
+        # public document.
+        from weisssrv_lib_cli import wire
+
+        wire.wire(scaffold, ["internal-ingress"])
+        path = _flux(scaffold, "ingressroute.yaml")
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + _flux(scaffold, tree.INTERNAL_INGRESS_MANIFESTS[0]).read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+        prune.prune(scaffold, ["external-ingress"])
+        assert path.exists()
+        assert [d["metadata"]["name"] for d in _docs(scaffold, "ingressroute.yaml")] == [
+            "changeme-app-internal"
+        ]
 
 
 class TestGenericAndErrors:
@@ -168,9 +231,16 @@ class TestGenericAndErrors:
         second = prune.prune(scaffold, [feature])
         assert second == []
 
-    def test_hpa_file_removed(self, scaffold):
+    @needs_optional_layout
+    def test_hpa_file_and_every_reference_removed(self, scaffold):
         prune.prune(scaffold, ["hpa"])
-        assert not _flux(scaffold, "hpa.yaml").exists()
+        assert not _flux(scaffold, tree.HPA_MANIFEST).exists()
+        # The commented enable line goes too: uncommenting it later would name a
+        # file that is gone.
+        assert tree.HPA_MANIFEST not in _kustomization(scaffold)
+        # And optional/kustomization.yaml, which CI builds.
+        opt_k = _flux(scaffold, f"{tree.OPTIONAL_DIR}/{tree.KUSTOMIZATION}")
+        assert "hpa.yaml" not in kz.list_resources(opt_k.read_text(encoding="utf-8"))
 
     def test_image_build_removes_root_files(self, scaffold):
         (scaffold / "Dockerfile").write_text("FROM scratch\n")

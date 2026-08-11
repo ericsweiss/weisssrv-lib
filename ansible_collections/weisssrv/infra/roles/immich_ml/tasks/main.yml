@@ -1,0 +1,97 @@
+---
+# Immich machine-learning (OpenVINO) compose stack on a GPU guest. Order: verify
+# the GPU passthrough -> install Docker -> render compose -> bring the stack up
+# via the shared compose_app systemd unit -> health-wait on /ping.
+
+- name: Validate the required inputs
+  ansible.builtin.assert:
+    that:
+      - immich_ml_version | length > 0
+    fail_msg: >-
+      immich_ml_version is empty. Set it, or set the inventory-wide
+      immich_version it defaults to, pinning this guest to the same release as
+      the Immich guest so the two stay in lockstep.
+    success_msg: "Immich release pin present"
+
+# GPU devices (bind-mounted into the guest by the hypervisor role, with the
+# host's video/render GIDs mapped 1:1).
+- name: Check the GPU render/card device nodes
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ immich_ml_render_device }}"
+    - "{{ immich_ml_card_device }}"
+  register: immich_ml_dri_nodes
+  when: not (immich_ml_skip_install | bool)
+
+- name: Assert the GPU passthrough is present
+  ansible.builtin.assert:
+    that:
+      - immich_ml_dri_nodes.results[0].stat.exists
+      - immich_ml_dri_nodes.results[1].stat.exists
+    fail_msg: >-
+      {{ immich_ml_render_device }} or {{ immich_ml_card_device }} is missing
+      inside the guest. Container GPU passthrough is create-time only — recreate
+      the guest, or add the device mount + cgroup allow to its config by hand.
+      Without them the OpenVINO container cannot reach the GPU.
+    success_msg: "GPU render + card nodes present"
+  when: not (immich_ml_skip_install | bool)
+
+# The idmap passes the HOST's video/render GIDs 1:1, so the authoritative GIDs
+# for compose group_add are whatever the passed-through nodes actually carry.
+- name: Discover the GPU device GIDs for the container group_add
+  ansible.builtin.set_fact:
+    immich_ml_render_gid: "{{ immich_ml_dri_nodes.results[0].stat.gid }}"
+    immich_ml_video_gid: "{{ immich_ml_dri_nodes.results[1].stat.gid }}"
+  when: not (immich_ml_skip_install | bool)
+
+# Pinned-engine install + dpkg hold + journald daemon.json, via compose_app.
+- name: Install Docker Engine + compose plugin
+  ansible.builtin.include_role:
+    name: weisssrv.infra.compose_app
+    tasks_from: docker.yml
+  vars:
+    compose_app_skip_install: "{{ immich_ml_skip_install }}"
+
+- name: Create the compose project directory
+  ansible.builtin.file:
+    path: "{{ immich_ml_compose_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Render the docker-compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ immich_ml_compose_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Restart compose stack
+
+# No attached volumes here, so compose_app_requires_mounts_for is empty and the
+# shared unit omits RequiresMountsFor entirely.
+- name: Deploy + start the Immich ML compose stack
+  ansible.builtin.include_role:
+    name: weisssrv.infra.compose_app
+  vars:
+    compose_app_skip_install: "{{ immich_ml_skip_install }}"
+    compose_app_service_name: immich-ml-compose
+    compose_app_description: "Immich machine learning (docker compose stack)"
+    compose_app_working_directory: "{{ immich_ml_compose_dir }}"
+    compose_app_requires_mounts_for: []
+    compose_app_requires_mounts_comment: []
+    compose_app_reconcile_comment:
+      - "`up -d` reconciles the running stack to the rendered compose, recreating"
+      - "only the containers whose definition changed."
+
+- name: Wait for the ML service to answer /ping
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ immich_ml_listen_port }}/ping"
+    status_code: 200
+  register: immich_ml_ping
+  until: immich_ml_ping.status == 200
+  retries: "{{ immich_ml_health_retries }}"
+  delay: "{{ immich_ml_health_delay }}"
+  when: not (immich_ml_skip_install | bool)

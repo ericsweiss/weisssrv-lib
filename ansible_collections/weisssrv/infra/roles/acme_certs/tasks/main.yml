@@ -59,17 +59,11 @@
     - acme_certs_ssh_public_key != ''
 
 # Seed each distribution target with the receiver, its sudoers rule and the
-# pinned pubkey. delegate_to reaches targets outside the play's host scope, so
-# adding a host to acme_certs_distribution_targets is enough.
-#
+# pinned pubkey; delegate_to reaches targets outside the play's host scope.
 # A looped INCLUDE around single delegated tasks, never a looped delegate: one
-# unreachable delegate makes the connection plugin mark the loop's AGGREGATE
-# result unreachable for the executing host, and the strategy then drops that
-# host from the play — silently ending distribution to every REACHABLE target,
-# the known_hosts pinning, and everything after. Probing first keeps one dead
-# target from taking the run down with it.
-#
-# ssh_no_sudo targets are skipped: Ansible does not manage their
+# unreachable delegate marks the loop's AGGREGATE result unreachable for THIS
+# host, which then drops out of the play (README § Unreachable targets).
+# ssh_no_sudo targets are skipped — Ansible does not manage their
 # authorized_keys, so the operator installs the pubkey out of band.
 - name: Reset the cert-distribution reachability results
   ansible.builtin.set_fact:
@@ -163,9 +157,9 @@
     - acme_certs_enabled | bool
     - not acme_certs_installed.stat.exists
 
-- name: Check the dns_cf hook is installed
+- name: Check the DNS-01 hook is installed
   ansible.builtin.stat:
-    path: /root/.acme.sh/dnsapi/dns_cf.sh
+    path: "/root/.acme.sh/dnsapi/{{ acme_certs_dns_hook }}.sh"
   register: acme_certs_dnsapi_hook
   when: acme_certs_enabled | bool
 
@@ -174,11 +168,12 @@
     that:
       - acme_certs_dnsapi_hook.stat.exists
     fail_msg: >-
-      /root/.acme.sh/dnsapi/dns_cf.sh is missing — this acme.sh install has
-      no DNS hooks, so Cloudflare DNS-01 issuance/renewal cannot work.
-      Remove /root/.acme.sh and re-run this role to reinstall from the
-      pinned release tarball (which ships dnsapi/).
-    success_msg: "acme.sh dnsapi hooks are present (dns_cf)"
+      /root/.acme.sh/dnsapi/{{ acme_certs_dns_hook }}.sh is missing — this
+      acme.sh install has no DNS hook for {{ acme_certs_dns_hook }}, so DNS-01
+      issuance/renewal cannot work. Remove /root/.acme.sh and re-run this role
+      to reinstall from the pinned release tarball (which ships dnsapi/), or
+      set acme_certs_dns_hook to a hook that tarball provides.
+    success_msg: "acme.sh dnsapi hooks are present ({{ acme_certs_dns_hook }})"
   when:
     - acme_certs_enabled | bool
     # In check mode on a fresh host the install above is skipped, so only
@@ -238,12 +233,9 @@
     mode: "0700"
   when: acme_certs_enabled | bool
 
-# Pin SSH host keys for cert distribution targets. The cert-reload
-# script runs as root (cron, post-renewal) with BatchMode and
-# StrictHostKeyChecking=yes — wildcard private keys are pushed over this
-# channel, so opportunistic trust (accept-new + keyscan refresh) is too weak.
-# host_key is required per target and the deploy fails loudly when one is
-# missing. Rotation is the same workflow after a target is rebuilt.
+# The push carries wildcard private-key material, so the channel runs with
+# StrictHostKeyChecking=yes and never accept-new: every target's host_key is
+# required, and the deploy fails loudly when one is missing.
 - name: Pin cert distribution target host keys
   when:
     - acme_certs_enabled | bool
@@ -291,8 +283,8 @@
       loop_control:
         label: "{{ item.host }} ({{ item.ip }})"
 
-# Automatic certificate installation if certs exist in acme.sh but not in acme_certs_local_cert_dir
-# This handles the case where certs were manually issued but never installed to the target directory
+# Install into acme_certs_local_cert_dir when acme.sh holds a cert that never
+# got installed there (manual issuance, rebuilt host).
 - name: Check if certificates exist in acme.sh
   ansible.builtin.stat:
     path: "/root/.acme.sh/{{ acme_certs_domain }}_ecc/fullchain.cer"
@@ -321,7 +313,9 @@
     - acme_certs_cert_exists.stat.exists | default(false)
     - not (acme_certs_local_cert_exists.stat.exists | default(false))
   register: acme_certs_install_result
-  changed_when: acme_certs_install_result.rc == 0
+  # Guarded by the local-cert-absence `when:` above, so reaching this task IS
+  # the change.
+  changed_when: true
 
 - name: Set proper ownership on installed certificates
   ansible.builtin.file:
@@ -345,13 +339,13 @@
       To issue certificates manually:
 
       1. Export the DNS provider credentials the acme.sh hook expects
-         (CF_Token / CF_Account_ID for the Cloudflare dns_cf hook).
+         (for the default dns_cf hook: CF_Token / CF_Account_ID).
 
       2. Issue the wildcard certificate. --keylength ec-256 issues ECC,
          stored under {{ acme_certs_domain }}_ecc/ — the directory the
          stat-check and --install-cert (--ecc) expect. --server is passed
          explicitly even though the install pinned the default CA:
-         /root/.acme.sh/acme.sh --issue --dns dns_cf --server letsencrypt \
+         /root/.acme.sh/acme.sh --issue --dns {{ acme_certs_dns_hook }} --server letsencrypt \
            --keylength ec-256 \
            -d "{{ acme_certs_domain }}" \
            -d "*.{{ acme_certs_domain }}"
@@ -369,11 +363,9 @@
     - acme_certs_cert_exists.stat.exists | default(false)
     - acme_certs_local_cert_exists.stat.exists | default(false) or (acme_certs_install_result.changed | default(false))
 
-# Proactive certificate distribution to ensure remote hosts have certs
-# This runs every time Ansible deploys if local certs exist, handling cases where:
-# - Certs were manually installed but never distributed
-# - A target host was rebuilt and lost its certs
-# - Distribution failed during a previous renewal
+# Proactive distribution on every run: covers a cert installed but never
+# distributed, a rebuilt target, and a renewal whose distribution failed. The
+# script decides per target whether anything actually needs pushing.
 - name: Check if local certificates exist for distribution
   ansible.builtin.stat:
     path: "{{ acme_certs_local_cert_dir }}/fullchain.pem"
@@ -395,18 +387,9 @@
     # explicit second run to avoid distributing twice in one play.
     - not (acme_certs_install_result.changed | default(false))
   register: acme_certs_distribution_result
-  # The script prints "OK: <host>" only when it actually pushed+reloaded a target
-  # and "unchanged: <host>" when it skipped (cert already applied), so report
-  # changed only on a real push — an all-unchanged run now converges to ok.
+  # "OK: <host>" means a real push+reload, "unchanged: <host>" a skip, so an
+  # all-unchanged run converges to ok. Any non-zero rc fails the play (module
+  # default): rc=1 is a hard local error, rc=2 means the script delivered to
+  # every reachable target and at least one was unreachable. Either way the
+  # per-target metrics in cert_distribution_targets.prom name the host.
   changed_when: "'OK:' in (acme_certs_distribution_result.stdout | default(''))"
-  # The script tries every target before exiting and uses distinct exit
-  # codes — rc=1 hard local error (cert files unreadable etc.), rc=2 one
-  # or more targets unreachable but the script delivered to all reachable
-  # targets first. Either way we fail the play: cert renewal is
-  # infrequent enough (~6× per cert per year via the acme.sh post-renew
-  # hook) that a red Ansible run is the right signal to look at the
-  # per-target Prometheus metrics in
-  # /var/lib/node_exporter/acme_certs_distribution_targets.prom
-  # (cert_distribution_target_last_run_success{host=...}) and either
-  # bring the offending target back or fix the cert path on it.
-  failed_when: acme_certs_distribution_result.rc != 0

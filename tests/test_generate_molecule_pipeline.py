@@ -16,9 +16,6 @@ Fixture dependency graph (consumer -> providers):
     gamma -> {beta, alpha}    (meta dependency + include_role)
     leaf  -> {}
 so a change to `alpha` fans out to alpha, beta, gamma.
-
-Run with pytest:
-    python3 -m pytest tests/test_generate_molecule_pipeline.py -v
 """
 
 import importlib.util
@@ -261,8 +258,23 @@ class TestGlobalTriggers:
         assert s.full
 
     def test_env_extra_triggers_are_honored(self, monkeypatch):
-        monkeypatch.setattr(gmp, "GLOBAL_TRIGGER_FILES", gmp.GLOBAL_TRIGGER_FILES | {"Taskfile.yml"})
-        assert gmp.is_global_trigger("Taskfile.yml")
+        # $MOLECULE_GLOBAL_TRIGGERS is read once into _EXTRA_TRIGGERS and folded
+        # into the derived sets, which are cached per roles_prefix.
+        monkeypatch.setattr(gmp, "_EXTRA_TRIGGERS", ["Taskfile.yml", "hack/"])
+        gmp._global_triggers.cache_clear()
+        try:
+            assert gmp.is_global_trigger("Taskfile.yml")
+            assert gmp.is_global_trigger("hack/thing.sh")
+        finally:
+            gmp._global_triggers.cache_clear()
+
+    def test_global_triggers_follow_the_roles_prefix(self):
+        """A caller configuring the layout by PARAMETER (not $ROLES_DIR) must
+        still get that layout's global triggers."""
+        prefix = "ansible_collections/ns/name/roles"
+        assert gmp.is_global_trigger("ansible_collections/ns/name/galaxy.yml", prefix)
+        assert gmp.is_global_trigger("ansible_collections/ns/name/plugins/x.py", prefix)
+        assert not gmp.is_global_trigger("ansible_collections/ns/name/galaxy.yml")
 
 
 class TestInventoryAndPlaybookPaths:
@@ -489,6 +501,12 @@ class TestCollectionLayout:
     def test_unknown_role_names_the_configured_prefix(self, repo):
         with pytest.raises(gmp.CoverageError, match=f"{COLLECTION}/roles/ghost/"):
             self._sel(repo, [f"{COLLECTION}/roles/ghost/tasks/main.yml"])
+
+    def test_collection_root_change_selects_everything(self, repo):
+        """galaxy.yml at the collection root is a global trigger for a caller
+        configured by PARAMETER, not only via $ROLES_DIR."""
+        s = self._sel(repo, [f"{COLLECTION}/galaxy.yml"])
+        assert s.full
 
     def test_missing_roles_dir_raises(self, repo):
         with pytest.raises(RuntimeError, match="not found"):

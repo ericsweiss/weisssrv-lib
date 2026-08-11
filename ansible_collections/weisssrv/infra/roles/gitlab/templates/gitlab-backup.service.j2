@@ -1,0 +1,18 @@
+# {{ ansible_managed }}
+[Unit]
+Description=GitLab backup (tarball + gitlab-secrets.json + gitlab.rb, emits textfile metrics)
+# Ordered after the Omnibus supervisor so the backup runs against a live GitLab.
+# Not a hard Requires: a momentarily-down GitLab should record success=0 rather
+# than cancel the run.
+After=gitlab-runsvdir.service network-online.target
+Wants=network-online.target
+{% if gitlab_backup_nfs_enabled | bool %}
+# Pull the landing-zone mount on demand and order after it, so the backup never
+# runs against an unmounted export (the in-script guard also fails closed).
+RequiresMountsFor={{ gitlab_backup_path }}
+{% endif %}
+
+[Service]
+Type=oneshot
+TimeoutStartSec={{ gitlab_backup_service_timeout }}
+ExecStart=/usr/local/sbin/gitlab-backup-run.sh

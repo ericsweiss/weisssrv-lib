@@ -1,11 +1,10 @@
 # {{ ansible_managed }}
 [Unit]
 Description=Nightly offsite backup to Backblaze B2 (restic + rclone)
-# Ordered after both ZFS mount passes — the file sources + the two data zvols
-# are all on encrypted datasets that mount only after their keys load on the
-# late zfs-mount-encrypted.service. archive-backup.service triggers this unit
-# via OnSuccess=, so it normally starts right after a good archive replication;
-# the timer is the fallback path.
+# Ordered after both ZFS mount passes: sources on encrypted datasets mount only
+# once their keys load, on the late zfs-mount-encrypted.service. The archive
+# replication unit triggers this one via OnSuccess=, so it normally starts right
+# after a good replication; the timer is the fallback path.
 After=zfs-mount.service zfs-mount-encrypted.service network-online.target
 Wants=network-online.target
 
@@ -13,9 +12,9 @@ Wants=network-online.target
 Type=oneshot
 EnvironmentFile={{ restic_offsite_config_dir }}/env
 ExecStart=/usr/local/sbin/restic-offsitectl run
-# Deferential under contention (mirror media-mover): Nice + ionice set absolute
-# priority; the cgroup-v2 weights proportionally deprioritize only when
-# something else competes (a no-op on an idle NAS).
+# Deferential under contention: Nice + ionice set absolute priority; the
+# cgroup-v2 weights deprioritize proportionally only when something else
+# competes (a no-op on an idle host).
 Nice={{ restic_offsite_nice }}
 IOSchedulingClass={{ restic_offsite_io_class }}
 IOSchedulingPriority={{ restic_offsite_io_priority }}

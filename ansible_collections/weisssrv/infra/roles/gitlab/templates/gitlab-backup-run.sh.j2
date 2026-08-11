@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Runs the GitLab backup and emits node_exporter textfile metrics.
+# Invoked by gitlab-backup.service (gitlab-backup.timer).
+#
+# NOT `set -e`: the backup's exit code must be captured and the metrics written
+# regardless, so the failure/staleness alerts can fire on a failed run.
+set -uo pipefail
+
+BACKUP_PATH="{{ gitlab_backup_path }}"
+PROM_DIR="{{ gitlab_textfile_dir }}"
+METRICS_LIB="{{ gitlab_backup_lib_path }}"
+# 1 when the backup lands on an NFS export (gitlab_backup_nfs_enabled).
+NFS_ENABLED="{{ '1' if (gitlab_backup_nfs_enabled | bool) else '0' }}"
+# Components excluded from the tarball (gitlab-backup SKIP=). Rendered in the
+# non-raw preamble and quote-filtered, so an override containing whitespace or
+# metacharacters cannot be word-split or interpreted below.
+BACKUP_SKIP={{ (gitlab_backup_skip | default('', true) | regex_replace('\\s+', '')) | quote }}
+{% raw %}
+PROM_FILE="${PROM_DIR}/gitlab_backup.prom"
+SECRETS_PROM_FILE="${PROM_DIR}/gitlab_backup_secrets.prom"
+START_TS="$(date +%s)"
+
+# Shared write_prom_metrics (deployed by the compose_app backup_lib task file):
+# write_prom_metrics <prefix> <success> <duration> <size> <prom_file> [glob]
+if [ ! -r "$METRICS_LIB" ]; then
+  echo "gitlab-backup: metrics library $METRICS_LIB missing — re-run the gitlab role" >&2
+  exit 1
+fi
+# shellcheck source=/dev/null
+. "$METRICS_LIB"
+
+# gitlab-secrets.json is what decrypts CI variables, 2FA and runner tokens on
+# restore, and the artefact watcher only globs the tarball — so its presence and
+# size get their own metric file.
+write_secrets_metrics() {
+  local present="$1" size="$2" tmp
+  tmp="${SECRETS_PROM_FILE}.$$"
+  {
+    echo "# HELP gitlab_backup_secrets_present Whether gitlab-secrets.json is in the backup landing zone (1=yes)"
+    echo "# TYPE gitlab_backup_secrets_present gauge"
+    echo "gitlab_backup_secrets_present ${present}"
+    echo "# HELP gitlab_backup_secrets_size_bytes Size of gitlab-secrets.json in the backup landing zone (0 = absent)"
+    echo "# TYPE gitlab_backup_secrets_size_bytes gauge"
+    echo "gitlab_backup_secrets_size_bytes ${size}"
+  } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  mv "$tmp" "$SECRETS_PROM_FILE" 2>/dev/null || rm -f "$tmp"
+}
+
+mkdir -p "$PROM_DIR"
+
+# Fail closed on an unmounted landing zone. When NFS-backed, BACKUP_PATH is the
+# mountpoint of the export; writing there while it is unmounted would put the
+# tarball on the underlying root-disk directory — silently un-offsited AND
+# filling the root disk. Refuse, record success=0, and exit non-zero BEFORE
+# running gitlab-backup.
+if [ "$NFS_ENABLED" = "1" ] && ! mountpoint -q "$BACKUP_PATH"; then
+  echo "gitlab-backup: BACKUP_PATH ${BACKUP_PATH} is NFS-backed but not mounted — aborting" >&2
+  write_prom_metrics gitlab_backup 0 0 0 "$PROM_FILE"
+  write_secrets_metrics 0 0
+  exit 1
+fi
+
+if [ -n "$BACKUP_SKIP" ]; then
+  /opt/gitlab/bin/gitlab-backup create CRON=1 "SKIP=$BACKUP_SKIP"
+else
+  /opt/gitlab/bin/gitlab-backup create CRON=1
+fi
+
+rc=$?
+
+# gitlab-backup excludes gitlab-secrets.json and gitlab.rb, and without them a
+# restore cannot decrypt CI variables, 2FA or runner tokens — so a copy failure
+# demotes rc and the run records success=0. An un-restorable backup must not
+# report healthy.
+# --preserve=mode (NOT -p): timestamps are deliberately NOT preserved so the
+# landing-zone mtime is a freshness signal, and ownership cannot be preserved
+# when the export squashes writes (the chown back would be EPERM and demote rc
+# to a false failure). Mode 0600 is what matters here.
+if [ "$rc" -eq 0 ]; then
+  cp --preserve=mode /etc/gitlab/gitlab-secrets.json /etc/gitlab/gitlab.rb "${BACKUP_PATH}/" || rc=1
+fi
+
+secrets_present=0
+secrets_size=0
+if [ -f "${BACKUP_PATH}/gitlab-secrets.json" ]; then
+  secrets_present=1
+  secrets_size="$(stat -c %s "${BACKUP_PATH}/gitlab-secrets.json" 2>/dev/null || echo 0)"
+fi
+write_secrets_metrics "$secrets_present" "$secrets_size"
+
+end_ts="$(date +%s)"
+duration=$(( end_ts - START_TS ))
+# Size 0 + the archive glob: the library sizes the newest existing tarball, so 0
+# keeps one meaning — no tarball exists at all.
+if [ "$rc" -eq 0 ]; then
+  write_prom_metrics gitlab_backup 1 "$duration" 0 "$PROM_FILE" "${BACKUP_PATH}/*_gitlab_backup.tar"
+else
+  write_prom_metrics gitlab_backup 0 "$duration" 0 "$PROM_FILE" "${BACKUP_PATH}/*_gitlab_backup.tar"
+fi
+
+exit "$rc"
+{% endraw %}

@@ -7,12 +7,6 @@ loading, pinned-image reads, deploy-command resolution, coverage check).
 
 The service registry is consumer data, so the suite loads the fixture config in
 tests/fixtures/version-registry/ against its own small repo tree.
-
-Run with pytest (preferred):
-    python3 -m pytest tests/test_check_versions.py -v
-
-Run without pytest (unittest fallback):
-    python3 tests/test_check_versions.py -v
 """
 
 import os
@@ -25,11 +19,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
-try:
-    import pytest
-    PYTEST_AVAILABLE = True
-except ImportError:
-    PYTEST_AVAILABLE = False
+import pytest
 
 # Import the module with hyphenated name using importlib
 REPO = Path(__file__).resolve().parent.parent
@@ -826,9 +816,7 @@ class TestDockerhubMajorPinAndPrefix(unittest.TestCase):
             self.assertEqual(check_versions.fetch_dockerhub_version(svc), "v1.15.2")
 
     def test_pin_major_handles_v_prefixed_versions(self):
-        # Regression: a leading "v" (gluetun, k3s, redis-exporter, ...) must not
-        # make the major pin a no-op. Previously `^(\d+)` failed to match "v3.x",
-        # left major_filter unset, and let a v4 major bump leak through.
+        # A leading "v" must not bypass the major pin.
         svc = {
             "docker_image": "qmcgaw/gluetun",
             "tag_regex": r"^(v\d+\.\d+\.\d+)$",
@@ -966,6 +954,23 @@ class TestUpdateVersionInFile(unittest.TestCase):
             # The nested branch must also rewrite the trailing comment (the
             # top-level test asserts this; the nested one was the blind spot).
             self.assertIn("# Currently deployed 40.4.0", out)
+        finally:
+            os.unlink(path)
+
+    def test_nested_same_named_key_is_never_rewritten(self):
+        """A `foo_version` nested under another mapping is not the top-level
+        pin; rewriting it would de-nest the key and break the vars file."""
+        import os
+        path = self._write_tmp(
+            "some_block:\n"
+            '  foo_version: "1.0.0"\n'
+        )
+        try:
+            with patch.object(check_versions, "VARS_FILE", path):
+                self.assertFalse(
+                    check_versions.update_version_in_file("foo_version", "2.0.0")
+                )
+            self.assertIn('  foo_version: "1.0.0"', path.read_text())
         finally:
             os.unlink(path)
 
@@ -1361,6 +1366,23 @@ class TestReadCurrentVersions(unittest.TestCase):
         self.assertEqual(versions.get("helm_chart_versions.traefik"), "40.0.0")
         self.assertEqual(versions.get("gitlab_version"), "17.0.0")
 
+    def test_nested_version_key_is_not_a_pin(self):
+        """Only column-0 keys are pins; a `*_version` nested under another
+        mapping must not be read (nor later rewritten) as top level."""
+        import os
+        path = self._write_tmp(
+            "some_block:\n"
+            '  nested_version: "2.0.0"\n'
+            'gitlab_version: "17.0.0"\n'
+        )
+        try:
+            with patch.object(check_versions, "VARS_FILE", path):
+                versions = check_versions.read_current_versions()
+        finally:
+            os.unlink(path)
+        self.assertNotIn("nested_version", versions)
+        self.assertEqual(versions.get("gitlab_version"), "17.0.0")
+
 
 class TestAnnotateLatestResolution(unittest.TestCase):
     """_annotate_latest_resolution surfaces the resolved version in notes only
@@ -1424,7 +1446,16 @@ class TestCliArgumentValidation(unittest.TestCase):
     def test_unknown_flag_exits_2(self):
         res = self._run("--catagory", "helm")
         self.assertEqual(res.returncode, 2)
-        self.assertIn("unknown argument", res.stderr)
+        self.assertIn("unrecognized arguments", res.stderr)
+
+    def test_unknown_category_value_exits_2(self):
+        res = self._run("--category", "helmm")
+        self.assertEqual(res.returncode, 2)
+        self.assertIn("--category", res.stderr)
+
+    def test_flag_shaped_value_is_rejected(self):
+        res = self._run("--service", "--json")
+        self.assertEqual(res.returncode, 2)
 
     def test_unknown_flag_after_valid_flag_exits_2(self):
         res = self._run("--service", "k3s", "--bogus")
@@ -1438,9 +1469,8 @@ class TestCliArgumentValidation(unittest.TestCase):
 
 
 class TestConsumerConfigFlags(unittest.TestCase):
-    """--config / --repo-root are the documented consumer entry point (SCRIPTS.md).
-    They are resolved before the argv loop, so the loop must consume them too —
-    it used to drop through to "unknown argument" on every non-early-exit path."""
+    """--config / --repo-root are the documented consumer entry point
+    (SCRIPTS.md): they must combine with any other flag and require a value."""
 
     def tearDown(self):
         check_versions.load_config(FIXTURE_CONFIG, repo_root=FIXTURE_REPO)
@@ -1467,7 +1497,7 @@ class TestConsumerConfigFlags(unittest.TestCase):
             [sys.executable, str(script_path), "--config"], capture_output=True, text=True,
         )
         self.assertEqual(res.returncode, 2)
-        self.assertIn("--config requires a value", res.stderr)
+        self.assertIn("--config", res.stderr)
 
 
 class TestFetchGithubReleaseTagFilter(unittest.TestCase):
@@ -1493,13 +1523,9 @@ class TestFetchGithubReleaseTagFilter(unittest.TestCase):
         return api
 
     def test_highest_not_newest_and_skip_is_load_bearing(self):
-        # Page 1 (exactly 100 items -> pagination continues to page 2) leads
-        # with a STABLE older-branch patch, simulating newest-by-date. Page 2
-        # (<100 -> loop stops) holds the true winner plus a prerelease AND a
-        # draft that both carry HIGHER versions. The winner must be the highest
-        # STABLE version across pages, proving both "highest not newest" and
-        # that the draft/prerelease skip is load-bearing (drop the skip and the
-        # 1.37 draft would win instead).
+        # Page 1 (100 items -> paginates) leads with an older stable patch;
+        # page 2 holds the true winner plus a higher prerelease and draft. The
+        # winner must be the highest STABLE version across pages.
         page1 = [{"tag_name": "v1.34.9+k3s2"}] + [
             {"tag_name": f"nightly-{i}"} for i in range(99)  # non-matching filler
         ]
@@ -1680,6 +1706,25 @@ class TestFormatJson(unittest.TestCase):
         self.assertIs(metallb.get("held"), True)
 
 
+class TestFormatTableUnknownCategory(unittest.TestCase):
+    """A registry entry with an unrecognised category must still be rendered
+    (under "Other") and still be counted in the summary."""
+
+    def test_unknown_category_is_rendered_and_counted(self):
+        SV = check_versions.ServiceVersion
+        results = [
+            SV(name="Typo", category="gihtub", current_version="1.0",
+               var_name="typo_version", error="Unknown category: gihtub"),
+            SV(name="Foo", category="helm", current_version="1.0",
+               latest_version="1.1", update_available=True, var_name="foo_version"),
+        ]
+        out = check_versions.format_table(results)
+        self.assertIn("Typo", out)
+        self.assertIn("Other", out)
+        self.assertIn("Errors:         1", out)
+        self.assertIn("Updates:        1", out)
+
+
 class TestCheckService(unittest.TestCase):
     """check_service — the function that decides update_available — exercised
     for real (never mocked): update detection on both the live-fetch and
@@ -1781,9 +1826,4 @@ class TestMainExitCodes(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    if PYTEST_AVAILABLE:
-        # Use pytest for better output formatting when available
-        pytest.main([__file__, "-v"])
-    else:
-        # Fall back to unittest when pytest is not installed
-        unittest.main(verbosity=2)
+    raise SystemExit(pytest.main([__file__, "-v"]))

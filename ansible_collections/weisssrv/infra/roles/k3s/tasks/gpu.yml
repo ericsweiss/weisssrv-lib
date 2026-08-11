@@ -97,17 +97,21 @@
 
 - name: Download the NVIDIA cuda-keyring package (SHA256 verified before install)
   ansible.builtin.get_url:
+    # Staged under /root 0600, not /tmp: dpkg runs this package's maintainer
+    # scripts as root, and a world-writable staging dir invites symlink abuse on
+    # the destination path. Same policy as the k3s installer in
+    # install-script.yml.
     url: "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/cuda-keyring_{{ k3s_gpu_cuda_keyring_version }}_all.deb"
-    dest: "/tmp/cuda-keyring_{{ k3s_gpu_cuda_keyring_version }}_all.deb"
+    dest: "/root/cuda-keyring_{{ k3s_gpu_cuda_keyring_version }}_all.deb"
     checksum: "sha256:{{ k3s_gpu_cuda_keyring_sha256 }}"
     owner: root
     group: root
-    mode: "0644"
+    mode: "0600"
   when: not (k3s_skip_gpu_install | default(false))
 
 - name: Install the verified cuda-keyring package (repo + debian13 signing key)
   ansible.builtin.apt:
-    deb: "/tmp/cuda-keyring_{{ k3s_gpu_cuda_keyring_version }}_all.deb"
+    deb: "/root/cuda-keyring_{{ k3s_gpu_cuda_keyring_version }}_all.deb"
   when: not (k3s_skip_gpu_install | default(false))
 
 - name: Refresh apt cache with the CUDA repo enabled
@@ -139,9 +143,9 @@
     cache_valid_time: 3600
     allow_change_held_packages: true
     # allow_change_held_packages permits touching a held package but NOT a
-    # downgrade; without this, recovering a host whose nvidia-open drifted ABOVE
-    # the pin (the failure this MR fixes) would still fail. allow_downgrade makes
-    # the exact pin authoritative in both directions (no-op when pin == installed).
+    # downgrade, so a host whose nvidia-open drifted ABOVE the pin could not be
+    # recovered without this. Together they make the exact pin authoritative in
+    # both directions (no-op when pin == installed).
     allow_downgrade: true
   when: not (k3s_skip_gpu_install | default(false))
   notify:
@@ -231,11 +235,11 @@
       {{ 'nvidia-smi OK — the GPU is visible to the agent.'
          if (k3s_gpu_nvidia_smi.rc | default(1)) == 0
          else ('nvidia-smi ran but found NO GPU ("No devices were found"): the card
-                is likely not attached to this VM yet — attach it in the window
-                (qm set 207 --hostpci0 0000:01:00, the role README step 6), then re-check.'
+                is most likely not passed through to this VM yet — attach it on the
+                hypervisor, then re-check.'
                if 'No devices were found' in ((k3s_gpu_nvidia_smi.stdout | default(''))
                                               ~ (k3s_gpu_nvidia_smi.stderr | default('')))
                else 'nvidia-smi could not reach the driver — most likely the DKMS
                      kernel module is not loaded yet: REBOOT this VM to load it, then
-                     re-check (expected right after a first driver install; the role README).') }}
+                     re-check (expected right after a first driver install).') }}
   when: not (k3s_skip_gpu_install | default(false))

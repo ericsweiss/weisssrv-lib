@@ -34,6 +34,7 @@ the role is a no-op.
 | `acme_certs_skip_distribution` | Skip the proactive push at the end | no (`false`) |
 | `acme_certs_receiver_path` | Receiver path on each sudo target | no (`/usr/local/sbin/cert-receive`) |
 | `acme_certs_sh_version` / `_sh_tarball_sha256` | Pinned acme.sh release | no |
+| `acme_certs_dns_hook` | acme.sh dnsapi hook used for DNS-01 (any hook the pinned tarball ships) | no (`dns_cf`) |
 | `acme_certs_distribution_targets` | Target list (schema below) | no (`[]`) |
 
 ### Target schema
@@ -87,7 +88,9 @@ A sudo target never grants the distribution key a shell. Each gets:
 **Pipe protocol.** `homelab-cert-reload.sh` pushes each sudo target in a single
 SSH round-trip: `fullchain.pem`, a fixed non-PEM boundary line, then
 `privkey.pem` on the forced command's stdin. The receiver reads stdin with a
-hard 64 KiB cap, splits at the boundary (it assigns the output filenames —
+hard 64 KiB cap and **rejects** anything larger (it reads one byte past the cap,
+so an oversized bundle fails as oversized rather than as a truncated PEM), splits
+at the boundary (it assigns the output filenames —
 nothing from stdin becomes a path), then validates before trusting: both parse,
 the cert is unexpired, the key matches the leaf, the SAN covers
 `*.<acme_certs_domain>`, and the leaf chains to a CA already in the host
@@ -126,6 +129,10 @@ export CF_Account_ID=...
   -d "<domain>" -d "*.<domain>"
 ```
 
+Another DNS provider is `acme_certs_dns_hook` plus that hook's own credential
+environment: the role checks for the hook, names it in these instructions, and
+does not otherwise care which provider signs the challenge.
+
 `--server letsencrypt` is passed explicitly so the command also works against a
 pre-existing acme.sh install that this role did not pin (acme.sh 3.x otherwise
 defaults to ZeroSSL, which a Let's-Encrypt-only CAA record would refuse).
@@ -139,6 +146,20 @@ post-reload `.applied-fullchain.sha256` marker matches the cert being pushed
 source. So an unchanged, successfully-applied cert restarts nothing, while a
 target that is missing the cert, holds an older one, was rebuilt, or whose
 previous reload failed gets the full push.
+
+## Metrics
+
+`homelab-cert-reload.sh` writes two node_exporter textfiles under
+`node_exporter_host_textfile_dir` (default `/var/lib/node_exporter`):
+
+- `cert_renewal.prom` — `cert_renewal_last_run_success`,
+  `cert_renewal_last_run_duration_seconds`,
+  `cert_renewal_last_success_timestamp_seconds`, and
+  `cert_local_expiry_timestamp_seconds` (the on-disk cert's `notAfter`, emitted
+  on failed runs too so an expiry alert's `absent()` clause does not false-fire)
+- `cert_distribution_targets.prom` —
+  `cert_distribution_target_last_run_success{host="…"}`, so one dead target is
+  visible instead of being collapsed into the run-level bit
 
 ## Operations
 

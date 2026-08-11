@@ -1,0 +1,45 @@
+# Rendered by the weisssrv.infra.home_assistant role — edits made on HAOS are
+# overwritten by the next deploy. The role compares a sha256 of this file with
+# the deployed one, so the render must stay byte-stable (no timestamps).
+
+# Reverse proxy: HA only honours X-Forwarded-For from these networks.
+http:
+  use_x_forwarded_for: true
+  trusted_proxies:
+{% for proxy in home_assistant_trusted_proxies %}
+    - {{ proxy }}
+{% endfor %}
+{% if home_assistant_ssl_enabled | default(false) %}
+  # TLS terminates on HAOS itself; the reverse proxy connects with scheme https
+  # and the backend port stays 8123.
+  ssl_certificate: {{ home_assistant_ssl_certificate }}
+  ssl_key: {{ home_assistant_ssl_key }}
+{% endif %}
+
+# OpenID Connect SSO. block_login disables HA's own password login, so the
+# identity provider is the only way in.
+openid:
+  client_id: !secret oidc_client_id
+  client_secret: !secret oidc_client_secret
+  configure_url: "{{ home_assistant_oidc_configure_url }}"
+  scope: "{{ home_assistant_oidc_scope }}"
+  username_field: "{{ home_assistant_oidc_username_field }}"
+  block_login: {{ home_assistant_oidc_block_login | bool | ternary('true', 'false') }}
+
+# Prometheus metrics endpoint
+prometheus:
+
+# Default configuration
+default_config:
+
+# Text to speech
+tts:
+  - platform: google_translate
+
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml
+{% if home_assistant_extra_config | length > 0 %}
+
+{{ home_assistant_extra_config }}
+{% endif %}

@@ -63,6 +63,7 @@ triggers can be added via $MOLECULE_GLOBAL_TRIGGERS (space-separated; a trailing
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 import re
 import subprocess
@@ -111,60 +112,52 @@ NOOP_JOB_NAME = "molecule-none-affected"
 # Pinned image for the no-op job (matches test-aggregate's alpine pin).
 NOOP_IMAGE = "alpine:3.23"
 
-# Everything that sits at the ROOT of the tree holding the roles (the collection
-# root for a collection layout, `ansible/` for the classic one) — derived from
-# $ROLES_DIR so a consumer that retargets the roles dir never has to restate it.
-# These are neither role paths nor scenario paths, so without them a change to
-# e.g. galaxy.yml or meta/runtime.yml selects NOTHING and the MR goes green
-# having run no scenario at all.
-_ROLES_ROOT = PurePosixPath(ROLES_PREFIX).parent
-
-# Files/prefixes that force the FULL matrix (any change -> EVERYTHING): the
-# collection root (galaxy metadata, runtime/meta, plugins, the shared molecule
-# config, the galaxy requirements both suites install), the two molecule CI image
-# contexts, the CI file that defines the matrix, the shared in-job retry wrapper,
-# and this generator itself (its selection logic changing means the narrowing
-# can't be trusted — run everything).
-#
-# A trigger only bites if the plan job was CREATED, i.e. if the path is also in
-# the `changes` list gating molecule-plan (ci/internal/molecule-matrix's
-# `changes` input). The pip pins that bake into the molecule CI image live in
-# that image's build context, so the `docker/molecule-ci/` prefix below covers
-# them on both sides; a consumer keeping pins at the repo root adds
-# `requirements.txt` to $MOLECULE_GLOBAL_TRIGGERS *and* to `changes` — listing
-# it here alone would promise a full fan-out the plan job never runs to deliver.
-GLOBAL_TRIGGER_FILES = frozenset({
-    str(_ROLES_ROOT / "requirements.yml"),
-    str(_ROLES_ROOT / "galaxy.yml"),
-    CI_FILE_NAME,
-    # The shared job templates every molecule/integration job extends — a
-    # template-only change must re-run everything, not emit a no-op child.
-    MOLECULE_JOBS_INCLUDE,
-    "scripts/molecule-retry.sh",
-    "scripts/generate-molecule-pipeline.py",
-})
-GLOBAL_TRIGGER_PREFIXES = (
-    str(_ROLES_ROOT / "meta") + "/",
-    str(_ROLES_ROOT / "plugins") + "/",
-    str(_ROLES_ROOT / "molecule-shared") + "/",
-    "ansible/molecule/",
-    # Playbooks a scenario's verify can include_tasks. Global rather than a
-    # per-role map so a future scenario consuming another maintenance playbook
-    # can't rot the narrowing — over-select on rare edits instead.
-    "ansible/playbooks/maintenance/",
-    "docker/molecule-test/",
-    # Includes the CI image's requirements.txt — the pip pins both suites run on.
-    "docker/molecule-ci/",
-)
-
-# Consumer-supplied extras: space-separated; a trailing "/" makes it a prefix.
+# Consumer-supplied extra global triggers: space-separated; a trailing "/"
+# makes it a prefix.
 _EXTRA_TRIGGERS = os.environ.get("MOLECULE_GLOBAL_TRIGGERS", "").split()
-GLOBAL_TRIGGER_FILES = GLOBAL_TRIGGER_FILES | {
-    e for e in _EXTRA_TRIGGERS if not e.endswith("/")
-}
-GLOBAL_TRIGGER_PREFIXES = GLOBAL_TRIGGER_PREFIXES + tuple(
-    e for e in _EXTRA_TRIGGERS if e.endswith("/")
-)
+
+
+@functools.lru_cache(maxsize=None)
+def _global_triggers(roles_prefix: str) -> tuple[frozenset[str], tuple[str, ...]]:
+    """Files/prefixes that force the FULL matrix, derived from `roles_prefix`.
+
+    The root of the tree holding the roles (collection root, or `ansible/` in
+    the classic layout) is neither a role path nor a scenario path, so without
+    these a change to e.g. galaxy.yml would select nothing at all.
+
+    A trigger only bites when the plan job was CREATED, so a consumer adding an
+    entry to $MOLECULE_GLOBAL_TRIGGERS must add the same path to the plan job's
+    `changes` list (ci/internal/molecule-matrix) — see docs/SCRIPTS.md.
+    """
+    root = PurePosixPath(roles_prefix).parent
+    files = {
+        str(root / "requirements.yml"),
+        str(root / "galaxy.yml"),
+        CI_FILE_NAME,
+        # The shared job templates every molecule/integration job extends — a
+        # template-only change must re-run everything, not emit a no-op child.
+        MOLECULE_JOBS_INCLUDE,
+        "scripts/molecule-retry.sh",
+        # This generator: if the selection logic changed, run everything.
+        "scripts/generate-molecule-pipeline.py",
+    } | {e for e in _EXTRA_TRIGGERS if not e.endswith("/")}
+    prefixes = (
+        str(root / "meta") + "/",
+        str(root / "plugins") + "/",
+        str(root / "molecule-shared") + "/",
+        "ansible/molecule/",
+        # Playbooks a scenario's verify can include_tasks. Global rather than a
+        # per-role map, so a new consumer cannot rot the narrowing.
+        "ansible/playbooks/maintenance/",
+        "docker/molecule-test/",
+        # Includes the CI image's requirements.txt — the pip pins both suites
+        # run on.
+        "docker/molecule-ci/",
+    ) + tuple(e for e in _EXTRA_TRIGGERS if e.endswith("/"))
+    return frozenset(files), prefixes
+
+
+GLOBAL_TRIGGER_FILES, GLOBAL_TRIGGER_PREFIXES = _global_triggers(ROLES_PREFIX)
 
 # include_role / import_role — matched on the final dotted component so
 # ansible.builtin.include_role, ansible.legacy.import_role, etc. all count.
@@ -183,12 +176,18 @@ class CoverageError(RuntimeError):
 # YAML loading (tolerant of GitLab custom tags such as !reference)
 # ---------------------------------------------------------------------------
 
+class _TagTolerantLoader(yaml.SafeLoader):
+    """SafeLoader that survives GitLab's custom tags (e.g. `!reference`).
+
+    Subclassed rather than patched onto yaml.SafeLoader, so importing this
+    module cannot change YAML parsing for anything else in the process.
+    """
+
+
 def _tag_passthrough(loader, tag_suffix, node):
-    """Preserve custom-tagged nodes structurally (mirrors
-    check-molecule-matrix-coverage.sh) so a !reference near the matrix doesn't
-    collapse the parse. Returns only scalars/sequences/mappings — it never
-    constructs arbitrary Python types — so yaml.safe_load stays safe. We do not
-    resolve !reference semantics."""
+    """Preserve a custom-tagged node structurally so a !reference near the
+    matrix does not collapse the parse. Returns only scalars/sequences/mappings
+    — never an arbitrary Python type. !reference semantics are not resolved."""
     if isinstance(node, yaml.ScalarNode):
         return loader.construct_scalar(node)
     if isinstance(node, yaml.SequenceNode):
@@ -198,15 +197,13 @@ def _tag_passthrough(loader, tag_suffix, node):
     return None
 
 
-# Make the SafeLoader tolerant of GitLab custom tags (e.g. !reference), same
-# pattern as scripts/check-molecule-matrix-coverage.sh. This only adds
-# structural passthrough for `!`-tagged nodes; yaml.safe_load still refuses
-# !!python/object and other arbitrary-type tags.
-yaml.SafeLoader.add_multi_constructor("!", _tag_passthrough)
+# Empty suffix catches every '!<anything>' tag. !!python/object and other
+# arbitrary-type tags are still refused (SafeLoader's own constructor set).
+_TagTolerantLoader.add_multi_constructor("!", _tag_passthrough)
 
 
 def _load_yaml(path: Path):
-    """Parse a YAML file with yaml.safe_load; None when absent/unreadable.
+    """Parse a YAML file (SafeLoader semantics); None when absent/unreadable.
 
     Malformed YAML RAISES (fail-loud): silently skipping a parse error could
     drop include_role/dependency edges from the derived graph and under-select
@@ -214,7 +211,7 @@ def _load_yaml(path: Path):
     """
     try:
         with path.open() as f:
-            return yaml.safe_load(f)
+            return yaml.load(f, Loader=_TagTolerantLoader)
     except yaml.YAMLError as e:
         raise CoverageError(f"{path}: YAML parse failed: {e}") from e
     except OSError:
@@ -492,11 +489,12 @@ def build_inventory_consumers(
 # Path classification
 # ---------------------------------------------------------------------------
 
-def is_global_trigger(path: str) -> bool:
+def is_global_trigger(path: str, roles_prefix: str = ROLES_PREFIX) -> bool:
     """True if a change to `path` forces the full matrix."""
-    if path in GLOBAL_TRIGGER_FILES:
+    files, prefixes = _global_triggers(roles_prefix)
+    if path in files:
         return True
-    return any(path.startswith(prefix) for prefix in GLOBAL_TRIGGER_PREFIXES)
+    return any(path.startswith(prefix) for prefix in prefixes)
 
 
 def _under(path: str, prefix: str) -> list[str] | None:
@@ -608,7 +606,7 @@ def compute_affected(
     integration_set = set(integration_tests)
 
     # Global trigger -> everything (first, so it short-circuits role/coverage checks).
-    if any(is_global_trigger(f) for f in changed_files):
+    if any(is_global_trigger(f, roles_prefix) for f in changed_files):
         return Selection(set(all_scenarios), set(integration_set), full=True)
 
     # consumer graph -> reverse (provider -> direct consumers) for molecule fan-out.
@@ -711,12 +709,11 @@ _HEADER = (
 )
 
 
-# Every emitted job carries explicit `rules: [when: always]`. Without ANY
-# rules/only/except, GitLab applies the LEGACY implicit `only: branches, tags`
-# — and a child of a merge-request pipeline runs on the MR ref (neither a
-# branch nor a tag), so every rule-less job is filtered out and the trigger
-# fails with "the resulting pipeline would have been empty" (observed on
-# pipeline 775). Explicit rules disable that legacy default.
+# Every emitted job carries explicit `rules: [when: always]`. Without any
+# rules/only/except GitLab applies the legacy implicit `only: branches, tags`,
+# and a child of a merge-request pipeline runs on the MR ref (neither), so every
+# rule-less job would be filtered out and the trigger would fail on an empty
+# pipeline.
 _ALWAYS_RULES = [{"when": "always"}]
 
 

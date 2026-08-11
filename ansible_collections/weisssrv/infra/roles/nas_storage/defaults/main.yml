@@ -27,6 +27,12 @@ nas_storage_media_mover_cpu_weight: 20
 nas_storage_media_mover_io_weight: 20
 nas_storage_media_mover_bwlimit: ""
 
+# Shared media group. Single source of truth for the gid the NFS exports squash
+# to, the Samba `force group`, and the appdata directory ownership — nfs.yml and
+# samba.yml both create it from these two values.
+nas_storage_media_group: media
+nas_storage_media_gid: 2000
+
 # Per-app appdata directories (NFS export /export/appdata -> /mnt/ssd/appdata)
 # Apps that persist config on the appdata NFS export need their subdirectory to
 # exist and be writable before their first write. The export squashes every
@@ -37,7 +43,7 @@ nas_storage_media_mover_bwlimit: ""
 # device does NOT belong here — that is a separate filesystem mount.
 nas_storage_appdata_base: /mnt/ssd/appdata
 nas_storage_appdata_owner: 1000
-nas_storage_appdata_group: 2000
+nas_storage_appdata_group: "{{ nas_storage_media_gid }}"
 nas_storage_appdata_mode: "0775"
 # CONSTRAINT: no database-dump directories here. Logical dumps belong on the
 # offsite-eligible landing zone below, so they ride the archive file walk into
@@ -54,12 +60,36 @@ nas_storage_appdata_dirs: []
 # is what the backup-artifact collector walks for freshness.
 nas_storage_backup_apps_base: /mnt/tank/backups/apps
 
-# Backup-artifact mtime collector (independent NAS-side freshness signal)
+# RUNTIME mounted-dataset guard for everything that reads or writes under
+# nas_storage_backup_apps_base. A pool root with mountpoint=none leaves that
+# path a plain directory on the root filesystem while the dataset is unmounted:
+# a local writer would shadow-write there and the collector would read the
+# shadow copy as fresh, so both alert arms stay green. Rendered into the
+# collector and the pmxcfs archiver as a `mountpoint -q` fail-closed check.
+# Follows nas_storage_skip_zfs_operations so molecule (where the path is an
+# ordinary container dir) renders it off. Never set false on a real NAS.
+nas_storage_backup_require_mounted_dataset: "{{ not (nas_storage_skip_zfs_operations | default(false)) }}"
+
+# Backup-artifact collector (independent NAS-side freshness + size signal)
 # Each app's own backup wrapper emits <app>_backup_last_* metrics, but those go
 # green even when the dump never REACHED the landing zone (broken mount, wrong
-# path). This NAS-side collector stats the newest file under each <base>/<app>
-# and emits backup_artifact_last_mtime_seconds{app=...} — the independent "the
-# dump landed offsite-eligible" signal.
+# path). This NAS-side collector stats the newest RESTORABLE artefact under each
+# <base>/<app> and emits backup_artifact_last_mtime_seconds{app} plus
+# backup_artifact_last_size_bytes{app} — an independent "a non-empty dump landed
+# offsite-eligible" signal, and a collector sentinel.
+#
+# `pattern` is MANDATORY, which is why this is a list of mappings: a collector
+# that takes the newest file of ANY name lets an app's own sidecar copies (a
+# config file rewritten nightly) hold the freshness signal green while no
+# restorable dump reaches the landing zone at all. Patterns are shell globs
+# matched against the BASENAME; keep them tight enough to exclude sidecars and
+# any partial-backup variant the app also writes.
+#
+# `companions` is optional: globs for files that are not themselves the dump but
+# are REQUIRED to restore it (an app's secrets/keys file). Each emits
+# backup_artifact_companion_present{app,file} and
+# backup_artifact_companion_size_bytes{app,file}, so a missing or truncated one
+# is alertable without widening the artefact pattern.
 nas_storage_backup_artifact_metrics_enabled: true
 nas_storage_backup_artifact_apps: []
 
@@ -80,6 +110,49 @@ nas_storage_archive_backup_sources: []
 # snapshotted only once writes under its mountpoint have quiesced, so a
 # half-written .vma is never captured. Empty disables the guard.
 nas_storage_archive_backup_vzdump_target: ""
+# Snapshot retention on the destination pool, applied per dataset: the newest
+# N snapshots unconditionally, plus the newest of each of the last M calendar
+# months. Rendered into archive-backupctl.
+nas_storage_archive_backup_keep_recent: 3
+nas_storage_archive_backup_keep_monthly: 6
+# Timer schedule. The default sits after a typical overnight backup window; the
+# in-script quiesce guard defers the vzdump target if that window overruns.
+nas_storage_archive_backup_schedule: "*-*-* 06:30:00"
+nas_storage_archive_backup_random_delay: "10m"
+
+# Nightly tar of the Proxmox cluster filesystem (/etc/pve) into the landing
+# zone. vzdump captures GUESTS, not pmxcfs, so users/ACLs/API tokens,
+# corosync.conf and priv/ (cluster CA, node certs, authkey) are otherwise backed
+# up nowhere and a total-cluster loss means rebuilding the cluster identity.
+# Opt-in: only meaningful on a PVE cluster member that also holds the landing
+# zone. The archive carries private key material, so its directory and every
+# archive are root-only.
+nas_storage_pve_cluster_backup_enabled: false
+nas_storage_pve_cluster_backup_src: /etc/pve
+# RUNTIME mounted-SOURCE guard, the mirror of the destination guard above.
+# /etc/pve is a FUSE mount; with pve-cluster.service down it is an empty plain
+# directory that tars into a valid, tiny "successful" backup of nothing — which
+# retention then retires the real archives behind. Never set false on a real
+# PVE host.
+nas_storage_pve_cluster_backup_require_src_mount: "{{ not (nas_storage_skip_zfs_operations | default(false)) }}"
+# CONTENT guard, paths relative to _src. A mounted but degraded pmxcfs still
+# tars into a non-empty, `tar -tzf`-readable archive, so framing checks alone
+# cannot tell a cluster-identity backup from an archive of nothing — and
+# publishing that one retires a real archive per night through retention. The
+# archive is refused unless every file here is in it. These are exactly the
+# files a cluster-identity restore needs; shorten it only for a deployment that
+# genuinely lacks one (e.g. a standalone node has no corosync.conf).
+nas_storage_pve_cluster_backup_required_files:
+  - user.cfg
+  - corosync.conf
+  - pve-root-ca.pem
+  - priv/pve-root-ca.key
+  - authkey.pub
+  - priv/authkey.key
+nas_storage_pve_cluster_backup_schedule: "*-*-* 02:15:00"
+nas_storage_pve_cluster_backup_random_delay: 300
+nas_storage_pve_cluster_backup_keep: 14
+nas_storage_pve_cluster_backup_nice: 10
 
 # Skip enabling/starting smartd (a container has no SMART-capable devices).
 nas_storage_skip_smartd_service: false

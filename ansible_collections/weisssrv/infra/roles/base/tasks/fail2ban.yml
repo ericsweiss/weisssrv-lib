@@ -3,9 +3,6 @@
 # is unavailable there; container mode uses the 'route' banaction (blackhole
 # routes) instead. Trade-offs: bans are IP-wide, the recidive jail is off
 # (route has no allports), and all jails share one routing table.
-#
-# Refs: https://pieterbakker.com/secure-debian-12-with-fail2ban-and-nftables/
-#       https://forum.proxmox.com/threads/iptables-inside-lxc-container-not-blocking-anything.123807/
 
 - name: Install fail2ban
   ansible.builtin.apt:

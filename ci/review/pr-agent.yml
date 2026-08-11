@@ -28,14 +28,10 @@ spec:
     reasoning_effort:
       default: "high"
       description: >-
-        low | medium | high | xhigh. `xhigh` is pr-agent's ceiling, and it was the
-        default until it proved unusable: MEASURED on weisssrv-lib!4 it took 40.7m,
-        44.6m and 74.5m to succeed and twice failed outright by running out the job
-        (45m, then 90m) having emitted nothing at all — on a 56k-token diff, so not
-        a size problem. A review nobody waits for is not a review. `high` produces
-        substantive findings on weisssrv in 3-16m against comparable diffs, which
-        is the evidence this default rests on. Note an unrecognised value (e.g.
-        gpt-5.6's `max`) silently downgrades to medium.
+        low | medium | high | xhigh. `high` reviews a large diff in minutes;
+        `xhigh` (pr-agent's ceiling) takes 40m-75m on the same diff and often
+        exhausts the job timeout with no output at all. An unrecognised value
+        (e.g. gpt-5.6's `max`) silently downgrades to medium.
     max_model_tokens:
       default: "900000"
       description: >-
@@ -44,14 +40,10 @@ spec:
     ai_timeout:
       default: "1200"
       description: >-
-        Per-LLM-call timeout (seconds). The upstream 120s default times out
-        immediately; 600 was not enough either — a single `improve` call on a
-        52k-token diff measured 1478s at xhigh, so it timed out, RETRIED, and
-        burned the job budget on a second attempt. 1800 was sized for that xhigh
-        measurement; with the default now `high` the calls are far shorter, so
-        1200 keeps headroom while halving the worst-case hang. This input and
-        reasoning_effort move TOGETHER — raising effort without raising this
-        reproduces the timeout-retry loop.
+        Per-LLM-call timeout (seconds); upstream's 120s default is far too low
+        for a real diff. A call that hits this timeout is RETRIED, so an
+        undersized value burns the job budget twice over. Moves TOGETHER with
+        reasoning_effort — raise both or neither.
     dual_publishing_threshold:
       default: "6"
       description: >-
@@ -70,12 +62,11 @@ spec:
     timeout:
       default: "45m"
       description: >-
-        Job timeout. Must exceed ai_timeout times the number of `commands`, or a
-        slow call is killed by the job rather than by its own timeout — which
-        loses the output of commands that already succeeded. At the defaults:
-        two commands x 1200s = 40m, plus image pull and clone. Keep that
-        inequality if either number changes. This is a CEILING on a wedged job,
-        not a target: it does not make a healthy review faster.
+        Job timeout. Must exceed ai_timeout times the number of `commands` (at
+        the defaults: 2 x 1200s = 40m, plus image pull and clone), or a slow call
+        is killed by the job instead of by its own timeout and the output of
+        commands that already succeeded is lost. Keep that inequality if either
+        number changes.
     secrets_source:
       default: "env"
       options: ["env", "1password"]
@@ -106,7 +97,9 @@ spec:
       description: >-
         Variable expression that must be non-empty for the job to be CREATED
         (e.g. `$OP_SERVICE_ACCOUNT_TOKEN`, or `$A && $B`). A tokenless pipeline
-        (fork MR) then has no AI review, which is expected, not a failure.
+        (fork MR) then has no AI review, which is expected, not a failure. The
+        value is interpolated INSIDE a single-quoted `rules:if` expression, so it
+        must contain no single quote.
 ---
 "$[[ inputs.job_name ]]":
   stage: $[[ inputs.stage ]]

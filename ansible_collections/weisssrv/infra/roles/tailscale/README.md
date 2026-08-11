@@ -9,7 +9,7 @@ advertised subnet routes, ACL tags) on every run.
 | Variable | Default | Meaning |
 |---|---|---|
 | `tailscale_enabled` | `true` | Role switch — `false` skips every task (honored by the role itself). |
-| `tailscale_version` | pinned | installed exactly, then `dpkg` held — the upstream repo continuously serves newer builds |
+| `tailscale_version` | pinned | installed exactly, then `dpkg` held — the upstream repo continuously serves newer builds. Override wherever the consumer keeps its version pins; the role default moves only on a collection release. |
 | `tailscale_gpg_fingerprint` | upstream primary key | the downloaded key is verified against this **before** it is trusted |
 | `tailscale_accept_routes` | `false` | keep `false` on a subnet router, or its own advertised routes loop back |
 | `tailscale_accept_dns` | `false` | leave the site's resolvers authoritative |
@@ -24,27 +24,40 @@ reaches argv, a fact, or a log.
 
 ## Key verification
 
-The signing key is re-downloaded on every run into a staging path, its primary
-fingerprint is matched against `tailscale_gpg_fingerprint`, and only then is it
-copied into `/usr/share/keyrings/`. Installing first and verifying after would
-leave a tampered download trusted by apt on an established host even though the
-play failed.
+The signing key is re-downloaded on every run into a staging path, checked
+there, and only then copied into `/usr/share/keyrings/`. Installing first and
+verifying after would leave a tampered download trusted by apt on an established
+host even though the play failed.
+
+The check binds the **complete set** of primary-key fingerprints in the
+downloaded file to `tailscale_gpg_fingerprint` (subkeys are ignored). Matching
+only the first would let a bundle carrying the pinned key *plus* an appended
+primary key pass, and the whole file is installed as trusted.
 
 ## IP forwarding
 
-A node advertising routes gets two things, because on a Proxmox host bridge
-initialization can reset `ip_forward` **after** systemd-sysctl has run:
+A node advertising routes gets two things, because on a host with bridged
+networking (a hypervisor, typically) bridge initialization can reset
+`ip_forward` **after** systemd-sysctl has run:
 
 1. `/etc/sysctl.d/99-tailscale-ip-forward.conf` — role-owned, deliberately not
    the sysctl module's `/etc/sysctl.conf` default and deliberately not
    `nic_tuning`'s file, which that role deletes on its disable path.
 2. a `tailscaled.service` `ExecStartPost` that re-asserts the value.
 
-Removing routes removes both, but does **not** force the live value back to 0:
-`nic_tuning` may legitimately own `ip_forward` on the same host, and fighting it
-would be worse than a demoted router that keeps forwarding until reboot.
+An `ip_forward` line in `/etc/sysctl.conf` is removed unconditionally, so the
+drop-in is the single owner either way.
+
+Emptying `tailscale_advertise_routes` removes both files, but does **not** force
+the live value back to 0: `nic_tuning` may legitimately own `ip_forward` on the
+same host, and fighting it would be worse than a demoted router that keeps
+forwarding until reboot.
 
 ## ACL tags
+
+Deploy order matters: apply the tailnet ACL (which defines `tagOwners`, and the
+tag-based route auto-approver if you use one) **before** running this role with
+`tailscale_advertise_tags` set.
 
 `--advertise-tags` is deliberately **not** passed to the initial `tailscale up`.
 A tag on the join hard-fails while the live ACL has no `tagOwners` entry yet, or

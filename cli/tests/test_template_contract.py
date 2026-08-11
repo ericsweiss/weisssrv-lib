@@ -1,9 +1,9 @@
 """Binds the bundled scaffold fixture to the real app-template repo.
 
 The CLI hardcodes the template's layout: directory paths, manifest filenames,
-kustomization opt-in lines, document names, commented opt-in markers and the
-placeholder tokens. Nothing else checks that those literals still describe the
-template, so a template change could silently break every scaffold run.
+the `# - optional/<file>` opt-in lines, document names and the placeholder
+tokens. Nothing else checks that those literals still describe the template, so
+a template change could silently break every scaffold run.
 
 These tests assert one contract against BOTH trees — the fixture (always) and a
 real template checkout (when reachable) — plus byte-equality between them, so
@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import needs_optional_layout
 
 from weisssrv_lib_cli import kustomization as kz, prune, tree, wire
 
@@ -87,8 +89,12 @@ if _TEMPLATE is None and os.environ.get("WEISSSRV_TEMPLATE_REQUIRED"):
         "WEISSSRV_TEMPLATE_REQUIRED is set but no template checkout was found"
     )
 _needs_template = pytest.mark.skipif(
-    _TEMPLATE is None,
-    reason="no template checkout (set WEISSSRV_TEMPLATE_ROOT)",
+    _TEMPLATE is None
+    or not (_TEMPLATE / tree.FLUX_DIR / tree.OPTIONAL_DIR).is_dir(),
+    reason="no template checkout (set WEISSSRV_TEMPLATE_ROOT), or the checkout "
+    f"predates {tree.FLUX_DIR}/{tree.OPTIONAL_DIR}/ — every fixture-vs-template "
+    "comparison false-fails across that transition, so the re-synced fixture "
+    "suite carries the contract until the template adopts the layout",
 )
 
 
@@ -99,7 +105,14 @@ def _fixture_files() -> list[str]:
 
 
 def _flux_names(root: Path) -> set[str]:
-    return {p.name for p in (root / tree.FLUX_DIR).glob("*.yaml")}
+    """Every manifest under kubernetes/flux, as FLUX_DIR-relative paths.
+
+    Recursive on purpose: the opt-in manifests moved into optional/, and a
+    top-level-only glob would report a set that matches while that whole
+    directory drifted.
+    """
+    flux = root / tree.FLUX_DIR
+    return {str(p.relative_to(flux)) for p in flux.rglob("*.yaml")}
 
 
 def _assert_cli_contract(root: Path) -> None:
@@ -111,10 +124,30 @@ def _assert_cli_contract(root: Path) -> None:
     active = set(kz.list_resources(ktext))
     assert active == set(_ACTIVE_RESOURCES)
 
+    # Opt-in manifests are real files under optional/, switched off by leaving
+    # their resource line commented. `wire` uncomments that exact line, so its
+    # spelling — `optional/<file>` — is part of the contract.
+    optional = tree.optional_dir(root)
+    assert optional.is_dir(), f"{tree.FLUX_DIR}/{tree.OPTIONAL_DIR} missing"
     for name in tree.OPT_IN_MANIFESTS:
+        assert name.startswith(f"{tree.OPTIONAL_DIR}/"), f"{name} is not an opt-in path"
         assert (flux / name).exists(), f"opt-in manifest {name} missing"
         assert name not in active, f"{name} must ship commented out"
         assert kz.uncomment_resource(ktext, name)[1], f"no `# - {name}` opt-in line"
+
+    # optional/kustomization.yaml is what CI builds to validate the switched-off
+    # manifests, so every file there must be listed in it (and `prune hpa`
+    # removes an entry from it).
+    opt_ktext = (optional / tree.KUSTOMIZATION).read_text(encoding="utf-8")
+    opt_listed = set(kz.list_resources(opt_ktext))
+    opt_on_disk = {
+        p.name for p in optional.glob("*.yaml") if p.name != tree.KUSTOMIZATION
+    }
+    assert opt_on_disk == opt_listed, (
+        f"{tree.OPTIONAL_DIR}/{tree.KUSTOMIZATION} lists {sorted(opt_listed)} but "
+        f"the directory holds {sorted(opt_on_disk)}"
+    )
+    assert {n.rsplit("/", 1)[-1] for n in tree.OPT_IN_MANIFESTS} == opt_on_disk
 
     for name in (tree.DEPLOYMENT, "vpa.yaml", "pdb.yaml", "externalsecret.yaml",
                  "servicemonitor.yaml", "networkpolicy.yaml", "ingressroute.yaml",
@@ -139,15 +172,20 @@ def _assert_cli_contract(root: Path) -> None:
         tree.flux_file(root, "networkpolicy.yaml")
     ), f"networkpolicy.yaml has no allow-scrape-from-observability document ({len(npol)}B)"
 
-    # prune external-ingress keys off the `-internal` name suffix, and refuses
-    # unless `wire internal-ingress` can activate an internal variant first.
+    # prune external-ingress keys off the `-internal` name suffix: the live
+    # files carry the public documents, the optional/ variants carry the
+    # internal ones, and it refuses until `wire internal-ingress` enables those.
     for name in ("ingressroute.yaml", "certificate.yaml"):
-        text = tree.flux_file(root, name).read_text(encoding="utf-8")
         docs = tree.read_document_names(tree.flux_file(root, name))
-        assert any(not d.endswith("-internal") for d in docs), f"{name}: no public doc"
-        assert any(
-            line.strip() == "# ---" for line in text.splitlines()
-        ), f"{name}: no commented internal block (`# ---` marker)"
+        assert docs, f"{name}: no document"
+        assert not any(d.endswith("-internal") for d in docs), (
+            f"{name}: an internal variant lives here, not in {tree.OPTIONAL_DIR}/"
+        )
+    for name in tree.INTERNAL_INGRESS_MANIFESTS:
+        docs = tree.read_document_names(tree.flux_file(root, name))
+        assert docs and all(d.endswith("-internal") for d in docs), (
+            f"{name}: prune external-ingress keys off the `-internal` suffix"
+        )
 
     # wire sso uncomments this exact middleware pair in the public route.
     ing = tree.flux_file(root, "ingressroute.yaml").read_text(encoding="utf-8")
@@ -228,20 +266,11 @@ class TestFixtureMatchesTemplate:
 
     @_needs_template
     def test_vendored_semantic_release_matches_the_library_ref_it_pins(self):
-        """The template VENDORS this script. Prose said so; nothing checked it.
+        """The template vendors this script; nothing else compares the copies.
 
-        The two copies had already drifted (98b6410f vs 83ad4b82) with every
-        gate green, because a vendored file is only compared by whoever
-        remembers to compare it. The cost is one-directional and quiet: fixes
-        land here, the template keeps shipping the old script, and every project
-        scaffolded from it inherits bugs that were fixed upstream months ago.
-
-        Compared against the library AT THE REF THE TEMPLATE PINS, not at HEAD.
-        Pinning is the whole point of vendoring — the template is entitled to
-        lag, so long as it lags coherently. Comparing to HEAD would red this
-        suite for the duration of every unreleased change, and a gate that is
-        red by default gets muted. This one goes red for exactly one reason:
-        someone bumped the ref without re-vendoring the file it carries.
+        Compared at the ref the template PINS, not at HEAD: the template is
+        entitled to lag, so long as it lags coherently. The gate reds when
+        someone bumps the ref without re-vendoring the file.
         """
         rel = "scripts/semantic-release.py"
         vendored = _TEMPLATE / rel
@@ -256,11 +285,8 @@ class TestFixtureMatchesTemplate:
 
         blob = _show()
         if blob.returncode != 0:
-            # CI clones shallow and does not always carry tags, so a tag one
-            # commit behind HEAD can still be unresolvable. Fetch just that tag
-            # and retry rather than reporting drift that is really a clone
-            # depth. Offline (a local run with no remote) this simply fails
-            # again and falls through to the error below.
+            # A shallow CI clone may not carry the tag: fetch just that tag
+            # and retry, rather than reporting a clone depth as drift.
             subprocess.run(
                 ["git", "fetch", "--quiet", "--depth", "1", "origin", "tag", pinned],
                 cwd=_LIB_ROOT,
@@ -268,10 +294,8 @@ class TestFixtureMatchesTemplate:
             )
             blob = _show()
         if blob.returncode != 0:
-            # Deliberately a failure, not a skip: "the tag was not in the
-            # checkout" is indistinguishable from "the files match" once it is
-            # a skip, and this gate exists because an invisible gap is what
-            # let the copies drift.
+            # A failure, not a skip: an unreadable tag would otherwise be
+            # indistinguishable from "the files match".
             raise AssertionError(
                 f"cannot read {rel} at {pinned} from this checkout "
                 f"({blob.stderr.decode(errors='replace').strip()}). "
@@ -284,19 +308,10 @@ class TestFixtureMatchesTemplate:
         )
 
     def test_example_and_fixture_release_workflows_match(self):
-        """The two copies inside THIS repo, compared without needing a template.
-
-        The GitHub release workflow exists in three byte-identical places: this
-        library's reference copy, the scaffold fixture, and the app template's
-        vendored .github/workflows/release.yml. Nothing compared any of them —
-        the identity was asserted only in the header comment of the file itself,
-        the same defect that let semantic-release.py drift.
-
-        Deliberately NOT @_needs_template. Every other comparison in this class
-        runs only when a template checkout is reachable, so with no template
-        they all skip and the two copies sitting in this very repository go
-        unchecked — the drift that is easiest to introduce (editing one of the
-        two files here) would be caught by nothing at all. This one always runs.
+        """The GitHub release workflow exists in three byte-identical places:
+        the library's reference copy, the scaffold fixture, and the template's
+        vendored .github/workflows/release.yml. This compares the two that live
+        in THIS repo, so it deliberately runs without a template checkout.
         """
         rel = ".github/workflows/release.yml"
         example = _LIB_ROOT / "ci" / "release" / "github-release-workflow.example.yml"
@@ -311,16 +326,10 @@ class TestFixtureMatchesTemplate:
 
     @_needs_template
     def test_vendored_github_release_workflow_matches_the_library_example(self):
-        """The third copy: what a consumer actually runs.
-
-        With the fixture pinned to the example by the test above, this closes
-        the triangle — example == fixture and example == vendored, so all three
-        agree.
-
-        Compared against the library's WORKING TREE rather than a released tag,
-        unlike the vendored script: this file is `uses:`-less reference YAML that
-        a consumer copies by hand, so there is no pinned ref for it to lag
-        behind. If they differ, one of the three was edited alone.
+        """The third copy: what a consumer runs. With the fixture pinned to the
+        example above, this closes the triangle. Compared against the working
+        tree rather than a tag: the file is reference YAML a consumer copies by
+        hand, so there is no pinned ref for it to lag behind.
         """
         rel = ".github/workflows/release.yml"
         example = _LIB_ROOT / "ci" / "release" / "github-release-workflow.example.yml"
@@ -356,6 +365,11 @@ class TestFixtureMatchesTemplate:
             ".dockerignore",
             "Dockerfile",
             "CODEOWNERS",
+            # ruff.toml is CI surface, not repo cosmetics: the python-lint
+            # include passes no `config:` input, so ruff DISCOVERS this file,
+            # and the same file backs `task python-lint` and the github shape's
+            # step. A drifted copy changes what all three enforce.
+            "ruff.toml",
         }
         for p in (_TEMPLATE / ".github" / "workflows").glob("*.y*ml"):
             ci_rel.add(str(p.relative_to(_TEMPLATE)))
@@ -387,9 +401,72 @@ class TestFixtureMatchesTemplate:
 
 
 class TestCliContract:
+    @needs_optional_layout
     def test_fixture_satisfies_contract(self):
         _assert_cli_contract(_FIXTURE)
 
     @_needs_template
     def test_template_satisfies_contract(self):
         _assert_cli_contract(_TEMPLATE)
+
+
+class TestOptionalManifests:
+    """The alternates used to ship as commented-out blocks, which nothing
+    parsed, built or validated — so an opt-in could rot until the day someone
+    enabled it. They are real files under optional/ now, and these tests are the
+    translation of that old guarantee: nothing in the flux tree is a commented
+    resource any more, and every optional manifest builds and validates.
+    """
+
+    @_needs_template
+    def test_no_manifest_ships_a_commented_out_resource(self):
+        # `# apiVersion:` and a commented `---` are what a commented-out
+        # document looks like. The `# - optional/<file>` lines in the
+        # kustomization are commented REFERENCES, not resources, and stay.
+        offenders = []
+        for rel in sorted(_flux_names(_TEMPLATE)):
+            text = (_TEMPLATE / tree.FLUX_DIR / rel).read_text(encoding="utf-8")
+            for i, line in enumerate(text.splitlines(), start=1):
+                stripped = line.strip()
+                if re.match(r"#\s*apiVersion:", stripped) or stripped == "# ---":
+                    offenders.append(f"{rel}:{i}")
+        assert not offenders, (
+            "commented-out resources, which nothing parses, builds or validates: "
+            + ", ".join(offenders)
+            + f" — make each a real manifest under {tree.OPTIONAL_DIR}/ or delete it"
+        )
+
+    @_needs_template
+    @pytest.mark.parametrize("name", sorted(tree.OPT_IN_MANIFESTS))
+    def test_optional_manifest_is_a_real_document(self, name):
+        docs = tree._safe_load_all(
+            (_TEMPLATE / tree.FLUX_DIR / name).read_text(encoding="utf-8")
+        )
+        real = [d for d in docs if d]
+        assert real, f"{name} yielded no document"
+        for doc in real:
+            assert doc.get("apiVersion") and doc.get("kind"), f"{name}: not a resource"
+            assert (doc.get("metadata") or {}).get("name"), f"{name}: no metadata.name"
+
+    @_needs_template
+    def test_optional_dir_builds_and_validates(self):
+        """`kustomize build optional/ | kubeconform` — the same pair CI runs, so
+        a switched-off manifest cannot rot into one that fails when enabled."""
+        for tool in ("kustomize", "kubeconform"):
+            if not shutil.which(tool):
+                pytest.skip(f"{tool} not on PATH")
+        built = subprocess.run(
+            ["kustomize", "build", str(_TEMPLATE / tree.FLUX_DIR / tree.OPTIONAL_DIR)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert built.returncode == 0, built.stderr
+        checked = subprocess.run(
+            ["kubeconform", "-strict", "-ignore-missing-schemas", "-summary", "-"],
+            input=built.stdout,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert checked.returncode == 0, checked.stdout + checked.stderr

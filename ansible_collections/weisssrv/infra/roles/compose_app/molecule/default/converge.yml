@@ -1,8 +1,8 @@
 ---
 # Converge: render the shared compose unit in BOTH shapes (RequiresMountsFor
-# present and absent) and
-# deploy the write_prom_metrics helper library — all in skip-install mode so no
-# container runtime or systemd service management is needed.
+# present and absent), deploy the write_prom_metrics helper library, and run the
+# host-nginx flow — all in skip-install mode, so no container runtime or systemd
+# service management is needed.
 - name: Converge
   hosts: all
   become: true
@@ -26,8 +26,7 @@
           - "Reconcile comment line one."
           - "Reconcile comment line two."
 
-    # Case B: no RequiresMountsFor (empty list omits the line
-    # AND its comment).
+    # Case B: no RequiresMountsFor (an empty list omits the line AND its comment).
     - name: Render the compose unit without RequiresMountsFor
       ansible.builtin.include_role:
         name: weisssrv.infra.compose_app

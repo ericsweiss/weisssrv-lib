@@ -1,0 +1,325 @@
+---
+# Home Assistant OS is an appliance, not a managed Linux host: this role only
+# renders configuration.yaml + secrets.yaml on the play host and pushes them
+# over the HAOS SSH add-on. Every task below runs on the play host.
+#
+# Each `cmd:` below is a folded scalar whose lines all share one indent, so it
+# folds to a SINGLE line — a more-indented continuation would keep its newline
+# and split the remote command in two.
+
+- name: Assert the rendered-config inputs are set
+  ansible.builtin.assert:
+    that:
+      - home_assistant_trusted_proxies | length > 0
+      - home_assistant_oidc_configure_url | length > 0
+    fail_msg: >-
+      home_assistant_trusted_proxies (CIDRs allowed to set X-Forwarded-For) and
+      home_assistant_oidc_configure_url (the identity provider's OIDC discovery
+      URL) are required. See the role README for a worked example.
+    success_msg: "Rendered-config inputs are present"
+
+- name: Assert the OIDC client credentials are set
+  ansible.builtin.assert:
+    that:
+      - home_assistant_oidc_client_id | default('') | length > 0
+      - home_assistant_oidc_client_secret | default('') | length > 0
+    fail_msg: >-
+      OIDC credentials are not set. Provide home_assistant_oidc_client_id and
+      home_assistant_oidc_client_secret; their defaults read HA_OIDC_CLIENT_ID /
+      HA_OIDC_CLIENT_SECRET from the environment, which a secret manager
+      (`op run -- ...`) is expected to populate.
+    success_msg: "OIDC credentials are present"
+  no_log: true
+
+# HAOS SSH is root with no sudo, so the accept-new TOFU path used for ordinary
+# hosts is not acceptable here: a re-imaged HAOS would silently re-key and still
+# receive the secrets push. The operator pins the key once (README) and every
+# ssh/scp below runs with StrictHostKeyChecking=yes.
+- name: Assert the HAOS connection inputs are set
+  ansible.builtin.assert:
+    that:
+      - home_assistant_host | default('') | length > 0
+      - home_assistant_host_key | default('') | length > 0
+    fail_msg: |
+      home_assistant_host and home_assistant_host_key are both required to
+      deploy. Capture the host key once with:
+
+          ssh-keyscan -t ed25519 -p {{ home_assistant_ssh_port }} <haos-address>
+
+      and set the algorithm + base64 portion (no leading host:port) as
+      home_assistant_host_key. See the role README "Host-key pinning".
+    success_msg: "HAOS connection inputs are present"
+  when: not (home_assistant_render_only | default(false))
+
+- name: Pin the HAOS host key in the deploying user's known_hosts
+  ansible.builtin.known_hosts:
+    name: "[{{ home_assistant_host }}]:{{ home_assistant_ssh_port }}"
+    key: "[{{ home_assistant_host }}]:{{ home_assistant_ssh_port }} {{ home_assistant_host_key }}"
+    state: present
+  when: not (home_assistant_render_only | default(false))
+
+- name: Check the HAOS TLS cert files are readable
+  # configuration.yaml names these paths when home_assistant_ssl_enabled; if
+  # they are missing HA fails to bind 8123 on its next restart, so pre-flight
+  # them instead of discovering it after the push.
+  ansible.builtin.command:
+    cmd: >
+      ssh -p {{ home_assistant_ssh_port }} {{ home_assistant_ssh_opts }}
+      {{ home_assistant_ssh_user }}@{{ home_assistant_host }}
+      'test -r {{ home_assistant_ssl_certificate }} && test -r {{ home_assistant_ssl_key }}'
+  register: home_assistant_ssl_cert_check
+  changed_when: false
+  failed_when: false
+  when:
+    - home_assistant_ssl_enabled | default(false)
+    - not (home_assistant_render_only | default(false))
+
+- name: Assert the HAOS TLS cert files are in place
+  ansible.builtin.assert:
+    that:
+      - home_assistant_ssl_cert_check.rc == 0
+    fail_msg: |
+      HAOS TLS cert pre-flight failed (ssh rc={{ home_assistant_ssl_cert_check.rc }}).
+      rc=255 means the check never reached HAOS (host down, ConnectTimeout, or a
+      host-key mismatch) — investigate connectivity first, not the cert.
+      Otherwise home_assistant_ssl_enabled is true but
+      {{ home_assistant_ssl_certificate }} or {{ home_assistant_ssl_key }} is
+      missing on HAOS: distribute the cert first, or set
+      home_assistant_ssl_enabled=false until it is in place.
+  when:
+    - home_assistant_ssl_enabled | default(false)
+    - not (home_assistant_render_only | default(false))
+
+- name: Deploy and validate Home Assistant configuration
+  block:
+    - name: Create a private staging directory for the rendered config
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: ha-config.
+      register: home_assistant_staging_tmp
+      # Controller-side scratch, not managed state: the staging tasks report
+      # no change so a converged run's `changed` count reflects HAOS only.
+      changed_when: false
+      when: home_assistant_staging_dir | length == 0
+
+    - name: Resolve the staging directory path
+      ansible.builtin.set_fact:
+        # The default() covers check mode, where tempfile is skipped and
+        # nothing is rendered anyway.
+        home_assistant_staging_resolved: >-
+          {{ home_assistant_staging_dir
+             if home_assistant_staging_dir | length > 0
+             else (home_assistant_staging_tmp.path | default('/tmp')) }}
+
+    - name: Render configuration.yaml
+      ansible.builtin.template:
+        src: configuration.yaml.j2
+        dest: "{{ home_assistant_staging_resolved }}/ha-configuration.yaml"
+        mode: "0644"
+      changed_when: false
+
+    - name: Render secrets.yaml
+      ansible.builtin.template:
+        src: secrets.yaml.j2
+        dest: "{{ home_assistant_staging_resolved }}/ha-secrets.yaml"
+        mode: "0600"
+      changed_when: false
+      no_log: true
+
+    - name: Checksum the rendered files
+      ansible.builtin.stat:
+        path: "{{ home_assistant_staging_resolved }}/{{ item }}"
+        checksum_algorithm: sha256
+        get_attributes: false
+        get_mime: false
+      register: home_assistant_local_sums
+      loop:
+        - ha-configuration.yaml
+        - ha-secrets.yaml
+      when: not (home_assistant_render_only | default(false))
+
+    - name: Read the deployed checksums from HAOS
+      # One round trip prints a sha256 (or `absent`) per file, in the same order
+      # as the staged files, so an unchanged /config can skip the whole
+      # stage -> backup -> install -> `ha core check` chain.
+      ansible.builtin.command:
+        cmd: >
+          ssh -p {{ home_assistant_ssh_port }} {{ home_assistant_ssh_opts }}
+          {{ home_assistant_ssh_user }}@{{ home_assistant_host }}
+          'for f in configuration secrets; do
+          if [ -f {{ home_assistant_config_path }}/$f.yaml ]; then
+          sha256sum {{ home_assistant_config_path }}/$f.yaml;
+          else echo absent; fi; done'
+      register: home_assistant_remote_sums
+      changed_when: false
+      when: not (home_assistant_render_only | default(false))
+
+    - name: Decide whether HAOS needs the rendered config
+      ansible.builtin.set_fact:
+        home_assistant_config_changed: >-
+          {{ (home_assistant_remote_sums.stdout_lines
+              | map('regex_replace', '\s.*$', '') | list)
+             != (home_assistant_local_sums.results
+              | map(attribute='stat.checksum') | list) }}
+      when: not (home_assistant_render_only | default(false))
+
+    - name: Report that HAOS already has this configuration
+      ansible.builtin.debug:
+        msg: "HAOS {{ home_assistant_config_path }} already matches the rendered config; nothing to deploy."
+      when:
+        - not (home_assistant_render_only | default(false))
+        - not (home_assistant_config_changed | default(false) | bool)
+
+    - name: Install the rendered config on HAOS
+      when:
+        - not (home_assistant_render_only | default(false))
+        - home_assistant_config_changed | default(false) | bool
+      block:
+        - name: Stage both files in HAOS /tmp
+          # Both files land remotely before either is moved into /config: a
+          # failed scp then leaves /config in its prior state instead of a
+          # configuration.yaml whose !secret keys are not in secrets.yaml yet.
+          ansible.builtin.command:
+            cmd: >
+              scp -P {{ home_assistant_ssh_port }} {{ home_assistant_ssh_opts }}
+              {{ home_assistant_staging_resolved }}/ha-configuration.yaml
+              {{ home_assistant_staging_resolved }}/ha-secrets.yaml
+              {{ home_assistant_ssh_user }}@{{ home_assistant_host }}:/tmp/
+          changed_when: true
+          no_log: true  # secrets.yaml content is visible in stdout on error
+
+        - name: Back up the current config (rollback source on check failure)
+          # A .bak exists after this iff the file existed before THIS deploy,
+          # which is what the rescue branches on.
+          ansible.builtin.command:
+            cmd: >
+              ssh -p {{ home_assistant_ssh_port }} {{ home_assistant_ssh_opts }}
+              {{ home_assistant_ssh_user }}@{{ home_assistant_host }}
+              'set -e; for f in configuration secrets; do
+              if [ -f {{ home_assistant_config_path }}/$f.yaml ]; then
+              cp -a {{ home_assistant_config_path }}/$f.yaml {{ home_assistant_config_path }}/$f.yaml.bak;
+              else rm -f {{ home_assistant_config_path }}/$f.yaml.bak; fi; done'
+          register: home_assistant_config_backup
+          changed_when: false
+
+        - name: Atomically install the configuration files
+          # secrets.yaml first, so configuration.yaml's `!secret` references
+          # always resolve against an up-to-date secrets file; the chained &&
+          # leaves /config consistent if the first mv fails.
+          ansible.builtin.command:
+            cmd: >
+              ssh -p {{ home_assistant_ssh_port }} {{ home_assistant_ssh_opts }}
+              {{ home_assistant_ssh_user }}@{{ home_assistant_host }}
+              'mv /tmp/ha-secrets.yaml {{ home_assistant_config_path }}/secrets.yaml &&
+              mv /tmp/ha-configuration.yaml {{ home_assistant_config_path }}/configuration.yaml'
+          changed_when: true
+
+        - name: Validate the installed configuration
+          ansible.builtin.command:
+            cmd: >
+              ssh -p {{ home_assistant_ssh_port }} {{ home_assistant_ssh_opts }}
+              {{ home_assistant_ssh_user }}@{{ home_assistant_host }}
+              'ha core check'
+          register: home_assistant_config_check
+          changed_when: false
+          # Non-zero means the config is invalid: fail so the rescue rolls back
+          # rather than leaving HAOS to break on its next restart.
+          failed_when: home_assistant_config_check.rc != 0
+
+        - name: Show the configuration check output
+          ansible.builtin.debug:
+            var: home_assistant_config_check.stdout_lines
+
+        - name: Remove the backups after a successful check
+          ansible.builtin.command:
+            cmd: >
+              ssh -p {{ home_assistant_ssh_port }} {{ home_assistant_ssh_opts }}
+              {{ home_assistant_ssh_user }}@{{ home_assistant_host }}
+              'rm -f {{ home_assistant_config_path }}/configuration.yaml.bak {{ home_assistant_config_path }}/secrets.yaml.bak'
+          register: home_assistant_backup_cleanup
+          changed_when: false
+          # Best-effort: the deploy already passed `ha core check`, so a cleanup
+          # hiccup must not enter the rescue and roll back a good config.
+          failed_when: false
+
+        - name: Warn when the backup cleanup failed
+          ansible.builtin.debug:
+            msg: >-
+              WARNING: config deployed and passed `ha core check`, but removing
+              the .bak files failed (rc={{ home_assistant_backup_cleanup.rc | default('n/a') }});
+              stale backups will be overwritten on the next deploy.
+          when: home_assistant_backup_cleanup.rc | default(0) != 0
+
+  rescue:
+    # The install or `ha core check` failed. Restore the pre-deploy state so a
+    # bad config is never left live. Per file: a .bak present -> restore it; no
+    # .bak but the file present -> this deploy created it, so remove it.
+    - name: Roll back the config to its pre-deploy state
+      ansible.builtin.command:
+        cmd: >
+          ssh -p {{ home_assistant_ssh_port }} {{ home_assistant_ssh_opts }}
+          {{ home_assistant_ssh_user }}@{{ home_assistant_host }}
+          'set -e; rolled_back=0; for f in configuration secrets; do
+          if [ -f {{ home_assistant_config_path }}/$f.yaml.bak ]; then
+          mv {{ home_assistant_config_path }}/$f.yaml.bak {{ home_assistant_config_path }}/$f.yaml; rolled_back=1;
+          elif [ -f {{ home_assistant_config_path }}/$f.yaml ]; then
+          rm -f {{ home_assistant_config_path }}/$f.yaml; rolled_back=1; fi; done;
+          echo "rolled_back=$rolled_back"'
+      register: home_assistant_rollback
+      changed_when: "'rolled_back=1' in (home_assistant_rollback.stdout | default(''))"
+      # Only roll back once the backup task has actually run and succeeded: if
+      # the rescue fires earlier no reliable .bak exists, and the remove-new-file
+      # branch would then delete the LIVE config.
+      when:
+        - not (home_assistant_render_only | default(false))
+        - home_assistant_config_backup is defined
+        - home_assistant_config_backup is not skipped
+        - home_assistant_config_backup is succeeded
+
+    - name: Re-raise the failure with the rollback outcome
+      ansible.builtin.fail:
+        # Each literal stays on ONE line: this scalar's if/else keywords are
+        # more-indented, so a split literal would embed newlines in the message.
+        msg: >-
+          Home Assistant deploy failed.
+          {{ 'Render-only: no remote change was made.'
+             if (home_assistant_render_only | default(false))
+             else ('/config rolled back to its pre-deploy state (backups restored / new files removed); fix the template or secrets and re-run.'
+                   if ('rolled_back=1' in (home_assistant_rollback.stdout | default('')))
+                   else 'Nothing to roll back (the deploy failed before the install), so /config was not modified.') }}
+          Review the check/SSH output above.
+
+  always:
+    - name: Remove the private staging directory
+      ansible.builtin.file:
+        path: "{{ home_assistant_staging_tmp.path }}"
+        state: absent
+      changed_when: false
+      when: (home_assistant_staging_tmp.path | default('')) | length > 0
+
+    - name: Remove the rendered files from a pinned staging directory
+      ansible.builtin.file:
+        path: "{{ home_assistant_staging_dir }}/{{ item }}"
+        state: absent
+      changed_when: false
+      loop:
+        - ha-configuration.yaml
+        - ha-secrets.yaml
+      # Render-only leaves them in place: rendering IS the deliverable there.
+      when:
+        - not (home_assistant_render_only | default(false))
+        - home_assistant_staging_dir | length > 0
+
+    - name: Remove any staged files left on HAOS
+      # Best-effort: an abort between the scp and the install mv leaves stale
+      # ha-*.yaml in HAOS /tmp.
+      ansible.builtin.command:
+        cmd: >
+          ssh -p {{ home_assistant_ssh_port }} {{ home_assistant_ssh_opts }}
+          {{ home_assistant_ssh_user }}@{{ home_assistant_host }}
+          'rm -f /tmp/ha-configuration.yaml /tmp/ha-secrets.yaml'
+      changed_when: false
+      failed_when: false
+      when:
+        - not (home_assistant_render_only | default(false))
+        - home_assistant_config_changed | default(false) | bool

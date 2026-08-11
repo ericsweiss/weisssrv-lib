@@ -9,7 +9,11 @@ policy_out: ACCEPT
 
 [ALIASES]
 
-{#- Host-backed aliases come from inventory: any host setting `firewall_alias`
+{# NOTE: opens with `{#`, not `{#-`. A leading `-` here strips the trailing
+   whitespace of the preceding text node — i.e. the blank line that separates
+   the `[ALIASES]` section header from its first entry — and renders
+   `[ALIASES]<first-alias>` on one line, which pve-firewall will not parse.
+   Host-backed aliases come from inventory: any host setting `firewall_alias`
     contributes one, pointing at the same address the IPSets use. That keeps the
     alias list from duplicating (and drifting from) the host addresses. Aliases
     for things that are not inventory hosts (VIPs, off-cluster peers) go in
@@ -33,22 +37,18 @@ policy_out: ACCEPT
 
 [IPSET admin_lan]
 
-# Admin LAN network — the whole /24. Accepted risk: the LAN is one flat,
-# unsegmented L2 (no VLANs for IoT/guest/management), so this
-# set also covers IoT/guest devices, which can therefore reach the management
-# plane (8006/22/6443). Compensated by key-only SSH + fail2ban + Proxmox/k3s auth
-# — every exposed endpoint is authenticated, no unauthenticated bypass. Narrow to
-# a dedicated management subnet once VLAN tagging is in place.
+# Sources allowed at the management plane (:22, :8006, :6443). A whole-subnet
+# entry also admits every other device on that L2, so narrow this to a dedicated
+# management subnet wherever VLAN segmentation exists.
 {% for cidr in proxmox_firewall_admin_lan_cidrs %}
 {{ cidr }}
 {% endfor %}
 
 [IPSET admin_ts]
 
-# Admin overlay network — the full Tailscale CGNAT range by default, not
-# per-device pins: those are brittle (onboarding/DR lockout) and partly moot,
-# since subnet-router SNAT means tailnet traffic to guests arrives as admin_lan
-# anyway. Narrow this if the tailnet ever gains non-admin members.
+# Admin overlay network — the full Tailscale CGNAT range by default rather than
+# per-device pins, which risk DR lockout. Narrow it if the tailnet carries
+# non-admin members.
 {% for cidr in proxmox_firewall_admin_ts_cidrs %}
 {{ cidr }}
 {% endfor %}
@@ -69,10 +69,12 @@ IN ACCEPT -source +dc/admin_ts -p udp -dport 853 -log nolog
 IN ACCEPT -source +dc/admin_lan -p udp -dport 853 -log nolog
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 853 -log nolog
 IN ACCEPT -source +dc/admin_lan -p tcp -dport 853 -log nolog
-# AdGuard Home plaintext admin API (:3000) — admin sources + k3s_nodes (the
-# adguard-exporter scrapes it on the trusted LAN; see exporter accepted-risk note)
+# AdGuard Home plaintext admin API (:3000) — admin sources, plus k3s_nodes
+# explicitly for the in-cluster AdGuard exporter's scrape (which must survive
+# any later narrowing of admin_lan).
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 3000 -log nolog
 IN ACCEPT -source +dc/admin_lan -p tcp -dport 3000 -log nolog
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 3000 -log nolog
 # AdGuard Home HTTPS admin UI (:443) — the ingress proxies the resolver
 # hostnames to AdGuard's own TLS listener; also reachable directly from
 # LAN/Tailscale.
@@ -86,8 +88,8 @@ IN ACCEPT -source +dc/admin_lan -p tcp -dport 53 -log nolog
 IN ACCEPT -source +dc/admin_lan -p udp -dport 53 -log nolog
 
 {# Per-application groups are site data, supplied as
-   proxmox_firewall_security_groups (defaults/main.yml carries an example set).
-   Rules are emitted verbatim, in order, comments included. #}
+   proxmox_firewall_security_groups (empty by default; worked example in the
+   role README). Rules are emitted verbatim, in order, comments included. #}
 {% for group in proxmox_firewall_security_groups | default([]) %}
 [group {{ group.name }}]
 
@@ -117,9 +119,7 @@ IN ACCEPT -source +dc/admin_lan -p icmp -log nolog
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 2379:2380 -log nolog
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 2381 -log nolog  # etcd metrics (kubeEtcd scrape)
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 10250 -log nolog
-# Flannel wireguard-native backend (pod-to-pod encrypted). Migrated
-# 2026-06-11; the VXLAN/8472 rollback rule was removed once every node
-# carried flannel-wg and stale vxlan routes were cleaned.
+# Flannel wireguard-native backend (pod-to-pod encrypted).
 IN ACCEPT -source +dc/k3s_nodes -p udp -dport 51820 -log nolog
 # MetalLB speaker memberlist (L2 leader election between speakers)
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 7946 -log nolog
@@ -209,13 +209,10 @@ OUT ACCEPT -p icmp -log nolog
 
 [group sg-host-egress]
 
-# Host-originated egress allowlist. Only takes effect on hosts where
-# proxmox_firewall_egress_filtering is true — host.fw then references this group
-# (under its conditional gate) and appends a trailing `OUT DROP -log info` rule
-# that enforces default-deny (pve-firewall ignores policy_out in host.fw; the OUT
-# DROP rule is what enforces it). Otherwise the group is unreferenced and inert.
-# conntrack auto-allows RELATED/ESTABLISHED replies, so these only cover NEW
-# outbound connections the node initiates. Tune via the OUT DROP rule's drop logs.
+# Host-originated egress allowlist, referenced by host.fw only where
+# proxmox_firewall_egress_filtering is true (inert otherwise). conntrack
+# auto-allows RELATED/ESTABLISHED replies, so these cover only NEW outbound
+# connections the node initiates; tune them from the OUT DROP rule's drop logs.
 OUT ACCEPT -p udp -dport 53 -log nolog          # DNS
 OUT ACCEPT -p tcp -dport 53 -log nolog          # DNS over TCP
 OUT ACCEPT -p udp -dport 853 -log nolog         # DNS over TLS

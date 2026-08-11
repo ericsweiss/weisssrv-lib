@@ -1,6 +1,6 @@
 ---
-# The role owns its own switch: a consumer addressing it by FQCN has no
-# surrounding play to gate on (weisssrv gates in site.yml as well).
+# The role honours its own switch, so a consumer can list it unconditionally in
+# a play and still disable it per host/group.
 - name: Configure Tailscale
   ansible.builtin.include_tasks: configure.yml
   when: tailscale_enabled | bool

@@ -4,6 +4,7 @@
 # either. `admin_user: root` — the fallback — means "manage no admin user": the
 # create/sudoers/authorized_keys tasks all self-skip.
 base_admin_user: "{{ admin_user | default('root') }}"
+# default(..., true) so an admin_email that resolves empty also falls back.
 base_admin_email: "{{ admin_email | default('root@localhost', true) }}"
 
 base_ssh_port: "{{ ssh_port | default(22) }}"
@@ -13,15 +14,10 @@ base_ssh_pubkey_authentication: "{{ ssh_pubkey_authentication | default(true) }}
 base_ssh_service_name: ssh
 base_ssh_authorized_keys: "{{ ssh_authorized_keys | default([]) }}"
 
-# Lockout guard (asserted in tasks/ssh.yml). A login path survives when a managed
-# non-root account carries at least one key, or root login is still permitted, or
-# password authentication is left on — the last keeps every pre-existing account
-# reachable, which is the case for hosts whose keys are provisioned outside
-# Ansible by cloud-init or image baking.
-# It lives here, not inline in the assert, so the role and the accept/reject
-# matrix in molecule/default/verify.yml share ONE expression: the matrix loads
-# this file and re-resolves the var per case with the four inputs overridden, so
-# dropping or inverting a clause here fails the matrix.
+# Lockout guard, asserted in tasks/ssh.yml: a login path survives when a managed
+# non-root account carries a key, or root login is permitted, or password auth is
+# on. It lives here so the role and the accept/reject matrix in
+# molecule/default/verify.yml share ONE expression — see README.
 base_ssh_login_path_survives: >-
   {{ (base_admin_user != 'root' and base_ssh_authorized_keys | default([]) | length > 0)
      or (base_ssh_permit_root_login | string | lower != 'no')
@@ -50,19 +46,13 @@ base_common_packages:
 base_vm_packages:
   - qemu-guest-agent
 
-# Fail2ban Configuration
-# Fail2ban provides intrusion prevention by banning IPs after failed auth attempts
-# Enabled by default on all hosts for SSH protection
-#
-# LXC container mode uses banaction=route — see the header in
-# tasks/fail2ban.yml for the trade-offs and references.
-
+# Fail2ban: bans IPs after failed auth attempts. LXC containers use
+# banaction=route — see the header in tasks/fail2ban.yml for the trade-offs.
 base_fail2ban_enabled: true
 
-# Trusted networks that should never be banned
-# Default: internal LAN and Tailscale networks
-# Add the site's LAN and any overlay-VPN range (e.g. 100.64.0.0/10 for a
-# Tailscale tailnet) — locking yourself out over the LAN is the failure mode.
+# Never banned. Add the site's LAN and any overlay-VPN range (e.g. 100.64.0.0/10
+# for a Tailscale tailnet) — locking yourself out over the LAN is the failure
+# mode.
 base_fail2ban_ignoreip:
   - 127.0.0.1/8
   - ::1
@@ -72,8 +62,7 @@ base_fail2ban_default_bantime: 1h       # Duration of IP ban
 base_fail2ban_default_findtime: 10m     # Window to count failures
 base_fail2ban_default_maxretry: 5       # Failures before ban
 
-# Progressive ban multiplier for recidivists
-# Each repeat offense multiplies bantime by this factor
+# Repeat offenders (off on containers — see the template's guard)
 base_fail2ban_recidive_enabled: true
 base_fail2ban_recidive_bantime: 1w      # Ban repeat offenders for 1 week
 base_fail2ban_recidive_findtime: 1d     # Look back 1 day for repeat bans
@@ -96,10 +85,6 @@ base_fail2ban_pveproxy_findtime: 10m
 
 # Email notifications (optional - uses the local SMTP relay)
 base_fail2ban_email_enabled: false
-# The fallback must trigger on undefined AND empty/falsy values — a site that
-# derives admin_email from an env lookup can legitimately produce an undef
-# sentinel — hence the second `true` arg to default(). Dormant unless email is
-# enabled.
 base_fail2ban_email_dest: "{{ base_admin_email }}"
 base_fail2ban_email_sender: "fail2ban@{{ inventory_hostname }}"
 base_fail2ban_email_action: "%(action_mwl)s"  # Ban with email + whois + log lines

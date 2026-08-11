@@ -17,7 +17,7 @@ PROM_DIR="{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter')
 # mkdir -p is a no-op on the steady state.
 mkdir -p "$PROM_DIR"
 PROM_FILE="${PROM_DIR}/cert_renewal.prom"
-PROM_TARGET_FILE="${PROM_DIR}/acme_certs_distribution_targets.prom"
+PROM_TARGET_FILE="${PROM_DIR}/cert_distribution_targets.prom"
 
 write_prom_metrics() {
   local success="$1" duration="$2"

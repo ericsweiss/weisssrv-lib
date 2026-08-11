@@ -274,7 +274,7 @@
         content: |
           {"conf": {{ conf_gpu_inverted.content | b64decode | to_json }}}
 
-    # 8 — standard (non-GPU) idmap: eric (1000) + media (2000) passthrough.
+    # 8 — standard (non-GPU) idmap: uid 1000 + gid 2000 passthrough.
     - name: 8 — reset pct.log and re-seed conf
       ansible.builtin.copy:
         dest: "{{ item.dest }}"

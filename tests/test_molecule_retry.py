@@ -4,9 +4,6 @@ runs, so a regression that loses `exit "$rc"` would turn the whole suite green.
 
 A `molecule` stub on PATH decides the outcome and records its arguments; a
 `sleep` stub keeps the 20-65s jitter window out of the test runtime.
-
-Run with pytest:
-    python3 -m pytest tests/test_molecule_retry.py -v
 """
 
 import os

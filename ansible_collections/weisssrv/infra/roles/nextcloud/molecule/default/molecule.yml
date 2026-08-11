@@ -1,0 +1,53 @@
+---
+# Render/contract scenario: nextcloud_skip_install skips everything needing a
+# Docker daemon and a running Nextcloud, so the compose file, .env, systemd
+# units, nginx site and backup wrapper are rendered + asserted (the wrapper runs
+# end to end against a mocked docker). occ/SSO wiring is lint-checked only.
+provisioner:
+  playbooks:
+    prepare: prepare.yml
+  env:
+    NEXTCLOUD_ADMIN_PASSWORD: testadminpassword123
+    NEXTCLOUD_POSTGRES_PASSWORD: testpostgrespassword123
+    NEXTCLOUD_SERVERINFO_TOKEN: testserverinfotoken123
+    NEXTCLOUD_OIDC_CLIENT_ID: test-client-id
+    NEXTCLOUD_OIDC_CLIENT_SECRET: test-client-secret
+  inventory:
+    group_vars:
+      all:
+        # Exercises the role's domain aliases + derived host names.
+        internal_domain: esweiss.test
+        external_domain: ericsweiss.test
+        nextcloud_version: "34.0.1"
+        nextcloud_postgres_version: "18.4-trixie"
+        # Redis rides the shared redis_version pin via the role's alias.
+        redis_version: "8.8.0-alpine"
+        nextcloud_exporter_version: "0.9.1"
+        # Consumed by docker_engine, which is skipped here — representative only.
+        docker_engine_ce_version: "5:29.6.1-1~debian.13~trixie"
+        docker_engine_containerd_version: "2.2.6-1~debian.13~trixie"
+        docker_engine_buildx_plugin_version: "0.35.0-1~debian.13~trixie"
+        docker_engine_compose_plugin_version: "5.3.1-1~debian.13~trixie"
+        # TEST-NET-1 stand-ins for the site's ingress node addresses.
+        nextcloud_nginx_real_ip_trusted_addresses:
+          - 192.0.2.11
+          - 192.0.2.12
+        nextcloud_oidc_enabled: true
+        nextcloud_oidc_discovery_uri: >-
+          https://auth.ericsweiss.test/application/o/cloud/.well-known/openid-configuration
+        nextcloud_smtp_host: smtp-relay.esweiss.test
+        nextcloud_skip_install: true
+platforms:
+  - name: nextcloud-test
+    image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    tmpfs:
+      - /run
+      - /tmp

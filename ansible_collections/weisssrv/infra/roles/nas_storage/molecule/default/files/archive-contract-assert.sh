@@ -50,6 +50,11 @@ while IFS= read -r root; do
   esac
 done <<< "$src_list"
 
+# Retention is rendered from the role defaults; an unset/empty var would emit a
+# bare `KEEP_RECENT=` and prune every snapshot on the first run.
+grep -qE '^KEEP_RECENT=[0-9]+$' "$s" || { echo >&2 "KEEP_RECENT did not render as an integer"; exit 1; }
+grep -qE '^KEEP_MONTHLY=[0-9]+$' "$s" || { echo >&2 "KEEP_MONTHLY did not render as an integer"; exit 1; }
+
 # Restore labels are basenames, so they must be unique across SRC_LIST (the
 # script fails loudly at startup on a collision, but that runtime check can't
 # execute in this ZFS-less container — pin it statically too).

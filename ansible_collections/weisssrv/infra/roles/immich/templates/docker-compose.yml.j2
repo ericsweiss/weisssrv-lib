@@ -1,0 +1,110 @@
+# {{ ansible_managed }}
+# Immich compose stack. Shape follows upstream docker/docker-compose.yml for the
+# pinned Immich release ({{ immich_version }}). Managed by the immich Ansible
+# role — do not edit on the host (changes are reverted on the next deploy).
+name: immich
+
+services:
+  immich-server:
+    image: {{ immich_server_image }}
+    env_file:
+      - .env
+    environment:
+      # System config (OIDC/SSO, telemetry, backup) is declared in this file.
+      IMMICH_CONFIG_FILE: /config/immich-config.json
+      # Expose native Prometheus metrics on the API ({{ immich_api_metrics_port }})
+      # and microservices ({{ immich_microservices_metrics_port }}) ports.
+      IMMICH_TELEMETRY_INCLUDE: {{ immich_telemetry_include }}
+      # Trust the compose bridge gateway (the host nginx SNATs 127.0.0.1 through
+      # it via docker-proxy) so X-Forwarded-For yields the real client IP.
+      IMMICH_TRUSTED_PROXIES: {{ immich_compose_gateway }}
+    volumes:
+      - ${UPLOAD_LOCATION}:/data
+      - {{ immich_config_dir }}/immich-config.json:/config/immich-config.json:ro
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      # App: loopback only — the host nginx terminates TLS and proxies to it.
+      - "127.0.0.1:{{ immich_server_listen_port }}:2283"
+      # Metrics: reachable on the LAN, so scrape access is the site firewall's job.
+      - "{{ immich_api_metrics_port }}:{{ immich_api_metrics_port }}"
+      - "{{ immich_microservices_metrics_port }}:{{ immich_microservices_metrics_port }}"
+    depends_on:
+      redis:
+        condition: service_healthy
+      database:
+        condition: service_healthy
+    restart: always
+
+  # CPU ML. immich-server tries machineLearning.urls in order, so when the site
+  # puts a dedicated inference endpoint first this service is the failover —
+  # removing it then turns an endpoint outage into broken ML.
+  immich-machine-learning:
+    image: {{ immich_machine_learning_image }}
+    volumes:
+      # Model cache (multi-GB, downloaded on first run) on the app volume.
+      - {{ immich_model_cache_dir }}:/cache
+    env_file:
+      - .env
+    restart: always
+
+  redis:
+    image: {{ immich_valkey_image }}
+    healthcheck:
+      test: redis-cli ping || exit 1
+    restart: always
+
+  database:
+    image: {{ immich_postgres_image }}
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_DB: ${DB_DATABASE_NAME}
+      POSTGRES_INITDB_ARGS: '--data-checksums'
+      # DB_DATA_LOCATION is the root of a dedicated filesystem, so it always
+      # carries a lost+found — which makes initdb refuse it as a non-empty
+      # PGDATA on first boot. Keep the actual data directory in a clean child.
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - ${DB_DATA_LOCATION}:/var/lib/postgresql/data
+    shm_size: 128mb
+    healthcheck:
+      test: >-
+        pg_isready --dbname="${DB_DATABASE_NAME}" --username="${DB_USERNAME}" || exit 1
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: always
+
+{% if immich_postgres_exporter_enabled %}
+  # Opt-in database-level metrics. The credentials are the stack's own, split
+  # across URI/USER/PASS rather than a single DSN so a password with URL-unsafe
+  # characters needs no percent-encoding.
+  postgres-exporter:
+    image: {{ immich_postgres_exporter_image }}
+    environment:
+      DATA_SOURCE_URI: "database:5432/{{ immich_db_database_name }}?sslmode=disable"
+      DATA_SOURCE_USER: ${DB_USERNAME}
+      DATA_SOURCE_PASS: ${DB_PASSWORD}
+    ports:
+      # Unauthenticated: scope access at the site firewall.
+      - "{{ immich_postgres_exporter_port }}:9187"
+    depends_on:
+      database:
+        condition: service_healthy
+    restart: always
+
+{% endif %}
+# Fixed subnet AND gateway so IMMICH_TRUSTED_PROXIES names a guaranteed hop.
+# The host nginx proxies to immich-server on 127.0.0.1; docker-proxy rewrites
+# that source to this network's gateway, so immich-server's REMOTE_ADDR is the
+# gateway. Pinning it (rather than relying on Docker's .1 convention) keeps
+# IMMICH_TRUSTED_PROXIES = {{ immich_compose_gateway }} correct even if Docker's
+# default-gateway allocation ever changes.
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: {{ immich_compose_subnet }}
+          gateway: {{ immich_compose_gateway }}

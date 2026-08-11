@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: gitlab
+  namespace: weisssrv
+  author: Eric Weiss
+  description: GitLab EE (Omnibus) installation, TLS, SSO, backups and Git-SSH hardening
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+
+# Ordering is the playbook's job, so the role stays unit-testable in isolation.
+# A real deploy runs base (SSH, packages, users) and a local mail relay first.
+dependencies: []

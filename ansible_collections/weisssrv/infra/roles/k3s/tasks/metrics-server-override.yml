@@ -1,0 +1,40 @@
+---
+# Raise the k3s-packaged metrics-server off one replica with no memory limit.
+# Included from server.yml on the FIRST server only (it owns the manifests dir).
+#
+# A HelmChartConfig reaches the component only when k3s packages it as a
+# HelmChart. Where k3s ships it as a static wrangler AddOn instead, the override
+# applies cleanly and changes nothing — the same silent no-op a CoreDNS
+# HelmChartConfig hits. Probe for the HelmChart first and fail with the
+# alternative, rather than leave an inert file behind.
+- name: Probe how this k3s packages metrics-server
+  ansible.builtin.command: k3s kubectl get helmchart metrics-server -n kube-system
+  register: k3s_metrics_server_helmchart
+  changed_when: false
+  failed_when: false
+  when: not (k3s_skip_install | default(false))
+  tags:
+    - molecule-notest
+
+- name: Assert metrics-server is HelmChart-packaged
+  ansible.builtin.assert:
+    that:
+      - (k3s_metrics_server_helmchart.rc | default(1)) == 0
+    fail_msg: >-
+      No HelmChart/metrics-server in kube-system, so this k3s packages
+      metrics-server as a static AddOn and a HelmChartConfig would be inert.
+      Either leave k3s_metrics_server_override_enabled false, or disable the
+      packaged component (add metrics-server to k3s_disable) and ship a
+      replacement manifest that carries the replica count and resources.
+    success_msg: "metrics-server is HelmChart-packaged; the override applies"
+  when: not (k3s_skip_install | default(false))
+  tags:
+    - molecule-notest
+
+- name: Deploy the metrics-server override
+  ansible.builtin.template:
+    src: metrics-server-helmchartconfig.yaml.j2
+    dest: /var/lib/rancher/k3s/server/manifests/metrics-server-config.yaml
+    owner: root
+    group: root
+    mode: "0600"

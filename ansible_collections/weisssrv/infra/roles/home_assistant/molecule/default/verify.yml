@@ -1,0 +1,452 @@
+---
+# Two contracts are verified here.
+#
+# 1. RENDER (from the render-only converge): /tmp/ha-configuration.yaml and
+#    /tmp/ha-secrets.yaml are slurped and asserted on — Jinja errors, dropped
+#    trusted-proxy entries, broken !secret refs, a missing SSL block and OIDC
+#    drift are the real failure modes of a config push.
+# 2. DEPLOY (driven from here with home_assistant_render_only=false): the
+#    stateful path talks to HAOS over raw ssh/scp, so local shims at
+#    /usr/local/bin execute the "remote" command against a fake /config and an
+#    `ha` shim honours a fault file. Four runs: success, unchanged (no-op),
+#    check-failure rollback, and first-deploy cleanup.
+#
+# YAML quoting: `that:` entries are double-quoted because the expressions
+# contain unquoted colons that YAML would read as flow-mapping separators.
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Stat /tmp/ha-configuration.yaml
+      ansible.builtin.stat:
+        path: /tmp/ha-configuration.yaml
+      register: home_assistant_t_cfg_stat
+
+    - name: Stat /tmp/ha-secrets.yaml
+      ansible.builtin.stat:
+        path: /tmp/ha-secrets.yaml
+      register: home_assistant_t_secrets_stat
+
+    - name: Assert both rendered files exist with the expected modes
+      ansible.builtin.assert:
+        that:
+          - "home_assistant_t_cfg_stat.stat.exists"
+          - "home_assistant_t_cfg_stat.stat.mode == '0644'"
+          - "home_assistant_t_secrets_stat.stat.exists"
+          - "home_assistant_t_secrets_stat.stat.mode == '0600'"
+        fail_msg: >-
+          Expected /tmp/ha-configuration.yaml (0644) and /tmp/ha-secrets.yaml
+          (0600) after the render-only converge.
+
+    - name: Slurp the rendered configuration.yaml
+      ansible.builtin.slurp:
+        src: /tmp/ha-configuration.yaml
+      register: home_assistant_t_cfg_content
+
+    - name: Decode the rendered configuration.yaml
+      ansible.builtin.set_fact:
+        home_assistant_t_cfg_text: "{{ home_assistant_t_cfg_content.content | b64decode }}"
+
+    - name: Assert the http block carries X-Forwarded-For and every trusted proxy
+      ansible.builtin.assert:
+        that:
+          - "home_assistant_t_cfg_text is search('use_x_forwarded_for: true')"
+          - "home_assistant_t_cfg_text is search('trusted_proxies:')"
+          - "home_assistant_t_cfg_text is search('- 192\\.168\\.0\\.0/24')"
+          - "home_assistant_t_cfg_text is search('- 10\\.42\\.0\\.0/16')"
+          - "home_assistant_t_cfg_text is search('- 10\\.43\\.0\\.0/16')"
+        fail_msg: >-
+          Expected an http block with use_x_forwarded_for and all three
+          trusted-proxy CIDRs from the scenario group_vars.
+
+    - name: Assert the SSL block is rendered when ssl_enabled
+      ansible.builtin.assert:
+        that:
+          - "home_assistant_t_cfg_text is search('ssl_certificate: /ssl/fullchain\\.pem')"
+          - "home_assistant_t_cfg_text is search('ssl_key: /ssl/privkey\\.pem')"
+        fail_msg: >-
+          ssl_enabled=true but the ssl_certificate / ssl_key lines are missing —
+          the home_assistant_ssl_enabled branch in configuration.yaml.j2 is
+          broken or the path variables are not being honoured.
+
+    - name: Assert the OIDC block is complete and uses the configured discovery URL
+      ansible.builtin.assert:
+        that:
+          - "home_assistant_t_cfg_text is search('openid:')"
+          - "home_assistant_t_cfg_text is search('client_id: !secret oidc_client_id')"
+          - "home_assistant_t_cfg_text is search('client_secret: !secret oidc_client_secret')"
+          - "home_assistant_t_cfg_text is search('configure_url: \"https://auth\\.example\\.com/application/o/home/\\.well-known/openid-configuration\"')"
+          - "home_assistant_t_cfg_text is search('scope: \"openid profile email\"')"
+          - "home_assistant_t_cfg_text is search('username_field: \"preferred_username\"')"
+          - "home_assistant_t_cfg_text is search('block_login: true')"
+        fail_msg: >-
+          OIDC block incomplete. Expected the !secret refs, the
+          home_assistant_oidc_configure_url value (not a hardcoded host), and
+          block_login true so password login stays disabled.
+
+    - name: Assert the deprecated YAML SMTP notify platform is not rendered
+      # The `smtp` notify platform is removed upstream in HA 2027.1.0; SMTP
+      # notifications live in a UI config entry instead.
+      ansible.builtin.assert:
+        that:
+          - "home_assistant_t_cfg_text is not search('platform: smtp')"
+        fail_msg: >-
+          A `platform: smtp` notify block was rendered — that platform no longer
+          exists in Home Assistant.
+
+    - name: Assert the prometheus, default_config and include lines are present
+      ansible.builtin.assert:
+        that:
+          - "home_assistant_t_cfg_text is search('^prometheus:', multiline=True)"
+          - "home_assistant_t_cfg_text is search('^default_config:', multiline=True)"
+          - "home_assistant_t_cfg_text is search('platform: google_translate')"
+          - "home_assistant_t_cfg_text is search('automation: !include automations\\.yaml')"
+          - "home_assistant_t_cfg_text is search('script: !include scripts\\.yaml')"
+          - "home_assistant_t_cfg_text is search('scene: !include scenes\\.yaml')"
+        fail_msg: >-
+          Expected prometheus, default_config, tts (google_translate) and the
+          !include lines for automations / scripts / scenes.
+
+    - name: Slurp the rendered secrets.yaml
+      ansible.builtin.slurp:
+        src: /tmp/ha-secrets.yaml
+      register: home_assistant_t_secrets_content
+      no_log: true
+
+    - name: Decode the rendered secrets.yaml
+      ansible.builtin.set_fact:
+        home_assistant_t_secrets_text: "{{ home_assistant_t_secrets_content.content | b64decode }}"
+      no_log: true
+
+    - name: Assert secrets.yaml carries both OIDC keys, double-quoted
+      # provisioner.env injects the synthetic values the role's env-lookup
+      # defaults read. Matching the quoted form catches a regression to
+      # unquoted output, which breaks YAML for values containing ":" or "[".
+      ansible.builtin.assert:
+        that:
+          - "home_assistant_t_secrets_text is search('oidc_client_id: \"test-oidc-client-id\"')"
+          - "home_assistant_t_secrets_text is search('oidc_client_secret: \"test-oidc-client-secret\"')"
+          - "home_assistant_t_secrets_text is not search('smtp_username')"
+          - "home_assistant_t_secrets_text is not search('smtp_password')"
+        fail_msg: >-
+          secrets.yaml is missing an OIDC key, a value is not double-quoted via
+          to_json, or a removed SMTP key came back.
+      no_log: true
+
+    # --- deploy path (render_only=false), driven through local shims ---
+    - name: Install the ssh shim (runs the remote command locally)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/ssh
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          # molecule shim: the role's remote command is the last argument.
+          for last; do :; done
+          exec /bin/bash -c "$last"
+
+    - name: Install the scp shim (copies into the "remote" path locally)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/scp
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          # molecule shim: strip options, copy sources to the dest path after ':'.
+          srcs=()
+          while [ $# -gt 0 ]; do
+            case "$1" in
+              -P|-o) shift 2 ;;
+              -*) shift ;;
+              *) srcs+=("$1"); shift ;;
+            esac
+          done
+          dest="${srcs[-1]#*:}"
+          unset 'srcs[-1]'
+          exec cp -p "${srcs[@]}" "$dest"
+
+    - name: Install the ha shim (fault-injectable `ha core check`)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/ha
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          if [ -f /tmp/ha-core-check-fail ]; then
+            echo "Configuration check failed (molecule fault injection)" >&2
+            exit 1
+          fi
+          echo "Configuration check OK"
+          exit 0
+
+    - name: Create /ssl for the cert pre-flight
+      ansible.builtin.file:
+        path: /ssl
+        state: directory
+        mode: "0755"
+
+    - name: Create the dummy cert files the pre-flight tests for
+      ansible.builtin.copy:
+        dest: "/ssl/{{ item }}"
+        content: "molecule dummy cert\n"
+        mode: "0644"
+      loop:
+        - fullchain.pem
+        - privkey.pem
+
+    - name: Generate a host key for the pin (known_hosts needs valid base64)
+      ansible.builtin.command:
+        cmd: ssh-keygen -t ed25519 -N '' -C haos-molecule -f /tmp/haos-hostkey
+        creates: /tmp/haos-hostkey
+
+    - name: Read the generated host public key
+      ansible.builtin.slurp:
+        src: /tmp/haos-hostkey.pub
+      register: home_assistant_t_hostkey_pub
+
+    - name: Pin the generated key as the HAOS host key
+      ansible.builtin.set_fact:
+        home_assistant_t_host_key: >-
+          {{ (home_assistant_t_hostkey_pub.content | b64decode).split()[0:2] | join(' ') }}
+
+    - name: Ensure /root/.ssh exists for the known_hosts pin
+      ansible.builtin.file:
+        path: /root/.ssh
+        state: directory
+        mode: "0700"
+
+    - name: Seed a prior /config (the pre-deploy state the rescue must restore)
+      ansible.builtin.file:
+        path: /tmp/haos-config
+        state: directory
+        mode: "0755"
+
+    - name: Write the prior configuration.yaml and secrets.yaml sentinels
+      ansible.builtin.copy:
+        dest: "/tmp/haos-config/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: configuration.yaml, content: "# prior-config-sentinel\n"}
+        - {name: secrets.yaml, content: "prior_secret: sentinel\n"}
+
+    - name: Create the pinned deploy staging directory
+      ansible.builtin.file:
+        path: /tmp/ha-staging
+        state: directory
+        mode: "0755"
+
+    # a. success path
+    - name: Deploy for real through the shims (success path)
+      ansible.builtin.include_role:
+        name: weisssrv.infra.home_assistant
+        # apply: is how a dynamic include_role passes task keywords (here
+        # environment) down to the role's tasks.
+        apply:
+          environment:
+            # Deterministic shim precedence: /usr/local/bin/{ssh,scp,ha} wins.
+            PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      vars:
+        home_assistant_render_only: false
+        home_assistant_host: 127.0.0.1
+        home_assistant_config_path: /tmp/haos-config
+        home_assistant_staging_dir: /tmp/ha-staging
+        home_assistant_host_key: "{{ home_assistant_t_host_key }}"
+
+    - name: Slurp the deployed configuration.yaml
+      ansible.builtin.slurp:
+        src: /tmp/haos-config/configuration.yaml
+      register: home_assistant_t_deployed_cfg
+
+    - name: Slurp the deployed secrets.yaml
+      ansible.builtin.slurp:
+        src: /tmp/haos-config/secrets.yaml
+      register: home_assistant_t_deployed_secrets
+      no_log: true
+
+    - name: Stat backup/staging leftovers after the successful deploy
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: home_assistant_t_deploy_leftovers
+      loop:
+        - /tmp/haos-config/configuration.yaml.bak
+        - /tmp/haos-config/secrets.yaml.bak
+        - /tmp/ha-staging/ha-configuration.yaml
+        - /tmp/ha-staging/ha-secrets.yaml
+
+    - name: Assert the deploy replaced the prior config and cleaned up
+      ansible.builtin.assert:
+        that:
+          - "(home_assistant_t_deployed_cfg.content | b64decode) is search('trusted_proxies:')"
+          - "(home_assistant_t_deployed_cfg.content | b64decode) is not search('prior-config-sentinel')"
+          - "(home_assistant_t_deployed_secrets.content | b64decode) is search('oidc_client_secret')"
+          - "home_assistant_t_deploy_leftovers.results | selectattr('stat.exists') | list | length == 0"
+        fail_msg: >-
+          The deploy did not atomically install the rendered config (or left
+          .bak / staging files behind).
+        success_msg: "deploy replaced /config atomically; .baks and staging cleaned up"
+
+    # a2. unchanged input: the sha256 compare must skip the whole install chain.
+    # The `ha core check` fault is armed first — a run that reaches the check
+    # would fail, so a passing run proves the chain was skipped.
+    - name: Arm the `ha core check` fault
+      ansible.builtin.file:
+        path: /tmp/ha-core-check-fail
+        state: touch
+        mode: "0644"
+
+    - name: Re-deploy with identical inputs (must be a no-op)
+      block:
+        - name: Run the role again with the same rendered config
+          ansible.builtin.include_role:
+            name: weisssrv.infra.home_assistant
+            apply:
+              environment:
+                PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          vars:
+            home_assistant_render_only: false
+            home_assistant_host: 127.0.0.1
+            home_assistant_config_path: /tmp/haos-config
+            home_assistant_staging_dir: /tmp/ha-staging
+            home_assistant_host_key: "{{ home_assistant_t_host_key }}"
+
+        - name: Record that the unchanged re-run succeeded
+          ansible.builtin.set_fact:
+            home_assistant_t_noop_ok: true
+      rescue:
+        - name: Record that the unchanged re-run reached the check
+          ansible.builtin.set_fact:
+            home_assistant_t_noop_ok: false
+
+    - name: Stat the .bak files after the unchanged re-run
+      ansible.builtin.stat:
+        path: "/tmp/haos-config/{{ item }}"
+      register: home_assistant_t_noop_baks
+      loop:
+        - configuration.yaml.bak
+        - secrets.yaml.bak
+
+    - name: Assert an unchanged deploy skips stage, backup, install and check
+      ansible.builtin.assert:
+        that:
+          - home_assistant_t_noop_ok | default(false)
+          - "home_assistant_t_noop_baks.results | selectattr('stat.exists') | list | length == 0"
+        fail_msg: >-
+          A re-run with identical inputs still ran the install chain: the remote
+          sha256 comparison in tasks/main.yml is not short-circuiting (the armed
+          `ha core check` fault fired, or a .bak was created).
+        success_msg: "unchanged re-run skipped the install chain entirely"
+
+    # b. check-failure path: the rescue restores the pre-deploy config
+    - name: Deploy again expecting the check to fail (rescue must roll back)
+      block:
+        - name: Run the role with a failing `ha core check`
+          ansible.builtin.include_role:
+            name: weisssrv.infra.home_assistant
+            apply:
+              environment:
+                PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          vars:
+            home_assistant_render_only: false
+            home_assistant_host: 127.0.0.1
+            home_assistant_config_path: /tmp/haos-config
+            home_assistant_staging_dir: /tmp/ha-staging
+            home_assistant_host_key: "{{ home_assistant_t_host_key }}"
+            # A different render, so the rollback is distinguishable from a
+            # no-op: the new (bad) config carries this CIDR, the restored one
+            # must not.
+            home_assistant_trusted_proxies: ["10.99.99.0/24"]
+
+        - name: Fail loudly if the role did not fail
+          ansible.builtin.fail:
+            msg: "`ha core check` was forced to fail but the role succeeded"
+      rescue:
+        - name: Record that the deploy failed as expected
+          ansible.builtin.set_fact:
+            home_assistant_t_rescue_fired: true
+
+    - name: Slurp /config after the failed deploy
+      ansible.builtin.slurp:
+        src: /tmp/haos-config/configuration.yaml
+      register: home_assistant_t_rolled_back_cfg
+
+    - name: Stat the .bak files after the rollback (must be consumed)
+      ansible.builtin.stat:
+        path: "/tmp/haos-config/{{ item }}"
+      register: home_assistant_t_rollback_baks
+      loop:
+        - configuration.yaml.bak
+        - secrets.yaml.bak
+
+    - name: Assert the rescue restored the pre-deploy config
+      ansible.builtin.assert:
+        that:
+          - home_assistant_t_rescue_fired | default(false)
+          - "(home_assistant_t_rolled_back_cfg.content | b64decode) == (home_assistant_t_deployed_cfg.content | b64decode)"
+          - "(home_assistant_t_rolled_back_cfg.content | b64decode) is not search('10\\.99\\.99\\.0/24')"
+          - "home_assistant_t_rollback_baks.results | selectattr('stat.exists') | list | length == 0"
+        fail_msg: >-
+          The rescue did not restore the pre-deploy /config after a failed
+          `ha core check` (or left .bak files behind).
+        success_msg: "rescue restored the pre-deploy config from .bak on check failure"
+
+    # c. first-deploy failure: the rescue removes the newly created files
+    - name: Empty /config (first-deploy case, fault still armed)
+      ansible.builtin.file:
+        path: "/tmp/haos-config/{{ item }}"
+        state: absent
+      loop:
+        - configuration.yaml
+        - secrets.yaml
+
+    - name: First deploy expecting the check to fail (rescue must remove new files)
+      block:
+        - name: Run the role first-install with a failing `ha core check`
+          ansible.builtin.include_role:
+            name: weisssrv.infra.home_assistant
+            apply:
+              environment:
+                PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          vars:
+            home_assistant_render_only: false
+            home_assistant_host: 127.0.0.1
+            home_assistant_config_path: /tmp/haos-config
+            home_assistant_staging_dir: /tmp/ha-staging
+            home_assistant_host_key: "{{ home_assistant_t_host_key }}"
+
+        - name: Fail loudly if the first-install role run did not fail
+          ansible.builtin.fail:
+            msg: "`ha core check` was forced to fail but the role succeeded"
+      rescue:
+        - name: Record that the first-install deploy failed as expected
+          ansible.builtin.set_fact:
+            home_assistant_t_first_rescue_fired: true
+
+    - name: Stat /config after the failed first deploy
+      ansible.builtin.stat:
+        path: "/tmp/haos-config/{{ item }}"
+      register: home_assistant_t_first_deploy_files
+      loop:
+        - configuration.yaml
+        - secrets.yaml
+
+    - name: Assert the rescue removed the newly created files
+      ansible.builtin.assert:
+        that:
+          - home_assistant_t_first_rescue_fired | default(false)
+          - "home_assistant_t_first_deploy_files.results | selectattr('stat.exists') | list | length == 0"
+        fail_msg: >-
+          On a failed FIRST deploy the rescue must remove the newly created
+          /config files (no .bak exists to restore), but files remain.
+        success_msg: "rescue removed the new files on a failed first deploy"
+
+    - name: Disarm the `ha core check` fault
+      ansible.builtin.file:
+        path: /tmp/ha-core-check-fail
+        state: absent
+
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "configuration.yaml: http/trusted_proxies, ssl block, OIDC discovery URL from a variable, prometheus, default_config"
+          - "secrets.yaml: both OIDC keys, double-quoted via to_json"
+          - "deploy: atomic install, unchanged re-run is a no-op, check-failure rollback, first-deploy cleanup"
+          - "All home_assistant role contract assertions passed"

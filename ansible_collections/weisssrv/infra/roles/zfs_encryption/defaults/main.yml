@@ -19,26 +19,36 @@ zfs_encryption_connect_vault: "Homelab"
 # a non-empty zfs_encryption_pools.
 zfs_encryption_connect_token: ""
 
+# Where the Connect bearer token lands on the host. The script reads it 0400
+# root and pipes it to curl on stdin; the parent directory is created 0700.
+zfs_encryption_token_path: /etc/onepassword-connect/token
+
+# SECRETS-BACKEND SEAM. Empty (default) = fetch each passphrase from 1Password
+# Connect, as described above. Set to a shell command that PRINTS the passphrase
+# on stdout to use any other backend; the Connect code is then not rendered into
+# zfs-load-key.sh at all, and no Connect URL/token/vault is required or deployed.
+# The command runs as root from the per-pool unit with $ZFS_ENCRYPTION_POOL,
+# $ZFS_ENCRYPTION_ITEM and $ZFS_ENCRYPTION_FIELD in the environment (item/field
+# are opaque locators — a Vault path, an SOPS key, whatever the backend uses).
+# It owns its own retry/timeout: a non-zero exit maps to rc 2 (transient, the
+# unit retries), empty output to rc 3 (config error, the unit stops). See README.
+zfs_encryption_key_command: ""
+
 # Per-host list of encrypted pools and their 1Password items.
 # Format:
 #   - name: tank          # ZFS pool name
 #     item: "ZFS Pool tank Passphrase"   # 1P item title in vault above
 #     field: passphrase   # field on the item that holds the passphrase
-# Empty list = deploy the script + unit template only (no token, no
-# per-pool services enabled) — used for hosts whose pools are not yet
-# encrypted, or that are intentionally plaintext (compute).
-# Every pool left out of this list is unencrypted at rest — including any pool
-# holding VM root disks and any swap device that is not itself a crypt device.
-# That is a deliberate, documented residual under a physical-theft model; a
-# drive-wipe SOP is the compensating control.
+# Empty list = deploy the script + unit template only (no token, no mount
+# anchor, no per-pool services) — for hosts whose pools are not yet encrypted
+# or that are intentionally plaintext. Anything left out of this list is
+# unencrypted at rest; see the README threat model.
 zfs_encryption_pools: []
 
-# Proxmox guests (on THIS host) whose disks live on an encrypted pool and
-# must start only AFTER zfs-mount-encrypted.service has unlocked + mounted
-# it. Consumed by pve-start-encrypted-guests.service. Empty on hosts with no
-# such guests (the start unit is then a no-op and is not enabled). Leave out
-# any guest that must start early on its normal onboot path — a control-plane
-# member whose quorum must never wait on this host's unlock, for instance.
+# Proxmox guests (on THIS host) whose disks live on an encrypted pool and must
+# start only AFTER zfs-mount-encrypted.service mounted it; they should carry
+# onboot=0. Leave out any guest that must start early on its normal onboot
+# path (README "Guest cohort"). Empty = the start unit is not enabled.
 zfs_encryption_guest_vmids: []
 zfs_encryption_guest_ctids: []
 
@@ -50,3 +60,8 @@ zfs_encryption_fetch_timeout_seconds: 120
 
 # Sleep between Connect retries within a single fetch attempt.
 zfs_encryption_fetch_retry_seconds: 5
+
+# Install zfsutils-linux. Set false only for a CI image without it: that also
+# skips the "every listed pool has an encrypted dataset" probe, which needs
+# a working `zfs` binary.
+zfs_encryption_install_zfsutils: true

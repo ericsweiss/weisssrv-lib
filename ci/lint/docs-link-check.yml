@@ -5,7 +5,7 @@ spec:
     stage:
       default: lint
     image:
-      default: python:3.11-slim
+      default: python:3.11
     tags:
       type: array
       default: ["infrastructure"]
@@ -13,15 +13,21 @@ spec:
     script_path:
       default: "scripts/check-doc-links.py"
       description: >-
-        Path to the offline link checker in the CONSUMER repo. weisssrv ships it
-        at this path (byte-equivalent to its current job). Tenant repos vendor
-        the stdlib-only checker from this library's scripts/check-doc-links.py
-        (no network, no extra deps).
+        Path to the offline link checker in the CONSUMER repo, vendored from
+        this library's scripts/check-doc-links.py (stdlib only, no network).
     roots:
       default: ""
       description: >-
         Optional space-separated repo roots to scan; empty uses the checker's
         default (docs/ + top-level README.md/CLAUDE.md).
+    default_branch:
+      default: "main"
+      description: >-
+        Consumer's default branch as a LITERAL name (`main`, `master`, `trunk`)
+        for the post-merge rule. NOT `$CI_DEFAULT_BRANCH`: the value lands
+        inside a quoted `rules:if` string, which GitLab does not expand, so the
+        comparison would never match and the job would silently stop running
+        post-merge.
     changes:
       type: array
       default:
@@ -31,10 +37,9 @@ spec:
         - "scripts/check-doc-links.py"
         - "scripts/test_check_doc_links.py"
       description: >-
-        Path list for the MR/main `changes:` rules. Covers the generic subset of
-        weisssrv's `.paths-docs-links`; weisssrv also guards `ansible/TESTING.md`
-        (ansible, out of library scope) so it passes its own full list on
-        adoption — see docs/INCLUDE-CONTRACT.md.
+        Path list for the MR / default-branch `changes:` rules. A consumer whose
+        markdown lives outside these paths passes its own list — the checker
+        scans `roots`, and a path missing here just means no run on that edit.
 ---
 "$[[ inputs.job_name ]]":
   needs: []
@@ -54,6 +59,6 @@ spec:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes: $[[ inputs.changes ]]
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "$[[ inputs.default_branch ]]"'
       changes: $[[ inputs.changes ]]
     - if: '$CI_PIPELINE_SOURCE == "web"'

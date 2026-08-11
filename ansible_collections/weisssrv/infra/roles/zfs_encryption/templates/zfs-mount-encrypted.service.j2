@@ -1,43 +1,26 @@
 # {{ ansible_managed }}
 #
-# Late, retrying pass that mounts the ZFS-native-encrypted datasets once
-# their per-pool keys have been loaded by zfs-load-key@<pool>.service. This
-# is the single anchor that downstream units order After=:
-#   - nfs-server.service (via a drop-in) — so nfsd exports the real datasets,
-#     never an empty/locked mountpoint (which breaks NFS-over-TLS new mounts);
-#   - pve-start-encrypted-guests.service — so guests whose disks live on the
-#     encrypted pools start only after that data is mounted.
-#
-# Separate from the stock zfs-mount.service because that one runs EARLY
-# (Before=local-fs.target) and must return promptly, so it cannot wait on a
-# network-dependent, k8s-hosted Connect — its `zfs mount -a` just skips the
-# locked datasets and exits 0. This unit runs LATE (WantedBy=multi-user.target,
-# never Before any boot target) and retries until every encryption root is
-# unlocked, so it can delay encrypted data but never hang boot or block login.
+# Late, retrying mount of the encrypted datasets once zfs-load-key@<pool> has
+# loaded their keys — the single anchor nfsd and the encrypted-storage guests
+# order After=. Runs LATE and is never Before= a boot target, so it can delay
+# encrypted data but can never hang boot (role README, "Cold-cluster boot").
 #
 # Deliberately NO ProtectSystem=/PrivateTmp/ProtectHome: those put the service
 # in a private mount namespace, so `zfs mount` would mount inside it and the
-# host would never see the mounts. Stock zfs-mount.service is unsandboxed for
-# the same reason; only namespace-safe hardening is kept.
+# host would never see the mounts. Only namespace-safe hardening is kept.
 
 [Unit]
 Description=Mount ZFS encrypted datasets after their keys are loaded
 Wants=network-online.target
 After=zfs-mount.service network-online.target
-# Pull the per-pool key-loads in with Wants= only — deliberately NOT After=.
-# An After= would keep this unit queued while a zfs-load-key@<pool> is still
-# activating/restarting (Connect down), preventing our own gate-then-mount
-# retry loop from running and mounting the pools whose keys ARE already loaded.
-# The script checks keystatus itself and retries, so Wants= (pull, no ordering)
-# is sufficient and converges faster.
+# Wants= (pull only), deliberately NOT After=: an ordering edge would keep this
+# unit queued behind a restarting zfs-load-key@<pool> (Connect down) instead of
+# letting its own retry loop mount the pools whose keys ARE loaded.
 {% for pool in zfs_encryption_pools %}
 Wants=zfs-load-key@{{ pool.name }}.service
 {% endfor %}
-# Retry forever until all keys are present (the cold-cluster case where
-# Connect, in k8s, comes up minutes after this NAS). The gate script exits
-# fast when keys aren't ready yet, so a finite StartLimitBurst would trip
-# within minutes — StartLimitIntervalSec=0 disables the burst limit so the
-# unit keeps retrying until an operator hand-unlock (or Connect) closes it.
+# No burst limit: the gate exits fast while keys are missing, so any finite
+# StartLimitBurst would trip within minutes of a cold-cluster boot.
 StartLimitIntervalSec=0
 
 [Service]
@@ -47,19 +30,10 @@ RemainAfterExit=yes
 # until the mount succeeds, so After= dependents stay QUEUED. A plain oneshot +
 # Restart=on-failure would COMPLETE the start job on the first failed attempt,
 # releasing nfs-server / pve-start-encrypted-guests and cascading Requires=
-# failures to the export .mount units — none of which retry, so a Connect-down
-# cold boot could leave them down until manual recovery. TimeoutStartSec=0 lets
-# the loop run as long as an operator hand-unlock takes; Restart=on-failure is
-# only a backstop for the bash wrapper itself dying.
-{% if zfs_encryption_pools %}
+# failures onto the export .mount units, none of which retry.
+# TimeoutStartSec=0 lets the loop run as long as an operator hand-unlock takes;
+# Restart=on-failure is only a backstop for the bash wrapper itself dying.
 ExecStart=/bin/bash -c 'until /usr/local/sbin/zfs-mount-encrypted.sh {{ zfs_encryption_pools | map(attribute='name') | join(' ') }}; do sleep 30; done'
-{% else %}
-# No pools configured: an argument-less zfs-mount-encrypted.sh exits 1 on its
-# usage guard, and with TimeoutStartSec=0 the until-loop above would spin
-# forever. The role disables this unit on such hosts; make a manual `systemctl
-# start` a clean no-op instead of a hang.
-ExecStart=/bin/true
-{% endif %}
 TimeoutStartSec=0
 Restart=on-failure
 RestartSec=30s

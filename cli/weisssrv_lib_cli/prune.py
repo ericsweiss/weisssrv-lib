@@ -33,13 +33,10 @@ FEATURES = (
 
 # The ONLY paths `ci:<shape>` may delete, keyed by the shape that is KEPT.
 #
-# SECURITY: unlike `manifest:<file>`, these paths live outside kubernetes/flux/,
-# so `_safe_manifest_name`'s containment guard cannot apply. The defence here is
-# different in kind: the shape name is never joined into a path. It is only ever
-# used as an exact dict key, and the paths deleted are the fixed constants in
-# `tree` — so no attacker-supplied text ever reaches the filesystem, and a
-# crafted shape (`../..`, `/etc`, `gitlab/../../x`) simply misses the mapping and
-# is refused by `_safe_ci_shape` before anything is touched.
+# SECURITY: these paths live outside kubernetes/flux/, so `_safe_manifest_name`
+# cannot guard them. Instead the shape name is never joined into a path — it is
+# an exact dict key only, and the deleted paths are fixed `tree` constants, so a
+# crafted shape misses the mapping and `_safe_ci_shape` refuses it.
 _CI_SHAPE_DROPS = {
     "gitlab": (tree.GITHUB_WORKFLOWS,),
     "github": (tree.GITLAB_CI, *tree.GITLAB_CI_EXTRA),
@@ -69,14 +66,42 @@ def _has_active_content(text: str) -> bool:
     return False
 
 
-def _external_ingress_would_empty(root: Path) -> list[str]:
-    """Files `prune external-ingress` would truncate to no active document.
+def _internal_ingress_active(root: Path) -> bool:
+    """Whether the internal route AND its certificate are both really deploying.
 
-    Happens on an un-wired scaffold: the only active documents are the public
-    IngressRoute/Certificate, and the internal variants are still commented out,
-    so dropping the public ones leaves an empty file that is still referenced by
-    the kustomization. Returns the offending filenames (empty = safe).
+    The internal variants are opt-in manifests of their own now, so "active"
+    means their `optional/…` resource line is uncommented — `wire
+    internal-ingress` is what does that.
+
+    EVERY manifest must be active AND present on disk, not just one: this gates
+    the destructive `prune external-ingress`, and a half-wired tree (only the
+    route enabled, or a line enabled for a file someone deleted) would otherwise
+    authorise deleting the public route + cert and leave the workload with no
+    usable TLS route at all.
     """
+    kpath = tree.flux_file(root, tree.KUSTOMIZATION)
+    if not kpath.exists():
+        return False
+    text = kpath.read_text(encoding="utf-8")
+    return all(
+        kz.has_resource(text, resource)
+        and tree.flux_file(root, resource).is_file()
+        for resource in tree.INTERNAL_INGRESS_MANIFESTS
+    )
+
+
+def _external_ingress_would_empty(root: Path) -> list[str]:
+    """Files `prune external-ingress` would leave with no active document, on a
+    tree where that outcome has nothing to replace it.
+
+    The public IngressRoute/Certificate are the only documents in these two
+    files, so pruning always empties them. That is fine once `wire
+    internal-ingress` has enabled the internal variants — the emptied files are
+    then deleted outright — and a dead end before that: the tenant would be left
+    with no route at all. Returns the offending filenames (empty = safe).
+    """
+    if _internal_ingress_active(root):
+        return []
     offenders: list[str] = []
     for fname in ("ingressroute.yaml", "certificate.yaml"):
         path = tree.flux_file(root, fname)
@@ -94,9 +119,10 @@ def _safe_manifest_name(root: Path, raw: str) -> str:
 
     The `manifest:` feature deletes `kubernetes/flux/<file>`, so an untrusted
     `<file>` must never be able to escape that directory. Reject absolute paths,
-    `..`, and any embedded path separator (the Flux dir is flat — a plain
-    filename is the only legitimate form), then resolve the final path and
-    assert containment as a belt-and-suspenders guard.
+    `..`, and any embedded path separator — a plain filename is the only
+    legitimate form, and the opt-in manifests one level down in `optional/` are
+    reached through their own named features, not through this selector — then
+    resolve the final path and assert containment as a belt-and-suspenders guard.
     """
     if not raw:
         raise PruneError(
@@ -146,11 +172,9 @@ def _validate_features(root: Path, features: list[str]) -> None:
     """Reject the whole request BEFORE mutating anything, so a bad feature name
     (or an external-ingress prune that would empty a file) never leaves a
     half-mutated repo."""
-    # A project keeps exactly ONE CI shape, but the features are applied in
-    # sequence, so `ci:gitlab ci:github` used to drop each other's files in turn
-    # and leave the project with no CI at all — a self-contradictory request
-    # silently doing the most destructive thing. Repeating the same shape is
-    # still fine (it is idempotent).
+    # At most one CI shape per invocation: the features are applied in
+    # sequence, so two shapes would drop each other's files and leave no CI at
+    # all. Repeats of the SAME shape are idempotent and allowed.
     shapes = {
         _safe_ci_shape(f.split(":", 1)[1]) for f in features if f.startswith("ci:")
     }
@@ -198,10 +222,10 @@ def _validate_features(root: Path, features: list[str]) -> None:
             raise PruneError(
                 "prune external-ingress would empty "
                 + " and ".join(offenders)
-                + " (no internal variant is active) while it stays listed in the "
-                "kustomization. Run `wire internal-ingress` first, then prune — "
-                "or use `prune manifest:<file>` to delete the file and its "
-                "kustomization entry."
+                + " (the internal route and certificate are not BOTH active and "
+                "present) while it stays listed in the kustomization. Run `wire "
+                "internal-ingress` first, then prune — or use `prune "
+                "manifest:<file>` to delete the file and its kustomization entry."
             )
 
 
@@ -210,11 +234,9 @@ def _ci_shape_missing(root: Path, shape: str) -> list[str]:
 
     `none` keeps nothing, so it can never be unsatisfiable.
     """
-    # _safe_ci_target, not `root / rel`: the DROP paths were already checked for
-    # symlinked ancestors, but the KEPT shape was not — so `ci:github` under a
-    # symlinked `.github` resolved to workflows outside the repo, satisfied this
-    # check, and deleted the working GitLab pipeline. A leaf symlink is rejected
-    # too: git tracks the link, not a runnable file at that path.
+    # Both the DROP and the KEPT paths go through _safe_ci_target, so a
+    # symlinked ancestor cannot resolve outside the repo. A leaf symlink is
+    # rejected too: git tracks the link, not a runnable file at that path.
     if shape == "gitlab":
         missing = []
         for rel in (tree.GITLAB_CI, *tree.GITLAB_CI_EXTRA):
@@ -266,12 +288,43 @@ def _delete_manifest(root: Path, name: str, changed: list[Path]) -> None:
     _drop_resource(root, name, changed)
 
 
-def _drop_resource(root: Path, name: str, changed: list[Path]) -> None:
+def _delete_optional_manifest(root: Path, resource: str, changed: list[Path]) -> None:
+    """Delete an opt-in manifest (a FLUX_DIR-relative `optional/<file>` path)
+    and every reference that would outlive it.
+
+    Three places name it: the file itself, the COMMENTED enable line in the live
+    kustomization (an active one too, if the feature was wired), and
+    optional/kustomization.yaml — which CI builds, so a stale entry there fails
+    the lint job for a file the tenant deliberately removed.
+    """
+    fname = resource.rsplit("/", 1)[-1]
+    path = tree.flux_file(root, resource)
+    if path.exists():
+        path.unlink()
+        changed.append(path)
+    _drop_resource(root, resource, changed, drop_commented=True)
+
+    okpath = tree.optional_dir(root) / tree.KUSTOMIZATION
+    if not okpath.is_file():
+        return
+    new, did = kz.remove_resource(okpath.read_text(encoding="utf-8"), fname)
+    if did:
+        okpath.write_text(new, encoding="utf-8")
+        if okpath not in changed:
+            changed.append(okpath)
+
+
+def _drop_resource(
+    root: Path, name: str, changed: list[Path], drop_commented: bool = False
+) -> None:
     kpath = tree.flux_file(root, tree.KUSTOMIZATION)
     if not kpath.exists():
         return
     text = kpath.read_text(encoding="utf-8")
     new, did = kz.remove_resource(text, name)
+    if drop_commented:
+        new, did_comment = kz.remove_commented_resource(new, name)
+        did = did or did_comment
     if did:
         kpath.write_text(new, encoding="utf-8")
         if kpath not in changed:
@@ -392,12 +445,14 @@ def _set_replicas(root: Path, count: int, changed: list[Path]) -> None:
 
 def _prune_external_ingress(root: Path, changed: list[Path]) -> None:
     """Remove the public IngressRoute + Certificate, leaving the internal
-    variants (whose metadata.name ends in `-internal`).
+    variants (whose metadata.name ends in `-internal`) to serve the workload.
 
-    For a clean internal-only result, run `wire internal-ingress` FIRST so the
-    internal variants are active documents (a real `---` separates them from the
-    public ones); this prune then drops only the public documents. `prune`
-    refuses up front (see `_validate_features`) if this would empty a file.
+    Run `wire internal-ingress` FIRST — it enables the optional/ internal
+    manifests, and `prune` refuses up front (see `_validate_features`) until it
+    has. A file left with no active document is DELETED, kustomization entry
+    included: the scaffold's public route and cert are one document each, and an
+    empty file that stays listed fails `kustomize build`. A file that still has
+    content (a tenant who kept both variants in one file) is rewritten instead.
     """
     for fname in ("ingressroute.yaml", "certificate.yaml"):
         path = tree.flux_file(root, fname)
@@ -405,10 +460,14 @@ def _prune_external_ingress(root: Path, changed: list[Path]) -> None:
             continue
         text = path.read_text(encoding="utf-8")
         new, removed = tree.remove_documents(text, _is_public_ingress)
-        if removed:
+        if not removed:
+            continue
+        if _has_active_content(new):
             path.write_text(new, encoding="utf-8")
             if path not in changed:
                 changed.append(path)
+        else:
+            _delete_manifest(root, fname, changed)
 
 
 def _prune_ci(root: Path, shape: str, changed: list[Path]) -> None:
@@ -488,7 +547,7 @@ def prune(root: Path, features: list[str]) -> list[Path]:
             _delete_manifest(root, "pdb.yaml", changed)
             _set_replicas(root, 1, changed)
         elif feat == "hpa":
-            _delete_manifest(root, "hpa.yaml", changed)
+            _delete_optional_manifest(root, tree.HPA_MANIFEST, changed)
         elif feat == "external-ingress":
             _prune_external_ingress(root, changed)
         elif feat == "image-build":

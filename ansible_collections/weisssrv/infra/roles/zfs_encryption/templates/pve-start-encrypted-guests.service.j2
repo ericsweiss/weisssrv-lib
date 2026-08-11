@@ -1,12 +1,9 @@
 # {{ ansible_managed }}
 #
-# Starts the guests in the encrypted-storage cohort (zfs_encryption_guest_vmids
-# / _ctids) after zfs-mount-encrypted.service. It does NOT touch
+# Starts the encrypted-storage guest cohort (zfs_encryption_guest_vmids /
+# _ctids) after zfs-mount-encrypted.service. It does NOT touch
 # pve-guests.service, so an unlisted guest still starts early on its normal
-# onboot path and cluster quorum never waits on this host's unlock.
-#
-# WantedBy=multi-user.target and never Before any boot target, so a slow unlock
-# delays these guests but can never hang boot.
+# onboot path (role README, "Guest cohort").
 #
 # Deliberately UN-sandboxed, matching stock pve-guests.service: qm/pct fork
 # qemu/lxc, which need setuid helpers (qemu-bridge-helper) and broad /etc/pve

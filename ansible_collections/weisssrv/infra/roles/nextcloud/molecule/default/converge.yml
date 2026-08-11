@@ -1,0 +1,27 @@
+---
+# Converge: render the templates + manage the directories/units. The live Docker
+# stack and occ are skipped via nextcloud_skip_install (set in molecule.yml).
+- name: Converge
+  hosts: all
+  become: true
+  tasks:
+    # public: the side render below reads role defaults the scenario's
+    # group_vars deliberately does not repeat.
+    - name: Apply the nextcloud role
+      ansible.builtin.include_role:
+        name: weisssrv.infra.nextcloud
+        public: true
+
+  post_tasks:
+    # Branch coverage for the opt-in postgres exporter. The default (off) state
+    # is asserted on the converged compose file; this render covers the enabled
+    # one without adding a service to it. The role template lives outside the
+    # scenario dir, so the relative src is deliberate.
+    - name: Render the compose file with the postgres exporter on  # noqa: no-relative-paths
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/docker-compose.yml.j2"
+        dest: /tmp/nextcloud-compose-pgexporter.yml
+        mode: "0644"
+      vars:
+        nextcloud_postgres_exporter_enabled: true
+        nextcloud_postgres_exporter_version: "0.19.0"

@@ -26,17 +26,9 @@ proxmox_vm_bridge: vmbr0
 proxmox_vm_ostype: l26
 proxmox_vm_agent_enabled: true
 
-# PCI passthrough (VFIO). A list of Proxmox `hostpci` device specs — each entry
-# becomes `--hostpci<index> <entry>` on the create-time `qm set` (Linux guests
-# only). Empty by default (no passthrough). CREATE-TIME ONLY: PCI attach needs
-# the guest stopped, so this is realized when the VM is first provisioned; an
-# already-existing guest is attached by hand in a maintenance window. The entry
-# is passed verbatim, so it may include Proxmox options, e.g.:
-#   proxmox_vm_hostpci:
-#     - "0000:01:00"            # whole multifunction device on i440fx (no pcie=1)
-#     - "0000:01:00,pcie=1"     # PCIe passthrough on q35
-# A passthrough guest cannot live-migrate and its RAM is host-pinned/mlock'd, so
-# it must also be pinned (proxmox_vm_cpu_type: host) and non-ballooned.
+# PCI passthrough (VFIO): Proxmox `hostpci` device specs, each passed verbatim
+# as `--hostpci<index>` on the create-time `qm set` (Linux guests only). See the
+# README for the apply gap on existing guests and the pinning it implies.
 proxmox_vm_hostpci: []
 
 # Persistent ZFS zvols created on proxmox_host and attached to the guest. Each
@@ -72,13 +64,9 @@ proxmox_vm_cloudinit_user: "{{ admin_user | default('root') }}"
 proxmox_vm_cloudinit_dns: "{{ dns_servers | default([]) }}"
 proxmox_vm_cloudinit_prefix_len: 24
 
-# Guest type
-# 'linux'  (default) — the cloud-init Debian path above.
-# 'windows' — a full-spec Win11 guest: q35 + OVMF/UEFI + pre-enrolled Secure
-#          Boot keys + TPM 2.0 + VirtIO disk/NIC + install & driver CDROMs.
-#          The cloud image download/import, cloud-init drive, SSH-key assert,
-#          and post-create SSH wait are all skipped. The VM is created STOPPED —
-#          the operator installs Windows interactively.
+# 'linux' takes the cloud-init Debian path above. 'windows' builds a Win11 guest
+# (q35 + OVMF + Secure Boot keys + TPM 2.0 + install/driver CDROMs), skips every
+# cloud-init step, and leaves the VM STOPPED for an interactive install.
 proxmox_vm_guest_type: linux
 
 # Windows guest knobs (ignored unless proxmox_vm_guest_type == 'windows').

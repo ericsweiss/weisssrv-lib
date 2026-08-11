@@ -1,0 +1,8 @@
+---
+# Internal, not consumer API: the option set every HAOS ssh/scp call shares.
+# StrictHostKeyChecking=yes is load-bearing — the pinned host key is the only
+# thing between a re-imaged HAOS and a secrets push to it.
+home_assistant_ssh_opts: >-
+  -o BatchMode=yes
+  -o ConnectTimeout={{ home_assistant_ssh_connect_timeout }}
+  -o StrictHostKeyChecking=yes

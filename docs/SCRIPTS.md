@@ -11,6 +11,30 @@ changed default is a MAJOR bump for scripts, exactly as for a CI template input.
 
 Example configs for every script live in [`../examples/`](../examples/).
 
+## Forge coupling
+
+**Every script here is forge-neutral except the seven below**, which carry a
+**Forge** line in their own section. Neutral means stdlib/PyYAML, the filesystem
+and `git` — no forge API, no CI-YAML parsing, no `CI_*` variable it cannot run
+without — so a GitHub-hosted consumer runs it unchanged from an Actions step.
+(`check-versions.py` calls the GitHub *releases* API as a version SOURCE; that
+says nothing about where the consumer is hosted.)
+
+| Script | Forge | Why |
+|---|---|---|
+| `check-deploy-coverage.sh` | gitlab-only | parses deploy jobs' `changes:` out of `.gitlab-ci.yml`; base ref from `CI_MERGE_REQUEST_DIFF_BASE_SHA` |
+| `check-molecule-matrix-coverage.sh` | gitlab-only | parses `parallel:matrix` out of the CI file |
+| `generate-molecule-pipeline.py` | gitlab-only | emits a GitLab child-pipeline YAML |
+| `check-lib-pins.py` | gitlab-only | its subject is `include:` — GitHub consumers vendor workflows instead |
+| `version-bump-mr.py` | gitlab-only | Merge Requests API |
+| `semantic-release.py` | dual | `--platform gitlab` (default) or `github` |
+| `version-check-ci.py` | neutral core | the report runs anywhere; only the MR comment is GitLab, and it is skipped when the `CI_*` env is absent |
+
+GitHub consumers have no `include:` equivalent for a private library, so they
+vendor workflows — see
+[`../ci/release/github-release-workflow.example.yml`](../ci/release/github-release-workflow.example.yml)
+and the note in [INCLUDE-CONTRACT.md](INCLUDE-CONTRACT.md#who-includes-what).
+
 ---
 
 ## Version tracking
@@ -36,6 +60,17 @@ JSON renderers.
   `--service`, `--category`, `--list`, `--update NAME`, `--update-all`,
   `--check-coverage` (fails when a `*_version` pin has no registry entry and is
   not in `untracked_allowlist`), `--no-cache`, `--clear-cache`, `--repo-root`.
+- **The CLI is argparse**, so error wording is argparse's
+  (`unrecognized arguments: …`, `argument --config: expected one argument`);
+  exit code 2 for a usage error is unchanged. `--category` is validated against
+  the known set at parse time rather than failing later, and a registry entry
+  whose category is unknown lands in an explicit **"Other"** bucket in the table
+  instead of vanishing from it.
+- **Pins are read AND written anchored at column 0.** An indented `*_version:`
+  key is not a pin — it is a nested value in some other structure — so it is
+  neither reported as current nor rewritten by `--update`/`--update-all` (both
+  report "could not find" for a var that exists only nested). Writes preserve
+  the line's existing indentation.
 - **Example:** [`version-registry.example.py`](../examples/version-registry.example.py).
 
 ### `version-check-ci.py`
@@ -48,6 +83,11 @@ created), and posts/updates an MR comment when there are actionable
 - **Env:** `CHECK_VERSIONS_CMD` (default `./scripts/check-versions.py`),
   `CHECK_VERSIONS_LOCAL` (command named in the comment footer),
   `VERSION_CHECK_TIMEOUT` (default 600), `GITLAB_API_TOKEN`.
+- **Forge: neutral core, GitLab-only comment.** The run + summary + artifact
+  need no forge; the comment needs `CI_API_V4_URL` + `CI_PROJECT_ID` +
+  `CI_MERGE_REQUEST_IID` + `GITLAB_API_TOKEN` and is skipped (silently outside
+  an MR pipeline, with a warning inside one) when they are absent — so a GitHub
+  consumer gets the report and no comment.
 
 ---
 
@@ -72,6 +112,7 @@ semantic-release.py [--platform gitlab|github] [--repo-dir DIR] [--tag-prefix v]
     [--output release.json] [--dry-run]
 ```
 
+- **Forge: dual.** `--platform gitlab|github`, one vendored copy for both.
 - **`--platform`** picks the forge; everything above the two API calls (commit
   parsing, the bump decision, the notes) is forge-neutral, so one vendored copy
   serves both. **`gitlab` is the default**, so a consumer that passes nothing is
@@ -147,6 +188,8 @@ version-bump-mr.py [--repo-dir DIR] [--branch bot/version-bumps]
     [--dry-run]
 ```
 
+- **Forge: gitlab-only.** The branch half is plain `git`; the MR half is the
+  GitLab Merge Requests API, with no `--platform` counterpart.
 - **Env:** the `--token-env` variable (default `BOT_TOKEN`; needs `api` +
   `write_repository` — a job token cannot do this), `CI_API_V4_URL`,
   `CI_PROJECT_ID`, `CI_SERVER_HOST` + `CI_PROJECT_PATH` (default `--remote-url`),
@@ -241,6 +284,14 @@ cluster's `k3s_version`. Defaults to `.gitlab-ci.yml` +
 `kubernetes/infrastructure/sources/versions-configmap.yaml`; pass both paths
 positionally for another layout.
 
+- **Env:** `CI_FILE` retargets the first default (repo-relative or absolute,
+  same name as the two molecule scripts), for a consumer whose kubectl pin
+  lives somewhere other than `.gitlab-ci.yml`. The extraction is a `dl.k8s.io`
+  regex over whatever text it is handed, so the file's format is irrelevant —
+  but the two failure messages still name `.gitlab-ci.yml` /
+  `versions-configmap.yaml`, which is the conventional layout, not the resolved
+  path.
+
 ### `extract-prometheus-config.py` + `lint-prometheus-config.sh` (PyYAML)
 
 Extract alert rules from a HelmRelease's `additionalPrometheusRulesMap` and the
@@ -255,6 +306,107 @@ extract-prometheus-config.py alertmanager <out> [--am-config PATH] [--dummy K=V]
 `lint-prometheus-config.sh` env: `EXTRACT_SCRIPT`, `RULE_TESTS_DIR`,
 `HELM_RELEASE`, `AM_CONFIG`. The unit-test step is skipped when `RULE_TESTS_DIR`
 holds no `*.test.yaml`.
+
+### `flux-render.sh` (PyYAML)
+
+The two shared halves of `ci/validate/flux-lint.yml`'s substitute mode: turn the
+cluster-versions ConfigMap into shell exports, and derive the kubeconform schema
+version from it. It does **not** own the per-Kustomization build + kubeconform
+loop — that stays in the template.
+
+```
+VARS=$(scripts/flux-render.sh export-versions "$CM") || exit 1
+eval "$VARS"                                  # every .data key + FLUX_ENVSUBST_VARS
+K8S_VER=$(scripts/flux-render.sh k8s-version "$CM")
+```
+
+- `export-versions` emits one `export <key>=<shell-quoted value>` per `.data`
+  key, plus `FLUX_ENVSUBST_VARS` — the `${name}` allowlist envsubst is given, so
+  substitution can never reach a variable the ConfigMap did not declare.
+- **Keys are validated before they are emitted, because the caller `eval`s the
+  output.** A key that is not a valid POSIX shell name is an error, and so is a
+  **reserved** one: `PATH`, `HOME`, `IFS`, `PWD`, `SHELL`, `TMPDIR`, `CI`,
+  `CLUSTER_DIR`, `SKIPPED_SCRIPT`, `FLUX_RENDER_SCRIPT`, `VERSIONS_CONFIGMAP`,
+  `FAILED`, `RENDER_ALL`, `K8S_VER`, `VARS`, `FLUX_ENVSUBST_VARS`, or anything
+  ending `_SHA256`. Those are the calling job's own variables; exporting one
+  would rewrite the job's environment mid-run. Generated keys are lowercase, so
+  no current consumer trips this.
+- `k8s-version` parses `k3s_version` out of `.data` **with PyYAML** and reduces
+  it to `major.minor.patch`. A missing or unparseable key is a hard **failure**,
+  not a fallback — it previously defaulted to a version nobody chose and
+  validated the whole cluster against it. A consumer whose ConfigMap has no such
+  key passes the template's `k8s_version` input instead.
+- An empty or unreadable ConfigMap path, and a ConfigMap with no `.data`, are
+  both errors.
+- **Dual-maintained:** weisssrv vendors this file and the flux-lint template
+  takes the path from the consumer tree, so the vendored copy is the one CI runs.
+
+### `kubeconform-skipped.py`
+
+Reads `kubeconform -output json` on stdin and prints the distinct
+`apiVersion/Kind` pairs kubeconform **skipped** — the CRs whose CRD schema is
+absent from the catalog. flux-lint runs kubeconform with
+`-ignore-missing-schemas`, so without this a new CRD-backed kind starts shipping
+with zero schema validation and no signal at review time.
+
+```
+kubeconform ... -output json | scripts/kubeconform-skipped.py
+```
+
+Informational only: flux-lint pipes it with `|| true`, and unparseable input
+prints a note and exits 0. The per-Kustomization kubeconform passes remain the
+actual gate — this only makes the gap visible. Dual-maintained with weisssrv.
+
+---
+
+## Docs and Taskfile gates
+
+### `check-doc-links.py`
+
+Offline checker for relative Markdown cross-links: resolves every relative `.md`
+link target against the filesystem and fails on a missing one. A renamed or
+deleted doc otherwise rots every link pointing at it, silently.
+
+```
+scripts/check-doc-links.py            # scan every tracked *.md in the repo
+scripts/check-doc-links.py <root>...  # scan explicit roots
+```
+
+- **Scan scope: every *git-tracked* `*.md` in the repo.** Role, app and agent
+  READMEs cross-link into `docs/` too, so a docs-only scan gated the wrong half
+  of the link graph. Tracked-only is deliberate — untracked scratch Markdown is
+  not ours to gate, and including it would make the check fail differently on
+  every machine.
+- **Fallback (not a git checkout):** everything under `docs/` plus the files
+  named in `$CHECK_DOC_LINKS_EXTRA` (default `README.md CLAUDE.md`).
+- **What is NOT checked:** URLs, `mailto:`/`tel:`, in-page anchors, and non-`.md`
+  targets are all ignored, and the anchor part of a `file.md#section` link is not
+  validated — only the file is.
+- Stdlib-only and network-free, which is what lets every consumer vendor it.
+- **Consumer note:** widening the scan did not widen `ci/lint/docs-link-check.yml`'s
+  default `changes` list, which still covers `docs/` + the two top-level READMEs.
+  A repo with Markdown elsewhere passes its own `changes` (weisssrv passes
+  `**/*.md`) or the job runs on fewer merge requests than it now covers.
+
+### `check-taskfile.sh`
+
+Asserts every `scripts/<name>.{sh,py}` a Taskfile references exists on disk,
+plus each `dotenv:` target. go-task compiles command templates lazily and never
+stats a referenced file, so a renamed script is invisible to `task --list` — and
+a missing dotenv file makes go-task fail hard at load time, taking every task
+with it.
+
+```
+scripts/check-taskfile.sh [Taskfile.yml]     # default: <repo-root>/Taskfile.yml
+```
+
+- **Env:** `CHECK_TASKFILE_DOTENV` — space-separated dotenv targets to require
+  when the Taskfile references them. Default `scripts/hosts.env`; set it to the
+  consumer's own generated env file(s), or to an empty string for a Taskfile
+  with none.
+- The dotenv match is on the bare path anywhere in the file, not just a same-line
+  `dotenv:`, so the YAML multi-line list form is caught too.
+- Dual-maintained with weisssrv.
 
 ---
 
@@ -279,6 +431,9 @@ one [VERSIONING.md](VERSIONING.md) forbids: a branch deleted after merge takes
 the include with it, and until then the pipeline can change behaviour with no
 commit in the consuming repo at all.
 
+- **Forge: gitlab-only** — its subject is the `include:` block. A GitHub
+  consumer has no `include:` to drift (it vendors workflows), so the gate has
+  nothing to guard there and is simply not wired.
 - **Flags:** `--ci-file PATH` (default `<repo root>/.gitlab-ci.yml`),
   `--project` (default `eric/weisssrv-lib`), `--ref-var` (default
   `WEISSSRV_LIB_REF`), `--fix`.
@@ -321,12 +476,22 @@ credit, so a lint job mentioning the same path cannot fake it. Deletions are
 excluded (`--diff-filter=d`); an invalid or unrelated base ref exits 2 instead of
 reporting "no changes".
 
+- **Forge: gitlab-only.** It reads job names, `stage:` and `changes:` out of
+  GitLab CI YAML, and takes its diff base from `CI_MERGE_REQUEST_DIFF_BASE_SHA`
+  / `CI_COMMIT_BEFORE_SHA` (a base ref may also be passed as `$1`, which is how
+  it runs locally).
 - **Config** (`scripts/deploy-coverage.conf`, or `$DEPLOY_COVERAGE_CONFIG`):
   `[settings]` (`roles_dir`, `playbooks_dir`, `inventory_dir`, `ci_file`,
   `job_prefix`, `job_stage`) plus `[roles]` / `[playbooks]` / `[inventory]`
   entries. **Every entry needs a trailing `# rationale`** — the script exits 2
   otherwise, so the "why is this unmapped" rule is machine-enforced rather than
   prose.
+- **The check runs one way, deliberately.** It asks "is every changed path
+  covered by some deploy job?", never "does every deploy job's `changes:` list
+  point at a path that exists?". The reverse direction would fail on a job that
+  legitimately guards a path the repo has not created yet, and the failure mode
+  it would catch (a dead glob) is inert, where the direction implemented here
+  catches the live one: a change that deploys nothing.
 - **Example:** [`deploy-coverage.example.conf`](../examples/deploy-coverage.example.conf).
 
 ### `check-molecule-matrix-coverage.sh` (PyYAML)
@@ -338,6 +503,8 @@ that `needs:` every entry hits GitLab's hard 50-needs-per-job limit).
 
 - **Env:** `CI_FILE`, `ROLES_DIR`, `INTEGRATION_DIR`, `MOLECULE_JOB`,
   `INTEGRATION_JOB`, `UNTESTED_ROLES`, `MAX_MATRIX_ENTRIES`.
+- **Forge: gitlab-only** — the disk half is neutral, the matrix it compares
+  against is `parallel:matrix` in a GitLab CI file.
 
 ### `generate-molecule-pipeline.py` (PyYAML)
 
@@ -352,6 +519,9 @@ generate-molecule-pipeline.py [BASE_SHA | --diff-base SHA | --changed-files-from
     [-o out.yml] [--repo DIR] [--print-graph]
 ```
 
+- **Forge: gitlab-only** — it reads a GitLab `parallel:matrix` and emits a
+  GitLab child-pipeline YAML. The dependency graph it derives (roles →
+  scenarios → affected set) is forge-neutral and lives in `compute_affected`.
 - **Env:** `CI_FILE`, `ROLES_DIR`, `INTEGRATION_DIR` — repo-relative locations,
   same names as `check-molecule-matrix-coverage.sh`, so one CI `variables:` block
   configures both (e.g. `ROLES_DIR=ansible_collections/<ns>/<name>/roles` for a
@@ -365,6 +535,12 @@ generate-molecule-pipeline.py [BASE_SHA | --diff-base SHA | --changed-files-from
   `MOLECULE_JOBS_INCLUDE` are triggers too. A repo with no integration suite just
   omits the `integration-tests` job from `CI_FILE`; a job that IS present with a
   broken matrix still fails loudly.
+- **`$MOLECULE_GLOBAL_TRIGGERS` must be paired with the plan job's `changes:`.**
+  A path listed here forces a full matrix *once the plan job runs* — but if that
+  path is not also in the `changes:` list that creates the plan job, an MR
+  touching only that path creates no plan job at all and the full matrix never
+  happens. The two lists are one setting expressed in two places; change them
+  together.
 - Wired by `ci/internal/molecule-matrix.gitlab-ci.yml`.
 
 ### `molecule-retry.sh`
@@ -406,7 +582,7 @@ confirmation required; a bad lifecycle rule can expire the only offsite copy).
 
 | Script | Contract |
 |---|---|
-| `shell-lib.sh` | function-only (safe to source under `set -e`): `timeout_cmd <secs> <cmd…>`, `ssh_probe <target> <cmd>` |
+| `shell-lib.sh` | function-only (safe to source under `set -e`): `timeout_cmd <secs> <cmd…>`, `ssh_probe <target> <cmd>`. With neither `timeout` nor `gtimeout` on `PATH` it warns **once per shell** on stderr that probes will run unbounded, rather than silently dropping the bound — anything parsing stderr from a sourcing script (the two finders below here; consumers source it from their own scripts too) sees that line |
 | `find-reachable-host.sh` | prints the first reachable SSH target from its args, exit 1 if none |
 | `find-pve-host-for-vm.sh` | prints which Proxmox host runs a VMID (ha-manager → `pvesh /cluster/resources` → per-host `qm status`) |
 | `resolve-tool.sh` | prints how to invoke a Python dev tool (`PATH` → `python3 -m <module>` → validated pyenv glob) |
@@ -419,9 +595,6 @@ per-host `qm status` scan is exempt, since that branch returns a target from the
 caller's own list. Set it to `""` when the two already agree; leaving it at the
 default on a site whose nodes are named otherwise returns a hostname that does
 not resolve.
-
-Plus the pre-existing `check-doc-links.py`, `check-taskfile.sh`,
-`flux-render.sh`, `kubeconform-skipped.py`.
 
 ---
 

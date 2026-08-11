@@ -6,9 +6,6 @@ which is the one failure mode the callers exist to prevent.
 
 Stubs for `ssh`, `timeout` and `gtimeout` on a controlled PATH decide what each
 helper sees, so nothing here touches a real host.
-
-Run with pytest:
-    python3 -m pytest tests/test_shell_lib.py -v
 """
 
 import shutil
@@ -98,11 +95,21 @@ def test_timeout_cmd_falls_back_to_gtimeout(shell):
 
 def test_timeout_cmd_runs_unbounded_when_neither_exists(shell):
     """The documented last resort: still run the command rather than fail, so a
-    box without coreutils is not silently unable to probe anything."""
+    box without coreutils is not silently unable to probe anything — but say so
+    on stderr, since the wall-clock bound is gone."""
     proc, trace = shell('timeout_cmd 9 /bin/echo hi', tools=())
     assert proc.returncode == 0
     assert proc.stdout.strip() == "hi"
     assert trace == []
+    assert "UNBOUNDED" in proc.stderr
+
+
+def test_unbounded_warning_is_emitted_once_per_shell(shell):
+    proc, _ = shell(
+        'timeout_cmd 9 /bin/echo a\ntimeout_cmd 9 /bin/echo b', tools=()
+    )
+    assert proc.returncode == 0
+    assert proc.stderr.count("UNBOUNDED") == 1
 
 
 def test_timeout_cmd_propagates_the_commands_exit_code(shell):

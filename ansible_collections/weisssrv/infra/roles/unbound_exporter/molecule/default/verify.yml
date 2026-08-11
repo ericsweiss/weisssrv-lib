@@ -4,7 +4,6 @@
   become: true
   gather_facts: true
   tasks:
-    # Verify binary is installed
     - name: Check if unbound_exporter binary exists
       ansible.builtin.stat:
         path: /usr/bin/unbound_exporter
@@ -17,6 +16,42 @@
           - unbound_exporter_binary.stat.executable
         fail_msg: "unbound_exporter binary is not executable"
         success_msg: "unbound_exporter binary is executable"
+
+    # The binary has no --version flag, so "it runs" is proven by it producing
+    # its own usage text rather than an exec failure; the pinned version comes
+    # from dpkg, the same source the role's install check uses.
+    - name: Run the installed binary
+      # Bounded: a build that ignored --help and started serving would otherwise
+      # hang the scenario instead of failing the assert below.
+      ansible.builtin.command: timeout 10 /usr/bin/unbound_exporter --help
+      register: unbound_exporter_help
+      changed_when: false
+      failed_when: false
+
+    - name: Collect the usage output
+      ansible.builtin.set_fact:
+        unbound_exporter_usage: "{{ (unbound_exporter_help.stdout | default('')) ~ (unbound_exporter_help.stderr | default('')) }}"
+
+    - name: Verify the binary executes
+      ansible.builtin.assert:
+        that:
+          - "'unbound' in (unbound_exporter_usage | lower)"
+        fail_msg: "unbound_exporter did not execute (no usage output)"
+        success_msg: "unbound_exporter executes"
+
+    - name: Query the installed package version
+      ansible.builtin.command: dpkg-query -W -f=${Version} unbound_exporter
+      register: unbound_exporter_pkg
+      changed_when: false
+
+    - name: Verify the installed version matches the pin
+      ansible.builtin.assert:
+        that:
+          - (unbound_exporter_pkg.stdout | regex_replace('^[0-9]+:', '') | regex_replace('-[^-]*$', '')) == (unbound_exporter_version | string)
+        fail_msg: >-
+          installed unbound_exporter {{ unbound_exporter_pkg.stdout }} does not
+          match the pinned {{ unbound_exporter_version }}
+        success_msg: "unbound_exporter {{ unbound_exporter_version }} installed"
 
     - name: Check if systemd service file exists
       ansible.builtin.stat:
@@ -36,10 +71,10 @@
           - "'/usr/bin/unbound_exporter' in (service_content.content | b64decode)"
           - "'9167' in (service_content.content | b64decode)"
           - "'unbound.ctl' in (service_content.content | b64decode)"
+          - "'SupplementaryGroups=unbound' in (service_content.content | b64decode)"
         fail_msg: "Service file missing expected configuration"
         success_msg: "Service file has correct configuration"
 
-    # Verify service is enabled (may not be actively running with mock binary)
     - name: Check service status
       ansible.builtin.systemd:
         name: unbound-exporter
@@ -55,8 +90,6 @@
     - name: Display test results
       ansible.builtin.debug:
         msg:
-          - "unbound_exporter installed and configured:"
-          - "  - Binary: /usr/bin/unbound_exporter (executable)"
-          - "  - Service: unbound-exporter.service (enabled)"
-          - "  - Port: 9167"
-          - "(Real Unbound metrics require Unbound control socket)"
+          - "unbound_exporter {{ unbound_exporter_version }} at /usr/bin/unbound_exporter (executable, runs)"
+          - "unbound-exporter.service enabled on port {{ unbound_exporter_port }}"
+          - "(scraping real metrics needs an Unbound control socket)"

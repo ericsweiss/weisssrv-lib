@@ -4,9 +4,8 @@
 *.env
 .tmp/
 
-# Python — anchor the build-artifact dirs to the repo root so they cannot match
-# real content like ci/build/ (an unanchored `build/` gitignored the DinD build
-# template `ci/build/docker-build.yml`).
+# Python — build-artifact dirs are anchored to the repo root so `build/` cannot
+# match real content like ci/build/.
 __pycache__/
 *.py[cod]
 .venv/
@@ -16,12 +15,11 @@ venv/
 *.egg-info/
 /build/
 /dist/
-# `pip install ./cli` builds here, and the anchored patterns above miss it.
+# `pip install ./cli` builds here, outside the anchored patterns above.
 /cli/build/
 /cli/dist/
 
-# CI job artifacts — version-check-ci.py's default report (also produced by a
-# local run of the wrapper). Unanchored: no real content carries this name.
+# CI job artifact: version-check-ci.py's default report.
 version-report.json
 
 # Terraform — init/state artifacts. Reusable modules deliberately do NOT commit
@@ -44,7 +42,6 @@ Thumbs.db
 .ansible/
 .ansible-home/
 
-# ansible-galaxy collection build writes these INTO the source dir when run
-# against it; they are packaging output, never repo content.
+# ansible-galaxy collection build writes these into the source dir.
 ansible_collections/**/MANIFEST.json
 ansible_collections/**/FILES.json

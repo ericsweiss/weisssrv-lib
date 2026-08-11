@@ -3,7 +3,7 @@ tailscale_enabled: true
 
 # Pinned apt version + dpkg hold; pkgs.tailscale.com continuously serves newer
 # builds. Override centrally wherever the site keeps its version pins.
-tailscale_version: "1.98.9"
+tailscale_version: "1.102.2"
 
 # Upstream signing key. The download is fingerprint-checked against this BEFORE
 # it is copied into the trusted keyring, so pin/rotate it deliberately.
@@ -15,11 +15,9 @@ tailscale_advertise_routes: []  # e.g. ["192.168.0.0/24"]
 tailscale_advertise_tags: []  # e.g. ["tag:subnet-router"]; the tag must exist in the tailnet ACL's tagOwners
 tailscale_additional_flags: []  # extra `tailscale up` flags, e.g. ["--ssh"]
 
-# Strict tag adoption. Default false = best-effort (`tailscale set --advertise-tags`
-# non-zero rc does not fail the play — the expected pre-cutover "needs reauth"
-# state stays green). Set true ONLY for the supervised adoption step AFTER the ACL
-# defines tagOwners, so a host that silently fails to adopt the tag fails the play
-# instead of leaving the lockdown half-applied.
+# false = best-effort: a failed tag reconcile does not fail the play. Set true
+# only for the supervised adoption step run after the ACL defines tagOwners, so
+# a host that silently fails to adopt is caught. See the README (ACL tags).
 tailscale_tags_require_adoption: false
 
 # The auth key is read from the TAILSCALE_AUTH_KEY environment variable, never

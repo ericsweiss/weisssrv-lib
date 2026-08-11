@@ -22,7 +22,7 @@ provisioner:
       all:
         # Site inputs the role's network/user defaults alias.
         internal_domain: example.test
-        admin_user: eric
+        admin_user: molecule
         dns_servers: [192.168.0.150, 192.168.0.160]
         proxmox_lxc_gateway: 192.168.0.1
         proxmox_lxc_skip_create: true
@@ -39,6 +39,11 @@ provisioner:
     defaults:
       remote_tmp: /tmp/ansible-tmp
 scenario:
+  # No `idempotence` step: converge drives negative-path cases to failure via
+  # block/rescue and rewrites the pct/pvesh stub state (and /etc/pve/lxc/199.conf)
+  # between cases, so a second converge would not replay the same inputs.
+  # Per-task idempotence is asserted directly instead (verify.yml counts the pct
+  # calls each reconcile makes).
   test_sequence:
     - dependency
     - cleanup

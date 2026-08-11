@@ -26,6 +26,10 @@ indent_size = 4
 indent_style = space
 indent_size = 2
 
+[Dockerfile]
+indent_style = space
+indent_size = 4
+
 [*.md]
 # Trailing double-space is a Markdown hard line break.
 trim_trailing_whitespace = false

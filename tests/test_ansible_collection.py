@@ -5,9 +5,6 @@ Three things drift silently and break consumers long after the commit that
 caused them: the galaxy dependency set vs the copies molecule and the CI image
 install, the collection version vs the library tag semantic-release will cut,
 and the relative depths the shared molecule base config resolves against.
-
-Run with pytest:
-    python3 -m pytest tests/test_ansible_collection.py -v
 """
 
 import importlib.util

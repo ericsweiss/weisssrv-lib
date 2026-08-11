@@ -1,0 +1,54 @@
+---
+# Self-heal for postfix's COMPILED map databases (.db). Both sources are
+# templated with notify:, so a run that loses its handlers leaves a correct
+# source next to a stale .db — and postfix reads the .db. Both checks compare
+# against the CONFIGURED value: a .db serving a retired target or credential
+# still satisfies a value-blind "resolves to something" test, so that drift
+# would never be reported or repaired.
+#
+# Shared with weisssrv.infra.smtp_relay, which includes this file.
+# Caller input: postfix_null_client_maps_root_alias — the /etc/aliases root target.
+
+- name: Check that the compiled alias database resolves root to the configured target
+  ansible.builtin.command:
+    cmd: postmap -q root hash:/etc/aliases
+  register: postfix_null_client_maps_alias_root
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Rebuild the alias database when it does not match the configured target
+  ansible.builtin.command:
+    cmd: newaliases
+  changed_when: true
+  when:
+    - postfix_null_client_maps_root_alias | default('', true) | length > 0
+    - (postfix_null_client_maps_alias_root.stdout | trim) != (postfix_null_client_maps_root_alias | trim)
+
+# The credential must never reach a log or a registered value, so the whole
+# comparison happens inside the shell and only its exit status leaves: rc 0 =
+# the .db serves what the source holds; anything else (missing .db, stale value,
+# unparseable source) means rebuild.
+- name: Check that the compiled SASL map matches the deployed credential
+  ansible.builtin.shell: |
+    set -o pipefail
+    key=$(awk '$1 !~ /^#/ && NF > 1 {print $1; exit}' /etc/postfix/sasl_passwd)
+    [ -n "$key" ] || exit 2
+    src=$(awk -v k="$key" '$1 == k {sub(/^[^[:blank:]]+[[:blank:]]+/, ""); print; exit}' \
+      /etc/postfix/sasl_passwd | sha256sum)
+    db=$(postmap -q "$key" hash:/etc/postfix/sasl_passwd | sha256sum)
+    [ "$src" = "$db" ]
+  args:
+    executable: /bin/bash
+  register: postfix_null_client_maps_sasl_map
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Rebuild the SASL password database when it does not match the source
+  ansible.builtin.command:
+    cmd: postmap /etc/postfix/sasl_passwd
+  changed_when: true
+  when: postfix_null_client_maps_sasl_map.rc != 0
+  no_log: true

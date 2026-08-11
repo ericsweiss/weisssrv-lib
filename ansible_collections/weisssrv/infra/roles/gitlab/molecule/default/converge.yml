@@ -1,0 +1,87 @@
+---
+# Converge: run the role in skip-install mode, then side-render the template
+# branches the converged file cannot cover in one pass.
+- name: Converge
+  hosts: all
+  become: true
+  pre_tasks:
+    - name: Wait out apt locks and refresh the cache
+      ansible.builtin.include_tasks: ../../../../molecule-shared/tasks/container-warmup.yml
+
+    - name: Install minimal prerequisites for testing
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - systemd
+          - cron
+          # The role installs and validates an sshd AllowUsers drop-in
+          # (sshd -t), which needs sshd and its host keys present.
+          - openssh-server
+        state: present
+
+  tasks:
+    # public: the side renders below read role defaults (cert paths, TLS floor,
+    # backup knobs) that the scenario's group_vars deliberately does not repeat.
+    - name: Run the gitlab role
+      ansible.builtin.include_role:
+        name: weisssrv.infra.gitlab
+        public: true
+
+  post_tasks:
+    # The converged file covers the plain-HTTP branch; this side render covers
+    # the TLS half without flip-flopping /etc/gitlab/gitlab.rb (which would
+    # break the idempotence run). The role template lives outside the scenario
+    # dir, so the relative src is deliberate.
+    - name: Render gitlab.rb with nginx TLS enabled (branch coverage)  # noqa: no-relative-paths
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/gitlab.rb.j2"
+        dest: /tmp/gitlab.rb.tls
+        mode: "0600"
+      vars:
+        gitlab_nginx_listen_https: true
+        gitlab_nginx_listen_port: 443
+
+    # The opt-in postgres_exporter overrides. The converged file covers the
+    # default (both empty -> no lines, Omnibus defaults stand).
+    - name: Render gitlab.rb with the postgres exporter published  # noqa: no-relative-paths
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/gitlab.rb.j2"
+        dest: /tmp/gitlab.rb.pgexporter
+        mode: "0600"
+      vars:
+        gitlab_postgres_exporter_enabled: true
+        gitlab_postgres_exporter_listen_address: "0.0.0.0:9187"
+
+    # Whitespace-stripping contract: an overridden gitlab_backup_skip containing
+    # spaces must render to a single comma-separated SKIP value.
+    - name: Render backup wrapper with a spaced SKIP override  # noqa: no-relative-paths
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/gitlab-backup-run.sh.j2"
+        dest: /tmp/gitlab-backup-run-spaced.sh
+        mode: "0755"
+      vars:
+        gitlab_backup_skip: "registry, artifacts"
+
+    # NFS-backed render (fail-closed guard). BACKUP_PATH points at a
+    # non-mountpoint and the textfile dir at a temp path, so verify can run it
+    # and assert it aborts with success=0 without clobbering the main metric.
+    - name: Render backup wrapper with NFS-backed landing (fail-closed guard)  # noqa: no-relative-paths
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/gitlab-backup-run.sh.j2"
+        dest: /tmp/gitlab-backup-run-nfs.sh
+        mode: "0755"
+      vars:
+        gitlab_backup_nfs_enabled: true
+        gitlab_backup_path: /tmp/gitlab-nfs-not-a-mount
+        gitlab_textfile_dir: /tmp/gitlab-nfs-guard
+
+    # The systemd unit's RequiresMountsFor branch, which the converged unit
+    # (NFS off) cannot cover.
+    - name: Render the backup service with the NFS landing zone  # noqa: no-relative-paths
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/gitlab-backup.service.j2"
+        dest: /tmp/gitlab-backup-nfs.service
+        mode: "0644"
+      vars:
+        gitlab_backup_nfs_enabled: true
+        gitlab_backup_path: /mnt/backups-offsite

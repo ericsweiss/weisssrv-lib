@@ -73,6 +73,19 @@
           - ha.c2b_set == 0
         fail_msg: "Expected converged no-op after clear, got set={{ ha.c2b_set }}"
 
+    # (n) With two resources in one `ha-manager config` index, only the
+    #     drifted one is `set` — proof the single index read is attributed
+    #     per SID (real PVE has no `ha-manager config <sid>` form).
+    - name: N — two-resource index sets only the drifted resource
+      ansible.builtin.assert:
+        that:
+          - ha.n_vm_set == 0
+          - ha.n_ct_set == 1
+          - ha.n_add == 0
+        fail_msg: >-
+          Expected vm_set=0/ct_set=1/add=0 for the two-resource index, got
+          vm_set={{ ha.n_vm_set }}/ct_set={{ ha.n_ct_set }}/add={{ ha.n_add }}
+
     # (d) An absent replication job whose source VM resides locally must be
     #     created via `pvesr create-local-job` (and not `update`).
     - name: D — absent replication job is created via `pvesr create-local-job`

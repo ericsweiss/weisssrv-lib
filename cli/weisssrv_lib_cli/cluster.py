@@ -1,8 +1,5 @@
 """`new-cluster` — render a weisssrv cluster template with copier.
 
-EXPERIMENTAL: weisssrv-cluster-template is not published yet, so the wrapper is
-exercised against local copier templates only.
-
 Unlike the fork-and-rename scaffold the other commands operate on, the cluster
 template is a copier template, so this is a thin wrapper: validate the source
 and destination up front (copier's own failure modes are late and messy), then

@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Quarterly trigger for the offsite restore drill
+
+[Timer]
+# Quarterly. Persistent=true because a quarterly timer that is missed (host
+# down, extended maintenance) would otherwise silently skip a whole quarter —
+# and the staleness alert would then page for an outage that already ended.
+OnCalendar={{ restic_offsite_restore_drill_timer_calendar }}
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

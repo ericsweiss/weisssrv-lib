@@ -1,16 +1,25 @@
+{# The `#` prose below is DEPLOYED CONTENT (/etc/exports) and the task that
+   writes it notifies `Reload NFS exports` (exportfs -ra). Rewording it
+   re-exports the whole table on every existing consumer's next converge, so
+   keep it byte-stable and put narrative in README.md instead. The
+   weisssrv-specific examples and the pre-collection role name are retained for
+   exactly that reason. #}
 # {{ ansible_managed }}
 # NFS exports configuration - see exports(5)
 #
-# Opt-in transport encryption (NFSv4 + tlshd) at two scopes: `export.xprtsec`
-# covers every client line, `client.xprtsec` overrides it per client — including
-# a falsy value to opt one client OUT, so a shared export can carry require-TLS
-# clients alongside an appliance that cannot speak xprtsec. A line with no
-# xprtsec leaves the server at its default (none:tls:mtls), which ACCEPTS
-# plaintext.
-#
-# The wire is only encrypted when the client MOUNTS with xprtsec=tls, by
-# hostname — a wildcard cert has no IP SAN. Requires weisssrv.infra.nfs_tls on
-# the server and on every TLS client.
+# Transport-layer encryption via NFSv4 + tlshd (opt-in). Two scopes:
+#   - export.xprtsec  : applies to every client line of the export.
+#   - client.xprtsec  : per-client override; takes precedence over the
+#                       export-level value, including a falsy value to
+#                       opt one client OUT.
+# Production k3s lines use "tls" (require: reject plaintext). A client line
+# with no xprtsec leaves the server at its default policy (none:tls:mtls),
+# which accepts plaintext. This per-client granularity lets a shared export
+# carry require-TLS k3s clients alongside a plaintext-only client (e.g.
+# HAOS .154 on /export/media, which cannot speak xprtsec — see docs/24).
+# The wire is encrypted by clients that MOUNT with xprtsec=tls (by
+# hostname, so the *.esweiss.com cert verifies); requires the nfs_tls role
+# active on the server AND on every client that mounts TLS.
 
 {% for export in nas_storage_exports %}
 {% set export_xprtsec = export.xprtsec | default('') %}

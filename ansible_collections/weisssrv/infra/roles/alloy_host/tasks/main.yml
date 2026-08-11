@@ -93,9 +93,9 @@
 - name: Apply pending restarts before health check
   ansible.builtin.meta: flush_handlers
 
-- name: Verify Alloy is listening on port 12345
+- name: Verify Alloy is listening on its HTTP port
   ansible.builtin.uri:
-    url: "http://localhost:12345/-/ready"
+    url: "http://localhost:{{ alloy_host_http_port }}/-/ready"
     return_content: false
     status_code: 200
   register: alloy_host_health

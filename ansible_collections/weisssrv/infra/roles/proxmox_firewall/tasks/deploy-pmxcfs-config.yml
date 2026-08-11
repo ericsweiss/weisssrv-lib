@@ -1,14 +1,8 @@
 ---
-# Publish a rendered Jinja template into pmxcfs (/etc/pve) content-only.
-#
-# pmxcfs auto-enforces root:www-data 0640 under /etc/pve/firewall and REJECTS
-# every explicit chown/chmod/utime with EPERM. Ansible's template/copy modules
-# land content through atomic_move, whose fallback runs shutil.copy2 (utime) and
-# then re-applies owner/group/mode — so any create or content change false-fails
-# "Operation not permitted" even though the bytes were written, and
-# unsafe_writes does not route around it on ansible-core 2.20+. Hence: render to
-# staging on the normal root fs, then publish with a plain `cp` (no metadata
-# syscalls) and let pmxcfs stamp its own ownership and mode.
+# Publish a rendered Jinja template into pmxcfs (/etc/pve), content only:
+# render to staging on the normal root fs, then copy in. template/copy cannot
+# write here — pmxcfs rejects the chown/chmod/utime that atomic_move performs.
+# Full explanation: role README, "Writing into pmxcfs".
 #
 # Caller contract (include_tasks vars): pmxcfs_config_src (template filename),
 # pmxcfs_config_dest (absolute path inside /etc/pve), pmxcfs_config_label
@@ -38,16 +32,12 @@
     checksum_algorithm: sha1
   register: proxmox_firewall_pmxcfs_live
 
-# cp is the only write primitive pmxcfs accepts here: pmxcfs enforces
-# root:www-data 0640 (no group/other write bit), so plain `cp` (no -p) issues
-# no post-copy fchmod/chown/utime and dodges the EPERM. This is content-only —
-# if this helper is ever reused for a pmxcfs file whose mode carries a write
-# bit, cp would restore that mode and reintroduce the fchmod/EPERM.
-#
-# Comparing render-vs-live-pmxcfs both provides idempotence and corrects
-# out-of-band drift in /etc/pve. In `--check` mode `template` returns no
-# checksum, so this guard collapses and the publish previews as "skipped" — the
-# render-to-staging task's `changed` is the dry-run signal instead.
+# Plain `cp` (no -p) issues no post-copy fchmod/chown/utime, so pmxcfs accepts
+# it and stamps its own root:www-data 0640. Content-only: reusing this helper
+# for a pmxcfs file whose mode carries a write bit would reintroduce the EPERM.
+# Comparing render against live pmxcfs gives idempotence and corrects
+# out-of-band drift. In --check mode `template` returns no checksum, so this
+# guard collapses and the render-to-staging task's `changed` is the signal.
 - name: Publish the firewall config into pmxcfs when changed for {{ pmxcfs_config_label }}
   ansible.builtin.command:
     cmd: "cp -- {{ proxmox_firewall_staging_dir }}/{{ pmxcfs_config_label }} {{ pmxcfs_config_dest }}"

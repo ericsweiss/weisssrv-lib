@@ -1,0 +1,27 @@
+---
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Apply the shared systemd-wait + temp-dir prep
+      ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/prepare-base.yml
+
+    - name: Disable apt background services
+      ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/prepare-apt-disable.yml
+
+    - name: Ensure the unbound drop-in directory exists
+      ansible.builtin.file:
+        path: /etc/unbound/unbound.conf.d
+        state: directory
+        mode: "0755"
+
+    # Seeds a superseded drop-in so converge exercises the removal path. Its
+    # name sorts after managed.conf, which is exactly the case where a survivor
+    # would win every duplicated scalar.
+    - name: Seed a superseded drop-in for the removal path
+      ansible.builtin.copy:
+        content: |
+          server:
+            verbosity: 1
+        dest: /etc/unbound/unbound.conf.d/weisssrv.conf
+        mode: "0644"

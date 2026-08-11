@@ -1,10 +1,9 @@
 ---
-# Off-node etcd snapshot copy (see README.md). Mounts the NFS export
-# (by hostname, xprtsec=tls) and installs a systemd timer that
-# copies the newest local k3s snapshot there, emitting an
-# etcd_snapshot_last_copy_timestamp_seconds textfile metric for EtcdSnapshotStale.
-# Server nodes only; the caller gates this on k3s_etcd_snapshot_offnode_enabled
-# (off by default — see defaults/main.yml for the companion changes it needs).
+# Mounts the NFS export (by hostname, xprtsec=tls) and installs a systemd timer
+# that copies the newest local k3s snapshot there, emitting an
+# etcd_snapshot_last_copy_timestamp_seconds textfile metric. Server nodes only;
+# the caller gates this on k3s_etcd_snapshot_offnode_enabled (off by default —
+# defaults/main.yml lists the companion changes it needs).
 
 - name: Create the off-node etcd snapshot mount point
   ansible.builtin.file:
@@ -16,9 +15,8 @@
 
 # The xprtsec=tls mount needs the kernel TLS handshake daemon (tlshd, from the
 # nfs_tls role) active on this server; without it the mount hangs with an opaque
-# timeout. Fail loud with an actionable message instead. The nfs_tls play runs
-# group-wide and BEFORE the k3s server play, so tlshd is
-# already up by the time this assert runs.
+# timeout. Fail loud with an actionable message instead. The caller's nfs_tls
+# play runs group-wide before the k3s server play, so tlshd is already up.
 - name: Assert tlshd is active for the off-node TLS NFS mount  # noqa: command-instead-of-module
   ansible.builtin.command: systemctl is-active tlshd.service
   register: k3s_offnode_tlshd

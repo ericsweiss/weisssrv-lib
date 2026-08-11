@@ -6,3 +6,80 @@
     - name: Apply the restic_offsite role
       ansible.builtin.include_role:
         name: weisssrv.infra.restic_offsite
+
+    # RESTORE-DRILL SEED GATE — both arms, behaviourally.
+    #
+    # The seed itself is molecule-notest (at converge time the repository holds
+    # no snapshot, so a real drill legitimately fails), but the gate that
+    # decides whether to run it is not — and it is the part that regressed:
+    # when the gate was `units is changed` alone it was EDGE-triggered, so a
+    # seed that failed once was skipped on every later converge and the play
+    # went green with backup_restore_drill_last_success_seconds still absent.
+    # The two passes below pin the level-triggered replacement: unchanged units
+    # + proof metric present => not due; unchanged units + proof metric absent
+    # => due (retry).
+    #
+    # Every helper here is changed_when: false — molecule's idempotence step
+    # re-runs this playbook and must see no changes.
+    - name: Write a proof metric as a PASSING drill would
+      ansible.builtin.copy:
+        dest: /var/lib/node_exporter/backup_restore_drill.prom
+        content: |
+          backup_restore_drill_last_run_seconds 1
+          backup_restore_drill_last_success_seconds 1
+          backup_restore_drill_files_compared 3
+        owner: root
+        group: root
+        mode: "0644"
+      changed_when: false
+
+    - name: Re-apply the role with the units unchanged and the proof metric present
+      ansible.builtin.include_role:
+        name: weisssrv.infra.restic_offsite
+
+    - name: Assert a host whose drill has already passed is not re-seeded
+      ansible.builtin.assert:
+        that:
+          - restic_offsite_drill_proof.matched | int == 1
+          - not (restic_offsite_drill_seed_due | bool)
+        fail_msg: >-
+          The seed gate is still due on a host whose restore drill has already
+          passed — every converge would re-run the drill and re-spend B2 egress.
+        success_msg: "The restore-drill seed is not re-run once a drill has passed"
+
+    # A drill that RAN and FAILED still writes backup_restore_drill.prom (it
+    # records _last_run_seconds unconditionally) — it just never writes the
+    # _last_success_seconds line. That is why the probe reads content and not
+    # mere existence, and this file is exactly what a failed first seed leaves
+    # behind.
+    - name: Overwrite it with what a FAILED first seed leaves behind
+      ansible.builtin.copy:
+        dest: /var/lib/node_exporter/backup_restore_drill.prom
+        content: |
+          backup_restore_drill_last_run_seconds 1
+          backup_restore_drill_files_compared 0
+        owner: root
+        group: root
+        mode: "0644"
+      changed_when: false
+
+    - name: Re-apply the role with the units unchanged after a failed seed
+      ansible.builtin.include_role:
+        name: weisssrv.infra.restic_offsite
+
+    - name: Assert a failed seed is retried on the next converge
+      ansible.builtin.assert:
+        that:
+          - restic_offsite_drill_proof.matched | int == 0
+          - restic_offsite_drill_seed_due | bool
+        fail_msg: >-
+          The seed gate is not due even though no drill has ever passed — the
+          seed is single-shot again, and a converge after a failed seed goes
+          green with the proof metric permanently absent.
+        success_msg: "A restore-drill seed that failed is retried until one passes"
+
+    - name: Drop the synthetic drill metric file again
+      ansible.builtin.file:
+        path: /var/lib/node_exporter/backup_restore_drill.prom
+        state: absent
+      changed_when: false

@@ -1,86 +1,190 @@
 # Include contract
 
-How to consume each CI template, its `spec:inputs`, and the parity note that
-records which weisssrv job(s) it reproduces. All templates are included the same
-way — by project + pinned ref + file path, with optional `inputs:`:
+How to consume each CI template, its complete `spec:inputs` set with defaults,
+and the parity note recording what it reproduces for which consumer. All
+templates are included the same way — by project + pinned ref + file path, with
+optional `inputs:`:
 
 ```yaml
 include:
   - project: eric/weisssrv-lib
-    ref: v0.2.0            # a release TAG (see VERSIONING.md) — never a branch
+    ref: <CURRENT_TAG>     # a release TAG (see VERSIONING.md) — never a branch
     file: /ci/<area>/<template>.yml
     inputs:
       <name>: <value>
 ```
 
-Conventions shared by every template:
+`<CURRENT_TAG>` is the placeholder convention across this repo's docs; the
+current release is named once, in the [README](../README.md#current-release).
+
+## Who includes what
+
+Three consumers, and they do not overlap. Read this table before changing an
+input default: a default is only "safe" relative to the consumers that take it.
+
+| Template | weisssrv | app-template | cluster-template |
+| --- | :-: | :-: | :-: |
+| `ci/lint/yaml-lint.yml` | ● | ● | ● |
+| `ci/lint/shellcheck.yml` | ● | ● | ● |
+| `ci/lint/docs-link-check.yml` | ● | ● | ● |
+| `ci/lint/python-lint.yml` | ● | ● | ● |
+| `ci/lint/ansible-lint.yml` | ● | | ● |
+| `ci/validate/terraform.yml` | ● | | ● |
+| `ci/validate/flux-lint.yml` | ● | ●● | ● |
+| `ci/security/secret-detection.yml` | ● | ● | ● |
+| `ci/test/python-tests.yml` | ● | ● | ● |
+| `ci/build/docker-build.yml` | | ● | |
+| `ci/review/pr-agent.yml` | ● | ● | ● |
+| `ci/release/semantic-release.yml` | | ● | ●* |
+| `ci/maintenance/version-check.yml` | ● | | ● |
+| `ci/maintenance/version-bump-bot.yml` | | | ● |
+| `ci/templates/*` (3 fragments) | ● | | ● |
+
+●● = included twice (the app template runs `flux-lint` over `kubernetes/flux`
+and a second `flux-lint-optional` over `kubernetes/flux/optional`).
+●* = copier-gated (`enable_semantic_release`); the other 15 cluster-template
+entries are unconditional.
+
+**weisssrv consumes 14 template files across 11 `include:` entries.** Five of
+them take the defaults verbatim and share two entries with a `file:` list — the
+three `ci/templates/*` fragments in one, `terraform` + `secret-detection` in the
+other. The remaining nine (yaml-lint, shellcheck, ansible-lint, python-lint,
+docs-link-check, version-check, python-tests, flux-lint, pr-agent) each pass
+their own `inputs:`, which bind per entry and therefore need an entry each.
+
+Only **three** templates are outside weisssrv's pipeline: `docker-build`,
+`semantic-release` and `version-bump-bot` (weisssrv runs a local version-bump
+job and cuts no releases). Everything else in this library is live in the
+cluster repo, so treat an input-default change as consumer-visible there by
+default — including `pr-agent`, `python-lint` and `ansible-lint`, which weisssrv
+adopted in v0.6.0 and which earlier revisions of this document listed as safe to
+change freely.
+
+**A GitHub-hosted consumer includes nothing.** Actions has no equivalent of
+`include: project:` for a private library, so such a consumer (the app
+template's CI shape B) VENDORS workflows and re-vendors deliberately — see
+`ci/release/semantic-release.yml` below for the one reference workflow this repo
+ships. The scripts those workflows run are shared unchanged; which of them are
+forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
+
+## Conventions shared by every template
 
 - **`tags` (array)** — runner tag(s). Default `["infrastructure"]` (weisssrv's
-  privileged runner). Tenants pass `tags: []` for the shared tag-less runner.
-- **`changes` (array)** — the `changes:` path list used in the MR + main rules.
-  For most templates (yaml-lint, shellcheck, terraform, flux-lint) the defaults
-  are byte-identical to weisssrv's `.paths-*` anchor, so weisssrv gets identical
-  rules with default inputs. **Two anchors reach into ansible paths that are
-  deliberately out of library scope** (`docs-link-check`, `python-tests`); their
-  defaults cover only the generic subset, so on adoption weisssrv passes its own
-  full `.paths-docs-links` / `.paths-python-tests` via the `changes` input (see
-  each template's Parity note). Tenants pass whatever list fits their repo.
-- The rules shape for lint/validate/test jobs is fixed:
-  `schedule → never`, `merge_request_event → changes`, `main → changes`, `web`.
-- **Every generated job retries on `runner_system_failure` / `scheduler_failure`
-  (max 2).** On a quota-capped shared runner a pipeline's fan-out can burst past
-  the namespace quota at pod-creation time; the retry turns that hard failure
-  into throttling. Bridge jobs carry no retry (GitLab rejects it there).
+  privileged runner). Tenants and generated clusters pass `tags: []` for a
+  shared tag-less runner.
+- **`changes` (array)** — the path list used in the merge-request and
+  post-merge rules. Every default is a literal, self-contained list stated in
+  the template; there is no anchor in any consumer that it must match. Two
+  templates ship a default that is deliberately narrower than what weisssrv
+  needs, and both say so in their parity note.
+- **`default_branch` (string, default `main`)** — the branch the post-merge
+  rule compares against, on every template that has such a rule (11 of them:
+  yaml-lint, shellcheck, docs-link-check, python-lint, ansible-lint, terraform,
+  flux-lint, secret-detection, python-tests, version-check, docker-build).
+  It must be a **literal** name. The value is interpolated into a quoted
+  `rules:if` string, and GitLab does not expand variables inside quotes, so
+  `$CI_DEFAULT_BRANCH` would be compared as literal text and never match — a
+  consumer on `master`/`trunk` that left the default would get a job that
+  silently stops running after merge. The default reproduces every current
+  consumer's behaviour byte-for-byte.
+- The rules shape for lint/validate/test jobs is fixed: `schedule → never`,
+  `merge_request_event → changes`, `default_branch → changes`, `web`.
+- **Every template that DEFINES a job retries it on `runner_system_failure` /
+  `scheduler_failure` (max 2).** On a quota-capped shared runner a pipeline's
+  fan-out can burst past the namespace quota at pod-creation time; the retry
+  turns that hard failure into throttling. Three things are outside that claim:
+  the `ci/templates/` fragments define hidden jobs and set no retry (the
+  consumer's own job supplies it), the bridge job in `ci/internal/` carries none
+  (GitLab rejects `retry` on a bridge), and
+  `ci/release/github-release-workflow.example.yml` is a GitHub Actions
+  reference copy, not a GitLab job at all.
 
 ---
 
 ## ci/lint/yaml-lint.yml
 
-- **Reproduces:** weisssrv `yaml-lint`; template `yaml-lint`.
-- **Inputs:** `job_name` (yaml-lint), `stage` (lint), `image` (python:3.11-slim),
-  `tags` (["infrastructure"]), `yamllint_version` (1.38.0), `config`
-  (`-d relaxed`), `targets` (`ansible/ kubernetes/ .gitlab-ci.yml .gitlab/ci/`),
-  `changes` (weisssrv `.paths-yaml-lint`).
+- **Reproduces:** weisssrv `yaml-lint`; the same job in both templates.
+- **Inputs:** `job_name` (yaml-lint), `stage` (lint), `image`
+  (python:3.11-slim), `tags` (["infrastructure"]), `yamllint_version` (1.38.0),
+  `config` (`-d relaxed`), `targets`
+  (`ansible/ kubernetes/ .gitlab-ci.yml .gitlab/ci/`), `default_branch` (main),
+  `changes` (`ansible/**/*`, `kubernetes/**/*`, `.gitlab-ci.yml`,
+  `.gitlab/ci/**/*`).
 - **Parity:** defaults reproduce weisssrv's four `yamllint -d relaxed <target>`
   invocations (run as a loop over `targets`) and its rules verbatim.
+- **A `targets` entry that does not exist is skipped with a note**, not a
+  failure — a repo that lacks one of the default trees still passes. But if
+  **no** target existed at all the job FAILS: a green job that linted nothing is
+  exactly the silent pass this gate exists to prevent.
+- **Config profiles:** `lint/yamllint-relaxed.yml` and
+  `lint/yamllint-strict.yml` ship here; vendor one and pass `-c <path>`.
 - **Tenant:** `inputs: { tags: [], config: "-c .yamllint", targets: "." }`.
 
 ## ci/lint/shellcheck.yml
 
-- **Reproduces:** weisssrv `shellcheck` (including the `*.sh.j2` Jinja neutralizer).
-- **Inputs:** `image` (koalaman/shellcheck-alpine:v0.10.0), `tags`, `severity`
-  (warning), `exclude` (SC1091,SC2034), `direct_globs`
-  (`scripts/*.sh ansible/*.sh`), `find_dir` (`ansible/roles` — recursively
-  shellchecks `*.sh` and neutralizes+checks `*.sh.j2`; empty string skips both
-  loops), `changes` (weisssrv `.paths-shellcheck`).
-- **Parity:** the neutralizer sed logic (raw-wrapped vs plain templates, the
+- **Reproduces:** weisssrv `shellcheck`, including the `*.sh.j2` Jinja
+  neutralizer.
+- **Inputs:** `job_name` (shellcheck), `stage` (lint), `image`
+  (koalaman/shellcheck-alpine:v0.10.0), `tags`, `severity` (warning), `exclude`
+  (SC1091,SC2034), `direct_globs` (`scripts/*.sh ansible/*.sh`), `find_dir`
+  (`ansible/roles`), `default_branch` (main), `changes` (`scripts/**/*`,
+  `ansible/*.sh`, `ansible/roles/**/*.sh`, `ansible/roles/**/*.sh.j2`).
+- **Parity:** the neutralizer logic (raw-wrapped vs plain templates, the
   rc-accumulating list-file loop) is extracted verbatim; defaults reproduce
-  weisssrv's globs + find dir.
+  weisssrv's globs and find dir.
+- **A `find_dir` that is empty OR absent skips both find loops with a note.**
+  Previously only the empty case was handled, so a consumer that simply does
+  not have that tree failed on `find`'s non-zero exit. Both live consumers pass
+  a directory that exists, so this changes nothing for them.
+- **Neutralizer constraint:** in a `{% raw %}`-wrapped template only FULL-LINE
+  `{# … #}` comments are stripped (a comment-range delete would eat bash
+  `${#arr[@]}`), so keep the out-of-raw header comments of such a template to
+  single lines.
 - **Tenant:** `inputs: { tags: [], direct_globs: "scripts/*.sh", find_dir: "" }`.
 
 ## ci/lint/docs-link-check.yml
 
 - **Reproduces:** weisssrv `docs-link-check`.
-- **Inputs:** `script_path` (`scripts/check-doc-links.py`), `roots` (empty →
-  checker default of docs/ + top-level READMEs), `changes`.
-- **Parity:** weisssrv runs its repo-local `scripts/check-doc-links.py` (byte
-  identical). The default `changes` covers the generic subset of weisssrv's
-  `.paths-docs-links` (docs/, READMEs, `scripts/check-doc-links.py`,
-  `scripts/test_check_doc_links.py`) but **not** `ansible/TESTING.md` — an
-  ansible path out of library scope. **Weisssrv adopts by passing its full
-  `.paths-docs-links` as `changes`** (or the ansible-only trigger is lost);
-  defaults are NOT byte-identical for this job. Tenants vendor the stdlib-only
-  checker from this library's `scripts/check-doc-links.py` (no network, no deps).
+- **Inputs:** `job_name` (docs-link-check), `stage` (lint), `image`
+  (python:3.11 — the checker enumerates tracked Markdown with git and fails
+  loud in a checkout without it, so a slim image cannot silently shrink the
+  scan), `tags`, `script_path` (`scripts/check-doc-links.py`),
+  `roots` (empty → the checker's own default scope), `default_branch` (main),
+  `changes` (`docs/**/*`, `README.md`, `CLAUDE.md`,
+  `scripts/check-doc-links.py`, `scripts/test_check_doc_links.py`).
+- **Parity — the script halves now agree; the `changes` default still does
+  not.** `scripts/check-doc-links.py` here and weisssrv's repo-local copy both
+  scan **every git-tracked `*.md` in the repo** (role, app and agent READMEs
+  cross-link into `docs/` too), falling back to `docs/` plus
+  `$CHECK_DOC_LINKS_EXTRA` only outside a git checkout. That unification is new:
+  the library copy previously scanned the narrow docs/+READMEs set, so the two
+  copies disagreed about what they were gating. The `changes` **default** was
+  not widened with it — it still lists only `docs/`, the two top-level READMEs
+  and the checker itself, because a `**/*.md` default would fire the job on
+  every consumer's every markdown edit. **A consumer whose markdown lives
+  outside `docs/` must pass its own `changes`**, or the widened scan runs on
+  fewer merge requests than it covers. weisssrv passes
+  `["**/*.md", "scripts/check-doc-links.py", "scripts/test_check_doc_links.py"]`.
+- Tenants vendor the stdlib-only checker from `scripts/check-doc-links.py` (no
+  network, no dependencies). Re-vendor it at each tag bump — all three consumers
+  now FAIL their own test suite on a drifted copy (see "A vendored script is a
+  pin too" below), so a skipped re-vendor is loud rather than silent.
 - **Tenant:** `inputs: { tags: [] }` (after vendoring the script).
 
 ## ci/lint/python-lint.yml
 
-- **Reproduces:** nothing in weisssrv — new in v0.2.0; the family had no Python
-  linter. This library self-applies it (`.gitlab-ci.yml`).
+- **Reproduces:** nothing — the family had no Python linter before this
+  template. This library self-applies it; weisssrv includes it over `scripts/`
+  with the shared profile vendored to its repo root as `ruff.toml`; the app
+  template includes it over `scripts tests` with the same profile vendored to
+  its root (no `config:` input, so ruff's discovery finds it — which is what
+  makes the GitLab job, the `github` shape's step and `task python-lint` report
+  identically); and the cluster template includes it.
 - **Inputs:** `job_name` (python-lint), `stage` (lint), `image`
   (python:3.11-slim), `tags`, `ruff_version` (0.16.0), `config` (empty → ruff's
   own discovery; pass the FULL argument, e.g. `--config lint/ruff.toml`),
-  `targets` (`.`), `format_check` (false), `changes`.
+  `targets` (`.`), `default_branch` (main), `format_check` (false), `changes`
+  (`**/*.py`, `ruff.toml`, `pyproject.toml`, `.gitlab-ci.yml`).
 - **Selection:** the shared profile in `lint/ruff.toml` selects
   `E4,E7,E9,F,W,B` — correctness rules only. Formatting rules (line length,
   quote style, import order) are deliberately excluded: the family has no
@@ -91,18 +195,24 @@ Conventions shared by every template:
 
 ## ci/lint/ansible-lint.yml
 
-- **Reproduces:** weisssrv's inline `ansible-lint` job — new in v0.2.0, and
-  this library self-applies it over the `weisssrv.infra` collection.
+- **Reproduces:** weisssrv's inline `ansible-lint` job, which now includes this
+  template instead (`targets: ansible/`, `galaxy_requirements:
+  ansible/requirements.yml` so the collection the playbooks address by FQCN is
+  installed first). This library also self-applies it over the `weisssrv.infra`
+  collection, and the cluster template includes it for the generated repo's own
+  `ansible/` tree.
 - **Inputs:** `job_name` (ansible-lint), `stage` (lint), `image`
   (python:3.13-slim), `tags`, `ansible_lint_version` (25.12.2 — keep in step
   with `docker/molecule-ci/requirements.txt` so lint and molecule agree),
   `pip_extra` (`black<26.5.0`, the broken-mypyc-wheel guard), `config` (empty →
-  ansible-lint's own discovery; pass the FULL argument, e.g.
-  `-c .ansible-lint`), `targets` (`.`), `collections_path` (`.` — exported as
-  `ANSIBLE_COLLECTIONS_PATH`, singular ONLY: ansible-compat hard-errors
-  whenever the legacy plural spelling is present), `galaxy_requirements`
-  (empty → no install; point at the requirements.yml declaring the dependency
-  collections the linted roles' FQCN module refs need), `changes`.
+  ansible-lint's own discovery; pass the FULL argument, e.g. `-c
+  .ansible-lint`), `targets` (`.`), `collections_path` (`.` — exported as
+  `ANSIBLE_COLLECTIONS_PATH`, singular ONLY: ansible-compat hard-errors whenever
+  the legacy plural spelling is present), `galaxy_requirements` (empty → no
+  install; point it at the requirements.yml declaring the dependency collections
+  the linted roles' FQCN module refs need), `default_branch` (main), `changes`
+  (`**/*.yml`, `**/*.yaml`, `.ansible-lint`, `.ansible-lint-ignore`,
+  `.gitlab-ci.yml`).
 - **Non-root safe:** `pip install --user` + absolute user-base path; caches go
   to `$CI_PROJECT_DIR/.ansible-home`.
 - **`pip_extra` is routed through a job variable (`PIP_EXTRA`), not
@@ -114,28 +224,46 @@ Conventions shared by every template:
   form takes `<`, `>` and `|` safely. `python-tests` routes `pip_packages` /
   `apt_packages` the same way; pass ceilings freely in either.
 - **Tenant:** `inputs: { tags: [], targets: "ansible/" }` (with its own
-  `.ansible-lint`, or empty `config` for defaults).
+  `.ansible-lint`, or an empty `config` for defaults).
 
 ## ci/validate/flux-lint.yml
 
-- **Reproduces:** weisssrv `flux-lint` (substitute mode) and the template
+- **Reproduces:** weisssrv `flux-lint` (substitute mode) and the tenant/cluster
   `flux-lint` (simple mode).
 - **Key input `substitute` (boolean, default true):**
   - `true` (weisssrv): extract postBuild vars from a cluster-versions ConfigMap
     (`flux_render_script`), iterate `cluster_dir` Kustomizations, envsubst each,
     kubeconform, run the unvalidated-kind tracker, build the cluster root, then
     run `extra_validation`. Needs a **root** runner (installs `gettext-base`).
-  - `false` (tenant): `kustomize build <kustomize_path> | kubeconform ...`.
+  - `false` (tenant): `kustomize build <kustomize_path> | kubeconform …`.
     Non-root safe (stdlib tool download into a workspace `.bin`).
-- **Version inputs (defaults = weisssrv's current pins):** `kubeconform_version`
-  (0.6.7) + `_sha256`, `kustomize_version` (5.4.3) + `_sha256`, `helm_version`
-  (3.18.4) + `_sha256`.
-- **Substitute-mode inputs:** `cluster_dir`
-  (`kubernetes/clusters/weisssrv`), `versions_configmap`, `flux_render_script`
-  (`scripts/flux-render.sh`), `skipped_script` (`scripts/kubeconform-skipped.py`),
-  `k8s_version` (empty → derived from k3s_version), `pyyaml_version` (6.0.2 —
-  pins the inline spec.path parser to match weisssrv's `PYYAML_VERSION`),
-  `require_cluster_root` (true), `extra_validation` (empty).
+- **Inputs (all modes):** `job_name` (flux-lint), `stage` (lint), `image`
+  (python:3.11-slim), `tags`, `substitute` (true), `kubeconform_version`
+  (0.6.7) + `kubeconform_sha256`, `kustomize_version` (5.4.3) +
+  `kustomize_sha256`, `helm_version` (3.18.4) + `helm_sha256`, `pyyaml_version`
+  (6.0.2 — pins the inline `spec.path` parser), `k8s_version` (empty → derived
+  from the ConfigMap's `k3s_version`), `default_branch` (main), `changes`
+  (`kubernetes/**/*`, `ansible/inventories/prod/group_vars/all.yml`).
+- **Substitute-mode inputs:** `cluster_dir` (`kubernetes/clusters/weisssrv`),
+  `versions_configmap`
+  (`kubernetes/infrastructure/sources/versions-configmap.yaml`),
+  `flux_render_script` (`scripts/flux-render.sh`), `skipped_script`
+  (`scripts/kubeconform-skipped.py`), `require_cluster_root` (true),
+  `extra_validation` (empty).
+- **Simple-mode inputs:** `kustomize_path` (`kubernetes/flux`), `k8s_version`.
+- **`k8s_version` no longer has a silent fallback.** When it is empty,
+  `flux-render.sh k8s-version` derives the schema version from the versions
+  ConfigMap's `k3s_version` key — and **fails the job** if that key is absent or
+  unparseable, where it previously defaulted to `1.36.0` and validated against a
+  version nobody chose. It is also read through a YAML parse now, so a
+  `k3s_version` outside `.data` no longer matches. A consumer whose ConfigMap
+  lacks the key passes `k8s_version` explicitly.
+- **`export-versions` rejects reserved key names.** A ConfigMap key that would
+  clobber the calling job's own shell variable (`PATH`, `HOME`, `CLUSTER_DIR`,
+  `FAILED`, `RENDER_ALL`, `K8S_VER`, `VARS`, `FLUX_ENVSUBST_VARS`, or anything
+  ending `_SHA256`) is a hard error rather than an `eval` that silently rewrites
+  the job's environment. Generated keys are lowercase, so no current consumer is
+  affected.
 - **Cluster-root build (substitute mode) is bootstrap-aware, opt-out.** After
   the per-Kustomization loop the job builds `cluster_dir` itself, to catch a
   malformed top-level `kustomization.yaml`. That root pulls in `flux-system/`,
@@ -144,30 +272,33 @@ Conventions shared by every template:
   succeed. `require_cluster_root` therefore defaults to **true**: a bootstrapped
   consumer always builds its root, so losing that content fails instead of
   quietly skipping. **A pre-bootstrap consumer must pass
-  `require_cluster_root: false`** — weisssrv-cluster-template's generated repo is
-  the case — and even then the skip applies only while **both** gotk files are
+  `require_cluster_root: false`** — a freshly generated cluster repo is exactly
+  that case — and even then the skip applies only while **both** gotk files are
   absent. If either exists, the root is built so a missing companion file fails
-  loudly. A generated repo that omits the input fails its first pipeline; the job
-  prints the input to pass. **A bootstrapped cluster is unaffected** — weisssrv
-  commits `gotk-components.yaml`, so its root is built either way.
-- **Simple-mode inputs:** `kustomize_path` (`kubernetes/flux`), `k8s_version`.
-- **Parity:** the render loop, missing-placeholder check, envsubst allowlist, and
+  loudly. A generated repo that omits the input fails its first pipeline; the
+  job prints the input to pass.
+- **Parity:** the render loop, missing-placeholder check, envsubst allowlist and
   informational skip tracker are extracted from weisssrv. **Full weisssrv parity
-  requires passing `extra_validation`** with its HPA/VPA invariant + helm-values
-  calls — those reference weisssrv-local scripts (`check-hpa-vpa-invariant.py`,
-  `validate-helm-values.py`) that stay in weisssrv. `flux-render.sh` and
-  `kubeconform-skipped.py` are shipped here AND kept in weisssrv.
+  requires passing `extra_validation`** with its HPA/VPA invariant,
+  scrape/NetworkPolicy invariant, secret-store scoping, PVC storage-class and
+  helm-values calls — those reference weisssrv-local scripts that stay in
+  weisssrv and run with `$RENDER_ALL` / `$FAILED` in scope.
+  `flux-render.sh` and `kubeconform-skipped.py` are shipped here AND vendored in
+  weisssrv.
 - **Tenant:** `inputs: { tags: [], substitute: false, kubeconform_version:
-  "0.8.0", kubeconform_sha256: "...", kustomize_version: "5.8.1",
-  kustomize_sha256: "...", k8s_version: "1.36.0" }` (its own newer pins).
+  "0.8.0", kubeconform_sha256: "…", kustomize_version: "5.8.1",
+  kustomize_sha256: "…", k8s_version: "1.36.0" }` (its own newer pins).
 
 ## ci/validate/terraform.yml
 
-- **Reproduces:** weisssrv `terraform-fmt` + `terraform-validate` (two jobs).
-- **Inputs:** `fmt_job_name`/`validate_job_name`, `fmt_stage` (lint),
-  `validate_stage` (validate), `image` (hashicorp/terraform:1.15), `tags`,
-  `fmt_dir` (`terraform/`), `module_glob` (`terraform/*/`), `changes`.
-- **Parity:** defaults reproduce both jobs' script + rules verbatim.
+- **Reproduces:** weisssrv `terraform-fmt` + `terraform-validate` — one include,
+  **two** jobs.
+- **Inputs:** `fmt_job_name` (terraform-fmt), `validate_job_name`
+  (terraform-validate), `fmt_stage` (lint), `validate_stage` (validate), `image`
+  (hashicorp/terraform:1.15), `tags`, `fmt_dir` (`terraform/`), `module_glob`
+  (`terraform/*/`), `default_branch` (main), `changes` (`terraform/**/*`).
+- **Parity:** defaults reproduce both jobs' script and rules verbatim.
+  `default_branch` is applied to BOTH jobs' post-merge rule.
 - **Self-applied** over `terraform/modules/` (`module_glob:
   "terraform/modules/*/"`, `validate_stage: lint` — this pipeline has no
   validate stage). The validate loop skips any dir without a `versions.tf`, so a
@@ -176,20 +307,28 @@ Conventions shared by every template:
 
 ## ci/security/secret-detection.yml
 
-- **Reproduces:** weisssrv `secret_detection`; template `secret_detection`.
-- **Includes** GitLab's `Jobs/Secret-Detection.gitlab-ci.yml` and overrides the
-  job. **Inputs:** `stage` (security), `tags` (["infrastructure"], set on the
+- **Reproduces:** weisssrv `secret_detection`; the same job in both templates.
+- **Inputs:** `stage` (security), `tags` (["infrastructure"], set on the
   override job), `cpu_selector` (`esweiss.com/cpu=modern`), `historic_scan`
-  (false), `allow_failure` (**false** — changed in v0.2.0).
-- **Parity:** rules (MR/main/schedule) + the node-selector pin are identical to
-  both consumers. `allow_failure: false` is what makes the gate real: an
-  `allow_failure: true` job counts as SUCCESSFUL for a downstream `needs:`, so
-  a gate job that needs this one does **not** block on findings — the pre-0.2.0
-  default was advisory in every consumer regardless of its gate wiring. Pass
-  `allow_failure: true` for deliberate advisory-only mode (findings still
-  produce the security report and a red-flagged job, nothing blocks).
-- **cpu_selector:** `""` is not a "no pin" escape — see the docker-build note
-  below; the same runner regex applies.
+  (`"false"`), `default_branch` (main), `allow_failure` (**false**).
+- **It nests a GitLab-MANAGED template, and that is the one dependency in this
+  family that moves without a `ref:` bump.** The file does
+  `include: - template: Jobs/Secret-Detection.gitlab-ci.yml` and then overrides
+  the `secret_detection` job. The nested template — and therefore the analyzer
+  image and the rule set it runs — is resolved from the GitLab *instance*, so it
+  changes on an instance upgrade even though the consumer's pin did not move.
+  There is no supported way to pin it. Consequences: a scan result can change
+  with no diff in any repo, and a GitLab upgrade is a legitimate suspect when
+  this job starts failing or stops finding something. Everything else in the
+  family — template refs, tool binaries, images, the collection — is pinned.
+- **`allow_failure: false` is what makes the gate real.** An `allow_failure:
+  true` job counts as SUCCESSFUL for a downstream `needs:`, so a gate job that
+  needs this one does **not** block on findings. Pass `allow_failure: true` for
+  deliberate advisory-only mode (findings still produce the security report and
+  a red-flagged job; nothing blocks).
+- **`cpu_selector`:** gitleaks' binary needs POPCNT/SSE4.2 and SIGILLs on older
+  CPUs. `""` is NOT a "no pin" escape — see the docker-build note below; the
+  same runner regex applies.
 - Pair with `lint/gitleaks.toml` + `lint/secret-detection-ruleset.toml` (vendored
   as `.gitleaks.toml` and `.gitlab/secret-detection-ruleset.toml`). The
   allowlist covers the two published supply-chain pins the CI templates carry
@@ -200,47 +339,44 @@ Conventions shared by every template:
 
 - **Reproduces:** the DinD `build_and_push` mechanics from weisssrv's
   `.build-molecule-base` (static docker CLI sha-pinned, dind wait, registry layer
-  cache + inline cache, bounded retry, `:<sha>` always + `:latest` on main).
-- **Inputs:** `job_name` (build-image), `image` (python:3.11), `tags`
-  (**must be a privileged runner**), `dind_service` (docker:24.0-dind),
-  `docker_cli_version` (27.5.1) + per-arch shas, `buildx_version` (v0.35.0) +
-  `buildx_sha256_amd64` / `buildx_sha256_arm64`, `registry`
-  (`$CI_REGISTRY_IMAGE`), `image_name` (empty → push to the registry base),
-  `context` (.), `dockerfile` (empty → context Dockerfile), `extra_build_args`,
-  `default_branch` (main), `publish_on_main` (true), `changes` (`["**/*"]`),
-  `digest_dotenv_var` (empty → off) + `digest_dotenv_file`
-  (`image-digest.env`), `cpu_selector` (`esweiss.com/cpu=modern` — changed from
-  `""` in v0.2.0).
+  cache + inline cache, bounded retry, `:<sha>` always + `:latest` on the default
+  branch). weisssrv itself does NOT include it — only the app template does.
+- **Inputs:** `job_name` (build-image), `stage` (build), `image` (python:3.11),
+  `tags` (**must be a privileged runner**), `dind_service`
+  (`docker:27.5.1-dind@sha256:aa3df78e…`), `docker_cli_version` (27.5.1) +
+  `docker_cli_sha256_amd64` / `_arm64`, `buildx_version` (v0.35.0) +
+  `buildx_sha256_amd64` / `_arm64`, `registry` (`$CI_REGISTRY_IMAGE`),
+  `image_name` (empty → push to the registry base), `context` (`.`),
+  `dockerfile` (empty → context Dockerfile), `extra_build_args`,
+  `default_branch` (main), `publish_on_main` (true), `changes` (`**/*`),
+  `digest_dotenv_var` (empty → off), `digest_dotenv_file` (`image-digest.env`),
+  `cpu_selector` (`esweiss.com/cpu=modern`).
+- **`dind_service` is digest-pinned and carries an explicit `alias: docker`.**
+  The service is a map, not a bare string, because the runner derives the
+  network alias from the image name and a digest-bearing name must not be left
+  to that derivation — `DOCKER_HOST=tcp://docker:2375` has to resolve. Bumping
+  this pin changes the daemon under every build and every molecule job that
+  reuses it; treat it as its own change.
 - **buildx:** the static docker CLI ships no buildx plugin, so with
   `DOCKER_BUILDKIT=1` the pinned plugin is what makes `docker build` work at
   all. Version + both per-arch sha256s are inputs on the same footing as the
   docker CLI trio (VERSIONING.md's "tool pins are inputs" rule); bump all three
   together, or override them per-consumer for a different buildx.
-- **default_branch:** gates BOTH the post-merge `rules:` clause and the
-  `:latest` publish. It must be a **literal** branch name: the value is
-  interpolated inside a quoted `rules:if` string, and GitLab does not expand
-  variables inside quotes, so `$CI_DEFAULT_BRANCH` is compared as literal text
-  and never matches. A consumer on `master`/`trunk` that leaves it at `main`
-  gets a job that never runs post-merge: SHA-tagged MR builds keep succeeding
-  while `:latest` is never pushed, so `--cache-from` and any `:latest` fallback
-  pull silently stop resolving. `release_branch` in
-  [ci/release/semantic-release.yml](#cireleasesemantic-releaseyml) is literal
-  for the same reason.
-- **changes:** the default `["**/*"]` matches everything — i.e. the
-  unconditional rules this template had before the input existed, so an
-  existing consumer's resolved rules are unchanged. Narrow it to the image's
-  build context (plus anything baked into it) instead of overriding `rules:`
+- **`default_branch` gates BOTH the post-merge rule and the `:latest` publish**,
+  and must be a literal name (see the shared conventions above).
+  `release_branch` in `ci/release/semantic-release.yml` is literal for the same
+  reason.
+- **`changes`:** the default `["**/*"]` matches everything — i.e. the
+  unconditional rules this template had before the input existed, so an existing
+  consumer's resolved rules are unchanged. Narrow it to the image's build
+  context (plus anything baked into it) instead of overriding `rules:`
   wholesale: an included job merges key-by-key with a local job of the same
   name, but `rules:` is REPLACED, so a copy silently forks from the template if
   its rules semantics ever change. This library's two image builds each pass
   their own context glob and nothing else, which is what keeps them disjoint.
   The `web` clause stays manual and ungated regardless.
-- **Note:** the shared tenant runner is non-privileged and CANNOT build — this
-  template is weisssrv-only unless the consumer registers a privileged runner.
-  weisssrv's molecule / hermes / camofox image builds stay in weisssrv (only the
-  reusable pattern is extracted).
-- **digest_dotenv_var:** set it to a variable NAME (e.g. `MOLECULE_CI_IMAGE`) and
-  the job emits a dotenv report pinning that variable to the pushed image's
+- **`digest_dotenv_var`:** set it to a variable NAME (e.g. `MOLECULE_CI_IMAGE`)
+  and the job emits a dotenv report pinning that variable to the pushed image's
   immutable digest ref. A job that `needs:` this one with `artifacts: true` — or
   a `trigger:` bridge that forwards it into a child pipeline — then resolves the
   exact image this pipeline built, instead of a `:latest` anyone can retag
@@ -248,42 +384,43 @@ Conventions shared by every template:
   injects nothing (the report key is static; a missing file would warn on every
   run). Pin only the image a later job runs *as*: an image the job pulls by its
   immutable `:<short-sha>` tag is already pinned.
-- **cpu_selector:** the job always emits `KUBERNETES_NODE_SELECTOR_CPU`, so its
-  value must satisfy the runner's `node_selector_overwrite_allowed` regex. On a
-  runner that sets one (both of this instance's do:
+- **`cpu_selector`:** the job always emits `KUBERNETES_NODE_SELECTOR_CPU`, so
+  its value must satisfy the runner's `node_selector_overwrite_allowed` regex.
+  On a runner that sets one (both of this instance's do:
   `^esweiss\.com/cpu=(modern|legacy)$`) an EMPTY value fails the check and the
-  job errors at pod creation — `""` is not a "no pin" escape, which is why the
-  pre-0.2.0 default was unusable and the only consumer had to override it. On a
-  runner that sets no regex, overwrite is disabled and the value is ignored, so
-  the new default is safe off-instance; a runner with a different allowlist
-  passes its own value.
-- **Tenant (with own privileged runner):** `inputs: { tags: [their-runner],
-  context: ".", dockerfile: "Dockerfile", cpu_selector: "<their pin>" }`.
+  job errors at pod creation — `""` is not a "no pin" escape. On a runner that
+  sets no regex, overwrite is disabled and the value is ignored, so the default
+  is safe off-instance; a runner with a different allowlist passes its own value.
+- **The shared tenant runner is non-privileged and CANNOT build.** This template
+  needs a privileged runner; a consumer without one cannot use it at all.
 - **`:latest` is default-branch-only, deliberately.** An MR build never writes
-  it — privileged CI jobs consume that tag, so unreviewed code must not be
-  able to populate it. A repo whose default branch has never built the image
-  therefore has no `:latest`: bootstrap it with one default-branch pipeline.
-  MR pipelines do not need it — they resolve the image they just built through
+  it — privileged CI jobs consume that tag, so unreviewed code must not be able
+  to populate it. A repo whose default branch has never built the image
+  therefore has no `:latest`: bootstrap it with one default-branch pipeline. MR
+  pipelines do not need it — they resolve the image they just built through
   `digest_dotenv_var` or the immutable `:<short-sha>` tag.
+- **Consumer (with own privileged runner):** `inputs: { tags: [their-runner],
+  context: ".", dockerfile: "Dockerfile", cpu_selector: "<their pin>" }`.
 
 ## ci/test/python-tests.yml
 
 - **Reproduces:** weisssrv `python-tests`.
-- **Inputs:** `test_dir` (`scripts/`), `pytest_version` (9.1.1), `pyyaml_version`
-  (6.0.2), `apt_packages` (`git jq`), `pip_packages` (empty — extra pinned pip
-  specs, added in v0.2.0), `setup_command` (`true` — single command run in
-  before_script AFTER the apt install and before the pip install, so it may use
-  what `apt_packages` provides; e.g. cloning a sibling repo for a cross-repo
-  contract test, which needs git. This library uses it to clone the app template
-  so `test_template_contract.py` cannot silently skip), `changes`.
-- **Parity:** junit report + before_script (apt + pinned pip) + rules are
-  verbatim. The default `changes` is the generic subset (`scripts/**/*`,
-  `.gitlab-ci.yml`); weisssrv's `.paths-python-tests` additionally guards four
-  ansible paths (`all.yml`, `adguard_home/tasks/api_base_config.yml`,
-  `ansible/roles/**/molecule/**/*`, `ansible/integration-tests/**/*`) whose
-  pytest suite validates ansible tree files — out of library scope. **Weisssrv
-  adopts by passing its full `.paths-python-tests` as `changes`**; defaults are
-  NOT byte-identical for this job.
+- **Inputs:** `job_name` (python-tests), `stage` (test), `image`
+  (python:3.11-slim), `tags`, `test_dir` (`scripts/`), `pytest_version` (9.1.1),
+  `pyyaml_version` (6.0.2), `apt_packages` (`git jq`), `pip_packages` (empty —
+  extra pinned pip specs), `setup_command` (`true` — a single command run in
+  `before_script` AFTER the apt install and before the pip install, so it may use
+  what `apt_packages` provides; this library uses it to clone the app template so
+  `test_template_contract.py` cannot silently skip), `default_branch` (main),
+  `changes` (`scripts/**/*`, `.gitlab-ci.yml`).
+- **Parity:** the junit report, the before_script (apt + pinned pip) and the
+  rules are verbatim. The default `changes` is the generic subset only.
+  **weisssrv's suite is mostly drift guards that read files outside
+  `scripts/`**, so with the default list a guard could not fire on its own
+  subject; weisssrv passes a ~28-entry `changes` covering the ansible,
+  kubernetes, terraform, docs and Taskfile paths its tests read. Defaults are
+  NOT byte-identical for this job. Derive such a list by tracing what the suite
+  opens, not by reasoning about what it "should" read.
 - **Tenant:** `inputs: { tags: [], apt_packages: "", image: python:3.13,
   test_dir: "tests" }`. `apt_packages` is the one root-only default in the
   library: installing them needs write access to the apt lock, which the shared
@@ -293,20 +430,25 @@ Conventions shared by every template:
 ## ci/review/pr-agent.yml
 
 - **Reproduces:** the `pr-agent-review` job that was copy-pasted into weisssrv,
-  this library and the app template — with the 0.40.0 upgrade folded in.
+  this library and the app template — with the 0.40.0 upgrade folded in. All
+  three consumers now include it; weisssrv deleted its local copy in v0.6.0 and
+  passes `secrets_source: env`, its own `gate` and a lint-only `needs` list.
 - **Inputs:** `job_name` (pr-agent-review), `stage` (ai-review), `image`
   (`pragent/pr-agent:0.40.0@sha256:08c42a2b…`, the multi-arch index digest),
   `tags`, `needs` (`[]`), `model` (gpt-5.6), `reasoning_effort` (high),
   `max_model_tokens` (900000), `ai_timeout` (1200),
   `dual_publishing_threshold` (6), `commands` (`review improve`),
   `extra_instructions`, `gitlab_url` (`$CI_SERVER_URL`), `timeout` (45m),
-  `secrets_source` (env | 1password), `openai_key` / `gitlab_token` (CI variable
-  REFERENCES for env mode), `op_openai_key_ref` / `op_gitlab_token_ref`
-  (1password mode), `gate` (the expression that must be non-empty for the job to
-  be created).
-- **Not byte-identical by design:** the previous copies ran `codiumai/pr-agent:0.34`
-  (frozen namespace) on gpt-5.5/`high` and posted **no inline comments**. The
-  template drops the two obsolete workaround variables
+  `secrets_source` (`env` | `1password`), `openai_key` (`$OPENAI__KEY`) /
+  `gitlab_token` (`$GITLAB__PERSONAL_ACCESS_TOKEN`) — CI variable REFERENCES for
+  env mode, `op_openai_key_ref` / `op_gitlab_token_ref` (1password mode), `gate`
+  (the expression that must be non-empty for the job to be created).
+- **`gate` takes single quotes.** It lands in a `rules:if` expression; write it
+  as the raw expression (`$OPENAI__KEY && $GITLAB__PERSONAL_ACCESS_TOKEN`), not
+  pre-quoted.
+- **Not byte-identical by design:** the previous copies ran
+  `codiumai/pr-agent:0.34` (frozen namespace) on gpt-5.5/`high` and posted **no
+  inline comments**. The template drops the obsolete workaround variable
   (`CONFIG__CUSTOM_MODEL_MAX_TOKENS`) and the two dead ones
   (`PR_REVIEWER__NUM_CODE_SUGGESTIONS`,
   `PR_CODE_SUGGESTIONS__NUM_CODE_SUGGESTIONS` — removed keys in 0.40), and adds
@@ -325,8 +467,6 @@ Conventions shared by every template:
       - !reference [.install-1password, before_script]
   ```
 
-- **weisssrv:** `inputs: { secrets_source: "1password", gate:
-  "$OP_SERVICE_ACCOUNT_TOKEN", needs: [...] }` + the `before_script` override.
 - **This library:** defaults (env mode, `$OPENAI__KEY` gate).
 - **Tenant (BYO keys):** `inputs: { tags: [], commands: "review", timeout: "30m",
   openai_key: "$AI_REVIEW_OPENAI_KEY", gitlab_token: "$GITLAB_REVIEW_TOKEN",
@@ -340,17 +480,19 @@ Conventions shared by every template:
   Releases API call. No releasable commit → no release, exit 0 (so re-running on
   an already-released commit is a no-op). Bump mapping and the notes format are
   in [VERSIONING.md](VERSIONING.md).
-- **Inputs:** `job_name`, `stage` (release), `image` (python:3.13 — the full
-  image ships git), `tags`, `script_path` (`scripts/semantic-release.py`),
-  `tag_prefix` (v), `initial_version` (0.1.0), `release_branch` (main — a
-  **literal** branch name; it lands in a quoted `rules:if`, which does not
-  expand variables),
-  `release_token` (`$CI_JOB_TOKEN`), `token_header` (JOB-TOKEN),
-  `major_on_zero` (false — a breaking change bumps MINOR while 0.x), `dry_run`.
+- **Inputs:** `job_name` (semantic-release), `stage` (release), `image`
+  (python:3.13 — the full image ships git), `tags`, `script_path`
+  (`scripts/semantic-release.py`), `tag_prefix` (`v`), `initial_version`
+  (0.1.0), `release_branch` (main — a **literal** branch name), `release_token`
+  (`$CI_JOB_TOKEN`), `token_header` (JOB-TOKEN), `major_on_zero` (false — a
+  breaking change bumps MINOR while 0.x), `dry_run` (false).
+- **`interruptible: false`.** A push to the release branch must not cancel an
+  in-flight release job mid-API-call; that would tag without publishing notes,
+  or publish twice on the retry.
 - **Token:** `CI_JOB_TOKEN` suffices — the Releases API accepts it and creates
   the tag from `ref` (the Tags API itself is read-only for job tokens). Pass a
-  PAT reference with `token_header: PRIVATE-TOKEN` if protected tags restrict
-  who may create `v*`.
+  PAT reference with `token_header: PRIVATE-TOKEN` if **protected tags** restrict
+  who may create `v*`. See VERSIONING's protected-tag prerequisite.
 - **This template is GitLab-only; the SCRIPT is not.** `semantic-release.py`
   takes `--platform {gitlab,github}` (default `gitlab`, so this template and
   every consumer of it are unaffected — it passes no such flag). In `github`
@@ -369,14 +511,16 @@ Conventions shared by every template:
   schedule, `workflow_run` on the CI workflow succeeding (Actions has no stage
   ordering to gate on), `concurrency` for `resource_group`, `fetch-depth: 0`
   for `GIT_DEPTH: 0`, and `release.json` uploaded `if: always()`. That file is a
-  reference copy, NOT a template: nothing `include:`s it, and re-vendoring when
-  it changes is a manual, deliberate step.
+  reference copy, NOT a template: nothing `include:`s it, re-vendoring is a
+  manual step, and `cli/tests/test_template_contract.py` asserts it stays
+  byte-identical to the CLI's scaffold fixture and to the app template's
+  vendored copy — so editing it is a coordinated three-repo change.
 - **Requires:** the script vendored at `script_path`, `release` declared as the
-  LAST stage (the job sets no `needs:` so stage ordering gates it on the rest of
+  LAST stage (the job sets no `needs:`, so stage ordering gates it on the rest of
   the pipeline passing), and a `resource_group` — already set — to serialize
   rapid merges. Artifact: `release.json` — the OUTCOME, not the plan
-  (`released` is true only after the API call succeeded; `dry_run` and
-  `error` fields mark the other endings). Publish it `when: always`.
+  (`released` is true only after the API call succeeded; `dry_run` and `error`
+  fields mark the other endings). Publish it `when: always`.
 - **Self-applied:** this library wires it into its own `.gitlab-ci.yml`
   (`release` stage, `tags: []`), so the tag every consumer pins is cut by the
   merge that earns it and the template is exercised by the MR that changes it.
@@ -388,13 +532,20 @@ Conventions shared by every template:
   is the other half — it rewrites pins and raises the MR. A repo wants BOTH:
   this one so an MR author sees drift while they are already looking, the bot so
   drift is acted on when nobody is.
-- **Inputs:** `job_name` (version-check), `stage` (lint), `image` (python:3.11),
-  `tags`, `setup_command` (`true` — a no-op, matching `python-tests`),
-  `check_command` (**required** — the
-  command that reports and writes the report), `report_path`
-  (`version-report.json`), `changes` (MR-rule filter, defaulting to `["**/*"]` —
-  NOT `[]`, which matches nothing and would delete the job silently). There is
-  deliberately no credential input; see below.
+- **Inputs:** `job_name` (version-check), `stage` (**lint**), `image`
+  (python:3.11), `tags`, `setup_command` (`true`), `check_command`
+  (**required**), `report_path` (`version-report.json`), `default_branch`
+  (main), `changes` (`["**/*"]` — NOT `[]`, which matches nothing and would
+  delete the job silently). There is deliberately no credential input.
+- **Stage split with the bot is deliberate:** this job defaults to `lint` so it
+  runs inside a normal MR pipeline, while `version-bump-bot` defaults to
+  `maintenance` because it only ever runs on a schedule or a manual web trigger.
+  A consumer that puts them in the same stage gets a bot job created on every
+  merge request.
+- **Retry parity:** this template now carries the same
+  `runner_system_failure`/`scheduler_failure` retry as every other job-defining
+  template. It previously did not, which is why the shared-conventions claim
+  above needed the correction.
 - **The template installs nothing, deliberately.** `setup_command` defaults to a
   no-op because the tools a checker needs are a property of that checker, which
   the library cannot see — the same reason `check_command` has no default. A
@@ -425,13 +576,9 @@ Conventions shared by every template:
   a token passes it as a masked CI variable, scoped to what it would tolerate
   leaking: an MR comment needs only Reporter + `api`, which can comment and read
   but not push. Vault-wide or user tokens do not belong here.
-- **Credential handling and report creation are the CHECKER's job, not this
-  template's.** The template runs `check_command` and uploads `report_path`; it
-  does not fetch, validate or fall back on anything. So "it degrades gracefully
-  without a token" is a property a consumer's checker either has or does not —
-  `version-check-ci.py` in weisssrv skips its MR comment and still writes the
-  report, but an arbitrary checker may just as easily exit before writing
-  anything, and this job cannot rescue that.
+- **Credential handling and report creation are the CHECKER's job**, not this
+  template's. The template runs `check_command` and uploads `report_path`; it
+  does not fetch, validate or fall back on anything.
 
 ## ci/maintenance/version-bump-bot.yml
 
@@ -440,37 +587,38 @@ Conventions shared by every template:
   `branch` and create or refresh the MR; bumps unchanged from the branch's
   current content → nothing at all (no MR churn on a weekly schedule); no bumps
   with an MR open → close it. It **never merges**.
-- **Inputs:** `job_name`, `stage` (maintenance), `image` (python:3.13), `tags`,
-  `script_path` (`scripts/version-bump-mr.py`), `setup_command` (`true`),
-  `check_command` (**required** — the command that rewrites the pins),
-  `paths` (`.`), `branch` (`bot/version-bumps`), `target_branch` (main),
-  `title`, `commit_message`, `labels`, `report_path` (embedded in the MR
-  description), `git_user_name`/`git_user_email`, `bot_token`
-  (`$VERSION_BUMP_BOT_TOKEN`).
+- **Inputs:** `job_name` (version-bump-bot), `stage` (**maintenance**), `image`
+  (python:3.13), `tags`, `script_path` (`scripts/version-bump-mr.py`),
+  `setup_command` (`true`), `check_command` (**required** — the command that
+  rewrites the pins), `paths` (`.`), `branch` (`bot/version-bumps`),
+  `target_branch` (main), `title`, `commit_message`, `labels`, `report_path`
+  (embedded in the MR description), `git_user_name` / `git_user_email`,
+  `bot_token` (`$VERSION_BUMP_BOT_TOKEN`).
+- **`resource_group` + `interruptible: false`.** A schedule and a manual web run
+  can no longer race each other on the same force-pushed branch and MR.
 - **Token:** a PAT with `api` + `write_repository` — `CI_JOB_TOKEN` cannot push
   and cannot write the Merge requests API. Mask the variable (it goes into the
   push URL; the script also redacts it from its own error output).
 - **Rules:** schedules, plus a manual `web` trigger. Untracked files are ignored,
   so a check command that drops a report artifact does not pollute the commit —
   point `report_path` at it instead.
-- **`check_command` must exit 0.** weisssrv's `version-check-ci.py` exits 1 when
-  updates exist, so it adopts as `check_command: "... || true"`; otherwise the
-  job dies before the bot runs.
+- **`check_command` must exit 0.** A checker that exits 1 when updates exist
+  adopts as `check_command: "… || true"`; otherwise the job dies before the bot
+  runs.
 - **Not self-applied.** `check_command` has no generic value — it is the
   consumer's own version-check run against the consumer's own tracked-version
   config — and this library tracks no upstream versions, so its pipeline does
   not include this template. Alongside `flux-lint` and the `ci/templates/`
   fragments it is first rendered in a consumer; the consumer also owns the
-  pipeline schedule that triggers it (a `schedule` clause in `workflow.rules`
-  where the consumer restricts them).
+  pipeline schedule that triggers it.
 
 ---
 
 ## Shared fragments (ci/templates/)
 
 These define hidden jobs; `include` the file, then `extends` or `!reference` the
-hidden job. Only `terraform-http-backend.yml` carries `spec:inputs` — the other
-two take no inputs.
+hidden job. They set no `retry` — the consumer's own job supplies it. Only
+`terraform-http-backend.yml` carries `spec:inputs`; the other two take none.
 
 - **dep-cache.yml** → `.dep-cache` (pip + galaxy cache). `extends: .dep-cache`.
 - **install-1password.yml** → `.install-1password` / `.install-1password-alpine`.
@@ -481,17 +629,17 @@ two take no inputs.
   second primary key past `gpg --dearmor`), and the apk fragment verifies in a
   tempfile and only then `install`s into `/etc/apk/keys`.
 - **terraform-http-backend.yml** → `.terraform-http-backend` (GitLab HTTP state).
-  `extends: .terraform-http-backend`. The one fragment with `spec:inputs`:
-  `api_url` (`https://git.ericsweiss.com/api/v4`) and `state_name`
-  (`cloudflare`). Both default to weisssrv's current values, so an existing
-  consumer's rendered TF_HTTP_* vars are byte-identical. **A consumer on another
-  GitLab instance must pass `api_url`** — `TF_HTTP_PASSWORD` is
-  `${CI_JOB_TOKEN}`, valid only against the instance that issued it, so the
-  default address sends that token to a foreign host and `terraform init` gets a
-  401/404; `${CI_API_V4_URL}` tracks whichever instance the pipeline runs on.
-  `state_name` sets the pipeline's ONE default state (the hidden job's name is
-  fixed, so a second include would collide); a job managing a different state
-  overrides the three `TF_HTTP_*ADDRESS` vars per-job.
+  `extends: .terraform-http-backend`. Inputs: `api_url`
+  (`https://git.ericsweiss.com/api/v4`) and `state_name` (`cloudflare`). Both
+  default to weisssrv's current values, so an existing consumer's rendered
+  `TF_HTTP_*` vars are byte-identical. **A consumer on another GitLab instance
+  must pass `api_url`** — `TF_HTTP_PASSWORD` is `${CI_JOB_TOKEN}`, valid only
+  against the instance that issued it, so the default address sends that token
+  to a foreign host and `terraform init` gets a 401/404; `${CI_API_V4_URL}`
+  tracks whichever instance the pipeline runs on. `state_name` sets the
+  pipeline's ONE default state (the hidden job's name is fixed, so a second
+  include would collide); a job managing a different state overrides the three
+  `TF_HTTP_*ADDRESS` vars per-job.
 
 ---
 
@@ -501,7 +649,7 @@ Not CI includes, but pinned the same way — a release tag, never a branch:
 
 ```hcl
 module "zone" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/cloudflare-zone?ref=v0.2.0"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/cloudflare-zone?ref=<CURRENT_TAG>"
 
   account_id = var.cloudflare_account_id
   zone_name  = var.external_domain
@@ -549,7 +697,7 @@ collection's subdirectory appended to the repo URL:
 collections:
   - name: git+https://git.ericsweiss.com/eric/weisssrv-lib.git#/ansible_collections/weisssrv/infra
     type: git
-    version: v0.2.0        # a release TAG; a branch works for local iteration
+    version: <CURRENT_TAG>   # a release TAG; a branch works for local iteration
 ```
 
 ```bash
@@ -575,29 +723,38 @@ collections path:
 ANSIBLE_COLLECTIONS_PATH=~/src/weisssrv-lib ansible-playbook site.yml
 ```
 
-Role variables are prefixed with the role name and documented in each role's
-`README.md`; the collection's own README carries the role table. Site-specific
+The role table, the inventory-wide alias table and the migration entry point are
+in the [collection README](../ansible_collections/weisssrv/infra/README.md); the
+complete old → new variable map is
+[MIGRATING.md](../ansible_collections/weisssrv/infra/MIGRATING.md). Site-specific
 values (domains, IPs, pool names) are **inputs**, never role defaults — that is
-the line between this collection and a cluster instantiation. Where a value is
-conventionally inventory-wide and read by several roles, the prefixed variable
-is aliased to the conventional name (`base_admin_user: "{{ admin_user |
-default('root') }}"`), so a site can set either.
+the line between this collection and a cluster instantiation.
 
-A role that must reach another host (cert distribution, cluster-wide
-reconciliation) probes it first and delegates per target from a looped
-**include** — never a looped `delegate_to`, which drops the executing host from
-the play when one target is unreachable and silently skips everything after it.
+Two role-level contracts worth knowing before writing a play against them:
+
+- A role that must reach another host (cert distribution, cluster-wide
+  reconciliation) probes it first and delegates per target from a looped
+  **include** — never a looped `delegate_to`, which drops the executing host
+  from the play when one target is unreachable and silently skips everything
+  after it.
+- Several roles **de-provision** when their feature is switched off rather than
+  leaving inert units behind (archive replication, the ZFS mount anchor). Set
+  the enable flag deliberately per host; flipping it off is a live change.
 
 Each scenario's platform image is
 `${MOLECULE_TEST_IMAGE:-…/molecule-test:latest}` — a FULL image ref, so a
-consumer that builds the test image into its own registry exports
+consumer that builds or pulls the test image into its own registry exports
 `MOLECULE_TEST_IMAGE` (tag or digest included) rather than patching every
-scenario.
+scenario. From this release the library publishes `molecule-ci` and
+`molecule-test` at `:vX.Y.Z` on each release, so a consumer can pin the images
+to the same tag it pins the templates to — see
+[`docker/README.md`](../docker/README.md). Cross-project registry pulls require
+the consumer to be on this project's CI/CD job-token allowlist.
 
-`molecule-shared/` (the shared scenario base config) and each role's `molecule/`
-tree are `build_ignore`d, so an installed copy carries only the roles, their
-metadata and `plugins/`. `plugins/` is an empty scaffold today; anything added
-there is FQCN-addressable public API from its first release.
+`molecule-shared/` (the shared scenario base config), each role's `molecule/`
+tree and `changelogs/` are `build_ignore`d, so an installed copy carries only
+the roles, their metadata and `plugins/`. `plugins/` is an empty scaffold today;
+anything added there is FQCN-addressable public API from its first release.
 
 ## Internal CI fragments (ci/internal/)
 
@@ -630,28 +787,44 @@ inputs configures both gates. Three things the consumer still owns:
 
 Not CI includes either: the gates and generators a job *runs* — version tracking,
 the deploy/molecule coverage invariants, the Flux and Prometheus checks, the
-molecule toolkit, the B2 drift check. A consumer vendors the file or calls it
-from a checkout. Their flags and config-file schemas are documented in
-**[SCRIPTS.md](SCRIPTS.md)** with a ready-to-copy config per script in
-`examples/`, and they carry the same semver guarantee as a template input.
+molecule toolkit, the release automation, the B2 drift check. A consumer vendors
+the file or calls it from a checkout. Their flags and config-file schemas are
+documented in **[SCRIPTS.md](SCRIPTS.md)** with a ready-to-copy config per script
+in `examples/`, and they carry the same semver guarantee as a template input.
 
 Site data is always a config file, never a constant in the script: the tracked
 service registry, the group→variable export map, the intentionally-unmapped
 deploy paths, the chart-native HPA targets, the helm releases to render, and the
 B2 bucket identity all live in the consumer's repo.
 
+**A vendored script is a pin too.** Bumping the `include: ref:` does not update
+a copy sitting in a consumer's `scripts/` — the CI templates take the script
+PATH from the consumer tree, so the copy is what actually runs. Since v0.6.0 all
+three consumers gate byte-identity against the library at their pinned ref, so a
+skipped re-vendor fails their pipeline instead of drifting silently:
+
+| Consumer | Gate | Scope |
+|---|---|---|
+| weisssrv | `scripts/test_vendored_byte_identity.py` (never skips) | 22 vendored scripts + 1 declared fork |
+| weisssrv-app-template | `tests/test_vendored_scripts.py` (`WEISSSRV_REQUIRE_CLI=1` in CI) | every non-LOCAL file in `scripts/` |
+| weisssrv-cluster-template | `tests/validate_render.py:check_vendored` | the render's `scripts/` + the template repo's own |
+
+Each gate reads the library at the ref the consumer pins, falling back to the
+checkout's working tree when that tag is not cut yet — which is what makes the
+lib-merge → tag → consumer-MR order workable. The per-consumer list of vendored
+files is in [CONSUMERS.yml](CONSUMERS.yml), and re-vendoring is part of the
+upgrade procedure in [VERSIONING.md](VERSIONING.md#upgrading-a-consumer).
+
 ## What is NOT here
 
-Deliberately kept in weisssrv, because they describe **one** cluster rather than
-any cluster:
+Deliberately kept in the consumer, because it describes **one** cluster rather
+than any cluster:
 
 - **Site data of every kind** — domains, IPs, hostnames, pool names,
   credentials. Anything a second cluster would have to change is an input here,
   never a default.
 - **Kubernetes manifests.** They live in the cluster template so a rendered
   cluster is self-contained (no remote kustomize bases pointing back here).
-- **The eric-specific Ansible roles** — `gitlab`, `plex`, `immich`,
-  `immich_ml`, `nextcloud`, `home_assistant`.
 - **weisssrv's own pipeline glue** — `validation-gate`, `test-aggregate-*`,
   `repo-sync-checks`, `repo-policy-checks`, its generated
   `.gitlab/ci/molecule-jobs.gitlab-ci.yml`, and the hermes/camofox image builds
@@ -661,3 +834,8 @@ any cluster:
   (`generate-molecule-pipeline.py`), the coverage gate over them, the images the
   jobs run in (`docker/molecule-{ci,test}/`) and the plan/trigger wiring
   (`ci/internal/molecule-matrix.gitlab-ci.yml`) are here.
+
+The application-guest Ansible roles (`gitlab`, `plex`, `immich`, `immich_ml`,
+`nextcloud`, `home_assistant`) used to be on this list. They are now in the
+collection: every site value they carried is an asserted input, so they describe
+any cluster that wants those services rather than one that has them.

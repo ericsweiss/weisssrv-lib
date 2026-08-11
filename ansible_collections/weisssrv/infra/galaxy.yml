@@ -1,14 +1,15 @@
 ---
 namespace: weisssrv
 name: infra
-version: 0.5.2
+version: 0.6.0
 readme: README.md
 authors:
   - Eric S. Weiss
 description: >-
-  Generic host-configuration roles for a Proxmox + ZFS + k3s homelab: base
-  hardening, storage, DNS/SMTP, guests, exporters and node tuning. Site data
-  (domains, IPs, pool names) is always an input, never a role default.
+  Host-configuration roles for a Proxmox + ZFS + k3s homelab: base hardening,
+  storage, DNS/SMTP, guest lifecycle, exporters, node tuning and the
+  application guests. Site data (domains, IPs, pool names) is always an input,
+  never a role default.
 license:
   - MIT
 tags:
@@ -41,6 +42,12 @@ dependencies:
 build_ignore:
   - molecule-shared
   - roles/*/molecule
+  # No changelog file ships, by policy: release notes are generated per tag from
+  # the conventional commits (docs/VERSIONING.md). A hand-maintained
+  # changelogs/changelog.yaml went stale within one release and told consumers
+  # a different story than the tag notes; this entry keeps a stray one out of
+  # the artifact if the antsibull tooling is ever run here by accident.
+  - changelogs
   # The TEST-environment superset. `dependencies:` above is the runtime
   # contract; shipping this alongside it in the artifact invites a consumer to
   # install the test-only collections too.

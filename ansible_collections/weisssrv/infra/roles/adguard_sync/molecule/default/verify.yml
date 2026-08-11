@@ -4,7 +4,6 @@
   become: true
   gather_facts: true
   tasks:
-    # Verify binary is installed
     - name: Check if adguardhome-sync binary exists
       ansible.builtin.stat:
         path: /usr/local/bin/adguardhome-sync
@@ -18,16 +17,22 @@
         fail_msg: "adguardhome-sync binary is not executable"
         success_msg: "adguardhome-sync binary is executable"
 
+    # Runs the artifact, so a corrupt or wrong-arch download fails here — the
+    # role selects the binary by ansible_architecture, so the right one lands.
     - name: Check adguardhome-sync version
-      ansible.builtin.command: /usr/local/bin/adguardhome-sync version
+      ansible.builtin.command: /usr/local/bin/adguardhome-sync --version
       register: sync_version
       changed_when: false
-      # May fail in cross-architecture testing (e.g., arm64 host, amd64 binary)
-      failed_when: false
 
-    - name: Display installed version
-      ansible.builtin.debug:
-        msg: "adguardhome-sync version: {{ sync_version.stdout | default('(binary incompatible with test host architecture)') }}"
+    - name: Assert the installed binary reports the pinned version
+      ansible.builtin.assert:
+        that:
+          - sync_version.rc == 0
+          - adguard_sync_version in sync_version.stdout
+        fail_msg: >-
+          adguardhome-sync did not report {{ adguard_sync_version }}:
+          rc={{ sync_version.rc }} stdout={{ sync_version.stdout | default('') }}
+        success_msg: "adguardhome-sync runs and reports {{ adguard_sync_version }}"
 
     # No home-directory check: StateDirectory= creates
     # /var/lib/private/adguardhome-sync on the service's first run, not at
@@ -127,14 +132,14 @@
     - name: Assert the success arm records success=1 with a fresh timestamp
       ansible.builtin.assert:
         that:
-          - "'adguard_sync_last_run_success 1' in (adg_prom_ok.content | b64decode)"
-          - "'adguard_sync_last_success_timestamp_seconds ' in (adg_prom_ok.content | b64decode)"
+          - "'adguardhome_sync_last_run_success 1' in (adg_prom_ok.content | b64decode)"
+          - "'adguardhome_sync_last_success_timestamp_seconds ' in (adg_prom_ok.content | b64decode)"
         fail_msg: "success arm did not emit success=1 + a timestamp"
         success_msg: "success arm emits success=1 + a fresh timestamp"
 
     - name: Capture the success timestamp (to assert preservation on failure)
       ansible.builtin.shell: >-
-        awk '/^adguard_sync_last_success_timestamp_seconds/ {print $2}'
+        awk '/^adguardhome_sync_last_success_timestamp_seconds/ {print $2}'
         /tmp/adg-textfile/adguardhome_sync.prom
       register: adg_ts_ok
       changed_when: false
@@ -151,9 +156,9 @@
     - name: Assert the failure arm records success=0 and preserves the timestamp
       ansible.builtin.assert:
         that:
-          - "'adguard_sync_last_run_success 0' in (adg_prom_fail.content | b64decode)"
+          - "'adguardhome_sync_last_run_success 0' in (adg_prom_fail.content | b64decode)"
           - >-
-            'adguard_sync_last_success_timestamp_seconds ' ~ adg_ts_ok.stdout
+            'adguardhome_sync_last_success_timestamp_seconds ' ~ adg_ts_ok.stdout
             in (adg_prom_fail.content | b64decode)
         fail_msg: "failure arm did not record success=0 or lost the prior timestamp"
         success_msg: "failure arm records success=0 and preserves the last-success timestamp"
@@ -179,7 +184,6 @@
         fail_msg: "Timer file missing expected configuration"
         success_msg: "Timer file configured for 5-minute intervals"
 
-    # Verify timer is enabled and running
     - name: Check timer status
       ansible.builtin.systemd:
         name: adguardhome-sync.timer

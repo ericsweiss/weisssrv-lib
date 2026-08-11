@@ -10,6 +10,30 @@ corosync/zpool/SMART/vzdump collectors — are gated on
 **`node_exporter_host_proxmox`**, so a guest installs only the package, the 9101
 override and the textfile-collector directory.
 
+## Liveness gate
+
+`node-exporter-healthcheck.timer` fires
+`/usr/local/sbin/node-exporter-healthcheck.sh` every
+`node_exporter_host_healthcheck_interval` (default `5min`). It GETs
+`http://127.0.0.1:<port>/metrics` twice (20s timeout, 5s apart) and, if both
+fail while systemd still reports the unit active, restarts
+`prometheus-node-exporter` and writes
+`node_exporter_healthcheck_last_restart_timestamp_seconds` to the textfile dir.
+
+It exists because the exporter can go **zombie** (`/proc/<pid>/status`
+`State: Z`) with its listening socket still bound and nothing accepting: systemd
+sees a live main PID, reports `active (running)` forever, and no `Restart=`
+policy can fire — the host silently stops being monitored while any
+metric-absence alert pages for the wrong reason. `WatchdogSec` cannot cover it
+either: the Debian unit is `Type=simple` and node_exporter never `sd_notify`s,
+so an HTTP probe is the only trustworthy liveness signal.
+
+A deliberately stopped unit is left alone (`systemctl is-active` guard), so the
+gate never fights an operator. Size the interval well inside the `for:` of the
+exporter-down alert covering this job, so the self-heal normally lands first.
+This is the runtime counterpart to the role's deploy-time `uri` check, which
+only proves the exporter was alive at the end of the play.
+
 ## Textfile collector
 
 Reads `/var/lib/node_exporter/*.prom` files for custom metrics. Currently
@@ -123,10 +147,71 @@ These metrics drive three alerts worth wiring up:
 Defaults (`defaults/main.yml`):
 
 ```yaml
-node_exporter_host_port: 9101            # 9101 to avoid a k3s DaemonSet on 9100
+node_exporter_host_port: 9101              # 9101 to avoid a k3s DaemonSet on 9100
 node_exporter_host_textfile_dir: /var/lib/node_exporter
-node_exporter_host_proxmox: false        # true on bare-metal Proxmox hosts
+node_exporter_host_proxmox: false          # true on bare-metal Proxmox hosts
+node_exporter_host_healthcheck_interval: 5min   # liveness-gate probe period
+node_exporter_host_zpool_collector: "{{ node_exporter_host_proxmox }}"
+node_exporter_host_systemd_collector: true
+node_exporter_host_systemd_unit_include: ".+[.](service|timer)"
+node_exporter_host_systemd_unit_exclude: ".+[.](automount|device|mount|scope|slice)"
 ```
+
+`node_exporter_host_zpool_collector` carves the one ZFS-specific collector out
+of the Proxmox block: set it false on a Proxmox host backed by Ceph or LVM-thin
+and the zpool script, unit and timer are not deployed — including its entry in
+the enable+start timer list, which is built from this flag rather than fixed.
+The corosync, SMART and vzdump collectors stay on the
+`node_exporter_host_proxmox` gate — they are hypervisor facts, not
+storage-backend ones.
+
+## systemd collector
+
+node_exporter's systemd collector is **default-off upstream**, so a cluster that
+alerts on "unit X failed" without enabling it has an alert with no emitter.
+`node_exporter_host_systemd_collector` (default `true`) passes
+`--collector.systemd`, `--collector.systemd.enable-restarts-metrics` and the
+include/exclude unit filters into the drop-in, producing:
+
+| Metric | Use |
+|---|---|
+| `node_systemd_unit_state{name,state,type}` | `state="failed"` == 1 is the unit-failed signal |
+| `node_systemd_service_restart_total{name}` | crash-loop detection (`increase(...[5m])`); needs the `enable-restarts-metrics` flag, which is passed |
+| `node_systemd_units{state}` | per-state unit counts |
+| `node_systemd_timer_last_trigger_seconds{name}` | timer staleness |
+| `node_systemd_system_running` | `systemctl is-system-running` as a gauge |
+| `node_systemd_version` | collector/systemd version info |
+
+`node_exporter_host_systemd_unit_include` is what bounds cardinality: the
+collector's unfiltered default enumerates every loaded unit — mounts, slices,
+scopes, devices, sockets — which is a large, churny label set with no alerting
+value. The default keeps `*.service` and `*.timer`; widen it deliberately if a
+rule needs sockets or targets. `node_exporter_host_systemd_unit_exclude` mirrors
+upstream's own default as a second guard (both filters are applied).
+
+Both patterns use `[.]` instead of `\.`: the value is written into a systemd
+`ExecStart=` line, where a backslash opens a C escape sequence and an
+unrecognised one makes systemd reject the command outright.
+
+### Proving the collector actually ran
+
+An HTTP 200 is **not** a per-collector gate. node_exporter answers 200 even when
+a collector errors on every scrape: it omits that collector's series and sets
+`node_scrape_collector_success{collector="..."}` to `0`. So the role's `/metrics`
+health check and `node-exporter-healthcheck.sh` both pass while `node_systemd_*`
+is entirely absent — and every alert built on it is *dead*, which looks exactly
+like *quiet*.
+
+Two layers close that:
+
+- **Deploy time (this role):** after the health check, an `assert` requires
+  `node_systemd_unit_state{` in the scrape body whenever
+  `node_exporter_host_systemd_collector` is true. A converge cannot leave a host
+  exporting nothing.
+- **Runtime (metrics side, not this role):** alert on
+  `node_scrape_collector_success{job="<host exporter job>", collector="systemd"} == 0`
+  for ~30m at `warning`. It is the only per-collector failure signal node_exporter
+  emits, and it names the collector, so it survives relabelling.
 
 The `prometheus-node-exporter` package is installed with `state: present`
 (unpinned) and `update_cache: true` (with `cache_valid_time: 3600` to skip a

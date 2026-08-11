@@ -1,0 +1,10 @@
+---
+# Converge: render the Immich ML stack in skip-install mode (no GPU, Docker, or
+# service management in the CI container).
+- name: Converge
+  hosts: all
+  become: true
+  roles:
+    - role: weisssrv.infra.immich_ml
+      vars:
+        immich_ml_skip_install: true

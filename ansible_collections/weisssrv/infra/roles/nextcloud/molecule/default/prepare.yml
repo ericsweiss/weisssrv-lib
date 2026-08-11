@@ -1,0 +1,71 @@
+---
+# Prepare: shared systemd/apt prep plus the fixtures the render-only run needs
+# (nginx dirs, textfile dir, a mock docker for the backup wrapper).
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Apply the shared systemd-wait + temp-dir prep
+      ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/prepare-base.yml
+
+    - name: Disable apt background services
+      ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/prepare-apt-disable.yml
+
+    # nginx isn't installed under skip_install, but the role renders its site
+    # file + symlink into these dirs.
+    - name: Create mock nginx sites directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /etc/nginx/sites-available
+        - /etc/nginx/sites-enabled
+
+    # node_exporter_host isn't in this scenario; create the textfile dir the
+    # backup wrapper writes into.
+    - name: Ensure the node_exporter textfile collector dir exists
+      ansible.builtin.file:
+        path: /var/lib/node_exporter
+        state: directory
+        mode: "0755"
+
+    # Mock `docker` so the wrapper's pg_dump pipe can be exercised on both the
+    # success and failure paths. /tmp/nextcloud-backup-fail arms the failure;
+    # /tmp/nextcloud-backup-tiny arms a truncated (too-small) dump.
+    # NEXTCLOUD_INFLIGHT_PROBE snapshots the landing zone WHILE the dump
+    # streams, which is the only way to prove the in-progress file is not
+    # visible under the final dump name.
+    - name: Install mock docker for the backup-wrapper test
+      ansible.builtin.copy:
+        dest: /usr/local/bin/docker
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          if [ "$1" = "compose" ]; then
+            for a in "$@"; do
+              if [ "$a" = "pg_dump" ]; then
+                if [ -n "${NEXTCLOUD_INFLIGHT_PROBE:-}" ]; then
+                  ls -1 "${NEXTCLOUD_INFLIGHT_DIR:-/nonexistent}"/nextcloud-db-*.sql.gz \
+                    > "$NEXTCLOUD_INFLIGHT_PROBE" 2>/dev/null
+                  ls -1 "${NEXTCLOUD_INFLIGHT_DIR:-/nonexistent}"/nextcloud-db-*.sql.gz.partial \
+                    > "${NEXTCLOUD_INFLIGHT_PROBE}.partial" 2>/dev/null
+                fi
+                if [ -f /tmp/nextcloud-backup-fail ]; then
+                  echo "mock pg_dump FAILED" >&2
+                  exit 1
+                fi
+                if [ -f /tmp/nextcloud-backup-tiny ]; then
+                  # Under the wrapper's 1000-byte floor: a truncated dump.
+                  echo "tiny"
+                  exit 0
+                fi
+                # Incompressible data, so the gzipped dump clears the wrapper's
+                # size floor.
+                head -c 8192 /dev/urandom | base64
+                exit 0
+              fi
+            done
+            exit 0
+          fi
+          exit 0

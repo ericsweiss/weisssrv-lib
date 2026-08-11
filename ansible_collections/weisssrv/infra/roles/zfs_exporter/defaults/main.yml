@@ -1,4 +1,5 @@
 ---
+# Listen port for --web.listen-address; must match the Prometheus target.
 zfs_exporter_port: 9134
 
 # Upstream release pin + checksum of the linux-amd64 tarball. The binary runs

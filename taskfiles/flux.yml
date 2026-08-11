@@ -20,12 +20,16 @@ tasks:
   lint:
     desc: kustomize build the flux dir, then kubeconform schema validation.
     cmds:
-      - kustomize build {{.FLUX_PATH}} > /tmp/flux-rendered.yaml
-      - >-
-        kubeconform -strict -ignore-missing-schemas -kubernetes-version {{.K8S_VERSION}}
-        -schema-location default
-        -schema-location '{{.CRD_CATALOG}}'
-        -summary /tmp/flux-rendered.yaml
+      # One mktemp per run: a fixed path collides between concurrent runs.
+      - |
+        rendered=$(mktemp -t flux-rendered.XXXXXX)
+        trap 'rm -f "$rendered"' EXIT
+        kustomize build {{.FLUX_PATH}} > "$rendered"
+        kubeconform -strict -ignore-missing-schemas \
+          -kubernetes-version {{.K8S_VERSION}} \
+          -schema-location default \
+          -schema-location '{{.CRD_CATALOG}}' \
+          -summary "$rendered"
 
   render:
     desc: Print the rendered manifests kustomize will hand to Flux.

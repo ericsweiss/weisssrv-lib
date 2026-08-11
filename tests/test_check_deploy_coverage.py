@@ -18,9 +18,6 @@ behaviors the gate hinges on:
 The script's deploy-path extraction parses .gitlab-ci.yml as YAML and only
 credits jobs whose name starts with "deploy-" AND whose stage is "deploy", so
 the fixture .gitlab-ci.yml below mirrors that shape minimally.
-
-Run with pytest:
-    python3 -m pytest tests/test_check_deploy_coverage.py -v
 """
 
 from __future__ import annotations
@@ -321,6 +318,18 @@ def test_shipped_example_config_parses(repo: Path):
     _git(["commit", "-q", "-am", "edit base"], repo)
     res = _run_check(repo, base)
     assert res.returncode == 0, res.stdout + res.stderr
+
+
+def test_playbook_path_with_space_stays_one_entry(repo: Path):
+    """A changed path containing whitespace must be reported as one unmapped
+    entry, not split into two bogus ones."""
+    base = _base_sha(repo)
+    _write(repo, "ansible/playbooks/my play.yml", "unmapped\n")
+    _git(["add", "-A"], repo)
+    _git(["commit", "-q", "-m", "add spaced playbook"], repo)
+    res = _run_check(repo, base)
+    assert res.returncode == 1
+    assert "ansible/playbooks/my play.yml" in res.stderr
 
 
 if __name__ == "__main__":

@@ -109,13 +109,12 @@
         - nfs_tls_enabled | default(true)
         - not (nfs_tls_is_server | default(false))
 
-    # The least-privilege cleanup task removes the wildcard cert + key only on
-    # CLIENT-only hosts (not nfs_tls_is_server, not nfs_tls_client_cert).
-    # prepare.yml staged both PEMs on BOTH hosts: the server's must survive (a
-    # regression dropping the is_server guard would delete pve-nas-01's own
-    # NFS-TLS identity), the client's must be gone (the security-motivated
-    # wildcard-key cleanup on agents).
-    - name: Stat the wildcard cert + key after converge
+    # The least-privilege cleanup removes the cert + key only on CLIENT-only
+    # hosts (not nfs_tls_is_server, not nfs_tls_client_cert). prepare.yml staged
+    # both PEMs on BOTH hosts: the server's must survive (dropping the is_server
+    # guard would delete the NFS server's own TLS identity), the client's must
+    # be gone.
+    - name: Stat the cert + key after converge
       ansible.builtin.stat:
         path: "{{ item }}"
       loop:
@@ -128,9 +127,9 @@
         that:
           - server_pem_stat.results | map(attribute='stat.exists') | list == [true, true]
         fail_msg: >-
-          The least-privilege cleanup removed the wildcard cert/key on a SERVER
-          host — the nfs_tls_is_server gating regressed; pve-nas-01 would lose
-          its own NFS-TLS identity.
+          The least-privilege cleanup removed the cert/key on a SERVER host —
+          the nfs_tls_is_server gating regressed; the NFS server would lose its
+          own TLS identity.
         success_msg: "cleanup spared the server's cert + key (is_server gating holds)"
       when: nfs_tls_is_server | default(false)
 
@@ -139,9 +138,9 @@
         that:
           - server_pem_stat.results | map(attribute='stat.exists') | list == [false, false]
         fail_msg: >-
-          The wildcard cert/key survived on a CLIENT-only host — the
-          least-privilege cleanup regressed; the impersonation-capable
-          *.esweiss.com key would linger on every k3s agent.
+          The cert/key survived on a CLIENT-only host — the least-privilege
+          cleanup regressed; an impersonation-capable wildcard key would linger
+          on every client.
         success_msg: "cleanup removed the client's PEMs (least-privilege holds)"
       when:
         - nfs_tls_enabled | default(true)

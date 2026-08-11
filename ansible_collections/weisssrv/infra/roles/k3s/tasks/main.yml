@@ -1,6 +1,4 @@
 ---
-# K3s installation
-
 - name: Install k3s prerequisites
   ansible.builtin.apt:
     name:
@@ -97,7 +95,6 @@
       {% endfor %}
   when: not (k3s_skip_install | default(false))
 
-# Mount additional persistent disks (ZFS zvols attached as SCSI devices by proxmox_vm role)
 - name: Mount additional persistent disks
   ansible.builtin.include_role:
     name: weisssrv.infra.zvol_mount

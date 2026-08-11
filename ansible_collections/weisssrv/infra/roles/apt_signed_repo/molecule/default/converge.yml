@@ -22,7 +22,7 @@
         set -o pipefail
         export GNUPGHOME=/tmp/apt-signed-repo-gpg
         rm -rf "$GNUPGHOME"; mkdir -m 0700 "$GNUPGHOME"
-        gpg --batch --passphrase '' --quick-generate-key 'apt-signed-repo test <test@esweiss.com>' \
+        gpg --batch --passphrase '' --quick-generate-key 'apt-signed-repo test <test@example.com>' \
           ed25519 sign none
         gpg --armor --export 'apt-signed-repo test' > /tmp/testkey.asc
       args:
@@ -93,7 +93,7 @@
         set -o pipefail
         export GNUPGHOME=/tmp/apt-signed-repo-gpg
         gpg --batch --passphrase '' \
-          --quick-generate-key 'apt-signed-repo test2 <test2@esweiss.com>' \
+          --quick-generate-key 'apt-signed-repo test2 <test2@example.com>' \
           ed25519 sign none
         # Original key FIRST so its fingerprint is the primary the role
         # extracts — proving pub_count>1 is rejected even when the primary

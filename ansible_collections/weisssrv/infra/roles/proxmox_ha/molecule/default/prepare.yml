@@ -23,22 +23,12 @@
       become: true
 
     # Configurable current state (defaults: nothing present)
-    # `ha-manager config` resource list lines (e.g. "vm:150"). Empty => the
-    # resource is absent and `ha-manager add` is expected.
-    - name: Default HA resource list to empty
+    # Full `ha-manager config` index: a "<type>:<vmid>" line per resource plus
+    # that resource's indented properties. Empty => every resource is absent
+    # and `ha-manager add` is expected. Converge overwrites this per case.
+    - name: Default HA resource index to empty
       ansible.builtin.copy:
         dest: /tmp/molecule-stub-state/ha_config_list
-        content: ""
-        mode: "0644"
-      become: true
-
-    # Per-resource detail returned by `ha-manager config <type>:<vmid>`.
-    # The role parses this to decide whether `ha-manager set` is needed.
-    # Default empty => no existing detail (only relevant once a resource is
-    # listed; converge overwrites this per case).
-    - name: Default per-resource HA detail to empty
-      ansible.builtin.copy:
-        dest: /tmp/molecule-stub-state/ha_resource_detail
         content: ""
         mode: "0644"
       become: true
@@ -88,19 +78,20 @@
           #!/bin/bash
           STATE=/tmp/molecule-stub-state
           LOG="$STATE/ha-manager.log"
-          case "$1 $2" in
-            "config ")
-              # `ha-manager config` (no resource arg) -> full resource list.
-              cat "$STATE/ha_config_list" 2>/dev/null
-              exit 0 ;;
-            "rules list")
-              # rules.yml passes `--output-format=json`; emit configurable rules.
-              cat "$STATE/ha_rules_list" 2>/dev/null || echo "[]"
-              exit 0 ;;
-          esac
-          # `ha-manager config <type>:<vmid>` -> per-resource detail.
-          if [ "$1" = "config" ] && [ -n "$2" ]; then
-            cat "$STATE/ha_resource_detail" 2>/dev/null
+          if [ "$1" = "config" ]; then
+            # Real PVE `config` takes NO positional resource id — it prints the
+            # whole index and rejects an argument. Model that so a role that
+            # asks per-SID fails the contract instead of silently no-op'ing.
+            if [ -n "$2" ]; then
+              echo "Unknown option: $2" >&2
+              exit 255
+            fi
+            cat "$STATE/ha_config_list" 2>/dev/null
+            exit 0
+          fi
+          if [ "$1 $2" = "rules list" ]; then
+            # rules.yml passes `--output-format=json`; emit configurable rules.
+            cat "$STATE/ha_rules_list" 2>/dev/null || echo "[]"
             exit 0
           fi
           # Everything else (add/set/remove/rules add/rules set/rules remove)

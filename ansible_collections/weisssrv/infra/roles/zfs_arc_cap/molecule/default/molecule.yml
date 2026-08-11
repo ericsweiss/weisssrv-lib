@@ -26,7 +26,8 @@ provisioner:
   inventory:
     group_vars:
       all:
-        # 8 GiB — the compute-host cap value (see group_vars/proxmox.yml).
-        zfs_arc_cap_max_bytes: 8589934592
+        # Set via the inventory-wide ALIAS, not zfs_arc_cap_max_bytes, so the
+        # alias in defaults/main.yml is what the scenario proves (8 GiB).
+        zfs_arc_max_bytes: 8589934592
         # No real /boot kernel in the container — render the file, skip the rebuild.
         zfs_arc_cap_skip_initramfs: true

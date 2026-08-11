@@ -56,9 +56,12 @@ The tool's own metrics API is disabled (`api.port: 0`), so the unit writes a
 node_exporter textfile on every run (`ExecStopPost=+…-metrics.sh`, under
 `node_exporter_host_textfile_dir`):
 
-- `adguard_sync_last_run_success` — `1` on a clean run, `0` on failure
-- `adguard_sync_last_success_timestamp_seconds` — preserved across failures, so
+- `adguardhome_sync_last_run_success` — `1` on a clean run, `0` on failure
+- `adguardhome_sync_last_success_timestamp_seconds` — preserved across failures, so
   a staleness alert measures time-since-last-success
+
+(The metric names keep the upstream tool's `adguardhome_sync_` prefix; only the
+role variables are `adguard_sync_`.)
 
 Wire a `Failed`/`Stale` alert pair to those, or a silently broken sync (revoked
 password, unreachable replica, schema change) leaves the replica serving stale

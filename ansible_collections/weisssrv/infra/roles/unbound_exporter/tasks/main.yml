@@ -15,13 +15,11 @@
     prometheus_exporter_download_url: "{{ _ue_base }}/v{{ unbound_exporter_version }}/{{ _ue_file }}"
     prometheus_exporter_checksum: "{{ unbound_exporter_checksum }}"
     prometheus_exporter_binary_path: /usr/bin/unbound_exporter
-    # The binary has no --version flag (--help exits rc=1 with no version), so
-    # dpkg is the source of truth. Normalize `[epoch:]upstream[-revision]` down
-    # to the pinned upstream version: strip the epoch, then everything after the
-    # LAST `-` (debian-policy §5.6.12 only allows a hyphen in upstream when a
-    # revision is present, so `0.5.0-rc1-1` → `0.5.0-rc1` is safe). Without it a
-    # substring check would match `0.4.6` against `0.4.60-1` (false skip) or
-    # miss `1:0.4.6-1` (false reinstall).
+    # The binary has no --version flag, so dpkg is the source of truth. Strip
+    # the epoch and everything after the LAST `-` (debian-policy §5.6.12 only
+    # allows a hyphen in upstream when a revision follows) to get the pinned
+    # upstream version; a raw substring check would match `0.4.6` against
+    # `0.4.60-1` and miss `1:0.4.6-1`.
     prometheus_exporter_version_check_cmd: |
       set -o pipefail
       dpkg-query -W -f='${Version}' unbound_exporter 2>/dev/null | sed -E 's/^[0-9]+://; s/-[^-]*$//'

@@ -7,32 +7,26 @@
     state: present
   when: ansible_facts['os_family'] == "Debian"
 
-# The user module is idempotent (reports changed only when the shell actually
-# changes), so set it unconditionally rather than guarding on a getent lookup —
-# the prior `== '/bin/zsh'` guard never matched when zsh resolved to
-# /usr/bin/zsh and re-ran the task every play. Skip when qol_admin_user is root:
-# the rest of the role's user-scoped tasks already guard on this, and the
-# oh-my-zsh/.zshrc/init.vim config that makes the zsh shell useful is only
-# deployed for non-root, so flipping root's login shell to zsh would leave it
-# unconfigured.
+# Set unconditionally — the user module is idempotent, while a getent guard has
+# to know whether zsh resolved to /bin/zsh or /usr/bin/zsh. Skipped for root,
+# which gets none of the dotfiles that make the zsh shell usable.
 - name: Set zsh as default shell for admin user
   ansible.builtin.user:
     name: "{{ qol_admin_user }}"
     shell: /bin/zsh
   when: qol_admin_user != 'root'
 
-# Cloning the framework directly (instead of running tools/install.sh, which
-# clones master HEAD) is what actually pins Oh My Zsh to qol_omz_commit. The
-# installer's other steps are covered by the role itself: .zshrc is templated
-# below and the login shell is set above.
+# Cloning the framework directly, rather than running upstream's tools/install.sh
+# (which clones master HEAD), is what pins Oh My Zsh to qol_omz_commit. The
+# installer's other steps are done by this role: .zshrc and the login shell.
 - name: Check for a legacy shallow Oh My Zsh clone
   ansible.builtin.stat:
     path: "/home/{{ qol_admin_user }}/.oh-my-zsh/.git/shallow"
   register: qol_omz_shallow
   when: qol_admin_user != 'root'
 
-# install.sh cloned with --depth=1, so the pinned commit may not be fetchable
-# in place; re-clone once.
+# install.sh clones --depth=1, so the pinned commit may not be fetchable in
+# place; re-clone once.
 - name: Remove legacy shallow Oh My Zsh clone
   ansible.builtin.file:
     path: "/home/{{ qol_admin_user }}/.oh-my-zsh"
@@ -41,9 +35,8 @@
     - qol_admin_user != 'root'
     - qol_omz_shallow.stat.exists | default(false)
 
-# Short-circuit the network on converged hosts: only clone/fetch when the repo
-# is missing (empty stdout) or not at the pin. Keeps qol offline-safe after
-# first install; a pin bump (HEAD != qol_omz_commit) re-triggers the fetch+checkout.
+# Short-circuit the network on converged hosts: clone/fetch only when the repo
+# is missing (empty stdout) or off the pin, so the role stays offline-safe.
 - name: Record current Oh My Zsh commit  # noqa: command-instead-of-module
   ansible.builtin.command:
     cmd: "git -C /home/{{ qol_admin_user }}/.oh-my-zsh rev-parse HEAD"

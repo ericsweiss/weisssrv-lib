@@ -1,0 +1,77 @@
+---
+# Prepare: stage the bits the render scenario needs without a real Docker/nginx.
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Apply the shared systemd-wait + temp-dir prep
+      ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/prepare-base.yml
+
+    - name: Disable apt background services
+      ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/prepare-apt-disable.yml
+
+    # openssl backs the self-signed TLS placeholder task; the nginx site dirs
+    # would normally be created by the nginx package (install is skipped here).
+    - name: Install openssl
+      ansible.builtin.apt:
+        name: openssl
+        state: present
+        update_cache: true
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+
+    - name: Create the nginx site directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /etc/nginx/sites-available
+        - /etc/nginx/sites-enabled
+
+    - name: Seed a packaged default vhost (to assert the flow removes it)
+      ansible.builtin.copy:
+        dest: /etc/nginx/sites-enabled/default
+        content: "# packaged default vhost\n"
+        mode: "0644"
+
+    # Mock `docker` so the backup wrapper's pg_dumpall pipe can be exercised end
+    # to end (success + failure metric paths). /tmp/immich-backup-fail arms the
+    # failure path; /tmp/immich-backup-tiny arms a truncated (too-small) dump.
+    # IMMICH_INFLIGHT_PROBE snapshots the landing zone WHILE the dump streams,
+    # which is the only way to prove the in-progress file is not visible under
+    # the final dump name.
+    - name: Install mock docker for the backup-wrapper test
+      ansible.builtin.copy:
+        dest: /usr/local/bin/docker
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          if [ "$1" = "compose" ]; then
+            for a in "$@"; do
+              if [ "$a" = "pg_dumpall" ]; then
+                if [ -n "${IMMICH_INFLIGHT_PROBE:-}" ]; then
+                  ls -1 "${IMMICH_INFLIGHT_DIR:-/nonexistent}"/immich-*.sql.gz \
+                    > "$IMMICH_INFLIGHT_PROBE" 2>/dev/null
+                  ls -1 "${IMMICH_INFLIGHT_DIR:-/nonexistent}"/immich-*.sql.gz.partial \
+                    > "${IMMICH_INFLIGHT_PROBE}.partial" 2>/dev/null
+                fi
+                if [ -f /tmp/immich-backup-fail ]; then
+                  echo "mock pg_dumpall FAILED" >&2
+                  exit 1
+                fi
+                if [ -f /tmp/immich-backup-tiny ]; then
+                  # Under the wrapper's 1000-byte floor: a truncated dump.
+                  echo "tiny"
+                  exit 0
+                fi
+                # Emit a fake dump that gzips to > the wrapper's 1000-byte floor.
+                # Must be incompressible: repetitive text gzips ~100:1, so use
+                # random data (8 KiB base64 gzips to ~8 KiB).
+                head -c 8192 /dev/urandom | base64
+                exit 0
+              fi
+            done
+            exit 0
+          fi
+          exit 0

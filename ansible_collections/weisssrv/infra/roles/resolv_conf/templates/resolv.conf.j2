@@ -4,15 +4,10 @@
 nameserver {{ nameserver }}
 {% endfor %}
 
-{# `domain` and `search` are both forms of search-suffix expansion;
-   `search` overrides `domain` if set. We tie both to
-   resolv_conf_search_domains so a host that explicitly opts out of
-   search-suffix behavior (k3s VMs override to []) gets neither line.
-   Otherwise the previous unconditional `domain {{ internal_domain }}`
-   would still apply suffix expansion to pods even when `search` was
-   suppressed. #}
+{# `domain` and `search` both drive search-suffix expansion (`search` wins when
+   both are present), so both hang off resolv_conf_search_domains: opting out
+   with [] has to leave neither line behind. #}
 {% if resolv_conf_search_domains %}
-# Domain configuration
 domain {{ resolv_conf_search_domains[0] }}
 search {{ resolv_conf_search_domains | join(' ') }}
 {% endif %}

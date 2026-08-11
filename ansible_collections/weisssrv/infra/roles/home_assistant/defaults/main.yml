@@ -1,0 +1,47 @@
+---
+# Required inputs (empty defaults, asserted in tasks/main.yml):
+#   home_assistant_host               — address the HAOS SSH add-on listens on
+#   home_assistant_host_key           — pinned SSH host key (README)
+#   home_assistant_trusted_proxies    — CIDRs allowed to set X-Forwarded-For
+#   home_assistant_oidc_configure_url — OIDC discovery URL of the IdP
+home_assistant_host: ""
+home_assistant_host_key: ""
+home_assistant_trusted_proxies: []
+home_assistant_oidc_configure_url: ""
+
+# OIDC client credentials. The env defaults let a secret manager inject them at
+# run time (e.g. `op run`); set them directly to bypass the environment.
+home_assistant_oidc_client_id: "{{ lookup('ansible.builtin.env', 'HA_OIDC_CLIENT_ID', default='') }}"
+home_assistant_oidc_client_secret: "{{ lookup('ansible.builtin.env', 'HA_OIDC_CLIENT_SECRET', default='') }}"
+
+# Rendered into the `openid:` block as-is. block_login keeps Home Assistant's
+# own password login disabled, so the IdP is the only way in.
+home_assistant_oidc_scope: "openid profile email"
+home_assistant_oidc_username_field: "preferred_username"
+home_assistant_oidc_block_login: true
+
+# HAOS SSH add-on: root, no sudo, non-standard port.
+home_assistant_ssh_user: root
+home_assistant_ssh_port: 22222
+home_assistant_ssh_connect_timeout: 10
+home_assistant_config_path: "/config"
+
+# TLS on the HA backend itself: adds ssl_certificate / ssl_key to the `http:`
+# block. Keep false until the cert is actually on HAOS — HA fails to bind 8123
+# when configuration.yaml names a cert file that is not there.
+home_assistant_ssl_enabled: false
+home_assistant_ssl_certificate: /ssl/fullchain.pem
+home_assistant_ssl_key: /ssl/privkey.pem
+
+# Appended verbatim to configuration.yaml. The escape hatch for HA config the
+# role does not model; keep it small and YAML-valid at column 0.
+home_assistant_extra_config: ""
+
+# Where the rendered files are staged before the push. Empty creates a private
+# per-run tempdir (removed in always:), so secrets never sit at a predictable
+# path; set it to pin a directory (the molecule scenario does).
+home_assistant_staging_dir: ""
+
+# Render the two files into the staging dir and stop: no ssh, no scp, no
+# `ha core check`, no cert pre-flight. The molecule contract test runs this way.
+home_assistant_render_only: false

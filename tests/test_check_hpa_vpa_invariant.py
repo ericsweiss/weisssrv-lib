@@ -424,37 +424,37 @@ spec:
 
 
 def test_cpu_limit_pod_spec_flagged():
-    assert mod._cpu_limit_violations(_docs(DEPLOY_WITH_CPU_LIMIT))
+    assert mod.cpu_limit_violations(_docs(DEPLOY_WITH_CPU_LIMIT))
 
 
 def test_cpu_limit_pod_spec_memory_only_ok():
-    assert mod._cpu_limit_violations(_docs(DEPLOY_NO_CPU_LIMIT)) == []
+    assert mod.cpu_limit_violations(_docs(DEPLOY_NO_CPU_LIMIT)) == []
 
 
 def test_cpu_limit_helmrelease_flagged():
-    assert mod._cpu_limit_violations(_docs(HR_WITH_CPU_LIMIT))
+    assert mod.cpu_limit_violations(_docs(HR_WITH_CPU_LIMIT))
 
 
 def test_cpu_limit_helmrelease_memory_only_ok():
-    assert mod._cpu_limit_violations(_docs(HR_NO_CPU_LIMIT)) == []
+    assert mod.cpu_limit_violations(_docs(HR_NO_CPU_LIMIT)) == []
 
 
 def test_cpu_limit_pod_spec_null_ok():
     """limits.cpu: null clears the default — not an effective CPU limit."""
-    assert mod._cpu_limit_violations(_docs(DEPLOY_NULL_CPU_LIMIT)) == []
+    assert mod.cpu_limit_violations(_docs(DEPLOY_NULL_CPU_LIMIT)) == []
 
 
 def test_cpu_limit_helmrelease_null_ok():
     """A HelmRelease clearing limits.cpu with null must not be flagged."""
-    assert mod._cpu_limit_violations(_docs(HR_NULL_CPU_LIMIT)) == []
+    assert mod.cpu_limit_violations(_docs(HR_NULL_CPU_LIMIT)) == []
 
 
 def test_cpu_limit_cronjob_flagged():
-    assert mod._cpu_limit_violations(_docs(CRONJOB_WITH_CPU_LIMIT))
+    assert mod.cpu_limit_violations(_docs(CRONJOB_WITH_CPU_LIMIT))
 
 
 def test_cpu_limit_allowlist_exempts():
-    assert mod._cpu_limit_violations(_docs(DEPLOY_WITH_CPU_LIMIT), {"ns/Deployment/app"}) == []
+    assert mod.cpu_limit_violations(_docs(DEPLOY_WITH_CPU_LIMIT), {"ns/Deployment/app"}) == []
 
 
 def test_cpu_limit_integrated_fails_with_flag(monkeypatch, policy_file):

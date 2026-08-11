@@ -9,7 +9,7 @@
     test_pve_storage:
       - id: tank-proxmox
         type: nfs
-        server: pve-nas-01.esweiss.com
+        server: nas.example.com
         export: /tank-proxmox
         # path is create-fixed like server/export — mirror the production
         # host_vars so Case A drives the create `--path` arm and Cases D/E
@@ -40,12 +40,25 @@
         prune_backups: "keep-daily=7,keep-weekly=4,keep-monthly=3"
         notification_mode: notification-system
         enabled: true
+    # Same job with a `script` hookscript path — drives the cross-role include
+    # that must put the file on disk before pvesh validates the path.
+    test_pve_vzdump_jobs_script:
+      - id: backup-test
+        storage: tank-proxmox
+        schedule: "03:30"
+        mode: snapshot
+        compress: zstd
+        all: true
+        prune_backups: "keep-daily=7,keep-weekly=4,keep-monthly=3"
+        notification_mode: notification-system
+        enabled: true
+        script: /usr/local/bin/vzdump-metrics-hook.sh
     # Live state matching test_pve_storage/-jobs exactly, but with the comma
     # lists REORDERED the way Proxmox normalizes them — proves the drift
     # comparison is set-based, not string-based.
     stub_storage_match: |
       [{"storage": "tank-proxmox", "type": "nfs",
-        "server": "pve-nas-01.esweiss.com", "export": "/tank-proxmox",
+        "server": "nas.example.com", "export": "/tank-proxmox",
         "path": "/mnt/pve/tank-proxmox",
         "content": "backup,iso,snippets,vztmpl",
         "options": "xprtsec=tls,vers=4.2"}]
@@ -99,7 +112,7 @@
         set -o pipefail
         log=/tmp/molecule-stub-state/pvesh.log
         exp_storage='pvesh create /storage --storage tank-proxmox --type nfs'
-        exp_storage="$exp_storage --server pve-nas-01.esweiss.com --export /tank-proxmox"
+        exp_storage="$exp_storage --server nas.example.com --export /tank-proxmox"
         exp_storage="$exp_storage --path /mnt/pve/tank-proxmox"
         exp_storage="$exp_storage --content snippets,backup,vztmpl,iso --options vers=4.2,xprtsec=tls"
         exp_job='pvesh create /cluster/backup --id backup-test --storage tank-proxmox'
@@ -284,7 +297,7 @@
         - name: pvesh_storage
           content: |
             [{"storage": "tank-proxmox", "type": "nfs",
-              "server": "pve-nas-01.esweiss.com", "export": "/tank-proxmox",
+              "server": "nas.example.com", "export": "/tank-proxmox",
               "path": "/mnt/pve/tank-proxmox",
               "content": "backup,images,rootdir",
               "options": "xprtsec=tls,vers=4.2"}]
@@ -324,7 +337,7 @@
         - name: pvesh_storage
           content: |
             [{"storage": "tank-proxmox", "type": "nfs",
-              "server": "192.168.0.102", "export": "/tank-proxmox",
+              "server": "10.0.0.102", "export": "/tank-proxmox",
               "path": "/mnt/pve/tank-proxmox",
               "content": "backup,iso,snippets,vztmpl",
               "options": "xprtsec=tls,vers=4.2"}]
@@ -358,6 +371,51 @@
       register: case_e
       changed_when: false
 
+    # CASE F — a job carrying `script` must land the hookscript on this node
+    # BEFORE the job is saved: pvesh rejects a --script path that does not
+    # exist. The file comes from weisssrv.infra.node_exporter_host, so this
+    # also proves the cross-role include resolves.
+    - name: F — reset log and empty live state
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesh.log, content: ""}
+        - {name: pvesh_storage, content: "[]\n"}
+        - {name: pvesh_backup, content: "[]\n"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: F — remove any previously deployed hookscript
+      ansible.builtin.file:
+        path: /usr/local/bin/vzdump-metrics-hook.sh
+        state: absent
+
+    - name: F — run role with a job that sets script
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_backup
+      vars:
+        proxmox_backup_storage: []
+        proxmox_backup_vzdump_jobs: "{{ test_pve_vzdump_jobs_script }}"
+
+    - name: F — stat the deployed hookscript
+      ansible.builtin.stat:
+        path: /usr/local/bin/vzdump-metrics-hook.sh
+      register: case_f_hook
+
+    - name: F — count pvesh mutations
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/pvesh.log
+        job_create=$(grep -c -- '^pvesh create /cluster/backup .*--script /usr/local/bin/vzdump-metrics-hook.sh$' "$log" || true)
+        total=$(grep -c '^pvesh ' "$log" || true)
+        echo "{\"job_create\": ${job_create}, \"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_f
+      changed_when: false
+
     - name: Capture backup contract results
       ansible.builtin.copy:
         dest: /tmp/molecule-results/backup-contract.json
@@ -376,4 +434,7 @@
            "d_storage_set": {{ (case_d.stdout | from_json).storage_set }},
            "d_total": {{ (case_d.stdout | from_json).total }},
            "e_failed": {{ fixed_drift_failed | ternary('true', 'false') }},
-           "e_total": {{ (case_e.stdout | from_json).total }}}
+           "e_total": {{ (case_e.stdout | from_json).total }},
+           "f_hook": {{ case_f_hook.stat.exists | ternary('true', 'false') }},
+           "f_job_create": {{ (case_f.stdout | from_json).job_create }},
+           "f_total": {{ (case_f.stdout | from_json).total }}}

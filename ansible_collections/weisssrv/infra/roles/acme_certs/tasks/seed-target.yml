@@ -25,6 +25,9 @@
 # receiver locks the next cert push out.
 - name: Seed the reachable target
   when: acme_certs_probe.ping | default('') == 'pong'
+  # A target that answered the probe and then went away must not take this host
+  # out of the play — the same failure mode the probe exists to prevent.
+  ignore_unreachable: true
   block:
     - name: Deploy the cert-receive forced-command receiver — {{ acme_certs_target.host }}
       ansible.builtin.template:
