@@ -164,3 +164,38 @@
           apt_signed_repo did NOT fail when the installed keyring's fingerprint
           no longer matches the pinned fingerprint — an existing keyring is
           trusted without re-verification.
+
+    # Dry run against an UNPROVISIONED keyring path. In check mode the dearmor
+    # writes nothing, so the keyring is still absent when the permission task is
+    # reached — and `file` with an implicit state=file fails "is absent, cannot
+    # continue" in check mode too. Without the post-dearmor existence re-check
+    # this makes `ansible-playbook --check` red on every fresh host.
+    - name: Check-mode dry run — an absent keyring must not fail the permission task
+      check_mode: true
+      block:
+        - name: Run the role in check mode against a keyring path that does not exist
+          ansible.builtin.include_role:
+            name: weisssrv.infra.apt_signed_repo
+          vars:
+            apt_signed_repo_key_url: "file:///tmp/testkey.asc"
+            apt_signed_repo_fingerprint: "{{ apt_signed_repo_real_fpr }}"
+            apt_signed_repo_keyring_path: /etc/apt/keyrings/test-checkmode.gpg
+            apt_signed_repo_repo_line: >-
+              deb [signed-by=/etc/apt/keyrings/test-checkmode.gpg]
+              http://deb.debian.org/debian bookworm main
+            apt_signed_repo_filename: apt-signed-repo-test-checkmode
+            apt_signed_repo_update_cache: false
+      rescue:
+        - name: Record that the check-mode dry run failed
+          ansible.builtin.set_fact:
+            apt_signed_repo_checkmode_failed: true
+
+    - name: Assert the check-mode dry run survived the unprovisioned keyring
+      ansible.builtin.assert:
+        that:
+          - not (apt_signed_repo_checkmode_failed | default(false))
+        fail_msg: >-
+          apt_signed_repo FAILED in check mode against a keyring that does not
+          exist yet — `task infra:check` would be red on every unprovisioned
+          host for every caller of this pipeline.
+        success_msg: "check mode is clean on an unprovisioned keyring path"

@@ -56,7 +56,7 @@
         mode: "0644"
 
     # The bonding module option is the real boot-time control for all_slaves_active
-    # (ifupdown2 ignores the interfaces stanza). Seed the stale `=1` the fleet had;
+    # (ifupdown2 ignores the interfaces stanza). Seed a stale `=1`;
     # verify.yml asserts the role flips it to 0 in place, preserving fail_over_mac.
     - name: Ensure /etc/modprobe.d exists (minimal test container may lack it)
       ansible.builtin.file:

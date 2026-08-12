@@ -6,6 +6,20 @@
 # zvol_mount_device_id_prefix + the slot. Slot 0 is the root disk, so extra
 # disks start at 1 (which is also what the idx + 1 fallback produces).
 
+# The role's one required input; the loop below is its first consumption, so
+# without this the failure is a raw undefined-variable error.
+- name: Assert the disk list is set
+  ansible.builtin.assert:
+    that:
+      - zvol_mount_disks is defined
+      - zvol_mount_disks | length > 0
+    fail_msg: >-
+      zvol_mount_disks is required: a list of {name, mount_point, fstype,
+      scsi_slot} entries. It is conventionally the same list the guest's
+      proxmox_vm_additional_disks names, so one inventory block feeds zvol
+      creation on the host and mounting in the guest.
+    quiet: true
+
 - name: Reset zvol_mount_disk_devices for this invocation
   ansible.builtin.set_fact:
     zvol_mount_disk_devices: []
@@ -94,8 +108,6 @@
     - zvol_mount_disk_devices is defined
     - (item.stdout | default('') | trim) == ''
 
-# After formatting, discover the filesystem UUID for stable mounting
-# This avoids reliance on positional /dev/sdX names which can change
 - name: Get filesystem UUID for additional disks
   ansible.builtin.command: "blkid -s UUID -o value {{ item.path }}"
   loop: "{{ zvol_mount_disk_devices | default([]) }}"
@@ -111,7 +123,6 @@
   check_mode: false
   when: zvol_mount_disk_devices is defined
 
-# Fail early if any disk doesn't have a valid UUID (prevents empty UUID in fstab)
 - name: Validate all additional disks have UUIDs
   ansible.builtin.assert:
     that:
@@ -171,8 +182,6 @@
     label: "{{ item.name }}"
   when: zvol_mount_disk_devices is defined
 
-# Check if any disk is currently mounted at a WRONG location
-# This can happen if device naming changed (/dev/sdX is non-deterministic)
 - name: Check current mount status of additional disks
   ansible.builtin.shell: |
     findmnt -n -o TARGET "UUID={{ item.1.stdout | default('') | trim }}" 2>/dev/null || echo "not-mounted"
@@ -204,7 +213,6 @@
     - item.stdout | trim != "not-mounted"
     - item.stdout | trim != item.item.0.mount_point
 
-# Clean up incorrect fstab entries for these UUIDs (only when wrong mount detected)
 - name: Remove incorrect fstab entries
   ansible.builtin.lineinfile:
     path: /etc/fstab
@@ -235,5 +243,4 @@
   when:
     - zvol_mount_disk_devices is defined
     - zvol_mount_disk_uuids is defined
-    # In check mode, skip mount if UUID is missing (disk may not be formatted yet)
     - not ansible_check_mode or (item.1.stdout | default('') | length > 0)

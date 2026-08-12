@@ -51,6 +51,10 @@ plex_cert_domain: ""
 # passed through, or a test container).
 plex_skip_gpu_drivers: false
 
+# deb822 sources file whose Components line carries non-free (where the Intel
+# media driver lives). A host without it falls back to one-line entries.
+plex_debian_sources_path: /etc/apt/sources.list.d/debian.sources
+
 # Skip the enable/start/readiness steps (a container with no working systemd).
 plex_skip_service: false
 

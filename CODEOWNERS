@@ -1,9 +1,5 @@
 # Code ownership for merge-request review routing.
 #
-# One rule, and that is not an oversight. Every path in this repo is a pinned
-# surface for at least one consumer — a lint config, a script, a role default
-# and a template input all ripple the same way on a tag bump — so a per-path
-# split would imply some paths are lower-stakes than others, and there is only
-# one reviewer to route to either way. Add a narrower rule when a second
-# maintainer exists, not before.
+# One rule on purpose: every path is a pinned surface for some consumer, and
+# there is one maintainer. Narrow it when a second one exists.
 * @eric

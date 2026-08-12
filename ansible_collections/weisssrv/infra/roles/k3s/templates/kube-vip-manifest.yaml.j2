@@ -104,8 +104,8 @@ spec:
           value: "true"
         - name: vip_leasename
           value: plndr-cp-lock
-        # Leader election timing - conservative values for unmanaged switch environment
-        # Reduces ARP traffic from every 1s to every 10s, prevents ARP storms
+        # Conservative leader-election timing: ARP re-announce every 10s
+        # rather than every 1s, to avoid ARP storms.
         - name: vip_leaseduration
           value: "30"
         - name: vip_renewdeadline

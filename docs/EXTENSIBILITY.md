@@ -27,9 +27,10 @@ Two rules govern every seam:
 | Storage, guest placement | Proxmox storage picked from the host's `proxmox_role` | `proxmox_storage_defaults` (role → storage id), `proxmox_storage` / `proxmox_lxc_storage` per guest | `proxmox_vm`, `proxmox_lxc` |
 | Storage, guest disks | zvols attached at a QEMU SCSI by-id path | `zvol_mount_device_id_prefix` — the role itself is UUID/fstab based, not ZFS-aware | `zvol_mount` |
 | Storage, backup source | restic walks a ZFS snapshot bind-mount | `restic_offsite_bind_mode: direct` walks a plain path instead | `restic_offsite` |
+| Storage, offsite target | rclone remote of type `b2` (Backblaze) | `restic_offsite_rclone_remote_type` + `restic_offsite_rclone_remote_options` (rendered verbatim as `key = value`); only `b2` has named credential variables | `restic_offsite` |
 | Storage, metrics | `zpool status` collector ships with the Proxmox collectors | `node_exporter_host_zpool_collector` (defaults to `node_exporter_host_proxmox`) | `node_exporter_host` |
 | Certificates | acme.sh DNS-01 via Cloudflare | `acme_certs_dns_hook` — any dnsapi hook the pinned tarball ships | `acme_certs` |
-| Forge | GitLab CI templates, GitLab release/MR APIs | `--platform {gitlab,github}` on `semantic-release.py`; the Actions example workflow | `ci/`, `scripts/` |
+| Forge | GitLab CI templates, GitLab release/MR APIs | `--platform {gitlab,github}` on `semantic-release.py`; the three vendorable Actions workflows (`ci/github/`, `ci/release/*.example.yml`) | `ci/`, `scripts/` |
 
 ## Backend-specific by design
 
@@ -83,6 +84,16 @@ does not `include:` them. What has to be portable is what they *call*:
   tag/release API call differs.
   [`ci/release/github-release-workflow.example.yml`](../ci/release/github-release-workflow.example.yml)
   is the reference Actions workflow, vendored rather than included.
+- **The gate set has an Actions counterpart too**:
+  [`ci/github/ci.example.yml`](../ci/github/ci.example.yml) (yamllint,
+  kustomize + kubeconform, shellcheck, doc links, secret scan) and
+  [`ci/github/build-image.example.yml`](../ci/github/build-image.example.yml).
+  Same discipline: vendored byte-identically and re-vendored on a bump. The copy
+  relationship is recorded in [`scripts/vendored-paths.yml`](../scripts/vendored-paths.yml)
+  and checked by [`scripts/check-vendored-copies.py`](../scripts/check-vendored-copies.py),
+  which is what reaches past `scripts/` — the older per-consumer gates iterate
+  `scripts/` only and cannot see `.github/`. Adoption is per consumer and has not
+  landed yet.
 - **The known gap** is `scripts/version-bump-mr.py`, which speaks the GitLab MR
   API only. Adding GitHub support means the same `--platform` flag and a PR call
   — not a second script.

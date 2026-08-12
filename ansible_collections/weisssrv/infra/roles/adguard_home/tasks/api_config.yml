@@ -1,15 +1,30 @@
 ---
-# AdGuard Home API-based configuration management
-# Manages DNS rewrites and custom filtering rules via REST API
-# Ensures DNS records match codified state (adds missing, removes orphaned)
-#
-# NOTE: API tasks are skipped in check mode since we cannot query/modify
-# the running AdGuard Home instance during dry-run
+# DNS rewrites + custom filtering rules reconciled to codified state through the
+# live AdGuard API (adds missing, removes orphaned); skipped in check mode.
 
 - name: Skip API configuration in check mode
   ansible.builtin.debug:
     msg: "Skipping AdGuard Home API configuration in check mode (cannot query live API)"
   when: ansible_check_mode
+
+# An empty codified list means "manage none" (defaults/main.yml): without this
+# gate the reconcilers below would read it as "delete everything live". Set the
+# matching _prune flag to make an empty list authoritative.
+- name: Determine which record sets are authoritative
+  ansible.builtin.set_fact:
+    adguard_home_reconcile_rewrites: >-
+      {{ (adguard_home_rewrites | length > 0) or (adguard_home_prune_rewrites | bool) }}
+    adguard_home_reconcile_user_rules: >-
+      {{ (adguard_home_user_rules | length > 0) or (adguard_home_prune_user_rules | bool) }}
+
+- name: Report record sets left unmanaged
+  ansible.builtin.debug:
+    msg: >-
+      AdGuard on {{ inventory_hostname }}: rewrites reconciled =
+      {{ adguard_home_reconcile_rewrites }}, user rules reconciled =
+      {{ adguard_home_reconcile_user_rules }}. A false side has an empty
+      codified list and its prune flag off, so live state is left untouched.
+  when: not (adguard_home_reconcile_rewrites | bool and adguard_home_reconcile_user_rules | bool)
 
 - name: Get existing DNS rewrites
   ansible.builtin.uri:
@@ -43,6 +58,7 @@
   loop: "{{ adguard_home_existing_rewrites.json | default([]) }}"
   when:
     - not ansible_check_mode
+    - adguard_home_reconcile_rewrites | bool
     - item.domain not in adguard_home_codified_domains
   no_log: true
   failed_when: false
@@ -150,6 +166,7 @@
     status_code: 200
   when:
     - not ansible_check_mode
+    - adguard_home_reconcile_user_rules | bool
     - adguard_home_current_user_rules != adguard_home_user_rules
   no_log: true
   failed_when: false

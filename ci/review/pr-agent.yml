@@ -85,13 +85,23 @@ spec:
       default: "$GITLAB__PERSONAL_ACCESS_TOKEN"
       description: >-
         secrets_source=env only. A CI variable REFERENCE holding the GitLab PAT
-        pr-agent posts with, e.g. `$GITLAB_REVIEW_TOKEN`.
+        pr-agent posts with, e.g. `$GITLAB_REVIEW_TOKEN`. Scope it to the
+        reviewed project (Developer + `api`) — never an instance/admin PAT: the
+        job runs branch-supplied config and hands the diff to a third-party
+        image.
     op_openai_key_ref:
-      default: "op://Homelab/OpenAI API Key/api-key"
-      description: secrets_source=1password only.
+      default: ""
+      # No default: an `op://` reference names one site's vault and item titles,
+      # which is consumer data. Empty fails the job in 1password mode only.
+      description: >-
+        secrets_source=1password only. REQUIRED in that mode, e.g.
+        `op://<vault>/<item>/<field>`.
     op_gitlab_token_ref:
-      default: "op://Homelab/GitLab API Token/credential"
-      description: secrets_source=1password only.
+      default: ""
+      description: >-
+        secrets_source=1password only. REQUIRED in that mode. Point it at a
+        project access token with Developer + `api` on the reviewed project —
+        never an instance/admin PAT.
     gate:
       default: "$OPENAI__KEY"
       description: >-
@@ -130,6 +140,11 @@ spec:
         if ! command -v op >/dev/null 2>&1; then
           echo "secrets_source=1password needs the op CLI on PATH — add" >&2
           echo "  before_script: [ !reference [.install-1password, before_script] ]" >&2
+          exit 1
+        fi
+        if [ -z "$[[ inputs.op_openai_key_ref ]]" ] || [ -z "$[[ inputs.op_gitlab_token_ref ]]" ]; then
+          echo "secrets_source=1password needs op_openai_key_ref and" >&2
+          echo "op_gitlab_token_ref set to op:// references on the include." >&2
           exit 1
         fi
         OPENAI__KEY="$(op read "$[[ inputs.op_openai_key_ref ]]")"

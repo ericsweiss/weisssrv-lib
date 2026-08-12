@@ -10,8 +10,7 @@
       # its address to the kernel mount API. Proxmox hosts and k3s agents
       # always had it from base tooling, but a first-time NFS client VM does
       # not: without it the kernel fsconfig() fails with "NFS: mount program
-      # didn't pass remote address" (pipeline 803: gitlab/immich/nextcloud
-      # per-app export mounts).
+      # didn't pass remote address".
       - nfs-common
     state: present
     update_cache: true
@@ -118,6 +117,11 @@
 # safe. A wildcard private key can impersonate every internal service, so it
 # must not linger here even if an earlier rollout pushed a copy. Idempotent, and
 # skipped on the NFS server and on an mTLS client — both legitimately keep it.
+#
+# nfs_tls_scrub_client_cert exists because these paths default to exactly what
+# acme_certs installs locally: on a host that both holds a local cert and mounts
+# NFS over TLS, an unconditional removal makes the two roles fight every
+# converge and breaks whatever serves those paths in between.
 - name: Remove cert + key on client-only hosts (least privilege)
   ansible.builtin.file:
     path: "{{ item }}"
@@ -127,6 +131,7 @@
     - "{{ nfs_tls_key_path }}"
   when:
     - nfs_tls_enabled | default(false)
+    - nfs_tls_scrub_client_cert | default(true)
     - not (nfs_tls_is_server | default(false))
     - not (nfs_tls_client_cert | default(false))
 

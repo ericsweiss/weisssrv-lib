@@ -17,6 +17,18 @@
         path: /mnt/pve/tank-proxmox
         content: "snippets,backup,vztmpl,iso"
         options: "vers=4.2,xprtsec=tls"
+    # zfspool entry: `pool` is create-fixed and is the property whose drift
+    # silently relocates every new guest disk (e.g. onto a pool root with
+    # different encryption), so it is asserted, not reconciled. nodes/mountpoint
+    # /sparse are mutable and reconciled.
+    test_pve_storage_zfs:
+      - id: ssd
+        type: zfspool
+        pool: ssd/pve
+        content: "images,rootdir"
+        nodes: pve-nas-01
+        mountpoint: /mnt/ssd/pve
+        sparse: false
     test_pve_vzdump_jobs:
       - id: backup-test
         storage: tank-proxmox
@@ -416,6 +428,161 @@
       register: case_f
       changed_when: false
 
+    # CASE G — zfspool entry absent: exactly one `pvesh create /storage`
+    # carrying --pool/--nodes/--mountpoint/--sparse. Without them the entry
+    # would be created without its dataset, its node restriction or its
+    # allocation mode.
+    - name: G — reset log and empty live state
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesh.log, content: ""}
+        - {name: pvesh_storage, content: "[]\n"}
+        - {name: pvesh_backup, content: "[]\n"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: G — run role with the zfspool entry absent
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_backup
+      vars:
+        proxmox_backup_storage: "{{ test_pve_storage_zfs }}"
+        proxmox_backup_vzdump_jobs: []
+
+    - name: G — count pvesh mutations
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/pvesh.log
+        exp='pvesh create /storage --storage ssd --type zfspool --pool ssd/pve'
+        exp="$exp --content images,rootdir --nodes pve-nas-01 --mountpoint /mnt/ssd/pve --sparse 0"
+        storage_create=$(grep -cxF "$exp" "$log" || true)
+        total=$(grep -c '^pvesh ' "$log" || true)
+        echo "{\"storage_create\": ${storage_create}, \"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_g
+      changed_when: false
+
+    # CASE G2 — the same entry already correct: ZERO mutations (an omitted
+    # live `sparse` must read as 0, or every run would re-set it).
+    - name: G2 — reset log, seed matching zfspool live state
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesh.log, content: ""}
+        - name: pvesh_storage
+          content: |
+            [{"storage": "ssd", "type": "zfspool", "pool": "ssd/pve",
+              "content": "rootdir,images", "nodes": "pve-nas-01",
+              "mountpoint": "/mnt/ssd/pve"}]
+        - {name: pvesh_backup, content: "[]\n"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: G2 — run role with the zfspool entry already correct
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_backup
+      vars:
+        proxmox_backup_storage: "{{ test_pve_storage_zfs }}"
+        proxmox_backup_vzdump_jobs: []
+
+    - name: G2 — count pvesh mutations
+      ansible.builtin.shell: |
+        set -o pipefail
+        total=$(grep -c '^pvesh ' /tmp/molecule-stub-state/pvesh.log || true)
+        echo "{\"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_g2
+      changed_when: false
+
+    # CASE G3 — the live entry points at the pool ROOT instead of the
+    # configured dataset: create-fixed, so the role must FAIL LOUD with zero
+    # mutations rather than leave the mapping silently diverged.
+    - name: G3 — reset log, seed the zfspool entry on the pool root
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesh.log, content: ""}
+        - name: pvesh_storage
+          content: |
+            [{"storage": "ssd", "type": "zfspool", "pool": "ssd",
+              "content": "rootdir,images", "nodes": "pve-nas-01",
+              "mountpoint": "/mnt/ssd/pve"}]
+        - {name: pvesh_backup, content: "[]\n"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: G3 — run role expecting the pool-drift assert to fail
+      block:
+        - name: G3 — include proxmox_backup (expected to fail)
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_backup
+          vars:
+            proxmox_backup_storage: "{{ test_pve_storage_zfs }}"
+            proxmox_backup_vzdump_jobs: []
+        - name: G3 — pool drift did not fail
+          ansible.builtin.set_fact:
+            pool_drift_failed: false
+      rescue:
+        - name: G3 — pool drift failed as expected
+          ansible.builtin.set_fact:
+            pool_drift_failed: true
+
+    - name: G3 — count pvesh mutations
+      ansible.builtin.shell: |
+        set -o pipefail
+        total=$(grep -c '^pvesh ' /tmp/molecule-stub-state/pvesh.log || true)
+        echo "{\"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_g3
+      changed_when: false
+
+    # CASE G4 — the live entry lost its node restriction: mutable, so the role
+    # must reconcile it back with exactly one `pvesh set`.
+    - name: G4 — reset log, seed the zfspool entry with no nodes restriction
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesh.log, content: ""}
+        - name: pvesh_storage
+          content: |
+            [{"storage": "ssd", "type": "zfspool", "pool": "ssd/pve",
+              "content": "rootdir,images", "mountpoint": "/mnt/ssd/pve"}]
+        - {name: pvesh_backup, content: "[]\n"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: G4 — run role with the node restriction missing live
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_backup
+      vars:
+        proxmox_backup_storage: "{{ test_pve_storage_zfs }}"
+        proxmox_backup_vzdump_jobs: []
+
+    - name: G4 — count pvesh mutations
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/pvesh.log
+        exp='pvesh set /storage/ssd --content images,rootdir --nodes pve-nas-01'
+        exp="$exp --mountpoint /mnt/ssd/pve --sparse 0"
+        storage_set=$(grep -cxF "$exp" "$log" || true)
+        total=$(grep -c '^pvesh ' "$log" || true)
+        echo "{\"storage_set\": ${storage_set}, \"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_g4
+      changed_when: false
+
     - name: Capture backup contract results
       ansible.builtin.copy:
         dest: /tmp/molecule-results/backup-contract.json
@@ -437,4 +604,11 @@
            "e_total": {{ (case_e.stdout | from_json).total }},
            "f_hook": {{ case_f_hook.stat.exists | ternary('true', 'false') }},
            "f_job_create": {{ (case_f.stdout | from_json).job_create }},
-           "f_total": {{ (case_f.stdout | from_json).total }}}
+           "f_total": {{ (case_f.stdout | from_json).total }},
+           "g_storage_create": {{ (case_g.stdout | from_json).storage_create }},
+           "g_total": {{ (case_g.stdout | from_json).total }},
+           "g2_total": {{ (case_g2.stdout | from_json).total }},
+           "g3_failed": {{ pool_drift_failed | ternary('true', 'false') }},
+           "g3_total": {{ (case_g3.stdout | from_json).total }},
+           "g4_storage_set": {{ (case_g4.stdout | from_json).storage_set }},
+           "g4_total": {{ (case_g4.stdout | from_json).total }}}

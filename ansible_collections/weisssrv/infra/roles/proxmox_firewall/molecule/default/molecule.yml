@@ -28,6 +28,23 @@ provisioner:
           - 192.168.0.0/24
         proxmox_firewall_wan_wireguard_vips:
           - 192.168.0.99
+        # Site scrape targets appended to sg-metrics (the role default is
+        # empty, so an app port is never opened fleet-wide by default).
+        # Same {port, sources[], comment?} schema as the sg-dns list below, and
+        # one entry with TWO sources so the per-source fan-out is asserted.
+        proxmox_firewall_metrics_scrape_ports:
+          - {port: 32400, sources: [k3s_nodes], comment: plex}
+          - {port: 31100, sources: [core-cluster], comment: loki push NodePort}
+          - {port: 9993, sources: [k3s_nodes, admin_lan], comment: two-source entry}
+        # An in-cluster scraper deliberately admitted to the resolver's
+        # plaintext admin API, on top of the two default admin sets.
+        proxmox_firewall_dns_admin_ports:
+          - port: 443
+            sources: [admin_ts, admin_lan]
+            comment: resolver HTTPS admin UI
+          - port: 3000
+            sources: [admin_ts, admin_lan, k3s_nodes]
+            comment: resolver plaintext admin API
         # Stands in for a site's per-application groups (the role default is
         # empty). Exercises verbatim rule/comment emission and a `rules` value
         # supplied as an expression, which must evaluate to a LIST.

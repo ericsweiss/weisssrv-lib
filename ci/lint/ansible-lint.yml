@@ -18,15 +18,18 @@ spec:
     ansible_lint_version:
       default: "25.12.2"
       description: >-
-        ansible-lint pip pin (pulls its matching ansible-core). Keep in step
-        with docker/molecule-ci/requirements.txt so lint and molecule agree on
-        the version under test.
+        ansible-lint pip pin (pulls its matching ansible-core). Held equal to
+        docker/molecule-ci/requirements.txt by
+        tests/test_lint_version_parity.py so lint and molecule agree on the
+        version under test.
     pip_extra:
       default: "black<26.5.0"
       description: >-
         Extra space-separated pip pins installed alongside ansible-lint. The
         default guards the broken black 26.5.x mypyc wheels (ansible-lint's
-        jinja rule imports black); lift once 26.5.x is fixed. Routed through a
+        jinja rule imports black) and is held equal to the molecule image's
+        black pin by tests/test_lint_version_parity.py; lift once 26.5.x is
+        fixed. Routed through a
         job variable, so a version-ceiling pin (`<`) is safe here — see the
         PIP_EXTRA note below.
     config:

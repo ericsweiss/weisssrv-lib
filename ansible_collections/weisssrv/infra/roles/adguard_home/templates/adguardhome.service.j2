@@ -2,10 +2,10 @@
 [Unit]
 Description=AdGuard Home: Network-level blocker
 ConditionFileIsExecutable={{ adguard_home_install_path }}/AdGuardHome
-# unbound is the sole upstream (127.0.0.1:5335); order after it so AdGuard
-# doesn't SERVFAIL during boot. Wants= tolerates hosts without the unit.
-After=network-online.target unbound.service
-Wants=network-online.target unbound.service
+# Order after the upstream resolver's unit so AdGuard doesn't SERVFAIL during
+# boot. Wants= tolerates hosts without those units.
+After={{ (['network-online.target'] + (adguard_home_after_units | default([]))) | join(' ') }}
+Wants={{ (['network-online.target'] + (adguard_home_wants_units | default([]))) | join(' ') }}
 
 # systemd honors the start-rate limit only in [Unit]; in [Service] it is
 # ignored (logged as a warning). With RestartSec=10 below, allow up to 5
@@ -25,14 +25,12 @@ NoNewPrivileges=true
 {% if adguard_home_use_private_tmp | default(true) %}
 PrivateTmp=true
 {% else %}
-# PrivateTmp disabled for Docker container compatibility
 PrivateTmp=false
 {% endif %}
 ProtectHome=true
 {% if adguard_home_use_protect_system | default(true) %}
 ProtectSystem=strict
 {% else %}
-# ProtectSystem disabled for Docker container compatibility
 ProtectSystem=false
 {% endif %}
 ReadWritePaths={{ adguard_home_install_path }}

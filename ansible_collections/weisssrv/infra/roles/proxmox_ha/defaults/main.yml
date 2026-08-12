@@ -7,3 +7,13 @@ proxmox_ha_replication_jobs: []  # pvesr jobs (tasks_from: replication)
 
 # Inventory group the role asserts membership of before touching HA state.
 proxmox_ha_host_group: proxmox
+
+# Cluster-wide migration channel (datacenter.cfg `migration:`). `secure` tunnels
+# guest RAM over SSH; `insecure` sends it in cleartext on TCP 60000-60050. PVE's
+# built-in default is already secure, so this PINS it rather than inheriting it,
+# and a live flip to insecure is reverted on the next run. Empty leaves
+# datacenter.cfg unmanaged.
+proxmox_ha_migration_type: secure
+# Dedicated migration network (CIDR). Empty preserves whatever is live — the
+# migration property string is replaced wholesale on every set.
+proxmox_ha_migration_network: ""

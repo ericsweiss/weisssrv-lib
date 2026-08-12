@@ -108,6 +108,45 @@
           Expected prometheus, default_config, tts (google_translate) and the
           !include lines for automations / scripts / scenes.
 
+    # The same template with every opinionated block disabled: a consumer whose
+    # HAOS lacks the !include targets must be able to omit them.
+    - name: Create the staging dir for the minimal render
+      ansible.builtin.file:
+        path: /tmp/ha-minimal
+        state: directory
+        mode: "0700"
+
+    - name: Re-render with the opinionated blocks disabled
+      ansible.builtin.include_role:
+        name: weisssrv.infra.home_assistant
+      vars:
+        home_assistant_render_only: true
+        home_assistant_staging_dir: /tmp/ha-minimal
+        home_assistant_enable_prometheus: false
+        home_assistant_enable_default_config: false
+        home_assistant_tts_platforms: []
+        home_assistant_includes: {}
+
+    - name: Slurp the minimal configuration.yaml
+      ansible.builtin.slurp:
+        src: /tmp/ha-minimal/ha-configuration.yaml
+      register: home_assistant_t_cfg_minimal
+
+    - name: Assert the opinionated blocks are omitted when disabled
+      vars:
+        home_assistant_t_cfg_min_text: "{{ home_assistant_t_cfg_minimal.content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - "home_assistant_t_cfg_min_text is not search('^prometheus:', multiline=True)"
+          - "home_assistant_t_cfg_min_text is not search('^default_config:', multiline=True)"
+          - "home_assistant_t_cfg_min_text is not search('^tts:', multiline=True)"
+          - "home_assistant_t_cfg_min_text is not search('!include')"
+          - "home_assistant_t_cfg_min_text is search('openid:')"
+        fail_msg: >-
+          Disabling home_assistant_enable_prometheus / _enable_default_config
+          and emptying _tts_platforms / _includes must drop those blocks while
+          leaving the http and openid blocks intact.
+
     - name: Slurp the rendered secrets.yaml
       ansible.builtin.slurp:
         src: /tmp/ha-secrets.yaml

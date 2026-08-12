@@ -14,103 +14,176 @@
 - name: Configure encrypted swap
   when: encrypted_swap_enabled | default(true)
   block:
-    # BOTH packages: Debian trixie / PVE 9 split the crypttab generator and the
-    # systemd-cryptsetup@.service template into a separate systemd-cryptsetup
-    # package. Without it the generator never materializes the unit and swap
-    # never activates at boot; cryptsetup alone is only the userspace tools.
-    - name: Install cryptsetup + the systemd crypttab machinery
-      ansible.builtin.apt:
-        name:
-          - cryptsetup
-          - systemd-cryptsetup
-        state: present
-        update_cache: true
-        cache_valid_time: 3600
+    # The mapper's fstab line is `nofail`, so a crypttab entry naming a device
+    # this host does not have fails systemd-cryptsetup@<mapper> quietly on every
+    # boot. Decide BEFORE any crypttab/fstab write.
+    - name: Stat the backing swap device
+      ansible.builtin.stat:
+        path: "{{ encrypted_swap_source_device }}"
+        follow: true
+      register: encrypted_swap_source_stat
 
-    # crypttab: systemd-cryptsetup opens <source> with a RANDOM key from
-    # /dev/urandom (plain mode — no `luks` option) and mkswaps the mapper (the
-    # `swap` option) at every boot, so the on-disk swap is unrecoverable after a
-    # reboot. Managed as a single keyed line so a future crypttab entry is
-    # untouched.
-    - name: Ensure /etc/crypttab exists
-      ansible.builtin.file:
-        path: /etc/crypttab
-        state: touch
-        owner: root
-        group: root
-        mode: "0600"
-        modification_time: preserve
-        access_time: preserve
+    - name: Record whether the backing swap device is usable
+      ansible.builtin.set_fact:
+        encrypted_swap_source_present: >-
+          {{ (encrypted_swap_source_stat.stat.exists | default(false))
+             and (encrypted_swap_source_stat.stat.isblk | default(false)) }}
 
-    - name: Manage the encrypted-swap crypttab entry
+    - name: Assert the backing swap device exists
+      ansible.builtin.assert:
+        that:
+          - encrypted_swap_source_present | bool
+        fail_msg: >-
+          encrypted_swap_source_device ({{ encrypted_swap_source_device }}) is
+          not a block device on {{ inventory_hostname }}. The default is the
+          Proxmox installer's LVM layout — point it at this host's swap device,
+          or set encrypted_swap_require_source_device false to self-skip the
+          role here instead of failing.
+        success_msg: "Backing swap device {{ encrypted_swap_source_device }} present"
+      when: encrypted_swap_require_source_device | bool
+
+    # A host that lost its backing device after an earlier converge still
+    # carries the entries that converge wrote. Leaving them is exactly the boot
+    # failure the stat above exists to prevent — systemd-cryptsetup@<mapper>
+    # fails on every boot naming a device that is gone — so the self-skip arm
+    # reconciles them away rather than only declining to write new ones.
+    - name: Remove the encrypted-swap crypttab entry when the backing device is absent
       ansible.builtin.lineinfile:
         path: /etc/crypttab
         regexp: '^{{ encrypted_swap_mapper_name | regex_escape }}\s+'
-        line: >-
-          {{ encrypted_swap_mapper_name }} {{ encrypted_swap_source_device }}
-          /dev/urandom swap,cipher={{ encrypted_swap_cipher }},size={{ encrypted_swap_key_size }},sector-size={{ encrypted_swap_sector_size }}
-        owner: root
-        group: root
-        mode: "0600"
+        state: absent
+      when: not (encrypted_swap_source_present | bool)
 
-    # fstab: `nofail` lets `swapon -a` skip the mapper while it is still absent
-    # (the pre-reboot defer window), so swap is never zero in any state; `pri=`
-    # makes the kernel prefer the encrypted mapper the moment it comes up.
-    - name: Ensure the encrypted-swap fstab line (mapper, higher priority, nofail)
+    - name: Remove the encrypted-swap fstab line when the backing device is absent
       ansible.builtin.lineinfile:
         path: /etc/fstab
         regexp: '^/dev/mapper/{{ encrypted_swap_mapper_name | regex_escape }}\s+'
-        line: "/dev/mapper/{{ encrypted_swap_mapper_name }} none swap sw,pri={{ encrypted_swap_mapper_swap_priority }},nofail 0 0"
-        owner: root
-        group: root
-        mode: "0644"
-
-    # Purge rather than orphan: the script carries the unsafe
-    # swapoff→open→swapon path, which must not stay hand-runnable on disk.
-    - name: Remove the obsolete encrypted-swap live-switch script
-      ansible.builtin.file:
-        path: /usr/local/sbin/encrypted-swap-switch.sh
         state: absent
+      when: not (encrypted_swap_source_present | bool)
 
-    # Boot finalize: after the activation reboot, drop the plaintext backing swap
-    # and comment its fstab line exactly once (guarded on the mapper being ACTIVE
-    # swap in /proc/swaps); and — if the plaintext line won the boot race so the
-    # mapper never opened — complete the switch at boot (memory empty, so the
-    # swapoff cannot OOM), always keeping a working swap on any failure.
-    - name: Deploy the encrypted-swap boot finalize script
-      ansible.builtin.template:
-        src: encrypted-swap-finalize.sh.j2
-        dest: /usr/local/sbin/encrypted-swap-finalize.sh
-        owner: root
-        group: root
-        mode: "0755"
-
-    - name: Deploy the encrypted-swap boot finalize unit
-      ansible.builtin.template:
-        src: encrypted-swap-finalize.service.j2
-        dest: /etc/systemd/system/encrypted-swap-finalize.service
-        owner: root
-        group: root
-        mode: "0644"
-
-    - name: Enable the encrypted-swap boot finalize unit
+    - name: Disable the boot finalize unit when the backing device is absent
       ansible.builtin.systemd:
         name: encrypted-swap-finalize.service
-        enabled: true
+        enabled: false
         daemon_reload: true
+      failed_when: false
+      when:
+        - not (encrypted_swap_source_present | bool)
+        - not ansible_check_mode
 
-    # Reload so the crypttab generator materializes systemd-cryptsetup@<mapper>
-    # now (it also runs at boot); harmless, and keeps the unit inspectable after
-    # a deploy.
-    - name: Reload systemd so the crypttab generator materializes the unit
-      ansible.builtin.systemd:
-        daemon_reload: true
-      when: not ansible_check_mode
-
-    - name: Report encrypted-swap configuration state
+    - name: Report encrypted swap skipped for a missing backing device
       ansible.builtin.debug:
         msg: >-
-          encrypted_swap: crypttab + fstab + boot finalize configured on
-          {{ inventory_hostname }} — the encrypted mapper activates on the next
-          reboot (swap is ephemeral; there is no live switchover). Any existing
-          plaintext swap keeps running until then.
+          encrypted_swap SKIPPED on {{ inventory_hostname }}:
+          {{ encrypted_swap_source_device }} is not a block device and
+          encrypted_swap_require_source_device is false. Nothing new was written,
+          and any crypttab/fstab entry from an earlier converge plus the boot
+          finalize unit have been reconciled away.
+      when: not (encrypted_swap_source_present | bool)
+
+    - name: Write the encrypted-swap configuration
+      when: encrypted_swap_source_present | bool
+      block:
+        # BOTH packages: Debian trixie / PVE 9 split the crypttab generator and
+        # the systemd-cryptsetup@.service template into a separate
+        # systemd-cryptsetup package. Without it the generator never
+        # materializes the unit and swap never activates at boot; cryptsetup
+        # alone is only the userspace tools.
+        - name: Install cryptsetup + the systemd crypttab machinery
+          ansible.builtin.apt:
+            name:
+              - cryptsetup
+              - systemd-cryptsetup
+            state: present
+            update_cache: true
+            cache_valid_time: 3600
+
+        # crypttab: systemd-cryptsetup opens <source> with a RANDOM key from
+        # /dev/urandom (plain mode — no `luks` option) and mkswaps the mapper
+        # (the `swap` option) at every boot, so the on-disk swap is
+        # unrecoverable after a reboot. Managed as a single keyed line so a
+        # future crypttab entry is untouched.
+        - name: Ensure /etc/crypttab exists
+          ansible.builtin.file:
+            path: /etc/crypttab
+            state: touch
+            owner: root
+            group: root
+            mode: "0600"
+            modification_time: preserve
+            access_time: preserve
+
+        - name: Manage the encrypted-swap crypttab entry
+          ansible.builtin.lineinfile:
+            path: /etc/crypttab
+            regexp: '^{{ encrypted_swap_mapper_name | regex_escape }}\s+'
+            line: >-
+              {{ encrypted_swap_mapper_name }} {{ encrypted_swap_source_device }}
+              /dev/urandom swap,cipher={{ encrypted_swap_cipher }},size={{ encrypted_swap_key_size }},sector-size={{ encrypted_swap_sector_size }}
+            owner: root
+            group: root
+            mode: "0600"
+
+        # fstab: `nofail` lets `swapon -a` skip the mapper while it is still
+        # absent (the pre-reboot defer window), so swap is never zero in any
+        # state; `pri=` makes the kernel prefer the encrypted mapper the moment
+        # it comes up.
+        - name: Ensure the encrypted-swap fstab line (mapper, higher priority, nofail)
+          ansible.builtin.lineinfile:
+            path: /etc/fstab
+            regexp: '^/dev/mapper/{{ encrypted_swap_mapper_name | regex_escape }}\s+'
+            line: "/dev/mapper/{{ encrypted_swap_mapper_name }} none swap sw,pri={{ encrypted_swap_mapper_swap_priority }},nofail 0 0"
+            owner: root
+            group: root
+            mode: "0644"
+
+        # Purge rather than orphan: the script carries the unsafe
+        # swapoff→open→swapon path, which must not stay hand-runnable on disk.
+        - name: Remove the obsolete encrypted-swap live-switch script
+          ansible.builtin.file:
+            path: /usr/local/sbin/encrypted-swap-switch.sh
+            state: absent
+
+        # Boot finalize: after the activation reboot, drop the plaintext backing
+        # swap and comment its fstab line exactly once (guarded on the mapper
+        # being ACTIVE swap in /proc/swaps); and — if the plaintext line won the
+        # boot race so the mapper never opened — complete the switch at boot
+        # (memory empty, so the swapoff cannot OOM), always keeping a working
+        # swap on any failure.
+        - name: Deploy the encrypted-swap boot finalize script
+          ansible.builtin.template:
+            src: encrypted-swap-finalize.sh.j2
+            dest: /usr/local/sbin/encrypted-swap-finalize.sh
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Deploy the encrypted-swap boot finalize unit
+          ansible.builtin.template:
+            src: encrypted-swap-finalize.service.j2
+            dest: /etc/systemd/system/encrypted-swap-finalize.service
+            owner: root
+            group: root
+            mode: "0644"
+
+        - name: Enable the encrypted-swap boot finalize unit
+          ansible.builtin.systemd:
+            name: encrypted-swap-finalize.service
+            enabled: true
+            daemon_reload: true
+
+        # Reload so the crypttab generator materializes
+        # systemd-cryptsetup@<mapper> now (it also runs at boot); harmless, and
+        # keeps the unit inspectable after a deploy.
+        - name: Reload systemd so the crypttab generator materializes the unit
+          ansible.builtin.systemd:
+            daemon_reload: true
+          when: not ansible_check_mode
+
+        - name: Report encrypted-swap configuration state
+          ansible.builtin.debug:
+            msg: >-
+              encrypted_swap: crypttab + fstab + boot finalize configured on
+              {{ inventory_hostname }} — the encrypted mapper activates on the
+              next reboot (swap is ephemeral; there is no live switchover). Any
+              existing plaintext swap keeps running until then.

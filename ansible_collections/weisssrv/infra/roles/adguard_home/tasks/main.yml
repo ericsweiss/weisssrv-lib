@@ -181,9 +181,8 @@
 - name: Flush handlers before starting service
   ansible.builtin.meta: flush_handlers
 
-# The .sig file has been observed with restrictive perms, unreadable by the
-# non-root adguard user; failed_when: false because it may legitimately not
-# exist.
+# AdGuardHome.sig can ship non-world-readable; the adguard user must read it.
+# failed_when: false — it may legitimately be absent.
 - name: Ensure AdGuardHome.sig is readable by the adguard user
   ansible.builtin.file:
     path: "{{ adguard_home_install_path }}/AdGuardHome.sig"
@@ -232,10 +231,10 @@
     body_format: json
     body:
       web:
-        ip: "0.0.0.0"
+        ip: "{{ adguard_home_web_bind }}"
         port: "{{ adguard_home_http_port }}"
       dns:
-        ip: "0.0.0.0"
+        ip: "{{ adguard_home_dns_bind }}"
         port: "{{ adguard_home_dns_port }}"
       username: "{{ adguard_home_admin_user }}"
       password: "{{ adguard_home_admin_password }}"
@@ -364,7 +363,7 @@
 # -4 because an IPv6 answer would fail the regex.
 - name: Verify AdGuard Home DNS resolution is working
   ansible.builtin.command:
-    cmd: dig -4 @127.0.0.1 google.com +short +time=5
+    cmd: "dig -4 @127.0.0.1 {{ adguard_home_dns_probe_name | quote }} +short +time=5"
   register: adguard_home_dns_test
   changed_when: false
   retries: 5
@@ -379,7 +378,9 @@
 
 - name: Display DNS verification result
   ansible.builtin.debug:
-    msg: "DNS verification successful - resolved google.com to: {{ adguard_home_dns_test.stdout | default('N/A') }}"
+    msg: >-
+      DNS verification successful - resolved {{ adguard_home_dns_probe_name }}
+      to: {{ adguard_home_dns_test.stdout | default('N/A') }}
   when:
     - not ansible_check_mode
     - not (adguard_home_skip_resolv_conf_update | default(false))

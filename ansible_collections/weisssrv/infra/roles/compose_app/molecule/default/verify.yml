@@ -19,7 +19,6 @@
           - (compose_app_unit_a.content | b64decode) is search('RequiresMountsFor=/mnt/testapp-a /mnt/testapp-b')
           - (compose_app_unit_a.content | b64decode) is search('# Mount-ordering comment line one.')
           - (compose_app_unit_a.content | b64decode) is search('WorkingDirectory=/opt/testapp/compose')
-          # RemainAfterExit standardised to `yes` (systemd treats yes/true alike).
           - (compose_app_unit_a.content | b64decode) is search('RemainAfterExit=yes')
           - (compose_app_unit_a.content | b64decode) is search('# Reconcile comment line one.')
           - (compose_app_unit_a.content | b64decode) is search('ExecStart=/usr/bin/docker compose up -d --remove-orphans')

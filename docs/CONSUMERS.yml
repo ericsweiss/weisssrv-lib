@@ -53,6 +53,12 @@ consumers:
           - /ci/build/docker-build.yml
           - /ci/release/semantic-release.yml
           - /ci/maintenance/version-bump-bot.yml  # weisssrv runs a local bump job
+        not_yet_adopted:
+          # Extracted FROM this pipeline's local .deploy-base / .kubectl-setup;
+          # weisssrv still carries its own copies. Adopt on the next bump.
+          - /ci/deploy/deploy-base.yml
+          - /ci/deploy/kubectl-setup.yml
+          - /ci/deploy/ansible-deploy.yml
       ansible_collection:
         file: ansible/requirements.yml
         status: >-
@@ -65,50 +71,24 @@ consumers:
           Not consumed. weisssrv's terraform/{cloudflare,tailscale,authentik}
           are root modules written before the shapes were extracted; they are a
           candidate for adoption, not a current pin.
-      vendored_scripts:
-        # Each copy carries a DUAL-MAINTAINED banner naming the library. The CI
-        # templates take the script PATH from the consumer tree, so these copies
-        # are the ones that actually run. Re-vendor them on every bump.
-        #
-        # SOURCE OF TRUTH: scripts/test_vendored_byte_identity.py in weisssrv,
-        # which carries TWO registries and this list must mirror both — it gates
-        # every entry against the library at the pinned ref and never skips.
-        #   VENDORED       — scripts/ copies, where both sides share the path
-        #                    (the `scripts/*` entries below).
-        #   VENDORED_PATHS — copies vendored to a DIFFERENT path here than in
-        #                    the library, because the tool discovers them by
-        #                    their conventional name at the repo root. Listing
-        #                    such a file under VENDORED would look for it at
-        #                    scripts/<name> upstream and fail; it needs the
-        #                    explicit local->library mapping instead (the
-        #                    non-scripts/ entry below).
-        - ruff.toml  # <- lint/ruff.toml upstream; gated via VENDORED_PATHS, not VENDORED
-        - scripts/b2-bucket-drift.py
-        - scripts/check-deploy-coverage.sh
-        - scripts/check-doc-links.py
-        - scripts/check-hpa-vpa-invariant.py
-        - scripts/check-kubectl-version-pin.py
-        - scripts/check-lib-pins.py
-        - scripts/check-taskfile.sh
-        - scripts/check-versions.py
-        - scripts/find-pve-host-for-vm.sh
-        - scripts/find-reachable-host.sh
-        - scripts/flux-render.sh
-        - scripts/generate-hosts-env.py
-        - scripts/generate-versions-configmap.py
-        - scripts/kubeconform-skipped.py
-        - scripts/lint-prometheus-config.sh
-        - scripts/molecule-retry.sh
-        - scripts/resolve-tool.sh
-        - scripts/sanitize-junit-expected-failures.py
-        - scripts/shell-lib.sh
-        - scripts/validate-helm-values.py
-        - scripts/version-bump-mr.py
-        - scripts/version-check-ci.py
-      forked_scripts:
-        # Declared forks (test_vendored_byte_identity.py::FORKED): NOT compared,
-        # and re-converged by getting the difference upstream.
-        - scripts/extract-prometheus-config.py  # unions observability/rules/* with the HelmRelease
+      vendored_copies: >-
+        Recorded in the library at scripts/vendored-paths.yml under
+        consumers.weisssrv, and checked from here by
+        scripts/check-vendored-copies.py against a library checkout. That
+        registry is the single list — vendored (byte-identical) and forked
+        (deliberately divergent, with the library-side sha they were last
+        reconciled against) — so a file the library starts or stops shipping
+        reaches this gate at the next bump with nothing to maintain here. The
+        copies are what actually RUN: the CI templates take the script path
+        from the consumer tree, so re-vendor on every bump. Covers scripts/
+        copies plus the root ruff.toml (lint/ruff.toml upstream, discovered by
+        the tool at its conventional root name), which is byte-identical here
+        and registered as vendored — only the two templates fork it. The lint
+        profiles ARE forks here (.gitleaks.toml,
+        .gitlab/secret-detection-ruleset.toml, .editorconfig,
+        .pre-commit-config.yaml), as is the one forked script,
+        scripts/extract-prometheus-config.py: it unions observability/rules/*
+        with the HelmRelease.
       cli: not installed
       molecule_images: >-
         Pulls the library's published
@@ -126,54 +106,112 @@ consumers:
       `tags: []` and the non-root-safe input set.
     profile: tenant
     pins:
+      # TWO pipelines, and they are NOT the same set — the same repo-vs-tenant
+      # split `vendored_copies` below already handles. Keyed separately so an
+      # input-default change is judged against the pipeline that actually
+      # includes the template.
       ci_includes:
+        scope: the template repo's OWN pipeline (what CI runs on this repo)
         single_source: .gitlab-ci.yml -> variables.WEISSSRV_LIB_REF
         enforced_by: scripts/check-lib-pins.py (vendored) + its own tests/
-        # 10 template files across 11 entries — flux-lint is included TWICE.
+        # 7 entries, all unconditional — a plain YAML file, no jinja.
         templates:
           - /ci/lint/yaml-lint.yml
-          - /ci/validate/flux-lint.yml       # substitute: false (non-root)
-          - /ci/validate/flux-lint.yml       # again as flux-lint-optional, over kubernetes/flux/optional
-          - /ci/lint/shellcheck.yml
-          # targets "scripts tests"; NO config: input — ruff discovers the
-          # vendored root ruff.toml, the same file `task python-lint` and the
-          # github shape resolve. changes: **/*.py, ruff.toml, .gitlab-ci.yml
+          # targets "scripts"; NO config: input — ruff discovers the root
+          # ruff.toml, the same file `task python-lint` resolves.
           - /ci/lint/python-lint.yml
-          - /ci/lint/docs-link-check.yml
+          # test_dir: tests, pip_packages: copier + jinja2, changes: **/*.
+          # The suite is copier.yml schema checks + the render invariants
+          # (validate_render.py, test_render.py, test_copier_config.py,
+          # test_check_lib_pins.py).
           - /ci/test/python-tests.yml
+          - /ci/lint/docs-link-check.yml
           - /ci/security/secret-detection.yml
-          - /ci/build/docker-build.yml       # needs a privileged runner
+          - /ci/review/pr-agent.yml
+          - /ci/release/semantic-release.yml
+        not_consumed:
+          - /ci/validate/terraform.yml       # ships no Terraform
+          - /ci/validate/flux-lint.yml       # the manifests are jinja SOURCES here, not renderable
+          - /ci/lint/ansible-lint.yml
+          - /ci/lint/shellcheck.yml
+          - /ci/build/docker-build.yml       # the Dockerfile is a template file, not built here
+          - /ci/maintenance/version-check.yml
+          - /ci/maintenance/version-bump-bot.yml
+          - /ci/templates/*
+          - /ci/deploy/*
+      rendered_tenant_ci_includes:
+        scope: >-
+          the pipeline copier RENDERS into a generated tenant, from
+          "template/{% if ci_shape == 'gitlab_selfhosted' %}.gitlab-ci.yml{% endif %}.jinja".
+          Only the gitlab_selfhosted shape consumes the library at all — the
+          github shape gets vendored Actions workflows, `none` gets no pipeline.
+        single_source: copier.yml -> lib_ref (rendered into variables.WEISSSRV_LIB_REF and every literal ref:)
+        enforced_by: >-
+          tests/test_check_lib_pins.py + the render tests in this repo; the
+          generated tenant then runs its own vendored check-lib-pins.py.
+        # 8 entries. docker-build is the ONE copier-gated include
+        # (enable_image_build); the other 7 are unconditional.
+        templates:
+          - /ci/lint/yaml-lint.yml
+          - /ci/validate/flux-lint.yml       # substitute: false (non-root), over kubernetes/flux
+          - /ci/lint/python-lint.yml         # targets "scripts", vendored template/ruff.toml
+          - /ci/lint/docs-link-check.yml
+          - /ci/security/secret-detection.yml
+          - /ci/build/docker-build.yml       # copier-gated on enable_image_build; privileged runner
           - /ci/release/semantic-release.yml
           - /ci/review/pr-agent.yml
         not_consumed:
           - /ci/validate/terraform.yml       # absent entirely (tenants ship no Terraform)
           - /ci/lint/ansible-lint.yml
+          - /ci/lint/shellcheck.yml          # a rendered tenant ships no shell scripts
+          - /ci/test/python-tests.yml        # and no test suite of its own
           - /ci/maintenance/version-check.yml
           - /ci/maintenance/version-bump-bot.yml
           - /ci/templates/*
+          - /ci/deploy/*                     # Flux pulls; a tenant never deploys
       ansible_collection: not consumed (tenants ship no Ansible)
       terraform_modules: not consumed
-      vendored_scripts:
-        # Gated by tests/test_vendored_scripts.py, which compares every file in
-        # scripts/ that is not in its LOCAL set against the library at the
-        # pinned ref (WEISSSRV_REQUIRE_CLI=1 in CI, so it cannot skip).
-        - scripts/check-doc-links.py
-        - scripts/check-lib-pins.py
-        - scripts/semantic-release.py
-        - .github/workflows/release.yml   # from ci/release/github-release-workflow.example.yml
+      vendored_copies: >-
+        Recorded in the library at scripts/vendored-paths.yml under
+        consumers.weisssrv-app-template, and checked from here by
+        scripts/check-vendored-copies.py — the only gate on this relationship
+        now that the consumer's own scripts/-only iterator is gone. It also
+        reaches past scripts/: tests/test_check_lib_pins.py (a byte-identical
+        copy of the canonical suite, so a library change to check-lib-pins.py
+        reds this gate until re-vendored), the three workflow copies
+        (release.yml, ci.yml, build-image.yml — from
+        ci/release/github-release-workflow.example.yml and ci/github/*), and the
+        lint-profile forks.
+        SINCE THE COPIER CONVERSION the registry's consumer paths follow the
+        template layout: anything rendered into a tenant sits under template/,
+        with the jinja conditional directory names (ci_shape,
+        enable_image_build) as literal path segments; only the copies this repo
+        runs on ITSELF stay unprefixed. Several files exist TWICE and are
+        registered twice, because they drift separately — scripts/
+        (check-doc-links.py, check-lib-pins.py, semantic-release.py), the lint
+        profiles (ruff.toml, .gitleaks.toml, .editorconfig) and
+        .gitlab/secret-detection-ruleset.toml, whose root copy is what this
+        repo's OWN pipeline loads. Only .pre-commit-config.yaml exists on the
+        tenant side alone. Moving any of them is a library-release event, since
+        the registry is library-owned — which is why the release checklist
+        sequences this repo's conversion MR ahead of the tag. build-image.yml's
+        consumer path carries the enable_image_build conditional too, so a
+        tenant that runs an upstream image gets no packages:write workflow.
       cli:
-        files:
-          - scripts/rename.sh -> LIB_REF default
-          - scripts/select-ci.sh -> LIB_REF default
+        files: []
         note: >-
-          TWO more literals of the same tag, both outside the include block, so
-          check-lib-pins.py does not see either. The wrappers pip-install the
-          CLI from git at that ref; a stale value scaffolds with an old CLI.
+          None. The shell wrappers that carried a second, unchecked literal of
+          the tag (rename.sh, select-ci.sh) are gone with the scaffolding CLI
+          they called: this repo is a copier template now, rendered by
+          `weisssrv-new-project new-app`, and the CI shape is the `ci_shape`
+          answer. As with the cluster template, the CLI version and the template
+          version couple at generation time rather than pinning in the output,
+          so check-lib-pins.py sees every remaining literal.
       contract_tests: >-
-        cli/tests/test_template_contract.py (in THIS repo) asserts the library's
-        scaffold fixture is byte-identical to this template's files. A change to
-        either is a coordinated two-repo edit; re-copy the fixture from the
-        template before the library MR.
+        None in this repo. The library no longer carries a byte-identical
+        scaffold fixture of this template; the copy relationship is recorded in
+        scripts/vendored-paths.yml and checked from the consumer side by
+        scripts/check-vendored-copies.py.
 
   - name: weisssrv-cluster-template
     url: https://git.ericsweiss.com/eric/weisssrv-cluster-template
@@ -191,7 +229,7 @@ consumers:
       single_source: copier.yml -> lib_ref (default), plus lib_url and lib_project
       ci_includes:
         file: "template/.gitlab-ci.yml.jinja — `ref: {{ lib_ref }}` on every entry"
-        # 16 files; 15 unconditional, semantic-release copier-gated on
+        # 17 files; 16 unconditional, semantic-release copier-gated on
         # enable_semantic_release.
         templates:
           - /ci/lint/yaml-lint.yml
@@ -210,6 +248,12 @@ consumers:
           - /ci/templates/dep-cache.yml
           - /ci/templates/install-1password.yml
           - /ci/templates/terraform-http-backend.yml
+          - /ci/deploy/deploy-base.yml         # op_vault + ansible_version inputs
+        not_yet_adopted:
+          # The rendered deploy jobs are per-playbook and name their own script,
+          # so neither the kubectl layer nor the generic job template applies.
+          - /ci/deploy/kubectl-setup.yml
+          - /ci/deploy/ansible-deploy.yml
       ansible_collection:
         file: template/ansible/requirements.yml.jinja
         pin: "version: {{ lib_ref }} against {{ lib_url }}"
@@ -219,16 +263,31 @@ consumers:
           - template/terraform/cloudflare/main.tf.jinja        # cloudflare-zone
           - template/terraform/authentik/main.tf.jinja         # authentik-sso
           - template/terraform/{% if vpn_tailscale %}tailscale{% endif %}/main.tf.jinja  # tailscale-acl
-      vendored_scripts:
+      vendored_copies:
         note: >-
-          COMMITTED, not fetched: template/scripts/ holds ~26 tracked files —
-          the vendored library scripts plus this cluster's site-data configs
+          Recorded in the library at scripts/vendored-paths.yml under
+          consumers.weisssrv-cluster-template (most paths are under template/,
+          since they are rendered into the generated repo; the unprefixed ones
+          are the copies this repo runs on ITSELF — scripts/check-doc-links.py,
+          scripts/check-lib-pins.py, scripts/semantic-release.py, its lint
+          profiles and its secret-detection ruleset). BOTH sets are registered:
+          the three scripts and the tenant-side lint profiles (template/ruff.toml,
+          template/.editorconfig) exist twice and drift separately. Checked by
+          scripts/check-vendored-copies.py, which
+          tests/validate_render.py:check_vendored calls via
+          _check_registered_copies — so the registry-only entries
+          (tests/test_check_lib_pins.py, the lint-profile forks) ARE reached;
+          it is the sibling directory WALK, over the render's scripts/, that
+          sees only scripts. template/.gitleaks.toml.jinja is deliberately
+          unregistered: it is a Jinja source with `{{ cluster_name }}`
+          interpolation, so it has no bytes comparable to lint/gitleaks.toml.
+          COMMITTED, not fetched: template/scripts/ holds the vendored library
+          scripts plus this cluster's site-data configs
           (deploy-coverage.conf, helm-values-releases.yaml,
-          autoscaling-policy.yaml, hosts.env, hosts-env-map.yml) and the one
-          locally-written flux-env.sh. They must be committed: the generated
-          repo's tests/ import check-lib-pins.py at module scope. Byte-identity
-          is gated by tests/validate_render.py:check_vendored, over BOTH the
-          render's scripts/ and this template repo's own scripts/.
+          autoscaling-policy.yaml, netpol-except.yaml,
+          alertmanager-behaviour.yaml, hosts.env, hosts-env-map.yml) and the
+          one locally-written flux-env.sh. They must be committed: the
+          generated repo's tests/ import check-lib-pins.py at module scope.
         file: template/Taskfile.yml.jinja -> LIB_REF
       cli:
         note: >-
@@ -243,19 +302,18 @@ pin_surfaces:
   - id: ci_include_ref
     enforced: scripts/check-lib-pins.py
   - id: ansible_collection_version
-    # SCOPED: enforced in some consumers, still a manual walk in others. Do not
-    # read "enforced" as fleet-wide.
     enforced: >-
+      scripts/check-lib-pins.py (vendored) — it reads the sibling
+      ansible/requirements.yml and holds the collection version: equal to
+      variables.WEISSSRV_LIB_REF; --fix syncs it. Belt-and-braces:
       weisssrv-cluster-template
       template/tests/test_lib_pins.py::test_collection_and_taskfile_pin_the_same_ref
       (in the GENERATED repo) + weisssrv scripts/test_site_configs.py
       (requirements.yml vs variables.WEISSSRV_LIB_REF)
     note: >-
-      SCOPE — cluster-template gates the pin inside the repos it generates, and
-      weisssrv gates its own ansible/requirements.yml. The app template ships no
-      Ansible, so there is nothing to gate there. If the weisssrv gate is not in
-      the tree you are releasing from, treat this row as a manual walk for
-      weisssrv.
+      The gate derives the wanted ref from .gitlab-ci.yml, so a consumer with
+      no .gitlab-ci.yml cannot run it. The app template ships no Ansible, so
+      there is nothing to gate there.
   - id: terraform_module_ref
     enforced: >-
       weisssrv-cluster-template
@@ -267,19 +325,42 @@ pin_surfaces:
   - id: vendored_script_copies
     enforced: >-
       weisssrv scripts/test_vendored_byte_identity.py (never skips) +
-      weisssrv-app-template tests/test_vendored_scripts.py +
-      weisssrv-cluster-template tests/validate_render.py:check_vendored
+      weisssrv-cluster-template tests/validate_render.py:check_vendored +
+      weisssrv-app-template tests/validate_render.py:check_registered_copies
     note: >-
-      The three gates read the library DIFFERENTLY, so "green" means three
-      different things. weisssrv reads blobs at the pinned ref
-      (`git show <ref>:scripts/<name>`) and falls back to the checkout's working
-      tree when the tag is not cut yet — which is what makes the
-      lib merge -> tag -> consumer MRs order workable. The app template REFUSES
-      to compare unless the checkout is provably AT the pinned ref (it reports
-      unavailable rather than comparing against the wrong file). The cluster
-      template compares against the working tree of whatever `--lib-path` points
-      at, which its CI clones at the fixture's lib_ref. Only the weisssrv gate
-      is pre-tag-tolerant.
+      ALL THREE consumers now drive scripts/check-vendored-copies.py against
+      scripts/vendored-paths.yml; no hand-maintained scripts/-only list is left.
+      None of the three adoptions has LANDED — all three are the in-flight MRs
+      that ship alongside this release, so the registry describes the target
+      state and each consumer's gate is red until its own MR merges. The
+      per-consumer wrappers differ in what else they do and in how they read the
+      library, which is what "green" means differently:
+      weisssrv (scripts/test_vendored_byte_identity.py) passes `--ref` at the
+      pin from .gitlab-ci.yml and falls back to the checkout's working tree when
+      the tag is not cut yet, announcing the fallback via a skip rather than
+      assuming it — the only pre-tag-tolerant wrapper, and it adds one local
+      smoke test the library cannot supply (a script sharing a name with a
+      library script must be registered).
+      weisssrv-cluster-template (tests/validate_render.py:check_vendored) runs
+      the registry gate via _check_registered_copies AND a directory walk over
+      the RENDER's scripts/, so the copy is proved right before copier touches
+      it and unchanged after.
+      weisssrv-app-template (tests/validate_render.py:check_registered_copies)
+      is the registry gate alone; its OLD scripts/-only iterator
+      (tests/test_vendored_scripts.py, which REFUSED to compare unless the
+      checkout was provably at the pinned ref) is deleted by the copier
+      conversion, which is why that repo's registry rows already use the
+      post-conversion template/ layout.
+      Both template wrappers pass `--lib-path` with NO `--ref`, so they compare
+      the library WORKING TREE unconditionally — which is exactly what makes the
+      lib-merge -> tag -> consumer-MR order workable for them too.
+    successor: >-
+      scripts/check-vendored-copies.py, driven by scripts/vendored-paths.yml —
+      one registry in the library, read by every consumer, reaching the
+      non-scripts/ copies a hand-maintained list misses (the lint profiles, the
+      vendored GitHub workflows, tests/test_check_lib_pins.py). This IS what
+      runs in all three consumers now; what is still per-consumer is only
+      whether that consumer's adoption MR has merged.
   - id: cli_install_spec
     enforced: false
   - id: molecule_image_tag

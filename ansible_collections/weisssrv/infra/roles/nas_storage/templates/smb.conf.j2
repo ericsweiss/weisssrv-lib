@@ -26,6 +26,11 @@
    server min protocol = SMB3_00
    smb encrypt = required
 
+   # Bind SMB only, so the encrypted-only posture holds at the socket rather
+   # than depending on a firewall to close the legacy NetBIOS ports.
+   smb ports = {{ nas_storage_samba_ports }}
+   disable netbios = {{ nas_storage_samba_disable_netbios | ternary('yes', 'no') }}
+
    # Performance
    socket options = TCP_NODELAY IPTOS_LOWDELAY
 

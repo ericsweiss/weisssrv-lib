@@ -20,7 +20,7 @@ provisioner:
         adguard_sync_enabled: true
         adguard_sync_version: 0.9.2
         # Custom textfile dir so the metrics-writer template's PROM_DIR is proven
-        # to track node_exporter_host_textfile_dir (not the hardcoded default).
+        # to track the node_exporter_host alias (not the hardcoded default).
         node_exporter_host_textfile_dir: /tmp/adg-textfile
         adguard_sync_schedule: '*:0/5'
         adguard_sync_origin: http://192.168.0.150:3000

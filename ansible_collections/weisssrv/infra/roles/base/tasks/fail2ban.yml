@@ -35,7 +35,6 @@
     mode: "0644"
   notify: Restart fail2ban
 
-# Deploy Proxmox filter only when pveproxy jail is enabled
 - name: Deploy Proxmox pveproxy filter
   ansible.builtin.template:
     src: proxmox.conf.j2
@@ -68,7 +67,6 @@
     state: started
     daemon_reload: true
 
-# Verify fail2ban is working (non-blocking check)
 - name: Check fail2ban status
   ansible.builtin.command: fail2ban-client status
   register: base_fail2ban_status

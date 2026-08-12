@@ -38,6 +38,22 @@ keeping its own CPU ML container as the failover.
 4. **Health wait** — polls `/ping`, which answers before the first-boot model
    download finishes (models load lazily).
 
+## VRAM
+
+`openvinotoolkit/openvino#32665`: on some Arc cards OCR batches leak device
+memory. The compose template carries a commented
+`MACHINE_LEARNING_MAX_BATCH_SIZE__OCR` line — uncomment it (or add the same key
+through the site's own override) to cap the batch size. The default stays
+upstream.
+
+## Deployed compose file
+
+`templates/docker-compose.yml.j2` is **byte-stable content**: the task that
+writes it notifies `Restart compose stack`, whose unit runs `docker compose
+down`, so any edit — including a comment reword — costs every consumer a full
+stack restart on its next converge. Land changes with a release tag so that
+restart is expected.
+
 ## Parameters
 
 | Variable | Meaning | Default |

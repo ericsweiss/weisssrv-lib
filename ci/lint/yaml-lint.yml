@@ -15,7 +15,9 @@ spec:
       description: Runner tag(s); pass `[]` for the tag-less tenant runner.
     yamllint_version:
       default: "1.38.0"
-      description: yamllint pip pin (kept in step with the CI image).
+      description: >-
+        yamllint pip pin, held equal to docker/molecule-ci/requirements.txt by
+        tests/test_lint_version_parity.py.
     config:
       default: "-d relaxed"
       description: >-

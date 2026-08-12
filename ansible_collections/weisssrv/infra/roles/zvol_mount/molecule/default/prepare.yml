@@ -34,13 +34,8 @@
       args:
         creates: /tmp/test-disk.img
 
-    # Loop devices are KERNEL-GLOBAL but the /dev/loopN NODES live in each
-    # container's private /dev, which has no udev, so `losetup -f --show` gets a
-    # free number and then fails "device node /dev/loopN (7:N) is lost". Follow
-    # the error's own hint: get a free number, mknod that node, then attach —
-    # retrying when a concurrent molecule job wins the same number in between
-    # (loops are shared host-wide). The -j probe makes a re-run reuse the
-    # existing attachment.
+    # Loop devices are kernel-global but their /dev nodes are per-container; the
+    # script below mknods the node itself and retries on contention (see inline).
     - name: Attach loopback device (dynamic allocation, mknod recovery, race-safe)
       ansible.builtin.shell: |
         set -euo pipefail

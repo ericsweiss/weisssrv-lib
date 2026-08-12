@@ -51,6 +51,9 @@ into the secret store the exporters read.
 | `proxmox_firewall_admin_ts_cidrs` | `[100.64.0.0/10]` | Admin overlay sources (Tailscale CGNAT range) |
 | `proxmox_firewall_smb_client_cidrs` | admin LAN | Sources allowed SMB (`sg-smb-server`) |
 | `proxmox_firewall_security_groups` | `[]` | Per-application groups (see below) |
+| `proxmox_firewall_dns_admin_ports` | `:443` + `:3000`, admin sets only | Resolver admin surfaces in `sg-dns` (`{port, sources[], comment?}`, asserted) |
+| `proxmox_firewall_metrics_scrape_ports` | `[]` | Application scrape targets appended to `sg-metrics` (same `{port, sources[], comment?}` schema, asserted) |
+| `proxmox_firewall_insecure_migration_ports` | `false` | Open the cleartext live-migration range (60000-60050) |
 | `proxmox_firewall_wan_wireguard_vips` | `[]` | VIPs the WAN WireGuard `-dest` rule is scoped to; empty = no such rule |
 | `proxmox_firewall_extra_aliases` | `[]` | `[ALIASES]` entries that are not inventory hosts (`{name, cidr, comment?}`) |
 | `proxmox_firewall_cluster_rules` | `[]` | Extra raw lines under cluster.fw `[RULES]` |
@@ -104,6 +107,37 @@ The role owns the **infrastructure** groups in `templates/cluster.fw.j2`:
 `sg-k3s-ingress-pub`, `sg-nfs-server`, `sg-metrics`, `sg-pve-cluster`,
 `sg-smb-server`, `sg-smtp-relay`, `sg-host-egress`.
 
+Two of those carry typed seams instead of hard-coded application ports, because
+`host.fw` applies `sg-metrics` on every node and the resolver admin API is a
+credentialed surface:
+
+- `sg-metrics` builds in only the exporters this collection's roles bind
+  (9100, 9101, 9134, 9167). An app's scrape port is site data:
+  `proxmox_firewall_metrics_scrape_ports: [{port: 32400, sources: [k3s_nodes], comment: plex}]`.
+
+  The template used to build in six application ports as well. They are removed
+  as of the release that added this seam, so a repo upgrading from the built-in
+  set re-declares whichever it still needs — note that 31100 is the one entry
+  whose source is NOT `k3s_nodes`:
+
+  ```yaml
+  proxmox_firewall_metrics_scrape_ports:
+    - {port: 8123, sources: [k3s_nodes], comment: home-assistant}
+    - {port: 32400, sources: [k3s_nodes], comment: plex}
+    - {port: 3000, sources: [k3s_nodes], comment: adguard API}
+    - {port: 7472, sources: [k3s_nodes], comment: metallb speaker}
+    - {port: 7473, sources: [k3s_nodes], comment: metallb controller}
+    - {port: 31100, sources: [core-cluster], comment: loki push NodePort}
+  ```
+- `sg-dns` builds in 53/853 and takes its admin surfaces from
+  `proxmox_firewall_dns_admin_ports`, which defaults to the two admin sets on
+  :443 and :3000. Admitting a scraper to the plaintext :3000 API means adding
+  its set to that entry's `sources` — that API answers HTTP Basic in the clear.
+- Both lists share one schema, asserted at role entry: `port` is required and
+  `sources` must be a non-empty **list**. A bare scalar (`sources: k3s_nodes`)
+  is rejected — the template iterates it per character, emitting rules that name
+  IPSets which do not exist.
+
 **Per-application** groups are site data in `proxmox_firewall_security_groups`,
 empty by default so an unconfigured deployment renders none. Each entry is
 `{name, rules}`; `rules` is a list of raw cluster.fw lines — comments included —
@@ -144,6 +178,13 @@ proxmox_firewall_security_groups:
 
 An authless port is a case where the group *is* the security boundary: admit
 only the specific consumers, and let an empty list admit nothing.
+
+The cleartext live-migration range (TCP 60000-60050) is **not** opened. PVE's
+default migration channel is the SSH tunnel, `weisssrv.infra.proxmox_ha` pins
+`migration: type=secure` in `datacenter.cfg`, and pre-authorising the range
+would make a flip to `insecure` — guest RAM on the wire in the clear — invisible
+at the packet filter. Set `proxmox_firewall_insecure_migration_ports: true` only
+alongside a deliberate `proxmox_ha_migration_type: insecure`.
 
 ## Architecture
 

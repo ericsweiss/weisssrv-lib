@@ -15,6 +15,10 @@ unbound_legacy_dropins:
 # pair it with a matching unbound_access_control entry.
 unbound_interface: 127.0.0.1
 unbound_interfaces: "{{ [unbound_interface] }}"
+# Name the readiness probe resolves through unbound_interface. It must resolve
+# to an A record via the configured forwarders, so a deployment without public
+# egress has to point this at a name its own upstreams answer.
+unbound_probe_name: google.com
 
 # Matches unbound_interfaces — nothing listens on ::1 by default, so no ACL is
 # emitted for it. unbound refuses every netblock not listed here.

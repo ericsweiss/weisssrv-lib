@@ -55,6 +55,7 @@ The role only handles the daemon. The handshake itself is triggered by:
 | `nfs_tls_cert_path` | `/etc/ssl/private/fullchain.pem` | Server cert (matches what `weisssrv.infra.acme_certs` distributes). |
 | `nfs_tls_key_path` | `/etc/ssl/private/privkey.pem` | Matching private key; asserted mode `0600`. |
 | `nfs_tls_truststore` | `/etc/ssl/certs/ca-certificates.crt` | CA bundle for validation. |
+| `nfs_tls_scrub_client_cert` | `true` | Remove cert + key on a client-only host; set `false` when another role owns those paths. |
 
 ### Private-key least privilege
 
@@ -66,6 +67,12 @@ the key only when `nfs_tls_client_cert: true`, and on a host that is neither a
 server nor an mTLS client it **removes** any `fullchain.pem`/`privkey.pem` a
 previous rollout staged. Keep such hosts out of the cert-distribution target
 list entirely; add one back only when migrating an export to `xprtsec=mtls`.
+
+That removal targets `nfs_tls_cert_path`/`nfs_tls_key_path`, whose defaults are
+also where `weisssrv.infra.acme_certs` installs a cert locally. On a host that
+legitimately holds a local cert *and* mounts NFS over TLS, set
+`nfs_tls_scrub_client_cert: false` — otherwise the two roles delete and
+reinstall the same files on alternate converges.
 
 ## Rollout order
 

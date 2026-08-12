@@ -13,6 +13,13 @@ Configures Proxmox VE High Availability for VMs and containers: HA rules
   and `comment`, including fields *removed* from config.
 - **Storage replication**: `pvesr` jobs, one per `<VMID>-<n>` id, with
   multi-target support so a guest can fail over to any node holding a replica.
+- **Cluster migration channel** (`datacenter.cfg`): pins `migration: type=` so
+  the safe default is declared rather than inherited. `insecure` sends guest RAM
+  in cleartext over TCP 60000-60050, and PVE only ever reads the live value, so
+  a one-off experiment stays in effect until something puts it back. `/etc/pve`
+  is clustered, so this reconcile is `run_once` — a play targeting the whole
+  group would otherwise have every host write the same key concurrently and hit
+  pmxcfs lock contention.
 
 `tasks/main.yml` runs the rules + resources reconciliation. Replication is
 **not** included there — run it in a separate play against the source nodes
@@ -26,6 +33,8 @@ with `tasks_from: replication`, or it executes once per host in the group.
 | `proxmox_ha_resources` | `[]` | Guests HA manages (schema below) |
 | `proxmox_ha_replication_jobs` | `[]` | `pvesr` replication jobs (schema below) |
 | `proxmox_ha_host_group` | `proxmox` | Inventory group whose membership is asserted before touching HA state |
+| `proxmox_ha_migration_type` | `secure` | `datacenter.cfg` migration channel; empty leaves `datacenter.cfg` unmanaged |
+| `proxmox_ha_migration_network` | `""` | Dedicated migration network (CIDR); empty preserves the live value |
 
 Every entry supports `enabled` (default `true`); setting it to `false` removes
 the rule / resource / job.
@@ -80,10 +89,16 @@ proxmox_ha_replication_jobs:
   name a stale target — read the live target from `pvesr list`.
 - **Deletes only where they can be repaired.** Jobs are deleted only while the
   guest is local, so a job that could not be recreated here is never removed.
-- **Orphaned jobs are reported, never deleted** — an incomplete config would
-  otherwise destroy jobs that are simply not codified yet.
+- **Orphans are reported, never deleted** — for replication jobs, HA rules and
+  HA resources alike. An incomplete config would otherwise destroy state that is
+  simply not codified yet, and a stale node-affinity rule silently constrains
+  placement of a resource the role believes it fully controls, so it is at least
+  named in the run output.
 - **Source drift is reported, not corrected**: a guest that migrated away
   needs either the inventory updated or the guest migrated back.
+- **The migration property string is replaced wholesale.** An empty
+  `proxmox_ha_migration_network` therefore carries the live network through the
+  set rather than clearing it.
 
 ## Requirements
 
@@ -92,7 +107,8 @@ proxmox_ha_replication_jobs:
 
 ## Files
 
-- `tasks/main.yml` — cluster/quorum gate, then rules + resources
+- `tasks/main.yml` — cluster/quorum gate, then the migration channel, rules + resources
+- `tasks/datacenter.yml` — cluster-wide `datacenter.cfg` migration options
 - `tasks/rules.yml` — node-affinity rules
 - `tasks/resources.yml` — HA resources
 - `tasks/replication.yml` — `pvesr` replication jobs (`tasks_from: replication`)

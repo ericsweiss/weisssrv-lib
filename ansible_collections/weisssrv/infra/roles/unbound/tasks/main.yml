@@ -35,7 +35,6 @@
       remote-control:
         control-enable: yes
         control-interface: /run/unbound.ctl
-        # Unix socket, no control certs (control-use-cert: no)
         control-use-cert: no
     dest: /etc/unbound/unbound.conf.d/remote-control.conf
     owner: root
@@ -60,7 +59,7 @@
 
 - name: Verify Unbound can resolve DNS queries
   ansible.builtin.command:
-    cmd: dig @127.0.0.1 -p {{ unbound_port }} google.com +short +time=5
+    cmd: dig @{{ unbound_interface }} -p {{ unbound_port }} {{ unbound_probe_name }} +short +time=5
   register: unbound_test
   changed_when: false
   retries: 3

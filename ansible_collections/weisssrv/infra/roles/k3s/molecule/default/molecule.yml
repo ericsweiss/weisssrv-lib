@@ -1,6 +1,12 @@
 ---
 platforms:
+  # Both platforms join k3s_servers (the k3s_server_group default) so the
+  # kube-vip agreement assert reads a REAL, populated group. Without the group
+  # the set is empty and the assert passes vacuously — which is what its
+  # membership clause now refuses.
   - name: k3s-server-test
+    groups:
+      - k3s_servers
     image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}
     pre_build_image: true
     privileged: true
@@ -21,6 +27,8 @@ platforms:
   # (k3s_is_first_server: false in host_vars): server stanza instead of
   # cluster-init, and no kube-vip manifest (first-server only).
   - name: k3s-server-join-test
+    groups:
+      - k3s_servers
     image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}
     pre_build_image: true
     privileged: true

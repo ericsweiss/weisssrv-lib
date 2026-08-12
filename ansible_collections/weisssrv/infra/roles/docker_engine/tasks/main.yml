@@ -69,7 +69,6 @@
       {{ docker_engine_repo_url }}
       {{ ansible_distribution_release }} stable
     apt_signed_repo_filename: docker
-    apt_signed_repo_keyring_mode: "0644"
   when: not (docker_engine_skip_install | default(false))
 
 - name: Install Docker Engine + plugins (pinned)

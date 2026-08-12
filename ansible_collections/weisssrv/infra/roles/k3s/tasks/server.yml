@@ -79,6 +79,14 @@
   ansible.builtin.include_tasks: audit.yml
   when: k3s_audit_enabled | bool
 
+# Opt-out converges: the config below drops the apiserver args, so the policy
+# file is left orphaned unless it is removed here.
+- name: Remove a previously deployed audit policy
+  ansible.builtin.file:
+    path: "{{ k3s_audit_policy_path }}"
+    state: absent
+  when: not (k3s_audit_enabled | bool)
+
 - name: Deploy k3s server config
   ansible.builtin.template:
     src: k3s-server-config.yaml.j2
@@ -126,6 +134,48 @@
       ({{ k3s_api_vip | default('?') }}) would silently fail to announce. Set
       k3s_kube_vip_interface in group_vars/k3s.yml or host_vars to the right interface.
     success_msg: "kube-vip interface {{ k3s_kube_vip_interface }} present"
+
+# The DaemonSet is rendered once, on the first server, so every node runs it
+# with THAT host's interface name. A per-host override elsewhere would satisfy
+# the per-host assert above and still be ignored — the exact silent no-announce
+# the assert exists to prevent.
+#
+# Runs on EVERY server, not just the renderer. Role defaults are not present in
+# hostvars, so a peer that never overrides the variable resolves to Undefined
+# and is defaulted to THIS host's value — which means the renderer's own view
+# collapses to one value precisely when the renderer is the outlier. Every
+# server evaluating the set from its own vantage makes that case fail: the
+# non-overriding servers see both names. This task ordering also puts the
+# failure before the manifest is written below.
+#
+# The membership clause is what stops the assert passing VACUOUSLY: a misnamed
+# k3s_server_group resolves to [] through the `| default([])`, and `0 <= 1` is
+# true. It also pins the group being read to one this server belongs to. Under
+# `--limit <first-server>` only the renderer evaluates the set, which no in-play
+# assert can see — see the role README's --limit note.
+- name: Assert every server names the same kube-vip interface
+  vars:
+    _kube_vip_interfaces: >-
+      {{ groups[k3s_server_group] | default([])
+         | map('extract', hostvars, 'k3s_kube_vip_interface')
+         | map('default', k3s_kube_vip_interface) | unique | list }}
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname in (groups[k3s_server_group] | default([]))
+      - _kube_vip_interfaces | length <= 1
+    fail_msg: >-
+      {{ inventory_hostname }} is not a member of k3s_server_group
+      '{{ k3s_server_group }}' (members:
+      {{ groups[k3s_server_group] | default([]) | join(', ') or '<none — the group does not exist>' }}),
+      so the interface set below was read from the wrong group — or the group is
+      right and the servers disagree. The kube-vip DaemonSet is rendered once
+      from the first server's k3s_kube_vip_interface and runs on every server, so
+      all servers must name the same interface. {{ inventory_hostname }} resolves
+      '{{ k3s_kube_vip_interface }}' and sees
+      {{ _kube_vip_interfaces | join(', ') }} across {{ k3s_server_group }}.
+      Point k3s_server_group at the control-plane group, give those nodes a
+      matching NIC name, or drop the per-host overrides.
+    success_msg: "All servers name the same kube-vip interface"
 
 - name: Deploy kube-vip manifest (first server only)
   ansible.builtin.template:
@@ -240,6 +290,16 @@
     - k3s_metrics_server_override_enabled | bool
     - k3s_is_first_server | default(false)
 
+# Opt-out converges: k3s auto-applies everything in the manifests dir, so a
+# left-behind override keeps taking effect after the flag is turned off.
+- name: Remove a previously deployed metrics-server override
+  ansible.builtin.file:
+    path: /var/lib/rancher/k3s/server/manifests/metrics-server-config.yaml
+    state: absent
+  when:
+    - not (k3s_metrics_server_override_enabled | bool)
+    - k3s_is_first_server | default(false)
+
 # Servers hold their etcd snapshots on local disk only; this copies the newest
 # one off-node. Opt-in, and off until the companion NFS export +
 # node_exporter_host exist (see defaults). No k3s_skip_install gate: the
@@ -248,3 +308,7 @@
 - name: Configure off-node etcd snapshot copy
   ansible.builtin.include_tasks: etcd-snapshot-offnode.yml
   when: k3s_etcd_snapshot_offnode_enabled | bool
+
+- name: Remove a previously deployed off-node etcd snapshot copy
+  ansible.builtin.include_tasks: etcd-snapshot-offnode-absent.yml
+  when: not (k3s_etcd_snapshot_offnode_enabled | bool)

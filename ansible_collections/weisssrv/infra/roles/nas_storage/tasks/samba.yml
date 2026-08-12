@@ -76,13 +76,13 @@
   args:
     executable: /bin/bash
   environment:
-    PASSWD: "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD') }}"
+    PASSWD: "{{ nas_storage_samba_password }}"
   register: nas_storage_samba_password_check
   changed_when: false
   failed_when: false
   no_log: true
   check_mode: false
-  when: lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD', default='') != ''
+  when: nas_storage_samba_password | length > 0
 
 - name: Warn when the Samba password could not be verified (smbd unreachable)
   ansible.builtin.debug:
@@ -90,7 +90,7 @@
       smbd was unreachable after retries; leaving the stored Samba password
       unchanged this run. If this is a first deploy, re-run once smbd is up.
   when:
-    - lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD', default='') != ''
+    - nas_storage_samba_password | length > 0
     - nas_storage_samba_password_check.rc | default(2) == 2
 
 - name: Set Samba password for nas user
@@ -98,23 +98,25 @@
     cmd: smbpasswd -a -s nas
     stdin: "{{ pw }}\n{{ pw }}"
   vars:
-    pw: "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD') }}"
+    pw: "{{ nas_storage_samba_password }}"
   when:
-    - lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD', default='') != ''
+    - nas_storage_samba_password | length > 0
     - nas_storage_samba_password_check.rc | default(2) == 1
   no_log: true
   register: nas_storage_samba_password_set
   changed_when: true
 
-# Without SAMBA_NAS_PASSWORD in the environment (plain ansible-playbook instead
-# of the `op run` Taskfile wrapper) the whole password block above skips — on a
-# first deploy the nas account is then left with NO password. Warn instead of
-# assert: molecule defines nas_storage_samba_shares with no secret injected, and the
-# account fails closed until the password is set.
-- name: Warn when SAMBA_NAS_PASSWORD is unset (Samba password unmanaged this run)
+# With nas_storage_samba_password empty (its default env lookup unset, i.e.
+# plain ansible-playbook instead of the `op run` Taskfile wrapper) the whole
+# password block above skips — on a first deploy the nas account is then left
+# with NO password. Warn instead of assert: molecule defines
+# nas_storage_samba_shares with no secret injected, and the account fails closed
+# until the password is set.
+- name: Warn when the Samba password is empty (unmanaged this run)
   ansible.builtin.debug:
     msg: >-
-      SAMBA_NAS_PASSWORD is not in the environment — the Samba password was
-      neither verified nor set this run. Supply it from the site's secret store;
-      until then a first-deploy account has no password.
-  when: lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD', default='') == ''
+      nas_storage_samba_password is empty (default: the SAMBA_NAS_PASSWORD
+      environment variable) — the Samba password was neither verified nor set
+      this run. Supply it from the site's secret store; until then a
+      first-deploy account has no password.
+  when: nas_storage_samba_password | length == 0

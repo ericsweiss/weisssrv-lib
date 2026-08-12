@@ -101,6 +101,29 @@
         or 'x-systemd.requires=zfs-mount.service' not in plain_bind_line.stdout
         or 'zfs-mount-encrypted' in plain_bind_line.stdout
 
+    # An explicit `zfs:` on the export OVERRIDES the mount-root derivation, in
+    # both directions. Definedness alone must not silence the classification
+    # assert while the guard and the anchor still key off the pattern — that was
+    # the fail-open the assert exists to close.
+    - name: Read the /export/declared-plain bind fstab entry (zfs false, outside the roots)
+      ansible.builtin.command: >-
+        grep -E '^/srv/plainbind[[:space:]]+/export/declared-plain[[:space:]]' /etc/fstab
+      register: declared_plain_line
+      changed_when: false
+      failed_when: >-
+        declared_plain_line.rc != 0
+        or 'zfs-mount' in declared_plain_line.stdout
+
+    - name: Read the /export/declared-zfs bind fstab entry (zfs true, outside the roots)
+      ansible.builtin.command: >-
+        grep -E '^/srv/pool2/data[[:space:]]+/export/declared-zfs[[:space:]]' /etc/fstab
+      register: declared_zfs_line
+      changed_when: false
+      failed_when: >-
+        declared_zfs_line.rc != 0
+        or 'x-systemd.requires=zfs-mount.service' not in declared_zfs_line.stdout
+        or 'nofail' not in declared_zfs_line.stdout
+
     - name: Read the nfs-server ordering drop-in
       ansible.builtin.slurp:
         src: /etc/systemd/system/nfs-server.service.d/zfs-encrypted.conf
@@ -130,10 +153,9 @@
       changed_when: false
       failed_when: media_mover_src_check.rc != 0
 
-    # The `${sval}` emit carries the preserved timestamp on failure: dropping
-    # it made every failed run also trip MediaMoverStale's absent() arm.
-    # (Behavior is executed by files/archive-metrics-behavior.sh; this pin
-    # catches a wholesale removal.)
+    # The `${sval}` emit carries the preserved timestamp on failure, so
+    # MediaMoverStale measures time-since-success. Behaviour is executed by
+    # files/archive-metrics-behavior.sh; this pin catches a wholesale removal.
     - name: Verify media-mover failure path preserves the last-success timestamp
       ansible.builtin.command: grep -qF 'media_mover_last_success_timestamp_seconds ${sval}' /usr/local/sbin/media-mover.sh
       register: media_mover_prev_check
@@ -185,7 +207,7 @@
       changed_when: false
       failed_when: swap_clean_timer.stdout | trim != 'enabled'
 
-    # Per-app appdata subdirectories (finding 204): created after the
+    # Per-app appdata subdirectories: created after the
     # mounted-dataset guard, owned 1000:2000 so the all_squashed appdata export
     # is writable by the floating k3s apps (Grafana + downloads/recipes).
     - name: Stat the grafana appdata subdirectory
@@ -403,9 +425,7 @@
         - 1785142817_2026_07_27_19.2.0-ee_gitlab_backup.tar.tmp
 
     # /etc/pve cluster-identity archive, exercised end to end against a synthetic
-    # source (the container has no pmxcfs). A producer with no test is how the
-    # bug class it closes — a "successful" run with no restorable artefact —
-    # gets shipped.
+    # source (the container has no pmxcfs).
     - name: Stat the pve-cluster backup script
       ansible.builtin.stat:
         path: /usr/local/sbin/pve-cluster-backup.sh
@@ -770,6 +790,302 @@
     - name: Assert archive/media-mover/swap-clean metric behavior (executed, not grepped)
       ansible.builtin.script: files/archive-metrics-behavior.sh
       changed_when: false
+
+    # MergerFS remount decision logic. The remount cycle itself unexports NFS
+    # paths and force-unmounts binds on a live fileserver (no FUSE in the
+    # container, so converge sets nas_storage_skip_mergerfs), but the facts that
+    # gate it are pure derivations — drive them from fabricated register results
+    # the way nic_tuning splits verify-offloads from assert-offloads.
+    - name: Drive the remount decision — nothing changed, every union healthy
+      ansible.builtin.include_tasks: ../../tasks/mergerfs_needs_remount.yml
+      vars:
+        nas_storage_mergerfs_fstab_changed:
+          results:
+            - {changed: false}
+            - {changed: false}
+        nas_storage_mergerfs_status_check:
+          results:
+            - {rc: 0}
+            - {rc: 0}
+
+    - name: Assert a healthy no-change state needs no remount
+      ansible.builtin.assert:
+        that:
+          - not (nas_storage_mergerfs_needs_remount | bool)
+        fail_msg: "An unchanged fstab with every union mounted must not trigger a remount cycle"
+        success_msg: "no-change path: needs_remount false"
+
+    - name: Drive the remount decision — one union's fstab options changed
+      ansible.builtin.include_tasks: ../../tasks/mergerfs_needs_remount.yml
+      vars:
+        nas_storage_mergerfs_fstab_changed:
+          results:
+            - {changed: false}
+            - {changed: true}
+        nas_storage_mergerfs_status_check:
+          results:
+            - {rc: 0}
+            - {rc: 0}
+
+    - name: Assert a changed fstab entry needs a remount
+      ansible.builtin.assert:
+        that:
+          - nas_storage_mergerfs_needs_remount | bool
+        fail_msg: "A changed fstab entry must trigger the remount cycle, or new options are never applied"
+        success_msg: "fstab-changed path: needs_remount true"
+
+    # The OTHER clause of the OR: nothing changed in fstab, but a union is not
+    # mounted / not mergerfs / lost inodecalc+noforget (any non-zero status
+    # check). This is the arm that recovers a union someone unmounted by hand —
+    # without it the media exports serve an unmounted stub forever.
+    - name: Drive the remount decision — fstab unchanged, one union unhealthy
+      ansible.builtin.include_tasks: ../../tasks/mergerfs_needs_remount.yml
+      vars:
+        nas_storage_mergerfs_fstab_changed:
+          results:
+            - {changed: false}
+            - {changed: false}
+        nas_storage_mergerfs_status_check:
+          results:
+            - {rc: 0}
+            - {rc: 1}
+
+    - name: Assert an unhealthy union needs a remount even with an unchanged fstab
+      ansible.builtin.assert:
+        that:
+          - nas_storage_mergerfs_needs_remount | bool
+        fail_msg: "A non-zero status check must trigger the remount cycle, or a hand-unmounted union never recovers"
+        success_msg: "status-check path: needs_remount true"
+
+    # Classification guard (tasks/assert_zfs_classification.yml), driven from
+    # fabricated inventory in all four shapes it decides. The live path is the
+    # converge above; these pin the FAIL-CLOSED direction, which no inventory
+    # that converges can exercise.
+    - name: Drive the classification guard — every source declared or derived
+      ansible.builtin.include_tasks: ../../tasks/assert_zfs_classification.yml
+      vars:
+        nas_storage_zfs_mount_roots: [/mnt/tank, /mnt/nvme]
+        nas_storage_zfs_bind_source_pattern: "^(/mnt/tank|/mnt/nvme)/"
+        nas_storage_mergerfs_mounts:
+          - name: media
+            target: /mnt/media
+            sources: [/mnt/nvme/media, /mnt/tank/media]
+            systemd_requires: [/mnt/tank]
+        nas_storage_exports:
+          - {path: /export/tv, bind_source: /mnt/tank/tv}
+          - {path: /export/media, bind_source: /mnt/media}
+          - {path: /export/local, bind_source: /srv/local, zfs: false}
+          - {path: /export/other, bind_source: /srv/pool2/data, zfs: true}
+
+    - name: Drive the classification guard — an undeclared out-of-roots export
+      block:
+        - name: Include the guard with an undeclared export bind source
+          ansible.builtin.include_tasks: ../../tasks/assert_zfs_classification.yml
+          vars:
+            nas_storage_zfs_mount_roots: [/mnt/tank]
+            nas_storage_zfs_bind_source_pattern: "^(/mnt/tank)/"
+            nas_storage_mergerfs_mounts: []
+            nas_storage_exports:
+              - {path: /export/other, bind_source: /srv/pool2/data}
+      rescue:
+        - name: Record that the undeclared export was rejected
+          ansible.builtin.set_fact:
+            nas_classify_export_rejected: true
+
+    - name: Drive the classification guard — a union anchored on nothing
+      block:
+        - name: Include the guard with a union whose branches are the roots themselves
+          ansible.builtin.include_tasks: ../../tasks/assert_zfs_classification.yml
+          vars:
+            nas_storage_zfs_mount_roots: [/mnt/tank, /mnt/nvme]
+            nas_storage_zfs_bind_source_pattern: "^(/mnt/tank|/mnt/nvme)/"
+            nas_storage_exports: []
+            nas_storage_mergerfs_mounts:
+              - name: media
+                target: /mnt/media
+                sources: [/mnt/nvme, /mnt/tank]
+                systemd_requires: [/mnt/tank]
+      rescue:
+        - name: Record that the unanchored union was rejected
+          ansible.builtin.set_fact:
+            nas_classify_union_rejected: true
+
+    # The anchor is derived from the branch set, so a union that never declares
+    # systemd_requires is checked too — scoping the guard to that key left the
+    # shape it exists to catch invisible whenever the key was absent.
+    - name: Drive the classification guard — an unanchored union with no systemd_requires
+      block:
+        - name: Include the guard with a root-branched union carrying no systemd_requires
+          ansible.builtin.include_tasks: ../../tasks/assert_zfs_classification.yml
+          vars:
+            nas_storage_zfs_mount_roots: [/mnt/tank, /mnt/nvme]
+            nas_storage_zfs_bind_source_pattern: "^(/mnt/tank|/mnt/nvme)/"
+            nas_storage_exports: []
+            nas_storage_mergerfs_mounts:
+              - name: media
+                target: /mnt/media
+                sources: [/mnt/nvme, /mnt/tank]
+      rescue:
+        - name: Record that the systemd_requires-less union was rejected
+          ansible.builtin.set_fact:
+            nas_classify_bare_union_rejected: true
+
+    # `zfs:` is read through `| bool`, which maps a non-boolean to False rather
+    # than erroring — so presence alone is not a declaration. An empty string is
+    # the realistic shape: `zfs: "{{ some_var }}"` rendering empty.
+    - name: Drive the classification guard — a non-boolean `zfs:` value
+      block:
+        - name: Include the guard with an empty-string zfs declaration
+          ansible.builtin.include_tasks: ../../tasks/assert_zfs_classification.yml
+          vars:
+            nas_storage_zfs_mount_roots: [/mnt/tank]
+            nas_storage_zfs_bind_source_pattern: "^(/mnt/tank)/"
+            nas_storage_mergerfs_mounts: []
+            nas_storage_exports:
+              - {path: /export/other, bind_source: /srv/pool2/data, zfs: ""}
+      rescue:
+        - name: Record that the non-boolean zfs value was rejected
+          ansible.builtin.set_fact:
+            nas_classify_nonboolean_rejected: true
+
+    # The type check is independent of the classification branch. Folded into
+    # the classification `or` it only ran when the derived clause had already
+    # failed, so a value typo on a source the roots DO cover stayed accepted and
+    # still reached `| bool` — the anchor gone with a green play.
+    - name: Drive the classification guard — a non-boolean `zfs:` on an IN-ROOT export
+      block:
+        - name: Include the guard with a typo'd zfs on a matching bind source
+          ansible.builtin.include_tasks: ../../tasks/assert_zfs_classification.yml
+          vars:
+            nas_storage_zfs_mount_roots: [/mnt/tank]
+            nas_storage_zfs_bind_source_pattern: "^(/mnt/tank)/"
+            nas_storage_mergerfs_mounts: []
+            nas_storage_exports:
+              - {path: /export/tv, bind_source: /mnt/tank/tv, zfs: "maybe"}
+      rescue:
+        - name: Record that the in-root non-boolean zfs value was rejected
+          ansible.builtin.set_fact:
+            nas_classify_inroot_nonboolean_rejected: true
+
+    - name: Drive the classification guard — a non-boolean `zfs:` on an anchored union
+      block:
+        - name: Include the guard with a typo'd zfs on a ZFS-branched union
+          ansible.builtin.include_tasks: ../../tasks/assert_zfs_classification.yml
+          vars:
+            nas_storage_zfs_mount_roots: [/mnt/tank]
+            nas_storage_zfs_bind_source_pattern: "^(/mnt/tank)/"
+            nas_storage_exports: []
+            nas_storage_mergerfs_mounts:
+              - name: media
+                target: /mnt/media
+                sources: [/mnt/tank/media]
+                zfs: "maybe"
+      rescue:
+        - name: Record that the anchored-union non-boolean zfs value was rejected
+          ansible.builtin.set_fact:
+            nas_classify_union_nonboolean_rejected: true
+
+    - name: Assert the classification guard fails closed on every shape
+      ansible.builtin.assert:
+        that:
+          - nas_classify_export_rejected | default(false)
+          - nas_classify_union_rejected | default(false)
+          - nas_classify_bare_union_rejected | default(false)
+          - nas_classify_nonboolean_rejected | default(false)
+          - nas_classify_inroot_nonboolean_rejected | default(false)
+          - nas_classify_union_nonboolean_rejected | default(false)
+        fail_msg: >-
+          The classification guard accepted an export bind source outside the
+          mount roots with no `zfs:` declaration, a union with no branch INSIDE
+          a root (with or without systemd_requires), or a non-boolean `zfs:`
+          value on EITHER branch — all six fail open into an unguarded,
+          unordered mount.
+        success_msg: >-
+          classification guard fails closed on undeclared exports, unanchored
+          unions (systemd_requires or not) and non-boolean zfs values whether or
+          not the source matches a mount root
+
+    - name: Drive the remount gate — idle mounts, remount allowed
+      ansible.builtin.include_tasks: ../../tasks/mergerfs_remount_gate.yml
+      vars:
+        nas_storage_mergerfs_needs_remount: true
+        nas_storage_mergerfs_nfs_check:
+          results:
+            - {rc: 0}
+        nas_storage_mergerfs_process_check:
+          results:
+            - {rc: 0}
+        nas_storage_mergerfs_mounts:
+          - name: media
+            target: /mnt/media
+        nas_storage_exports:
+          - path: /export/media
+            bind_source: /mnt/media
+            clients:
+              - spec: 192.168.0.200/29
+              - spec: 192.168.0.154/32
+          - path: /export/share
+            bind_source: /mnt/tank/share
+            clients:
+              - spec: 192.168.0.200/29
+
+    - name: Assert the idle path unblocks the remount and scopes the unexport
+      ansible.builtin.assert:
+        that:
+          - nas_storage_mergerfs_safe_to_remount | bool
+          - nas_storage_mergerfs_export_bindings | length == 2
+          - (nas_storage_mergerfs_export_bindings | map(attribute='0.path')
+             | unique | list) == ['/export/media']
+          - (nas_storage_mergerfs_export_bindings | map(attribute='1.spec') | list)
+            == ['192.168.0.200/29', '192.168.0.154/32']
+        fail_msg: >-
+          The unexport must be scoped to the MergerFS-backed exports only —
+          got {{ nas_storage_mergerfs_export_bindings
+                 | map(attribute='0.path') | list }}
+        success_msg: "idle path: safe_to_remount true, unexport scoped to /export/media"
+
+    - name: Drive the remount gate — a busy mount blocks the cycle
+      ansible.builtin.include_tasks: ../../tasks/mergerfs_remount_gate.yml
+      vars:
+        nas_storage_mergerfs_needs_remount: true
+        nas_storage_mergerfs_nfs_check:
+          results:
+            - {rc: 0}
+        nas_storage_mergerfs_process_check:
+          results:
+            - {rc: 1}
+        nas_storage_mergerfs_mounts:
+          - name: media
+            target: /mnt/media
+        nas_storage_exports: []
+
+    - name: Assert a process holding the mount blocks the remount
+      ansible.builtin.assert:
+        that:
+          - not (nas_storage_mergerfs_safe_to_remount | bool)
+        fail_msg: "A busy mount must block the unexport/unmount cycle on a live fileserver"
+        success_msg: "busy path: safe_to_remount false"
+
+    - name: Drive the remount gate — an established NFS client blocks the cycle
+      ansible.builtin.include_tasks: ../../tasks/mergerfs_remount_gate.yml
+      vars:
+        nas_storage_mergerfs_needs_remount: true
+        nas_storage_mergerfs_nfs_check:
+          results:
+            - {rc: 1}
+        nas_storage_mergerfs_process_check:
+          results: []
+        nas_storage_mergerfs_mounts:
+          - name: media
+            target: /mnt/media
+        nas_storage_exports: []
+
+    - name: Assert an active NFS client blocks the remount
+      ansible.builtin.assert:
+        that:
+          - not (nas_storage_mergerfs_safe_to_remount | bool)
+        fail_msg: "An established NFS client must block the unexport/unmount cycle"
+        success_msg: "active-client path: safe_to_remount false"
 
     # De-provisioning path (nas_storage_archive_backup_enabled: false).
     # molecule.yml opts IN, so converge only ever runs archive_backup.yml and

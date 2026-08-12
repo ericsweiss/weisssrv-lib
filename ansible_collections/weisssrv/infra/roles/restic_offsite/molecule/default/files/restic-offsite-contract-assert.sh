@@ -107,6 +107,24 @@ need 'mount-failed'
 need 'zfs get -H -o value origin'
 need 'clone-conflict'
 
+# Restore-drill sampling. The container has no repository to drill, so the
+# selection rules are pinned structurally: a size floor (without it the sample
+# is the estate's 1-byte marker files), per-source buckets drawn round-robin
+# (without them one source is proven and the rest are not), and a coverage floor
+# that fails the drill.
+need 'DRILL_MIN_BYTES'
+need 'DRILL_MIN_SOURCES'
+# The literals below intentionally contain unexpanded $-vars.
+# shellcheck disable=SC2016
+need 'cand.${idx}'
+need 'drill: sampled'
+need 'yielded a sampled file, below the required'
+
+# The clone name must derive from the FULL zvol path: two sources under one
+# parent would otherwise collide and abort the nightly run.
+# shellcheck disable=SC2016
+need 'local clone="${zvol}-${ZVOL_CLONE_SUFFIX}"'
+
 # single-instance lock
 need 'flock -n 9'
 

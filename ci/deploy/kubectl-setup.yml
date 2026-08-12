@@ -1,0 +1,59 @@
+spec:
+  inputs:
+    fragment_name:
+      default: ".kubectl-setup"
+      description: Name of the generated hidden job.
+    kubectl_version:
+      default: "v1.35.2"
+      description: >-
+        kubectl release to install. Keep within one minor of the cluster's
+        server version; `kubectl_sha256` must be re-taken when this moves.
+    kubectl_sha256:
+      default: "924eb50779153f20cb668117d141440b95df2f325a64452d78dff9469145e277"
+      description: >-
+        sha256 of the linux/amd64 binary for `kubectl_version`, from
+        `https://dl.k8s.io/release/<version>/bin/linux/amd64/kubectl.sha256`.
+    op_vault:
+      description: >-
+        1Password vault holding the kubeconfig item. REQUIRED — a vault name is
+        site data, so this template ships no default.
+    kubeconfig_item:
+      default: "K3s Kubeconfig"
+      description: 1Password item holding the base64-encoded kubeconfig.
+    kubeconfig_field:
+      default: "kubeconfig"
+      description: >-
+        Field on `kubeconfig_item`. The value must be base64, so the YAML
+        survives storage and retrieval unchanged.
+---
+# kubectl install (sha256-pinned) + kubeconfig fetch fragment. Defines a hidden
+# job (default `.kubectl-setup`) whose before_script a consumer pulls into any
+# job that needs cluster access on top of a deploy base:
+#
+#   .maintenance-base:
+#     extends: .deploy-base
+#     before_script:
+#       - !reference [.deploy-base, before_script]
+#       - !reference [.kubectl-setup, before_script]
+#
+# Needs the op CLI already on PATH (ci/templates/install-1password.yml) and a
+# root-capable runner (writes /usr/local/bin).
+"$[[ inputs.fragment_name ]]":
+  before_script:
+    - |
+      # sha256-pinned: a downloaded binary is verified before it is installed.
+      curl -fsSL "https://dl.k8s.io/release/$[[ inputs.kubectl_version ]]/bin/linux/amd64/kubectl" -o /tmp/kubectl
+      echo "$[[ inputs.kubectl_sha256 ]]  /tmp/kubectl" | sha256sum -c -
+      install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+    - |
+      set -eo pipefail
+      mkdir -p ~/.kube
+      KUBECONFIG_B64=$(op read "op://$[[ inputs.op_vault ]]/$[[ inputs.kubeconfig_item ]]/$[[ inputs.kubeconfig_field ]]")
+      if [ -z "$KUBECONFIG_B64" ]; then
+        echo "ERROR: op read returned an empty kubeconfig. Is OP_SERVICE_ACCOUNT_TOKEN set?" >&2
+        exit 1
+      fi
+      # umask 077 subshell: never create the kubeconfig world-readable.
+      (umask 077; echo "$KUBECONFIG_B64" | base64 -d > ~/.kube/config)
+      export KUBECONFIG="$HOME/.kube/config"
+      echo "Kubeconfig written ($(wc -c < ~/.kube/config) bytes), KUBECONFIG=$KUBECONFIG"

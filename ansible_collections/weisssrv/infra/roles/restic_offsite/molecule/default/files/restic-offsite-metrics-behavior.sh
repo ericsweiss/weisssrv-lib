@@ -142,15 +142,15 @@ printf '%s\n' "$out" | grep -q 'rc=11 is a repository lock' \
   || fail "rc=11 was not reported as a repository lock"
 
 # A `forget --prune` that CRASHES must surface as restic's own rc, not as the
-# ceiling sentinel. rc 2 is restic's documented "go runtime error" — the exact
-# code the ceiling refusal used to reuse.
+# ceiling sentinel. rc 2 is restic's documented "go runtime error", which is why
+# the sentinel is 90.
 STUB_MODE=under; PRUNE_RC=2; rc=0; run_forget >/dev/null || rc=$?
 [ "$rc" = "2" ] || fail "a crashed forget --prune must return restic's rc 2 (got $rc)"
 PRUNE_RC=0
 
 # --- run verdict + retention gauges per forget rc -----------------------------
-# The mapping that used to conflate a crashed prune with a deliberate refusal:
-# blocked ONLY on the ceiling sentinel, and only the ceiling keeps the run green.
+# A crashed prune must not read as a deliberate refusal: blocked ONLY on the
+# ceiling sentinel, and only the ceiling keeps the run green.
 # Redirect to a file, never `$(...)`: a command substitution would run
 # apply_forget_rc in a SUBSHELL and none of the gauges it sets would come back.
 _reset_run_state() { prune_success=0; retention_blocked=0; run_success=0; retention_pending=7; }

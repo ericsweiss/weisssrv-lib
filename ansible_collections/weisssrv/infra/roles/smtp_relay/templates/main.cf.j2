@@ -1,5 +1,4 @@
 # {{ ansible_managed }}
-# Postfix SMTP Relay Configuration
 
 smtpd_banner = $myhostname ESMTP $mail_name (Debian/GNU)
 biff = no
@@ -36,7 +35,7 @@ smtp_tls_security_level = {{ smtp_relay_effective_config.smtp_tls_security_level
 smtp_tls_CAfile = {{ smtp_relay_effective_config.smtp_tls_CAfile }}
 smtp_tls_protocols = {{ smtp_relay_effective_config.smtp_tls_protocols }}
 
-# SASL authentication for Gmail relay
+# SASL authentication for the upstream smarthost (outgoing)
 smtp_sasl_auth_enable = {{ smtp_relay_effective_config.smtp_sasl_auth_enable }}
 smtp_sasl_password_maps = {{ smtp_relay_effective_config.smtp_sasl_password_maps }}
 smtp_sasl_security_options = {{ smtp_relay_effective_config.smtp_sasl_security_options }}

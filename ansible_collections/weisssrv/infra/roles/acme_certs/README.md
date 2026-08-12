@@ -13,6 +13,9 @@ the role is a no-op.
   time is never fetched later — a single-file install can neither issue nor
   renew over DNS-01) with Let's Encrypt pinned as the default CA
 - the renewal cronjob, and `homelab-cert-reload.sh` as acme.sh's `--reloadcmd`
+  — re-asserted on every run, so a cert that arrived by another route (manual
+  `--install-cert`, a restore, a pre-role host) does not renew without
+  distributing
 - the distribution key pair, plus each target's forced-command receiver,
   sudoers drop-in, pinned `authorized_keys` entry and pinned host key
 - installation of the issued cert into `acme_certs_local_cert_dir`
@@ -28,6 +31,7 @@ the role is a no-op.
 | `acme_certs_ssh_user` | Login user on the targets, and owner of the key here | no (`root`) |
 | `acme_certs_ssh_key_dir` / `_ssh_key_path` | Where the key lives on this host | no (derived) |
 | `acme_certs_local_cert_dir` / `_local_cert_group` | Local install path + reader group | no (`/etc/ssl/private`, `root`) |
+| `acme_certs_textfile_dir` | Where the renewal/distribution metrics land; aliases `node_exporter_host_textfile_dir` | no (`/var/lib/node_exporter`) |
 | `acme_certs_local_reload_command` | Reload for a local consumer of the cert; empty omits the block | no (`""`) |
 | `acme_certs_key_from` | `from="..."` source pin on the distributed key | no (`""`) |
 | `acme_certs_distribute_pubkeys` | Seed the targets; `false` renders locally only | no (`true`) |
@@ -54,6 +58,12 @@ acme_certs_distribution_targets:
     ssh_port: 22
     ssh_no_sudo: false            # true = appliance, legacy scp push
 ```
+
+`key_mode` is group-readable above only because the consuming service runs as a
+non-root user (`group: adguard`). Use `0600` wherever the key can stay
+root-only — in particular on an NFS-over-TLS host, where
+`weisssrv.infra.nfs_tls` asserts the key is `0600`/`0400` and fails the deploy
+on anything looser.
 
 ## Host-key pinning (required)
 
@@ -150,7 +160,8 @@ previous reload failed gets the full push.
 ## Metrics
 
 `homelab-cert-reload.sh` writes two node_exporter textfiles under
-`node_exporter_host_textfile_dir` (default `/var/lib/node_exporter`):
+`acme_certs_textfile_dir`, which aliases `node_exporter_host_textfile_dir`
+(default `/var/lib/node_exporter`):
 
 - `cert_renewal.prom` — `cert_renewal_last_run_success`,
   `cert_renewal_last_run_duration_seconds`,
@@ -177,7 +188,8 @@ ssh -i <ssh_key_path> <ssh_user>@<target> </dev/null
 
 ## Security
 
-- private key `0600`; distributed key `0640`, cert `0644`
+- local private key `0600`; the distributed key's mode is each target's
+  `key_mode` (`0600` unless a non-root service must read it), cert `0644`
 - the distribution key is locked to the forced-command receiver on sudo targets
   — no shell, no arbitrary sudo
 - the receiver validates every bundle (parse, expiry, key-matches-cert, SAN,

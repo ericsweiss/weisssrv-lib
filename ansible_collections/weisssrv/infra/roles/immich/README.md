@@ -57,7 +57,8 @@ credentials are asserted `no_log`.
 | `immich_telemetry_include`, `immich_api_metrics_port`, `immich_microservices_metrics_port` | Native Prometheus telemetry | `all`, `8081`, `8082` |
 | `immich_postgres_exporter_enabled` | Add the `postgres-exporter` sidecar (DB-level metrics) | `false` |
 | `immich_postgres_exporter_version` / `_digest` / `_image` | Its image pin; the image derives from the version + optional digest, or override it outright | `""`, `""`, `quay.io/prometheuscommunity/postgres-exporter:<version>` |
-| `immich_postgres_exporter_port` | Host port for the exporter (unauthenticated — scope it at the firewall) | `9187` |
+| `immich_postgres_exporter_port` | Host port for the exporter (unauthenticated) | `9187` |
+| `immich_metrics_bind` | Publish address for all three unauthenticated metrics ports — pin to `127.0.0.1` when nothing scrapes from off-host | `0.0.0.0` |
 | `immich_oauth_scope` / `_button_text` / `_storage_label_claim` | OIDC presentation + claims | `openid email profile`, `Sign in with SSO`, `preferred_username` |
 | `immich_oauth_auto_register` / `_auto_launch` | Provision on first login / skip the login page | `true` / `true` |
 | `immich_oauth_default_storage_quota` | Per-user quota in GiB for new accounts; empty = unlimited | `""` |
@@ -68,6 +69,7 @@ credentials are asserted `no_log`.
 | `immich_nginx_self_signed_subj` / `_san` | Placeholder identity until that first push | `/CN=<inventory_hostname>` / none |
 | `immich_nginx_real_ip_groups` | Inventory groups whose members are trusted proxies | `[k3s_servers, k3s_agents]` |
 | `immich_nginx_real_ip_from` | Resolved trust list — override to set addresses directly | derived from the groups |
+| `immich_nginx_trust_no_proxy` | Accept an empty trust list (nginx is directly exposed) instead of failing the assert | `false` |
 | `immich_timezone` | Container `TZ` | `timezone` or `UTC` |
 | `immich_backup_hour` / `_minute` / `_keep_days` | Dump schedule + local retention | `02:30`, `3` |
 | `immich_backup_metrics_dir` / `immich_backup_lib_path` | textfile dir + sourced metrics helper | `node_exporter_host_textfile_dir`, `/usr/local/lib/immich-backup-lib.sh` |
@@ -89,9 +91,13 @@ immich_nginx_real_ip_from: >-
      | select('defined') | list }}
 ```
 
-— so a renamed or renumbered proxy node cannot silently drop out. When no listed
-group exists the list is empty and no `set_real_ip_from` is emitted: every
-client then appears as the proxy's address, which is quiet rather than loud.
+— so a renamed or renumbered proxy node cannot silently drop out. The group
+names are this collection's k3s convention; a site whose inventory has neither
+group would resolve an empty list, emit no `set_real_ip_from`, and attribute
+every request to the fronting proxy. That is asserted rather than accepted:
+point `immich_nginx_real_ip_groups` at the site's own proxy group, set
+`immich_nginx_real_ip_from` directly, or set `immich_nginx_trust_no_proxy: true`
+where nginx really is exposed without a proxy in front of it.
 
 ## Offsite backup landing
 

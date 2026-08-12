@@ -9,10 +9,16 @@ base_admin_email: "{{ admin_email | default('root@localhost', true) }}"
 
 base_ssh_port: "{{ ssh_port | default(22) }}"
 base_ssh_permit_root_login: "{{ ssh_permit_root_login | default('no') }}"
-base_ssh_password_authentication: "{{ ssh_password_authentication | default(false) }}"
-base_ssh_pubkey_authentication: "{{ ssh_pubkey_authentication | default(true) }}"
+# Coerced here, not at each use site: a quoted or env-supplied "false" is
+# truthy to Python, so the template's ternary and the lockout guard's | bool
+# would disagree and write PasswordAuthentication yes behind a passing assert.
+base_ssh_password_authentication: "{{ ssh_password_authentication | default(false) | bool }}"
+base_ssh_pubkey_authentication: "{{ ssh_pubkey_authentication | default(true) | bool }}"
 base_ssh_service_name: ssh
 base_ssh_authorized_keys: "{{ ssh_authorized_keys | default([]) }}"
+# Make the list authoritative, so dropping a key revokes it on the next run.
+# Default false: it also removes keys installed by anything else on the host.
+base_ssh_authorized_keys_exclusive: false
 
 # Lockout guard, asserted in tasks/ssh.yml: a login path survives when a managed
 # non-root account carries a key, or root login is permitted, or password auth is
@@ -58,15 +64,15 @@ base_fail2ban_ignoreip:
   - ::1
 
 # Default jail settings (can be overridden per-jail)
-base_fail2ban_default_bantime: 1h       # Duration of IP ban
-base_fail2ban_default_findtime: 10m     # Window to count failures
-base_fail2ban_default_maxretry: 5       # Failures before ban
+base_fail2ban_default_bantime: 1h
+base_fail2ban_default_findtime: 10m
+base_fail2ban_default_maxretry: 5
 
 # Repeat offenders (off on containers — see the template's guard)
 base_fail2ban_recidive_enabled: true
-base_fail2ban_recidive_bantime: 1w      # Ban repeat offenders for 1 week
-base_fail2ban_recidive_findtime: 1d     # Look back 1 day for repeat bans
-base_fail2ban_recidive_maxretry: 3      # 3 bans triggers recidive
+base_fail2ban_recidive_bantime: 1w
+base_fail2ban_recidive_findtime: 1d
+base_fail2ban_recidive_maxretry: 3
 
 # SSH jail configuration
 base_fail2ban_sshd_enabled: true

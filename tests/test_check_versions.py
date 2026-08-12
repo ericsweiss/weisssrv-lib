@@ -951,8 +951,8 @@ class TestUpdateVersionInFile(unittest.TestCase):
                 )
             out = path.read_text()
             self.assertIn('traefik: "40.4.0"', out)
-            # The nested branch must also rewrite the trailing comment (the
-            # top-level test asserts this; the nested one was the blind spot).
+            # The nested branch must rewrite the trailing comment too (the
+            # top-level case is asserted separately).
             self.assertIn("# Currently deployed 40.4.0", out)
         finally:
             os.unlink(path)

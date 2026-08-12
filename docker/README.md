@@ -36,12 +36,13 @@ A consumer that needs different pins builds from its own context with this
 library's `ci/build/docker-build.yml` template — the extracted `build_and_push`
 helper (sha-pinned static docker CLI, digest-pinned DinD, dind wait, registry
 layer cache + inline cache, bounded retry, `:<sha>` always + `:latest` on the
-default branch):
+default branch). The `ref` below is an example: use the tag your repo pins
+(docs/VERSIONING.md).
 
 ```yaml
 include:
   - project: eric/weisssrv-lib
-    ref: v0.6.0
+    ref: v0.7.0
     file: /ci/build/docker-build.yml
     inputs:
       job_name: build-molecule-ci

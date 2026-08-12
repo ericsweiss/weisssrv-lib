@@ -50,6 +50,16 @@ ISO the role downloads + checksum-verifies), `proxmox_vm_iso_storage`
 | `proxmox_vm_install_iso` | Windows create | media cannot be redistributed; asserted |
 | `SSH_PUBLIC_KEY` (env) | Linux create | asserted before create — an empty key provisions an unreachable VM |
 
+The cloud-init assert carries the create-path gate (`proxmox_vm_exists.rc != 0`
+plus `proxmox_vm_skip_create`), so a run that only reconciles disks, HA or pool
+membership on an existing guest never fails on values it does not read.
+
+`proxmox_vm_disk_size` accepts a GiB value with or without the `G` suffix on
+**both** paths, and `M`/`T` on the Linux path only (it goes to `qm resize`).
+The Windows boot disk is allocated as a bare GiB count, so a non-GiB unit is
+rejected by an assert on that path rather than reaching `qm set` as a
+nonsensical number.
+
 `proxmox_vm_cloudinit_user` and `proxmox_vm_cloudinit_dns` default to the
 inventory-wide `admin_user` and `dns_servers`. `proxmox_vm_additional_disks`
 defaults to the inventory-wide `vm_additional_disks`, the same name
@@ -158,7 +168,7 @@ applied **only at VM creation**:
 | `onboot` / `startup` (order, delay) | **Reconciled** on existing VMs — editing `proxmox_autostart_enabled` / `proxmox_startup_order` / `proxmox_startup_delay` and re-running applies them via an idempotent `qm set`. These are metadata-only (next-boot), so converging a live VM is safe. |
 | QEMU guest-agent flag (`proxmox_vm_agent_enabled`) | **Reconciled** on existing VMs (metadata-only `qm set --agent`). |
 | NIC `firewall=1` flag | **Reconciled** on existing VMs (one-time repair of legacy NICs). |
-| `proxmox_vm_memory` | **Reconciled** on existing VMs via `qm set --memory`, which writes the config and takes effect at the guest's **next start** — the task never restarts anything. Draining and restarting the guest stays an operator step. |
+| `proxmox_vm_memory` | **Reconciled** on existing VMs via `qm set --memory`, which writes the config and takes effect at the guest's **next start** — the task never restarts anything. Draining and restarting the guest stays an operator step. The role **defaults** this to 2048 MiB and the reconcile participates, so a guest that loses its inventory key would be resized down to the default: a shrink fails the task unless `proxmox_vm_memory_shrink_ok: true` names it. |
 | `proxmox_vm_balloon` | **Reconciled** on existing VMs when defined; `qm set --balloon` takes effect live. |
 | Cores, disk size, `proxmox_vm_cpu_type`, cloud-init (user, SSH key, IP), boot disk, `proxmox_vm_hostpci` | **Create-time only.** Changing these in inventory does not reconcile onto an existing VM — recreate the VM (or `qm set …` by hand in a stop/start window for PCI). Persistent zvols are matched idempotently by stable SCSI slot and survive recreation. |
 

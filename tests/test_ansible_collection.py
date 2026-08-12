@@ -26,6 +26,29 @@ REQUIREMENTS = COLLECTION / "requirements.yml"
 MOLECULE_BASE = COLLECTION / "molecule-shared" / "base.yml"
 IMAGE_REQUIREMENTS = REPO / "docker" / "molecule-ci" / "requirements.yml"
 CLI_PYPROJECT = REPO / "cli" / "pyproject.toml"
+README = REPO / "README.md"
+
+
+def readme_current_release() -> str:
+    """The bare semver from README.md's `## Current release` line.
+
+    Anchored on the first non-blank line after the heading — a loose scan would
+    match the `<CURRENT_TAG>` snippets and prose elsewhere on the page.
+    """
+    lines = README.read_text().splitlines()
+    for i, line in enumerate(lines):
+        if line.strip().lower() != "## current release":
+            continue
+        for candidate in lines[i + 1:]:
+            if not candidate.strip():
+                continue
+            match = re.match(r"\*\*v(\d+\.\d+\.\d+)\.\*\*", candidate.strip())
+            assert match, (
+                "README.md's Current release line must open with **v<semver>.**, got: %r"
+                % candidate.strip()
+            )
+            return match.group(1)
+    raise AssertionError("README.md has no `## Current release` heading")
 
 
 def _load(path: Path):
@@ -61,12 +84,68 @@ class TestGalaxyMetadata:
         assert match, "cli/pyproject.toml has no version"
         assert str(galaxy["version"]) == match.group(1)
 
+    def test_version_matches_the_readme_current_release(self, galaxy):
+        # README.md's Current release line is the substitution source for every
+        # <CURRENT_TAG> pin snippet, so it ships the tag consumers adopt.
+        assert str(galaxy["version"]) == readme_current_release(), (
+            "README.md's Current release line says v%s but galaxy.yml declares %s — "
+            "bump all three of README.md, galaxy.yml and cli/pyproject.toml together."
+            % (readme_current_release(), galaxy["version"])
+        )
+
     def test_tags_are_galaxy_legal(self, galaxy):
         for tag in galaxy["tags"]:
             assert re.fullmatch(r"[a-z0-9]+", tag), f"galaxy tag {tag!r} must be lowercase alphanumeric"
 
     def test_requires_ansible_is_declared(self):
         assert _load(RUNTIME)["requires_ansible"].startswith(">=")
+
+
+class TestRoleMetadataParity:
+    """Every role's min_ansible_version agrees with the collection's floor.
+
+    meta/runtime.yml carries the floor a consumer actually installs against;
+    each role's galaxy_info carries its own copy, which nothing reconciles. The
+    two drifted once already — roles kept advertising 2.15 support after the
+    collection moved to 2.18 — and neither ansible-lint nor a molecule run
+    reads the role-level value, so the drift is invisible until a consumer
+    trusts it.
+    """
+
+    @pytest.fixture(scope="class")
+    def floor(self) -> str:
+        """The bare version from meta/runtime.yml's `requires_ansible` floor."""
+        requires = _load(RUNTIME)["requires_ansible"]
+        match = re.match(r">=\s*(\d+\.\d+)", requires)
+        assert match, f"requires_ansible {requires!r} has no >=X.Y floor to compare against"
+        return match.group(1)
+
+    @pytest.fixture(scope="class")
+    def role_metas(self) -> dict:
+        metas = {
+            path.parent.parent.name: _load(path)
+            for path in sorted((COLLECTION / "roles").glob("*/meta/main.yml"))
+        }
+        assert metas, "no role meta/main.yml found"
+        return metas
+
+    def test_every_role_declares_the_collection_floor(self, role_metas, floor):
+        mismatched = {
+            role: meta.get("galaxy_info", {}).get("min_ansible_version")
+            for role, meta in role_metas.items()
+            if str(meta.get("galaxy_info", {}).get("min_ansible_version", "")) != floor
+        }
+        assert not mismatched, (
+            f"meta/runtime.yml requires ansible-core >={floor}; these roles disagree: "
+            f"{mismatched}"
+        )
+
+    def test_every_role_declares_an_author(self, role_metas):
+        missing = sorted(
+            role for role, meta in role_metas.items()
+            if not meta.get("galaxy_info", {}).get("author")
+        )
+        assert not missing, f"roles with no galaxy_info.author: {missing}"
 
 
 class TestDependencyParity:

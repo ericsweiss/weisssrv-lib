@@ -1,0 +1,43 @@
+---
+# De-provisioning path for k3s_etcd_snapshot_offnode_enabled: false. Turning the
+# feature off must stand the timer down and drop the NFS mount — an armed unit
+# would keep mounting the export and copying etcd snapshots (whole-cluster
+# Secret material) off-node indefinitely. Stat-gated so a host that never had
+# the feature does no systemd work at all.
+
+- name: Stat the off-node etcd snapshot artifacts
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: k3s_offnode_absent_stat
+  loop:
+    - /etc/systemd/system/k3s-etcd-snapshot-copy.timer
+    - /etc/systemd/system/k3s-etcd-snapshot-copy.service
+    - /usr/local/sbin/k3s-etcd-snapshot-copy.sh
+
+- name: Stop + disable the etcd snapshot copy timer if present
+  ansible.builtin.systemd:
+    name: k3s-etcd-snapshot-copy.timer
+    enabled: false
+    state: stopped
+  failed_when: false
+  when:
+    - not ansible_check_mode
+    - k3s_offnode_absent_stat.results[0].stat.exists
+
+- name: Unmount and remove the off-node etcd snapshot export
+  ansible.posix.mount:
+    path: "{{ k3s_etcd_snapshot_mountpoint }}"
+    state: absent
+  when: not ansible_check_mode
+  tags:
+    - molecule-notest
+
+- name: Remove the etcd snapshot copy units and script
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/k3s-etcd-snapshot-copy.timer
+    - /etc/systemd/system/k3s-etcd-snapshot-copy.service
+    - /usr/local/sbin/k3s-etcd-snapshot-copy.sh
+  notify: Reload systemd for etcd snapshot copy

@@ -38,7 +38,8 @@
 # dataset: with the pool exported or its key unloaded, the mountpoint is a bare
 # root-fs directory that the file task below would mkdir/chown, the bind fstab
 # task would then bind, and the NFS export would serve. Only ZFS-backed sources
-# are checked (same regex the fstab task scopes its boot-ordering opts with);
+# are checked (nas_storage_zfs_bind_source_pattern, which the fstab task also
+# scopes its boot-ordering opts with, overridable per export with `zfs:`);
 # mergerfs sources are handled by mergerfs.yml.
 #
 # bind_source_check points the guard at the parent DATASET mountpoint for an
@@ -62,7 +63,9 @@
     - not (nas_storage_skip_zfs_operations | default(false))
   when:
     - item.bind_source is defined
-    - item.bind_source is match('^/mnt/(tank|ssd|nvme)/')
+    # An explicit `zfs:` on the export WINS over the derived classification —
+    # it is the declaration the up-front assert accepts, in both directions.
+    - item.zfs | default(item.bind_source is match(nas_storage_zfs_bind_source_pattern)) | bool
 
 - name: Set ownership on bind source directories
   ansible.builtin.file:
@@ -139,8 +142,7 @@
     # bulk mount unit (zfs-mount-generator is not enabled — no
     # /etc/zfs/zfs-list.cache). Without it the fstab binds race the mount at
     # boot and can capture the still-empty root-fs mountpoint, stacking a stale
-    # layer under the real bind so the export serves an empty directory
-    # (observed as backups failing "could not activate storage ... unreachable").
+    # layer under the real bind so the export serves an empty directory.
     # `nofail` keeps a not-yet-mounted source from blocking boot.
     #
     # ANCHOR CHOICE (_zfs_anchor below): ENCRYPTED sources order on the LATE
@@ -148,12 +150,15 @@
     # runs before keys load and SKIPS locked datasets — an encrypted bind
     # ordered on it would capture the empty mountpoint. Plaintext ZFS sources
     # keep the early anchor; non-ZFS sources keep a plain bind.
+    #
+    # Same classification as the mounted-dataset guard above: derived from the
+    # mount roots, overridden by an explicit `zfs:` on the export.
     opts: >-
       {{
         'bind,nofail,x-systemd.requires=' ~ _zfs_anchor
         ~ ',x-systemd.after=' ~ _zfs_anchor
         ~ ',x-systemd.requires-mounts-for=' ~ item.bind_source
-        if item.bind_source is match('^/mnt/(tank|ssd|nvme)/')
+        if (item.zfs | default(item.bind_source is match(nas_storage_zfs_bind_source_pattern)) | bool)
         else 'bind'
       }}
     state: mounted

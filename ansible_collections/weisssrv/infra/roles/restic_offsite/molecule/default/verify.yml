@@ -287,16 +287,16 @@
       ansible.builtin.command: grep -Fq '[[ -z "${snap_time//[[:space:]]/}" || "$snap_epoch" -le 0 ]]' /usr/local/sbin/restic-offsitectl
       changed_when: false
 
-    # A parse miss and "nothing on this host maps to the snapshot" used to share
-    # one message, sending the operator after a path-mapping problem that did
-    # not exist.
+    # A parse miss and "nothing on this host maps to the snapshot" must stay
+    # distinct: one message for both sends the operator after a path-mapping
+    # problem that does not exist.
     - name: Assert a restic ls parse miss is reported as its own failure
       ansible.builtin.command: grep -q "restic's output shape changed" /usr/local/sbin/restic-offsitectl
       changed_when: false
 
-    # `unlock` is what three runbook paths tell an operator to run. It used to
-    # exit 0 having printed nothing whenever the lock was not reapable, which
-    # reads as "the lock is gone". It must always state an outcome.
+    # `unlock` is what three runbook paths tell an operator to run, so it must
+    # always state an outcome: exiting 0 having printed nothing when the lock is
+    # not reapable reads as "the lock is gone".
     - name: Run restic-offsitectl unlock on an unlocked repository
       ansible.builtin.shell: |
         set -a; . /etc/restic-offsite/env; set +a
@@ -316,12 +316,11 @@
           by an rc=11 hint cannot tell "nothing to do" from "it did nothing".
         success_msg: "unlock reports a verdict on a repository with no locks"
 
-    # ...and an UNREADABLE repository must not be reported as "no locks". The
-    # lock count used to swallow restic's rc, so a repository that could not be
-    # read at all counted as zero locks and unlock exited 0 saying "no locks on
-    # the repository — nothing to remove". That is the worst possible verdict:
-    # the operator is here because something is stuck, and the command tells
-    # them the lock cleared while hiding a total outage.
+    # ...and an UNREADABLE repository must not be reported as "no locks". A
+    # lock count that swallowed restic's rc would count zero locks for a
+    # repository it cannot read at all and exit 0 — the worst possible verdict:
+    # the operator is here because something is stuck, and the command would
+    # tell them the lock cleared while hiding a total outage.
     - name: Run restic-offsitectl unlock against an unreadable repository
       ansible.builtin.shell: |
         set -a; . /etc/restic-offsite/env; set +a
@@ -437,11 +436,11 @@
 
     # A repository with NO SNAPSHOT YET is the one legitimate seed failure the
     # role documents (set restic_offsite_restore_drill_seed false for that first
-    # converge). Both it and a genuine outage make `restic ls latest` fail, and
-    # they used to share the "is the repository reachable?" message — which
-    # sends the operator to check B2 credentials that are perfectly fine. The
-    # two repos below pin the split. Run AFTER the success/mismatch asserts:
-    # each failing drill rewrites backup_restore_drill.prom.
+    # converge). Both it and a genuine outage make `restic ls latest` fail, so
+    # the verdicts must stay split — a shared "is the repository reachable?"
+    # message sends the operator to check B2 credentials that are fine. The two
+    # repos below pin the split. Run AFTER the success/mismatch asserts: each
+    # failing drill rewrites backup_restore_drill.prom.
     - name: Run the drill against a reachable repository holding no snapshot
       ansible.builtin.shell: |
         set -a; . /etc/restic-offsite/env; set +a

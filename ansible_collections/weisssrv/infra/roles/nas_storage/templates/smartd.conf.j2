@@ -1,40 +1,29 @@
 # {{ ansible_managed }}
 # SMART monitoring configuration for {{ ansible_facts['hostname'] }}
 
-# All drives explicitly listed below — no DEVICESCAN, which with -n standby
-# aborted extended self-tests at 90% when drives entered standby.
+# All drives explicitly listed — no DEVICESCAN (it aborts long self-tests on
+# drives that enter standby).
 #
 # TRADE-OFF: a static list means a drive added or replaced in a pool is
-# UNMONITORED until it is added to the matching smartd_*_disks list. smartd.yml
-# catches that at deploy time by failing when an imported pool has a member
-# absent from the union of those lists.
+# UNMONITORED until it is added to a group. smartd.yml catches that at deploy
+# time by failing when an imported pool has a member absent from the union of
+# all groups.
 
-# Long self-tests are staggered per pool (8th/9th/10th/11th at 3am) so 14
-# drives don't thrash simultaneously — the archive bay already runs hot.
+# Long self-tests are staggered per group so the drives do not thrash
+# simultaneously.
 
-# Tank pool (raidz2 - 6x 22TB enterprise drives)
-{% for disk in nas_storage_smartd_tank_disks | default([]) %}
-{{ disk }} -a -o on -S on -s (S/../.././02|L/../08/./03) -m root
+{% for group in nas_storage_smartd_disk_groups | default([]) %}
+{% if group.disks | default([]) | length > 0 %}
+# {{ group.name }}
+{% for disk in group.disks %}
+{{ disk }} -a{% if group.ata | default(true) %} -o on -S on{% endif %} -s {{ group.schedule }} -m root
 {% endfor %}
 
-# SSD pool (raidz1 - 3x 4TB Samsung SSDs)
-{% for disk in nas_storage_smartd_ssd_disks | default([]) %}
-{{ disk }} -a -o on -S on -s (S/../.././02|L/../09/./03) -m root
+{% endif %}
 {% endfor %}
-
-# NVMe devices (special/cache/fast storage). The ATA-only -o/-S flags do
-# not apply to NVMe and make smartd log warnings.
-{% for disk in nas_storage_smartd_nvme_disks | default([]) %}
-{{ disk }} -a -s (S/../.././02|L/../10/./03) -m root
-{% endfor %}
-
-# Archive pool (raidz1 - 4x 6TB drives) - if defined
-{% for disk in nas_storage_smartd_archive_disks | default([]) %}
-{{ disk }} -a -o on -S on -s (S/../.././02|L/../11/./03) -m root
-{% endfor %}
-
 # SMART test schedule:
 #   S = Short self-test, daily at 2am
-#   L = Long self-test, monthly at 3am on the pool's staggered day
+#   L = Long self-test, monthly at 3am on the group's staggered day
 # Flags: -a monitor all attributes; -o/-S ATA offline-collection and
-# attribute autosave (ATA drives only); -m root mails alerts via postfix.
+# attribute autosave (ATA only — they log warnings on NVMe, so a group of NVMe
+# devices sets ata: false); -m root mails alerts via postfix.

@@ -14,46 +14,34 @@ vfio_passthrough_enabled: false
 vfio_passthrough_pci_ids: []
 
 # Host kernel modules HARD-BLACKLISTED so they never claim their function of the
-# device (the VGA function's driver). A blacklisted module never loads, so it gets
-# NO softdep — a `softdep nouveau pre: vfio-pci` would be dead (nouveau never
-# loads, so it never fires). vfio-pci instead claims the VGA function directly via
-# `options vfio-pci ids=` once it is force-loaded at boot (see
-# vfio_passthrough_force_load below).
+# device. A blacklisted module never loads, so it gets NO softdep — the softdep
+# would never fire. vfio-pci claims the function via `ids=` instead.
 vfio_passthrough_blacklist_modules:
   - nouveau
-  # i2c_nvidia_gpu provides the `nvidia-gpu` driver for the card's UCSI/USB-C
-  # controller (01:00.3). It auto-loads on PCI match and claimed .3 before
-  # vfio-pci despite the `vfio-pci.ids=` cmdline (seen in the first GPU window),
-  # leaving one function of the IOMMU group on a host driver — Proxmox then had
-  # to rebind it to vfio-pci at VM start. It is NVIDIA-GPU-only (nothing else on
-  # the host uses it), so hard-blacklist it like nouveau; vfio-pci claims .3 via
-  # `ids=` at boot and the whole group is guest-ready without a VM-start rebind.
+  # i2c_nvidia_gpu drives the card's UCSI/USB-C function and auto-loads on PCI
+  # match, claiming it ahead of vfio-pci. It is NVIDIA-GPU-only (nothing else on
+  # a host uses it), so hard-blacklist rather than softdep; vfio-pci then claims
+  # the function via `ids=` at boot with no VM-start rebind.
   - i2c_nvidia_gpu
 
-# Host drivers that DO load at boot (they also serve OTHER host devices, so they
+# Host drivers that DO load at boot (they also serve other host devices, so they
 # must NOT be blacklisted) but must let vfio-pci grab the passed-through function
-# first: each gets `softdep <mod> pre: vfio-pci` so vfio-pci is pulled in ahead of
-# it and binds its `ids=` before the host driver enumerates. On a multifunction
-# NVIDIA GPU these are the HD-audio (snd_hda_intel) and USB-C xHCI (xhci_hcd)
-# functions. The UART/UCSI function is claimed by i2c_nvidia_gpu, which is
-# hard-blacklisted above (NVIDIA-GPU-only, unlike these two host-shared
-# drivers), so it needs no softdep here.
+# first: each gets `softdep <mod> pre: vfio-pci`. On a multifunction NVIDIA GPU
+# these are the HD-audio and USB-C xHCI functions.
 vfio_passthrough_softdep_modules:
   - snd_hda_intel
   - xhci_hcd
 
-# Force vfio-pci to load early at boot via /etc/modules-load.d, backing up the
-# primary `vfio-pci.ids=` cmdline bind: systemd-modules-load loads vfio-pci at
-# real-root boot even when nothing else pulls it in (the blacklisted host driver
-# means its softdep never fires). Leave true — the mechanisms are complementary.
+# Write /etc/modules-load.d/vfio-pci.conf so systemd-modules-load pulls vfio-pci
+# in at real-root boot. Leave true: it backs up the primary cmdline bind
+# (README, "Binding mechanisms").
 vfio_passthrough_force_load: true
 
 # Kernel command-line parameters appended via the GRUB drop-in. iommu=pt improves
 # passthrough DMA/reset behavior; intel_iommu=on suits an Intel host (swap for
-# amd_iommu=on on AMD). The
-# role ALSO appends `vfio-pci.ids=<vfio_passthrough_pci_ids>` to the cmdline (in
-# the template, not this list) so vfio-pci binds the target functions at the
-# earliest point in the initramfs — do not duplicate an ids= entry here.
+# amd_iommu=on on AMD). The template ALSO appends
+# `vfio-pci.ids=<vfio_passthrough_pci_ids>` — do not duplicate an ids= entry
+# here.
 vfio_passthrough_cmdline_params:
   - "intel_iommu=on"
   - "iommu=pt"

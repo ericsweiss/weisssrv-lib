@@ -107,6 +107,65 @@ class TestBuild:
             gen.build(_minimal_inventory(), [{"key": "X", "group": "dns", "value": "bogus"}])
 
 
+def _nested_inventory() -> dict:
+    """A group-of-groups tree: siblings by reference, one child defined inline."""
+    inv = _minimal_inventory()
+    children = inv["all"]["children"]
+    children["k3s"] = {"children": {"k3s_servers": None, "k3s_agents": None}}
+    children["base_managed"] = {
+        "children": {
+            "proxmox": None,
+            "dns": None,
+            # Defined inline rather than as a top-level sibling.
+            "edge": {"hosts": {"edge-01": {"ansible_host": "10.0.0.9"}}},
+        }
+    }
+    children["empty_parent"] = {"children": {}}
+    return inv
+
+
+class TestNestedGroups:
+    def test_group_of_groups_unions_children_depth_first(self):
+        pairs = dict(
+            gen.build(_nested_inventory(), [{"key": "K3S_ALL", "group": "k3s", "value": "ips"}])
+        )
+        assert pairs["K3S_ALL"] == "10.0.0.222 10.0.0.223 10.0.0.202"
+
+    def test_names_are_stable_across_runs(self):
+        spec = [{"key": "BASE", "group": "base_managed", "value": "names"}]
+        first = dict(gen.build(_nested_inventory(), spec))["BASE"]
+        assert first == "pve-a pve-b dns-01 dns-02 edge-01"
+        assert dict(gen.build(_nested_inventory(), spec))["BASE"] == first
+
+    def test_host_selector_searches_nested_members(self):
+        pairs = dict(
+            gen.build(
+                _nested_inventory(),
+                [{"key": "EDGE_IP", "group": "base_managed", "host": "edge-01", "value": "ip"}],
+            )
+        )
+        assert pairs["EDGE_IP"] == "10.0.0.9"
+
+    def test_cycle_terminates(self):
+        inv = _minimal_inventory()
+        inv["all"]["children"]["a"] = {"children": {"b": None}}
+        inv["all"]["children"]["b"] = {
+            "children": {"a": None},
+            "hosts": {"only": {"ansible_host": "10.0.0.1"}},
+        }
+        pairs = dict(gen.build(inv, [{"key": "A", "group": "a", "value": "ips"}]))
+        assert pairs["A"] == "10.0.0.1"
+
+    def test_missing_group_and_empty_group_report_differently(self):
+        inv = _nested_inventory()
+        with pytest.raises(ValueError, match="not in the inventory"):
+            gen.build(inv, [{"key": "X", "group": "nope", "value": "ips"}])
+        with pytest.raises(ValueError, match="contains no hosts"):
+            gen.build(inv, [{"key": "X", "group": "empty_parent", "value": "ips"}])
+        with pytest.raises(ValueError, match="host 'ghost' is not in group"):
+            gen.build(inv, [{"key": "X", "group": "dns", "host": "ghost", "value": "ip"}])
+
+
 class TestRender:
     def test_render_is_shell_sourceable(self, exports, tmp_path):
         pairs = gen.build(_minimal_inventory(), exports)

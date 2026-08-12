@@ -25,9 +25,11 @@ services:
     ports:
       # App: loopback only — the host nginx terminates TLS and proxies to it.
       - "127.0.0.1:{{ immich_server_listen_port }}:2283"
-      # Metrics: reachable on the LAN, so scrape access is the site firewall's job.
-      - "{{ immich_api_metrics_port }}:{{ immich_api_metrics_port }}"
-      - "{{ immich_microservices_metrics_port }}:{{ immich_microservices_metrics_port }}"
+      # Metrics: unauthenticated, published on immich_metrics_bind — 0.0.0.0 by
+      # default, i.e. every interface. Pin it to 127.0.0.1 (or the scrape-facing
+      # address) and firewall these ports if nothing scrapes from off-host.
+      - "{{ immich_metrics_bind }}:{{ immich_api_metrics_port }}:{{ immich_api_metrics_port }}"
+      - "{{ immich_metrics_bind }}:{{ immich_microservices_metrics_port }}:{{ immich_microservices_metrics_port }}"
     depends_on:
       redis:
         condition: service_healthy
@@ -87,8 +89,8 @@ services:
       DATA_SOURCE_USER: ${DB_USERNAME}
       DATA_SOURCE_PASS: ${DB_PASSWORD}
     ports:
-      # Unauthenticated: scope access at the site firewall.
-      - "{{ immich_postgres_exporter_port }}:9187"
+      # Unauthenticated: published on immich_metrics_bind.
+      - "{{ immich_metrics_bind }}:{{ immich_postgres_exporter_port }}:9187"
     depends_on:
       database:
         condition: service_healthy

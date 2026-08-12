@@ -5,7 +5,7 @@ galaxy_info:
   author: Eric Weiss
   description: Declarative Proxmox storage entries and vzdump backup jobs via pvesh
   license: MIT
-  min_ansible_version: "2.15"
+  min_ansible_version: "2.18"
   platforms:
     - name: Debian
       versions:

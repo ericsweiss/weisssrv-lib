@@ -15,10 +15,19 @@ one node. It no-ops while both lists are empty.
 ## What This Role Manages
 
 - **Storage entries** (`/storage` API): creates missing entries; reconciles
-  the mutable properties (`content`, `options`) on drift with a set-based
-  comparison (Proxmox reorders comma lists); **fails loud** when a
-  create-fixed property (`server`, `export`, `path`) drifts, printing the
-  manual recreation procedure — Proxmox cannot update those in place.
+  the mutable properties (`content`, `nodes`, `mountpoint`, `sparse`,
+  `options`) on drift with a set-based comparison (Proxmox reorders comma
+  lists); **fails loud** when a create-fixed property (`server`, `export`,
+  `path`, `pool`) drifts, printing the manual recreation procedure — Proxmox
+  cannot update those in place.
+  - `type: zfspool` entries are supported alongside `nfs`/`dir`: `pool` names
+    the dataset the id allocates in, and it is **create-fixed for a reason** —
+    an id recreated against the pool root instead of the intended child dataset
+    puts every new guest disk on whatever the root's ZFS properties are
+    (encryption included), with no other signal. Codifying the id is what turns
+    that into a deploy failure. `nodes` keeps a single-host pool off the rest of
+    the cluster; an undefined `nodes`/`mountpoint`/`sparse` inherits the live
+    value rather than clearing it.
 - **vzdump backup jobs** (`/cluster/backup` API): creates missing jobs with
   the configured `id`; reconciles `storage`, `schedule`, `mode`, `compress`,
   `enabled`, guest selection (`all`, `vmid`, `exclude`), `prune-backups`,
@@ -49,6 +58,14 @@ proxmox_backup_storage:
     export: /tank-proxmox
     content: "snippets,backup,vztmpl,iso"
     options: "vers=4.2,xprtsec=tls"
+
+  - id: ssd                  # the id guest disks are allocated from
+    type: zfspool
+    pool: ssd/pve            # create-fixed: the dataset new disks inherit from
+    content: "images,rootdir"
+    nodes: pve-nas-01        # comma-separated; keeps a local pool off other nodes
+    mountpoint: /mnt/ssd/pve
+    sparse: false
 
 proxmox_backup_vzdump_jobs:
   - id: backup-10f33360-a177  # matches the live jobs.cfg id -> the role ADOPTS the job

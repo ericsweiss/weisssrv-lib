@@ -1,9 +1,9 @@
 ---
 # Canonical copy: weisssrv-lib `ci/release/github-release-workflow.example.yml`.
 # Consumers vendor it byte-identically as `.github/workflows/release.yml` — edit
-# it upstream, then re-vendor; a library test compares the two copies. Vendoring
-# rather than `uses:` is forced: GitHub has no equivalent of GitLab's
-# `include: project:` for a private library.
+# it upstream, then re-vendor; the consumer's own vendored-copy gate compares
+# the two. Vendoring rather than `uses:` is forced: GitHub has no equivalent of
+# GitLab's `include: project:` for a private library.
 #
 # It is the GitHub Actions counterpart of the library's
 # `ci/release/semantic-release.yml` and runs `scripts/semantic-release.py` with
@@ -18,16 +18,14 @@
 #   - full history + tags, so `<last tag>..HEAD` resolves (GitLab's GIT_DEPTH 0);
 #   - publishes release.json unconditionally (GitLab's `artifacts: when:always`).
 #
-# Ordering: this triggers on `ci` COMPLETING successfully rather than on
-# `push: main`, so a tag is never cut for a commit whose gates then fail. That
-# makes `ci` the aggregate gate and nothing else — a sibling workflow
-# (build-image.yml) can still be running or already red when the tag is cut, so
-# put anything that must gate the release inside ci.yml as a job. `workflow_run`
-# reports `github.sha` as the default-branch tip at trigger time, not the commit
-# that was tested, which is why `head_sha` is used in both the checkout and
-# `--ref`. If you would rather not reason about that, delete this file and
-# append the same step to ci.yml as a job gated on the other jobs and on
-# `github.event_name == 'push' && github.ref == 'refs/heads/main'`.
+# Ordering: triggers on `ci` COMPLETING successfully rather than on `push:
+# main`, so no tag is cut for a commit whose gates then fail. `ci` is the
+# aggregate gate and nothing else — a sibling workflow (build-image.yml) can
+# still be running or already red at tag time, so anything that must gate the
+# release belongs inside ci.yml as a job. `workflow_run` reports `github.sha`
+# as the default-branch tip at trigger time, not the tested commit, so
+# `head_sha` is used for both the checkout and `--ref`. Alternatives:
+# docs/CI-SHAPES.md (app template).
 name: release
 
 # No workflow_dispatch. A dispatch runs the workflow definition FROM THE

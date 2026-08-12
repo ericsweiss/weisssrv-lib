@@ -23,7 +23,7 @@
           - "'ktls-utils' in ansible_facts.packages"
           # mount.nfs must ship with the TLS client tooling: a first-time NFS
           # client VM otherwise fails fsconfig() with "mount program didn't
-          # pass remote address" (pipeline 803).
+          # pass remote address".
           - "'nfs-common' in ansible_facts.packages"
         fail_msg: "ktls-utils/nfs-common not installed — role's apt step incomplete"
         success_msg: "ktls-utils (tlshd) + nfs-common (mount.nfs) installed"

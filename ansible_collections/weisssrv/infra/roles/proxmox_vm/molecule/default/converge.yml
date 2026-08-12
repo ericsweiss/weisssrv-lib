@@ -2,13 +2,11 @@
 - name: Converge — exercise storage selection + pool validation
   hosts: all
   become: true
-  # gather_facts deferred: with become: true at play level + the molecule
-  # docker connector, the implicit Gathering Facts task has been failing
-  # to create Ansible's remote_tmp dir (`mkdir … && mkdir …`, exit 1, no
-  # stderr surfaced) on the proxmox_{vm,lxc,ha} scenarios. A raw `mkdir
-  # -p` first then an explicit `ansible.builtin.setup` works around it
-  # — the raw bypasses Ansible's tmpdir-creation path, so the subsequent
-  # setup module finds the directory already in place.
+  # gather_facts deferred: under become + the molecule docker connector, the
+  # implicit fact-gathering task fails to create Ansible's remote_tmp. A raw
+  # `mkdir -p` (which bypasses that path) followed by an explicit
+  # ansible.builtin.setup avoids it. Same pattern in the proxmox_lxc/ha
+  # scenarios.
   gather_facts: false
   vars:
     proxmox_host: "{{ inventory_hostname }}"
@@ -136,6 +134,47 @@
         dest: /tmp/molecule-results/11-windows-guest.json
         mode: "0644"
         content: "{{ win_scan.stdout }}"
+
+    # 2wi. Same Windows path with the UNQUOTED-INT disk size the GiB assert's own
+    # fail_msg recommends ("e.g. 64 or 64G"). YAML makes it an int, and the
+    # `match` test hands the value straight to re.match — so without the assert's
+    # `| string` coercion this run dies with an opaque templating TypeError
+    # instead of assembling `scsi0 ssd:250`.
+    - name: Reset qm.log for the Windows-guest bare-int disk-size case
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/qm.log
+        content: ""
+        mode: "0644"
+
+    - name: Windows-guest run with a bare-int disk size
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_vm
+      vars:
+        proxmox_storage: ssd
+        proxmox_vm_guest_type: windows
+        proxmox_vm_cpu_type: host
+        proxmox_vm_disk_size: 250
+        proxmox_vm_iso_storage: isostore
+        proxmox_vm_install_iso: Win11_Test.iso
+        proxmox_vm_virtio_win_version: "0.1.285"
+        proxmox_vm_skip_create: true
+
+    - name: Scan the bare-int Windows run for the assembled boot disk
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/qm.log
+        bootdisk=$(grep -c -- 'scsi0 ssd:250,discard=on,ssd=1' "$log" || true)
+        printf '{"bootdisk": %s}\n' "$bootdisk"
+      args:
+        executable: /bin/bash
+      register: win_int_scan
+      changed_when: false
+
+    - name: Capture Windows-guest bare-int result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/13-windows-int-size.json
+        mode: "0644"
+        content: "{{ win_int_scan.stdout }}"
 
     # 2p. PCI passthrough — a create-time proxmox_vm_hostpci list must attach each device
     # as `qm set <id> --hostpci<index> <spec>` (Linux guest, VM-missing state, so
@@ -399,11 +438,12 @@
       changed_when: false
 
     # 7b-ii. memory drift — an existing VM reporting a different memory must get
-    # exactly one `qm set 999 --memory <desired>`.
-    - name: Stub memory drifted (4096 against the role default 2048)
+    # exactly one `qm set 999 --memory <desired>`. Growth needs no ceremony;
+    # a SHRINK has to be named, so both arms are exercised here.
+    - name: Stub memory drifted low (1024 against the role default 2048)
       ansible.builtin.copy:
         dest: /tmp/molecule-stub-state/vm_memory_override
-        content: "4096"
+        content: "1024"
         mode: "0644"
 
     - name: Reset qm.log for memory-drift case
@@ -418,11 +458,6 @@
       vars:
         proxmox_storage: ssd
 
-    - name: Remove memory override
-      ansible.builtin.file:
-        path: /tmp/molecule-stub-state/vm_memory_override
-        state: absent
-
     - name: Count memory-drift qm calls
       ansible.builtin.shell: |
         set -o pipefail
@@ -432,6 +467,91 @@
         executable: /bin/bash
       register: memory_drift
       changed_when: false
+
+    # 7b-iii. shrink guard — a desired value BELOW the live one must fail the
+    # task unless proxmox_vm_memory_shrink_ok names it. Without the guard a
+    # guest that lost its inventory memory key would be resized down to the
+    # role default on the next converge.
+    - name: Stub memory drifted high (8192 against the role default 2048)
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/vm_memory_override
+        content: "8192"
+        mode: "0644"
+
+    - name: Reset qm.log for the shrink-guard case
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/qm.log
+        content: ""
+        mode: "0644"
+
+    - name: Run role against a VM with MORE memory than desired
+      block:
+        - name: Include the role with an unnamed shrink pending
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_vm
+          vars:
+            proxmox_storage: ssd
+
+        - name: The unnamed shrink was not refused
+          ansible.builtin.fail:
+            msg: >-
+              The memory reconcile lowered a live guest's allocation without
+              proxmox_vm_memory_shrink_ok — a dropped inventory key silently
+              downsizes the guest.
+      rescue:
+        - name: Count shrink-guard qm calls
+          ansible.builtin.shell: |
+            set -o pipefail
+            applied=$(grep -c -- '^qm set 999 --memory' /tmp/molecule-stub-state/qm.log || true)
+            echo "{\"memory_set\": ${applied}}"
+          args:
+            executable: /bin/bash
+          register: memory_shrink_guard
+          changed_when: false
+
+        - name: Assert the refusal applied nothing
+          ansible.builtin.assert:
+            that:
+              - (memory_shrink_guard.stdout | from_json).memory_set | int == 0
+            fail_msg: "The refused shrink still issued a qm set --memory"
+            success_msg: "A memory shrink is refused unless it is named"
+
+    - name: Reset qm.log after the shrink-guard case
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/qm.log
+        content: ""
+        mode: "0644"
+
+    - name: Run role with the shrink explicitly accepted
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_vm
+      vars:
+        proxmox_storage: ssd
+        proxmox_vm_memory_shrink_ok: true
+
+    - name: Count accepted-shrink qm calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        applied=$(grep -c '^qm set 999 --memory 2048$' /tmp/molecule-stub-state/qm.log || true)
+        echo "{\"memory_set\": ${applied}}"
+      args:
+        executable: /bin/bash
+      register: memory_shrink_accepted
+      changed_when: false
+
+    - name: Assert a named shrink is applied
+      ansible.builtin.assert:
+        that:
+          - (memory_shrink_accepted.stdout | from_json).memory_set | int == 1
+        fail_msg: >-
+          proxmox_vm_memory_shrink_ok did not let the reconcile lower the
+          allocation.
+        success_msg: "A named memory shrink is applied"
+
+    - name: Remove memory override
+      ansible.builtin.file:
+        path: /tmp/molecule-stub-state/vm_memory_override
+        state: absent
 
     # 7c. onboot + startup drift — existing VM reporting onboot:0 and a stale
     # startup string must get exactly one `qm set 999 --onboot 1 --startup ...`.

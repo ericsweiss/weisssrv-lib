@@ -38,3 +38,15 @@
 
   roles:
     - role: weisssrv.infra.base
+
+  post_tasks:
+    # Second pass for the ONE key path that can lock an operator out: exclusive
+    # rewrites authorized_keys wholesale. Run against a second admin user so the
+    # additive default above stays asserted on testuser, and idempotent because
+    # prepare (not converge) seeded the foreign key it revokes.
+    - name: Re-apply the role for the exclusive-keys admin user
+      ansible.builtin.include_role:
+        name: weisssrv.infra.base
+      vars:
+        base_admin_user: keyexcl
+        base_ssh_authorized_keys_exclusive: true

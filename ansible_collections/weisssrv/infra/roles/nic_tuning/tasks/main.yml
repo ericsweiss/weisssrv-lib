@@ -19,12 +19,14 @@
   when: nic_tuning_ip_forward | bool
   notify: Reload sysctl ip_forward
 
+# Removing the drop-in does not force ip_forward=0: another role may
+# legitimately need forwarding (Tailscale subnet routing), and the live value
+# reverts to the kernel default at the next reboot.
 - name: Remove sysctl.d ip_forward drop-in when disabled
   ansible.builtin.file:
     path: /etc/sysctl.d/99-nic-tuning-ip-forward.conf
     state: absent
   when: not (nic_tuning_ip_forward | bool)
-  notify: Disable sysctl ip_forward
 
 - name: Install sysctl.d drop-in for vm.swappiness
   ansible.builtin.copy:
@@ -41,12 +43,13 @@
   when: nic_tuning_vm_swappiness is not none
   notify: Reload sysctl swappiness
 
+# As above: the drop-in goes, the live value is left alone and reverts to the
+# kernel default at the next reboot.
 - name: Remove sysctl.d vm.swappiness drop-in when unmanaged
   ansible.builtin.file:
     path: /etc/sysctl.d/99-nic-tuning-swappiness.conf
     state: absent
   when: nic_tuning_vm_swappiness is none
-  notify: Disable sysctl swappiness
 
 - name: Install ethtool for NIC overrides
   ansible.builtin.apt:

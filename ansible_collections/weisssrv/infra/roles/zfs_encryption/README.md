@@ -130,7 +130,7 @@ go `failed` on a locked boot and needs no `reset-failed`.
 | `zfs_encryption_connect_token` | yes, where pools are set | Injected at runtime from 1Password; asserted non-empty. |
 | `zfs_encryption_connect_url` | yes, where pools are set | Defaults to `https://connect.<zfs_encryption_internal_domain>`; asserted non-empty. |
 | `zfs_encryption_internal_domain` | no | Aliases the inventory-wide `internal_domain`. |
-| `zfs_encryption_connect_vault` | no | Vault holding the passphrase items (`Homelab`). A 26-char lowercase id is used as a vault UUID directly; anything else is resolved by name at runtime. |
+| `zfs_encryption_connect_vault` | no | Vault holding the passphrase items (`Homelab`). A 26-char lowercase id is used as a vault UUID directly; anything else is resolved by name at runtime. Scope it to a vault holding only the passphrases — see below. |
 | `zfs_encryption_guest_vmids` / `_ctids` | no | Guest cohort started after the mount anchor. |
 | `zfs_encryption_fetch_timeout_seconds` | no | Per-phase deadline inside one script invocation (120). |
 | `zfs_encryption_fetch_retry_seconds` | no | Sleep between Connect retries (5); jittered. |
@@ -170,6 +170,27 @@ and credentials on the root filesystem.
 One `Password` item per pool in the configured vault, with a field matching
 `zfs_encryption_pools[*].field` (default `passphrase`) and a title matching
 `zfs_encryption_pools[*].item`. Convention: `ZFS Pool <pool> Passphrase`.
+
+### Scoping the Connect token
+
+The token lands on disk as a plaintext bearer credential (`0400 root`) on every
+host with pools, and it can read **every item in every vault the token covers**.
+`zfs_encryption_connect_vault` defaults to `Homelab` — the vault name this
+collection's original consumer uses — so a deployment that keeps a mixed-purpose
+vault gives a boot credential read access to all of it. Point it at a vault
+holding only the pool passphrases.
+
+Order matters, because a Connect **token** can only cover vaults the Connect
+**server** itself has access to. Minting a token against a vault the server
+cannot reach yields one that 403s, and a token that cannot read the item makes
+`zfs-load-key@<pool>.service` retry forever and drags `zfs-mount` with it — a
+failure that only shows up at the next boot. So: create the vault and move the
+passphrase items into it, grant the existing Connect server access to it, mint
+the new token, set `zfs_encryption_connect_vault`, converge, prove an actual key
+load, and only then revoke the old token.
+
+`zfs_encryption_key_command` sidesteps Connect entirely and is the alternative
+when a dedicated vault is not worth those steps.
 
 ## Upgrading
 

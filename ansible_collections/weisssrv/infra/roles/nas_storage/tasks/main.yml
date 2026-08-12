@@ -1,6 +1,12 @@
 ---
 # NAS storage role: ZFS, NFS, MergerFS, Samba, media-mover
 
+# Pure inventory validation, so it runs before anything is written: every export
+# bind source and every boot-ordered MergerFS union must be classified
+# ZFS-backed or not. Rationale + the `zfs:` contract live in the included file.
+- name: Assert every ZFS-backed source is classified
+  ansible.builtin.include_tasks: assert_zfs_classification.yml
+
 - name: Include ZFS tasks
   ansible.builtin.include_tasks: zfs.yml
   when:

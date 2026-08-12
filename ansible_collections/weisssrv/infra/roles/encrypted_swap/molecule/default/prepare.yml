@@ -1,8 +1,18 @@
 ---
-# Prepare: shared systemd/apt prep, plus two fixtures — a plaintext swap fstab
-# line (verify asserts the deferred shape KEEPS it) and an obsolete live-switch
-# script (verify asserts the role purges it). Seeded here, not in converge, so
-# the idempotence re-run does not ping-pong with the role.
+# Prepare. Two host shapes:
+#
+#   encrypted-swap-test      a real backing block device at /dev/pve/swap (a
+#                            loop device symlinked into place — the role stats
+#                            with follow: true), plus two fixtures: a plaintext
+#                            swap fstab line (verify asserts the deferred shape
+#                            KEEPS it) and an obsolete live-switch script
+#                            (verify asserts the role purges it).
+#   encrypted-swap-skip-test no backing device, but the crypttab/fstab entries
+#                            an earlier converge would have written — the
+#                            self-skip arm must reconcile them away.
+#
+# Seeded here, not in converge, so the idempotence re-run does not ping-pong
+# with the role.
 - name: Prepare
   hosts: all
   gather_facts: false
@@ -29,3 +39,125 @@
         owner: root
         group: root
         mode: "0755"
+
+    # Backing device for the non-skip host. The role only stats it (activation
+    # is deferred to reboot), so a loop device is enough — but it has to be a
+    # real block device or the new guard aborts converge before anything is
+    # written and every assertion in verify goes untested.
+    - name: Provision a backing swap block device at /dev/pve/swap
+      when: inventory_hostname != 'encrypted-swap-skip-test'
+      block:
+        - name: Install the loop-device tooling
+          ansible.builtin.apt:
+            name: util-linux
+            state: present
+            update_cache: true
+            cache_valid_time: 3600
+
+        - name: Create the backing disk image (64MB)
+          ansible.builtin.command: dd if=/dev/zero of=/tmp/encrypted-swap-backing.img bs=1M count=64
+          args:
+            creates: /tmp/encrypted-swap-backing.img
+
+        # Loop devices are kernel-global but their /dev nodes are per-container;
+        # the script mknods the node itself and retries on contention (see
+        # zvol_mount's prepare, which carries the same recipe and rationale).
+        - name: Attach a loopback device (dynamic allocation, mknod recovery, race-safe)
+          ansible.builtin.shell: |
+            set -euo pipefail
+            # NOTE: keep these comments apostrophe-free. ansible split_args
+            # tokenizes the shell free-form value, so a stray single quote in a
+            # comment trips "unbalanced quotes" at PARSE time.
+            loop_num() { n=${1##*loop}; printf '%s' "${n%%[!0-9]*}"; }
+            node_for() {
+              n=$(loop_num "$1"); [ -n "$n" ] || return 1
+              d="/dev/loop$n"
+              rm -f "$d" 2>/dev/null || true
+              mknod "$d" b 7 "$n" 2>/dev/null || true
+              [ -b "$d" ] || return 1
+              printf '%s' "$d"
+            }
+            existing=$(losetup -j /tmp/encrypted-swap-backing.img 2>/dev/null | cut -d: -f1 | head -1 || true)
+            if [ -n "$existing" ]; then
+              d=$(node_for "$existing") && { printf '%s' "$d"; exit 0; }
+            fi
+            for _ in $(seq 1 10); do
+              raw=$(losetup -f 2>/dev/null || true)
+              [ -n "$raw" ] || { sleep 1; continue; }
+              d=$(node_for "$raw") || { sleep 1; continue; }
+              if losetup "$d" /tmp/encrypted-swap-backing.img 2>/dev/null; then
+                printf '%s' "$d"
+                exit 0
+              fi
+              sleep 1
+            done
+            echo "could not attach a loop device after 10 attempts" >&2
+            exit 1
+          args:
+            executable: /bin/bash
+          register: encrypted_swap_loop_device
+          changed_when: false
+
+        - name: Create /dev/pve
+          ansible.builtin.file:
+            path: /dev/pve
+            state: directory
+            mode: "0755"
+
+        # Symlink, not a second node: the production path is the Proxmox
+        # installer LVM LV at /dev/pve/swap, which is itself a symlink into
+        # /dev/dm-N, and the role stats with follow: true.
+        - name: Publish the loop device at the production /dev/pve/swap path
+          ansible.builtin.file:
+            src: "{{ encrypted_swap_loop_device.stdout | trim }}"
+            dest: /dev/pve/swap
+            state: link
+            force: true
+
+    # Self-skip host: the state an earlier successful converge left behind,
+    # before the backing device disappeared.
+    - name: Seed stale encrypted-swap entries on the self-skip host
+      when: inventory_hostname == 'encrypted-swap-skip-test'
+      block:
+        - name: Seed a stale crypttab entry
+          ansible.builtin.copy:
+            dest: /etc/crypttab
+            content: |
+              cryptswap /dev/pve/swap /dev/urandom swap,cipher=aes-xts-plain64,size=512
+            owner: root
+            group: root
+            mode: "0600"
+
+        - name: Seed a stale mapper fstab line
+          ansible.builtin.lineinfile:
+            path: /etc/fstab
+            line: "/dev/mapper/cryptswap none swap sw,pri=100,nofail 0 0"
+            create: true
+            owner: root
+            group: root
+            mode: "0644"
+
+        - name: Seed the boot finalize unit an earlier converge enabled
+          ansible.builtin.copy:
+            dest: /etc/systemd/system/encrypted-swap-finalize.service
+            content: |
+              [Unit]
+              Description=Stale encrypted-swap finalize fixture
+              ConditionPathExists=/etc/crypttab
+
+              [Service]
+              Type=oneshot
+              RemainAfterExit=yes
+              ExecStart=/bin/true
+
+              [Install]
+              WantedBy=multi-user.target
+            owner: root
+            group: root
+            mode: "0644"
+
+        - name: Enable the seeded finalize unit
+          ansible.builtin.systemd:
+            name: encrypted-swap-finalize.service
+            enabled: true
+            daemon_reload: true

@@ -10,15 +10,26 @@
       ansible.builtin.assert:
         that:
           - adguard_sync_version | default('') | length > 0
+          - (adguard_sync_replica | default('') | length > 0)
+            or (adguard_sync_replicas | default([]) | length > 0)
           - adguard_sync_origin | default('') | length > 0
-          - adguard_sync_replica | default('') | length > 0
           - adguard_sync_admin_user | default('') | length > 0
           - adguard_sync_admin_password | default('') | length > 0
         fail_msg: >-
-          adguard_sync_{version,origin,replica,admin_user,admin_password} are
-          all required — the pinned release plus the two AdGuard API endpoints
-          and the credentials shared by both.
+          adguard_sync_{version,origin,admin_user,admin_password} are all
+          required — the pinned release plus the origin AdGuard API endpoint
+          and the credentials shared by every endpoint — along with at least
+          one target in adguard_sync_replica or adguard_sync_replicas.
         quiet: true
+
+    - name: Validate every entry in adguard_sync_replicas carries a URL
+      ansible.builtin.assert:
+        that:
+          - adguard_sync_replicas | rejectattr('url', 'defined') | list | length == 0
+          - adguard_sync_replicas | map(attribute='url') | select('equalto', '') | list | length == 0
+        fail_msg: "Every adguard_sync_replicas entry needs a non-empty url."
+        quiet: true
+      when: adguard_sync_replicas | default([]) | length > 0
 
     - name: Install adguardhome-sync via shared pipeline
       ansible.builtin.include_role:
@@ -26,9 +37,9 @@
         tasks_from: install
       vars:
         _as_base: "https://github.com/bakito/adguardhome-sync/releases/download"
-        # Upstream publishes both arches. Hardcoding amd64 made the version
-        # probe fail with "Exec format error" on aarch64, and because the probe
-        # gates the download, install reported CHANGED on every run there.
+        # Upstream publishes both arches; select by ansible_architecture — the
+        # version probe execs the binary, so a wrong-arch download breaks
+        # install idempotence.
         _as_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
         _as_file: "adguardhome-sync_{{ adguard_sync_version }}_linux_{{ _as_arch }}.tar.gz"
         prometheus_exporter_name: adguardhome-sync

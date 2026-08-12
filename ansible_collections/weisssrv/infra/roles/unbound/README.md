@@ -16,8 +16,9 @@ for a LAN-facing filtering resolver (`weisssrv.infra.adguard_home`).
   no control certificate pair is generated. `weisssrv.infra.unbound_exporter`
   reads stats through that socket.
 - Removal of superseded role-owned drop-ins (`unbound_legacy_dropins`), then a
-  readiness probe: the port must accept connections and `dig` must return an A
-  record.
+  readiness probe: `unbound_interface`:`unbound_port` must accept connections
+  and `dig @unbound_interface` must return an A record for
+  `unbound_probe_name`.
 
 `/etc/resolv.conf` is deliberately untouched — this resolver is not on port 53.
 
@@ -28,6 +29,7 @@ for a LAN-facing filtering resolver (`weisssrv.infra.adguard_home`).
 | `unbound_port` | `5335` | Listen port; off 53 so a filtering resolver can own 53 |
 | `unbound_interface` | `127.0.0.1` | Readiness-probe target and sole default listen address |
 | `unbound_interfaces` | `[unbound_interface]` | Full listen list; add `::1` here to also serve IPv6 loopback |
+| `unbound_probe_name` | `google.com` | Name the readiness probe resolves; point it at a name the configured forwarders answer when the host has no public egress |
 | `unbound_access_control` | `["127.0.0.0/8 allow"]` | ACL lines; must cover what `unbound_interfaces` serves — every other netblock is refused |
 | `unbound_dropin_name` | `managed.conf` | Filename of the role-owned drop-in |
 | `unbound_legacy_dropins` | `["weisssrv.conf"]` | Drop-in names removed on every run; unbound merges the directory with a **sorted** glob, so a survivor that sorts after the managed file wins every duplicated scalar |

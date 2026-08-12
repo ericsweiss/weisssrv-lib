@@ -1,7 +1,7 @@
 ---
 # Manage Proxmox HA node-affinity rules
 #
-# Note: This uses JSON output from ha-manager to avoid yq dependency.
+# Reads `ha-manager rules list --output-format=json` (no yq dependency).
 
 - name: Check if ha-manager rules command exists
   ansible.builtin.command: ha-manager rules list --output-format=json
@@ -30,14 +30,14 @@
       {{ dict((proxmox_ha_rules_check.stdout | from_json | default([]))
          | map(attribute='rule')
          | zip(proxmox_ha_rules_check.stdout | from_json | default([]))) }}
-  when: proxmox_ha_rules_check.rc == 0 and proxmox_ha_rules_check.stdout | length > 0
+  when: proxmox_ha_rules_check.stdout | length > 0
   tags: [proxmox_ha_rules]
 
 - name: Set empty list if no rules exist
   ansible.builtin.set_fact:
     proxmox_ha_current_ha_rule_ids: []
     proxmox_ha_current_ha_rules_lookup: {}
-  when: proxmox_ha_rules_check.rc != 0 or proxmox_ha_rules_check.stdout | length == 0 or proxmox_ha_rules_check.stdout == '[]'
+  when: proxmox_ha_rules_check.stdout | length == 0 or proxmox_ha_rules_check.stdout == '[]'
   tags: [proxmox_ha_rules]
 
 # The create/update tasks below gate on `item.type == 'node-affinity'`, so any
@@ -61,7 +61,6 @@
 - name: Remove HA rules
   ansible.builtin.command: ha-manager rules remove {{ item.name }}
   when:
-    - proxmox_ha_rules_check.rc == 0
     - item.name in (proxmox_ha_current_ha_rule_ids | default([]))
     - not (item.enabled | default(true))
   loop: "{{ proxmox_ha_rules | default([]) }}"
@@ -81,7 +80,6 @@
     --strict {{ '1' if item.strict | default(false) else '0' }}
     {% if item.comment is defined %}--comment "{{ item.comment }}"{% endif %}
   when:
-    - proxmox_ha_rules_check.rc == 0
     - item.name not in (proxmox_ha_current_ha_rule_ids | default([]))
     - item.type == 'node-affinity'
     - item.enabled | default(true)
@@ -142,12 +140,33 @@
     --strict {{ '1' if item.strict | default(false) else '0' }}
     {% if _needs_comment_arg %}--comment "{{ _comment_value }}"{% endif %}
   when:
-    - proxmox_ha_rules_check.rc == 0
     - item.name in (proxmox_ha_current_ha_rule_ids | default([]))
     - item.type == 'node-affinity'
     - item.enabled | default(true)
-    - _has_drift | bool  # Only update if there's actual drift
+    - _has_drift | bool
   loop: "{{ proxmox_ha_rules | default([]) }}"
   register: proxmox_ha_rule_update_result
   changed_when: proxmox_ha_rule_update_result.rc == 0
+  tags: [proxmox_ha_rules]
+
+# Warn-only, matching replication.yml's orphan handling: automatic deletion
+# could remove a rule someone created live before it was codified. A stale
+# node-affinity rule silently constrains placement of a resource this role
+# believes it fully controls, so it must at least be reported.
+- name: Find HA rules present in Proxmox but absent from inventory
+  ansible.builtin.set_fact:
+    proxmox_ha_unmanaged_rule_ids: >-
+      {{ proxmox_ha_current_ha_rule_ids | default([])
+         | difference(proxmox_ha_rules | default([]) | map(attribute='name') | list) }}
+  tags: [proxmox_ha_rules]
+
+- name: Display unmanaged HA rules
+  ansible.builtin.debug:
+    msg: |
+      WARNING: {{ proxmox_ha_unmanaged_rule_ids | length }} HA rule(s) exist in Proxmox
+      but are not defined in proxmox_ha_rules: {{ proxmox_ha_unmanaged_rule_ids | join(', ') }}
+
+      Codify them (add an entry with the SAME name so the role adopts the live rule)
+      or remove them manually: ha-manager rules remove <name>
+  when: proxmox_ha_unmanaged_rule_ids | length > 0
   tags: [proxmox_ha_rules]

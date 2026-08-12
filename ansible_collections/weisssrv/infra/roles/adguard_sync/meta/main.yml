@@ -5,7 +5,7 @@ galaxy_info:
   author: Eric Weiss
   description: Automatic synchronization of AdGuard Home settings from primary to replica
   license: MIT
-  min_ansible_version: "2.15"
+  min_ansible_version: "2.18"
   platforms:
     - name: Debian
       versions:

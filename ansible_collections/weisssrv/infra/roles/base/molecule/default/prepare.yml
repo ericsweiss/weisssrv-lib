@@ -29,3 +29,38 @@
         owner: root
         group: root
         mode: "0644"
+
+    # Two admin users, each seeded with a FOREIGN key nothing in the inventory
+    # lists. testuser converges additively (default) and must KEEP it; keyexcl
+    # converges with base_ssh_authorized_keys_exclusive and must LOSE it. Seeded
+    # here, not in converge, so the idempotence re-run does not ping-pong.
+    - name: Create the two admin users the converge exercises
+      ansible.builtin.user:
+        name: "{{ item }}"
+        state: present
+        create_home: true
+      loop:
+        - testuser
+        - keyexcl
+
+    - name: Create .ssh for both admin users
+      ansible.builtin.file:
+        path: "/home/{{ item }}/.ssh"
+        state: directory
+        owner: "{{ item }}"
+        group: "{{ item }}"
+        mode: "0700"
+      loop:
+        - testuser
+        - keyexcl
+
+    - name: Seed a foreign key into both authorized_keys files
+      ansible.builtin.copy:
+        dest: "/home/{{ item }}/.ssh/authorized_keys"
+        content: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIForeignKeyNotInInventory foreign@molecule\n"
+        owner: "{{ item }}"
+        group: "{{ item }}"
+        mode: "0600"
+      loop:
+        - testuser
+        - keyexcl

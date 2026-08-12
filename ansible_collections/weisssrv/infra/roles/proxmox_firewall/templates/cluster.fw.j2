@@ -69,18 +69,16 @@ IN ACCEPT -source +dc/admin_ts -p udp -dport 853 -log nolog
 IN ACCEPT -source +dc/admin_lan -p udp -dport 853 -log nolog
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 853 -log nolog
 IN ACCEPT -source +dc/admin_lan -p tcp -dport 853 -log nolog
-# AdGuard Home plaintext admin API (:3000) — admin sources, plus k3s_nodes
-# explicitly for the in-cluster AdGuard exporter's scrape (which must survive
-# any later narrowing of admin_lan).
-IN ACCEPT -source +dc/admin_ts -p tcp -dport 3000 -log nolog
-IN ACCEPT -source +dc/admin_lan -p tcp -dport 3000 -log nolog
-IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 3000 -log nolog
-# AdGuard Home HTTPS admin UI (:443) — the ingress proxies the resolver
-# hostnames to AdGuard's own TLS listener; also reachable directly from
-# LAN/Tailscale.
-IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 443 -log nolog
-IN ACCEPT -source +dc/admin_ts -p tcp -dport 443 -log nolog
-IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog
+{# Resolver admin surfaces (AdGuard Home's HTTPS UI on :443 and its plaintext
+   admin API on :3000). Both port and source sets are site data: the plaintext
+   API carries a reusable admin credential, so a scraper reaching it from the
+   cluster has to be declared, not inherited. #}
+{% for entry in proxmox_firewall_dns_admin_ports | default([]) %}
+{% for src in entry.sources %}
+IN ACCEPT -source +dc/{{ src }} -p tcp -dport {{ entry.port }} -log nolog{% if entry.comment is defined %} # {{ entry.comment }}{% endif %}
+
+{% endfor %}
+{% endfor %}
 # Standard DNS
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 53 -log nolog
 IN ACCEPT -source +dc/admin_ts -p udp -dport 53 -log nolog
@@ -156,24 +154,33 @@ IN ACCEPT -source +dc/nfs_clients -p tcp -dport 2049 -log nolog
 
 [group sg-metrics]
 
-# Prometheus scraping from k3s cluster (k3s SNATs pod traffic to node IPs)
+# Prometheus scraping from k3s cluster (k3s SNATs pod traffic to node IPs).
+# Built in: the exporters this collection's own roles bind. host.fw applies this
+# group on every node, so application scrape targets are site data
+# (proxmox_firewall_metrics_scrape_ports) rather than ports opened fleet-wide
+# for an app that may not be there.
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9100 -log nolog  # node-exporter
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9101 -log nolog  # node-exporter-host (bare metal)
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9134 -log nolog  # zfs-exporter
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9167 -log nolog  # unbound-exporter
-IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 8123 -log nolog  # home-assistant
-IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 32400 -log nolog # plex
-IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 3000 -log nolog  # adguard API
-IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 7472 -log nolog  # metallb speaker
-IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 7473 -log nolog  # metallb controller
-IN ACCEPT -source +dc/core-cluster -p tcp -dport 31100 -log nolog  # loki push (NodePort, host→k8s)
+{% for entry in proxmox_firewall_metrics_scrape_ports | default([]) %}
+{% for src in entry.sources %}
+IN ACCEPT -source +dc/{{ src }} -p tcp -dport {{ entry.port }} -log nolog{% if entry.comment is defined %}  # {{ entry.comment }}{% endif %}
+
+{% endfor %}
+{% endfor %}
 
 [group sg-pve-cluster]
 
 # Proxmox auto-permits intra-cluster traffic via a built-in macro, so this
 # group is belt-and-suspenders.
 IN ACCEPT -source +dc/pve_hosts -p tcp -dport 8006 -log nolog
+{% if proxmox_firewall_insecure_migration_ports | default(false) %}
+# Cleartext live-migration channel. Only reachable when datacenter.cfg carries
+# `migration: type=insecure` (proxmox_ha pins secure by default), and it moves
+# guest RAM unencrypted — keep this off unless that trade is deliberate.
 IN ACCEPT -source +dc/pve_hosts -p tcp -dport 60000:60050 -log nolog
+{% endif %}
 IN ACCEPT -source +dc/pve_hosts -p tcp -dport 22 -log nolog
 # corosync totem ring UDP ports: 5405 = ring0 (single-ring default), 5406 =
 # ring1 (reserved for a future second knet link). If the knet ring layout
@@ -232,7 +239,9 @@ OUT ACCEPT -p udp -dport 111 -log nolog         # rpcbind (NFS)
 OUT ACCEPT -p tcp -dport 31100 -log nolog       # Loki push NodePort fallback (alloy_host_loki_url)
 OUT ACCEPT -p udp -dport 5404:5412 -log nolog   # corosync cluster membership
 OUT ACCEPT -p tcp -dport 8006 -log nolog        # Proxmox API (cluster/migration)
-OUT ACCEPT -p tcp -dport 60000:60050 -log nolog # Proxmox live migration (insecure channel)
+{% if proxmox_firewall_insecure_migration_ports | default(false) %}
+OUT ACCEPT -p tcp -dport 60000:60050 -log nolog # cleartext live-migration channel
+{% endif %}
 OUT ACCEPT -p icmp -log nolog                   # ping/diagnostics
 
 [RULES]

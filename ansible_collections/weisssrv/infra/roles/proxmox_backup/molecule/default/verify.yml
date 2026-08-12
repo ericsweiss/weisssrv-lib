@@ -81,6 +81,38 @@
           - bk.f_total == 1
         fail_msg: "Expected hook=true/job_create=1/total=1, got {{ bk.f_hook }}/{{ bk.f_job_create }}/{{ bk.f_total }}"
 
+    # (g) A zfspool entry carries the dataset, node restriction, mountpoint and
+    #     allocation mode on the create path; without them the id is created
+    #     against the wrong dataset or without its node scope.
+    - name: G — absent zfspool entry is created with pool/nodes/mountpoint/sparse
+      ansible.builtin.assert:
+        that:
+          - bk.g_storage_create == 1
+          - bk.g_total == 1
+        fail_msg: "Expected storage_create=1/total=1 for the zfspool create, got {{ bk.g_storage_create }}/{{ bk.g_total }}"
+
+    - name: G2 — already-correct zfspool entry triggers NO mutations
+      ansible.builtin.assert:
+        that:
+          - bk.g2_total == 0
+        fail_msg: "Expected 0 mutations for a matching zfspool entry, got {{ bk.g2_total }}"
+
+    # (g3) `pool` is create-fixed and is the mapping that decides which dataset
+    #      new guest disks inherit their properties (encryption included) from.
+    - name: G3 — a zfspool id pointing at the wrong dataset fails loud
+      ansible.builtin.assert:
+        that:
+          - bk.g3_failed
+          - bk.g3_total == 0
+        fail_msg: "Expected failure with 0 mutations for pool drift, got failed={{ bk.g3_failed }}/total={{ bk.g3_total }}"
+
+    - name: G4 — a lost node restriction is reconciled with one storage set
+      ansible.builtin.assert:
+        that:
+          - bk.g4_storage_set == 1
+          - bk.g4_total == 1
+        fail_msg: "Expected storage_set=1/total=1 for nodes drift, got {{ bk.g4_storage_set }}/{{ bk.g4_total }}"
+
     # (e) Create-fixed drift (server IP -> hostname migration) must fail
     #     loud with ZERO mutations — recreation is a deliberate manual step.
     - name: E — fixed-property drift fails loud with NO mutations

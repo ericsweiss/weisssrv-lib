@@ -3,9 +3,9 @@ galaxy_info:
   role_name: smtp_relay
   namespace: weisssrv
   author: Eric Weiss
-  description: Central SMTP relay forwarding to Gmail with SASL authentication
+  description: Central SMTP relay forwarding to an upstream smarthost with SASL authentication
   license: MIT
-  min_ansible_version: "2.15"
+  min_ansible_version: "2.18"
   platforms:
     - name: Debian
       versions:

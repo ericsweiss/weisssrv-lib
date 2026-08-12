@@ -11,11 +11,12 @@ cluster instantiation: a second cluster consumes the same tag and passes its own
 values. A value with no safe generic default is asserted by name at role entry,
 so a missed rename fails the play instead of rendering an empty string.
 
-One documented exception ships a non-empty default anyway:
+Two documented exceptions ship a non-empty default anyway:
 
 | Default | Why |
 | --- | --- |
 | `nas_storage_appdata_base` (`/mnt/ssd/appdata`), `nas_storage_backup_apps_base` (`/mnt/tank/backups/apps`) | Conventional mount paths under conventional pool names, not site identity — a second cluster with the same pool layout wants exactly these. The datasets *under* them are inputs (`nas_storage_appdata_dirs`, `nas_storage_backup_artifact_apps`), and both default to empty. |
+| `zfs_encryption_connect_vault` (`Homelab`) | A 1Password vault NAME, which is site identity. It is defaulted because emptying it would break every host that currently sets nothing, and because the safe re-scope is a multi-step live operation (the Connect server must be granted the new vault before a token can cover it) rather than a variable change — see the role README, "Scoping the Connect token". Set it. |
 
 ## Install
 
@@ -48,83 +49,83 @@ the current release is named in the library
 ## Roles
 
 40 roles, addressed by FQCN. Each has its own `README.md` (variables, task flow,
-operator notes) and its own molecule scenario. "New" marks a role first shipped
-in this release; everything else has been in the collection since 0.2.0.
+operator notes) and its own molecule scenario. Which roles a release added is in
+that release's notes, not here.
 
 ### Host baseline and tuning
 
-| Role | Purpose | New |
-| --- | --- | :-: |
-| `base` | Packages, SSH hardening, sudoers, timezone, DNS, fail2ban, unattended-upgrades | |
-| `qol` | Shell/editor conveniences: zsh, Oh My Zsh, Neovim + plugins | |
-| `apt_signed_repo` | Shared pipeline for adding a fingerprint-verified signed APT repository | |
-| `resolv_conf` | Managed `/etc/resolv.conf`, with optional immutable-flag handling | |
-| `nic_tuning` | Per-NIC ethtool offload overrides, bond ASA guard, `ip_forward` sysctl, offload read-back gate | |
-| `encrypted_swap` | dm-crypt plain-mode random-key swap (crypttab + fstab) for bare metal | |
-| `tailscale` | Tailscale with subnet routing and a pinned, fully-verified signing key | |
+| Role | Purpose |
+| --- | --- |
+| `base` | Packages, SSH hardening, sudoers, timezone, DNS, fail2ban, unattended-upgrades |
+| `qol` | Shell/editor conveniences: zsh, Oh My Zsh, Neovim + plugins |
+| `apt_signed_repo` | Shared pipeline for adding a fingerprint-verified signed APT repository |
+| `resolv_conf` | Managed `/etc/resolv.conf`, with optional immutable-flag handling |
+| `nic_tuning` | Per-NIC ethtool offload overrides, bond ASA guard, `ip_forward` sysctl, offload read-back gate |
+| `encrypted_swap` | dm-crypt plain-mode random-key swap (crypttab + fstab) for bare metal |
+| `tailscale` | Tailscale with subnet routing and a pinned, fully-verified signing key |
 
 ### Proxmox host and guest lifecycle
 
-| Role | Purpose | New |
-| --- | --- | :-: |
-| `proxmox_vm` | VM provisioning: cloud-init or Windows, persistent ZFS zvols, memory/CPU reconcile | |
-| `proxmox_lxc` | LXC provisioning: bind mounts, GPU passthrough, UID mapping | |
-| `proxmox_firewall` | Cluster/host/guest firewall, IPSets, security groups, pveum users and tokens | |
-| `proxmox_ha` | HA rules and resources plus ZFS replication jobs, reconciled from one config index | |
-| `proxmox_backup` | Declarative storage entries and vzdump jobs via `pvesh` | |
-| `vfio_passthrough` | GPU VFIO host codification (IOMMU cmdline, vfio-pci bind, driver blacklist); stages config and flags reboot-required, never reboots | |
-| `zvol_mount` | Mounts attached zvols by stable device path with UUID-based fstab entries | |
+| Role | Purpose |
+| --- | --- |
+| `proxmox_vm` | VM provisioning: cloud-init or Windows, persistent ZFS zvols, memory/CPU reconcile |
+| `proxmox_lxc` | LXC provisioning: bind mounts, GPU passthrough, UID mapping |
+| `proxmox_firewall` | Cluster/host/guest firewall, IPSets, security groups, pveum users and tokens |
+| `proxmox_ha` | HA rules and resources plus ZFS replication jobs, reconciled from one config index |
+| `proxmox_backup` | Declarative storage entries and vzdump jobs via `pvesh` |
+| `vfio_passthrough` | GPU VFIO host codification (IOMMU cmdline, vfio-pci bind, driver blacklist); stages config and flags reboot-required, never reboots |
+| `zvol_mount` | Mounts attached zvols by stable device path with UUID-based fstab entries |
 
 ### Storage
 
-| Role | Purpose | New |
-| --- | --- | :-: |
-| `nas_storage` | ZFS properties and scrubs, NFS + Samba exports, mergerfs, media-mover, SMART, archive replication, backup-artifact metrics, `/etc/pve` cluster-config archive | |
-| `zfs_encryption` | Boot-time unlock of ZFS-native encrypted pools from 1Password Connect, with the mount/guest-start ordering units | |
-| `zfs_arc_cap` | Caps the ZFS ARC on compute hosts (modprobe.d + initramfs + live sysfs) | |
-| `nfs_tls` | tlshd (ktls-utils) for NFSv4 transport security (`xprtsec=tls`/`mtls`) | |
-| `restic_offsite` | Nightly offsite backup to Backblaze B2 (restic + rclone): retention ceiling, stale-lock reaper, rotating deep verify | |
+| Role | Purpose |
+| --- | --- |
+| `nas_storage` | ZFS properties and scrubs, NFS + Samba exports, mergerfs, media-mover, SMART, archive replication, backup-artifact metrics, `/etc/pve` cluster-config archive |
+| `zfs_encryption` | Boot-time unlock of ZFS-native encrypted pools from 1Password Connect, with the mount/guest-start ordering units |
+| `zfs_arc_cap` | Caps the ZFS ARC on compute hosts (modprobe.d + initramfs + live sysfs) |
+| `nfs_tls` | tlshd (ktls-utils) for NFSv4 transport security (`xprtsec=tls`/`mtls`) |
+| `restic_offsite` | Nightly offsite backup to Backblaze B2 (restic + rclone): retention ceiling, stale-lock reaper, rotating deep verify |
 
 ### DNS, mail and certificates
 
-| Role | Purpose | New |
-| --- | --- | :-: |
-| `unbound` | Forwarding resolver, DoT to public upstreams, managed drop-in | |
-| `adguard_home` | AdGuard Home with API-driven config and an atomic admin-password reconcile | |
-| `adguard_sync` | Replicates AdGuard settings primary → replica, with freshness metrics | |
-| `smtp_relay` | Central Postfix relay to an upstream provider with SASL, as a merge over role defaults | |
-| `postfix_null_client` | Postfix satellite forwarding to the relay, incl. compiled-map repair | |
-| `acme_certs` | Wildcard certificates via acme.sh (DNS-01) plus verified push to each consuming host | |
+| Role | Purpose |
+| --- | --- |
+| `unbound` | Forwarding resolver, DoT to public upstreams, managed drop-in |
+| `adguard_home` | AdGuard Home with API-driven config and an atomic admin-password reconcile |
+| `adguard_sync` | Replicates AdGuard settings primary → replica, with freshness metrics |
+| `smtp_relay` | Central Postfix relay to an upstream provider with SASL, as a merge over role defaults |
+| `postfix_null_client` | Postfix satellite forwarding to the relay, incl. compiled-map repair |
+| `acme_certs` | Wildcard certificates via acme.sh (DNS-01) plus verified push to each consuming host |
 
 ### Kubernetes
 
-| Role | Purpose | New |
-| --- | --- | :-: |
-| `k3s` | k3s servers/agents, kube-vip API VIP, TLS SANs, GPU agents, off-node etcd snapshots, optional metrics-server override | |
+| Role | Purpose |
+| --- | --- |
+| `k3s` | k3s servers/agents, kube-vip API VIP, TLS SANs, GPU agents, off-node etcd snapshots, optional metrics-server override |
 
 ### Observability
 
-| Role | Purpose | New |
-| --- | --- | :-: |
-| `prometheus_exporter` | Shared download → install → enable → health pipeline for tarball and `.deb` exporters | |
-| `node_exporter_host` | node_exporter on bare metal, textfile collectors (corosync, zpool, smartmon, vzdump) and a liveness gate | |
-| `textfile_collector` | Shared oneshot-service + timer scaffold for any textfile collector | |
-| `zfs_exporter` | ZFS pool/dataset exporter (`prometheus_exporter` wrapper) | |
-| `unbound_exporter` | Unbound exporter (`prometheus_exporter` wrapper) | |
-| `alloy_host` | Grafana Alloy shipping journald to Loki, with the stream-cardinality relabel contract | |
+| Role | Purpose |
+| --- | --- |
+| `prometheus_exporter` | Shared download → install → enable → health pipeline for tarball and `.deb` exporters |
+| `node_exporter_host` | node_exporter on bare metal, textfile collectors (corosync, zpool, smartmon, vzdump) and a liveness gate |
+| `textfile_collector` | Shared oneshot-service + timer scaffold for any textfile collector |
+| `zfs_exporter` | ZFS pool/dataset exporter (`prometheus_exporter` wrapper) |
+| `unbound_exporter` | Unbound exporter (`prometheus_exporter` wrapper) |
+| `alloy_host` | Grafana Alloy shipping journald to Loki, with the stream-cardinality relabel contract |
 
 ### Application guests
 
-| Role | Purpose | New |
-| --- | --- | :-: |
-| `docker_engine` | Pinned, dpkg-held Docker CE + plugins and a journald `daemon.json` | |
-| `compose_app` | Shared scaffolding for a single-project compose guest: unit template, backup-metrics library, validated host-nginx TLS terminator | |
-| `gitlab` | GitLab EE (Omnibus): TLS, registry, Pages, SMTP, SAML, backups with secrets-presence metrics, Git-SSH hardening | ● |
-| `plex` | Plex Media Server: GPU transcoding, media group, custom-certificate reload hook | ● |
-| `nextcloud` | Nextcloud compose stack behind host nginx, with OIDC and backup wrapper | ● |
-| `immich` | Immich compose stack on a dedicated guest: derived real-IP trust list, OIDC, NFS-TLS backup landing | ● |
-| `immich_ml` | Immich machine-learning (OpenVINO) compose stack in a GPU guest | ● |
-| `home_assistant` | Home Assistant OS configuration deployment over the HAOS SSH add-on, checksum-idempotent | ● |
+| Role | Purpose |
+| --- | --- |
+| `docker_engine` | Pinned, dpkg-held Docker CE + plugins and a journald `daemon.json` |
+| `compose_app` | Shared scaffolding for a single-project compose guest: unit template, backup-metrics library, validated host-nginx TLS terminator |
+| `gitlab` | GitLab EE (Omnibus): TLS, registry, Pages, SMTP, SAML, backups with secrets-presence metrics, Git-SSH hardening |
+| `plex` | Plex Media Server: GPU transcoding, media group, custom-certificate reload hook |
+| `nextcloud` | Nextcloud compose stack behind host nginx, with OIDC and backup wrapper |
+| `immich` | Immich compose stack on a dedicated guest: derived real-IP trust list, OIDC, NFS-TLS backup landing |
+| `immich_ml` | Immich machine-learning (OpenVINO) compose stack in a GPU guest |
+| `home_assistant` | Home Assistant OS configuration deployment over the HAOS SSH add-on, checksum-idempotent |
 
 ## Use
 
@@ -177,10 +178,17 @@ nas_storage_zfs_arc_max_bytes: "{{ zfs_arc_max_bytes | default('') }}"
 `modprobe.d` file by both, which is idempotent — but keep the two role gates
 mutually exclusive if the value should ever differ per role.
 
-One alias crosses roles rather than the inventory: `nextcloud_backup_metrics_dir`
-defaults to `node_exporter_host_textfile_dir`, so a guest running both roles
-publishes its backup metrics where the exporter reads them without restating the
-path.
+One convention crosses roles rather than the inventory. A role that publishes
+node_exporter textfile metrics exposes its own prefixed `<role>_..._dir`
+variable defaulting to
+`node_exporter_host_textfile_dir | default('/var/lib/node_exporter')`, so a
+guest running both roles publishes where the exporter reads without restating
+the path, and a site that moved the textfile dir sets it once. The variables
+following the convention today are `acme_certs_textfile_dir`,
+`adguard_sync_textfile_dir`, `gitlab_textfile_dir`,
+`immich_backup_metrics_dir`, `k3s_etcd_snapshot_textfile_dir`,
+`nas_storage_backup_artifact_metrics_dir`, `nextcloud_backup_metrics_dir`,
+`restic_offsite_metrics_dir` and `smtp_relay_textfile_dir`.
 
 ## Consumers that differ from weisssrv
 
@@ -190,8 +198,9 @@ collection. Roles that *are* a backend (`zfs_*`, `nas_storage`, the `proxmox_*`
 family) are skipped and replaced by a sibling family in the same flat FQCN
 namespace; roles that merely *use* one expose a seam variable whose default is
 today's behaviour (`zfs_encryption_key_command`, `proxmox_storage_defaults`,
-`restic_offsite_bind_mode`, `node_exporter_host_zpool_collector`,
-`acme_certs_dns_hook`, `zvol_mount_device_id_prefix`). The full seam map, the
+`restic_offsite_bind_mode`, `restic_offsite_rclone_remote_type`,
+`node_exporter_host_zpool_collector`, `acme_certs_dns_hook`,
+`zvol_mount_device_id_prefix`). The full seam map, the
 by-design list, and the contract for contributing an alternative are in
 [docs/EXTENSIBILITY.md](../../../docs/EXTENSIBILITY.md).
 

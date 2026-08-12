@@ -5,7 +5,7 @@ galaxy_info:
   author: Eric Weiss
   description: GPU VFIO host codification (IOMMU cmdline, vfio-pci bind, driver blacklist); stages config, flags reboot-required, never reboots
   license: MIT
-  min_ansible_version: "2.15"
+  min_ansible_version: "2.18"
   platforms:
     - name: Debian
       versions:

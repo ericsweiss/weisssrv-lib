@@ -2,7 +2,6 @@
 # Shared compose systemd-unit lifecycle. The caller renders its app-specific
 # compose.yml/.env/config first (notifying "Restart compose stack"), then
 # includes this to deploy + enable + start the shared compose.service unit.
-# RemainAfterExit is standardised to `yes` (systemd treats `yes`/`true` alike).
 
 - name: Deploy the compose systemd unit
   ansible.builtin.template:

@@ -28,7 +28,11 @@
         {% if item.server is defined %}--server {{ item.server }}{% endif %}
         {% if item.export is defined %}--export {{ item.export }}{% endif %}
         {% if item.path is defined %}--path {{ item.path }}{% endif %}
+        {% if item.pool is defined %}--pool {{ item.pool }}{% endif %}
         --content {{ item.content }}
+        {% if item.nodes is defined %}--nodes {{ item.nodes }}{% endif %}
+        {% if item.mountpoint is defined %}--mountpoint {{ item.mountpoint }}{% endif %}
+        {% if item.sparse is defined %}--sparse {{ item.sparse | ternary(1, 0) }}{% endif %}
         {% if item.options is defined %}--options {{ item.options }}{% endif %}
       when: item.id not in _proxmox_backup_current_storage_ids
       loop: "{{ proxmox_backup_storage }}"
@@ -37,9 +41,12 @@
       register: proxmox_backup_storage_create_result
       changed_when: proxmox_backup_storage_create_result.rc == 0
 
-    # server/export/path are create-fixed in Proxmox's storage plugins —
+    # server/export/path/pool are create-fixed in Proxmox's storage plugins —
     # `pvesh set` cannot change them. Fail loud with the manual recreation
     # procedure instead of leaving the vars silently diverged from live state.
+    # `pool` matters beyond drift bookkeeping: a zfspool id recreated against a
+    # pool ROOT instead of the intended child dataset lands every new guest disk
+    # on whatever that root's encryption property is, with no other signal.
     - name: Assert create-fixed storage properties have not drifted
       vars:
         _current: >-
@@ -49,14 +56,17 @@
           - item.server is not defined or (_current.server | default('')) == item.server
           - item.export is not defined or (_current.export | default('')) == item.export
           - item.path is not defined or (_current.path | default('')) == item.path
+          - item.pool is not defined or (_current.pool | default('')) == item.pool
         fail_msg: >-
           Storage '{{ item.id }}' exists with different create-fixed properties
           (live: server={{ _current.server | default('-') }}
           export={{ _current.export | default('-') }}
-          path={{ _current.path | default('-') }};
+          path={{ _current.path | default('-') }}
+          pool={{ _current.pool | default('-') }};
           config: server={{ item.server | default('-') }}
           export={{ item.export | default('-') }}
-          path={{ item.path | default('-') }}).
+          path={{ item.path | default('-') }}
+          pool={{ item.pool | default('-') }}).
           Proxmox cannot update these in place — recreate the entry manually
           outside a backup window: `pvesh delete /storage/{{ item.id }}`
           (removes only the storage.cfg entry, never the data behind it),
@@ -67,7 +77,7 @@
       loop_control:
         label: "{{ item.id }}"
 
-    - name: Reconcile mutable storage properties (content, options)
+    - name: Reconcile mutable storage properties (content, nodes, mountpoint, sparse, options)
       vars:
         _current: >-
           {{ _proxmox_backup_current_storage | selectattr('storage', 'equalto', item.id) | first }}
@@ -76,12 +86,28 @@
         _desired_content: "{{ item.content | split(',') | map('trim') | select() | sort | list }}"
         _current_options: "{{ _current.options | default('') | split(',') | map('trim') | select() | sort | list }}"
         _desired_options: "{{ item.options | default(_current.options | default('')) | split(',') | map('trim') | select() | sort | list }}"
+        # An undefined desired value inherits the live one, so a config that
+        # does not express a property never registers as drift.
+        _current_nodes: "{{ _current.nodes | default('') | split(',') | map('trim') | select() | sort | list }}"
+        _desired_nodes: "{{ item.nodes | default(_current.nodes | default('')) | split(',') | map('trim') | select() | sort | list }}"
+        _current_mountpoint: "{{ _current.mountpoint | default('') }}"
+        _desired_mountpoint: "{{ item.mountpoint | default(_current.mountpoint | default('')) }}"
+        # PVE omits `sparse` when it is off, so an absent live value reads as 0.
+        _current_sparse: "{{ _current.sparse | default(0) | string }}"
+        _desired_sparse: >-
+          {{ (item.sparse | ternary('1', '0')) if item.sparse is defined else _current_sparse }}
         _has_drift: >-
           {{ _current_content != _desired_content or
-             _current_options != _desired_options }}
+             _current_options != _desired_options or
+             _current_nodes != _desired_nodes or
+             _current_mountpoint != _desired_mountpoint or
+             _current_sparse != _desired_sparse }}
       ansible.builtin.command: >-
         pvesh set /storage/{{ item.id }}
         --content {{ item.content }}
+        {% if item.nodes is defined %}--nodes {{ item.nodes }}{% endif %}
+        {% if item.mountpoint is defined %}--mountpoint {{ item.mountpoint }}{% endif %}
+        {% if item.sparse is defined %}--sparse {{ item.sparse | ternary(1, 0) }}{% endif %}
         {% if item.options is defined %}--options {{ item.options }}{% endif %}
       when:
         - item.id in _proxmox_backup_current_storage_ids

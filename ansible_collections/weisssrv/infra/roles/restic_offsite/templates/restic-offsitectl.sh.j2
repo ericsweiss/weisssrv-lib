@@ -27,7 +27,9 @@ RETRY_LOCK="{{ restic_offsite_retry_lock | default('15m') }}"       # empty disa
 STALE_LOCK_MIN_AGE_H="{{ restic_offsite_stale_lock_min_age_h | default(6) }}"
 VERIFY_GROUPS="{{ restic_offsite_verify_groups | default(12) }}"
 DRILL_SAMPLE_FILES="{{ restic_offsite_restore_drill_sample_files | default(5) }}"
-DRILL_MAX_BYTES="{{ restic_offsite_restore_drill_max_bytes | default(8388608) }}"
+DRILL_MAX_BYTES="{{ restic_offsite_restore_drill_max_bytes | default(16777216) }}"
+DRILL_MIN_BYTES="{{ restic_offsite_restore_drill_min_bytes | default(4096) }}"
+DRILL_MIN_SOURCES="{{ restic_offsite_restore_drill_min_sources | default(1) }}"
 PROM_DIR="{{ restic_offsite_metrics_dir | default('/var/lib/node_exporter') }}"
 ZVOL_CLONE_SUFFIX="{{ restic_offsite_zvol_clone_suffix | default('b2walk') }}"
 ENV_FILE="{{ restic_offsite_config_dir }}/env"
@@ -71,7 +73,9 @@ log() { echo "[$(date -Is)] $*"; }
 # 'serve restic --stdio --b2-hard-delete'. That flag maps EVERY restic delete —
 # including the routine lock refresh mid-backup — to b2_delete_file_version,
 # which a hide-only restricted key refuses (401). Strip it on every invocation
-# so deletes HIDE and the bucket lifecycle expires the hidden versions.
+# so deletes HIDE and the bucket lifecycle expires the hidden versions. These
+# are the backend's own defaults minus that one flag, so the override is a no-op
+# for a non-B2 remote.
 # --retry-lock waits out a concurrent holder instead of failing the night.
 _RESTIC_BASE_ARGS=( -o rclone.args="serve restic --stdio" )
 _RETRY_LOCK_ARGS=()
@@ -166,12 +170,9 @@ reap_stale_locks() {
   return 0
 }
 
-# Ceiling-refusal sentinel. NOT 2: run_forget's last statement is the real
-# `restic forget --prune`, whose exit status it also returns, and restic
-# documents 2 as "go runtime error" — sharing the code made a CRASHED prune
-# indistinguishable from a deliberate refusal, so the run reported
-# retention_blocked=1 with success=1 and exited 0. restic's codes are
-# 0/1/2/3/10/11/12, so 90 cannot collide.
+# Ceiling-refusal sentinel. Must NOT be 2: run_forget also returns restic's own
+# rc from the destructive pass, and restic documents 2 as "go runtime error".
+# restic's codes are 0/1/2/3/10/11/12, so 90 cannot collide.
 FORGET_RC_CEILING=90
 
 # Guarded forget+prune. The delete set is a function of the keep policy AND of
@@ -216,26 +217,17 @@ run_forget() {
   restic forget "${FORGET_FLAGS[@]}" --prune
 }
 
-# Translate run_forget's rc into the retention gauges and the run verdict. Split
-# out of cmd_run because this mapping is the thing that used to conflate a
-# CRASHED prune with a deliberate ceiling refusal — it is worth testing on its
-# own rather than only through a full run.
+# Translate run_forget's rc into the retention gauges and the run verdict.
 #
-# A ceiling refusal is NOT a backup failure: it is recorded in
-# restic_offsite_retention_blocked/_pending and the run still succeeds, because
-# the snapshot did land. Every OTHER non-zero rc is a real retention failure —
-# a dry-run that could not be read, or a `forget --prune` that ran and died —
-# and fails the run rather than being reported as a "raise the ceiling"
-# suggestion for something the ceiling had nothing to do with.
+# A ceiling refusal is NOT a backup failure: it sets
+# restic_offsite_retention_blocked/_pending and the run still succeeds (the
+# snapshot landed). Every other non-zero rc is a real retention failure and
+# fails the run.
 #
-# Which alert catches it: ResticOffsitePruneFailed at 24h, via
-# restic_offsite_last_prune_success. NOT ResticOffsiteFailed at 1h — that rule's
-# restic_offsite_last_run_success arm is suppressed by
-# `unless on (instance) restic_offsite_last_backup_success`, and this path
-# always leaves the backup gauge at success (the snapshot landed), so
-# restic_offsite_last_run_success=0 alone never pages. Keep that in mind before
-# reaching for run_success as an escalation lever: today it has no live
-# consumer.
+# Caught by ResticOffsitePruneFailed (24h, restic_offsite_last_prune_success).
+# ResticOffsiteFailed cannot fire here: its run_success arm is suppressed by
+# `unless on (instance) restic_offsite_last_backup_success`, which this path
+# always leaves at success.
 apply_forget_rc() {
   local forget_rc="$1"
   case "$forget_rc" in
@@ -497,8 +489,7 @@ source_snap_epochs() {
 }
 
 # Unix time of the last successful UPLOAD, from the metrics file (0 when
-# absent). Falls back to the run timestamp so an upgrade from the pre-split
-# metric set does not read as "never backed up".
+# absent). Falls back to the run timestamp when only that gauge is present.
 last_backup_epoch() {
   local v
   v="$(prev_metric "$PROM_FILE" restic_offsite_last_backup_timestamp_seconds)"
@@ -641,7 +632,10 @@ cmd_run() {
     # ONLY after proving the dataset really is OUR clone (its `origin` points at
     # this zvol) — otherwise an unrelated dataset that merely shares the derived
     # name would be recursively destroyed by a nightly backup job.
-    local clone="${zvol%/*}-${ZVOL_CLONE_SUFFIX}"
+    # Derived from the FULL zvol path, not its parent: two sources under one
+    # parent would otherwise derive the same clone name, and the second would
+    # hit the conflict branch and abort the nightly run.
+    local clone="${zvol}-${ZVOL_CLONE_SUFFIX}"
     if zfs list -H -o name "$clone" >/dev/null 2>&1; then
       local origin
       origin="$(zfs get -H -o value origin "$clone" 2>/dev/null || true)"
@@ -771,19 +765,35 @@ cmd_verify() {
 # A repository that passes `check` can still be unrestorable — wrong password in
 # the env file, a key the operator rotated, a restore path that no longer maps.
 # The drill answers the only question that matters: can this host pull real
-# bytes back out of B2 and are they the bytes that went in. It is deliberately
-# TINY (smallest N files of the newest snapshot, hard byte cap) because B2
-# egress is billed and volume proves nothing extra here — repo-wide bit-rot is
-# `verify --auto-subset`'s job.
-#
-# Where a path INSIDE the repository can be compared against on this host. File
-# sources are backed up from an IMMUTABLE ZFS snapshot subtree, so that subtree,
-# not the live dataset, is the honest comparand. Prints nothing for a zvol
+# bytes back out of the offsite repository and are they the bytes that went in.
+# It is deliberately SMALL (a handful of files per source, hard byte cap)
+# because egress is billed and volume proves nothing extra here — repo-wide
+# bit-rot is `verify --auto-subset`'s job. Sampling rules: README, "Restore
+# drill".
+
+# Newest snapshot per file source, resolved once. The selection walk resolves a
+# comparand per candidate, so re-globbing .zfs/snapshot each time would dominate
+# the drill's runtime on a repository with many files.
+DRILL_SNAPS=()
+drill_cache_snaps() {
+  local i name mp
+  DRILL_SNAPS=()
+  for i in "${!FILE_SOURCES[@]}"; do
+    read -r name mp <<< "${FILE_SOURCES[$i]}"
+    DRILL_SNAPS[i]="$(latest_file_snap "$mp")"
+  done
+}
+
+# Where a path INSIDE the repository can be compared against on this host, and
+# which file source it belongs to. File sources are backed up from an IMMUTABLE
+# ZFS snapshot subtree, so that subtree, not the live dataset, is the honest
+# comparand. Prints "<source index><TAB><comparand>", or nothing for a zvol
 # source (its filesystem is only mounted during a run) or for a path with no
 # counterpart on disk.
 drill_compare_path() {
-  local p="$1" entry name mp rest snap
-  for entry in "${FILE_SOURCES[@]}"; do
+  local p="$1" entry name mp rest snap i
+  for i in "${!FILE_SOURCES[@]}"; do
+    entry="${FILE_SOURCES[$i]}"
     [[ -n "$entry" ]] || continue
     read -r name mp <<< "$entry"
     if [[ "$BIND_MODE" == "bind" ]]; then
@@ -794,11 +804,11 @@ drill_compare_path() {
       rest="${p#"${mp}/.zfs/snapshot/"}"
       rest="${rest#*/}"
     fi
-    snap="$(latest_file_snap "$mp")"
+    snap="${DRILL_SNAPS[$i]:-}"
     if [[ -n "$snap" && -f "${mp}/.zfs/snapshot/${snap}/${rest}" ]]; then
-      printf '%s' "${mp}/.zfs/snapshot/${snap}/${rest}"
+      printf '%s\t%s' "$i" "${mp}/.zfs/snapshot/${snap}/${rest}"
     elif [[ -f "${mp}/${rest}" ]]; then
-      printf '%s' "${mp}/${rest}"
+      printf '%s\t%s' "$i" "${mp}/${rest}"
     fi
     return 0
   done
@@ -809,10 +819,13 @@ cmd_drill() {
   need_lock_or_die
   reap_stale_locks
   local work restore_dir rc=0 compared=0 mismatched=0 skipped=0 total=0
-  local glob_skipped=0 glob_note=""
-  local snap_json snap_time snap_epoch size path cmp_src restored src_mtime i
-  local snaps_probe=""
+  local glob_skipped=0 glob_note="" too_small=0 filled=0 round_added=1
+  local proven_sources=0 breakdown="" min_sources="$DRILL_MIN_SOURCES"
+  local min_bytes="$DRILL_MIN_BYTES"
+  local snap_json snap_time snap_epoch size path cmp_src cmp_entry restored src_mtime i
+  local name mp idx line snaps_probe=""
   local includes=() sample_paths=() sample_srcs=() sample_mtimes=()
+  local src_count=() src_cursor=() src_selected=()
 
   work="$(mktemp -d)"
   # shellcheck disable=SC2064  # expand $work now: it must survive the function
@@ -880,9 +893,8 @@ cmd_drill() {
     | sed -n 's/.*"path":"\([^"\\]*\)".*"size":\([0-9][0-9]*\).*/\2 \1/p' \
     | sort -n -k1,1 > "${work}/candidates" || true
 
-  # An empty candidate list is a PARSE failure, not "nothing here maps to this
-  # host" — the two used to share the message below and send the operator after
-  # a path-mapping problem that did not exist.
+  # An empty candidate list is a PARSE failure — distinct from the "nothing here
+  # maps to this host" case handled below.
   if [[ ! -s "${work}/candidates" ]]; then
     if [[ -s "${work}/ls.json" ]]; then
       log "drill FAILED: could not parse any file entry out of 'restic ls --json' — restic's output shape changed and the sampler needs updating"
@@ -893,9 +905,37 @@ cmd_drill() {
     return 1
   fi
 
+  # A zero-byte file compares equal to anything, so the floor is never below 1.
+  [[ "$min_bytes" -ge 1 ]] || min_bytes=1
+  # A requirement above the number of configured sources could never be met, so
+  # a source-list change would wedge the drill permanently.
+  if [[ "$min_sources" -gt "${#FILE_SOURCES[@]}" ]]; then
+    log "drill: restic_offsite_restore_drill_min_sources (${min_sources}) exceeds the ${#FILE_SOURCES[@]} configured file source(s) — requiring ${#FILE_SOURCES[@]}"
+    min_sources="${#FILE_SOURCES[@]}"
+  fi
+
+  drill_cache_snaps
+  for i in "${!FILE_SOURCES[@]}"; do
+    src_count[i]=0
+    src_cursor[i]=0
+    src_selected[i]=0
+    : > "${work}/cand.${i}"
+  done
+
+  # Bucket eligible candidates PER SOURCE (fields: size, comparand, repo path).
+  # The globally-smallest-first list is dominated by whichever source owns the
+  # smallest files, so taking the head of it proves one source and leaves the
+  # rest unproven; the round-robin below draws from these buckets instead.
+  # Stop once every source holds a full sample — the candidate list is the whole
+  # snapshot and resolving a comparand for all of it is wasted work.
   while read -r size path; do
     [[ -n "${path:-}" ]] || continue
-    [[ "$size" -gt 0 ]] || continue
+    # Size floor: without one the sample is the estate's marker files, and a
+    # drill that restores five 1-byte files proves almost nothing.
+    if [[ "$size" -lt "$min_bytes" ]]; then
+      too_small=$(( too_small + 1 ))
+      continue
+    fi
     # restic matches an --include with filepath.Match semantics per path
     # component, so * ? [ ] and \ inside a real filename are GLOB SYNTAX rather
     # than literals: `foo[1].txt` as a pattern does not match the file named
@@ -913,8 +953,11 @@ cmd_drill() {
         continue
         ;;
     esac
-    cmp_src="$(drill_compare_path "$path")"
-    [[ -n "$cmp_src" ]] || continue
+    cmp_entry="$(drill_compare_path "$path")"
+    [[ -n "$cmp_entry" ]] || continue
+    idx="${cmp_entry%%$'\t'*}"
+    cmp_src="${cmp_entry#*$'\t'}"
+    [[ "${src_count[$idx]}" -lt "$DRILL_SAMPLE_FILES" ]] || continue
     src_mtime="$(stat -c %Y "$cmp_src" 2>/dev/null || echo 0)"
     case "$src_mtime" in ''|*[!0-9]*) src_mtime=0 ;; esac
     # Skip anything written after the snapshot: it legitimately differs, and
@@ -923,14 +966,51 @@ cmd_drill() {
     # by size, so this just walks on. snap_epoch is guaranteed > 0 by the guard
     # above; the filter is never conditionally disabled.
     if [[ "$src_mtime" -gt "$snap_epoch" ]]; then continue; fi
-    if [[ $(( total + size )) -gt "$DRILL_MAX_BYTES" ]]; then continue; fi
-    includes+=( --include "$path" )
-    sample_paths+=( "$path" )
-    sample_srcs+=( "$cmp_src" )
-    sample_mtimes+=( "$src_mtime" )
-    total=$(( total + size ))
-    if [[ "${#sample_paths[@]}" -ge "$DRILL_SAMPLE_FILES" ]]; then break; fi
+    printf '%s\t%s\t%s\n' "$size" "$cmp_src" "$path" >> "${work}/cand.${idx}"
+    src_count[idx]=$(( src_count[idx] + 1 ))
+    if [[ "${src_count[$idx]}" -eq "$DRILL_SAMPLE_FILES" ]]; then
+      filled=$(( filled + 1 ))
+      [[ "$filled" -lt "${#FILE_SOURCES[@]}" ]] || break
+    fi
   done < "${work}/candidates"
+
+  # Round-robin: one file per source per round, smallest first within a source,
+  # until the sample size is reached or every bucket is spent.
+  while [[ "${#sample_paths[@]}" -lt "$DRILL_SAMPLE_FILES" && "$round_added" -gt 0 ]]; do
+    round_added=0
+    for i in "${!FILE_SOURCES[@]}"; do
+      [[ "${#sample_paths[@]}" -lt "$DRILL_SAMPLE_FILES" ]] || break
+      [[ "${src_cursor[$i]}" -lt "${src_count[$i]}" ]] || continue
+      src_cursor[i]=$(( src_cursor[i] + 1 ))
+      line="$(sed -n "${src_cursor[$i]}p" "${work}/cand.${i}")"
+      IFS=$'\t' read -r size cmp_src path <<< "$line"
+      # The byte cap is per DRILL, so a source whose next candidate would blow
+      # it is passed over rather than ending the selection — another source may
+      # still have one that fits. Buckets are size-ascending, so a source that
+      # fails the cap once is effectively done.
+      if [[ $(( total + size )) -gt "$DRILL_MAX_BYTES" ]]; then continue; fi
+      src_mtime="$(stat -c %Y "$cmp_src" 2>/dev/null || echo 0)"
+      case "$src_mtime" in ''|*[!0-9]*) src_mtime=0 ;; esac
+      includes+=( --include "$path" )
+      sample_paths+=( "$path" )
+      sample_srcs+=( "$cmp_src" )
+      sample_mtimes+=( "$src_mtime" )
+      src_selected[i]=$(( src_selected[i] + 1 ))
+      total=$(( total + size ))
+      round_added=$(( round_added + 1 ))
+    done
+  done
+
+  # Per-source breakdown: how many files were sampled is not the same question
+  # as which sources this drill actually proves.
+  for i in "${!FILE_SOURCES[@]}"; do
+    read -r name mp <<< "${FILE_SOURCES[$i]}"
+    if [[ "${src_selected[$i]}" -gt 0 ]]; then
+      proven_sources=$(( proven_sources + 1 ))
+    fi
+    breakdown="${breakdown} ${name}=${src_selected[$i]}"
+  done
+  log "drill: sampled${breakdown:- none} (${proven_sources}/${#FILE_SOURCES[@]} file sources; ${too_small} candidate(s) under the ${min_bytes}-byte floor, ${glob_skipped} skipped for glob metacharacters)"
 
   if [[ "${#sample_paths[@]}" -eq 0 ]]; then
     glob_note=""
@@ -938,6 +1018,14 @@ cmd_drill() {
       glob_note=" (${glob_skipped} candidate(s) skipped for glob metacharacters in their path)"
     fi
     log "drill FAILED: no file in the newest snapshot maps to a stable, comparable path on this host — nothing was proven${glob_note}"
+    write_drill_metrics 0 0
+    return 1
+  fi
+
+  # Coverage floor. A sample drawn from one source proves that source only, and
+  # the pass looks identical to one that covered the estate.
+  if [[ "$proven_sources" -lt "$min_sources" ]]; then
+    log "drill FAILED: only ${proven_sources} of ${#FILE_SOURCES[@]} file source(s) yielded a sampled file, below the required ${min_sources} — lower restic_offsite_restore_drill_min_sources or fix the sources that yielded nothing"
     write_drill_metrics 0 0
     return 1
   fi
@@ -1006,20 +1094,12 @@ cmd_prune() {
   run_forget "$max_remove"
 }
 
-# Three runbook paths send an operator here (the rc=11 hints above, the alert
-# annotations, docs). It used to exit 0 having done nothing whenever the lock
-# was not reapable — the COMMON case (another host's lock, a live run, a lock
-# younger than the threshold) — and a silent success reads as "the lock is
-# gone", which is how someone talks themselves into force-unlocking a live run.
-# Print a verdict, and return non-zero when locks remain.
+# Prints a verdict and returns non-zero when locks remain — a silent success
+# reads as "the lock is gone", which is how a live run gets force-unlocked.
 #
-# count_locks PROPAGATES restic's rc rather than folding it into a count: an
-# unreadable repository (B2 down, wrong password, repo gone) makes `list locks`
-# fail, and a swallowed failure counts as ZERO locks — which cmd_unlock then
-# reports as "no locks on the repository" and exits 0. That is the single worst
-# verdict this command can give: the operator was sent here BECAUSE something is
-# stuck, and a green "nothing to remove" reads as "the lock cleared", hiding a
-# total outage behind a success. Keep the count and the probe failure distinct.
+# count_locks PROPAGATES restic's rc rather than folding it into a count: a
+# swallowed `list locks` failure would count ZERO locks and report an
+# unreadable repository (B2 down, wrong password, repo gone) as "no locks".
 count_locks() {
   local out
   out="$(restic_ro list locks 2>/dev/null)" || return 1
@@ -1089,9 +1169,10 @@ Commands:
   verify [--full|--auto-subset]  restic check (--full reads all pack data;
                                --auto-subset reads the next rotating pack group —
                                the weekly restic-offsite-verify.timer's mode)
-  drill                        Restore the smallest {% endraw %}{{ restic_offsite_restore_drill_sample_files | default(5) }}{% raw %} file(s) of the newest
-                               snapshot and byte-compare them against source
-                               (the quarterly backup-restore-drill.timer's mode)
+  drill                        Restore {% endraw %}{{ restic_offsite_restore_drill_sample_files | default(5) }}{% raw %} file(s) of the newest snapshot,
+                               spread across the file sources, and byte-compare
+                               them against source (the quarterly
+                               backup-restore-drill.timer's mode)
   snapshots                    List restic snapshots
   prune [--max-remove N]       restic forget --prune (GFS retention). Refuses to
                                run (exit 90) when the dry-run would forget more

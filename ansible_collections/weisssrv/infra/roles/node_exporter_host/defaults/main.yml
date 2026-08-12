@@ -23,6 +23,12 @@ node_exporter_host_proxmox: false
 # so the timer is not deployed at all rather than sampling an absent `zpool`.
 node_exporter_host_zpool_collector: "{{ node_exporter_host_proxmox }}"
 
+# Clustering seam, the corosync/pmxcfs counterpart of the zpool one above. A
+# STANDALONE PVE host runs no corosync and has no /etc/pve/ha/manager_status, so
+# the collector publishes mtime 0 — which PmxcfsStale treats as stale by design,
+# leaving an alert that can only be silenced. Set false there.
+node_exporter_host_corosync_collector: "{{ node_exporter_host_proxmox }}"
+
 # systemd collector. Default-OFF upstream, so node_systemd_* exists nowhere
 # unless it is asked for — and a "unit X failed" alert with no emitter is a gate
 # that can never fire. On here, with the unit set filtered: the collector's

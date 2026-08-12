@@ -8,19 +8,22 @@ consumer at a pinned tag.
 
 ## Current release
 
-**v0.6.0.** Every pin example on this page and in `docs/` is written as
-`<CURRENT_TAG>`; substitute the release you are adopting. The literal tag is
-recorded here and nowhere else, so a release bump touches one line instead of a
-dozen stale snippets. (`docs/VERSIONING.md`'s release checklist enforces the
-sweep.)
+**v0.7.0.** Every pin example on this page and in `docs/` is written as
+`<CURRENT_TAG>`; substitute the release you are adopting, so a release bump
+touches the few copy-paste snippets that must be runnable rather than a dozen
+stale examples. This line is the authority for the literal; the runnable
+snippets that repeat it (`cli/README.md`, `docker/README.md`, the three
+Terraform module READMEs) are held equal to it by
+`tests/test_release_version.py`, and `docs/VERSIONING.md` carries the release
+checklist.
 
 ## Who consumes it
 
 | Consumer | What it is | What it pins |
 | --- | --- | --- |
-| [weisssrv](https://git.ericsweiss.com/eric/weisssrv) | the homelab platform repo — one cluster, running | 8 CI template includes, the `weisssrv.infra` collection, 5 vendored scripts |
-| [weisssrv-app-template](https://git.ericsweiss.com/eric/weisssrv-app-template) | the tenant scaffold — repos that deploy *into* that cluster | 9 CI template includes, 3 vendored scripts, the CLI (`scripts/rename.sh`) |
-| [weisssrv-cluster-template](https://git.ericsweiss.com/eric/weisssrv-cluster-template) | the copier template a **new cluster** is generated from | 16 CI includes, the collection, all 3 Terraform modules — all through one `lib_ref` answer |
+| [weisssrv](https://git.ericsweiss.com/eric/weisssrv) | the homelab platform repo — one cluster, running | CI template includes, the `weisssrv.infra` collection, vendored scripts |
+| [weisssrv-app-template](https://git.ericsweiss.com/eric/weisssrv-app-template) | the tenant scaffold — repos that deploy *into* that cluster | CI template includes, vendored scripts, the CLI |
+| [weisssrv-cluster-template](https://git.ericsweiss.com/eric/weisssrv-cluster-template) | the copier template a **new cluster** is generated from | CI includes, the collection, all 3 Terraform modules — all through one `lib_ref` answer |
 
 The machine-readable registry of every pin site per consumer is
 [docs/CONSUMERS.yml](docs/CONSUMERS.yml); read it before cutting a release, and
@@ -62,8 +65,8 @@ taskfiles/     go-task include fragments (lint, flux) so `task lint` mirrors CI
                — see taskfiles/README.md
 docker/        molecule test/CI images for the collection, published per release
 examples/      copy-and-edit config files for the helper scripts
-cli/           weisssrv-new-project — tenant scaffolding (rename/prune/wire/
-               verify) plus new-cluster, the copier wrapper
+cli/           weisssrv-new-project — the copier wrapper that renders the
+               cluster template (new-cluster) and the app template (new-app)
 docs/          the include contract, the scripts contract, versioning policy,
                the consumer registry, the extensibility seam map
 tests/         pytest for scripts/ (the CLI has its own cli/tests/)
@@ -169,19 +172,18 @@ variables are in each role's own README; the old → new rename map for adopting
 the collection is
 [MIGRATING.md](ansible_collections/weisssrv/infra/MIGRATING.md).
 
-## The scaffolding CLI
+## The CLI
 
-`cli/` ships `weisssrv-new-project`, which turns a fresh copy of the app
-template into a configured project: `rename` the placeholders (optionally
-selecting the CI shape in the same call with `--ci gitlab|github|none`), `prune`
-components you don't need — including the CI shapes you didn't pick, via
-`prune ci:<shape>` — `wire` opt-in components, and `verify` the result.
-`new-cluster` additionally renders a **cluster** template with copier. Install
-it at a pinned tag — the spec is positional, not `--spec`:
+`cli/` ships `weisssrv-new-project`, a copier wrapper: `new-cluster` renders the
+**cluster** template and `new-app` the **app (tenant)** template into a new
+repo, validating source and destination up front because copier's own failure
+modes are late and messy. The package is stdlib-only and offline; copier is an
+optional extra. Install it at a pinned tag — the spec is positional, not
+`--spec`:
 
 ```bash
 pipx install 'git+https://git.ericsweiss.com/eric/weisssrv-lib.git@<CURRENT_TAG>#subdirectory=cli'
-# new-cluster only: add the copier extra
+# rendering (either subcommand): add the copier extra
 pipx install 'weisssrv-lib-cli[cluster] @ git+https://git.ericsweiss.com/eric/weisssrv-lib.git@<CURRENT_TAG>#subdirectory=cli'
 ```
 
@@ -194,13 +196,13 @@ here rather than restating it.
 
 ```bash
 python3 -m pytest tests cli/tests -q     # scripts + CLI tests
-# CLI only: also diff the bundled scaffold fixture against the real app template
-WEISSSRV_TEMPLATE_ROOT=~/src/weisssrv-app-template python3 -m pytest cli/tests -q
 yamllint -c .yamllint ci/ lint/ taskfiles/ .gitlab-ci.yml
 shellcheck --severity=warning --exclude=SC1091,SC2034 scripts/*.sh
-ruff check --config lint/ruff.toml scripts tests cli
+ruff check --config lint/ruff.toml scripts tests cli examples
 gitleaks detect --no-git --config lint/gitleaks.toml   # what CI's secret_detection runs
-python3 -c "import glob,yaml; [list(yaml.safe_load_all(open(f))) for f in glob.glob('ci/**/*.yml',recursive=True)]"
+# YAML smoke over every CI template (tests/test_render_templates.py does the
+# full render; `!reference` needs a loader that knows the tag)
+python3 -c "import glob,yaml; L=type('L',(yaml.SafeLoader,),{}); L.add_constructor('!reference', lambda l,n: l.construct_sequence(n)); [list(yaml.load_all(open(f),Loader=L)) for f in glob.glob('ci/**/*.yml',recursive=True)]"
 # collection changes only:
 ANSIBLE_COLLECTIONS_PATH=$PWD:~/.ansible/collections \
   ansible-lint ansible_collections/weisssrv/infra/roles/*

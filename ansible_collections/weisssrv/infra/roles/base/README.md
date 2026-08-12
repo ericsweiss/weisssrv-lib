@@ -18,7 +18,9 @@ Foundational system configuration applied to all managed hosts. Provides essenti
 - Admin user creation and configuration
 - Sudo group membership
 - Passwordless sudo via `/etc/sudoers.d/` (validated with visudo)
-- SSH authorized keys, optionally with `from=` network restrictions
+- SSH authorized keys, optionally with `from=` network restrictions. The whole
+  list is deployed in ONE `authorized_key` call (newline-joined) — a looped
+  `exclusive: true` would leave only the last key on the host
 - Home directory and `.ssh` directory creation with correct permissions
 
 ### SSH Hardening
@@ -63,7 +65,9 @@ Foundational system configuration applied to all managed hosts. Provides essenti
 - VM guest agent enablement (qemu-guest-agent service)
 - openipmi.service masked on hosts without IPMI hardware (its LSB init script
   otherwise fails at boot and leaves systemd degraded)
-- unattended-upgrades turned off on VMs and containers — the
+- unattended-upgrades turned off on any hypervisor's guest and on containers
+  (`base_is_virtual_machine` is `virtualization_role == 'guest'`; the guest
+  agent is gated on the narrower KVM-only `base_is_kvm_guest`) — the
   `/etc/apt/apt.conf.d/20auto-upgrades` knobs are written whether or not the
   package is installed, so a later `apt install unattended-upgrades` cannot
   come up enabled
@@ -185,6 +189,11 @@ None — this is the foundational role. It includes
 - SSH password authentication disabled by default
 - Root login disabled (key-only on Proxmox for migration/replication)
 - SSH keys carry whatever `from=` restriction the site puts in `ssh_authorized_keys`
+- `ssh_authorized_keys` is **additive** by default: dropping a key from the list
+  does not revoke it on hosts the role already touched, and the run still
+  reports converged. Set `base_ssh_authorized_keys_exclusive: true` to make the
+  list authoritative (it then also removes keys installed outside Ansible), or
+  remove the key by hand
 - Fail2ban bans brute-force sources on SSH (and pveproxy on Proxmox hosts)
 - Sudoers configuration validated before applying
 - SSH configuration validated before install and asserted effective after

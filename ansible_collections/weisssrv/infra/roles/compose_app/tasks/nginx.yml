@@ -6,6 +6,20 @@
 # absolute path), disables the packaged default vhost, and reloads. Every value
 # that diverges between apps is a compose_app_nginx_* parameter.
 
+# Resolved by the CALLER (README § nginx site template): an unresolved or
+# relative value reaches the template module as an opaque "src is empty".
+- name: Assert the nginx site template is an absolute path
+  ansible.builtin.assert:
+    that:
+      - compose_app_nginx_site_template | default('') | length > 0
+      - compose_app_nginx_site_template is match('^/')
+    fail_msg: >-
+      compose_app_nginx_site_template must be a non-empty ABSOLUTE path to the
+      caller's site template (got
+      "{{ compose_app_nginx_site_template | default('') }}") — resolve it in the
+      caller with role_path or a lookup before including this role.
+    quiet: true
+
 - name: Install nginx
   ansible.builtin.apt:
     name: nginx
@@ -28,14 +42,20 @@
 # so seed a self-signed placeholder to get nginx started and the guest reachable
 # for the first push. That push overwrites both files unconditionally; the
 # `creates` guard makes this a one-shot that never clobbers a distributed cert.
+#
+# umask 077 so the key is never group/world-readable, not even between openssl
+# writing it and the chmod below.
 - name: Seed a self-signed TLS placeholder until the real cert is distributed
-  ansible.builtin.command:
+  ansible.builtin.shell:
     cmd: >-
-      openssl req -x509 -newkey rsa:2048 -nodes
-      -keyout {{ compose_app_nginx_ssl_key }}
-      -out {{ compose_app_nginx_ssl_cert }}
-      -days {{ compose_app_nginx_self_signed_days }} -subj "{{ compose_app_nginx_self_signed_subj }}"
-      {% if compose_app_nginx_self_signed_san %}-addext "subjectAltName={{ compose_app_nginx_self_signed_san }}"{% endif %}
+      umask 077 && openssl req -x509 -newkey rsa:2048 -nodes
+      -keyout {{ compose_app_nginx_ssl_key | quote }}
+      -out {{ compose_app_nginx_ssl_cert | quote }}
+      -days {{ compose_app_nginx_self_signed_days | quote }}
+      -subj {{ compose_app_nginx_self_signed_subj | quote }}
+      {% if compose_app_nginx_self_signed_san %}-addext {{ ('subjectAltName=' ~ compose_app_nginx_self_signed_san) | quote }}{% endif %}
+  args:
+    executable: /bin/bash
     creates: "{{ compose_app_nginx_ssl_cert }}"
   when: compose_app_nginx_bootstrap_cert | default(true)
 

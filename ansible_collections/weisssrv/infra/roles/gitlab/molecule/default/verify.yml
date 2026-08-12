@@ -108,8 +108,8 @@
           # (which render unconditionally) cannot satisfy the web-UI branch.
           - (gitlab_rb_tls_content.content | b64decode) is search("(?m)^nginx\\['listen_https'\\] = true")
           - (gitlab_rb_tls_content.content | b64decode) is search("(?m)^nginx\\['listen_port'\\] = 443$")
-          - (gitlab_rb_tls_content.content | b64decode) is search("(?m)^nginx\\['ssl_certificate'\\] = '/etc/gitlab/ssl/fullchain.pem'")
-          - (gitlab_rb_tls_content.content | b64decode) is search("(?m)^nginx\\['ssl_certificate_key'\\] = '/etc/gitlab/ssl/privkey.pem'")
+          - (gitlab_rb_tls_content.content | b64decode) is search('(?m)^nginx\\[.ssl_certificate.\\] = "/etc/gitlab/ssl/fullchain.pem"')
+          - (gitlab_rb_tls_content.content | b64decode) is search('(?m)^nginx\\[.ssl_certificate_key.\\] = "/etc/gitlab/ssl/privkey.pem"')
           - (gitlab_rb_tls_content.content | b64decode) is search("(?m)^nginx\\['ssl_protocols'\\] = \"TLSv1.3\"")
           - (gitlab_rb_tls_content.content | b64decode) is search("registry_nginx\\['ssl_protocols'\\] = \"TLSv1.3\"")
           - (gitlab_rb_tls_content.content | b64decode) is search("pages_nginx\\['ssl_protocols'\\] = \"TLSv1.3\"")
@@ -278,7 +278,7 @@
     - name: Verify Container Registry blob store path is relocated
       ansible.builtin.assert:
         that:
-          - "gitlab_config is search(\"gitlab_rails\\\\['registry_path'\\\\] = '/mnt/gitlab-repos/registry'\")"
+          - "gitlab_config is search('gitlab_rails\\\\[.registry_path.\\\\] = \"/mnt/gitlab-repos/registry\"')"
         fail_msg: "registry_path not rendered — the registry blob store would stay on the root disk"
         success_msg: "Registry blob store relocated to /mnt/gitlab-repos/registry"
 

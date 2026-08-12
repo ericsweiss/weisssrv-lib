@@ -1,6 +1,6 @@
 ---
 # SMTP relay server configuration
-# Central postfix relay that forwards to Gmail
+# Central postfix relay that forwards to the configured smarthost.
 
 # Assert the EFFECTIVE config (defaults + smtp_relay_config merged), so a site
 # override is checked too. An empty relayhost renders `relayhost = ` (postfix
@@ -20,16 +20,16 @@
       alias: internal_domain); a site can also set them in smtp_relay_config.
     success_msg: "SMTP relay identity and smarthost are set"
 
-- name: Validate required SMTP Gmail credentials are set
+- name: Validate the upstream smarthost credentials are set
   ansible.builtin.assert:
     that:
       - smtp_relay_upstream_user | default('') | length > 0
       - smtp_relay_upstream_password | default('') | length > 0
     fail_msg: >-
-      SMTP Gmail credentials are not set. Ensure SMTP_GMAIL_USER and
-      SMTP_GMAIL_PASSWORD environment variables are provided via 'op run'.
-      Run deployment with: task infra:deploy (which injects 1Password secrets)
-    success_msg: "SMTP Gmail credentials are present"
+      smtp_relay_upstream_user and smtp_relay_upstream_password are required —
+      they authenticate this relay to smtp_relay_upstream. Inject them from the
+      caller's secret store.
+    success_msg: "Upstream smarthost credentials are present"
   no_log: true
 
 # default('') guards the undef()-hinted lookups in all.yml so a missing env
@@ -40,10 +40,9 @@
       - smtp_relay_sasl_user | default('') | length > 0
       - smtp_relay_sasl_password | default('') | length > 0
     fail_msg: >-
-      SMTP relay auth credentials are not set. Ensure SMTP_RELAY_USER and
-      SMTP_RELAY_PASSWORD environment variables are provided via 'op run'.
-      These are used for SASL authentication by null clients connecting to this relay.
-      Run deployment with: task infra:deploy (which injects 1Password secrets)
+      smtp_relay_sasl_user and smtp_relay_sasl_password are required — null
+      clients authenticate to this relay with them. Inject them from the
+      caller's secret store.
     success_msg: "SMTP relay auth credentials are present"
   no_log: true
 
@@ -94,7 +93,7 @@
     mode: "0644"
   notify: Reload postfix
 
-- name: Deploy SASL password file for Gmail relay
+- name: Deploy SASL password file for the upstream smarthost
   ansible.builtin.template:
     src: sasl_passwd.j2
     dest: /etc/postfix/sasl_passwd
@@ -227,7 +226,7 @@
     enabled: true
 
 # Postfix queue depth collector
-# A wedged Gmail hop (expired app password, rate-limit) queues mail silently:
+# A wedged upstream hop (expired credential, rate-limit) queues mail silently:
 # postfix stays active and the LXC gauges stay green while the deferred queue
 # grows. The collector feeds postfix_queue_depth / postfix_up to the
 # node_exporter textfile collector already scraped on :9101 so

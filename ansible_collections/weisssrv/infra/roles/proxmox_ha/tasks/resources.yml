@@ -111,3 +111,25 @@
     - "'does not exist' not in (proxmox_ha_resource_remove_result.stderr | default(''))"
     - "'not found' not in (proxmox_ha_resource_remove_result.stderr | default(''))"
   tags: [proxmox_ha_resources]
+
+# Warn-only, matching replication.yml and rules.yml: automatic removal could
+# delete a resource someone registered live before it was codified.
+- name: Find HA resources present in Proxmox but absent from inventory
+  ansible.builtin.set_fact:
+    proxmox_ha_unmanaged_resource_sids: >-
+      {{ proxmox_ha_current_resource_config.keys() | list
+         | difference(proxmox_ha_resources
+                      | map(attribute='type') | zip(proxmox_ha_resources | map(attribute='vmid') | map('string'))
+                      | map('join', ':') | list) }}
+  tags: [proxmox_ha_resources]
+
+- name: Display unmanaged HA resources
+  ansible.builtin.debug:
+    msg: |
+      WARNING: {{ proxmox_ha_unmanaged_resource_sids | length }} HA resource(s) exist in Proxmox
+      but are not defined in proxmox_ha_resources: {{ proxmox_ha_unmanaged_resource_sids | join(', ') }}
+
+      Codify them (add an entry with the SAME type/vmid so the role adopts the live
+      resource) or remove them manually: ha-manager remove <sid>
+  when: proxmox_ha_unmanaged_resource_sids | length > 0
+  tags: [proxmox_ha_resources]

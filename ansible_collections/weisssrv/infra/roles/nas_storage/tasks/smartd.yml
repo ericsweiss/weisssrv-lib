@@ -27,13 +27,13 @@
   tags: [smart, service]
 
 # The smartd disk lists are static (no DEVICESCAN — see smartd.conf.j2), so a
-# swapped drive would be silently unmonitored until the matching smartd_*_disks
-# host_vars list is updated. Detect that gap at deploy time: every member of
-# every IMPORTED pool must appear in the UNION of the four lists (union, not
-# per-pool — tank's special/cache NVMe vdevs live under nas_storage_smartd_nvme_disks).
-# Whole-disk vdevs report their data partition, so -part<N> is stripped before
-# matching. An exported pool (archive's steady state) is not visible to zpool
-# and is re-checked by the deploy that follows its next plug.
+# swapped drive would be silently unmonitored until the matching group's `disks`
+# list is updated. Detect that gap at deploy time: every member of every
+# IMPORTED pool must appear in the UNION of all groups (union, not per-group —
+# a pool's special/cache NVMe vdevs belong in the NVMe group). Whole-disk vdevs
+# report their data partition, so -part<N> is stripped before matching. An
+# exported pool (archive's steady state) is not visible to zpool and is
+# re-checked by the deploy that follows its next plug.
 - name: Enumerate pool member disks missing from smartd_*_disks
   ansible.builtin.shell: |
     set -o pipefail
@@ -72,10 +72,8 @@
     executable: /bin/bash
   vars:
     _smartd_all_disks: >-
-      {{ (nas_storage_smartd_tank_disks | default([]))
-         + (nas_storage_smartd_ssd_disks | default([]))
-         + (nas_storage_smartd_nvme_disks | default([]))
-         + (nas_storage_smartd_archive_disks | default([])) }}
+      {{ nas_storage_smartd_disk_groups | default([])
+         | map(attribute='disks', default=[]) | flatten }}
   register: nas_storage_smartd_unlisted_disks
   changed_when: false
   check_mode: false
@@ -87,11 +85,10 @@
     that:
       - nas_storage_smartd_unlisted_disks.stdout | trim | length == 0
     fail_msg: >-
-      Pool member disk(s) missing from every smartd_*_disks list (UNMONITORED
-      until added to host_vars): {{ nas_storage_smartd_unlisted_disks.stdout | default('') }}.
-      Add each to the matching smartd_*_disks list (special/cache NVMe vdevs go
-      under nas_storage_smartd_nvme_disks regardless of pool), then re-run the storage
-      deploy.
+      Pool member disk(s) missing from every nas_storage_smartd_disk_groups entry
+      (UNMONITORED until added): {{ nas_storage_smartd_unlisted_disks.stdout | default('') }}.
+      Add each to the matching group's `disks` list (special/cache NVMe vdevs go
+      in the NVMe group regardless of pool), then re-run the storage deploy.
     quiet: true
   when: not (nas_storage_skip_zfs_operations | default(false))
   tags: [smart, config]

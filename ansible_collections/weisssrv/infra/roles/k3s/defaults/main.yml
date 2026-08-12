@@ -17,13 +17,11 @@
 k3s_registry_host_pins: []
 k3s_storage_host_pins: []
 
-# Raise the per-UID inotify ceilings on every k3s node. The kernel default
-# fs.inotify.max_user_instances=128 is per-UID, and since pods share the host
-# user namespace it is drawn HOST-GLOBAL by every uid-0 container (kubelet,
-# containerd, Flux, Prometheus, Alloy, every pod's root process). A
-# container-dense node exhausts the pool and the next systemd-in-Docker
-# container's PID 1 dies at boot with "Failed to allocate manager object: Too
-# many open files" — surfacing as an unretried molecule script_failure.
+# Raise the per-UID inotify ceilings on every k3s node. fs.inotify.max_user_instances
+# defaults to 128 per-UID and, because pods share the host user namespace, is
+# drawn HOST-GLOBAL by every uid-0 container (kubelet, containerd, Flux,
+# Prometheus, Alloy). A container-dense node exhausts the pool and the next
+# systemd-in-container PID 1 dies at boot with "Too many open files".
 # Set k3s_inotify_tuning false to remove the drop-in entirely.
 k3s_inotify_tuning: true
 k3s_inotify_max_user_instances: 8192

@@ -182,3 +182,27 @@
         that:
           - ha.i_set == 1
         fail_msg: "Expected rules set=1 for resource drift, got set={{ ha.i_set }}"
+
+    # (p) The cluster migration channel is PINNED, not inherited: an unset
+    #     datacenter.cfg key is written, a live `insecure` (cleartext guest RAM
+    #     on 60000-60050) is reverted with the migration network preserved, and
+    #     an already-pinned channel mutates nothing.
+    - name: P — an unpinned migration channel is pinned with one pvesh set
+      ansible.builtin.assert:
+        that:
+          - ha.p_pin == 1
+          - ha.p_total == 1
+        fail_msg: "Expected pin=1/total=1 for an unpinned channel, got {{ ha.p_pin }}/{{ ha.p_total }}"
+
+    - name: P2 — an insecure channel is reverted, keeping the migration network
+      ansible.builtin.assert:
+        that:
+          - ha.p2_revert == 1
+          - ha.p2_total == 1
+        fail_msg: "Expected revert=1/total=1 for an insecure channel, got {{ ha.p2_revert }}/{{ ha.p2_total }}"
+
+    - name: P3 — an already-pinned channel triggers NO mutation
+      ansible.builtin.assert:
+        that:
+          - ha.p3_total == 0
+        fail_msg: "Expected 0 mutations for an already-pinned channel, got {{ ha.p3_total }}"

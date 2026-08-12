@@ -73,18 +73,13 @@
     apt_signed_repo_install_gnupg: true
   when: not (k3s_skip_gpu_install | default(false))
 
-# NVIDIA CUDA apt repository (nvidia-open driver) via the official keyring
-# The debian13 CUDA repo InRelease is signed by a key NVIDIA does NOT publish as a
-# standalone .pub (unlike debian12's 3bf863cc.pub, which is a DIFFERENT, older
-# key). Fetching that debian12 .pub left apt unable to verify the debian13
-# InRelease ("repository is not signed", missing key 02182E60…8793F200) — the
-# first fleet GPU install failed there. The debian13 signing key ships ONLY in
-# NVIDIA's cuda-keyring package, which also installs the matching sources file.
-# The deb runs maintainer scripts as root, so VERIFY IT BEFORE INSTALL: download
-# with a pinned SHA256 (get_url fails on mismatch, before dpkg touches it), then
-# install the verified local file — verify-before-trust for the artifact itself.
-# apt then verifies the repo's InRelease against the key the deb dropped on every
-# fetch, so a separate keyring-fingerprint check would be redundant.
+# NVIDIA CUDA apt repository (nvidia-open driver). The debian13 CUDA repo's
+# signing key ships ONLY in NVIDIA's cuda-keyring package (there is no
+# standalone .pub), which also drops the matching sources file. dpkg runs that
+# deb's maintainer scripts as root, so it is downloaded with a pinned SHA256
+# (get_url fails on mismatch, before dpkg touches it) and installed from the
+# verified local file. apt then verifies InRelease against that key on every
+# fetch, so no separate keyring-fingerprint check is needed.
 - name: Remove the stale hand-rolled NVIDIA CUDA repo (superseded by cuda-keyring)
   ansible.builtin.file:
     path: "{{ item }}"
@@ -153,16 +148,13 @@
     - Confirm the restarted k3s-agent is up and stable
     - Wait for agent node Ready
 
-# Hold the ENTIRE installed NVIDIA driver + toolkit stack at its pinned versions
-# so a routine `apt upgrade` (e.g. maintenance-update-packages) can't move any of
-# it off the pin. An UNHELD nvidia-open drifted up to the CUDA repo's latest, and
-# the next pinned install then failed trying to DOWNGRADE it (E: Packages were
-# downgraded ...). nvidia-open is a META-package, so holding just it + the toolkit
-# could still let their versioned dependency libs (nvidia-kernel-open-dkms,
-# libnvidia-*, libnvidia-container*, …) drift — hold every installed
-# nvidia-*/libnvidia-* package so the whole stack is pinned. The install above
-# passes allow_change_held_packages + allow_downgrade, so bumping the pin in
-# all.yml still re-applies cleanly over these holds.
+# Hold the ENTIRE installed NVIDIA driver + toolkit stack at its pinned
+# versions so a routine `apt upgrade` cannot move any of it off the pin.
+# nvidia-open is a META-package, so holding only it + the toolkit would still
+# let their versioned dependency libs (nvidia-kernel-open-dkms, libnvidia-*,
+# libnvidia-container*) drift. The install above passes
+# allow_change_held_packages + allow_downgrade, so bumping the pin still
+# re-applies cleanly over these holds.
 - name: Gather installed package facts (to hold the whole NVIDIA stack)
   ansible.builtin.package_facts:
     manager: apt

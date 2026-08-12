@@ -1,0 +1,101 @@
+spec:
+  inputs:
+    job_name:
+      description: Name of the generated job. REQUIRED — one job per playbook.
+    stage:
+      default: deploy
+      description: Pipeline stage the job runs in.
+    base:
+      default: ".deploy-base"
+      description: >-
+        Hidden job supplying the toolchain (ci/deploy/deploy-base.yml). Match
+        its `fragment_name`.
+    needs:
+      type: array
+      description: >-
+        REQUIRED. `needs:` entries (strings, or `{job, optional}` maps) naming
+        the validation gate that must pass before anything is applied. There is
+        no default because the only value the library could pick is `[]`, and in
+        GitLab `needs: []` does not mean "no dependencies" — it starts the job at
+        pipeline creation, ahead of every lint and validate stage. A deploy is
+        the one job that must never run ungated, so the gate is stated per
+        consumer.
+    resource_group:
+      description: >-
+        REQUIRED. Serializes concurrent runs of this job. Give each deploy job
+        its own group unless two jobs genuinely must not overlap.
+    environment_name:
+      description: >-
+        REQUIRED. GitLab environment the job deploys to, e.g.
+        `production/ansible-dns` — it is what makes the deploy show up in the
+        environment history.
+    ansible_dir:
+      default: "ansible"
+      description: Directory the playbook command runs from.
+    inventory:
+      default: "inventories/prod"
+      description: Inventory path, relative to `ansible_dir`.
+    playbook:
+      default: "playbooks/site.yml"
+      description: Playbook path, relative to `ansible_dir`.
+    extra_args:
+      default: ""
+      description: >-
+        Extra ansible-playbook arguments, e.g. `--limit dns` or `--tags certs`.
+        Word-split by the shell, so no quoting survives.
+    branch:
+      default: "main"
+      description: Branch the deploy runs on. Nothing deploys from a feature branch.
+    gate:
+      default: "$OP_SERVICE_ACCOUNT_TOKEN"
+      description: >-
+        Variable expression that must also be non-empty for the job to be
+        created; without the op token every `op://` reference fails at runtime.
+        Interpolated INSIDE a single-quoted `rules:if`, so it must contain no
+        single quote.
+    changes:
+      type: array
+      description: >-
+        REQUIRED. Paths that trigger this job. Derive it from what the playbook
+        actually reads (inventory, group_vars, the playbook itself, the
+        collection pin) — a job that cannot fire on its own subject is a deploy
+        that silently never runs.
+---
+# One Ansible deploy job: run a playbook under `op run` on main, gated on a
+# changes list. It carries the shape every deploy job shares (stage, extends,
+# resource_group, environment, the schedule/main/token rules) and leaves the
+# per-cluster half to the consumer.
+#
+# Include it once per playbook-scoped job. It extends the `.deploy-base`
+# fragment from ci/deploy/deploy-base.yml, which must be included too.
+#
+# `needs` is required, not defaulted: `needs: []` is GitLab's "start at pipeline
+# creation, ignore stage order", so an omitted gate would be an ungated deploy.
+#
+# The per-job SECRET MAP is not an input — `spec:inputs` has no map type, and
+# `op run` resolves every op:// reference in the environment, so a job must
+# declare exactly what its playbook needs. Add it by re-declaring the job, which
+# MERGES at the map level with the generated one:
+#
+#   deploy-ansible-dns:
+#     variables:
+#       ADGUARD_ADMIN_PASSWORD: "op://<vault>/AdGuard Home/password"
+#
+# Same mechanism for anything else per-job: `timeout`, extra `needs`, or a
+# `script` that runs two playbooks in sequence.
+"$[[ inputs.job_name ]]":
+  stage: $[[ inputs.stage ]]
+  extends: $[[ inputs.base ]]
+  resource_group: $[[ inputs.resource_group ]]
+  needs: $[[ inputs.needs ]]
+  script:
+    - cd "$[[ inputs.ansible_dir ]]"
+    # shellcheck disable=SC2086  # extra_args is a word-split argument list
+    - op run -- ansible-playbook -i "$[[ inputs.inventory ]]" "$[[ inputs.playbook ]]" $[[ inputs.extra_args ]]
+  environment:
+    name: $[[ inputs.environment_name ]]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "$[[ inputs.branch ]]" && $[[ inputs.gate ]]'
+      changes: $[[ inputs.changes ]]

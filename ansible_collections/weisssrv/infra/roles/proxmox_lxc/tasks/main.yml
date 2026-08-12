@@ -8,10 +8,14 @@
     that:
       - proxmox_lxc_gateway | default('') | length > 0
       - proxmox_lxc_nameserver | default('') | length > 0
+      - proxmox_lxc_netmask_bits | int > 0
+      - proxmox_lxc_netmask_bits | int <= 32
     fail_msg: >-
       proxmox_lxc_gateway (the container's default gateway — no generic
       default) and proxmox_lxc_nameserver (alias: dns_servers) are required on
-      the create path.
+      the create path, and proxmox_lxc_netmask_bits
+      ({{ proxmox_lxc_netmask_bits | default('<undefined>') }}) must be an IPv4
+      prefix length.
     quiet: true
   # Same gate the create tasks carry: a run that only reconciles bind mounts or
   # startup order on an existing container never reads either value.
@@ -315,7 +319,7 @@
       --memory {{ proxmox_lxc_memory }} \
       --swap {{ proxmox_lxc_swap }} \
       --rootfs {{ _proxmox_lxc_effective_storage }}:{{ proxmox_lxc_disk_size | regex_replace('[Gg]$', '') }} \
-      --net0 name=eth0,bridge={{ proxmox_lxc_bridge }},firewall=1,ip={{ proxmox_lxc_target_ip }}/24,gw={{ proxmox_lxc_gateway }} \
+      --net0 name=eth0,bridge={{ proxmox_lxc_bridge }},firewall=1,ip={{ proxmox_lxc_target_ip }}/{{ proxmox_lxc_netmask_bits }},gw={{ proxmox_lxc_gateway }} \
       --nameserver "{{ proxmox_lxc_nameserver }}" \
       --searchdomain "{{ proxmox_lxc_searchdomain }}" \
       --unprivileged {{ proxmox_lxc_unprivileged | ternary(1, 0) }} \

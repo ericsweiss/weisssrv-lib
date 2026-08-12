@@ -16,7 +16,7 @@ DRY_RUN="${DRY_RUN:-0}"
 # rsync --bwlimit value (e.g. 50m for 50 MiB/s).
 BWLIMIT="{{ nas_storage_media_mover_bwlimit | default('') }}"
 
-PROM_DIR="/var/lib/node_exporter"
+PROM_DIR="{{ nas_storage_backup_artifact_metrics_dir | default(node_exporter_host_textfile_dir | default('/var/lib/node_exporter')) }}"
 PROM_FILE="${PROM_DIR}/media_mover.prom"
 _MM_START_TS="$(date +%s)"
 
@@ -25,6 +25,9 @@ write_prom_metrics() {
   local ts
   ts="$(date +%s)"
   local tmp="${PROM_FILE}.$$"
+  # The redirect below swallows its own failure, so a missing textfile dir would
+  # silently produce no metrics and no error.
+  mkdir -p "$PROM_DIR" 2>/dev/null || true
   {
     echo "# HELP media_mover_last_run_duration_seconds Duration of last run"
     echo "# TYPE media_mover_last_run_duration_seconds gauge"
@@ -33,8 +36,7 @@ write_prom_metrics() {
     echo "# TYPE media_mover_last_run_success gauge"
     echo "media_mover_last_run_success ${success}"
     # On failure, preserve the last-known success timestamp so MediaMoverStale
-    # measures time-since-last-success, not time-since-last-attempt (dropping
-    # it made every failure also trip the alert's absent() arm).
+    # measures time-since-last-success, not time-since-last-attempt.
     local sval
     if [ "$success" -eq 1 ]; then
       sval="$ts"

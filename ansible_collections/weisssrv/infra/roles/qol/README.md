@@ -11,6 +11,8 @@ compose it into a play only where you want it.
 | Variable | Default | Meaning |
 |---|---|---|
 | `qol_admin_user` | `{{ admin_user }}` | User whose dotfiles the role owns. `root` self-skips every user-scoped task (packages still install). |
+| `qol_admin_home` | `""` | Directory the dotfiles land in; empty resolves it from passwd rather than assuming `/home/<user>` |
+| `qol_admin_shell` | `/bin/zsh` | Login shell set for `qol_admin_user` |
 | `qol_packages` | zsh, neovim, fzf, ripgrep, fd-find | apt packages |
 | `qol_omz_commit` | pinned sha | Oh My Zsh has no release tags, so the clone is pinned to a commit and self-update is disabled in `.zshrc` |
 | `qol_omz_theme` | `risto` | `ZSH_THEME` |
@@ -38,7 +40,8 @@ via forks or explicit checkouts if that ever matters.
 ## Files it owns
 
 `~/.zshrc`, `~/.zprofile`, `~/.alias.zsh`, `~/.local.zsh` (created once, never
-overwritten), `~/.config/nvim/init.vim`, `~/.oh-my-zsh/`, `~/.vim/bundle/`.
+overwritten), `~/.config/nvim/init.vim`, `~/.oh-my-zsh/`, `~/.vim/bundle/` —
+where `~` is `qol_admin_home`, or the user's passwd home when that is empty.
 
 ## Idempotency
 
@@ -52,3 +55,9 @@ overwritten), `~/.config/nvim/init.vim`, `~/.oh-my-zsh/`, `~/.vim/bundle/`.
   does not.
 - The login shell is set unconditionally; the `user` module reports changed only
   on a real change.
+
+## Platform
+
+The whole role is gated on `os_family == Debian` at one point, so a non-Debian
+host gets neither the packages nor a login shell pointing at a binary the role
+declined to install.
