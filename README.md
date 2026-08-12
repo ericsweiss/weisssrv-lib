@@ -63,7 +63,8 @@ scripts/       the gates + generators CI jobs run: version tracking, deploy/
                release automation — see docs/SCRIPTS.md
 taskfiles/     go-task include fragments (lint, flux) so `task lint` mirrors CI
                — see taskfiles/README.md
-docker/        molecule test/CI images for the collection, published per release
+docker/        published per release: the two molecule test/CI images for the
+               collection + ansible-deploy (the pre-baked deploy job image)
 examples/      copy-and-edit config files for the helper scripts
 cli/           weisssrv-new-project — the copier wrapper that renders the
                cluster template (new-cluster) and the app template (new-app)

@@ -33,10 +33,22 @@ resource "tailscale_dns_split_nameservers" "this" {
   for_each = var.split_dns
 
   domain = each.key
-  # addresses[0] is the device's IPv4 (100.x) tailnet address.
+  # Select the device's IPv4 (100.x) tailnet address explicitly — the API's
+  # address ordering is convention, not contract, and an IPv6 nameserver here
+  # breaks resolution for every tailnet client of the domain.
   nameservers = (
     each.value.device_hostname == null
     ? each.value.nameservers
-    : [data.tailscale_device.split_dns[each.key].addresses[0]]
+    : [one([
+      for a in data.tailscale_device.split_dns[each.key].addresses : a
+      if !strcontains(a, ":")
+    ])]
   )
+
+  # Destroying a split-DNS entry silences the domain for the whole tailnet.
+  # Deliberate removal: `terraform state rm` the entry first (the live mapping
+  # is untouched), then drop it from var.split_dns.
+  lifecycle {
+    prevent_destroy = true
+  }
 }

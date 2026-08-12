@@ -44,6 +44,7 @@ consumers:
       - scripts/check-versions.py
       - scripts/find-pve-host-for-vm.sh
       - scripts/find-reachable-host.sh
+      - scripts/flux-env.sh
       - scripts/flux-render.sh
       - scripts/generate-hosts-env.py
       - scripts/generate-versions-configmap.py
@@ -212,6 +213,8 @@ consumers:
         consumer: template/scripts/check-versions.py
       - lib: scripts/extract-prometheus-config.py
         consumer: template/scripts/extract-prometheus-config.py
+      - lib: scripts/flux-env.sh
+        consumer: template/scripts/flux-env.sh
       - lib: scripts/find-reachable-host.sh
         consumer: template/scripts/find-reachable-host.sh
       - lib: scripts/flux-render.sh

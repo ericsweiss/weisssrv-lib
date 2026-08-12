@@ -90,13 +90,18 @@ consumers:
         scripts/extract-prometheus-config.py: it unions observability/rules/*
         with the HelmRelease.
       cli: not installed
-      molecule_images: >-
+      images: >-
         Pulls the library's published
         $CI_REGISTRY/eric/weisssrv-lib/molecule-{ci,test}:$WEISSSRV_LIB_REF
         images; weisssrv's own docker/ now holds only the app images
         (hermes-agent, camofox-browser). The image tag is therefore a fifth pin
         surface that moves with WEISSSRV_LIB_REF, and it only resolves once the
         release tag exists.
+        NOT YET ADOPTED: the ansible-deploy image, published from the same
+        registry at the same tag. weisssrv's .deploy-base still installs the op
+        CLI, ansible and git per run (over half of a 115s deploy job); adopting
+        it is an image swap plus dropping those before_script steps, and it
+        pairs naturally with the /ci/deploy/* includes above.
 
   - name: weisssrv-app-template
     url: https://git.ericsweiss.com/eric/weisssrv-app-template
@@ -363,9 +368,10 @@ pin_surfaces:
       whether that consumer's adoption MR has merged.
   - id: cli_install_spec
     enforced: false
-  - id: molecule_image_tag
+  - id: image_tag
     enforced: false
     note: >-
-      :vX.Y.Z tags exist only from the release that added
-      publish-molecule-image-tags. weisssrv now pulls molecule-{ci,test} at
-      $WEISSSRV_LIB_REF, so its molecule jobs cannot run until the tag is cut.
+      :vX.Y.Z tags exist only from the release that added publish-image-tags
+      (and, for ansible-deploy, the release that added that image). weisssrv now
+      pulls molecule-{ci,test} at $WEISSSRV_LIB_REF, so its molecule jobs cannot
+      run until the tag is cut.

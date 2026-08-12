@@ -737,6 +737,11 @@ definition, and parameterising them would trade duplication for indirection.
   fleet's config, and any job running `site.yml --limit` can reach one. The
   cost is that the Loki item must exist in `op_vault` — `op run` resolves every
   `op://` reference in the environment and a missing item is a hard failure.
+  The op CLI, ansible and `apt_packages` installs this fragment performs are
+  also available pre-baked, in the published `ansible-deploy` image
+  ([`docker/README.md`](../docker/README.md)). The fragment is unchanged by it
+  and still installs unconditionally, so a job that switches `image:` also drops
+  the corresponding `before_script` steps to collect the saving.
 - **kubectl-setup.yml** → a hidden job (default `.kubectl-setup`) whose
   `before_script` installs a sha256-verified kubectl and writes the kubeconfig
   from 1Password under `umask 077`. Pull it in AFTER the base's own

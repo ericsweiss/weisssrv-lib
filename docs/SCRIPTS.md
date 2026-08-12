@@ -317,6 +317,27 @@ extract-prometheus-config.py alertmanager <out> [--am-config PATH] [--dummy K=V]
 `HELM_RELEASE`, `AM_CONFIG`. The unit-test step is skipped when `RULE_TESTS_DIR`
 holds no `*.test.yaml`.
 
+### `flux-env.sh` (PyYAML, wraps `flux-render.sh`)
+
+The multi-ConfigMap front end to `flux-render.sh` for clusters that substitute
+from more than one ConfigMap (versions plus a cluster-config). Same
+`export-versions` / `k8s-version` entry points, so callers written for one
+ConfigMap keep working with several, plus `merged-configmap` for tools that
+accept a single `--versions-configmap`.
+
+```
+VARS=$(scripts/flux-env.sh export-versions "$VERSIONS_CM") || exit 1
+eval "$VARS"        # every key from every file + ONE merged FLUX_ENVSUBST_VARS
+```
+
+- The argument may name several files in one quoted word; later files win on a
+  key collision, and a file named twice is read once.
+- `FLUX_EXTRA_CONFIGMAPS` (default: the sibling cluster-config path) appends
+  files; set it to the empty string to add none.
+- `merged-configmap` prints one ConfigMap whose `.data` is the union, with the
+  same precedence, so the merged document and the exported environment cannot
+  disagree.
+
 ### `flux-render.sh` (PyYAML)
 
 The two shared halves of `ci/validate/flux-lint.yml`'s substitute mode: turn the

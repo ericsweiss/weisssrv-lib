@@ -1,0 +1,11 @@
+# Python dependencies baked into the ansible-deploy image.
+#
+# Exact pins, not lower bounds: this file is COPYed and pip-installed by
+# docker/ansible-deploy/Dockerfile, so a rebuild must be reproducible and must
+# never silently pull a new major.
+#
+# `ansible` (the batteries-included distribution), not `ansible-core`: it is
+# exactly what ci/deploy/deploy-base.yml pip-installs, so a job that switches to
+# this image runs the same interpreter+collection set it ran before. That pin
+# parity is a contract — see tests/test_ansible_deploy_image.py for the pair.
+ansible==11.6.0

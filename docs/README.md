@@ -34,5 +34,5 @@ Each Terraform module documents its own inputs, outputs and consumption pattern:
 
 The top-level [../README.md](../README.md) is the overview + repo map, and names
 the current release. The CLI has its own [../cli/README.md](../cli/README.md);
-the published molecule images are documented in
-[../docker/README.md](../docker/README.md).
+the published images (the two molecule ones and `ansible-deploy`) are documented
+in [../docker/README.md](../docker/README.md).

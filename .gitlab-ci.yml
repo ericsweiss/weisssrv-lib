@@ -1,8 +1,8 @@
 ---
 # CI for weisssrv-lib itself. Two runner classes: the lint/test/security/review
 # jobs are TAG-LESS and non-root safe (`pip install --user`, `python -m`, no
-# apt, no /usr/local/bin writes) and land on the shared runner; the two molecule
-# image builds, the molecule matrix and the image retag need privileged
+# apt, no /usr/local/bin writes) and land on the shared runner; the three image
+# builds, the molecule matrix and the image retag need privileged
 # Docker-in-Docker and are tagged `infrastructure`.
 #
 # ADMIN PREREQUISITE: `infrastructure` is a PROJECT runner — it must be enabled
@@ -93,6 +93,19 @@ include:
       tags: ["infrastructure"]
       changes:
         - "docker/molecule-test/**/*"
+  # The deploy job image (docker/ansible-deploy/README.md). No job in THIS
+  # pipeline consumes it — it is built here so consumers can pull it at a
+  # release tag instead of re-installing the op CLI, ansible and git on every
+  # deploy. `changes` is its own context alone, disjoint from both molecule
+  # contexts for the same reason they are disjoint from each other.
+  - local: /ci/build/docker-build.yml
+    inputs:
+      job_name: build-ansible-deploy
+      image_name: ansible-deploy
+      context: docker/ansible-deploy
+      tags: ["infrastructure"]
+      changes:
+        - "docker/ansible-deploy/**/*"
   # MR-targeted molecule child pipeline. Every other input already matches this
   # repo (roles_dir/ci_file/jobs_include/global_triggers/changes and the two
   # image jobs); integration_dir points at a dir that does not exist, which is
@@ -292,13 +305,13 @@ include:
     inputs:
       tags: []
 
-# Republish the two molecule images under the tag semantic-release just cut, so
-# a consumer pins the image at the SAME ref it pins the templates at
+# Republish every image this repo builds under the tag semantic-release just
+# cut, so a consumer pins the image at the SAME ref it pins the templates at
 # (molecule-ci:vX.Y.Z). The build jobs are path-gated, so most releases ship an
 # image built by an earlier pipeline: the source is this pipeline's :<short-sha>
 # when it rebuilt, else the current :latest. Both immutable tags stay published
 # either way — this only adds the version alias.
-publish-molecule-image-tags:
+publish-image-tags:
   stage: release
   tags: ["infrastructure"]
   # Writes tags consumers pin; must not be cancelled by the next merge.
@@ -344,7 +357,7 @@ publish-molecule-image-tags:
       done
       docker info >/dev/null 2>&1 || { echo "docker daemon did not become ready"; exit 1; }
       echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
-      for img in molecule-ci molecule-test; do
+      for img in molecule-ci molecule-test ansible-deploy; do
         ref="${CI_REGISTRY_IMAGE}/${img}"
         if docker pull "${ref}:${CI_COMMIT_SHORT_SHA}" >/dev/null 2>&1; then
           src="${ref}:${CI_COMMIT_SHORT_SHA}"

@@ -146,8 +146,9 @@ class TestExtractedBodyIsParsedOnce:
         with pytest.raises(mod.ExtractionError, match="is empty"):
             mod._load_extracted(path, "Alertmanager config")
 
-    def test_main_exits_two_on_a_malformed_body(self, tmp_path, capsys):
+    def test_main_exits_two_on_a_malformed_body(self, tmp_path, capsys, monkeypatch):
         """End to end: exit 2, not the traceback-on-1 the old code produced."""
+        monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/amtool")
         extract = tmp_path / "extract.py"
         extract.write_text(
             "import pathlib, sys\n"

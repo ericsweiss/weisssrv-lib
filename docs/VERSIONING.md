@@ -55,17 +55,18 @@ tested together in the pipeline that cut it — the templates against their own
 jobs, the collection roles against the molecule images built from the same
 commit, the scripts against `tests/`.
 
-The one pair that needs an explicit act is the molecule images, because they
-live in a registry rather than in git. The release pipeline's
-`publish-molecule-image-tags` job runs after `semantic-release` and retags the
-`molecule-ci` / `molecule-test` images this pipeline built to `:vX.Y.Z`,
+The pairs that need an explicit act are the published images, because they live
+in a registry rather than in git. The release pipeline's `publish-image-tags`
+job runs after `semantic-release` and retags the `molecule-ci` /
+`molecule-test` / `ansible-deploy` images this pipeline built to `:vX.Y.Z`,
 appending that validated tag↔image pair to the registry. So a consumer that
 pins `ref: vX.Y.Z` can pin `…/molecule-test:vX.Y.Z` and know the two were
 exercised against each other. The job is a no-op when no release was cut, and
-warns rather than reddening when the images were never pushed at all.
+warns rather than reddening when an image was never pushed at all.
 
-`:vX.Y.Z` image tags exist only from the first release that carried that job —
-before it, pin `:latest` or an immutable `:<short-sha>`.
+`:vX.Y.Z` image tags exist only from the first release that carried that job,
+and `ansible-deploy:vX.Y.Z` only from the release that added that image —
+before either, pin `:latest` or an immutable `:<short-sha>`.
 
 ## No changelog file
 
