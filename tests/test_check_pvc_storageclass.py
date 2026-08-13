@@ -199,3 +199,22 @@ spec:
 """
     assert _run(pvc_null, monkeypatch) == 1
     assert "no storageClassName" in capsys.readouterr().err
+
+
+def test_a_null_chart_storageclass_is_unpinned(monkeypatch, capsys):
+    """`storageClass: null` in chart values pins nothing — templates treat it
+    as unset and the default class captures the chart's PVC."""
+    hr_null = HR_PINNED.replace('storageClass: "-"', "storageClass: null")
+    assert _run(hr_null, monkeypatch) == 1
+    assert "no" in capsys.readouterr().err
+
+
+def test_an_empty_existing_claim_is_unpinned(monkeypatch):
+    """`existingClaim: ""` references no claim; only a non-empty name pins."""
+    hr_empty_claim = HR_PINNED.replace('storageClass: "-"', 'existingClaim: ""')
+    assert _run(hr_empty_claim, monkeypatch) == 1
+
+
+def test_a_named_existing_claim_pins(monkeypatch):
+    hr_claim = HR_PINNED.replace('storageClass: "-"', "existingClaim: app-data")
+    assert _run(hr_claim, monkeypatch) == 0

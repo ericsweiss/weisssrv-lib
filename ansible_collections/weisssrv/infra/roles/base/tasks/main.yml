@@ -167,6 +167,24 @@
 # ansible-core's template engine does NOT process escape sequences inside Jinja
 # string literals, so the single-quoted-YAML `join("\n")` form yields the
 # two-character sequence.
+# An EMPTY authoritative list under exclusive is a contradiction, not a
+# revocation: applying it would strip every key from an SSH-managed host
+# (self-lockout), while the deploy task's length guard makes it a silent
+# no-op — the revocation asked for never happens and nothing says so. Fail
+# loudly; a deliberate full revocation belongs to console access.
+- name: Refuse an empty exclusive authorized_keys list
+  ansible.builtin.assert:
+    that: >-
+      not (base_ssh_authorized_keys_exclusive | bool)
+      or (base_ssh_authorized_keys | default([]) | length > 0)
+    fail_msg: >-
+      base_ssh_authorized_keys_exclusive is true but base_ssh_authorized_keys
+      is empty. That combination would remove every key from
+      {{ base_admin_user }}'s authorized_keys and lock this SSH-managed host
+      out. Populate the list, or perform the full revocation from console
+      access instead.
+  tags: [ssh, users, security, base]
+
 - name: Deploy authorized_keys for admin user
   ansible.posix.authorized_key:
     user: "{{ base_admin_user }}"

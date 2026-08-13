@@ -42,8 +42,11 @@ except ImportError:
 # does, server-side). A persistence block that declares a size is provisioning
 # storage, so it must also say WHICH class — `storageClass: ""` for a static
 # bind, the chart-specific `"-"` sentinel where the template's `with` guard
-# would otherwise drop an empty string (loki), or an existingClaim.
-_CLASS_KEYS = ("storageClass", "storageClassName", "existingClaim", "existingVolume")
+# would otherwise drop an empty string (loki), or an existingClaim. A class
+# key set to null, or an existing-volume key that is not a non-empty string,
+# pins nothing: chart templates treat both as unset.
+_CLASS_PIN_KEYS = ("storageClass", "storageClassName")
+_VOLUME_PIN_KEYS = ("existingClaim", "existingVolume")
 
 
 def _claim_violations(docs: list[dict]) -> tuple[list[str], int]:
@@ -88,7 +91,14 @@ def _values_violations(node, doc_label: str, path: str = "values") -> tuple[list
     if isinstance(node, dict):
         if "size" in node and node.get("enabled") is not False:
             seen += 1
-            if not any(k in node for k in _CLASS_KEYS):
+            class_pinned = any(
+                k in node and node[k] is not None for k in _CLASS_PIN_KEYS
+            )
+            volume_pinned = any(
+                isinstance(node.get(k), str) and node[k].strip()
+                for k in _VOLUME_PIN_KEYS
+            )
+            if not (class_pinned or volume_pinned):
                 out.append(
                     f"  {doc_label}: {path} declares size={node['size']!r} but no "
                     f"storageClass — the chart's PVC would take the default class"
