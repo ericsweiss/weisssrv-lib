@@ -34,6 +34,14 @@ resource "cloudflare_zone_settings_override" "this" {
       preload            = var.zone_settings.hsts.preload
     }
   }
+
+  # Same policy as every record below: destroying this override reverts
+  # ssl/HSTS/min_tls_version zone-wide, and a consumer stack may auto-apply.
+  # Disabling manage_zone_settings deliberately means `terraform state rm`
+  # first (the live settings survive that), then flipping the variable.
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # `lifecycle` takes no variables, so the two protection dimensions are expressed
