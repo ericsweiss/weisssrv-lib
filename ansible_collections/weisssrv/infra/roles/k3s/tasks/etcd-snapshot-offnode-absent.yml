@@ -24,11 +24,17 @@
     - not ansible_check_mode
     - k3s_offnode_absent_stat.results[0].stat.exists
 
+# Evidence-gated like the rest of the file: the mount at that path belongs to
+# this feature only when a role-owned artifact says the feature was deployed.
+# Unconditional, this would strip an unrelated fstab entry/mount from a host
+# that never had it.
 - name: Unmount and remove the off-node etcd snapshot export
   ansible.posix.mount:
     path: "{{ k3s_etcd_snapshot_mountpoint }}"
     state: absent
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    - k3s_offnode_absent_stat.results | selectattr('stat.exists') | list | length > 0
   tags:
     - molecule-notest
 
