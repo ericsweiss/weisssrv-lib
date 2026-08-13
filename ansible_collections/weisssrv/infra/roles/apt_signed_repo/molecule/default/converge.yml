@@ -58,6 +58,8 @@
         apt_signed_repo_update_cache: false
 
     - name: Reject path — a wrong fingerprint must fail before writing a keyring
+      # Rejects and dry runs report changed/failed by design on every pass.
+      tags: [molecule-idempotence-notest]
       block:
         - name: Run the role with a deliberately wrong fingerprint
           ansible.builtin.include_role:
@@ -77,6 +79,8 @@
             apt_signed_repo_fingerprint_rejected: true
 
     - name: Assert the reject path actually failed the role
+      # Rejects and dry runs report changed/failed by design on every pass.
+      tags: [molecule-idempotence-notest]
       ansible.builtin.assert:
         that:
           - apt_signed_repo_fingerprint_rejected | default(false)
@@ -106,6 +110,8 @@
         creates: /tmp/testkey-multi.asc
 
     - name: Multi-key reject path — a bundled second key must fail the guard
+      # Rejects and dry runs report changed/failed by design on every pass.
+      tags: [molecule-idempotence-notest]
       block:
         - name: Run the role with a two-key file but the correct PRIMARY fingerprint
           ansible.builtin.include_role:
@@ -125,6 +131,8 @@
             apt_signed_repo_multikey_rejected: true
 
     - name: Assert the multi-key path failed the role (pub_count==1 guard)
+      # Rejects and dry runs report changed/failed by design on every pass.
+      tags: [molecule-idempotence-notest]
       ansible.builtin.assert:
         that:
           - apt_signed_repo_multikey_rejected | default(false)
@@ -138,6 +146,8 @@
     # download/verify/dearmor steps all skip on an existing keyring, so only the
     # new existing-keyring re-verify can catch the drift. It must fail.
     - name: Existing-keyring re-verify — a drifted fingerprint on an installed keyring must fail
+      # Rejects and dry runs report changed/failed by design on every pass.
+      tags: [molecule-idempotence-notest]
       block:
         - name: Re-run the role against the installed keyring with a wrong fingerprint
           ansible.builtin.include_role:
@@ -157,6 +167,8 @@
             apt_signed_repo_existing_rejected: true
 
     - name: Assert the existing-keyring re-verify rejected the drifted fingerprint
+      # Rejects and dry runs report changed/failed by design on every pass.
+      tags: [molecule-idempotence-notest]
       ansible.builtin.assert:
         that:
           - apt_signed_repo_existing_rejected | default(false)
@@ -171,6 +183,8 @@
     # continue" in check mode too. Without the post-dearmor existence re-check
     # this makes `ansible-playbook --check` red on every fresh host.
     - name: Check-mode dry run — an absent keyring must not fail the permission task
+      # Rejects and dry runs report changed/failed by design on every pass.
+      tags: [molecule-idempotence-notest]
       check_mode: true
       block:
         - name: Run the role in check mode against a keyring path that does not exist
@@ -191,6 +205,7 @@
             apt_signed_repo_checkmode_failed: true
 
     - name: Assert the check-mode dry run survived the unprovisioned keyring
+      tags: [molecule-idempotence-notest]
       ansible.builtin.assert:
         that:
           - not (apt_signed_repo_checkmode_failed | default(false))

@@ -48,9 +48,17 @@
     name: "{{ item }}"
     state: started
     enabled: true
-  loop:
-    - smbd
-    - nmbd
+  # nmbd exits immediately under `disable netbios = yes`, so managing it there
+  # flaps the service state on every run.
+  loop: "{{ ['smbd'] if nas_storage_samba_disable_netbios else ['smbd', 'nmbd'] }}"
+
+- name: Ensure nmbd is stopped and disabled when NetBIOS is off
+  ansible.builtin.service:
+    name: nmbd
+    state: stopped
+    enabled: false
+  when: nas_storage_samba_disable_netbios
+  failed_when: false  # the unit may not exist on minimal installs
 
 # The secret never appears in argv: smbpasswd reads it on stdin, smbclient from
 # PASSWD in the environment. Idempotency comes from probing whether the supplied

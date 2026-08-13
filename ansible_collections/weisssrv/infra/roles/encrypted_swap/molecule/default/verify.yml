@@ -134,7 +134,7 @@
     - name: Exercise the finalize script's decision arms
       ansible.builtin.shell: |
         set -euo pipefail
-        root=/tmp/encrypted-swap-behaviour
+        root=/root/encrypted-swap-behaviour
         rm -rf "$root"; mkdir -p "$root/bin"
         # Same script, reading fixtures instead of the live host state.
         sed -e "s#/proc/swaps#$root/swaps#g" -e "s#/etc/fstab#$root/fstab#g" \
