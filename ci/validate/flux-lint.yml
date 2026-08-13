@@ -250,6 +250,17 @@ spec:
         # Every ${var} reference in the pre-substitution output must be a known
         # ConfigMap key. envsubst renders unknown vars as empty (Flux does too),
         # so post-substitution grep would miss typos — check pre-substitution.
+        # Flux's Go envsubst PARSE-errors on `${` followed by anything that
+        # cannot start a variable name, and silently eats `${1}`-style refs —
+        # while the GNU envsubst below ignores both. `$${` is Flux's escape
+        # and is exempt. The sed uses `[{]`, which both GNU and BSD accept.
+        MALFORMED=$(printf '%s\n' "$RAW" | sed 's/\$\$[{]/__FLUX_ESCAPED__/g' | grep -nE '\$\{[^A-Za-z_]' || true)
+        if [ -n "$MALFORMED" ]; then
+          echo "ERROR: $SRCPATH renders a \${ sequence Flux's envsubst mishandles (escape as \$\${ or assemble at runtime):"
+          echo "$MALFORMED" | head -5 | sed 's/^/  /'
+          FAILED=1
+          continue
+        fi
         MISSING=""
         for ref in $(echo "$RAW" | grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' | sort -u); do
           varname=${ref#\$\{}

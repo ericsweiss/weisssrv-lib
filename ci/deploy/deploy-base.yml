@@ -108,4 +108,7 @@ spec:
       . "$[[ inputs.hosts_env ]]"
       # shellcheck disable=SC2086  # word-split ALL_SSH_IPS into one keyscan
       ssh-keyscan -H $ALL_SSH_IPS >> ~/.ssh/known_hosts 2>/dev/null || true
-    - ansible-galaxy collection install -r "$[[ inputs.ansible_dir ]]/requirements.yml"
+    # Retried: a consumer fleet deploy may include the forge's own restart
+    # (GitLab reconfigure), and a sibling job cloning the collection through
+    # it mid-window gets a 5xx.
+    - for i in 1 2 3; do ansible-galaxy collection install -r "$[[ inputs.ansible_dir ]]/requirements.yml" && break; [ "$i" = 3 ] && exit 1; echo "galaxy install failed (attempt $i) — retrying in 20s"; sleep 20; done
