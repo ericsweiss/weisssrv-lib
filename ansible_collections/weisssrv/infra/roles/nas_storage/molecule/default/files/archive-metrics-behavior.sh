@@ -73,6 +73,9 @@ grep -q 'media_mover_last_run_success' "$WORK/mover-fn.sh" \
 
 env -i bash -c '
   set -euo pipefail
+  # Both globals the extracted function reads: it mkdir -p "$PROM_DIR" before
+  # writing PROM_FILE, and this subshell runs under set -u.
+  PROM_DIR="'"$WORK"'"
   PROM_FILE="'"$WORK"'/media_mover.prom"
   # shellcheck disable=SC1091
   source "'"$WORK"'/mover-fn.sh"
