@@ -27,6 +27,17 @@ port-level assertion would be enforceable for hand-written monitors and silently
 vacuous for chart ones. Namespace-level reachability is the invariant that can be
 checked uniformly.
 
+Pod-selector granularity is out of reach for the same reason. Which pods a
+monitor ultimately scrapes resolves through Service label selectors (and, for
+chart-native monitors, through templates the corpus never contains), so the
+gate cannot tell whether an observability-sourced allow's podSelector covers
+the scraped pods, nor whether a pod-scoped ingress policy isolates them. It
+therefore counts any observability-sourced allow for the namespace and treats
+only namespace-wide policies as restricting — an allow scoped to the wrong
+pod, or a pod-scoped default-deny, passes here and surfaces at runtime as
+TargetDown. Requiring namespace-wide allows instead would fail the tighter
+(and preferred) app-scoped allow policies this gate exists to encourage.
+
 Site data — which namespace Prometheus runs in, and any namespace exempt from
 the invariant — comes from flags, not from this file.
 
