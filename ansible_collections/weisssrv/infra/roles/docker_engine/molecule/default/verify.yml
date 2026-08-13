@@ -25,9 +25,7 @@
         success_msg: "daemon.json renders the journald log driver + live-restore"
 
     # The converge seeded the pre-standardization repo line + keyring; the
-    # role's legacy cleanup must have removed both (a leftover line wedges apt
-    # with "Conflicting values set for option Signed-By" once the current-path
-    # line is added alongside it).
+    # role's legacy cleanup must have removed both.
     - name: Read docker.list after the legacy cleanup
       ansible.builtin.slurp:
         src: /etc/apt/sources.list.d/docker.list

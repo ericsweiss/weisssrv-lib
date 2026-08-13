@@ -11,6 +11,12 @@ encrypted_swap_enabled: true
 encrypted_swap_source_device: /dev/pve/swap
 encrypted_swap_mapper_name: cryptswap
 
+# The role stats the backing device before writing crypttab/fstab. True fails
+# the deploy when it is not a block device; false self-skips loudly instead
+# (nothing written, boot finalize unit disabled) for a mixed fleet where only
+# some hosts carry it.
+encrypted_swap_require_source_device: true
+
 # aes-xts-plain64, size=512 => AES-256-XTS (two 256-bit keys). Random key from
 # /dev/urandom (ephemeral).
 encrypted_swap_cipher: aes-xts-plain64

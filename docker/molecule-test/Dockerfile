@@ -80,11 +80,9 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     ethtool \
     python3 \
     python3-apt
-    # NOTE: intentionally NOT removing /var/lib/apt/lists/* — keeping the
-    # apt cache warm so roles with `update_cache: true` get a near-instant
-    # cache hit instead of re-downloading all package metadata from the
-    # internet (~2-3 min saved per role). The ~30MB image size increase is
-    # worth it for CI speed.
+    # NOTE: intentionally NOT removing /var/lib/apt/lists/* — roles with
+    # `update_cache: true` then hit a warm cache instead of re-downloading all
+    # package metadata (~30MB image cost).
 
 # Pre-create the ansible tmp directory (avoids "Failed to create
 # temporary directory" errors during molecule prepare)

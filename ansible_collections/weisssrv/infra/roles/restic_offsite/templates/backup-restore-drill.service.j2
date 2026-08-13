@@ -17,9 +17,8 @@ EnvironmentFile={{ restic_offsite_config_dir }}/env
 ExecStart=/usr/local/sbin/restic-offsitectl drill
 # journald tags stdout with the ExecStart BASENAME by default, i.e.
 # `restic-offsitectl` — the same tag the nightly run and the weekly verify get.
-# The alert annotation and docs/42 both send an operator to
-# `journalctl -t backup-restore-drill`, which would return nothing. Pin the tag
-# so that command works and the drill's journal is separable from the run's.
+# Pinning the tag keeps the drill's journal separable from theirs and makes the
+# `journalctl -t backup-restore-drill` the alert annotation points at work.
 SyslogIdentifier=backup-restore-drill
 Nice={{ restic_offsite_nice }}
 IOSchedulingClass={{ restic_offsite_io_class }}

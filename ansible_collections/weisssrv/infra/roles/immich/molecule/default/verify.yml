@@ -29,8 +29,8 @@
           - (immich_compose.content | b64decode) is search('IMMICH_TELEMETRY_INCLUDE: all')
           - (immich_compose.content | b64decode) is search('IMMICH_TRUSTED_PROXIES: 172.28.0.1')
           - (immich_compose.content | b64decode) is search('127.0.0.1:2283:2283')
-          - (immich_compose.content | b64decode) is search('"8081:8081"')
-          - (immich_compose.content | b64decode) is search('"8082:8082"')
+          - (immich_compose.content | b64decode) is search('"0.0.0.0:8081:8081"')
+          - (immich_compose.content | b64decode) is search('"0.0.0.0:8082:8082"')
           - (immich_compose.content | b64decode) is search('subnet: 172.28.0.0/16')
         fail_msg: "docker-compose.yml missing expected image pins / telemetry / network config"
         success_msg: "docker-compose.yml pins images and wires metrics, config, trusted proxy, network"
@@ -60,7 +60,7 @@
           - >-
             immich_pgexporter_doc.services['postgres-exporter'].image
             == 'quay.io/prometheuscommunity/postgres-exporter:0.19.0'
-          - "'9187:9187' in immich_pgexporter_doc.services['postgres-exporter'].ports"
+          - "'0.0.0.0:9187:9187' in immich_pgexporter_doc.services['postgres-exporter'].ports"
           # Credentials reuse the stack's .env, split across URI/USER/PASS.
           - >-
             immich_pgexporter_doc.services['postgres-exporter'].environment.DATA_SOURCE_URI

@@ -115,12 +115,9 @@
   register: acme_certs_installed
   when: acme_certs_enabled | bool
 
-# The pinned release tarball — NOT the single raw acme.sh file. The
-# installer copies dnsapi/ (and deploy/, notify/) into /root/.acme.sh only
-# when those directories exist next to it, and a hook missing at install
-# time is never fetched later (acme.sh has no network fallback for hooks).
-# A single-file install lacks dnsapi/dns_cf.sh, so a fresh host could neither
-# issue nor renew via the Cloudflare DNS-01 hook.
+# Must be the release TARBALL, never the single raw acme.sh file: the installer
+# only copies dnsapi/ when it sits next to acme.sh, and a hook missing at
+# install time is never fetched later (README § What it manages).
 - name: Download acme.sh release tarball
   ansible.builtin.get_url:
     url: "https://github.com/acmesh-official/acme.sh/archive/refs/tags/{{ acme_certs_sh_version }}.tar.gz"
@@ -181,11 +178,9 @@
     # default-CA task below.
     - acme_certs_installed.stat.exists or (not ansible_check_mode)
 
-# acme.sh's installer manages its own renewal cron. Earlier role versions
-# passed --nocron, leaving renewals unscheduled on fresh installs; ensure
-# the job exists regardless of install vintage. The && ties the task's rc
-# to --install-cronjob, so an install failure fails the task instead of
-# being masked by the echo.
+# acme.sh manages its own renewal cron; ensure the job exists regardless of
+# install vintage. The && ties the task rc to --install-cronjob so a failure is
+# not masked by the echo.
 - name: Ensure acme.sh renewal cronjob exists
   ansible.builtin.shell: |
     set -o pipefail
@@ -200,9 +195,8 @@
     - acme_certs_enabled | bool
     - not ansible_check_mode
 
-# Defensive: even on hosts where acme.sh was installed BEFORE this pin
-# was added, set the default CA so the next renewal uses Let's Encrypt.
-# `--set-default-ca --server letsencrypt` is idempotent.
+# Re-assert the default CA on every run (idempotent) so a host installed
+# without the pin still renews from Let's Encrypt.
 - name: Ensure acme.sh default CA is Let's Encrypt
   ansible.builtin.shell: |
     /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt
@@ -317,6 +311,44 @@
   # the change.
   changed_when: true
 
+# --install-cert above only runs on a first local install, so a cert that
+# arrived by any other route (manual --install-cert, a restore, a pre-role host)
+# would renew with no Le_ReloadCmd and never distribute. Presence is the test,
+# not the exact command: acme.sh base64-wraps Le_ReloadCmd, so matching the
+# script path would read "missing" every run and re-distribute forever.
+- name: Check the acme.sh reload command is recorded for this domain
+  ansible.builtin.shell: |
+    set -o pipefail
+    conf=/root/.acme.sh/{{ acme_certs_domain | quote }}_ecc/{{ acme_certs_domain | quote }}.conf
+    [ -f "$conf" ] || { echo missing; exit 0; }
+    val=$(sed -n 's/^Le_ReloadCmd=//p' "$conf" | tr -d "'\"" | tr -d '[:space:]')
+    if [ -n "$val" ]; then echo present; else echo missing; fi
+  args:
+    executable: /bin/bash
+  register: acme_certs_reloadcmd_check
+  changed_when: false
+  check_mode: false
+  when:
+    - acme_certs_enabled | bool
+    - acme_certs_cert_exists.stat.exists | default(false)
+
+- name: Re-install the certificate to restore the acme.sh reload command
+  ansible.builtin.command:
+    cmd: >
+      /root/.acme.sh/acme.sh --install-cert -d "{{ acme_certs_domain }}" --ecc
+      --cert-file {{ acme_certs_local_cert_dir }}/cert.pem
+      --key-file {{ acme_certs_local_cert_dir }}/privkey.pem
+      --fullchain-file {{ acme_certs_local_cert_dir }}/fullchain.pem
+      --reloadcmd "/usr/local/sbin/homelab-cert-reload.sh"
+  when:
+    - acme_certs_enabled | bool
+    - acme_certs_cert_exists.stat.exists | default(false)
+    - not (acme_certs_install_result.changed | default(false))
+    - (acme_certs_reloadcmd_check.stdout | default('') | trim) == 'missing'
+  register: acme_certs_reloadcmd_repair
+  # Guarded by the mismatch `when:` above, so reaching this task IS the change.
+  changed_when: true
+
 - name: Set proper ownership on installed certificates
   ansible.builtin.file:
     path: "{{ acme_certs_local_cert_dir }}/{{ item.name }}"
@@ -329,7 +361,8 @@
     - { name: "cert.pem", mode: "0644" }
   when:
     - acme_certs_enabled | bool
-    - acme_certs_install_result.changed | default(false)
+    - (acme_certs_install_result.changed | default(false))
+      or (acme_certs_reloadcmd_repair.changed | default(false))
 
 - name: Display acme.sh setup instructions (only if no certs exist yet)
   ansible.builtin.debug:
@@ -382,10 +415,11 @@
     - acme_certs_distribution_targets | length > 0
     - not ansible_check_mode
     - not (acme_certs_skip_distribution | default(false))
-    # On a fresh issue the "Install certificates to local directory" task above
-    # already ran the same distribution script via --reloadcmd, so skip the
-    # explicit second run to avoid distributing twice in one play.
+    # Either --install-cert task above already ran the same distribution script
+    # via --reloadcmd, so skip the explicit second run to avoid distributing
+    # twice in one play.
     - not (acme_certs_install_result.changed | default(false))
+    - not (acme_certs_reloadcmd_repair.changed | default(false))
   register: acme_certs_distribution_result
   # "OK: <host>" means a real push+reload, "unchanged: <host>" a skip, so an
   # all-unchanged run converges to ok. Any non-zero rc fails the play (module

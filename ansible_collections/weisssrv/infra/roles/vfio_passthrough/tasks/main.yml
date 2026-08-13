@@ -48,11 +48,8 @@
     - Rebuild initramfs for VFIO
     - Warn that a VFIO reboot is required
 
-# Force vfio-pci to load at boot (modules-load.d) — the backup to the primary
-# `vfio-pci.ids=` cmdline bind above. systemd-modules-load loads vfio-pci at
-# real-root boot even when nothing else pulls it in (the blacklisted host driver
-# means its softdep never fires); vfio-pci then claims the functions via the
-# cmdline ids= and the redundant modprobe.d `options ids=`.
+# Force vfio-pci to load early — backup to the primary vfio-pci.ids= cmdline
+# bind (README, "Binding mechanisms").
 - name: Force vfio-pci to load early at boot
   ansible.builtin.template:
     src: modules-load-vfio.conf.j2

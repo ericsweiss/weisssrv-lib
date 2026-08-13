@@ -49,6 +49,12 @@ placement.
   + `node_exporter_host` + `nfs_tls`/tlshd on the servers it needs — the
   `xprtsec=tls` mount hangs without the TLS handshake daemon)
 
+Each of those three opt-in features **converges on opt-out**: setting the flag
+back to `false` stops and disables the snapshot timer, drops its NFS mount and
+removes its units and script; removes the metrics-server override from the
+manifests dir (k3s auto-applies whatever is left there); and removes the audit
+policy file. Otherwise a flag flip would leave the feature running.
+
 ## Required variables
 
 The role ships **no** version pins and **no** site addresses: a role-local
@@ -66,10 +72,22 @@ drift. These are asserted, so a dropped inventory var fails the run.
 Everything else has a working default. The ones a site almost always sets:
 `k3s_agent_token` (falls back to `k3s_token`, which is fine for a test run and
 wrong for production — an agent token cannot promote a node),
-`k3s_kube_vip_interface` (alias `kube_vip_interface`, default `eth0`),
+`k3s_kube_vip_interface` (alias `kube_vip_interface`, default `eth0`) — the
+kube-vip DaemonSet is rendered once, on the first server, and runs on all of
+them, so every server must name the SAME interface; the role asserts both that
+the NIC exists per host and that the servers agree — the agreement check runs on
+EVERY server, because role defaults are absent from `hostvars` and the first
+server alone cannot see that its peers resolved a different default,
 `k3s_registry_host_pins` / `k3s_storage_host_pins` (both `[]`),
 `k3s_etcd_snapshot_nfs_server` (empty; required once the off-node copy is on),
 `k3s_disable`, `k3s_labels`, `k3s_taints`.
+
+The agreement check also asserts the host is a MEMBER of `k3s_server_group`,
+because a misnamed group resolves to an empty list and an empty set trivially
+agrees with itself — that clause is what stops the assert passing vacuously.
+**`--limit` caveat:** under `ansible-playbook --limit <one-server>` only that
+host evaluates the set, so the agreement half is only as wide as the limit; run
+the control-plane nodes together before trusting it.
 
 ## Configuration
 
@@ -284,6 +302,7 @@ leaves the now-unreferenced policy file behind, inert.
 - `tasks/gpu.yml` - NVIDIA driver/toolkit enablement (included when `k3s_gpu_node`)
 - `tasks/audit.yml` - kube-apiserver audit policy (opt-in, servers only)
 - `tasks/etcd-snapshot-offnode.yml` - Off-node etcd snapshot copy (opt-in)
+- `tasks/etcd-snapshot-offnode-absent.yml` - Its de-provisioning path
 - `tasks/metrics-server-override.yml` - metrics-server replicas/resources (opt-in)
 - `templates/k3s-server-config.yaml.j2` - Server configuration
 - `templates/k3s-agent-config.yaml.j2` - Agent configuration

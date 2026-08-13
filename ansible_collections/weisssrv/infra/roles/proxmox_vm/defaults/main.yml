@@ -21,6 +21,12 @@ proxmox_vm_target_ip: "{{ ansible_host }}"
 # VM resource defaults
 proxmox_vm_cores: 2
 proxmox_vm_memory: 2048
+# The memory reconcile refuses to lower a live guest's allocation unless this is
+# set: proxmox_vm_memory is defaulted, so a dropped inventory key would
+# otherwise resize the guest down to 2048 MiB on the next converge.
+proxmox_vm_memory_shrink_ok: false
+# GiB unless a unit is given; the Windows create path accepts GiB only (see the
+# assert in tasks/main.yml).
 proxmox_vm_disk_size: 32G
 proxmox_vm_bridge: vmbr0
 proxmox_vm_ostype: l26

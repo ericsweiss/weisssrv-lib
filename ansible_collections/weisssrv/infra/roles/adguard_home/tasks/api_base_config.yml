@@ -1,9 +1,6 @@
 ---
-# AdGuard Home base configuration via API
-# Manages upstream DNS, TLS, and other core settings
-#
-# NOTE: API tasks are skipped in check mode since we cannot query/modify
-# the running AdGuard Home instance during dry-run
+# Base settings (upstreams, TLS, cache, ratelimit, DHCP) reconciled through the
+# live AdGuard API; skipped in check mode.
 
 - name: Skip API base configuration in check mode
   ansible.builtin.debug:
@@ -217,6 +214,17 @@
       {{ adguard_home_tls_config_updated.json | default(adguard_home_tls_config_updated.content | default(adguard_home_tls_config_updated.msg | default('no response body'))) }}
     success_msg: "AdGuard TLS configuration applied"
   when: not ansible_check_mode
+
+# Only the disable direction is implemented, so a true value would be a silent
+# no-op rather than a configured DHCP server.
+- name: Assert AdGuard DHCP is not requested
+  ansible.builtin.assert:
+    that:
+      - not (adguard_home_dhcp_enabled | bool)
+    fail_msg: >-
+      adguard_home_dhcp_enabled is true, but this role only reconciles the
+      DHCP server into the disabled state — configure DHCP out of band.
+    success_msg: "AdGuard DHCP server stays disabled"
 
 - name: Get current DHCP configuration
   ansible.builtin.uri:

@@ -20,6 +20,7 @@
         - 10-meta-drift.json
         - 11-windows-guest.json
         - 12-hostpci.json
+        - 13-windows-int-size.json
       register: artifacts
 
     - name: Decode artifacts
@@ -36,6 +37,7 @@
         meta_drift: "{{ artifacts.results[9].content | b64decode | from_json }}"
         windows: "{{ artifacts.results[10].content | b64decode | from_json }}"
         hostpci: "{{ artifacts.results[11].content | b64decode | from_json }}"
+        windows_int: "{{ artifacts.results[12].content | b64decode | from_json }}"
 
     - name: NAS host defaults to ssd
       ansible.builtin.assert:
@@ -166,3 +168,13 @@
           - windows.importdisk == 0
           - windows.ciuser == 0
           - windows.start == 0
+
+    # The GiB assert must accept the bare-int form its fail_msg recommends: an
+    # uncoerced `match` test raises a templating TypeError before the assert can
+    # report anything, and the run would never reach the boot-disk assembly.
+    - name: Windows boot-disk size accepts an unquoted-int GiB value
+      ansible.builtin.assert:
+        that:
+          - windows_int.bootdisk == 1
+        fail_msg: "proxmox_vm_disk_size: 250 (int) did not assemble `scsi0 ssd:250`"
+        success_msg: "bare-int proxmox_vm_disk_size passes the GiB assert and assembles the boot disk"

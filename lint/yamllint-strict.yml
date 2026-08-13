@@ -16,7 +16,8 @@ rules:
     allowed-values: ['true', 'false', 'yes', 'no']
   comments:
     min-spaces-from-content: 1
-  # Required by ansible-lint for compatibility
+  # ansible-lint's bundled yamllint profile disables this rule; keep the two
+  # aligned or ansible-lint and a bare yamllint run disagree.
   comments-indentation: false
   braces:
     max-spaces-inside: 1

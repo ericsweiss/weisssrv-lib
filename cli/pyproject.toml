@@ -6,27 +6,22 @@ build-backend = "setuptools.build_meta"
 name = "weisssrv-lib-cli"
 # Tracks the library release tag (see docs/VERSIONING.md); weisssrv_lib_cli
 # reads it back at runtime via importlib.metadata rather than duplicating it.
-version = "0.6.2"
-description = "Scaffold weisssrv cluster tenants (rename/prune/wire/verify) and render cluster templates."
+version = "0.7.0"
+description = "Render weisssrv copier templates (new-cluster, new-app)."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Eric S. Weiss" }]
-dependencies = [
-  # ruamel.yaml is the ONLY runtime dependency: it does both the round-trip
-  # edits that preserve the scaffold's comments AND the plain safe-loads used to
-  # inspect documents (tree._safe_load / _safe_load_all). The CLI is otherwise
-  # stdlib-only and offline. No PyYAML at runtime.
-  "ruamel.yaml>=0.17",
-]
+# No runtime dependencies: the package is stdlib-only, and copier — the one
+# thing it drives — is the `cluster` extra below.
+dependencies = []
 
 [project.optional-dependencies]
-# pyyaml is TEST-ONLY — the test suite reads manifests back with yaml.safe_load;
-# it is never imported by the weisssrv_lib_cli package at runtime.
+# pyyaml is TEST-ONLY — the test suite reads rendered files back with
+# yaml.safe_load; it is never imported by the weisssrv_lib_cli package.
 test = ["pytest>=7", "pyyaml>=6", "copier>=9.4,<10"]
-# copier is an EXTRA, not a runtime dependency: only `new-cluster` imports it,
-# and making it mandatory would put jinja2/pydantic/plumbum in the path of every
-# `pipx run … rename` the app template performs.
+# copier is an EXTRA so `--help`, argument validation and the destination guards
+# work without pulling jinja2/pydantic/plumbum in.
 cluster = ["copier>=9.4,<10"]
 
 [project.scripts]

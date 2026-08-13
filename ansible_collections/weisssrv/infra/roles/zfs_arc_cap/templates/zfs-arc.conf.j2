@@ -1,7 +1,8 @@
-{# Deployed content (/etc/modprobe.d/zfs-arc.conf), and the writing task
-   notifies `Rebuild initramfs for zfs arc cap`. A comment reword here costs
-   every existing consumer an initramfs rebuild per host on its next converge,
-   so keep this byte-stable and put narrative in README.md. #}
+{# Deployed content (/etc/modprobe.d/zfs.conf — the filename is shared with
+   nas_storage on purpose, see the role README), and the writing task notifies
+   `Rebuild initramfs for zfs arc cap`. A comment reword here costs every
+   existing consumer an initramfs rebuild per host on its next converge, so
+   keep this byte-stable and put narrative in README.md. #}
 # {{ ansible_managed }}
 # Managed by the zfs_arc_cap Ansible role (compute Proxmox hosts).
 #

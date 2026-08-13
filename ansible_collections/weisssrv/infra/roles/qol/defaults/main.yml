@@ -3,6 +3,12 @@
 # inventory-wide `admin_user`; set `qol_admin_user` directly to decouple.
 # `root` makes every user-scoped task self-skip (packages still install).
 qol_admin_user: "{{ admin_user | default('root') }}"
+# Home directory the dotfiles land in. Empty resolves it from passwd; set it
+# only for a user whose home the role cannot look up.
+qol_admin_home: ""
+# Login shell set for qol_admin_user. Must be one the role installs
+# (qol_packages) or one already present on the host.
+qol_admin_shell: /bin/zsh
 
 # Packages installed by the QoL role (override per host/group as needed).
 qol_packages:

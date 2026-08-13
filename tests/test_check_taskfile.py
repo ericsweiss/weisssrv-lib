@@ -155,6 +155,72 @@ class TestHostsEnvDotenv:
         assert "OK:" in res.stdout
 
 
+class TestIncludes:
+    """Included fragments carry their own scripts/ references."""
+
+    def _repo(self, tmp_path: Path, includes: str, fragment: str, scripts=()) -> Path:
+        root = _make_repo(tmp_path, "version: '3'\nincludes:\n" + includes, scripts=scripts)
+        (root / "taskfiles").mkdir()
+        (root / "taskfiles" / "lint.yml").write_text(fragment)
+        return root
+
+    def test_a_missing_script_inside_an_include_fails(self, tmp_path: Path):
+        root = self._repo(
+            tmp_path,
+            "  lint:\n    taskfile: taskfiles/lint.yml\n",
+            "tasks:\n  a:\n    cmds:\n      - python3 scripts/gone.py\n",
+        )
+        res = _run(root)
+        assert res.returncode == 1
+        assert "lint.yml references missing scripts/gone.py" in res.stderr
+
+    def test_the_shorthand_include_form_is_followed(self, tmp_path: Path):
+        root = self._repo(
+            tmp_path,
+            "  lint: taskfiles/lint.yml\n",
+            "tasks:\n  a:\n    cmds:\n      - python3 scripts/gone.py\n",
+        )
+        assert _run(root).returncode == 1
+
+    def test_a_present_script_inside_an_include_passes(self, tmp_path: Path):
+        root = self._repo(
+            tmp_path,
+            "  lint:\n    taskfile: taskfiles/lint.yml\n",
+            "tasks:\n  a:\n    cmds:\n      - bash scripts/foo.sh\n",
+            scripts=("foo.sh",),
+        )
+        res = _run(root)
+        assert res.returncode == 0, res.stderr
+
+    def test_a_missing_include_target_fails(self, tmp_path: Path):
+        root = _make_repo(tmp_path, "version: '3'\nincludes:\n  lint: taskfiles/absent.yml\n")
+        res = _run(root)
+        assert res.returncode == 1
+        assert "Taskfile not found" in res.stderr
+
+    def test_an_include_cycle_terminates(self, tmp_path: Path):
+        root = self._repo(
+            tmp_path,
+            "  lint:\n    taskfile: taskfiles/lint.yml\n",
+            "version: '3'\nincludes:\n  root: ../Taskfile.yml\ntasks: {}\n",
+        )
+        res = subprocess.run(
+            ["bash", str(root / "scripts" / "check-taskfile.sh"), str(root / "Taskfile.yml")],
+            capture_output=True, text=True, timeout=30, env=dict(os.environ),
+        )
+        assert res.returncode == 0, res.stderr
+
+    def test_an_includes_key_inside_a_task_is_not_followed(self, tmp_path: Path):
+        """Only a column-0 `includes:` block declares fragments."""
+        root = _make_repo(
+            tmp_path,
+            "version: '3'\ntasks:\n  a:\n    includes:\n      x: nope.yml\n    cmds:\n"
+            "      - echo hi\n",
+        )
+        res = _run(root)
+        assert res.returncode == 0, res.stderr
+
+
 if __name__ == "__main__":
     import sys
 

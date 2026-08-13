@@ -29,7 +29,11 @@ needs its own upstreams and TLS:
 **DNS records** (`api_config.yml`) — **primary only**:
 - DNS rewrites (forward A records)
 - Custom filtering rules (reverse PTR records)
-- Reconciliation: adds missing, deletes orphaned
+- Reconciliation: adds missing, deletes orphaned — but only for a **non-empty**
+  codified list. An empty `adguard_home_rewrites` / `_user_rules` means "manage
+  none" and the live state is left untouched, so a dropped group_var cannot wipe
+  the resolver. Set `adguard_home_prune_rewrites` / `_prune_user_rules` to make
+  the empty list authoritative (that is how the last record is removed).
 
 ### Admin password (upstream limitation)
 
@@ -63,6 +67,9 @@ printf '%s' "$password" | adguard-admin-hash.py --config … --user <user> recon
 
 - HTTP/DNS port changes after setup (they need a service restart)
 - Filter lists (managed in the UI)
+- The DHCP server: only the disable direction is implemented, so
+  `adguard_home_dhcp_enabled: true` is rejected by an assert rather than
+  silently ignored
 
 ## Variables
 
@@ -77,6 +84,10 @@ printf '%s' "$password" | adguard-admin-hash.py --config … --user <user> recon
 | `adguard_home_cert_path` | Where `acme_certs` delivers `fullchain.pem` / `privkey.pem` | no (`<install_path>/certs`) |
 | `adguard_home_upstream_dns` | Upstream resolvers | no (`127.0.0.1:5335`) |
 | `adguard_home_rewrites` / `_user_rules` | Primary-only API-managed records; empty means "manage none" | no (`[]`) |
+| `adguard_home_prune_rewrites` / `_prune_user_rules` | Treat the empty list as authoritative and delete what it does not name | no (`false`) |
+| `adguard_home_web_bind` / `_dns_bind` | Listen addresses written by the first-install wizard | no (`0.0.0.0`) |
+| `adguard_home_after_units` / `_wants_units` | Extra systemd ordering for the upstream resolver | no (`[unbound.service]`) |
+| `adguard_home_dns_probe_name` | Name resolved by the post-deploy smoke test | no (`google.com`) |
 | `adguard_home_skip_api_config` | Skip password + API reconciliation | no (`false`) |
 | `adguard_home_skip_resolv_conf_update` | Leave `/etc/resolv.conf` alone | no (`false`) |
 | `adguard_home_user` / `_group` / `_install_path` | Service identity and prefix | no (`adguard`, `adguard`, `/opt/AdGuardHome`) |
@@ -126,7 +137,7 @@ adguard_home_cache_optimistic: false
 adguard_home_ratelimit: 20
 adguard_home_ratelimit_whitelist: []
 
-# DHCP
+# DHCP (must stay false — see "Not managed")
 adguard_home_dhcp_enabled: false
 
 # DNS rewrites (managed via API)
@@ -184,3 +195,7 @@ replica  (base settings reconciled locally; rewrites/rules arrive by sync)
 - API calls use `no_log: true` to prevent credential exposure
 - Runs as unprivileged `adguard` user with `CAP_NET_BIND_SERVICE`
 - Config file owned by `adguard:adguard` with mode `0600`
+- The admin UI is **plaintext HTTP**: `force_https` stays false so the role can
+  reconcile over the localhost API, and the wizard binds
+  `adguard_home_web_bind` (`0.0.0.0` by default). Restrict that bind address or
+  firewall `adguard_home_http_port` to trusted networks.

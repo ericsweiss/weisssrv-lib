@@ -51,7 +51,8 @@ JSON renderers.
   defining `CONFIG` or `SERVICE_REGISTRY`) and `.json` are both accepted; the
   Python form keeps each entry's inline rationale.
 - **Config keys:** `vars_file`, `services`, `default_deploy_command`,
-  `version_file_aliases`, `untracked_allowlist`, `cache_dir`, `repo_root`.
+  `version_file_aliases`, `untracked_allowlist`, `cache_dir`, `repo_root`,
+  `report_title` (heading on the table report; default `Version Check Report`).
 - **Service entry:** `name`, `var_name`, `category`, plus the category's fetch
   fields (`github_repo`, `docker_image`, `ghcr_image`, `helm_repo`/`helm_chart`,
   `apt_url`/`apt_package`), optional `deploy_command`, `version_file`, `held`,
@@ -239,6 +240,15 @@ generate-hosts-env.py --inventory <hosts.yml> --map <exports.yml>
     [--output <hosts.env>] [--regen-command "task hosts:sync"]
 ```
 
+- **Group-of-groups resolve.** A `group:` naming a group whose members are
+  `children:` yields the union of its descendants, depth-first in declaration
+  order, first occurrence winning; a cycle terminates. A child defined inline
+  under its parent resolves the same as one declared at the top level, and the
+  `host:` selector searches the flattened set.
+- **An empty resolution names its cause**: the group is absent from the
+  inventory, the `host:` is absent from the group, or the group (including its
+  children) holds no hosts. `required: false` turns any of the three into an
+  empty value instead.
 - **Example:** [`hosts-env-map.example.yml`](../examples/hosts-env-map.example.yml).
 
 ---
@@ -307,6 +317,27 @@ extract-prometheus-config.py alertmanager <out> [--am-config PATH] [--dummy K=V]
 `HELM_RELEASE`, `AM_CONFIG`. The unit-test step is skipped when `RULE_TESTS_DIR`
 holds no `*.test.yaml`.
 
+### `flux-env.sh` (PyYAML, wraps `flux-render.sh`)
+
+The multi-ConfigMap front end to `flux-render.sh` for clusters that substitute
+from more than one ConfigMap (versions plus a cluster-config). Same
+`export-versions` / `k8s-version` entry points, so callers written for one
+ConfigMap keep working with several, plus `merged-configmap` for tools that
+accept a single `--versions-configmap`.
+
+```
+VARS=$(scripts/flux-env.sh export-versions "$VERSIONS_CM") || exit 1
+eval "$VARS"        # every key from every file + ONE merged FLUX_ENVSUBST_VARS
+```
+
+- The argument may name several files in one quoted word; later files win on a
+  key collision, and a file named twice is read once.
+- `FLUX_EXTRA_CONFIGMAPS` (default: the sibling cluster-config path) appends
+  files; set it to the empty string to add none.
+- `merged-configmap` prints one ConfigMap whose `.data` is the union, with the
+  same precedence, so the merged document and the exported environment cannot
+  disagree.
+
 ### `flux-render.sh` (PyYAML)
 
 The two shared halves of `ci/validate/flux-lint.yml`'s substitute mode: turn the
@@ -359,6 +390,203 @@ actual gate — this only makes the gap visible. Dual-maintained with weisssrv.
 
 ---
 
+## Cluster invariant gates
+
+Six gates, in two invocation shapes. **Three read the rendered manifest corpus on
+stdin** — `check-pvc-storageclass.py`, `check-scrape-netpol.py` and
+`check-secretstore-scope.py` — where the corpus is what `task flux:lint`
+accumulates from `kustomize build | envsubst`, so they wire into
+`ci/validate/flux-lint.yml`'s `extra_validation` chain. **Three take paths or
+flags**: `check-netpol-except-parity.py` (manifest paths), and
+`check-alertmanager-behaviour.py` / `check-backup-artifact-apps.py` (flags).
+Where a gate needs site data it comes from a flag or a config file, never from
+the source, so the shipped file is identical in every consumer —
+`check-pvc-storageclass` needs none at all, and `check-secretstore-scope` only
+an optional `--external-store`.
+
+### `check-pvc-storageclass.py` (PyYAML)
+
+Fails any PersistentVolumeClaim, StatefulSet `volumeClaimTemplate` or
+HelmRelease `persistence` block that sizes a volume without naming a class.
+Omitting `storageClassName` is not neutral: the DefaultStorageClass admission
+plugin rewrites it at create time to whatever class is default, so the claim
+silently binds a dynamically provisioned volume instead of the static PV it was
+written for — and a `volumeClaimTemplate` is immutable afterwards.
+
+```
+cat rendered-corpus.yaml | scripts/check-pvc-storageclass.py
+```
+
+- A HelmRelease values block counts as provisioning when it declares `size` and
+  is not `enabled: false`; it satisfies the gate with any of `storageClass`,
+  `storageClassName`, `existingClaim` or `existingVolume` (some charts need the
+  `"-"` sentinel where an empty string would be dropped by a `with` guard).
+- **An empty corpus is an operator error, exit 2**, as it is for the two sibling
+  stdin gates. This one takes no arguments at all, so a mis-piped invocation has
+  no other symptom. **So is a corpus that arrived but declares no claim** — that
+  is what a render loop which never reached the storage-declaring stages
+  produces; the success line prints the claim count next to the document count.
+- **Exit codes:** 0 clean, 1 on an unpinned claim, 2 on an operator error (an
+  empty or claim-less corpus, unparseable input).
+- No configuration: the rule is universal.
+
+### `check-scrape-netpol.py` (PyYAML)
+
+Fails a namespace that is scraped AND ingress-restricted but admits no traffic
+from the observability namespace. Kubelet probes bypass the CNI policy chain, so
+the pod stays healthy while the scrape is REJECTed and the only symptom is
+`TargetDown`.
+
+```
+cat rendered-corpus.yaml | scripts/check-scrape-netpol.py \
+    [--observability-namespace NS] [--exempt NS=REASON ...]
+```
+
+- A namespace counts as scraped from a ServiceMonitor/PodMonitor (its own
+  namespace, or `spec.namespaceSelector.matchNames`) **or** from a HelmRelease
+  whose values enable a chart-native monitor — the case the kustomize corpus
+  cannot otherwise see. `namespaceSelector.any` is unattributable and skipped.
+- **`--exempt` requires a reason** (`NS=REASON`); an unexplained exemption is
+  rejected at parse time.
+- The port is deliberately not checked: a chart-native monitor names a port that
+  only resolves once the chart is rendered.
+- **An empty corpus is an operator error, exit 2**, as it is for the two sibling
+  stdin gates. **So is a corpus that arrived but holds no scrape target** — the
+  observability stage never rendered, so every namespace went unexamined. Scrape
+  targets with none ingress-restricted among them is still a pass (default-deny
+  is a per-namespace choice); the success line prints both counts.
+- **Exit codes:** 0 clean, 1 on a blocked scrape, 2 on an operator error (an
+  empty or target-less corpus, unparseable input, a malformed `--exempt`).
+
+### `check-secretstore-scope.py` (PyYAML)
+
+Fails a `ClusterSecretStore` with no `spec.conditions` (referenceable from every
+namespace, so any ExternalSecret in the cluster can read the whole backing
+vault), and any ExternalSecret — or namespace a ClusterExternalSecret fans out
+to — sitting in a namespace those conditions do not admit.
+
+```
+cat rendered-corpus.yaml | scripts/check-secretstore-scope.py
+```
+
+- Condition matching mirrors ESO: a namespace is admitted when ANY condition
+  matches, on an exact `namespaces` entry, a `namespaceRegexes` match, or a
+  `namespaceSelector` label match. A ClusterExternalSecret's
+  `namespaceSelector: {}` is a selector with no terms and therefore matches
+  EVERY namespace — absent and empty are not the same thing.
+- A ClusterExternalSecret's fan-out is the **union** of `spec.namespaceSelectors`
+  (or the deprecated singular `spec.namespaceSelector`) and its literal
+  `spec.namespaces` list, the way ESO resolves it. A CES written with the list
+  alone matches no selector, so reading the selectors only made its whole
+  fan-out invisible to the check.
+- **A store referenced but not defined in the corpus FAILS.** That is the runtime
+  failure the gate exists to catch: the ExternalSecret never syncs and the Secret
+  goes stale. `--external-store NAME` (repeatable) declares a store genuinely
+  managed outside the linted tree, so the exemption is visible.
+- **An empty corpus is an operator error, exit 2** — a broken pipe or a wrong
+  `kustomize build` path must not report green. So is a corpus that HAS documents
+  but holds neither a ClusterSecretStore nor a consumer: that is what a render
+  loop which never reached the defining stage produces, and it is the likelier of
+  the two wiring failures.
+- **Exit codes:** 0 clean, 1 on a scoping violation, 2 on an operator error (an
+  empty or store-less corpus, unparseable input).
+- No configuration file: the rule is universal; `--external-store` is the only
+  site-shaped flag.
+
+### `check-netpol-except-parity.py` (PyYAML)
+
+Reads NetworkPolicy manifests from **paths** (not stdin) and asserts no fenced
+pod has unrestricted egress, three ways: every egress `ipBlock` /0 peer carries
+one of the canonical reserved-CIDR except-lists exactly and in order; no egress
+rule reaches a whole fenced range (a /0 written as two /1s, or a lone
+`192.168.0.0/16`, are the same escape); and a peer-less egress rule — which
+allows every destination — is declared with a reason.
+
+```
+scripts/check-netpol-except-parity.py [--config FILE] [path ...]
+```
+
+- **Config keys:** `canonical_except_lists` (name -> `[cidr]`, replaces the
+  built-in `reserved-full` / `lan-fence` sets **wholesale** — declare both, or
+  omit the key), `fence_networks` (the ranges no rule may reach in full;
+  defaults to the v4 LAN fence plus `fc00::/7` and `fe80::/10`),
+  `unrestricted_egress_ok` (`"<namespace>/<name>"` -> reason).
+- **Without `--config` the allowlist is EMPTY**, so a peer-less egress rule
+  fails until it is declared. An entry with a blank reason is rejected.
+- Ingress is exempt: an unfenced `0.0.0.0/0` ingress peer is a deliberate shape
+  (a WAN endpoint).
+- **Exit codes:** 0 clean, 1 on a policy violation, 2 on an operator error — a
+  path that does not exist, a scanned manifest that does not parse, a run that
+  inspected **zero** NetworkPolicy documents, and a `--config` that is missing,
+  unparseable or malformed (a bad
+  CIDR in `fence_networks`, a reasonless exemption). A renamed manifest subtree
+  must not retire the LAN fence quietly; the success line prints the count it
+  scanned. Every config arm exits 2, never 1 — otherwise "my config is broken"
+  reads as "the fence drifted" and sends the reader into `kubernetes/`.
+- **Example:** [`netpol-except.example.yaml`](../examples/netpol-except.example.yaml).
+
+### `check-alertmanager-behaviour.py` (PyYAML, needs `amtool`)
+
+Asserts what the Alertmanager config DOES, not just that it parses. Resolves
+each declared route case with `amtool config routes test` and compares the
+receiver actually reached; checks every inhibit rule for parseable matchers, a
+redundant `equal:` label (which makes the pair dedup nothing), and alertnames
+that no longer exist.
+
+```
+scripts/check-alertmanager-behaviour.py --config FILE [--repo-root DIR]
+                                        [--extract-script PATH]
+```
+
+- Extracts the config and rules through the consumer's
+  `extract-prometheus-config.py` (default `<repo-root>/scripts/`), so a consumer
+  that forked the extractor keeps its own. `--repo-root` is the extractor's
+  **cwd** as well as where it is looked up — the extractor resolves its manifest
+  defaults relative to the process cwd, so the gate runs from anywhere. Both
+  paths are resolved ONCE against the caller's cwd, so a relative `--repo-root`
+  is not re-resolved by the child (which would double its prefix), and a
+  `--repo-root` that is not a directory exits 2 naming the flag.
+- The resolved receiver is compared **exactly**, against the first token of
+  amtool's output (it can print several matching receivers in tree order). A
+  prefix comparison would pass `critical-page` for an expected `critical`.
+- **Config keys:** `route_cases` (required, non-empty; each `receiver` +
+  `labels`), `synthetic_route_alerts` (route-case alertnames that deliberately
+  name no rule), `upstream_alerts` (alertnames shipped by a chart's own rule
+  groups, invisible to the extractor).
+- **Every member of a regex alternation is checked**, not just "at least one
+  survives", and a regex that is not a plain alternation is REPORTED rather than
+  skipped — an empty name set would otherwise pass silently.
+- **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error (no amtool, no
+  extractor, unreadable or invalid config). The extracted config and rules are
+  parsed ONCE up front and a body that is empty, scalar or unparseable is the
+  same class. That matters because the extractor copies the `alertmanager.yaml`
+  block scalar out of the ExternalSecret **without parsing it**: a typo inside
+  that block leaves the outer manifest valid and only surfaces here.
+- **Example:** [`alertmanager-behaviour.example.yaml`](../examples/alertmanager-behaviour.example.yaml).
+
+### `check-backup-artifact-apps.py` (PyYAML)
+
+Pairs the `nas_storage` role's `nas_storage_backup_artifact_apps` list with the
+`absent(backup_artifact_last_mtime_seconds{app="…"})` arms hand-enumerated in a
+`BackupArtifactStale` rule. The two sit on different lifecycles (Ansible deploy
+vs Flux reconcile), so both directions rot silently: an app with no arm emits no
+series at all when its landing dir is never created, so the freshness arm has
+nothing to fire on; an arm with no app fires forever on a series that will never
+return. The same split owns `companions:` and its
+`BackupArtifactCompanionMissing` rule, checked both ways.
+
+```
+scripts/check-backup-artifact-apps.py --host-vars FILE --rules FILE
+```
+
+- Both paths are site data, so both flags are required.
+- The rule is read as TEXT, scoped to the alert's own block: it lives inside a
+  HelmRelease `values:` blob several levels deep, carrying Go-template
+  `{{ $labels }}` strings, so a structural walk buys nothing.
+- **Exit codes:** 0 in sync, 1 on drift, 2 when either file is missing.
+
+---
+
 ## Docs and Taskfile gates
 
 ### `check-doc-links.py`
@@ -397,9 +625,17 @@ a missing dotenv file makes go-task fail hard at load time, taking every task
 with it.
 
 ```
-scripts/check-taskfile.sh [Taskfile.yml]     # default: <repo-root>/Taskfile.yml
+scripts/check-taskfile.sh [Taskfile.yml ...]  # default: <repo-root>/Taskfile.yml
 ```
 
+- **`includes:` are followed.** Both the `name: path.yml` shorthand and the
+  `name: {taskfile: path.yml}` map form, resolved relative to the including
+  file, with a visited set for cycles and a depth cap
+  (`CHECK_TASKFILE_MAX_DEPTH`, default 10). Only a column-0 `includes:` block
+  counts. This is what covers the fragments in [`../taskfiles/`](../taskfiles/),
+  which carry their own `scripts/` references.
+- **A missing include target is a failure**, not a skip: go-task fails hard at
+  load time on one, taking every task with it.
 - **Env:** `CHECK_TASKFILE_DOTENV` — space-separated dotenv targets to require
   when the Taskfile references them. Default `scripts/hosts.env`; set it to the
   consumer's own generated env file(s), or to an empty string for a Taskfile
@@ -414,9 +650,15 @@ scripts/check-taskfile.sh [Taskfile.yml]     # default: <repo-root>/Taskfile.yml
 
 ### `check-lib-pins.py` (PyYAML)
 
-Asserts every `include:` entry pinning this library agrees with the consumer's
-single source (`variables.WEISSSRV_LIB_REF`) and that the value is a release
-TAG.
+Asserts every place a consumer pins this library agrees with its single source
+(`variables.WEISSSRV_LIB_REF` in `.gitlab-ci.yml`) and that the value is a
+release TAG. Two surfaces, one command:
+
+1. every `include:` entry naming this library, and
+2. the `weisssrv.infra` collection `version:` in the sibling
+   `ansible/requirements.yml`.
+
+`--fix` rewrites both.
 
 The copies are not avoidable: GitLab resolves `include:` at pipeline-CREATION
 time, before the `variables:` block exists, so `ref: $WEISSSRV_LIB_REF` silently
@@ -431,14 +673,25 @@ one [VERSIONING.md](VERSIONING.md) forbids: a branch deleted after merge takes
 the include with it, and until then the pipeline can change behaviour with no
 commit in the consuming repo at all.
 
-- **Forge: gitlab-only** — its subject is the `include:` block. A GitHub
-  consumer has no `include:` to drift (it vendors workflows), so the gate has
-  nothing to guard there and is simply not wired.
+- **Forge: gitlab-only.** `ansible/requirements.yml` is itself forge-independent,
+  but the value it is compared against comes from `variables.WEISSSRV_LIB_REF` in
+  `.gitlab-ci.yml`, and an absent CI file exits 2 as an operator error — so on a
+  GitHub consumer the gate still cannot run. A GitHub consumer also has no
+  `include:` to drift (it vendors workflows), so it is simply not wired there.
 - **Flags:** `--ci-file PATH` (default `<repo root>/.gitlab-ci.yml`),
   `--project` (default `eric/weisssrv-lib`), `--ref-var` (default
   `WEISSSRV_LIB_REF`), `--fix`.
-- **`--fix`** rewrites the literals to the single source. A bump is one edit
-  plus one command. The rewrite is textual, so comments and formatting survive,
+- **The collection surface.** The file checked is `<ci-file dir>/ansible/requirements.yml`.
+  A repo without one — a tenant app scaffold — is a silent no-op. A
+  requirements.yml that installs the library **with no `version:`** is a floating
+  pin and fails. The entry is located from the parsed node tree by `--project`
+  appearing in its `name:`, so a `version:` under a different collection is never
+  matched; that substring match resolves both the Galaxy name and a
+  `git+https://…#/ansible_collections/weisssrv/infra` source.
+- **`--fix`** rewrites the literals to the single source — both the `include:`
+  refs and the collection `version:` — and reports the two counts together
+  (`rewrote N pin(s) in <ci-file> + requirements.yml`). A bump is one edit plus
+  one command. The rewrite is textual, so comments and formatting survive,
   but the lines it touches come from the PARSED tree — the `ref` key of each
   direct mapping under `include:`, exactly the nodes `check()` reads. Every
   indentation heuristic tried here leaked (`inputs:` may carry its own `project`
@@ -466,6 +719,55 @@ commit in the consuming repo at all.
 - **Consumers vendor it** and run it from their own tree (their `python-tests`
   job, plus `task lint`). Point that job's `changes` at `.gitlab-ci.yml` so the
   guard fires on its own subject.
+
+### `check-vendored-copies.py` (PyYAML)
+
+Gates a consumer's copies of library files against a library checkout. The copy
+relationship is recorded once, in the library
+([`../scripts/vendored-paths.yml`](../scripts/vendored-paths.yml)), so a file the
+library starts or stops shipping reaches every consumer's gate at the next bump
+instead of being re-listed by hand in each of them.
+
+```
+scripts/check-vendored-copies.py --consumer <name> [--repo-root DIR]
+    [--lib-path DIR] [--registry FILE] [--ref GIT_REF] [--list]
+```
+
+- **Two relationships.** `vendored` is byte-identical — drift in either
+  direction, a missing local copy, and a file the library dropped all fail.
+  `forked` is deliberate divergence: the entry must still DIFFER (a converged
+  fork belongs under `vendored`) and, when it records `reconciled_sha256`, the
+  LIBRARY side must not have moved since the fork was last reconciled. That last
+  arm is what a documentation-only fork list cannot catch.
+- **Registry entry forms:** a bare string when both repos use the same path, or a
+  mapping with `lib:` and `consumer:` when they differ (`lint/ruff.toml` ->
+  `ruff.toml`; `ci/release/github-release-workflow.example.yml` ->
+  `template/{% if ci_shape == 'github' %}.github{% endif %}/workflows/release.yml`
+  in the app template, where a copier conditional is a **literal** path segment
+  and is written out in full). `reason:` is required on every fork.
+- **Scope is not limited to `scripts/`**: lint profiles, vendored test suites
+  (the canonical `tests/test_check_lib_pins.py`) and vendored workflows are all
+  registrable — which is where the unguarded copies were.
+- **This gate itself need not be vendored.** A consumer that already has a
+  library checkout runs it from there with `--lib-path`; only the files it
+  compares are copies.
+- **`--ref`** reads library blobs with `git show <ref>:<path>`. The working-tree
+  fallback is decided once **per ref**, not per path: an unresolvable ref means
+  the tag is not cut yet (it is cut after the library MR merges), so the run
+  compares against the branch it will be tagged from and prints a note saying
+  so. When the ref resolves, a path missing at it is reported as "the library no
+  longer ships …" — a file added after the tag is not in that release, and
+  comparing it against a newer working tree would pass a copy the consumer's pin
+  cannot deliver.
+- **`reconciled_sha256` is a release-time value.** It records the LIBRARY blob as
+  the release ships it, and the consumer reads it at its pinned tag — so a
+  release that edits a forked file must re-take the sha in the registry.
+  `tests/test_check_vendored_copies.py::TestShippedRegistry` fails on a stale
+  one, because no consumer-side edit can clear it.
+- **`--lib-path`, else `$WEISSSRV_LIB_PATH`, else `../weisssrv-lib`.** There is
+  no skip-when-missing path: an unavailable checkout is an operator error, exit 2.
+- **Exit codes:** 0 clean, 1 on drift, 2 on an operator error (unknown consumer,
+  malformed registry, no library checkout).
 
 ### `check-deploy-coverage.sh` (PyYAML for the CI parse)
 

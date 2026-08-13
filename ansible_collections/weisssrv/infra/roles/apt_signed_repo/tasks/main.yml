@@ -77,7 +77,7 @@
     # single-fingerprint pin below.
     pub_count=$(gpg --show-keys --with-colons {{ apt_signed_repo_tmp_key | quote }} 2>/dev/null | grep -c '^pub')
     [ "$pub_count" = "1" ]
-    [ "$primary_fpr" = "{{ apt_signed_repo_fingerprint }}" ]
+    [ "$primary_fpr" = {{ apt_signed_repo_fingerprint | quote }} ]
   args:
     executable: /bin/bash
   changed_when: false
@@ -85,13 +85,9 @@
     - apt_signed_repo_when
     - not (apt_signed_repo_keyring.stat.exists | default(false))
 
-# Re-verify an ALREADY-INSTALLED keyring on every run. The download/verify/
-# dearmor steps above are all skipped once the keyring exists, so without this
-# an existing keyring that was tampered with, drifted, or bundles an appended
-# second key — or a rotated apt_signed_repo_fingerprint that the creates-guarded
-# dearmor never re-applied to existing hosts — would be trusted indefinitely.
-# Same primary-fpr + single-key (pub_count==1) guard, run against the installed
-# binary keyring instead of the freshly downloaded armored key.
+# The download/verify/dearmor path is skipped once the keyring exists, so an
+# installed keyring would otherwise be trusted forever. Re-run the same
+# primary-fpr + pub_count==1 guard against the binary keyring on every run.
 - name: Verify existing signing keyring fingerprint (primary key must match exactly)
   ansible.builtin.shell: |
     set -eo pipefail
@@ -99,7 +95,7 @@
         | awk -F: '/^pub/{p=1; next} p && /^fpr/{print $10; exit}')
     pub_count=$(gpg --show-keys --with-colons {{ apt_signed_repo_keyring_path | quote }} 2>/dev/null | grep -c '^pub')
     [ "$pub_count" = "1" ]
-    [ "$primary_fpr" = "{{ apt_signed_repo_fingerprint }}" ]
+    [ "$primary_fpr" = {{ apt_signed_repo_fingerprint | quote }} ]
   args:
     executable: /bin/bash
   changed_when: false
@@ -119,8 +115,19 @@
     - apt_signed_repo_when
     - not (apt_signed_repo_keyring.stat.exists | default(false))
 
-# Optional explicit keyring mode (callers that need it pass a mode; runs whether
-# or not the keyring already existed, so a legacy 0600 keyring is corrected).
+# Re-stat after the dearmor: under --check the shell above reports changed but
+# writes nothing, so the keyring can still be absent here. `file` with an
+# implicit state=file fails "is absent, cannot continue" on a missing path — in
+# check mode too — which would make `ansible-playbook --check` red on every
+# not-yet-provisioned host for every caller of this pipeline.
+- name: Re-check the signing keyring after dearmor
+  ansible.builtin.stat:
+    path: "{{ apt_signed_repo_keyring_path }}"
+  register: apt_signed_repo_keyring_final
+  when: apt_signed_repo_when
+
+# Runs whether or not the keyring already existed, so a legacy 0600 keyring is
+# corrected.
 - name: Set permissions on signing keyring
   ansible.builtin.file:
     path: "{{ apt_signed_repo_keyring_path }}"
@@ -128,6 +135,7 @@
   when:
     - apt_signed_repo_when
     - apt_signed_repo_keyring_mode | length > 0
+    - apt_signed_repo_keyring_final.stat.exists | default(false)
 
 - name: Clean up the key staging directory
   ansible.builtin.file:

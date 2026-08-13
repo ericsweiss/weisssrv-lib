@@ -5,7 +5,7 @@ galaxy_info:
   author: Eric Weiss
   description: Kubernetes k3s cluster with kube-vip, persistent storage, and workload placement
   license: MIT
-  min_ansible_version: "2.15"
+  min_ansible_version: "2.18"
   platforms:
     - name: Debian
       versions:

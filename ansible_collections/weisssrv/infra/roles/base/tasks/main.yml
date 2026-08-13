@@ -29,9 +29,16 @@
   tags: [packages, base]
 
 # Downstream tasks gate on these facts — they must exist for any --tags subset.
+# Two facts, not one: qemu-guest-agent is KVM-only, while the update-policy
+# gates below apply to any hypervisor's guest.
+- name: Detect if running as a KVM guest
+  ansible.builtin.set_fact:
+    base_is_kvm_guest: "{{ ansible_facts['virtualization_role'] == 'guest' and ansible_facts['virtualization_type'] == 'kvm' }}"
+  tags: [always]
+
 - name: Detect if running in a VM
   ansible.builtin.set_fact:
-    base_is_virtual_machine: "{{ ansible_facts['virtualization_role'] == 'guest' and ansible_facts['virtualization_type'] == 'kvm' }}"
+    base_is_virtual_machine: "{{ ansible_facts['virtualization_role'] | default('') == 'guest' }}"
   tags: [always]
 
 - name: Detect if running in a container (no hwclock access)
@@ -45,7 +52,7 @@
     state: present
   when:
     - ansible_facts['os_family'] == "Debian"
-    - base_is_virtual_machine | bool
+    - base_is_kvm_guest | bool
   tags: [packages, base]
 
 - name: Enable and start qemu-guest-agent service
@@ -55,7 +62,7 @@
     state: started
   when:
     - ansible_facts['os_family'] == "Debian"
-    - base_is_virtual_machine | bool
+    - base_is_kvm_guest | bool
   tags: [packages, base]
 
 # Disable unattended-upgrades on VMs and containers to prevent unexpected
@@ -148,12 +155,42 @@
   when: base_ssh_authorized_keys is defined and base_ssh_authorized_keys | length > 0
   tags: [ssh, users, security, base]
 
+# Additive by default (see README § Security): only base_ssh_authorized_keys_
+# exclusive makes the list authoritative, so removing a key revokes it. The
+# whole list goes in one call — a looped exclusive: true would leave only the
+# last key.
+#
+# The separator MUST be a real newline: authorized_key splits a multi-key value
+# on newlines, so a literal backslash-n collapses every key into one malformed
+# line (and, under exclusive, that is the only line left). YAML DOUBLE quotes
+# with a Jinja single-quoted '\n' — YAML does the unescaping — because
+# ansible-core's template engine does NOT process escape sequences inside Jinja
+# string literals, so the single-quoted-YAML `join("\n")` form yields the
+# two-character sequence.
+# An EMPTY authoritative list under exclusive is a contradiction, not a
+# revocation: applying it would strip every key from an SSH-managed host
+# (self-lockout), while the deploy task's length guard makes it a silent
+# no-op — the revocation asked for never happens and nothing says so. Fail
+# loudly; a deliberate full revocation belongs to console access.
+- name: Refuse an empty exclusive authorized_keys list
+  ansible.builtin.assert:
+    that: >-
+      not (base_ssh_authorized_keys_exclusive | bool)
+      or (base_ssh_authorized_keys | default([]) | length > 0)
+    fail_msg: >-
+      base_ssh_authorized_keys_exclusive is true but base_ssh_authorized_keys
+      is empty. That combination would remove every key from
+      {{ base_admin_user }}'s authorized_keys and lock this SSH-managed host
+      out. Populate the list, or perform the full revocation from console
+      access instead.
+  tags: [ssh, users, security, base]
+
 - name: Deploy authorized_keys for admin user
   ansible.posix.authorized_key:
     user: "{{ base_admin_user }}"
     state: present
-    key: "{{ item }}"
-  loop: "{{ base_ssh_authorized_keys | default([]) }}"
+    key: "{{ base_ssh_authorized_keys | join('\n') }}"
+    exclusive: "{{ base_ssh_authorized_keys_exclusive | bool }}"
   when: base_ssh_authorized_keys is defined and base_ssh_authorized_keys | length > 0
   tags: [ssh, users, security, base]
 
@@ -205,11 +242,9 @@
   when: not (base_skip_dns_config | default(false))
   tags: [dns, networking, base]
 
-# NIC offload workarounds have one owner: weisssrv.infra.nic_tuning (declarative
-# per-host `nic_tuning_overrides` plus a live ethtool apply). This role used to
-# install two oneshot units of its own — atlantic-gro-fix and e1000e-tso-fix —
-# so it removes them from hosts that still carry them. Any host that needs the
-# e1000e TSO/GSO/GRO workaround must declare it in nic_tuning_overrides.
+# weisssrv.infra.nic_tuning is the single owner of NIC offload settings; remove
+# any legacy atlantic-gro-fix / e1000e-tso-fix oneshot still on a host. A host
+# needing the e1000e workaround declares it in nic_tuning_overrides.
 - name: Check for orphaned NIC offload fix units
   ansible.builtin.stat:
     path: "/etc/systemd/system/{{ item }}.service"
@@ -240,10 +275,6 @@
     - /usr/local/sbin/e1000e-tso-fix.sh
   notify: Reload systemd
   tags: [networking, base]
-
-# Fail2ban - Intrusion Prevention
-# Protects against brute-force attacks on SSH and other services. Whitelist the
-# site's own networks via base_fail2ban_ignoreip.
 
 - name: Include fail2ban tasks
   ansible.builtin.include_tasks:

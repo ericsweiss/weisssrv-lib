@@ -1,0 +1,37 @@
+---
+# Cluster-wide datacenter.cfg options that govern how HA and manual migrations
+# move a guest. Reconciled on ONE node — /etc/pve is clustered.
+
+- name: Get current datacenter options
+  ansible.builtin.command: pvesh get /cluster/options --output-format json
+  register: proxmox_ha_datacenter_raw
+  changed_when: false
+  check_mode: false
+
+# PVE returns `migration` as a parsed hash, but a property string is also a
+# legal shape, so accept both. An ABSENT key means the cluster is inheriting
+# PVE's built-in default rather than declaring one, which is the case this
+# reconcile exists to close.
+- name: Pin the cluster migration channel
+  vars:
+    _migration_raw: "{{ (proxmox_ha_datacenter_raw.stdout | from_json).migration | default({}) }}"
+    _current_type: >-
+      {{ (_migration_raw.type | default('')) if _migration_raw is mapping
+         else ((_migration_raw | string | split(','))[0] | replace('type=', '')) }}
+    _current_network: >-
+      {{ (_migration_raw.network | default('')) if _migration_raw is mapping
+         else ((_migration_raw | string | split(',') | select('match', 'network=')
+                | first | default('')) | replace('network=', '')) }}
+    # A set replaces the whole property string, so an unconfigured network must
+    # carry the live value through or it is silently cleared.
+    _desired_network: >-
+      {{ proxmox_ha_migration_network
+         if proxmox_ha_migration_network | length > 0 else _current_network }}
+  ansible.builtin.command: >-
+    pvesh set /cluster/options
+    --migration type={{ proxmox_ha_migration_type }}{% if _desired_network | length > 0 %},network={{ _desired_network }}{% endif %}
+  when: >-
+    _current_type != proxmox_ha_migration_type
+    or _current_network != _desired_network
+  register: proxmox_ha_migration_set
+  changed_when: proxmox_ha_migration_set.rc == 0

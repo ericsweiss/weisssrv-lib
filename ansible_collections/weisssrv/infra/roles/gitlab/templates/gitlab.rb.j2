@@ -26,7 +26,7 @@
 # Core Configuration
 # =============================================================================
 
-external_url '{{ gitlab_external_url }}'
+external_url {{ rb(gitlab_external_url) }}
 
 {% if gitlab_email_from %}
 gitlab_rails['gitlab_email_from'] = {{ rb(gitlab_email_from) }}
@@ -57,9 +57,9 @@ nginx['listen_port'] = {{ gitlab_nginx_listen_port }}
 {% if gitlab_nginx_listen_https %}
 # Cert + key are written (and rotated) by the external cert distributor, which
 # reloads nginx with `gitlab-ctl hup nginx`.
-nginx['ssl_certificate'] = '{{ gitlab_nginx_ssl_certificate }}'
-nginx['ssl_certificate_key'] = '{{ gitlab_nginx_ssl_certificate_key }}'
-nginx['ssl_protocols'] = "{{ gitlab_nginx_ssl_protocols }}"
+nginx['ssl_certificate'] = {{ rb(gitlab_nginx_ssl_certificate) }}
+nginx['ssl_certificate_key'] = {{ rb(gitlab_nginx_ssl_certificate_key) }}
+nginx['ssl_protocols'] = {{ rb(gitlab_nginx_ssl_protocols) }}
 {% endif %}
 
 {% if gitlab_nginx_real_ip_trusted_addresses | length > 0 %}
@@ -92,7 +92,7 @@ gitlab_rails['smtp_port'] = {{ gitlab_smtp_port }}
 gitlab_rails['smtp_user_name'] = {{ rb(gitlab_smtp_user) }}
 gitlab_rails['smtp_password'] = {{ rb(gitlab_smtp_password) }}
 gitlab_rails['smtp_domain'] = {{ rb(gitlab_smtp_domain) }}
-gitlab_rails['smtp_authentication'] = '{{ gitlab_smtp_authentication }}'
+gitlab_rails['smtp_authentication'] = {{ rb(gitlab_smtp_authentication) }}
 gitlab_rails['smtp_enable_starttls_auto'] = {{ gitlab_smtp_enable_starttls_auto | lower }}
 gitlab_rails['smtp_openssl_verify_mode'] = 'peer'
 {% endif %}
@@ -102,18 +102,18 @@ gitlab_rails['smtp_openssl_verify_mode'] = 'peer'
 # =============================================================================
 
 {% if gitlab_registry_enabled %}
-registry_external_url '{{ gitlab_registry_external_url }}'
+registry_external_url {{ rb(gitlab_registry_external_url) }}
 registry['enable'] = true
 # TLS with the distributed cert, so the proxy->registry hop is encrypted.
 registry_nginx['listen_https'] = true
 registry_nginx['listen_port'] = 5050
-registry_nginx['ssl_certificate'] = '{{ gitlab_nginx_ssl_certificate }}'
-registry_nginx['ssl_certificate_key'] = '{{ gitlab_nginx_ssl_certificate_key }}'
-registry_nginx['ssl_protocols'] = "{{ gitlab_nginx_ssl_protocols }}"
+registry_nginx['ssl_certificate'] = {{ rb(gitlab_nginx_ssl_certificate) }}
+registry_nginx['ssl_certificate_key'] = {{ rb(gitlab_nginx_ssl_certificate_key) }}
+registry_nginx['ssl_protocols'] = {{ rb(gitlab_nginx_ssl_protocols) }}
 {% if gitlab_registry_data_dir != '/var/opt/gitlab/gitlab-rails/shared/registry' %}
 # Blob store relocated off the root disk; the role moves an existing store once
 # and reconfigure repoints it here.
-gitlab_rails['registry_path'] = '{{ gitlab_registry_data_dir }}'
+gitlab_rails['registry_path'] = {{ rb(gitlab_registry_data_dir) }}
 {% endif %}
 {% endif %}
 
@@ -122,7 +122,7 @@ gitlab_rails['registry_path'] = '{{ gitlab_registry_data_dir }}'
 # =============================================================================
 
 {% if gitlab_pages_enabled %}
-pages_external_url '{{ gitlab_pages_external_url }}'
+pages_external_url {{ rb(gitlab_pages_external_url) }}
 gitlab_pages['enable'] = true
 # The pages daemon binds loopback only; pages_nginx fronts it with TLS on 8443.
 gitlab_pages['listen_proxy'] = "localhost:8090"
@@ -130,9 +130,9 @@ pages_nginx['enable'] = true
 pages_nginx['listen_port'] = 8443
 pages_nginx['listen_https'] = true
 pages_nginx['redirect_http_to_https'] = false
-pages_nginx['ssl_certificate'] = '{{ gitlab_nginx_ssl_certificate }}'
-pages_nginx['ssl_certificate_key'] = '{{ gitlab_nginx_ssl_certificate_key }}'
-pages_nginx['ssl_protocols'] = "{{ gitlab_nginx_ssl_protocols }}"
+pages_nginx['ssl_certificate'] = {{ rb(gitlab_nginx_ssl_certificate) }}
+pages_nginx['ssl_certificate_key'] = {{ rb(gitlab_nginx_ssl_certificate_key) }}
+pages_nginx['ssl_protocols'] = {{ rb(gitlab_nginx_ssl_protocols) }}
 {% endif %}
 
 # =============================================================================
@@ -167,10 +167,10 @@ gitlab_rails['omniauth_providers'] = [
     external_groups: {{ rb(gitlab_saml_external_groups) }},
 {% endif %}
     args: {
-      assertion_consumer_service_url: "{{ gitlab_external_url }}/users/auth/saml/callback",
+      assertion_consumer_service_url: {{ rb(gitlab_external_url ~ '/users/auth/saml/callback') }},
       idp_cert_fingerprint: {{ rb(gitlab_saml_idp_cert_fingerprint) }},
       idp_sso_target_url: {{ rb(gitlab_saml_idp_sso_url) }},
-      issuer: "{{ gitlab_external_url }}",
+      issuer: {{ rb(gitlab_external_url) }},
       name_identifier_format: "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent",
       attribute_statements: {
         email: ["http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"],
@@ -194,7 +194,7 @@ gitaly['configuration'] = {
   storage: [
     {
       name: 'default',
-      path: '{{ gitlab_git_data_dir }}/repositories',
+      path: {{ rb(gitlab_git_data_dir ~ '/repositories') }},
     },
   ],
 }
@@ -210,7 +210,7 @@ gitaly['configuration'] = {
 # the right ownership, so Omnibus has nothing to manage. Re-exporting
 # no_root_squash instead would hand every NFS client root on the share.
 gitlab_rails['manage_backup_path'] = false
-gitlab_rails['backup_path'] = '{{ gitlab_backup_path }}'
+gitlab_rails['backup_path'] = {{ rb(gitlab_backup_path) }}
 gitlab_rails['backup_keep_time'] = {{ gitlab_backup_keep_time }}
 
 # =============================================================================

@@ -1,0 +1,103 @@
+---
+# Up-front classification guard for both consumers of
+# nas_storage_zfs_bind_source_pattern: NFS export bind sources and MergerFS
+# unions. The mounted-dataset guard (nfs.yml), the export fstab boot ordering
+# (nfs.yml) and the union's zfs-mount anchor (mergerfs.yml) all fail OPEN on a
+# source the pattern does not match, so an unmatched source has to be a
+# deliberate declaration rather than a silent skip.
+#
+# `zfs:` is the declaration, and it is load-bearing in both directions:
+# `zfs: false` = deliberately non-ZFS (plain bind, no guard, no anchor),
+# `zfs: true`  = ZFS-backed on a path the roots do not cover (guard + anchor
+#                applied anyway).
+#
+# `zfs:` must be a BOOLEAN, not merely present: both consumers read it through
+# `| bool`, which maps anything outside its truthy set to False rather than
+# erroring. A presence-only check therefore accepts `zfs: ""` (a var that
+# rendered empty) or `zfs: "maybe"` and silently classifies the source as NOT
+# ZFS-backed — dropping the mounted-dataset guard and the boot anchor by a value
+# typo instead of by an omission.
+#
+# The type check is its OWN task, not a term in the classification `or`: folded
+# into that `or` it only runs when the derived clause already failed, so a value
+# typo on a source the roots DO cover stays accepted and still reaches `| bool`.
+# The two questions are independent — is the declaration well-typed, and which
+# branch classified the source — so each gets its own assert and message.
+#
+# Split into its own file so molecule can drive it from fabricated inventory —
+# the live path needs a real fileserver.
+
+- name: Assert every declared export `zfs:` is a boolean
+  ansible.builtin.assert:
+    that:
+      - item.zfs is boolean
+    fail_msg: >-
+      Export {{ item.path }} declares `zfs: {{ item.zfs | to_json }}`, which is
+      not a boolean. Both consumers read it through `| bool`, which maps any
+      other value to False — the mounted-dataset guard and the zfs-mount boot
+      ordering would be dropped silently. Use unquoted `true` or `false`.
+    quiet: true
+  loop: "{{ nas_storage_exports | default([]) | selectattr('zfs', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Assert every declared MergerFS union `zfs:` is a boolean
+  ansible.builtin.assert:
+    that:
+      - item.zfs is boolean
+    fail_msg: >-
+      MergerFS union {{ item.name }} declares `zfs: {{ item.zfs | to_json }}`,
+      which is not a boolean. mergerfs.yml reads it through `| bool`, which maps
+      any other value to False — the union's zfs-mount anchor would be dropped
+      silently. Use unquoted `true` or `false`.
+    quiet: true
+  loop: "{{ nas_storage_mergerfs_mounts | default([]) | selectattr('zfs', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Assert every export bind source is classified ZFS-backed or not
+  ansible.builtin.assert:
+    that:
+      - item.bind_source is match(nas_storage_zfs_bind_source_pattern)
+        or item.bind_source in (nas_storage_mergerfs_mounts | default([]) | map(attribute='target') | list)
+        or (item.zfs is defined and item.zfs is boolean)
+    fail_msg: >-
+      Export {{ item.path }} has bind_source {{ item.bind_source }}, which is
+      outside nas_storage_zfs_mount_roots
+      ({{ nas_storage_zfs_mount_roots | join(', ') }}) and is not a declared
+      MergerFS target. It would get no mounted-dataset guard and no zfs-mount
+      boot ordering. Add its pool root to nas_storage_zfs_mount_roots, or set an
+      explicit BOOLEAN `zfs: true` (ZFS-backed anyway — apply both) /
+      `zfs: false` (deliberately non-ZFS — plain bind) on the export — got
+      {{ item.zfs | default('<unset>') | to_json }}.
+  loop: "{{ nas_storage_exports | default([]) | selectattr('bind_source', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.bind_source }}"
+
+# MergerFS targets are exempt from the export assert above (mergerfs.yml owns
+# their ordering), so the unions themselves are where that ordering is checked.
+# A union whose branches are the pool ROOTS (/mnt/tank, /mnt/nvme) does not
+# match the pattern — it matches paths INSIDE a root — and would silently lose
+# its zfs-mount anchor, re-introducing the boot race the anchor exists to close.
+#
+# EVERY union is checked, not only the ones declaring systemd_requires: the
+# anchor is derived from the branch set, so scoping the guard to that key left
+# the shape it exists to catch invisible whenever the key was absent.
+- name: Assert every MergerFS union is classified ZFS-backed or not
+  ansible.builtin.assert:
+    that:
+      - item.sources | select('match', nas_storage_zfs_bind_source_pattern) | list | length > 0
+        or (item.zfs is defined and item.zfs is boolean)
+    fail_msg: >-
+      MergerFS union {{ item.name }} has no branch INSIDE
+      nas_storage_zfs_mount_roots
+      ({{ nas_storage_zfs_mount_roots | join(', ') }}) — its branches are
+      {{ item.sources | join(', ') }}, and a branch equal to a root does not
+      count. Its fstab entry would get no zfs-mount anchor and the union could
+      capture empty branch stubs at boot. Add the pool root to
+      nas_storage_zfs_mount_roots, or set an explicit BOOLEAN `zfs: true`
+      (anchor it anyway) / `zfs: false` (deliberately non-ZFS) on the union —
+      got {{ item.zfs | default('<unset>') | to_json }}.
+  loop: "{{ nas_storage_mergerfs_mounts | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"

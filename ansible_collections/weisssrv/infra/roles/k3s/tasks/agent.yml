@@ -11,9 +11,9 @@
       - k3s_api_vip is defined
       - k3s_api_vip | length > 0
     fail_msg: >-
-      k3s_token, k3s_version and k3s_api_vip are all required — supply the join
-      token (and, ideally, a dedicated k3s_agent_token) from the site's secret
-      store.
+      k3s_agent_token, k3s_version and k3s_api_vip are all required — supply
+      the agent join token from the site's secret store (it defaults to
+      k3s_token when no dedicated agent token is set).
     success_msg: "Required k3s variables are present"
   tags: [validation, always]
 
@@ -103,10 +103,11 @@
   no_log: true
   when:
     - k3s_agent_env_file.stat.exists
-    - k3s_agent_token != k3s_token
+    # k3s_token is server-side data: a site following the least-privilege
+    # arrangement scopes it to the server group, so it is undefined here.
+    - k3s_agent_token != (k3s_token | default(''))
 
-# SAFEGUARD: Ensure k3s.service (server) is never running on agent nodes.
-# This protects against incorrect manual installations or bugs.
+# The server unit must never run on an agent node (stray manual install).
 - name: Check if k3s.service exists (server service on agent node)
   ansible.builtin.stat:
     path: /etc/systemd/system/k3s.service

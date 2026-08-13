@@ -30,6 +30,7 @@ plaintext swap" gap next to at-rest disk encryption.
 |---|---|---|
 | `encrypted_swap_enabled` | `true` | Set false to make the role a no-op on a host. |
 | `encrypted_swap_source_device` | `/dev/pve/swap` | Backing swap device (the Proxmox installer's LVM layout); override per host if a box differs. |
+| `encrypted_swap_require_source_device` | `true` | Fail the deploy when that device is not a block device; `false` self-skips loudly instead. |
 | `encrypted_swap_mapper_name` | `cryptswap` | Mapper name; also names the `systemd-cryptsetup@` unit. |
 | `encrypted_swap_cipher` | `aes-xts-plain64` | crypttab cipher. |
 | `encrypted_swap_key_size` | `512` | Key size in bits (512 ⇒ AES-256-XTS). |
@@ -97,11 +98,33 @@ both sides: swap-clean's pre-flight skips the whole cycle when any fstab swap
 device is absent (exactly that window), and the kept plaintext fstab line means
 `swapon -a` restores real swap even if it did cycle.
 
+## Backing-device guard
+
+The role is opt-**out** (`encrypted_swap_enabled: true`) with a
+Proxmox-installer-specific default source device, so before writing anything it
+stats `encrypted_swap_source_device`. A crypttab entry naming a device the host
+does not have would leave `systemd-cryptsetup@<mapper>` failed on every boot
+while the `nofail` fstab line kept the host booting — quiet, permanent
+degradation. With the guard, that host either fails the deploy
+(`encrypted_swap_require_source_device: true`, the default) or self-skips with a
+loud message.
+
+The self-skip arm **reconciles**, it does not merely decline to write: a host
+that converged successfully and later lost its backing device also gets its
+crypttab entry and its `/dev/mapper/<mapper>` fstab line removed and the boot
+finalize unit disabled, so the every-boot `systemd-cryptsetup@<mapper>` failure
+is not carried forward. The plaintext backing fstab line is left untouched —
+removing it is the finalize unit's job and only once the mapper is live.
+
 ## Scope
 
 Bare-metal hosts only — a VM or container has no backing swap LV to encrypt.
 
 ## Molecule
+
+Two hosts. The first is given a real backing block device (a loop device
+published at `/dev/pve/swap`, which the role stats with `follow: true`) — without
+one the backing-device guard aborts converge and nothing below is exercised.
 
 Activation is deferred to reboot (real devices), so converge asserts the rendered
 config: `cryptsetup` **and `systemd-cryptsetup`** installed; the crypttab entry
@@ -111,3 +134,16 @@ live-switch script is absent; and the boot finalize unit + script are deployed
 and enabled. The finalize-script assertions cover the active-swap gate, the
 `readlink -f` resolution to `/dev/dm-N`, the boot-race recovery arm, and the
 `mkswap`-before-`swapon -a` restore.
+
+The script is then **executed** against a fixture `/proc/swaps` and `/etc/fstab`
+with stubbed `swapon`/`swapoff`/`mkswap`/`systemctl`, asserting the decisions in
+all three arms: mapper already active (comment the plaintext line, idempotently,
+without entering recovery); plaintext won the race and every step succeeds
+(swapoff → open → swapon, then comment); and a failed mapper open (restore with
+`mkswap` + `swapon -a`, plaintext line left uncommented). Inverted control flow
+passes the string greps but fails these.
+
+The second host has no backing device and `encrypted_swap_require_source_device:
+false`. Prepare seeds the crypttab entry, mapper fstab line and enabled finalize
+unit an earlier converge would have left; verify asserts all three are gone and
+that the plaintext backing line survives.

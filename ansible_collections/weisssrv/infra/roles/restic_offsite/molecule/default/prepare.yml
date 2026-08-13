@@ -22,7 +22,8 @@
         for src in backups appdata; do
           d="/tmp/molsrc/${src}/.zfs/snapshot/archsync-${ts}"
           mkdir -p "$d"
-          echo "molecule ${src} payload" > "${d}/payload.txt"
+          # Above the 4096-byte drill sampling floor, deterministic content.
+          for i in $(seq 1 400); do echo "molecule ${src} payload ${i}"; done > "${d}/payload.txt"
         done
       args:
         executable: /bin/bash

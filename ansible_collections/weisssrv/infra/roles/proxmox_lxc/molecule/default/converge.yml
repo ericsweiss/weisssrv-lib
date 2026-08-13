@@ -492,3 +492,42 @@
         content: |
           {"conf": {{ conf_gpu_nobind.content | b64decode | to_json }},
            "mp_calls": {{ (gpu_nobind_mp_lines.stdout | from_json).mp_calls }}}
+
+    # 12 — the create-path address carries proxmox_lxc_netmask_bits, so a LAN
+    # that is not a /24 provisions with the right prefix.
+    - name: 12 — reset stub state (container absent) and pct.log
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: ct_exists_state, content: "missing\n"}
+        - {name: pct.log, content: ""}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: 12 — run role on a /22 LAN
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_lxc
+      vars:
+        proxmox_lxc_storage: local-ssd
+        proxmox_lxc_netmask_bits: 22
+
+    - name: 12 — count create lines by rendered prefix
+      ansible.builtin.shell: |
+        set -o pipefail
+        wanted=$(grep -c '^pct create 199 .*ip=192.168.0.199/22,gw=192.168.0.1' /tmp/molecule-stub-state/pct.log || true)
+        hardcoded=$(grep -c '^pct create 199 .*ip=192.168.0.199/24' /tmp/molecule-stub-state/pct.log || true)
+        echo "{\"prefix22_calls\": ${wanted}, \"prefix24_calls\": ${hardcoded}}"
+      args:
+        executable: /bin/bash
+      register: lxc_prefix_lines
+      changed_when: false
+
+    - name: 12 — capture netmask artifact
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/12-netmask.json
+        mode: "0644"
+        content: |
+          {"prefix22_calls": {{ (lxc_prefix_lines.stdout | from_json).prefix22_calls }},
+           "prefix24_calls": {{ (lxc_prefix_lines.stdout | from_json).prefix24_calls }}}

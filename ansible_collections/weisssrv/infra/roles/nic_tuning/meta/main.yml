@@ -5,7 +5,7 @@ galaxy_info:
   author: Eric Weiss
   description: Per-NIC tuning (ethtool overrides) and ip_forward sysctl drop-in
   license: MIT
-  min_ansible_version: "2.15"
+  min_ansible_version: "2.18"
   platforms:
     - name: Debian
       versions:

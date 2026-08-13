@@ -1,104 +1,129 @@
 ---
 # QoL role: zsh, oh-my-zsh, neovim, vundle for admin user
 
-- name: Install QoL packages
-  ansible.builtin.apt:
-    name: "{{ qol_packages }}"
-    state: present
+# The whole role is Debian-gated at one point. Guarding only the package install
+# would set a login shell to a binary the role declined to install.
+- name: Configure QoL tooling
   when: ansible_facts['os_family'] == "Debian"
+  block:
+    - name: Install QoL packages
+      ansible.builtin.apt:
+        name: "{{ qol_packages }}"
+        state: present
 
-# Set unconditionally — the user module is idempotent, while a getent guard has
-# to know whether zsh resolved to /bin/zsh or /usr/bin/zsh. Skipped for root,
-# which gets none of the dotfiles that make the zsh shell usable.
-- name: Set zsh as default shell for admin user
-  ansible.builtin.user:
-    name: "{{ qol_admin_user }}"
-    shell: /bin/zsh
-  when: qol_admin_user != 'root'
+    # Every user-scoped path below is built from the user's REAL home: writing
+    # dotfiles to /home/<user> on a host where that is not the home leaves a
+    # converged play and a shell that reads none of them.
+    - name: Resolve the admin user's home directory
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ qol_admin_user }}"
+      when:
+        - qol_admin_user != 'root'
+        - not qol_admin_home
 
-# Cloning the framework directly, rather than running upstream's tools/install.sh
-# (which clones master HEAD), is what pins Oh My Zsh to qol_omz_commit. The
-# installer's other steps are done by this role: .zshrc and the login shell.
-- name: Check for a legacy shallow Oh My Zsh clone
-  ansible.builtin.stat:
-    path: "/home/{{ qol_admin_user }}/.oh-my-zsh/.git/shallow"
-  register: qol_omz_shallow
-  when: qol_admin_user != 'root'
+    - name: Record the admin user's home directory
+      ansible.builtin.set_fact:
+        qol_admin_home_resolved: >-
+          {{ qol_admin_home
+             or ansible_facts.getent_passwd[qol_admin_user][4] }}
+      when: qol_admin_user != 'root'
 
-# install.sh clones --depth=1, so the pinned commit may not be fetchable in
-# place; re-clone once.
-- name: Remove legacy shallow Oh My Zsh clone
-  ansible.builtin.file:
-    path: "/home/{{ qol_admin_user }}/.oh-my-zsh"
-    state: absent
-  when:
-    - qol_admin_user != 'root'
-    - qol_omz_shallow.stat.exists | default(false)
+    # Set unconditionally — the user module is idempotent, while a getent guard
+    # has to know whether zsh resolved to /bin/zsh or /usr/bin/zsh. Skipped for
+    # root, which gets none of the dotfiles that make the zsh shell usable.
+    - name: Set the admin user's login shell
+      ansible.builtin.user:
+        name: "{{ qol_admin_user }}"
+        shell: "{{ qol_admin_shell }}"
+      when: qol_admin_user != 'root'
 
-# Short-circuit the network on converged hosts: clone/fetch only when the repo
-# is missing (empty stdout) or off the pin, so the role stays offline-safe.
-- name: Record current Oh My Zsh commit  # noqa: command-instead-of-module
-  ansible.builtin.command:
-    cmd: "git -C /home/{{ qol_admin_user }}/.oh-my-zsh rev-parse HEAD"
-  register: qol_omz_head
-  changed_when: false
-  failed_when: false
-  when: qol_admin_user != 'root'
+    # Cloning the framework directly, rather than running upstream's
+    # tools/install.sh (which clones master HEAD), is what pins Oh My Zsh to
+    # qol_omz_commit. The installer's other steps are done by this role: .zshrc
+    # and the login shell.
+    - name: Check for a legacy shallow Oh My Zsh clone
+      ansible.builtin.stat:
+        path: "{{ qol_admin_home_resolved }}/.oh-my-zsh/.git/shallow"
+      register: qol_omz_shallow
+      when: qol_admin_user != 'root'
 
-- name: Install Oh My Zsh at the pinned commit
-  ansible.builtin.git:
-    repo: https://github.com/ohmyzsh/ohmyzsh.git
-    dest: "/home/{{ qol_admin_user }}/.oh-my-zsh"
-    version: "{{ qol_omz_commit }}"
-  become: true
-  become_user: "{{ qol_admin_user }}"
-  when:
-    - qol_admin_user != 'root'
-    - (qol_omz_head.stdout | default('')) != qol_omz_commit
-  # GitHub git fetches intermittently reset from CI runners — retry before failing.
-  register: qol_omz_clone
-  until: qol_omz_clone is succeeded
-  retries: 3
-  delay: 5
+    # install.sh clones --depth=1, so the pinned commit may not be fetchable in
+    # place; re-clone once.
+    - name: Remove legacy shallow Oh My Zsh clone
+      ansible.builtin.file:
+        path: "{{ qol_admin_home_resolved }}/.oh-my-zsh"
+        state: absent
+      when:
+        - qol_admin_user != 'root'
+        - qol_omz_shallow.stat.exists | default(false)
 
-- name: Deploy .zshrc configuration
-  ansible.builtin.template:
-    src: zshrc.j2
-    dest: "/home/{{ qol_admin_user }}/.zshrc"
-    owner: "{{ qol_admin_user }}"
-    group: "{{ qol_admin_user }}"
-    mode: "0644"
-  when: qol_admin_user != 'root'
+    # Short-circuit the network on converged hosts: clone/fetch only when the
+    # repo is missing (empty stdout) or off the pin, so the role stays
+    # offline-safe.
+    - name: Record current Oh My Zsh commit  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: "git -C {{ qol_admin_home_resolved }}/.oh-my-zsh rev-parse HEAD"
+      register: qol_omz_head
+      changed_when: false
+      failed_when: false
+      when: qol_admin_user != 'root'
 
-- name: Deploy .zprofile configuration
-  ansible.builtin.copy:
-    content: |
-      export PATH="$HOME/.local/bin:$PATH"
-    dest: "/home/{{ qol_admin_user }}/.zprofile"
-    owner: "{{ qol_admin_user }}"
-    group: "{{ qol_admin_user }}"
-    mode: "0644"
-  when: qol_admin_user != 'root'
+    - name: Install Oh My Zsh at the pinned commit
+      ansible.builtin.git:
+        repo: https://github.com/ohmyzsh/ohmyzsh.git
+        dest: "{{ qol_admin_home_resolved }}/.oh-my-zsh"
+        version: "{{ qol_omz_commit }}"
+      become: true
+      become_user: "{{ qol_admin_user }}"
+      when:
+        - qol_admin_user != 'root'
+        - (qol_omz_head.stdout | default('')) != qol_omz_commit
+      # GitHub git fetches intermittently reset from CI runners — retry before
+      # failing.
+      register: qol_omz_clone
+      until: qol_omz_clone is succeeded
+      retries: 3
+      delay: 5
 
-- name: Deploy .alias.zsh configuration
-  ansible.builtin.template:
-    src: alias.zsh.j2
-    dest: "/home/{{ qol_admin_user }}/.alias.zsh"
-    owner: "{{ qol_admin_user }}"
-    group: "{{ qol_admin_user }}"
-    mode: "0644"
-  when: qol_admin_user != 'root'
+    - name: Deploy .zshrc configuration
+      ansible.builtin.template:
+        src: zshrc.j2
+        dest: "{{ qol_admin_home_resolved }}/.zshrc"
+        owner: "{{ qol_admin_user }}"
+        group: "{{ qol_admin_user }}"
+        mode: "0644"
+      when: qol_admin_user != 'root'
 
-- name: Deploy .local.zsh configuration
-  ansible.builtin.copy:
-    content: |
-      # Local environment overrides (not tracked in git)
-    dest: "/home/{{ qol_admin_user }}/.local.zsh"
-    owner: "{{ qol_admin_user }}"
-    group: "{{ qol_admin_user }}"
-    mode: "0644"
-    force: false
-  when: qol_admin_user != 'root'
+    - name: Deploy .zprofile configuration
+      ansible.builtin.copy:
+        content: |
+          export PATH="$HOME/.local/bin:$PATH"
+        dest: "{{ qol_admin_home_resolved }}/.zprofile"
+        owner: "{{ qol_admin_user }}"
+        group: "{{ qol_admin_user }}"
+        mode: "0644"
+      when: qol_admin_user != 'root'
 
-- name: Include neovim setup tasks
-  ansible.builtin.include_tasks: neovim.yml
+    - name: Deploy .alias.zsh configuration
+      ansible.builtin.template:
+        src: alias.zsh.j2
+        dest: "{{ qol_admin_home_resolved }}/.alias.zsh"
+        owner: "{{ qol_admin_user }}"
+        group: "{{ qol_admin_user }}"
+        mode: "0644"
+      when: qol_admin_user != 'root'
+
+    - name: Deploy .local.zsh configuration
+      ansible.builtin.copy:
+        content: |
+          # Local environment overrides (not tracked in git)
+        dest: "{{ qol_admin_home_resolved }}/.local.zsh"
+        owner: "{{ qol_admin_user }}"
+        group: "{{ qol_admin_user }}"
+        mode: "0644"
+        force: false
+      when: qol_admin_user != 'root'
+
+    - name: Include neovim setup tasks
+      ansible.builtin.include_tasks: neovim.yml

@@ -46,6 +46,7 @@
         - 09-firewall-reconcile.json
         - 10-meta-drift.json
         - 11-idmap-gpu-nobind.json
+        - 12-netmask.json
       register: artifacts
 
     - name: Decode artifacts
@@ -61,6 +62,7 @@
         fw_reconcile: "{{ artifacts.results[8].content | b64decode | from_json }}"
         meta_drift: "{{ artifacts.results[9].content | b64decode | from_json }}"
         idmap_gpu_nobind: "{{ artifacts.results[10].content | b64decode | from_json }}"
+        netmask: "{{ artifacts.results[11].content | b64decode | from_json }}"
 
     - name: Compute host defaults to local-ssd
       ansible.builtin.assert:
@@ -158,3 +160,16 @@
         that:
           - meta_drift.startup_set == 1
           - meta_drift.any_onboot_set == 1
+
+    # The create-path prefix comes from proxmox_lxc_netmask_bits, not a
+    # hard-coded /24 — a non-/24 LAN would otherwise get a wrong netmask that
+    # the SSH probe does not catch.
+    - name: Create path renders the configured prefix length
+      ansible.builtin.assert:
+        that:
+          - netmask.prefix22_calls == 1
+          - netmask.prefix24_calls == 0
+        fail_msg: >-
+          pct create must carry ip=.../22 when proxmox_lxc_netmask_bits is 22
+          (got {{ netmask.prefix22_calls }} /22 and
+          {{ netmask.prefix24_calls }} /24 create lines).

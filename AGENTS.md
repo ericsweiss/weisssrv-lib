@@ -12,7 +12,10 @@ files themselves.
 
 One source of truth for everything the family shares:
 
-- **`ci/`** — GitLab CI templates with `spec:inputs`.
+- **`ci/`** — GitLab CI templates with `spec:inputs`, including the Ansible
+  deploy toolchain in `ci/deploy/` (includes like the rest, just not adopted by
+  any consumer yet), plus the `*.example.yml` GitHub workflows, which are the
+  one thing here a forge-portable consumer VENDORS rather than includes.
 - **`ansible_collections/weisssrv/infra/`** — 40 host-configuration roles,
   consumed by FQCN (`weisssrv.infra.<role>`), versioned by the same tag.
 - **`terraform/modules/`** — three module shapes (cloudflare-zone,
@@ -20,7 +23,8 @@ One source of truth for everything the family shares:
 - **`scripts/`** — the gates and generators the CI jobs run.
 - **`lint/`**, **`taskfiles/`** — configs and go-task fragments a consumer
   vendors.
-- **`cli/`** — the scaffolding CLI (`weisssrv-new-project`).
+- **`cli/`** — `weisssrv-new-project`, the copier wrapper that renders the
+  cluster template (`new-cluster`) and the app template (`new-app`).
 
 Three consumers pin all of it at a **release tag**: weisssrv, the app template,
 and the cluster template. Who pins what, and where each pin lives, is

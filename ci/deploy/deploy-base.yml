@@ -1,0 +1,111 @@
+spec:
+  inputs:
+    fragment_name:
+      default: ".deploy-base"
+      description: Name of the generated hidden job.
+    tags:
+      type: array
+      default: ["infrastructure"]
+      description: >-
+        Runner tag(s). A deploy needs the privileged runner: an untagged job
+        lands on the shared non-root runner, where the apt install and the SSH
+        reach to the hosts both fail.
+    op_vault:
+      description: >-
+        1Password vault holding the deploy items. REQUIRED — a vault name is
+        site data, so this template ships no default.
+    ansible_version:
+      default: "11.6.0"
+      description: ansible pip pin installed into the job.
+    apt_packages:
+      default: "git"
+      description: >-
+        Extra apt packages installed before ansible. `git` is needed whenever
+        ansible/requirements.yml installs the collection from a git+ URL. Pass
+        `""` to install nothing.
+    ansible_dir:
+      default: "ansible"
+      description: Directory holding ansible.cfg and requirements.yml.
+    hosts_env:
+      default: "scripts/hosts.env"
+      description: >-
+        Script sourced for `ALL_SSH_IPS`, the keyscan target list. Generate it
+        from the inventory so a new node is covered without editing CI.
+    ssh_key_item:
+      default: "SSH Key"
+      description: 1Password item holding the deploy SSH key.
+    ssh_key_field:
+      default: "private key"
+      description: Field on `ssh_key_item` holding the private key.
+    loki_item:
+      default: "Loki Push Auth"
+      description: >-
+        1Password item holding the Loki push credentials, exported on the BASE
+        so every job that may run a log-shipping role has them — a role that
+        renders basic_auth from empty values clobbers the fleet's config. `op
+        run` resolves every op:// reference in the environment, so this item
+        must exist in `op_vault`.
+---
+# Shared Ansible-deploy base fragment. Defines a hidden job (default
+# `.deploy-base`) that a consumer's deploy jobs `extends:`. It brings up
+# everything a deploy needs and nothing job-specific: the op CLI + dependency
+# cache, ansible at a pinned version, a secured ansible.cfg copy, the SSH key
+# read from 1Password, a TOFU keyscan of the inventory's hosts, and the
+# collection install.
+#
+# ROOT RUNNER ONLY — it extends `.install-1password`, which apt-installs.
+#
+# The consumer supplies the per-job half by extending the fragment:
+#
+#   deploy-ansible-dns:
+#     extends: .deploy-base
+#     variables: { ADGUARD_ADMIN_PASSWORD: "op://<vault>/AdGuard Home/password" }
+#     script: [...]
+#
+# and adds steps with `- !reference [.deploy-base, before_script]` followed by
+# its own (see ci/deploy/kubectl-setup.yml for the kubectl layer).
+"$[[ inputs.fragment_name ]]":
+  # Both fragments ship in ci/templates/ and must be included by the consumer.
+  # `extends` alone would not run the op install: this fragment defines its own
+  # before_script, which REPLACES the extended one, hence the !reference below.
+  extends: [.install-1password, .dep-cache]
+  tags: $[[ inputs.tags ]]
+  # Deploys touch live infrastructure: never cancel one because a new pipeline
+  # started.
+  interruptible: false
+  # Runner-pod casualties (scheduling timeout, NoExecute eviction) are
+  # environmental and the playbooks are idempotent, so retry rather than fail
+  # the whole needs chain.
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+  variables:
+    LOKI_PUSH_USER: "op://$[[ inputs.op_vault ]]/$[[ inputs.loki_item ]]/username"
+    LOKI_PUSH_PASSWORD: "op://$[[ inputs.op_vault ]]/$[[ inputs.loki_item ]]/password"
+  before_script:
+    - !reference [.install-1password, before_script]
+    - |
+      if [ -n "$[[ inputs.apt_packages ]]" ]; then
+        apt-get install -y --no-install-recommends $[[ inputs.apt_packages ]]
+      fi
+    - pip install --quiet "ansible==$[[ inputs.ansible_version ]]"
+    - |
+      # A world-writable checkout makes Ansible ignore ansible.cfg outright, so
+      # run from a 0600 copy on a private path.
+      export ANSIBLE_CONFIG="$(mktemp /tmp/ansible-XXXXXXXXXX.cfg)"
+      install -m 600 "$[[ inputs.ansible_dir ]]/ansible.cfg" "$ANSIBLE_CONFIG"
+      trap "rm -f '$ANSIBLE_CONFIG'" EXIT
+    - |
+      mkdir -p ~/.ssh
+      chmod 700 ~/.ssh
+      # umask in a subshell: the key file is never created 0644, so there is no
+      # chmod race window.
+      (umask 077; op read "op://$[[ inputs.op_vault ]]/$[[ inputs.ssh_key_item ]]/$[[ inputs.ssh_key_field ]]" > ~/.ssh/id_ed25519)
+      # TOFU keyscan — ephemeral runners inherit no known_hosts, so fetch fresh
+      # per job rather than baking host keys into the image. Strict pinning
+      # belongs on the operator path (ansible.cfg + per-host host_key vars).
+      . "$[[ inputs.hosts_env ]]"
+      # shellcheck disable=SC2086  # word-split ALL_SSH_IPS into one keyscan
+      ssh-keyscan -H $ALL_SSH_IPS >> ~/.ssh/known_hosts 2>/dev/null || true
+    - ansible-galaxy collection install -r "$[[ inputs.ansible_dir ]]/requirements.yml"

@@ -1,9 +1,31 @@
 ---
 # Scenario: assert the crypttab + fstab rendering + boot-finalize wiring
 # (activation is deferred to reboot — real devices — so there is nothing live
-# to exercise here).
+# to exercise here), plus the self-skip arm on a host with no backing device.
 platforms:
+  # Backing device present: prepare attaches a loop device and publishes it at
+  # /dev/pve/swap, so the role's stat/assert passes and the whole write block
+  # (and the finalize behaviour harness in verify) actually runs.
   - name: encrypted-swap-test
+    image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    capabilities:
+      - SYS_ADMIN
+    tmpfs:
+      - /run
+      - /tmp
+  # Backing device absent + encrypted_swap_require_source_device false: the
+  # self-skip arm. Prepare seeds the crypttab/fstab entries an earlier converge
+  # would have left behind; the role must reconcile them away instead of
+  # carrying the every-boot systemd-cryptsetup@ failure forward.
+  - name: encrypted-swap-skip-test
     image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}
     pre_build_image: true
     privileged: true
@@ -26,3 +48,6 @@ provisioner:
       all:
         encrypted_swap_enabled: true
         encrypted_swap_source_device: /dev/pve/swap
+    host_vars:
+      encrypted-swap-skip-test:
+        encrypted_swap_require_source_device: false

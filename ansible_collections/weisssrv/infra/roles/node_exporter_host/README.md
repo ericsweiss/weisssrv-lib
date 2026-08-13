@@ -152,18 +152,27 @@ node_exporter_host_textfile_dir: /var/lib/node_exporter
 node_exporter_host_proxmox: false          # true on bare-metal Proxmox hosts
 node_exporter_host_healthcheck_interval: 5min   # liveness-gate probe period
 node_exporter_host_zpool_collector: "{{ node_exporter_host_proxmox }}"
+node_exporter_host_corosync_collector: "{{ node_exporter_host_proxmox }}"
 node_exporter_host_systemd_collector: true
 node_exporter_host_systemd_unit_include: ".+[.](service|timer)"
 node_exporter_host_systemd_unit_exclude: ".+[.](automount|device|mount|scope|slice)"
 ```
 
-`node_exporter_host_zpool_collector` carves the one ZFS-specific collector out
-of the Proxmox block: set it false on a Proxmox host backed by Ceph or LVM-thin
-and the zpool script, unit and timer are not deployed — including its entry in
-the enable+start timer list, which is built from this flag rather than fixed.
-The corosync, SMART and vzdump collectors stay on the
-`node_exporter_host_proxmox` gate — they are hypervisor facts, not
-storage-backend ones.
+Two collectors in the Proxmox block carry their own seam, because "bare-metal
+Proxmox" does not imply either fact:
+
+- `node_exporter_host_zpool_collector` — the ZFS-specific one. False on a
+  Proxmox host backed by Ceph or LVM-thin, and the zpool script, unit and timer
+  are not deployed.
+- `node_exporter_host_corosync_collector` — the clustering one. A standalone PVE
+  host runs no corosync and has no `/etc/pve/ha/manager_status`, so the
+  collector would publish mtime 0, which `PmxcfsStale` treats as stale by
+  design; false there ships no emitter instead of a permanently silenced alert.
+
+Both flags also drive the enable+start timer list (built from them rather than
+fixed) and reconcile a previously deployed collector away when turned off. The
+SMART and vzdump collectors stay on the plain `node_exporter_host_proxmox`
+gate.
 
 ## systemd collector
 

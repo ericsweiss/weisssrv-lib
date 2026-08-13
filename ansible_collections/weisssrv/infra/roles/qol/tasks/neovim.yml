@@ -3,7 +3,7 @@
 
 - name: Create neovim config directory
   ansible.builtin.file:
-    path: "/home/{{ qol_admin_user }}/.config/nvim"
+    path: "{{ qol_admin_home_resolved }}/.config/nvim"
     state: directory
     owner: "{{ qol_admin_user }}"
     group: "{{ qol_admin_user }}"
@@ -12,7 +12,7 @@
 
 - name: Create vim bundle directory for Vundle
   ansible.builtin.file:
-    path: "/home/{{ qol_admin_user }}/.vim/bundle"
+    path: "{{ qol_admin_home_resolved }}/.vim/bundle"
     state: directory
     owner: "{{ qol_admin_user }}"
     group: "{{ qol_admin_user }}"
@@ -22,7 +22,7 @@
 - name: Clone Vundle plugin manager
   ansible.builtin.git:
     repo: https://github.com/VundleVim/Vundle.vim.git
-    dest: "/home/{{ qol_admin_user }}/.vim/bundle/Vundle.vim"
+    dest: "{{ qol_admin_home_resolved }}/.vim/bundle/Vundle.vim"
     version: "{{ qol_vundle_version }}"
     depth: 1
   become: true
@@ -37,7 +37,7 @@
 - name: Deploy neovim init.vim configuration
   ansible.builtin.template:
     src: init.vim.j2
-    dest: "/home/{{ qol_admin_user }}/.config/nvim/init.vim"
+    dest: "{{ qol_admin_home_resolved }}/.config/nvim/init.vim"
     owner: "{{ qol_admin_user }}"
     group: "{{ qol_admin_user }}"
     mode: "0644"
@@ -49,7 +49,7 @@
     # Sentinel keyed to the sha1 of the plugin LIST, not a fixed filename, so
     # editing qol_nvim_plugins re-runs PluginInstall instead of silently no-op'ing.
     # join(',') not '\n' — YAML would turn \n into a real newline here.
-    creates: "/home/{{ qol_admin_user }}/.vim/bundle/.vundle-installed-{{ (qol_nvim_plugins | default([]) | join(',')) | hash('sha1') }}"
+    creates: "{{ qol_admin_home_resolved }}/.vim/bundle/.vundle-installed-{{ (qol_nvim_plugins | default([]) | join(',')) | hash('sha1') }}"
   become: true
   become_user: "{{ qol_admin_user }}"
   register: qol_vundle_install
@@ -63,7 +63,7 @@
       Vundle plugins installed by the qol role for plugin-list hash
       {{ (qol_nvim_plugins | default([]) | join(',')) | hash('sha1') }}.
       Delete this marker to force a reinstall.
-    dest: "/home/{{ qol_admin_user }}/.vim/bundle/.vundle-installed-{{ (qol_nvim_plugins | default([]) | join(',')) | hash('sha1') }}"
+    dest: "{{ qol_admin_home_resolved }}/.vim/bundle/.vundle-installed-{{ (qol_nvim_plugins | default([]) | join(',')) | hash('sha1') }}"
     owner: "{{ qol_admin_user }}"
     group: "{{ qol_admin_user }}"
     mode: "0644"

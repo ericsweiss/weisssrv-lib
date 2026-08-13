@@ -95,7 +95,6 @@
           - "'FULLCHAIN_SRC=' in (cert_reload_content.content | b64decode)"
           - "'PRIVKEY_SRC=' in (cert_reload_content.content | b64decode)"
           - "'IDENTITY_FILE=' in (cert_reload_content.content | b64decode)"
-          - "'DNS_02_IP=' in (cert_reload_content.content | b64decode)"
           - "'systemctl restart AdGuardHome' in (cert_reload_content.content | b64decode)"
         fail_msg: "Cert reload script missing expected content"
         success_msg: "Cert reload script contains all expected variables and commands"
@@ -110,7 +109,8 @@
         that:
           - "'push_target_receiver' in (cert_reload_content.content | b64decode)"
           - "'CERT-RECEIVE-BUNDLE-BOUNDARY' in (cert_reload_content.content | b64decode)"
-          - "'DNS_02_CERT_DIR=' not in (cert_reload_content.content | b64decode)"
+          - "'\"10.0.0.160\"' in (cert_reload_content.content | b64decode)"
+          - "'push_target_legacy \\\\' not in (cert_reload_content.content | b64decode)"
         fail_msg: "Cert reload script is not using the forced-command receiver path for sudo targets"
         success_msg: "Cert reload script dispatches sudo targets through the receiver"
 

@@ -1,9 +1,7 @@
-"""weisssrv-new-project: scaffold a weisssrv cluster tenant repo.
+"""weisssrv-new-project: render a weisssrv copier template into a new repo.
 
-Commands (see cli.main): rename, prune, wire, verify, new-cluster. Offline and
-dependency-light — the only runtime dependency is ruamel.yaml (round-trip YAML
-editing that preserves the scaffold's comments); copier is an optional extra
-that only new-cluster needs.
+Commands (see cli.main): new-cluster, new-app. copier does the rendering and is
+an optional extra, so the package itself carries no runtime dependency.
 """
 from importlib.metadata import PackageNotFoundError, version as _version
 

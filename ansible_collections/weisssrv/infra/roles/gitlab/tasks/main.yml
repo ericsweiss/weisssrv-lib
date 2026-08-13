@@ -135,13 +135,9 @@
 
 - name: Registry relocation | Check whether the default store has real blobs
   ansible.builtin.find:
-    # Only the Docker-registry v2 data tree counts as real content. After a
-    # relocation, Omnibus reconfigure keeps recreating an EMPTY scaffold at the
-    # default path (docker/registry/lockfiles/database-in-use — a stray lockfile,
-    # no blobs), so a `file_type: any` sweep of the store root counted that as
-    # "populated" and tripped the ambiguity guard below on EVERY later deploy.
-    # v2/ holds the actual repositories + blobs and is absent in the scaffold;
-    # find on a missing path returns matched=0 (does not fail).
+    # Only the Docker-registry v2 tree counts as real content: reconfigure
+    # recreates an EMPTY scaffold (docker/registry/lockfiles/…) at the default
+    # path after a relocation. find on a missing path returns matched=0.
     paths: /var/opt/gitlab/gitlab-rails/shared/registry/docker/registry/v2
     file_type: file
     hidden: true
@@ -352,7 +348,6 @@
       https://packages.gitlab.com/gitlab/gitlab-ee/debian/
       {{ ansible_distribution_release }} main
     apt_signed_repo_filename: gitlab-ee
-    apt_signed_repo_keyring_mode: "0644"
     apt_signed_repo_when: "{{ not (gitlab_skip_install | bool) }}"
 
 # The install env is staged in a root-only file and sourced by the shell —

@@ -26,6 +26,8 @@ CONFIG = {
     "cache_dir": ".version-cache",
     # Used when an entry has no deploy_command and is not a version_file pin.
     "default_deploy_command": "task infra:deploy",
+    # Heading on the table report.
+    "report_title": "Homelab Version Check Report",
     # Named files that hold digest-locked `image:` pins outside vars_file.
     "version_file_aliases": {"ci": ".gitlab-ci.yml"},
     # Pins with no upstream to track — `--check-coverage` ignores these.

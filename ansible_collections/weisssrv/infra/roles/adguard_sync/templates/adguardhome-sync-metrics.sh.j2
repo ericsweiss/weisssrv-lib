@@ -4,14 +4,10 @@
 # Invoked as an ExecStopPost (prefixed '+' in the unit, so it runs as root
 # OUTSIDE the unit's DynamicUser + ProtectSystem sandbox and can write the
 # textfile dir). $1 is systemd's $SERVICE_RESULT ("success" on a clean run).
-# Closes the silent-failure gap: without this, a broken primary->secondary DNS
-# sync (revoked password, replica unreachable, schema change) leaves the replica
-# serving stale rewrites/blocklists indefinitely with nothing to page on.
+# The tool's own metrics API is disabled, so this is the only failure signal.
 set -u
 
-# Textfile collector dir — templated from node_exporter_host_textfile_dir so it
-# tracks the host's exporter config instead of hardcoding the default path.
-PROM_DIR="{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
+PROM_DIR="{{ adguard_sync_textfile_dir }}"
 PROM_FILE="${PROM_DIR}/adguardhome_sync.prom"
 
 # node_exporter_host owns the textfile dir; if the host hasn't deployed it yet,

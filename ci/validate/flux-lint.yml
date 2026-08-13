@@ -6,6 +6,10 @@ spec:
       default: lint
     image:
       default: python:3.11-slim
+      description: >-
+        Job image. Must ship BASH and python: the scripts use `set -o pipefail`
+        and `${!var+x}` indirect expansion, so an Alpine base (ash) fails in
+        before_script. The root path additionally needs apt.
     tags:
       type: array
       default: ["infrastructure"]
@@ -14,7 +18,7 @@ spec:
       type: boolean
       default: true
       description: >-
-        true (weisssrv): extract postBuild vars from a cluster-versions
+        true (cluster repo): extract postBuild vars from a cluster-versions
         ConfigMap, envsubst every rendered Kustomization, iterate the cluster
         dir. Needs a ROOT runner (apt install gettext-base). false (tenant):
         render one literal-pinned path and kubeconform it — non-root safe,
@@ -35,9 +39,9 @@ spec:
     pyyaml_version:
       default: "6.0.2"
       description: >-
-        (substitute=true) pinned PyYAML for the inline spec.path parser, matching
-        weisssrv's PYYAML_VERSION. An unpinned floating install would drift the
-        before_script from weisssrv's and let a breaking release change behavior.
+        (substitute=true) pinned PyYAML for the inline spec.path parser. An
+        unpinned floating install would let a breaking release change the
+        before_script's behaviour between runs.
     k8s_version:
       default: ""
       description: >-
@@ -73,9 +77,11 @@ spec:
       default: ""
       description: >-
         (substitute=true) extra shell injected after the render loop, with
-        $RENDER_ALL / $K8S_VER / $FAILED in scope. weisssrv passes its HPA/VPA
-        invariant + helm-values checks here (those reference weisssrv-local
-        scripts that stay in weisssrv).
+        $RENDER_ALL / $K8S_VER / $FAILED in scope. It runs corpus gates over the
+        accumulated render — this library ships check-pvc-storageclass.py,
+        check-scrape-netpol.py and check-secretstore-scope.py, which read the
+        corpus on stdin exactly as this input expects — alongside any
+        consumer-local script (an HPA/VPA invariant, a helm-values check).
     default_branch:
       default: "main"
       description: >-
@@ -136,7 +142,7 @@ spec:
       KC_URL="https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
       KZ_URL="https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
       if [ "$SUBSTITUTE" = "true" ]; then
-        # --- ROOT path (weisssrv privileged runner). apt + /usr/local/bin +
+        # --- ROOT path (privileged runner). apt + /usr/local/bin +
         # a VERIFIED-TARBALL cache: every run re-checks each tarball against its
         # pinned sha256 and re-extracts, so a mutated runner cache can never
         # smuggle an unverified binary onto PATH. ---
@@ -202,8 +208,8 @@ spec:
         exit 0
       fi
 
-      # --- Substitute mode (weisssrv): mirror the kustomize-controller postBuild
-      # step, then kubeconform every rendered top-level Kustomization. ---
+      # --- Substitute mode: mirror the kustomize-controller postBuild step,
+      # then kubeconform every rendered top-level Kustomization. ---
       VARS=$(bash "$FLUX_RENDER_SCRIPT" export-versions "$VERSIONS_CONFIGMAP") \
         || { echo "ERROR: failed to extract version keys from $VERSIONS_CONFIGMAP"; exit 1; }
       eval "$VARS"
@@ -332,9 +338,9 @@ spec:
         echo "=== Skipping cluster root $CLUSTER_DIR: neither flux-system/gotk-components.yaml nor gotk-sync.yaml exists (flux bootstrap writes both); set require_cluster_root: true to build anyway ==="
       fi
 
-      # Consumer-injected extra validation (weisssrv: HPA/VPA invariant + helm
-      # values). Runs with $RENDER_ALL / $K8S_VER / $FAILED in scope; no-op by
-      # default. These reference consumer-local scripts, not this library.
+      # Consumer-injected extra validation (e.g. an HPA/VPA invariant or a
+      # helm-values check). Runs with $RENDER_ALL / $K8S_VER / $FAILED in
+      # scope; no-op by default, and references consumer-local scripts.
       $[[ inputs.extra_validation ]]
 
       exit $FAILED

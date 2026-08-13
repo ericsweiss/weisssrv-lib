@@ -50,6 +50,16 @@
       Check cluster health with: pvecm status
   tags: [proxmox_ha]
 
+# run_once: /etc/pve is clustered, so this is ONE reconcile for the whole
+# cluster. Without it a play targeting the whole proxmox group has every host
+# issue the same `pvesh set /cluster/options` concurrently against pmxcfs, and
+# lock contention surfaces as a task failure rather than a retry.
+- name: Pin cluster-wide migration options
+  ansible.builtin.include_tasks: datacenter.yml
+  run_once: true
+  when: proxmox_ha_migration_type | default('') | length > 0
+  tags: [proxmox_ha, proxmox_ha_datacenter]
+
 - name: Manage HA rules (node-affinity)
   ansible.builtin.include_tasks: rules.yml
   when: proxmox_ha_rules is defined and proxmox_ha_rules | length > 0

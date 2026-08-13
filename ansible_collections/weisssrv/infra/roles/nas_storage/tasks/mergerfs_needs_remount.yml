@@ -1,0 +1,10 @@
+---
+# Decision step over the fstab + mount-status results: does any union need a
+# remount cycle? Split out of mergerfs.yml so it can be driven from fabricated
+# register results in test — the live path needs FUSE and a real fileserver.
+
+- name: Determine if MergerFS remount is needed
+  ansible.builtin.set_fact:
+    nas_storage_mergerfs_needs_remount: >-
+      {{ (nas_storage_mergerfs_fstab_changed.results | selectattr('changed', 'equalto', true) | list | length > 0)
+         or (nas_storage_mergerfs_status_check.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | list | length > 0) }}

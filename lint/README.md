@@ -51,12 +51,38 @@ run cannot.
 are deliberately excluded: the family runs no formatter, so they would bury the
 findings that matter.
 
+## Canonical source, and what "self-applied" means here
+
+**This directory is the canonical copy of every profile below.** A fix goes in
+here first; every root-level or `.gitlab/`-level file in any repo of the family
+is a copy or a deliberate fork of one of these. Which is which is recorded in
+[`../scripts/vendored-paths.yml`](../scripts/vendored-paths.yml) and checked by
+`scripts/check-vendored-copies.py`: a `vendored` entry must stay
+byte-identical, and a `forked` entry must still differ AND carry a
+`reconciled_sha256` of the library side, so a change made here fails the fork
+until someone absorbs it. The one exception is `.yamllint`: the copies in both
+templates (root and `template/`) are unregistered, so a change to
+`yamllint-relaxed.yml` reds nothing and must be propagated by hand until they
+are registered. Register a new profile there in the same MR that adds it, or it
+reaches no consumer.
+
+The library's own application is uneven, which matters when judging whether a
+change here has been exercised:
+
+| File | How this repo applies it |
+|---|---|
+| `ruff.toml` | in place — `python-lint` passes `--config lint/ruff.toml` |
+| `gitleaks.toml` | in place — `.gitlab/secret-detection-ruleset.toml` passes it through directly, with no root copy |
+| `secret-detection-ruleset.toml` | forked to `.gitlab/`, differing only in the passthrough target above |
+| `yamllint-relaxed.yml` | forked to `.yamllint`, which additionally disables `document-start` (a `spec:`-first CI template has no leading `---`) |
+| `pre-commit-config.yaml` | forked to `.pre-commit-config.yaml`, which adds a local `check-doc-links` hook |
+| `editorconfig` | forked to `.editorconfig`, prose differences only |
+| `yamllint-strict.yml` | not applied here at all — it is exercised only in a consumer, through ansible-lint |
+
 ## Versioning
 
 These files are part of the tag-versioned surface. A changed rule can turn a
 consumer's green pipeline red on a bump with nothing in the consumer's own diff
 to explain it, so a rule addition is treated as a behavior change under
 [docs/VERSIONING.md](../docs/VERSIONING.md), and re-vendoring is part of the
-upgrade procedure there. This library self-applies `ruff.toml`, both yamllint
-profiles, `pre-commit-config.yaml` and `editorconfig`, so a change here is
-exercised by the MR that makes it.
+upgrade procedure there.

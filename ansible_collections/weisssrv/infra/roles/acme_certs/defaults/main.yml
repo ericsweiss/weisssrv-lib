@@ -12,9 +12,8 @@ acme_certs_enabled: false
 acme_certs_domain: ""
 acme_certs_email: ""
 
-# Pin acme.sh to a release tag (never the mutable get.acme.sh redirect). The
-# full release TARBALL is installed — not the single acme.sh file — so the
-# dnsapi/ hooks ship with it. Bump both values together:
+# Pin acme.sh to a release tag (never the mutable get.acme.sh redirect); the
+# full release tarball is what ships dnsapi/. Bump both values together:
 # https://github.com/acmesh-official/acme.sh/releases
 acme_certs_sh_version: "3.1.2"
 acme_certs_sh_tarball_sha256: "a51511ad0e2912be45125cf189401e4ae776ca1a29d5768f020a1e35a9560186"
@@ -29,6 +28,10 @@ acme_certs_dns_hook: dns_cf
 # Where the issued cert lands on this host, and the group that may read it.
 acme_certs_local_cert_dir: /etc/ssl/private
 acme_certs_local_cert_group: root
+
+# Where the renewal/distribution metrics land; aliases
+# node_exporter_host_textfile_dir so it tracks the host's exporter config.
+acme_certs_textfile_dir: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
 
 # Command run after a LOCAL cert change (for a service on the authority host
 # that consumes the cert). Empty omits the local-reload block entirely.

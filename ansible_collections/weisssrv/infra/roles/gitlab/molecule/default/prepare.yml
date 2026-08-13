@@ -49,12 +49,8 @@
       changed_when: false
 
     # Omnibus creates git:git on install; gitlab_skip_install means the scenario
-    # has to. The IDs are system-allocated, never a hardcoded 998:998 appended
-    # to /etc/passwd: that ID is already taken in the image (systemd-network),
-    # and with a duplicate, getpwuid()/getgrgid() resolve to the earlier entry's
-    # name instead of `git` — which the role's ownership guard reads as
-    # permanent drift, re-chowning on every run (an idempotence failure that
-    # says nothing about the role).
+    # must. IDs are system-allocated — a hardcoded one collides in the image and
+    # makes the role's ownership guard read permanent drift.
     - name: Create the mock git group
       ansible.builtin.group:
         name: git

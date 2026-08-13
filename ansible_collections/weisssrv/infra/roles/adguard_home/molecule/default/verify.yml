@@ -57,7 +57,7 @@
         fail_msg: "Systemd service file missing expected content"
         success_msg: "Systemd service file has correct core security settings"
 
-    # ProtectSystem check is conditional - disabled in Docker container tests
+    # Presence only — the value depends on adguard_home_use_protect_system.
     - name: Verify systemd service file has ProtectSystem setting
       ansible.builtin.assert:
         that:

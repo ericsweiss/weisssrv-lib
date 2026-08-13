@@ -56,12 +56,7 @@ for pool in "$@"; do
     done <<< "$enc_roots"
 done
 
-# Best-effort mount: run `zfs mount -a` NOW, even if some pool is still pending.
-# It mounts every dataset whose key IS loaded (the ready pools) and harmlessly
-# skips the still-locked ones (verified: exits 0 with locked datasets present,
-# e.g. archive/*). So a delayed/failed unlock of one pool does NOT block an
-# already-unlocked pool from mounting — only the SERVICE staying `activating`
-# (we exit non-zero below) is deferred until every listed pool is ready.
+# Run `zfs mount -a` now even with a pool still pending — see header.
 if ! zfs mount -a; then
     log "zfs mount -a failed; will retry"
     exit 2

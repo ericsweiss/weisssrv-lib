@@ -40,6 +40,14 @@ id; `local-ssd` is used when the role is unknown. Override per-container with
 run that just reconciles bind mounts or startup order on an existing container
 needs neither.
 
+The container address is written as
+`{{ proxmox_lxc_target_ip }}/{{ proxmox_lxc_netmask_bits }}`;
+`proxmox_lxc_netmask_bits` defaults to `24` and must be set on any LAN that is
+not a /24 (`proxmox_vm_cloudinit_prefix_len` is the VM counterpart). It is
+create-time only, and a wrong prefix does not fail the deploy — the SSH probe
+still succeeds from a controller inside the accidental /24 — so it surfaces
+later as hosts that are reachable only through the gateway.
+
 `proxmox_lxc_nameserver` defaults to the inventory-wide `dns_servers`, and
 `proxmox_lxc_admin_user` to `admin_user`. `proxmox_host`, `vmid`,
 `proxmox_storage_defaults`, `proxmox_resource_pool(s)` and the

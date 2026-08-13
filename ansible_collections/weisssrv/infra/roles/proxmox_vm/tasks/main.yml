@@ -13,25 +13,6 @@
   ansible.builtin.set_fact:
     _proxmox_vm_is_windows: "{{ (proxmox_vm_guest_type | default('linux')) == 'windows' }}"
 
-# Named here rather than as an undefined-variable error from inside the `qm
-# create` shell command, where the failure points at the wrong thing. Windows
-# guests take no cloud-init drive, so the gateway is Linux-only.
-- name: Assert the required cloud-init inputs are set
-  ansible.builtin.assert:
-    that:
-      - proxmox_vm_cloudinit_gateway | default('') | length > 0
-      - proxmox_vm_cloudinit_dns | default([]) | length > 0
-    fail_msg: >-
-      proxmox_vm_cloudinit_gateway (the VM's default gateway — no generic
-      default) and proxmox_vm_cloudinit_dns (alias: dns_servers) are required
-      on the Linux create path.
-    quiet: true
-  when:
-    - not _proxmox_vm_is_windows
-    # Same gate the cloud-init tasks carry: a run that only reconciles disks,
-    # HA or pool membership on an existing guest never reads either value.
-    - not (proxmox_vm_skip_create | default(false))
-
 # Storage selection logic: auto-select based on Proxmox host role if not specified
 - name: Determine Proxmox host role
   ansible.builtin.set_fact:
@@ -62,6 +43,27 @@
   changed_when: false
   failed_when: proxmox_vm_exists.rc not in [0, 1]
   check_mode: false
+
+# Named here rather than as an undefined-variable error from inside the `qm
+# create` shell command, where the failure points at the wrong thing. Windows
+# guests take no cloud-init drive, so the gateway is Linux-only. Placed after
+# the existence probe so it can carry the SAME gate as the cloud-init tasks —
+# a run that only reconciles disks, HA or pool membership on an existing guest
+# reads neither value and must not fail on them.
+- name: Assert the required cloud-init inputs are set
+  ansible.builtin.assert:
+    that:
+      - proxmox_vm_cloudinit_gateway | default('') | length > 0
+      - proxmox_vm_cloudinit_dns | default([]) | length > 0
+    fail_msg: >-
+      proxmox_vm_cloudinit_gateway (the VM's default gateway — no generic
+      default) and proxmox_vm_cloudinit_dns (alias: dns_servers) are required
+      on the Linux create path.
+    quiet: true
+  when:
+    - not _proxmox_vm_is_windows
+    - proxmox_vm_exists.rc != 0
+    - not (proxmox_vm_skip_create | default(false))
 
 # An existing VM may have HA-migrated off the inventory proxmox_host, so
 # reconcile tasks (qm config/set against a live VM) must run on its ACTUAL
@@ -130,7 +132,7 @@
     - not ansible_check_mode
 
 # errexit: without it the task rc is `echo`'s, so a failed `pvesh create /pools`
-# reported a successful creation. The probe is exempt as an `if` condition.
+# reports success. The `pvesh get` probe is exempt as an `if` condition.
 - name: Ensure standard resource pools exist
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell:
@@ -233,6 +235,25 @@
     success_msg: "Windows install ISO: {{ proxmox_vm_install_iso }}"
   when:
     - not ansible_check_mode
+    - proxmox_vm_exists.rc != 0
+    - _proxmox_vm_is_windows
+
+# The Windows boot disk is allocated as a bare GiB count (`<storage>:<N>`), so
+# the size is stripped of its G suffix — a 512M or 1T would survive the strip
+# and reach `qm set` as a nonsensical count. The Linux path hands the value to
+# `qm resize`, which accepts all three units, so only this path is constrained.
+- name: Assert the Windows boot-disk size is expressed in GiB
+  ansible.builtin.assert:
+    that:
+      # `| string` first: the `match` test hands the value straight to re.match,
+      # which raises an opaque templating TypeError on the unquoted-int form
+      # (`proxmox_vm_disk_size: 64`) this assert's own fail_msg recommends.
+      - proxmox_vm_disk_size | string is match('^[0-9]+[Gg]?$')
+    fail_msg: >-
+      proxmox_vm_disk_size ({{ proxmox_vm_disk_size }}) must be a GiB value
+      (e.g. 64 or 64G) on the Windows create path.
+    quiet: true
+  when:
     - proxmox_vm_exists.rc != 0
     - _proxmox_vm_is_windows
 
@@ -348,22 +369,37 @@
 # a reboot, which restarts against the unchanged config. `qm set --memory` on a
 # running guest writes the config and takes effect at its NEXT start; this task
 # never restarts anything, so applying it stays an operator step.
+#
+# `proxmox_vm_memory is defined` is NOT a gate here: the role defaults it, so a
+# guest that loses its inventory key would be reconciled DOWN to that default.
+# A shrink therefore has to be named (proxmox_vm_memory_shrink_ok) — growth
+# needs no ceremony, and the one thing that must not happen silently is a live
+# guest being resized to less than it has.
 - name: Reconcile VM memory allocation
   delegate_to: "{{ proxmox_vm_reconcile_host }}"
   ansible.builtin.shell: |
     set -euo pipefail
     current=$(qm config {{ proxmox_vm_id }} | sed -n 's/^memory: //p')
-    if [ "$current" != "{{ proxmox_vm_memory }}" ]; then
-      qm set {{ proxmox_vm_id }} --memory {{ proxmox_vm_memory }}
-      echo CHANGED
-    fi
+    desired={{ proxmox_vm_memory | int }}
+    if [ "$current" = "$desired" ]; then exit 0; fi
+    case "$current" in
+      ''|*[!0-9]*) ;;
+      *)
+        if [ "$desired" -lt "$current" ] && [ "{{ 'yes' if (proxmox_vm_memory_shrink_ok | bool) else 'no' }}" = "no" ]; then
+          echo "REFUSING to shrink VM {{ proxmox_vm_id }} from ${current} MiB to ${desired} MiB." >&2
+          echo "Set proxmox_vm_memory_shrink_ok: true to accept it, or restore proxmox_vm_memory in inventory." >&2
+          exit 1
+        fi
+        ;;
+    esac
+    qm set {{ proxmox_vm_id }} --memory "$desired"
+    echo CHANGED
   args:
     executable: /bin/bash
   register: proxmox_vm_memory_reconcile
   changed_when: "'CHANGED' in (proxmox_vm_memory_reconcile.stdout | default(''))"
   when:
     - not ansible_check_mode
-    - proxmox_vm_memory is defined
     - proxmox_vm_exists.rc == 0 or not (proxmox_vm_skip_create | default(false))
 
 - name: Import cloud image disk
@@ -656,17 +692,15 @@
     - proxmox_vm_additional_disks is defined
     - proxmox_vm_additional_disks | length > 0
 
-# With loops + register, changed_when is evaluated per-iteration using the current result
-# sparse: true creates a thin-provisioned zvol (`zfs create -s`), so the volsize
-# is reserved lazily as data is written (used for large data disks like the
-# Nextcloud/Immich bulk user-data stores). Omitting the key preserves the
-# historical thick-provisioned behavior — existing disks are unaffected.
+# sparse: true creates a thin-provisioned zvol (`zfs create -s`), so volsize is
+# reserved lazily as data is written — use it for large bulk data disks.
+# Omitting the key keeps the zvol thick-provisioned; existing disks are
+# unaffected either way.
 - name: Create ZFS zvol for additional disks
   delegate_to: "{{ proxmox_host }}"
-  # errexit is what makes a failed `zfs create` (pool absent/full, quota
-  # refusal, typo) fail the task: without it the rc is `echo`'s, so the play
-  # continued with a CHANGED "created" for a zvol that does not exist. The
-  # `zfs list` probe is exempt because it is an `if` condition.
+  # errexit: without it the task rc is `echo`'s, so a failed `zfs create` (pool
+  # absent/full, quota refusal, typo) reports a CHANGED "created" for a zvol
+  # that does not exist. The `zfs list` probe is exempt as an `if` condition.
   ansible.builtin.shell:
     cmd: |
       set -euo pipefail

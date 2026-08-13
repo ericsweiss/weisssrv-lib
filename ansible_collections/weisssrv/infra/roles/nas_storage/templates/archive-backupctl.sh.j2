@@ -70,7 +70,9 @@ for _src in "${SRC_LIST[@]}"; do
 done
 unset _src _dst
 
-PROM_DIR="/var/lib/node_exporter"
+{% endraw %}
+PROM_DIR="{{ nas_storage_backup_artifact_metrics_dir | default(node_exporter_host_textfile_dir | default('/var/lib/node_exporter')) }}"
+{% raw %}
 PROM_FILE="${PROM_DIR}/archive_backup.prom"
 
 # Per-dataset replication state, keyed by SRC_LIST entry. Seeded from the
@@ -86,6 +88,9 @@ write_prom_metrics() {
   local ts
   ts="$(date +%s)"
   local tmp="${PROM_FILE}.$$"
+  # The redirect below swallows its own failure, so a missing textfile dir would
+  # silently produce no metrics and no error.
+  mkdir -p "$PROM_DIR" 2>/dev/null || true
   {
     echo "# HELP archive_backup_last_run_duration_seconds Duration of last backup run"
     echo "# TYPE archive_backup_last_run_duration_seconds gauge"
@@ -339,7 +344,7 @@ prune_snaps_dataset() {
     fi
   done
 
-  # Destroy anything not kept (oldest first is slightly safer to read logs; but we're iterating newest->oldest here)
+  # Destroy anything not kept.
   for s in "${snaps[@]}"; do
     if [[ -z "${keep[$s]:-}" ]]; then
       log "Prune: destroying snapshot $s"

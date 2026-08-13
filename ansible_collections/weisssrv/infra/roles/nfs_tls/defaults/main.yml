@@ -23,6 +23,13 @@ nfs_tls_client_cert: false
 nfs_tls_cert_path: /etc/ssl/private/fullchain.pem
 nfs_tls_key_path: /etc/ssl/private/privkey.pem
 
+# Remove the cert + key on a client-only host (they are needed by neither an
+# xprtsec=tls client nor tlshd's client block). Set false when ANOTHER role owns
+# those paths — the defaults above are also acme_certs' local install path, and
+# a host that holds a local cert AND mounts NFS over TLS would otherwise have it
+# deleted here and reinstalled there on every converge.
+nfs_tls_scrub_client_cert: true
+
 # Truststore for validation: the system CA bundle, so a publicly-issued cert
 # validates as-is. Override when using an internal CA.
 nfs_tls_truststore: /etc/ssl/certs/ca-certificates.crt

@@ -24,8 +24,12 @@ provisioner:
         timezone: America/Los_Angeles
         base_skip_dns_config: true
         base_skip_sudoers_validation: true
+        # TWO keys: the role deploys the whole list in ONE authorized_key call
+        # (a looped exclusive: true would leave only the last key), so the
+        # newline join is only exercised with more than one entry.
         ssh_authorized_keys:
           - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForMolecule test@molecule
+          - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAISecondTestKeyForMolecule second@molecule
         base_common_packages:
           - curl
           - wget

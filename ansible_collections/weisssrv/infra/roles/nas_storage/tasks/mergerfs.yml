@@ -13,27 +13,43 @@
     state: present
   when: ansible_facts['os_family'] == "Debian"
 
-# Boot ordering: the branch dirs are (deliberately plaintext) ZFS datasets
-# with no .mount units — zfs-mount-generator is not enabled here (see the
-# nfs.yml bind-mount comment) — so requires-mounts-for alone orders against
-# nothing and the mergerfs mount can race the ZFS mounts and capture empty
-# branch stubs. Anchor explicitly on the bulk zfs-mount.service like the
-# ZFS-backed export binds do (nofail keeps a missing branch from blocking
-# boot); requires-mounts-for is kept as documentation of the branch set.
+# Boot ordering: ZFS branch dirs have no .mount units — zfs-mount-generator is
+# not enabled here (see the nfs.yml bind-mount comment) — so requires-mounts-for
+# alone orders against nothing and the mergerfs mount can race the ZFS mounts
+# and capture empty branch stubs. A union with any branch under
+# nas_storage_zfs_mount_roots therefore anchors on the bulk zfs-mount.service
+# like the ZFS-backed export binds do (nofail keeps a missing branch from
+# blocking boot); requires-mounts-for is kept as documentation of the branch set.
+#
+# The anchor is derived from the BRANCH SET, so it is emitted independently of
+# `systemd_requires` — nesting it inside that key made deleting one inventory
+# line silently drop the anchor and the boot race back in. Only the
+# requires-mounts-for fan-out, which is that key's own content, stays inside it.
 - name: Configure MergerFS mounts in fstab
   ansible.posix.mount:
     path: "{{ item.target }}"
     src: "{{ item.sources | join(':') }}"
     fstype: fuse.mergerfs
     opts: >-
-      {{ item.options | join(',') }},fsname={{ item.name }}{%- if item.systemd_requires is defined -%}
-      ,nofail,x-systemd.requires=zfs-mount.service,x-systemd.after=zfs-mount.service{%- for req in item.systemd_requires -%}
+      {{ item.options | join(',') }},fsname={{ item.name }}{%- if _zfs_backed_branches | bool -%}
+      ,nofail,x-systemd.requires=zfs-mount.service,x-systemd.after=zfs-mount.service{%- elif item.systemd_requires is defined -%}
+      ,nofail{%- endif -%}
+      {%- for req in item.systemd_requires | default([]) -%}
       ,x-systemd.requires-mounts-for={{ req }}{%- endfor -%}
-      {% endif -%}
     state: mounted
   loop: "{{ nas_storage_mergerfs_mounts }}"
   loop_control:
     label: "{{ item.name }}"
+  vars:
+    # Derived from the branch set, overridden by an explicit boolean `zfs:` on
+    # the union. A branch EQUAL to a mount root does not count — the pattern
+    # matches paths INSIDE a root — so such a union needs `zfs: true` (or its own
+    # root in nas_storage_zfs_mount_roots).
+    # tasks/assert_zfs_classification.yml checks EVERY union and fails the play
+    # rather than letting an unanchored one race the ZFS mounts silently.
+    _zfs_backed_branches: >-
+      {{ item.zfs | default(item.sources
+         | select('match', nas_storage_zfs_bind_source_pattern) | list | length > 0) }}
   register: nas_storage_mergerfs_fstab_changed
 
 - name: Verify MergerFS mount status and fstab options
@@ -88,10 +104,7 @@
   when: not ansible_check_mode
 
 - name: Determine if MergerFS remount is needed
-  ansible.builtin.set_fact:
-    nas_storage_mergerfs_needs_remount: >-
-      {{ (nas_storage_mergerfs_fstab_changed.results | selectattr('changed', 'equalto', true) | list | length > 0)
-         or (nas_storage_mergerfs_status_check.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | list | length > 0) }}
+  ansible.builtin.include_tasks: mergerfs_needs_remount.yml
   when: not ansible_check_mode
 
 - name: Display MergerFS status
@@ -217,25 +230,8 @@
     - (nas_storage_mergerfs_nfs_check.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | list | length > 0)
       or (nas_storage_mergerfs_process_check.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | list | length > 0)
 
-- name: Check if safe remount is possible
-  ansible.builtin.set_fact:
-    nas_storage_mergerfs_safe_to_remount: >-
-      {{ nas_storage_mergerfs_needs_remount | default(false)
-         and (nas_storage_mergerfs_nfs_check.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | list | length == 0)
-         and (nas_storage_mergerfs_process_check.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | list | length == 0) }}
-  when: not ansible_check_mode
-
-# The exports that actually sit on a MergerFS target, as `<client spec>:<path>`
-# — the argument form `exportfs -u` takes. Everything else on this server (k3s
-# PVs, backup landing zones) must keep serving through the remount, so the
-# unexport is scoped to these and never `exportfs -u -a`.
-- name: Identify the MergerFS-backed NFS export bindings
-  ansible.builtin.set_fact:
-    nas_storage_mergerfs_export_bindings: >-
-      {{ nas_storage_exports | default([])
-         | selectattr('bind_source', 'defined')
-         | selectattr('bind_source', 'in', nas_storage_mergerfs_mounts | map(attribute='target') | list)
-         | list | subelements('clients') | list }}
+- name: Decide whether the remount cycle may proceed, and what it must unexport
+  ansible.builtin.include_tasks: mergerfs_remount_gate.yml
   when: not ansible_check_mode
 
 - name: Temporarily unexport the MergerFS-backed NFS paths

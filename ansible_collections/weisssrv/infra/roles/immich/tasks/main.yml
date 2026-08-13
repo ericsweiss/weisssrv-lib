@@ -45,6 +45,21 @@
     success_msg: "OIDC credentials present"
   no_log: true
 
+# Without a trusted source nginx attributes every request to the fronting
+# proxy, which is quiet rather than loud — so make it loud.
+- name: Validate the real-IP trust list resolved
+  ansible.builtin.assert:
+    that:
+      - immich_nginx_real_ip_from | length > 0
+    fail_msg: >-
+      immich_nginx_real_ip_from resolved empty — immich_nginx_real_ip_groups
+      ({{ immich_nginx_real_ip_groups | join(', ') }}) named no inventory group
+      with an ansible_host. Point it at this site's proxy group, set
+      immich_nginx_real_ip_from directly, or set immich_nginx_trust_no_proxy
+      true if nginx is exposed without a proxy in front of it.
+    success_msg: "Real-IP trust list resolved"
+  when: not (immich_nginx_trust_no_proxy | bool)
+
 - name: Validate the offsite backup landing inputs
   ansible.builtin.assert:
     that:

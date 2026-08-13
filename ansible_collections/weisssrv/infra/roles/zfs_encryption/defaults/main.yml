@@ -11,7 +11,10 @@
 zfs_encryption_internal_domain: "{{ internal_domain | default('') }}"
 zfs_encryption_connect_url: "{{ ('https://connect.' ~ zfs_encryption_internal_domain) if zfs_encryption_internal_domain else '' }}"
 
-# Vault holding the passphrase items.
+# Vault holding the passphrase items. The token deployed to every host with
+# pools can read this whole vault, so point it at one holding only the
+# passphrases; the ordering that keeps a re-scope from wedging boot is in the
+# README ("Scoping the Connect token").
 zfs_encryption_connect_vault: "Homelab"
 
 # Connect access token, injected by the caller from 1Password (preferably a

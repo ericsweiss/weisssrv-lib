@@ -46,6 +46,9 @@ not restart it.
 | `home_assistant_ssh_connect_timeout` | `ConnectTimeout` for every call | no (`10`) |
 | `home_assistant_config_path` | Config dir on HAOS | no (`/config`) |
 | `home_assistant_extra_config` | Extra YAML appended verbatim to `configuration.yaml` | no (`""`) |
+| `home_assistant_enable_prometheus` / `_enable_default_config` | Emit the `prometheus:` / `default_config:` block | no (`true`) |
+| `home_assistant_tts_platforms` | TTS platforms; empty omits the `tts:` block | no (`[google_translate]`) |
+| `home_assistant_includes` | `<key>: !include <file>` map; empty omits them | no (`automation`/`script`/`scene`) |
 | `home_assistant_staging_dir` | Pin the staging dir; empty uses a private per-run tempdir | no (`""`) |
 | `home_assistant_render_only` | Render and stop — no ssh/scp/check | no (`false`) |
 
@@ -108,7 +111,12 @@ be reviewable.
 
 `configuration.yaml.j2` renders the `http:` block (X-Forwarded-For + trusted
 proxies, optional TLS), the `openid:` SSO block, `prometheus:`,
-`default_config:`, `tts:` and the `automation`/`script`/`scene` includes.
+`default_config:`, `tts:` and the `automation`/`script`/`scene` includes. The
+last four are opinionated defaults, not fixtures: `home_assistant_enable_
+prometheus`, `_enable_default_config`, `_tts_platforms` and `_includes` each
+omit their block when disabled or emptied, which matters because
+`home_assistant_extra_config` can only append and `ha core check` fails the
+deploy when an `!include` target does not exist on the host.
 Anything else belongs in `home_assistant_extra_config` or in HA's own UI
 storage. SMTP notifications in particular are no longer YAML: the `smtp` notify
 platform was removed in HA 2027.1.0 and lives in a UI config entry (kept in

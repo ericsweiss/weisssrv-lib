@@ -77,11 +77,20 @@ spec:
     # providers); -backend=false skips state/creds.
     - |
       set -eo pipefail
+      validated=0
       for mod in $[[ inputs.module_glob ]]; do
         [ -f "${mod}versions.tf" ] || continue
         echo "=== terraform validate ${mod} ==="
         ( cd "$mod" && terraform init -backend=false && terraform validate )
+        validated=$((validated + 1))
       done
+      # A green job that validated nothing is the silent pass this gate
+      # prevents — the same accounting yaml-lint and shellcheck do.
+      [ "$validated" -gt 0 ] || {
+        echo "ERROR: module_glob matched no module with a versions.tf"
+        exit 1
+      }
+      echo "terraform validate passed ($validated module(s))"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never

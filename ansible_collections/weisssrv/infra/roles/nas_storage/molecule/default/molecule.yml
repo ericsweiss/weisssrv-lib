@@ -94,6 +94,22 @@ provisioner:
             clients:
               - spec: 192.168.0.154/32
                 options: rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=98
+          # Explicit `zfs:` classification, both directions. Both bind sources
+          # sit OUTSIDE nas_storage_zfs_mount_roots, so the derived pattern says
+          # "not ZFS" for each — the key is what decides, and verify asserts the
+          # rendered fstab opts differ accordingly.
+          - path: /export/declared-plain
+            bind_source: /srv/plainbind
+            zfs: false
+            clients:
+              - spec: 192.168.0.200/29
+                options: rw,sync,no_subtree_check,fsid=99
+          - path: /export/declared-zfs
+            bind_source: /srv/pool2/data
+            zfs: true
+            clients:
+              - spec: 192.168.0.200/29
+                options: rw,sync,no_subtree_check,fsid=100
         nas_storage_encrypted_bind_sources:
           - /mnt/ssd/appdata
           - /mnt/tank/backups/apps/authentik

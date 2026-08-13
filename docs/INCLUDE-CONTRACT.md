@@ -22,28 +22,51 @@ current release is named once, in the [README](../README.md#current-release).
 Three consumers, and they do not overlap. Read this table before changing an
 input default: a default is only "safe" relative to the consumers that take it.
 
-| Template | weisssrv | app-template | cluster-template |
+Both templates are copier templates, so each has TWO pipelines: the one CI runs
+on the template repo itself, and the one it RENDERS. The columns below are the
+**rendered** pipelines — that is the surface an input default reaches at scale.
+The template repos' own pipelines are recorded per consumer in
+[CONSUMERS.yml](CONSUMERS.yml) (`ci_includes` vs
+`rendered_tenant_ci_includes`), and they are NOT the same set: the app template's
+own pipeline includes `ci/test/python-tests.yml` (its copier-schema and render
+suite) and neither `flux-lint` nor `docker-build`, the reverse of its tenant
+column here.
+
+| Template | weisssrv | app-template (tenant) | cluster-template (cluster) |
 | --- | :-: | :-: | :-: |
 | `ci/lint/yaml-lint.yml` | ● | ● | ● |
-| `ci/lint/shellcheck.yml` | ● | ● | ● |
+| `ci/lint/shellcheck.yml` | ● | | ● |
 | `ci/lint/docs-link-check.yml` | ● | ● | ● |
 | `ci/lint/python-lint.yml` | ● | ● | ● |
 | `ci/lint/ansible-lint.yml` | ● | | ● |
 | `ci/validate/terraform.yml` | ● | | ● |
-| `ci/validate/flux-lint.yml` | ● | ●● | ● |
+| `ci/validate/flux-lint.yml` | ● | ● | ● |
 | `ci/security/secret-detection.yml` | ● | ● | ● |
-| `ci/test/python-tests.yml` | ● | ● | ● |
-| `ci/build/docker-build.yml` | | ● | |
+| `ci/test/python-tests.yml` | ● | | ● |
+| `ci/build/docker-build.yml` | | ●† | |
 | `ci/review/pr-agent.yml` | ● | ● | ● |
 | `ci/release/semantic-release.yml` | | ● | ●* |
 | `ci/maintenance/version-check.yml` | ● | | ● |
 | `ci/maintenance/version-bump-bot.yml` | | | ● |
 | `ci/templates/*` (3 fragments) | ● | | ● |
+| `ci/deploy/deploy-base.yml` | ○ | | ● |
+| `ci/deploy/{kubectl-setup,ansible-deploy}.yml` | ○ | | ○ |
 
-●● = included twice (the app template runs `flux-lint` over `kubernetes/flux`
-and a second `flux-lint-optional` over `kubernetes/flux/optional`).
-●* = copier-gated (`enable_semantic_release`); the other 15 cluster-template
-entries are unconditional.
+●* = copier-gated on `enable_semantic_release` (cluster template only).
+†  = copier-gated on `enable_image_build` (app template). The other 16
+cluster-template entries and 7 app-template entries are unconditional; the app
+template has no `enable_semantic_release` question, so its tenant always gets
+the release job.
+○ = extracted here, not yet adopted: weisssrv still carries its own
+`.deploy-base`, and no consumer takes `kubectl-setup` or the `ansible-deploy`
+job template yet. Until a consumer adopts one, treat its defaults as free to
+change.
+
+The app template renders a TENANT: no Ansible, no Terraform, no shell scripts
+and no test suite of its own, which is why four rows are blank for it. It runs
+`flux-lint` once, over `kubernetes/flux` — the optional manifests it used to
+keep in a second directory are copier-gated files now, so they are either in the
+one build or not generated at all.
 
 **weisssrv consumes 14 template files across 11 `include:` entries.** Five of
 them take the defaults verbatim and share two entries with a `file:` list — the
@@ -62,9 +85,11 @@ change freely.
 
 **A GitHub-hosted consumer includes nothing.** Actions has no equivalent of
 `include: project:` for a private library, so such a consumer (the app
-template's CI shape B) VENDORS workflows and re-vendors deliberately — see
-`ci/release/semantic-release.yml` below for the one reference workflow this repo
-ships. The scripts those workflows run are shared unchanged; which of them are
+template's `ci_shape: github`) VENDORS workflows and re-vendors deliberately. The three
+reference workflows this repo publishes for that are
+`ci/release/github-release-workflow.example.yml`, `ci/github/ci.example.yml` and
+`ci/github/build-image.example.yml` — see "GitHub workflow examples" below. The
+scripts those workflows run are shared unchanged; which of them are
 forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
 
 ## Conventions shared by every template
@@ -132,10 +157,13 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
 - **Parity:** the neutralizer logic (raw-wrapped vs plain templates, the
   rc-accumulating list-file loop) is extracted verbatim; defaults reproduce
   weisssrv's globs and find dir.
-- **A `find_dir` that is empty OR absent skips both find loops with a note.**
-  Previously only the empty case was handled, so a consumer that simply does
-  not have that tree failed on `find`'s non-zero exit. Both live consumers pass
-  a directory that exists, so this changes nothing for them.
+- **A `find_dir` that is empty OR absent skips both find loops with a note**, so
+  a consumer that simply does not have that tree still passes.
+- **All three blocks run, then the job decides.** A failure in the direct-glob
+  block no longer hides the role-shell and `*.sh.j2` results: each block folds
+  its rc into a `failed` flag, and the final accounting block exits on it
+  (after the `linted > 0` check). Pass/fail is unchanged — only the output is
+  more complete.
 - **Neutralizer constraint:** in a `{% raw %}`-wrapped template only FULL-LINE
   `{# … #}` comments are stripped (a comment-range delete would eat bash
   `${#arr[@]}`), so keep the out-of-raw header comments of such a template to
@@ -238,7 +266,9 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
   - `false` (tenant): `kustomize build <kustomize_path> | kubeconform …`.
     Non-root safe (stdlib tool download into a workspace `.bin`).
 - **Inputs (all modes):** `job_name` (flux-lint), `stage` (lint), `image`
-  (python:3.11-slim), `tags`, `substitute` (true), `kubeconform_version`
+  (python:3.11-slim — **must ship bash**: the scripts use `set -o pipefail` and
+  `${!var+x}` indirect expansion, so an Alpine swap fails in before_script; the
+  root path also needs apt), `tags`, `substitute` (true), `kubeconform_version`
   (0.6.7) + `kubeconform_sha256`, `kustomize_version` (5.4.3) +
   `kustomize_sha256`, `helm_version` (3.18.4) + `helm_sha256`, `pyyaml_version`
   (6.0.2 — pins the inline `spec.path` parser), `k8s_version` (empty → derived
@@ -301,9 +331,12 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
   `default_branch` is applied to BOTH jobs' post-merge rule.
 - **Self-applied** over `terraform/modules/` (`module_glob:
   "terraform/modules/*/"`, `validate_stage: lint` — this pipeline has no
-  validate stage). The validate loop skips any dir without a `versions.tf`, so a
-  `module_glob` that matches nothing passes silently: point it at the level that
-  actually holds the modules.
+  validate stage).
+- **A `module_glob` that matches no module with a `versions.tf` FAILS the job**
+  ("module_glob matched no module with a versions.tf"), the same accounting
+  `yaml-lint` and `shellcheck` apply. Individual dirs without a `versions.tf`
+  are still skipped; point the glob at the level that actually holds the
+  modules.
 
 ## ci/security/secret-detection.yml
 
@@ -346,11 +379,18 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
   (`docker:27.5.1-dind@sha256:aa3df78e…`), `docker_cli_version` (27.5.1) +
   `docker_cli_sha256_amd64` / `_arm64`, `buildx_version` (v0.35.0) +
   `buildx_sha256_amd64` / `_arm64`, `registry` (`$CI_REGISTRY_IMAGE`),
-  `image_name` (empty → push to the registry base), `context` (`.`),
+  `login_registry` / `login_user` / `login_password` (the `$CI_REGISTRY*`
+  trio), `image_name` (empty → push to the registry base), `context` (`.`),
   `dockerfile` (empty → context Dockerfile), `extra_build_args`,
   `default_branch` (main), `publish_on_main` (true), `changes` (`**/*`),
   `digest_dotenv_var` (empty → off), `digest_dotenv_file` (`image-digest.env`),
-  `cpu_selector` (`esweiss.com/cpu=modern`).
+  `cpu_selector` (`esweiss.com/cpu=modern`), `schedule_when` (`on_success`).
+- **Schedules rebuild by default — this is the one template that does not
+  exclude them.** `changes:` always evaluates true on a scheduled pipeline and
+  the layer cache is deliberately skipped there, so a schedule is a
+  fresh-dependency canary that also re-pushes `:latest` on the default branch.
+  Pass `schedule_when: never` to opt out; `publish_on_main` is not the lever
+  (it also disables `:latest` on ordinary merges).
 - **`dind_service` is digest-pinned and carries an explicit `alias: docker`.**
   The service is a map, not a bare string, because the runner derives the
   network alias from the image name and a digest-bearing name must not be left
@@ -362,6 +402,12 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
   all. Version + both per-arch sha256s are inputs on the same footing as the
   docker CLI trio (VERSIONING.md's "tool pins are inputs" rule); bump all three
   together, or override them per-consumer for a different buildx.
+- **OCI provenance is applied by the job, not the Dockerfile.** Every build gets
+  `org.opencontainers.image.{source,revision,version,title}` via `--label`
+  (from `CI_PROJECT_URL` / `CI_COMMIT_SHA` / `CI_COMMIT_TAG` or the short sha /
+  `image_name`), so an image pulled cross-project traces back to its commit with
+  no consumer Dockerfile change. A `LABEL` of the same key in a Dockerfile is
+  overridden — the job's value is the authoritative one.
 - **`default_branch` gates BOTH the post-merge rule and the `:latest` publish**,
   and must be a literal name (see the shared conventions above).
   `release_branch` in `ci/release/semantic-release.yml` is literal for the same
@@ -391,6 +437,14 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
   job errors at pod creation — `""` is not a "no pin" escape. On a runner that
   sets no regex, overwrite is disabled and the value is ignored, so the default
   is safe off-instance; a runner with a different allowlist passes its own value.
+- **`registry` and the login are separate on purpose**, but they must agree:
+  pointing `registry` at ghcr.io / Docker Hub / a Harbor host without also
+  passing `login_registry` + `login_user` + `login_password` pushes
+  unauthenticated and fails. The defaults render byte-identically to the
+  hard-coded `$CI_REGISTRY*` trio they replaced.
+- **`image` must be Debian-based.** The before_script derives the arch with
+  `dpkg --print-architecture`, so an Alpine or UBI base fails there — the same
+  class of image requirement `flux-lint` documents for bash.
 - **The shared tenant runner is non-privileged and CANNOT build.** This template
   needs a privileged runner; a consumer without one cannot use it at all.
 - **`:latest` is default-branch-only, deliberately.** An MR build never writes
@@ -410,8 +464,7 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
   `pyyaml_version` (6.0.2), `apt_packages` (`git jq`), `pip_packages` (empty —
   extra pinned pip specs), `setup_command` (`true` — a single command run in
   `before_script` AFTER the apt install and before the pip install, so it may use
-  what `apt_packages` provides; this library uses it to clone the app template so
-  `test_template_contract.py` cannot silently skip), `default_branch` (main),
+  what `apt_packages` provides), `default_branch` (main),
   `changes` (`scripts/**/*`, `.gitlab-ci.yml`).
 - **Parity:** the junit report, the before_script (apt + pinned pip) and the
   rules are verbatim. The default `changes` is the generic subset only.
@@ -441,7 +494,8 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
   `extra_instructions`, `gitlab_url` (`$CI_SERVER_URL`), `timeout` (45m),
   `secrets_source` (`env` | `1password`), `openai_key` (`$OPENAI__KEY`) /
   `gitlab_token` (`$GITLAB__PERSONAL_ACCESS_TOKEN`) — CI variable REFERENCES for
-  env mode, `op_openai_key_ref` / `op_gitlab_token_ref` (1password mode), `gate`
+  env mode, `op_openai_key_ref` / `op_gitlab_token_ref` (1password mode, both
+  default `""` and required in that mode), `gate`
   (the expression that must be non-empty for the job to be created).
 - **`gate` takes single quotes.** It lands in a `rules:if` expression; write it
   as the raw expression (`$OPENAI__KEY && $GITLAB__PERSONAL_ACCESS_TOKEN`), not
@@ -467,6 +521,18 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
       - !reference [.install-1password, before_script]
   ```
 
+  `op_openai_key_ref` / `op_gitlab_token_ref` default to `""` — they name a
+  vault and item titles, which are consumer data. The job fails fast in
+  1password mode when either is empty; env-mode consumers never read them.
+- **Token scope — never an admin PAT.** The GitLab credential (either path)
+  should be a **project access token on the reviewed project with the
+  `api` scope and the Developer role** — enough to post discussions, apply
+  suggestions and label. The job runs on `merge_request_event` with config
+  taken from the branch under review, and exports the token into a third-party
+  image that is handed the diff, so an instance-admin or group-owner PAT turns
+  any MR author into an admin-API caller. This applies to the `env` path too:
+  the default `gitlab_token: "$GITLAB__PERSONAL_ACCESS_TOKEN"` inherits
+  whatever the consumer put in that CI variable.
 - **This library:** defaults (env mode, `$OPENAI__KEY` gate).
 - **Tenant (BYO keys):** `inputs: { tags: [], commands: "review", timeout: "30m",
   openai_key: "$AI_REVIEW_OPENAI_KEY", gitlab_token: "$GITLAB_REVIEW_TOKEN",
@@ -503,7 +569,7 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
   calls differ; the bump decision and the notes are forge-neutral, which is what
   keeps ONE byte-identical script in the library, the app template and the
   cluster template. Per-flag detail in [SCRIPTS.md](SCRIPTS.md#semantic-releasepy).
-- **GitHub consumers** (the app template's CI shape B) have no `include:` to
+- **GitHub consumers** (the app template's `ci_shape: github`) have no `include:` to
   point at — the library ships no reusable Actions workflows — so they vendor
   [`ci/release/github-release-workflow.example.yml`](../ci/release/github-release-workflow.example.yml)
   as `.github/workflows/release.yml` next to the vendored script. It reproduces
@@ -511,10 +577,10 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
   schedule, `workflow_run` on the CI workflow succeeding (Actions has no stage
   ordering to gate on), `concurrency` for `resource_group`, `fetch-depth: 0`
   for `GIT_DEPTH: 0`, and `release.json` uploaded `if: always()`. That file is a
-  reference copy, NOT a template: nothing `include:`s it, re-vendoring is a
-  manual step, and `cli/tests/test_template_contract.py` asserts it stays
-  byte-identical to the CLI's scaffold fixture and to the app template's
-  vendored copy — so editing it is a coordinated three-repo change.
+  reference copy, NOT a template: nothing `include:`s it and re-vendoring is a
+  manual step, but the copy IS registered in `scripts/vendored-paths.yml`, so
+  `scripts/check-vendored-copies.py` fails the consumer on drift. Editing it is
+  a coordinated two-repo change.
 - **Requires:** the script vendored at `script_path`, `release` declared as the
   LAST stage (the job sets no `needs:`, so stage ordering gates it on the rest of
   the pipeline passing), and a `resource_group` — already set — to serialize
@@ -617,10 +683,19 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
 ## Shared fragments (ci/templates/)
 
 These define hidden jobs; `include` the file, then `extends` or `!reference` the
-hidden job. They set no `retry` — the consumer's own job supplies it. Only
-`terraform-http-backend.yml` carries `spec:inputs`; the other two take none.
+hidden job. They set no `retry` — the consumer's own job supplies it.
+`install-1password.yml` takes no inputs; the other two carry `spec:inputs` whose
+defaults render byte-identically to what they replaced.
 
 - **dep-cache.yml** → `.dep-cache` (pip + galaxy cache). `extends: .dep-cache`.
+  Inputs: `key_files` (`requirements.txt`, `ansible/requirements.yml`) and
+  `cache_paths` (`.cache/pip`, `.cache/ansible-collections`). **`key_files` are
+  consumer paths** — a repo that pins elsewhere must pass its own, or the key is
+  computed from files that never change and "a dependency bump busts it" is not
+  true for it. A listed path that does not exist is ignored silently, and
+  **`key_files` takes at most two paths** (GitLab's `cache:key:files` limit — a
+  third fails pipeline creation, not the job). A repo with three pin files keys
+  on one concatenated lockfile instead. `cache_paths` has no such cap.
 - **install-1password.yml** → `.install-1password` / `.install-1password-alpine`.
   `before_script: - !reference [.install-1password, before_script]`. Root runner
   only. Both fragments carry the hardened key verification: the apt fragment
@@ -629,17 +704,109 @@ hidden job. They set no `retry` — the consumer's own job supplies it. Only
   second primary key past `gpg --dearmor`), and the apk fragment verifies in a
   tempfile and only then `install`s into `/etc/apk/keys`.
 - **terraform-http-backend.yml** → `.terraform-http-backend` (GitLab HTTP state).
-  `extends: .terraform-http-backend`. Inputs: `api_url`
-  (`https://git.ericsweiss.com/api/v4`) and `state_name` (`cloudflare`). Both
-  default to weisssrv's current values, so an existing consumer's rendered
-  `TF_HTTP_*` vars are byte-identical. **A consumer on another GitLab instance
-  must pass `api_url`** — `TF_HTTP_PASSWORD` is `${CI_JOB_TOKEN}`, valid only
-  against the instance that issued it, so the default address sends that token
-  to a foreign host and `terraform init` gets a 401/404; `${CI_API_V4_URL}`
-  tracks whichever instance the pipeline runs on. `state_name` sets the
+  `extends: .terraform-http-backend`. Inputs: `api_url` (`${CI_API_V4_URL}`) and
+  `state_name` (`cloudflare`). `api_url` no longer defaults to this instance's
+  literal address — `TF_HTTP_PASSWORD` is `${CI_JOB_TOKEN}`, valid only against
+  the instance that issued it, so a hard-coded address was wrong for every
+  consumer but one. `${CI_API_V4_URL}` resolves to the same value on this
+  instance, so nothing changes here. `state_name` sets the
   pipeline's ONE default state (the hidden job's name is fixed, so a second
   include would collide); a job managing a different state overrides the three
   `TF_HTTP_*ADDRESS` vars per-job.
+
+## Deploy templates (ci/deploy/)
+
+The Ansible-deploy toolchain, extracted from the two cluster pipelines that had
+copied it. **Root runner only** — every file here apt-installs or writes
+`/usr/local/bin`. What is NOT here is the per-job matrix: `changes:` lists,
+`op://` variable maps, resource groups and environment names are per-cluster by
+definition, and parameterising them would trade duplication for indirection.
+
+- **deploy-base.yml** → a hidden job (`fragment_name`, default `.deploy-base`)
+  carrying `interruptible: false`, the `runner_system_failure` retry, the op
+  CLI + dep cache (it `extends: [.install-1password, .dep-cache]`, so both
+  `ci/templates/` fragments must be included too), the pinned ansible install,
+  a 0600 `ansible.cfg` copy on a private path, the SSH key read under
+  `umask 077`, the TOFU keyscan over `ALL_SSH_IPS`, and the collection install.
+  Inputs: `tags`, **`op_vault` (required — no default, a vault name is site
+  data)**, `ansible_version` (11.6.0), `apt_packages` (`git`, needed when the
+  collection installs from a `git+` URL), `ansible_dir`, `hosts_env`,
+  `ssh_key_item` / `ssh_key_field`, `loki_item`.
+  **`LOKI_PUSH_USER` / `LOKI_PUSH_PASSWORD` are set on the BASE**, not per job:
+  a log-shipping role that renders `basic_auth` from empty values clobbers the
+  fleet's config, and any job running `site.yml --limit` can reach one. The
+  cost is that the Loki item must exist in `op_vault` — `op run` resolves every
+  `op://` reference in the environment and a missing item is a hard failure.
+  The op CLI, ansible and `apt_packages` installs this fragment performs are
+  also available pre-baked, in the published `ansible-deploy` image
+  ([`docker/README.md`](../docker/README.md)). The fragment is unchanged by it
+  and still installs unconditionally, so a job that switches `image:` also drops
+  the corresponding `before_script` steps to collect the saving.
+- **kubectl-setup.yml** → a hidden job (default `.kubectl-setup`) whose
+  `before_script` installs a sha256-verified kubectl and writes the kubeconfig
+  from 1Password under `umask 077`. Pull it in AFTER the base's own
+  `before_script`, both by `!reference` — a `before_script:` key defined on the
+  extending job replaces the extended one rather than appending to it. Inputs:
+  `kubectl_version` (v1.35.2) + `kubectl_sha256` (they move together),
+  **`op_vault` (required)**, `kubeconfig_item` / `kubeconfig_field` (the value
+  must be base64 so the YAML survives the round trip).
+- **ansible-deploy.yml** → one deploy job: `op run -- ansible-playbook` from
+  `ansible_dir`, `extends` the base, on `branch` (main) with the `gate`
+  expression and a `changes:` list. Inputs `job_name`, `needs`,
+  `resource_group`, `environment_name` and `changes` are **required** — each is
+  per-job by nature, and defaulting them would silently collapse two jobs into
+  one resource group or fire a deploy on the wrong paths. **`needs` is required
+  for a stronger reason**: the only value the library could default it to is
+  `[]`, and in GitLab `needs: []` is not "no dependencies declared" — it starts
+  the job at pipeline creation, ahead of every lint and validate stage. An
+  omitted gate would therefore be an *ungated* deploy against live
+  infrastructure, so the template makes the consumer name the gate
+  (`needs: [{job: validation-gate}]` is the shape both cluster pipelines use).
+  Others: `stage`, `base`, `inventory`, `playbook`, `extra_args`, `branch`,
+  `gate`.
+  The per-job **secret map is not an input** (`spec:inputs` has no map type,
+  and `op run` resolves every `op://` reference in the environment, so a job
+  must declare exactly what its playbook needs). Supply it by re-declaring the
+  job name at top level, which merges at the map level with the generated one:
+
+  ```yaml
+  deploy-ansible-dns:
+    variables:
+      ADGUARD_ADMIN_PASSWORD: "op://<vault>/AdGuard Home/password"
+  ```
+
+  Use the same mechanism for a per-job `timeout`, extra `needs`, or a `script:`
+  that runs two playbooks in sequence.
+
+## GitHub workflow examples (ci/github/, ci/release/)
+
+Vendorable references for a consumer on GitHub Actions, which cannot `include:`
+anything from a private library. Copy them byte-identically into
+`.github/workflows/` and re-vendor on a library bump; each carries a
+canonical-copy header naming its source.
+
+- **ci/release/github-release-workflow.example.yml** → `release.yml`. The
+  Actions counterpart of `ci/release/semantic-release.yml`, running the same
+  vendored `scripts/semantic-release.py` with `--platform github`.
+- **ci/github/ci.example.yml** → `ci.yml`. The gate set: yamllint,
+  `kustomize build` + kubeconform, shellcheck, the docs link check, a secret
+  scan, and a discarded Dockerfile build. Its tool pins are the same values as
+  the library's template defaults, so both CI shapes gate on identical tools.
+- **ci/github/build-image.example.yml** → `build-image.yml`. Image build and
+  push to GHCR, push-only and with no `workflow_dispatch` (it holds
+  `packages: write`). A consumer that does not build an image should not vendor
+  it at all — the app template's registry path is gated on `enable_image_build`
+  for that reason, mirroring the GitLab shape, which gates its own build job on
+  the same answer. Both workflows announce their no-Dockerfile skip with a
+  `::warning::` and a step-summary line: a byte-identical file cannot tell
+  "runs an upstream image" from "the Dockerfile was renamed", and a green job
+  with every step skipped is invisible in the run list.
+
+The copy relationship is recorded once, in `scripts/vendored-paths.yml`, and
+checked from the consumer side by `scripts/check-vendored-copies.py` — the
+older per-consumer gates iterate `scripts/` only and cannot see `.github/`. An
+example that is not in that registry is a manual walk at bump time;
+[CONSUMERS.yml](CONSUMERS.yml) points each consumer's `vendored_copies` at it.
 
 ---
 
@@ -667,7 +834,7 @@ lockfile.
 |---|---|---|
 | `cloudflare-zone` | zone settings + DNS records with per-record destroy/drift protection | `account_id`, `zone_name` |
 | `tailscale-acl` | tailnet ACL policy + Split-DNS nameservers | `acl_policy`, `split_dns` |
-| `authentik-sso` | OAuth2/proxy/SAML providers, applications, groups, policy bindings, embedded outpost | none (every map defaults to `{}`) |
+| `authentik-sso` | OAuth2/proxy/SAML providers, applications, groups, policy bindings, custom scope mappings, embedded outpost | none (every map defaults to `{}`) |
 
 Behaviour to know before adopting:
 
@@ -682,6 +849,14 @@ Behaviour to know before adopting:
   `["authorization_code","refresh_token"]`** (no ROPC/implicit/hybrid/
   client_credentials), defaults `matching_mode` to `strict`, and **rejects**
   regex redirect URIs containing an unescaped dot.
+- **`authentik-sso` fails the plan on an application no ENABLED `policy_bindings`
+  entry names** (it would be reachable by every authenticated user); a binding
+  with `enabled = false` does not count, because the policy engine never
+  evaluates it, and `allow_unbound` declares an open tile deliberate. Every object except policy bindings carries
+  unconditional `prevent_destroy` — no per-object flag, because a flag would
+  route the object to a different resource address, and an address change here
+  is the destroy+create the flag exists to prevent. Removal is
+  `terraform state rm` plus the map entry; renames use `moved {}`.
 
 Full input/output tables and the per-module consumption pattern are in each
 module's `README.md`. `ci/validate/terraform.yml` covers them with
@@ -799,21 +974,35 @@ B2 bucket identity all live in the consumer's repo.
 
 **A vendored script is a pin too.** Bumping the `include: ref:` does not update
 a copy sitting in a consumer's `scripts/` — the CI templates take the script
-PATH from the consumer tree, so the copy is what actually runs. Since v0.6.0 all
-three consumers gate byte-identity against the library at their pinned ref, so a
-skipped re-vendor fails their pipeline instead of drifting silently:
+PATH from the consumer tree, so the copy is what actually runs. All three
+consumers gate byte-identity against the library, so a skipped re-vendor fails
+their pipeline instead of drifting silently:
 
 | Consumer | Gate | Scope |
 |---|---|---|
-| weisssrv | `scripts/test_vendored_byte_identity.py` (never skips) | 22 vendored scripts + 1 declared fork |
-| weisssrv-app-template | `tests/test_vendored_scripts.py` (`WEISSSRV_REQUIRE_CLI=1` in CI) | every non-LOCAL file in `scripts/` |
-| weisssrv-cluster-template | `tests/validate_render.py:check_vendored` | the render's `scripts/` + the template repo's own |
+| weisssrv | `scripts/test_vendored_byte_identity.py` (never skips) | the library registry, plus one local smoke test — a script sharing a name with a library script must be registered |
+| weisssrv-app-template | `tests/validate_render.py:check_registered_copies` | the library registry alone — scripts, workflows and lint profiles, on both sides of the copier split |
+| weisssrv-cluster-template | `tests/validate_render.py:check_vendored` | the render's `scripts/` + the template repo's own, then the library registry over both |
 
-Each gate reads the library at the ref the consumer pins, falling back to the
-checkout's working tree when that tag is not cut yet — which is what makes the
-lib-merge → tag → consumer-MR order workable. The per-consumer list of vendored
-files is in [CONSUMERS.yml](CONSUMERS.yml), and re-vendoring is part of the
-upgrade procedure in [VERSIONING.md](VERSIONING.md#upgrading-a-consumer).
+Every one of them drives
+[`scripts/check-vendored-copies.py`](../scripts/check-vendored-copies.py)
+against [`scripts/vendored-paths.yml`](../scripts/vendored-paths.yml); no
+hand-maintained `scripts/`-only list survives. That registry is what reaches the
+copies a `scripts/`-only iterator cannot see — the lint profiles, the vendored
+GitHub workflows, `tests/test_check_lib_pins.py`. **All three adoptions are the
+in-flight MRs shipping alongside this release, none has landed**, so the
+registry describes the target state and each consumer's gate is red until its
+own MR merges.
+
+How each reads the library differs, and it matters at release time. weisssrv
+passes `--ref` at the pin from its `.gitlab-ci.yml` and falls back to the
+checkout's working tree when the tag is not cut yet, announcing the fallback as
+a skip rather than assuming it. Both template gates pass `--lib-path` with no
+`--ref`, so they compare the library working tree unconditionally. Either way
+the lib-merge → tag → consumer-MR order is workable, which is the point. The
+per-consumer list of vendored files is in [CONSUMERS.yml](CONSUMERS.yml), and
+re-vendoring is part of the upgrade procedure in
+[VERSIONING.md](VERSIONING.md#upgrading-a-consumer).
 
 ## What is NOT here
 

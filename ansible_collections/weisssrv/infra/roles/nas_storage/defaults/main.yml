@@ -154,8 +154,68 @@ nas_storage_pve_cluster_backup_random_delay: 300
 nas_storage_pve_cluster_backup_keep: 14
 nas_storage_pve_cluster_backup_nice: 10
 
+# SMART monitoring groups. Each entry: {name, disks[], schedule, ata?}. The
+# schedule is smartd's -s regex (a daily short test plus a monthly long test on
+# the group's own day, so the groups do not thrash together); ata: false drops
+# the ATA-only -o/-S flags, which log warnings on NVMe.
+#
+# The default reproduces the four legacy pool-named lists, so an existing
+# consumer's nas_storage_smartd_{tank,ssd,nvme,archive}_disks keep working. A
+# site with a different pool layout sets this list directly instead.
+nas_storage_smartd_tank_disks: []
+nas_storage_smartd_ssd_disks: []
+nas_storage_smartd_nvme_disks: []
+nas_storage_smartd_archive_disks: []
+nas_storage_smartd_disk_groups:
+  - name: tank
+    disks: "{{ nas_storage_smartd_tank_disks }}"
+    schedule: "(S/../.././02|L/../08/./03)"
+  - name: ssd
+    disks: "{{ nas_storage_smartd_ssd_disks }}"
+    schedule: "(S/../.././02|L/../09/./03)"
+  - name: nvme
+    disks: "{{ nas_storage_smartd_nvme_disks }}"
+    schedule: "(S/../.././02|L/../10/./03)"
+    ata: false
+  - name: archive
+    disks: "{{ nas_storage_smartd_archive_disks }}"
+    schedule: "(S/../.././02|L/../11/./03)"
+
 # Skip enabling/starting smartd (a container has no SMART-capable devices).
 nas_storage_skip_smartd_service: false
+
+# Samba password for the `nas` account. Defaults to the env lookup the `op run`
+# wrapper supplies; set it directly to source the secret from any other backend.
+# Never reaches argv — smbpasswd reads it on stdin, smbclient from PASSWD.
+# Empty leaves the password unmanaged (a warning, not a failure).
+nas_storage_samba_password: "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD', default='') }}"
+
+# Samba listener scope. smbd otherwise also binds 139 (NetBIOS session
+# service), which nothing in an SMB3-only, encryption-required deployment uses
+# and only the firewall closes. Widen the port list only for a client that
+# genuinely cannot speak SMB over 445.
+nas_storage_samba_ports: "445"
+nas_storage_samba_disable_netbios: true
+
+# ZFS mount roots — site data. A bind_source under one of these is treated as
+# ZFS-backed: it gets the mounted-dataset guard in nfs.yml and the zfs-mount
+# boot-ordering opts on its fstab entry, and a mergerfs union whose branches sit
+# under them anchors on zfs-mount.service. Anything else is a plain bind with no
+# guard and no ordering, so a site with a different pool/mount layout MUST set
+# this or both protections silently do nothing. A per-entry `zfs: true|false`
+# overrides the classification for one export or union (see the role README).
+nas_storage_zfs_mount_roots:
+  - /mnt/tank
+  - /mnt/ssd
+  - /mnt/nvme
+# Derived from the roots; override directly only for a layout the roots cannot
+# express. Matches paths INSIDE a root, not the root itself. An EMPTY roots list
+# yields a never-matching pattern: `^()/` is an empty alternation that matches
+# every absolute path, which would invert the guard for a site that legitimately
+# has no ZFS roots.
+nas_storage_zfs_bind_source_pattern: >-
+  {{ ('^(' ~ (nas_storage_zfs_mount_roots | map('regex_escape') | join('|')) ~ ')/')
+     if (nas_storage_zfs_mount_roots | length > 0) else '^(?!)' }}
 
 # Component gates, declared so a typo cannot silently disable one.
 nas_storage_skip_zfs_operations: false  # pool/dataset/property work (needs real ZFS)

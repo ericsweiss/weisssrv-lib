@@ -9,15 +9,10 @@
 
     # RESTORE-DRILL SEED GATE — both arms, behaviourally.
     #
-    # The seed itself is molecule-notest (at converge time the repository holds
-    # no snapshot, so a real drill legitimately fails), but the gate that
-    # decides whether to run it is not — and it is the part that regressed:
-    # when the gate was `units is changed` alone it was EDGE-triggered, so a
-    # seed that failed once was skipped on every later converge and the play
-    # went green with backup_restore_drill_last_success_seconds still absent.
-    # The two passes below pin the level-triggered replacement: unchanged units
-    # + proof metric present => not due; unchanged units + proof metric absent
-    # => due (retry).
+    # The seed itself is molecule-notest (no snapshot exists at converge time),
+    # but the gate is: unchanged units + proof metric present => not due;
+    # unchanged units + proof metric absent => due (retry). Contract: README,
+    # "Restore drill".
     #
     # Every helper here is changed_when: false — molecule's idempotence step
     # re-runs this playbook and must see no changes.

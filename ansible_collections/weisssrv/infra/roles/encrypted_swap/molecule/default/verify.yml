@@ -3,8 +3,8 @@
 # is deferred to reboot, so converge produces the deferred shape: plaintext
 # backing line KEPT alongside the higher-priority nofail mapper line, and the
 # finalize unit deployed + enabled.
-- name: Verify
-  hosts: all
+- name: Verify the host with a backing device
+  hosts: encrypted-swap-test
   become: true
   gather_facts: false
   tasks:
@@ -126,3 +126,116 @@
           - "'mkswap \"$dev\"' in (finalize_script_raw.content | b64decode)"
         fail_msg: "finalize script missing the active-swap gate, the dm-device resolution, the boot-race recovery arm, or the mkswap restore"
         success_msg: "finalize gates on active swap (resolving the mapper device) and recovers a lost boot race safely"
+
+    # Behaviour, not strings: run the deployed script against a fixture
+    # /proc/swaps + /etc/fstab with stubbed swapon/swapoff/mkswap/systemctl, and
+    # assert the DECISIONS in each of the three arms. Inverted control flow
+    # passes every grep above; it fails here.
+    - name: Exercise the finalize script's decision arms
+      ansible.builtin.shell: |
+        set -euo pipefail
+        root=/root/encrypted-swap-behaviour
+        rm -rf "$root"; mkdir -p "$root/bin"
+        # Same script, reading fixtures instead of the live host state.
+        sed -e "s#/proc/swaps#$root/swaps#g" -e "s#/etc/fstab#$root/fstab#g" \
+          /usr/local/sbin/encrypted-swap-finalize.sh > "$root/finalize.sh"
+        chmod 0755 "$root/finalize.sh"
+
+        # Stubs log their invocation; swapon of the mapper models the kernel by
+        # appending it to the fixture /proc/swaps, and FAULT names the command
+        # that must fail.
+        for cmd in swapoff swapon mkswap systemctl; do
+          cat > "$root/bin/$cmd" <<STUB
+        #!/bin/sh
+        echo "$cmd \$*" >> "$root/log"
+        case "\${FAULT:-}" in "$cmd") exit 1 ;; esac
+        if [ "$cmd" = swapon ] && [ "\$1" = /dev/mapper/cryptswap ]; then
+          echo "/dev/mapper/cryptswap partition 1048572 0 -2" >> "$root/swaps"
+        fi
+        exit 0
+        STUB
+          chmod 0755 "$root/bin/$cmd"
+        done
+        export PATH="$root/bin:$PATH"
+
+        fstab_line='/dev/pve/swap none swap sw 0 0'
+        fail() { echo "FAIL: $1"; echo "--- log"; cat "$root/log" 2>/dev/null; \
+                 echo "--- fstab"; cat "$root/fstab"; exit 1; }
+
+        # Arm 1: mapper already active -> comment the plaintext line, no switch.
+        : > "$root/log"
+        printf 'Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/dev/mapper/cryptswap partition 1048572 0 -2\n' > "$root/swaps"
+        printf '%s\n' "$fstab_line" > "$root/fstab"
+        "$root/finalize.sh" 2>/dev/null
+        grep -q "^# $fstab_line" "$root/fstab" || fail "arm1: plaintext line was not commented"
+        ! grep -q 'systemctl start' "$root/log" || fail "arm1: entered the recovery arm with an active mapper"
+
+        # Arm 1 re-run: idempotent, the commented line stays commented once.
+        "$root/finalize.sh" 2>/dev/null
+        [ "$(grep -c "^# $fstab_line" "$root/fstab")" = 1 ] || fail "arm1: re-run was not idempotent"
+
+        # Arm 2: plaintext won the race, every step succeeds -> switch, then
+        # comment the plaintext line.
+        : > "$root/log"
+        printf 'Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/dev/pve/swap partition 1048572 0 -2\n' > "$root/swaps"
+        printf '%s\n' "$fstab_line" > "$root/fstab"
+        "$root/finalize.sh" 2>/dev/null
+        grep -q 'swapoff /dev/pve/swap' "$root/log" || fail "arm2: did not swapoff the plaintext device"
+        grep -q 'systemctl start systemd-cryptsetup@cryptswap.service' "$root/log" || fail "arm2: did not open the mapper"
+        grep -q 'swapon /dev/mapper/cryptswap' "$root/log" || fail "arm2: did not swapon the mapper"
+        grep -q "^# $fstab_line" "$root/fstab" || fail "arm2: plaintext line was not commented after the switch"
+
+        # Arm 3: mapper open fails -> restore the fallback (mkswap + swapon -a)
+        # and LEAVE the plaintext line uncommented.
+        : > "$root/log"
+        printf 'Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/dev/pve/swap partition 1048572 0 -2\n' > "$root/swaps"
+        printf '%s\n' "$fstab_line" > "$root/fstab"
+        FAULT=systemctl "$root/finalize.sh" 2>/dev/null
+        grep -q 'mkswap /dev/pve/swap' "$root/log" || fail "arm3: restore did not mkswap the backing device"
+        grep -q 'swapon -a' "$root/log" || fail "arm3: restore did not swapon -a"
+        grep -q "^$fstab_line" "$root/fstab" || fail "arm3: plaintext fallback line was commented despite a failed switch"
+        echo BEHAVIOUR_OK
+      args:
+        executable: /bin/bash
+      register: encrypted_swap_behaviour
+      changed_when: false
+      failed_when: "'BEHAVIOUR_OK' not in encrypted_swap_behaviour.stdout"
+
+# The self-skip arm (no backing device + encrypted_swap_require_source_device
+# false). Prepare left this host in the state an earlier successful converge
+# produced; the role must reconcile it away, because a crypttab entry naming a
+# device that is gone fails systemd-cryptsetup@<mapper> on every boot — the
+# exact failure the backing-device guard exists to prevent.
+- name: Verify the self-skip host
+  hosts: encrypted-swap-skip-test
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read /etc/crypttab on the self-skip host
+      ansible.builtin.slurp:
+        src: /etc/crypttab
+      register: skip_crypttab
+
+    - name: Read /etc/fstab on the self-skip host
+      ansible.builtin.slurp:
+        src: /etc/fstab
+      register: skip_fstab
+
+    - name: Assert the stale crypttab and mapper fstab entries were removed
+      ansible.builtin.assert:
+        that:
+          - "'cryptswap' not in (skip_crypttab.content | b64decode)"
+          - "'/dev/mapper/cryptswap' not in (skip_fstab.content | b64decode)"
+          # The plaintext backing line is NOT the role's to remove — swap must
+          # never be driven to zero by the skip arm.
+          - "'/dev/pve/swap none swap' in (skip_fstab.content | b64decode)"
+        fail_msg: >-
+          The self-skip arm left a crypttab/fstab entry naming an absent backing
+          device (or removed the plaintext fallback line).
+        success_msg: "self-skip arm reconciled the stale crypttab + mapper fstab entries away"
+
+    - name: Check the finalize unit is no longer enabled  # noqa command-instead-of-module
+      ansible.builtin.command: systemctl is-enabled encrypted-swap-finalize.service
+      register: skip_finalize_enabled
+      changed_when: false
+      failed_when: skip_finalize_enabled.stdout | trim == 'enabled'

@@ -50,7 +50,7 @@ else
 fi
 
 {
-    printf '# HELP postfix_queue_depth Number of messages in the Postfix queue. Persistently non-zero means the Gmail hop is wedged (expired app password, rate-limit).\n'
+    printf '# HELP postfix_queue_depth Number of messages in the Postfix queue. Persistently non-zero means the upstream hop is wedged (expired credential, rate-limit).\n'
     printf '# TYPE postfix_queue_depth gauge\n'
     printf 'postfix_queue_depth %d\n' "$queue_depth"
     printf '# HELP postfix_up Whether the postfix master daemon is running.\n'

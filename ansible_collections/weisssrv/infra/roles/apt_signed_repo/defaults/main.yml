@@ -17,9 +17,11 @@ apt_signed_repo_when: true
 # where a prerequisite task or the base role provides it.
 apt_signed_repo_install_gnupg: false
 
-# Explicit keyring mode. Empty skips the permission task entirely (the keyring
-# keeps whatever gpg --dearmor created); set e.g. "0644" to pin it.
-apt_signed_repo_keyring_mode: ""
+# Keyring mode. A public signing key is meant to be world-readable, and apt
+# reports "unverifiable signature" when it cannot read the keyring, so this is
+# pinned rather than left at gpg --dearmor's umask-dependent output. Empty
+# skips the permission task entirely.
+apt_signed_repo_keyring_mode: "0644"
 
 # Staging area for the downloaded key between verification and dearmor. Must be
 # a root-owned 0700 directory under a non-world-writable parent: verify and

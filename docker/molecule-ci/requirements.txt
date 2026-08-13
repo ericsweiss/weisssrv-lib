@@ -2,14 +2,17 @@
 #
 # Exact pins, not lower bounds: this file is COPYed and pip-installed by
 # docker/molecule-ci/Dockerfile, so a rebuild must be reproducible and must never
-# silently pull a new major. Keep the ansible / ansible-lint pins in step with a
-# consumer's ansible-lint CI job so both agree on the version under test.
+# silently pull a new major.
+#
+# Three pins below (ansible-lint, black, yamllint) are the molecule side of a
+# parity contract with the ci/lint template defaults — see
+# tests/test_lint_version_parity.py for the exact pairs. ansible-core is not in
+# that contract: no template input pins it, ansible-lint pulls its own.
 ansible==11.6.0
 ansible-lint==25.12.2
 # black is a transitive dep (ansible-lint's jinja rule imports it); the black
 # 26.5.x wheels ship a broken mypyc extension that makes ansible-lint fail to
-# load. Kept in step with the same guard in the .gitlab-ci.yml lint job; lift
-# once 26.5.x is fixed.
+# load. Lift once 26.5.x is fixed.
 black<26.5.0
 molecule==26.4.0
 molecule-plugins[docker]==25.8.12

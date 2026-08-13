@@ -749,6 +749,98 @@
     # molecule without seeding a non-PVE9 JSON shape the role would never see in
     # prod. Left untested deliberately — it's a defensive fallback, not a path.
 
+    # CASE P — datacenter.cfg carries no migration key at all (the cluster is
+    # inheriting PVE's default rather than declaring one): exactly one
+    # `pvesh set /cluster/options --migration type=secure`.
+    - name: P — reset pvesh log, seed datacenter options with no migration key
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesh.log, content: ""}
+        - {name: pvesh_cluster_options, content: "{\"keyboard\": \"en-us\"}\n"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: P — run role with the migration channel unpinned
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+
+    - name: P — count pvesh mutations
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/pvesh.log
+        pin=$(grep -cxF 'pvesh set /cluster/options --migration type=secure' "$log" || true)
+        total=$(grep -c '^pvesh ' "$log" || true)
+        echo "{\"pin_calls\": ${pin}, \"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_p
+      changed_when: false
+
+    # CASE P2 — a live `insecure` channel (cleartext guest RAM on 60000-60050)
+    # is reverted, and the dedicated migration network is carried through
+    # rather than cleared by the wholesale property-string replacement.
+    - name: P2 — reset pvesh log, seed an insecure channel with a network
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesh.log, content: ""}
+        - name: pvesh_cluster_options
+          content: |
+            {"keyboard": "en-us",
+             "migration": {"type": "insecure", "network": "10.0.0.0/24"}}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: P2 — run role against the insecure channel
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+
+    - name: P2 — count pvesh mutations
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/pvesh.log
+        exp='pvesh set /cluster/options --migration type=secure,network=10.0.0.0/24'
+        revert=$(grep -cxF "$exp" "$log" || true)
+        total=$(grep -c '^pvesh ' "$log" || true)
+        echo "{\"revert_calls\": ${revert}, \"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_p2
+      changed_when: false
+
+    # CASE P3 — already pinned: ZERO mutations.
+    - name: P3 — reset pvesh log, seed the pinned channel
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesh.log, content: ""}
+        - name: pvesh_cluster_options
+          content: |
+            {"keyboard": "en-us", "migration": {"type": "secure"}}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: P3 — run role with the channel already pinned
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+
+    - name: P3 — count pvesh mutations
+      ansible.builtin.shell: |
+        set -o pipefail
+        total=$(grep -c '^pvesh ' /tmp/molecule-stub-state/pvesh.log || true)
+        echo "{\"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_p3
+      changed_when: false
+
     - name: Capture HA contract results
       ansible.builtin.copy:
         dest: /tmp/molecule-results/ha-contract.json
@@ -785,4 +877,9 @@
            "e2_add": {{ (case_e2.stdout | from_json).add_calls }},
            "g_set": {{ (case_g.stdout | from_json).set_calls }},
            "h_set": {{ (case_h.stdout | from_json).set_calls }},
-           "i_set": {{ (case_i.stdout | from_json).set_calls }}}
+           "i_set": {{ (case_i.stdout | from_json).set_calls }},
+           "p_pin": {{ (case_p.stdout | from_json).pin_calls }},
+           "p_total": {{ (case_p.stdout | from_json).total }},
+           "p2_revert": {{ (case_p2.stdout | from_json).revert_calls }},
+           "p2_total": {{ (case_p2.stdout | from_json).total }},
+           "p3_total": {{ (case_p3.stdout | from_json).total }}}

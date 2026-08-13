@@ -48,13 +48,51 @@ variable "oauth2_grant_types" {
 }
 
 variable "oauth2_scope_mappings" {
-  description = "Managed IDs of the scope property mappings assigned to every OAuth2 provider, in the order the API stores them."
+  description = <<-EOT
+    Scope property mappings assigned to every OAuth2 provider, in the order the
+    API stores them (order is state, not style — a reordered list is a diff).
+
+    An entry is a managed id, or `custom:<key>` naming a `custom_scope_mappings`
+    entry this module authors.
+  EOT
   type        = list(string)
   default = [
     "goauthentik.io/providers/oauth2/scope-openid",
     "goauthentik.io/providers/oauth2/scope-email",
     "goauthentik.io/providers/oauth2/scope-profile",
   ]
+}
+
+variable "custom_scope_mappings" {
+  description = <<-EOT
+    Scope property mappings this module AUTHORS, keyed by a stable identifier.
+    Reference one from a provider's `scope_mappings` list (or from
+    `oauth2_scope_mappings`) as `custom:<key>`; every other entry in those lists
+    is a managed id read through a data source.
+
+    This is the escape hatch for a claim authentik does not emit by default. Its
+    built-in scope mappings are blueprint-managed objects the server restores on
+    upgrade, so the claim has to live in a mapping of its own rather than an
+    edit to a stock one.
+
+    `expression` is authentik's Python expression body — it runs server-side on
+    every token issue, so keep it side-effect free and never put a credential in
+    it (mapping bodies are readable by any authentik admin).
+  EOT
+  type = map(object({
+    name        = string
+    scope_name  = string
+    description = optional(string, "")
+    expression  = string
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for key, m in var.custom_scope_mappings : !startswith(key, "custom:")
+    ])
+    error_message = "custom_scope_mappings keys are bare identifiers; the \"custom:\" prefix belongs only in the scope_mappings reference."
+  }
 }
 
 variable "saml_property_mappings" {
@@ -88,6 +126,8 @@ variable "oauth2_providers" {
       matching_mode     = optional(string, "strict")
       redirect_uri_type = optional(string, "authorization")
     }))
+    # Overrides oauth2_scope_mappings for this provider. Same two reference
+    # kinds (managed id or "custom:<key>"), same ordering rule.
     scope_mappings             = optional(list(string))
     sub_mode                   = optional(string, "hashed_user_id")
     issuer_mode                = optional(string, "per_provider")
@@ -213,7 +253,16 @@ variable "group_secret_attributes" {
 }
 
 variable "applications" {
-  description = "Applications keyed by slug. `provider_type` + `provider_key` reference one of the provider maps; leave both null for an application with no provider."
+  description = <<-EOT
+    Applications keyed by slug. `provider_type` + `provider_key` reference one of
+    the provider maps; leave both null for an application with no provider.
+
+    Each application must be named by at least one ENABLED `policy_bindings`
+    entry or the plan fails — an unbound application is open to every
+    authenticated user, and a disabled binding is not evaluated by the policy
+    engine. `allow_unbound = true` declares that deliberate (a tile everyone may
+    reach).
+  EOT
   type = map(object({
     name               = string
     group              = optional(string, "")
@@ -226,6 +275,7 @@ variable "applications" {
     hide               = optional(bool, false)
     open_in_new_tab    = optional(bool, true)
     policy_engine_mode = optional(string, "any")
+    allow_unbound      = optional(bool, false)
   }))
   default = {}
 
@@ -257,7 +307,9 @@ variable "policy_bindings" {
     Group bindings that gate application access, keyed by a stable identifier.
     An application with no binding is open to every authenticated user, so give
     each application at least one; with policy_engine_mode "any", any one
-    binding grants access.
+    binding grants access. Only `enabled` bindings satisfy the unbound-application
+    precondition — setting `enabled = false` on an application's last binding
+    fails the plan rather than silently opening the app.
   EOT
   type = map(object({
     application = string
@@ -275,8 +327,9 @@ variable "embedded_outpost" {
     outpost alone.
 
     The outpost object is created by authentik itself, so managing it means
-    importing it first (README "Adopting existing objects"); going back to null
-    later DESTROYS it — detach it with `terraform state rm` instead.
+    importing it first (README "Adopting existing objects"). Going back to null
+    later is a DESTROY of authentik's own outpost; `prevent_destroy` refuses it,
+    so detach with `terraform state rm` instead.
   EOT
   type = object({
     name = optional(string, "authentik Embedded Outpost")

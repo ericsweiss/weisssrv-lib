@@ -18,8 +18,12 @@ spec:
     roots:
       default: ""
       description: >-
-        Optional space-separated repo roots to scan; empty uses the checker's
-        default (docs/ + top-level README.md/CLAUDE.md).
+        Optional space-separated repo roots to scan. Empty uses the checker's
+        default: every git-TRACKED *.md in the repo (falling back to docs/ +
+        $CHECK_DOC_LINKS_EXTRA outside a git checkout). A repo with Markdown
+        outside `docs/` therefore needs no `roots` — but it does need to widen
+        `changes:` to match, or the job never fires on those files. See
+        docs/SCRIPTS.md.
     default_branch:
       default: "main"
       description: >-

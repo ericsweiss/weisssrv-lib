@@ -20,6 +20,20 @@ from pathlib import Path
 import pytest
 import yaml
 
+
+class _GitLabLoader(yaml.SafeLoader):
+    """SafeLoader that understands GitLab's `!reference [job, key]` tag."""
+
+
+_GitLabLoader.add_constructor(
+    "!reference", lambda loader, node: loader.construct_sequence(node)
+)
+
+
+def _load(text: str) -> object:
+    return yaml.load(text, Loader=_GitLabLoader)
+
+
 _LIB_ROOT = Path(__file__).resolve().parents[1]
 _TEMPLATES = sorted((_LIB_ROOT / "ci").rglob("*.yml"))
 _INPUT_RE = re.compile(r"\$\[\[\s*inputs\.([a-zA-Z0-9_]+)\s*\]\]")
@@ -35,22 +49,37 @@ def _split_docs(text: str) -> tuple[dict | None, str]:
     docs = text.split("\n---\n", 1)
     if len(docs) == 1:
         return None, text
-    head = yaml.safe_load(docs[0])
+    head = _load(docs[0])
     if isinstance(head, dict) and "spec" in head:
         return head, docs[1]
     return None, text
 
 
+# A REQUIRED input (no `default:`) has no library-side value to render, and
+# substituting "" produces a shape no consumer can ever produce: an empty job
+# name, an array key rendered as a bare scalar. Stand-ins by declared type, so a
+# mandatory-input template is smoke-rendered the way it is actually used.
+_PLACEHOLDER_BY_TYPE = {
+    "array": ["placeholder"],
+    "boolean": True,
+    "number": 1,
+}
+_PLACEHOLDER_STRING = "placeholder"
+
+
 def _default_for(name: str, spec: dict) -> object:
     inputs = spec["spec"]["inputs"]
     assert name in inputs, f"undeclared input interpolated: {name}"
-    return inputs[name].get("default", "")
+    meta = inputs[name] or {}
+    if "default" in meta:
+        return meta["default"]
+    return _PLACEHOLDER_BY_TYPE.get(meta.get("type", "string"), _PLACEHOLDER_STRING)
 
 
 def _render(body: str, spec: dict) -> str:
     def sub(m: re.Match) -> str:
         default = _default_for(m.group(1), spec)
-        if isinstance(default, (list, bool)):
+        if isinstance(default, (list, dict, bool)):
             return json.dumps(default)
         return str(default)
 
@@ -77,7 +106,7 @@ def test_template_renders(path: Path) -> None:
     rendered_text = _render(body, spec) if spec else body
     assert not _INPUT_RE.search(rendered_text), "unsubstituted interpolation survived"
 
-    rendered = yaml.safe_load(rendered_text)
+    rendered = _load(rendered_text)
     assert isinstance(rendered, dict)
 
     script = "\n".join(_script_lines(rendered))
@@ -86,6 +115,127 @@ def test_template_renders(path: Path) -> None:
             ["bash", "-n"], input=script, capture_output=True, text=True
         )
         assert proc.returncode == 0, f"rendered script does not parse:\n{proc.stderr}"
+
+
+def test_deploy_templates_never_default_needs() -> None:
+    """A deploy job's gate must be stated by the consumer, never defaulted.
+
+    The only value the library could pick is `[]`, and in GitLab `needs: []`
+    means "start at pipeline creation, ignore stage order" — an ungated
+    `ansible-playbook` against live infrastructure. So `needs` stays required.
+    """
+    checked = 0
+    for path in sorted((_LIB_ROOT / "ci" / "deploy").glob("*.yml")):
+        spec, _body = _split_docs(path.read_text(encoding="utf-8"))
+        if spec is None:
+            continue
+        meta = spec["spec"]["inputs"].get("needs")
+        if meta is None:
+            continue
+        checked += 1
+        assert "default" not in meta, (
+            f"{path.name}: `needs` must stay a REQUIRED input — every default "
+            "the library could pick bypasses the validation gate"
+        )
+    assert checked, "no ci/deploy template declares a `needs` input any more"
+
+
+_ARRAY_MARKER = "__ARRAY_INPUT_{}__"
+
+
+def _array_inputs(spec: dict) -> set[str]:
+    """The names of every input the spec declares as `type: array`."""
+    return {
+        name
+        for name, meta in spec["spec"]["inputs"].items()
+        if (meta or {}).get("type") == "array"
+    }
+
+
+def _render_with_array_markers(body: str, spec: dict, arrays: set[str]) -> str:
+    """Render normally, except array inputs, which become a bare scalar marker.
+
+    Only the array sites differ from `_render`'s output, so the two documents
+    have the same shape and a path found in one resolves in the other.
+    """
+
+    def sub(m: re.Match) -> str:
+        name = m.group(1)
+        if name in arrays:
+            return _ARRAY_MARKER.format(name)
+        default = _default_for(name, spec)
+        if isinstance(default, (list, dict, bool)):
+            return json.dumps(default)
+        return str(default)
+
+    return _INPUT_RE.sub(sub, body)
+
+
+def _marker_sites(node: object, arrays: set[str], path: tuple = ()):
+    """Yield (path, input name) for every value that is exactly one marker."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from _marker_sites(value, arrays, path + (key,))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from _marker_sites(value, arrays, path + (index,))
+    elif isinstance(node, str):
+        for name in arrays:
+            if node.strip() == _ARRAY_MARKER.format(name):
+                yield path, name
+
+
+def _at(node: object, path: tuple) -> object:
+    for step in path:
+        node = node[step]
+    return node
+
+
+def _array_sites(path: Path) -> list[tuple[tuple, str, object]]:
+    """(path, input name, rendered value) for every array interpolation site."""
+    spec, body = _split_docs(path.read_text(encoding="utf-8"))
+    if spec is None:
+        return []
+    arrays = _array_inputs(spec)
+    if not arrays:
+        return []
+    marked = _load(_render_with_array_markers(body, spec, arrays))
+    rendered = _load(_render(body, spec))
+    return [
+        (site, name, _at(rendered, site)) for site, name in _marker_sites(marked, arrays)
+    ]
+
+
+@pytest.mark.parametrize("path", _TEMPLATES, ids=lambda p: str(p.relative_to(_LIB_ROOT)))
+def test_array_inputs_render_as_sequences(path: Path) -> None:
+    """An input typed `array` must reach YAML as a sequence at EVERY site.
+
+    A required array with no placeholder renders as a bare scalar (YAML null) —
+    which parses fine and hides that the real job would carry a list. A null is
+    the shape being guarded, so there is no `is not None` escape hatch here.
+
+    The sites are DERIVED from the spec rather than named by hand, so the ones
+    that are not job-level keys are covered too: `changes:` inside a `rules:`
+    entry, and `key_files` under `cache: key:`.
+    """
+    for site, name, value in _array_sites(path):
+        where = ".".join(str(step) for step in site)
+        assert isinstance(value, list), (
+            f"{path.name}: array input `{name}` rendered as {value!r} at {where} — "
+            "an array interpolation site must reach YAML as a sequence"
+        )
+
+
+def test_the_array_site_walker_finds_sites_to_check() -> None:
+    """The guard above is per-template and silently passes on a template with no
+    array inputs, so prove the walker locates real sites somewhere in ci/ —
+    otherwise a broken walker would green every template at once."""
+    found = {
+        (path.name, name)
+        for path in _TEMPLATES
+        for _site, name, _value in _array_sites(path)
+    }
+    assert found, "no array interpolation site found in any ci/ template"
 
 
 @pytest.mark.parametrize(
@@ -120,7 +270,7 @@ def test_metachar_defaults_are_variable_routed(path: Path) -> None:
     spec, body = _split_docs(path.read_text(encoding="utf-8"))
     if spec is None:
         return
-    body_yaml = yaml.safe_load(_INPUT_RE.sub(lambda m: f"__INPUT_{m.group(1)}__", body))
+    body_yaml = _load(_INPUT_RE.sub(lambda m: f"__INPUT_{m.group(1)}__", body))
 
     risky = {
         name

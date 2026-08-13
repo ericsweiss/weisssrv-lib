@@ -6,6 +6,15 @@ adguard_sync_enabled: false
 # How often the sync timer fires (systemd OnCalendar).
 adguard_sync_schedule: "*:0/5"
 
+# Where the run metrics land; aliases node_exporter_host_textfile_dir so it
+# tracks the host's exporter config.
+adguard_sync_textfile_dir: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
+
+# Two or more replicas: a list of {url, username, password}, the credentials
+# falling back to adguard_sync_admin_user / _password. When non-empty it
+# replaces the single adguard_sync_replica in the rendered config.
+adguard_sync_replicas: []
+
 # Which AdGuard config sections the primary pushes. tlsConfig stays false: cert
 # files/paths are host-local and reconciled per host by weisssrv.infra.adguard_home,
 # so syncing them would fight the Ansible-managed config on the replica.
@@ -29,7 +38,8 @@ adguard_sync_features:
 # Required inputs (no default — asserted in tasks/main.yml):
 # - adguard_sync_version: pinned adguardhome-sync release, fetched by the shared
 #   prometheus_exporter install pipeline.
-# - adguard_sync_origin / adguard_sync_replica: primary and replica AdGuard API
-#   URLs.
+# - adguard_sync_origin: primary AdGuard API URL.
+# - adguard_sync_replica: replica AdGuard API URL; optional when
+#   adguard_sync_replicas carries the targets instead.
 # - adguard_sync_admin_user / adguard_sync_admin_password: credentials valid on
 #   BOTH endpoints. Never defaulted here — supply from the secret store.

@@ -13,6 +13,15 @@ adguard_home_dot_port: 853
 adguard_home_https_port: 443
 adguard_home_admin_user: admin
 
+# Listen addresses written by the first-install setup wizard. The admin UI is
+# plaintext HTTP (force_https stays false so the role can reconcile over the
+# localhost API), so restrict adguard_home_web_bind or firewall the port.
+adguard_home_web_bind: "0.0.0.0"
+adguard_home_dns_bind: "0.0.0.0"
+
+# Name resolved by the post-deploy DNS smoke test.
+adguard_home_dns_probe_name: google.com
+
 # Where files/adguard-admin-hash.py is installed; it is also the operator tool
 # for inspecting or resetting the admin hash (README § Admin password).
 adguard_home_hash_helper_path: /usr/local/sbin/adguard-admin-hash.py
@@ -33,13 +42,17 @@ adguard_home_skip_api_config: false
 # rewrites /etc/resolv.conf to 127.0.0.1 via weisssrv.infra.resolv_conf).
 adguard_home_skip_resolv_conf_update: false
 
-# Use PrivateTmp in systemd service (disable for Docker containers)
-# Docker containers may have issues with PrivateTmp causing container crashes
+# systemd sandboxing. Both are set false in containers, where the private
+# mounts systemd creates over system directories break the unit.
 adguard_home_use_private_tmp: true
-
-# Use ProtectSystem=strict in systemd service (disable for Docker containers)
-# Docker containers may crash when systemd creates private mounts over system directories
 adguard_home_use_protect_system: true
+
+# Unit ordering. The default upstream is a local recursive resolver
+# (weisssrv.infra.unbound); set these empty when pointing at a public one.
+adguard_home_after_units:
+  - unbound.service
+adguard_home_wants_units:
+  - unbound.service
 
 # DoT/DoH/DoQ. The server name must match the cert distributed to
 # adguard_home_cert_path, so it has no default.
@@ -73,10 +86,16 @@ adguard_home_cache_optimistic: false
 adguard_home_ratelimit: 20
 adguard_home_ratelimit_whitelist: []
 
-# DHCP (disabled - the router handles DHCP)
+# The role only reconciles the DISABLED state (it asserts this stays false);
+# running AdGuard's DHCP server is out of scope.
 adguard_home_dhcp_enabled: false
 
 # Reconciled on the primary only (adguard_home_is_primary). Empty lists mean
 # "manage none" — the role never deletes what it was not given.
 adguard_home_rewrites: []
 adguard_home_user_rules: []
+
+# Make the empty list authoritative instead, so the last rewrite / rule can be
+# removed through codification. Prunes everything the lists do not name.
+adguard_home_prune_rewrites: false
+adguard_home_prune_user_rules: false

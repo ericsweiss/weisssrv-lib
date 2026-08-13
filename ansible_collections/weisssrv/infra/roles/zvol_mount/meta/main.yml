@@ -5,7 +5,7 @@ galaxy_info:
   author: Eric Weiss
   description: Mount ZFS zvols attached as SCSI devices with stable device paths and UUID-based fstab
   license: MIT
-  min_ansible_version: "2.15"
+  min_ansible_version: "2.18"
   platforms:
     - name: Debian
       versions:

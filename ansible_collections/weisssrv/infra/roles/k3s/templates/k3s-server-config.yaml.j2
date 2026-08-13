@@ -1,14 +1,8 @@
-{# Deployed content (/etc/rancher/k3s/config.yaml). The writing task notifies
-   `Restart k3s` + `Wait for k3s API healthy`, which on a multi-server cluster
-   is a rolling control-plane bounce and an API-VIP failover per node. A comment
-   reword here buys every existing consumer that bounce for nothing, so keep
-   this file byte-stable — including the `(see docs/11-firewall.md)` pointers,
-   which are load-bearing only in that they are already on disk. Role narrative
-   belongs in README.md.
-
-   Corollary for new content: gate it on a variable that is OFF by default, so
-   the rendered bytes are unchanged for every consumer that has not opted in.
-   The kube-apiserver-arg block at the bottom is the worked example. #}
+{# Deployed content. The writing task notifies `Restart k3s` + `Wait for k3s API
+   healthy`, i.e. a rolling control-plane bounce per node — so keep this file
+   BYTE-STABLE, comments included, and gate any new content on a variable that
+   is OFF by default (see the kube-apiserver-arg block below). Role narrative
+   belongs in README.md. #}
 # {{ ansible_managed }}
 # K3s server configuration
 

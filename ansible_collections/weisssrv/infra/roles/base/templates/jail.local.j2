@@ -20,10 +20,8 @@ backend = systemd
 # Trade-offs are documented in the base role's tasks/fail2ban.yml header.
 banaction = route
 {% else %}
-# Physical/VM Mode: Use iptables for full packet filtering
-# iptables-multiport allows per-port banning with full netfilter capabilities.
-# nftables is preferred on modern systems but iptables provides broader
-# compatibility and works well with the Proxmox firewall stack.
+# Physical/VM: iptables-multiport for per-port banning (broad compatibility;
+# nftables backends vary by host).
 banaction = iptables-multiport
 banaction_allports = iptables-allports
 {% endif %}
@@ -55,10 +53,6 @@ backend = systemd
 mode = aggressive
 
 {% if base_fail2ban_pveproxy_enabled %}
-# Proxmox Web UI (pveproxy) Protection
-# Protects against brute-force attacks on Proxmox web interface
-# Proxmox 9.x uses journald - daemon.log doesn't exist
-
 [proxmox]
 enabled = true
 port = {{ base_fail2ban_pveproxy_port }}

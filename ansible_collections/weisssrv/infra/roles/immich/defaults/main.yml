@@ -72,11 +72,17 @@ immich_ml_urls:
   - "http://immich-machine-learning:3003"
 
 # Native Prometheus telemetry: IMMICH_TELEMETRY_INCLUDE=all exposes /metrics on
-# the API and microservices ports of the immich-server container. Both are
-# published on the guest, so scrape access is the site firewall's job.
+# the API and microservices ports of the immich-server container.
 immich_telemetry_include: all
 immich_api_metrics_port: 8081
 immich_microservices_metrics_port: 8082
+
+# Publish address for every metrics port (the two above plus the optional
+# postgres-exporter). All three endpoints are UNAUTHENTICATED. The default
+# publishes them on every interface, so a site that does not scrape from
+# off-host should pin this to 127.0.0.1; a site that does should pin it to the
+# guest's scrape-facing address and firewall the ports to the scrapers.
+immich_metrics_bind: "0.0.0.0"
 
 # Opt-in postgres_exporter sidecar: database-level metrics, which the telemetry
 # above (application-level) does not carry. Off by default, so nothing is added
@@ -90,8 +96,7 @@ immich_postgres_exporter_digest: ""
 immich_postgres_exporter_image: >-
   quay.io/prometheuscommunity/postgres-exporter:{{ immich_postgres_exporter_version
   }}{{ ('@' ~ immich_postgres_exporter_digest) if immich_postgres_exporter_digest else '' }}
-# Host port, published on all interfaces like the metrics ports above — the
-# endpoint is unauthenticated, so scope it with the guest firewall.
+# Host port, published on immich_metrics_bind like the metrics ports above.
 immich_postgres_exporter_port: 9187
 
 # SSO (OIDC). The issuer is the provider's application URL — Immich appends
@@ -145,6 +150,10 @@ immich_nginx_real_ip_from: >-
   {{ immich_nginx_real_ip_groups | map('extract', groups) | select('defined')
      | flatten | map('extract', hostvars, 'ansible_host')
      | select('defined') | list }}
+# An empty derivation is asserted, not accepted: it renders zero
+# set_real_ip_from directives and every request is then attributed to the
+# fronting proxy. Set this true where nginx really is directly exposed.
+immich_nginx_trust_no_proxy: false
 
 # Backups: nightly pg_dumpall, with a node_exporter textfile freshness metric.
 immich_backup_hour: "02"

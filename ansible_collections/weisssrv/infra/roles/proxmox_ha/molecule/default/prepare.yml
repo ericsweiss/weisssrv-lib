@@ -52,6 +52,17 @@
         mode: "0644"
       become: true
 
+    # `pvesh get /cluster/options` payload. Defaults to an already-pinned
+    # migration channel so the cases that assert "no mutations" are not
+    # perturbed; the datacenter cases overwrite it.
+    - name: Default datacenter options to a pinned secure migration channel
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/pvesh_cluster_options
+        content: |
+          {"keyboard": "en-us", "migration": {"type": "secure"}}
+        mode: "0644"
+      become: true
+
     # Stub binaries
     - name: Pvecm stub (always quorate)
       ansible.builtin.copy:
@@ -133,6 +144,22 @@
             done < "$STATE/qm_vmids" 2>/dev/null
             exit 0
           fi
+          exit 0
+      become: true
+
+    # pvesh: answers `get /cluster/options` from state; logs every mutation.
+    - name: Pvesh stub (logs mutations, answers cluster options from state)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/pvesh
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          STATE=/tmp/molecule-stub-state
+          if [ "$1" = "get" ] && [ "$2" = "/cluster/options" ]; then
+            cat "$STATE/pvesh_cluster_options" 2>/dev/null || echo "{}"
+            exit 0
+          fi
+          echo "pvesh $*" >> "$STATE/pvesh.log"
           exit 0
       become: true
 

@@ -1,9 +1,10 @@
 ---
 # Declarative Proxmox storage entries (storage.cfg), reconciled via pvesh:
-# absent entries are created; mutable properties (content, options) are
-# updated on drift; create-fixed properties (server, export, path) fail loud
-# with recreation instructions instead of silently diverging. Reconciled on ONE
-# node — storage.cfg and jobs.cfg are cluster-wide. Schema: README.
+# absent entries are created; mutable properties (content, nodes, mountpoint,
+# sparse, options) are updated on drift; create-fixed properties (server,
+# export, path, pool) fail loud with recreation instructions instead of
+# silently diverging. Reconciled on ONE node — storage.cfg and jobs.cfg are
+# cluster-wide. Schema: README.
 proxmox_backup_storage: []
 
 # Declarative vzdump backup jobs (jobs.cfg), reconciled via pvesh

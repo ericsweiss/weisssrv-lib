@@ -5,7 +5,7 @@ galaxy_info:
   author: Eric Weiss
   description: Proxmox LXC provisioning with bind mounts, GPU passthrough, and UID mapping
   license: MIT
-  min_ansible_version: "2.15"
+  min_ansible_version: "2.18"
   platforms:
     - name: Debian
       versions:

@@ -338,9 +338,8 @@
   loop_control:
     label: "{{ item.path | basename }}"
   vars:
-    # Extract `<pool>` from `zfs-load-key@<pool>.service` so we can test
-    # membership against the desired set without overflowing the line-
-    # length limit in the `when:` expression itself.
+    # Extract `<pool>` from `zfs-load-key@<pool>.service` so the `when:` below
+    # can test set membership within the line-length limit.
     _pool_name: >-
       {{ item.path | basename
          | regex_replace('^zfs-load-key@', '')

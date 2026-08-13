@@ -1,11 +1,8 @@
 ---
-# Restart, then gate on the API actually coming back. On a busy node (the NAS
-# server) k3s can exit once during startup (etcd rejoin) and be recovered by
-# Restart=always seconds later; a plain restart reports failure on that first
-# exit even though it recovers, which spuriously failed a maintenance-run-all on
-# k3s-srv-nas-01. failed_when:false tolerates that transient, and the config
-# tasks notify "Wait for k3s API healthy" alongside this so the health poll runs
-# regardless — it is the real gate (a genuinely-stuck k3s fails there).
+# Restart, then gate on the API actually coming back. k3s can exit once during
+# startup (etcd rejoin) and be recovered by Restart=always seconds later, which
+# a plain restart reports as failure. failed_when:false tolerates that; the
+# config tasks also notify "Wait for k3s API healthy", which is the real gate.
 - name: Restart k3s
   ansible.builtin.systemd:
     name: k3s

@@ -6,7 +6,10 @@ spec:
       default: build
     image:
       default: "python:3.11"
-      description: The job image the docker CLI runs in (needs curl + tar).
+      description: >-
+        The job image the docker CLI runs in. Needs curl, tar AND `dpkg
+        --print-architecture` — the before_script derives the arch from it, so
+        a non-Debian base (Alpine, UBI) fails there.
     tags:
       type: array
       default: ["infrastructure"]
@@ -43,10 +46,23 @@ spec:
     registry:
       default: "$CI_REGISTRY_IMAGE"
       description: >-
-        Registry image base used only for TAGGING the built image. The docker
-        login target is the registry HOST `$CI_REGISTRY` (with
-        CI_REGISTRY_USER/PASSWORD) — deliberately separate from this
-        image-ref base, so overriding `registry` does not change the login.
+        Registry image base used only for TAGGING the built image. Login is
+        deliberately separate (`login_*` below), so overriding this does not
+        change the credentials — but overriding it to a HOST the login trio
+        does not cover pushes unauthenticated and fails.
+    login_registry:
+      default: "$CI_REGISTRY"
+      description: >-
+        Registry HOST `docker login` targets. Defaults to the GitLab built-in;
+        pass ghcr.io / docker.io / a Harbor host together with the two below.
+    login_user:
+      default: "$CI_REGISTRY_USER"
+      description: Username for `login_registry` (a CI variable REFERENCE).
+    login_password:
+      default: "$CI_REGISTRY_PASSWORD"
+      description: >-
+        Password/token for `login_registry` (a CI variable REFERENCE, never a
+        literal — it is echoed into `docker login --password-stdin`).
     image_name:
       default: ""
       description: >-
@@ -91,6 +107,16 @@ spec:
         anything baked into it) so an unrelated commit does not trigger a
         multi-minute DinD rebuild and re-push. The `web` clause stays manual and
         ungated.
+    schedule_when:
+      default: "on_success"
+      options: ["on_success", "never"]
+      description: >-
+        What a SCHEDULED pipeline does. `changes:` always evaluates true on a
+        schedule, so the default rebuilds unconditionally — and the layer cache
+        is deliberately skipped there, which makes the scheduled build a
+        fresh-dependency canary. Pass `never` when that rebuild-plus-`:latest`
+        push is not wanted; every other job-defining template in this library
+        excludes schedules outright.
     digest_dotenv_var:
       default: ""
       description: >-
@@ -178,12 +204,9 @@ spec:
       tar xz --strip-components=1 -C /usr/local/bin -f /tmp/docker.tgz docker/docker
       rm /tmp/docker.tgz
       docker --version
-      # Install the Docker buildx CLI plugin (pinned + sha256, same checksum
-      # discipline as the static docker CLI). The static docker binary ships NO
-      # buildx plugin, so with DOCKER_BUILDKIT=1 `docker build` fails with
-      # "BuildKit is enabled but the buildx component is missing or broken";
-      # installing the plugin routes the build through the dind daemon's embedded
-      # BuildKit (enables --cache-from + inline cache).
+      # Install the Docker buildx CLI plugin (pinned + sha256). Without it
+      # DOCKER_BUILDKIT=1 fails: "BuildKit is enabled but the buildx component
+      # is missing or broken".
       case "$ARCH" in
         amd64) BUILDX_SHA256="$BUILDX_SHA256_AMD64" ;;
         arm64) BUILDX_SHA256="$BUILDX_SHA256_ARM64" ;;
@@ -199,7 +222,7 @@ spec:
       # to the Docker daemon at tcp://docker:2375".
       for i in $(seq 1 30); do docker info >/dev/null 2>&1 && break; echo "waiting for docker daemon ($i/30)..."; sleep 2; done
       docker info >/dev/null 2>&1 || { echo "docker daemon did not become ready"; exit 1; }
-    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - echo "$[[ inputs.login_password ]]" | docker login -u "$[[ inputs.login_user ]]" --password-stdin "$[[ inputs.login_registry ]]"
     - |
       # Full image ref for an image_name (empty = the registry base itself).
       # Shared with the digest-dotenv step so both derive the ref one way.
@@ -215,6 +238,13 @@ spec:
       build_and_push() {
         img="$1"
         ref="$(image_ref "$img")"
+        # OCI provenance, applied with --label so no consumer Dockerfile needs
+        # editing: an image pulled cross-project traces back to the commit that
+        # built it. None of these values can contain a space.
+        oci_labels="--label org.opencontainers.image.source=${CI_PROJECT_URL}
+          --label org.opencontainers.image.revision=${CI_COMMIT_SHA}
+          --label org.opencontainers.image.version=${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}
+          --label org.opencontainers.image.title=${img:-$CI_PROJECT_NAME}"
         cache_args=""
         if [ "$CI_PIPELINE_SOURCE" != "schedule" ]; then
           cache_args="--cache-from ${ref}:latest --build-arg BUILDKIT_INLINE_CACHE=1"
@@ -222,8 +252,8 @@ spec:
         df_arg=""
         [ -n "$DOCKERFILE" ] && df_arg="-f $DOCKERFILE"
         attempt=1; max=3
-        # shellcheck disable=SC2086  # word-split cache_args + df_arg + extra args
-        until docker build $cache_args $df_arg $EXTRA_BUILD_ARGS -t "${ref}:${CI_COMMIT_SHORT_SHA}" "$BUILD_CONTEXT" \
+        # shellcheck disable=SC2086  # word-split oci_labels + cache_args + df_arg + extra args
+        until docker build $oci_labels $cache_args $df_arg $EXTRA_BUILD_ARGS -t "${ref}:${CI_COMMIT_SHORT_SHA}" "$BUILD_CONTEXT" \
               && docker push "${ref}:${CI_COMMIT_SHORT_SHA}"; do
           attempt=$((attempt+1))
           if [ "$attempt" -gt "$max" ]; then
@@ -268,6 +298,9 @@ spec:
       dotenv: $[[ inputs.digest_dotenv_file ]]
     expire_in: 7 days
   rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: $[[ inputs.schedule_when ]]
+      changes: $[[ inputs.changes ]]
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes: $[[ inputs.changes ]]
     - if: '$CI_COMMIT_BRANCH == "$[[ inputs.default_branch ]]"'

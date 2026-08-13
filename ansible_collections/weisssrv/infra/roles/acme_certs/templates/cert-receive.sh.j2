@@ -69,15 +69,10 @@ if ! openssl x509 -in "$TMP/fullchain.pem" -noout -ext subjectAltName 2>/dev/nul
      | tr ',' '\n' | tr -d ' ' | grep -Fxq "DNS:*.${EXPECT_DOMAIN}"; then
   fail "certificate does not cover *.${EXPECT_DOMAIN}"
 fi
-# The checks above only prove the bundle is internally self-consistent — a
-# self-signed (or attacker-CA) cert carrying the right SAN would pass them all.
-# Require the leaf to chain to a CA the host already trusts (the same public
-# Let's Encrypt chain the real cert uses), so the pinned distribution key can't
-# be abused to install a well-formed-but-untrusted wildcard cert. The fullchain
-# supplies its own intermediate via -untrusted; roots come from the system
-# store. Trade-off: this fails-closed if the local truststore ever lags a future
-# LE root/intermediate rotation — acceptable, since a stale truststore would
-# also break every TLS client on the host.
+# Self-consistency is not enough — a self-signed cert with the right SAN passes
+# every check above. Require the leaf to chain to a CA the host already trusts
+# (fullchain supplies the intermediate via -untrusted; roots from the system
+# store). Fails closed on a stale truststore.
 if ! openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt \
        -untrusted "$TMP/fullchain.pem" "$TMP/fullchain.pem" >/dev/null 2>&1; then
   fail "certificate does not chain to a trusted CA"

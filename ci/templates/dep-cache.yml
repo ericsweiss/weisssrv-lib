@@ -1,3 +1,20 @@
+spec:
+  inputs:
+    key_files:
+      type: array
+      default: ["requirements.txt", "ansible/requirements.yml"]
+      description: >-
+        Pin files whose contents key the cache. **At most two** — GitLab's
+        `cache:key:files` limit, and a third entry fails pipeline CREATION, not
+        the job. A repo with more pin files should key on one concatenated
+        lockfile instead. A path that does not exist is ignored by GitLab, so a
+        stale entry degrades silently — list what this repo actually pins.
+    cache_paths:
+      type: array
+      default: [".cache/pip", ".cache/ansible-collections"]
+      description: >-
+        Cached directories. Must match the two variables below if either is
+        overridden on the consuming job.
 ---
 # Shared pip + ansible-galaxy cache fragment. Defines the hidden `.dep-cache`
 # job; a consumer `include:`s this file and `extends: .dep-cache` (or references
@@ -6,17 +23,15 @@
 # includes the pin files so a dependency bump busts it. No-op (just no cache
 # hits) when the runner has no distributed cache backend — safe either way.
 #
-# This is a plain fragment (no spec:inputs): it carries no parameterizable
-# values.
+# `key_files` are CONSUMER paths: a repo whose pins live elsewhere must pass its
+# own, or the key is computed from files that never change and the
+# bump-busts-it guarantee does not hold. GitLab caps `cache:key:files` at TWO
+# entries — a third is a pipeline-creation error.
 .dep-cache:
   variables:
     PIP_CACHE_DIR: "${CI_PROJECT_DIR}/.cache/pip"
     ANSIBLE_COLLECTIONS_PATH: "${CI_PROJECT_DIR}/.cache/ansible-collections"
   cache:
     key:
-      files:
-        - requirements.txt
-        - ansible/requirements.yml
-    paths:
-      - .cache/pip
-      - .cache/ansible-collections
+      files: $[[ inputs.key_files ]]
+    paths: $[[ inputs.cache_paths ]]

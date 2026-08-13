@@ -103,7 +103,7 @@
         or not sync_metrics_script.stat.executable
         or sync_metrics_script.stat.mode != '0755'
 
-    # The textfile dir is templated from node_exporter_host_textfile_dir (set to
+    # adguard_sync_textfile_dir aliases node_exporter_host_textfile_dir (set to
     # a custom path in molecule.yml), so the rendered PROM_DIR must track it.
     - name: Verify the metrics writer templates PROM_DIR from the host var
       ansible.builtin.command: >-

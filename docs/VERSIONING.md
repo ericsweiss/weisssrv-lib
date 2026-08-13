@@ -55,17 +55,23 @@ tested together in the pipeline that cut it — the templates against their own
 jobs, the collection roles against the molecule images built from the same
 commit, the scripts against `tests/`.
 
-The one pair that needs an explicit act is the molecule images, because they
-live in a registry rather than in git. The release pipeline's
-`publish-molecule-image-tags` job runs after `semantic-release` and retags the
-`molecule-ci` / `molecule-test` images this pipeline built to `:vX.Y.Z`,
-appending that validated tag↔image pair to the registry. So a consumer that
-pins `ref: vX.Y.Z` can pin `…/molecule-test:vX.Y.Z` and know the two were
-exercised against each other. The job is a no-op when no release was cut, and
-warns rather than reddening when the images were never pushed at all.
+The pairs that need an explicit act are the published images, because they live
+in a registry rather than in git. The release pipeline's `publish-image-tags`
+job runs after `semantic-release` and retags the `molecule-ci` /
+`molecule-test` / `ansible-deploy` images this pipeline built to `:vX.Y.Z`,
+appending that tag↔image pair to the registry. The two molecule images are
+*exercised* by the pipeline that cuts the tag, so a consumer that pins
+`ref: vX.Y.Z` can pin `…/molecule-test:vX.Y.Z` and know the two were run against
+each other. `ansible-deploy` is retagged for pin alignment only — no job in this
+pipeline runs it; what holds it to the tag is `tests/test_ansible_deploy_image.py`,
+a static assertion that `docker/ansible-deploy/requirements.txt`'s `ansible==`
+pin equals the `ansible_version` default in `ci/deploy/deploy-base.yml`. The job
+is a no-op when no release was cut, and warns rather than reddening when an
+image was never pushed at all.
 
-`:vX.Y.Z` image tags exist only from the first release that carried that job —
-before it, pin `:latest` or an immutable `:<short-sha>`.
+`:vX.Y.Z` image tags exist only from the first release that carried that job,
+and `ansible-deploy:vX.Y.Z` only from the release that added that image —
+before either, pin `:latest` or an immutable `:<short-sha>`.
 
 ## No changelog file
 
@@ -168,15 +174,15 @@ config, and this library tracks no upstream versions, so its pipeline does not
 include it.
 
 **A library bump is not just the `include: ref:`.** Five surfaces carry a pin,
-and only the first is enforced by a gate. Walk all five in one MR:
+and three of them are enforced by a gate (1, 2 and 4). Walk all five in one MR:
 
 | # | Surface | Where | Enforced by |
 |---|---|---|---|
 | 1 | CI template `ref:` on every include entry | `.gitlab-ci.yml` (plus the single-source `WEISSSRV_LIB_REF` variable) | `scripts/check-lib-pins.py` — vendored; fails on drift or a branch ref; `--fix` rewrites them |
-| 2 | Ansible collection `version:` | `ansible/requirements.yml` | nothing — a stale pin installs an old collection silently |
+| 2 | Ansible collection `version:` | `ansible/requirements.yml` | the same `scripts/check-lib-pins.py` — it reads the sibling `ansible/requirements.yml` and holds the collection `version:` equal to `WEISSSRV_LIB_REF`; `--fix` syncs it. The file it inspects is forge-independent, but the ref it compares against comes from `.gitlab-ci.yml`, so a consumer without one cannot run the gate |
 | 3 | Terraform module `?ref=` | each `main.tf` `source =` | nothing — `terraform init` happily fetches the old tag |
-| 4 | **Vendored scripts** | the consumer's `scripts/` | nothing — the copies drift and both keep working |
-| 5 | CLI install spec | wherever `pipx install …@<tag>` is written (the app template's `scripts/rename.sh` has its own `LIB_REF` default) | nothing |
+| 4 | **Vendored scripts** (and the lint profiles, vendored suites and workflows alongside them) | the consumer's `scripts/`, plus the paths `scripts/vendored-paths.yml` records | `scripts/check-vendored-copies.py` — registry-driven, run from the consumer against a library checkout at its pinned `--ref`; fails on drift in either direction, on a converged fork, and on a fork whose library side moved since its `reconciled_sha256`. Per-consumer adoption is still landing |
+| 5 | CLI install spec | wherever `pipx install …@<tag>` is written | nothing |
 
 [CONSUMERS.yml](CONSUMERS.yml) records which of the five each consumer actually
 has, and which files hold them — read it when cutting a release so no consumer
@@ -188,7 +194,7 @@ The procedure:
 1. Read the target tag's GitLab release notes for what changed — the release job
    generates them per tag; this repo keeps no CHANGELOG file.
 2. Bump every `ref:` / `version:` / `?ref=` in one MR (`check-lib-pins.py --fix`
-   does surface 1).
+   does surfaces 1 and 2).
 3. **Re-vendor the scripts** the consumer copies. All three consumers gate
    byte-identity against the library at their pinned ref (see "A vendored
    script is a pin too" in [INCLUDE-CONTRACT.md](INCLUDE-CONTRACT.md)), so
@@ -208,13 +214,14 @@ The procedure:
 
 Before merging the MR that will cut a tag:
 
-- [ ] `galaxy.yml` `version:` and `cli/pyproject.toml` `version:` both equal the
-      version the commit subjects will produce (`tests/test_ansible_collection.py`
-      asserts all three agree).
-- [ ] The **Current release** line in `README.md` names the tag about to be cut.
-      It is the only literal tag in the root README, `docs/` and the collection
-      README — every pin example there is written as `<CURRENT_TAG>`. Sweep for
-      regressions:
+- [ ] `galaxy.yml` `version:`, `cli/pyproject.toml` `version:` and the
+      **Current release** line in `README.md` all move TOGETHER to the version
+      the commit subjects will produce (`tests/test_ansible_collection.py`
+      asserts all three agree, so they stay green while all three name the
+      *previous* release — nothing reds until they diverge).
+- [ ] That **Current release** line is the ONLY literal tag in the root README,
+      `docs/` and the collection README — every pin example there is written as
+      `<CURRENT_TAG>`. Sweep for regressions:
 
       ```bash
       grep -rn 'ref: v[0-9]\|@v[0-9]\|?ref=v[0-9]' \
@@ -225,12 +232,47 @@ Before merging the MR that will cut a tag:
 - [ ] The READMEs that still carry a **literal** tag — `cli/README.md`,
       `docker/README.md`, and each `terraform/modules/*/README.md` — name the new
       one. These are per-directory front doors whose examples are copy-pasted
-      directly, so they show a real tag rather than a placeholder; that means
-      they need the bump by hand, and they are the ones that go stale.
+      directly, so they show a real tag rather than a placeholder.
+      `tests/test_release_version.py` holds them equal to `cli/pyproject.toml`
+      and to the README **Current release** line, so a missed sweep reds the
+      pipeline instead of shipping.
 - [ ] Every changed template's parity note in `INCLUDE-CONTRACT.md` reflects the
       change, and any new input is listed in that template's input set.
 - [ ] `CONSUMERS.yml` still describes reality (a consumer that gained or dropped
       an include, a script it now vendors, a new pin site).
+- [ ] `scripts/vendored-paths.yml` is re-taken against the tree being tagged:
+      every `reconciled_sha256` is the sha of the library file **as this release
+      ships it**, and every `consumer:` path matches **the layout the consumer
+      will be on when it adopts this tag** — not necessarily the layout on its
+      `main` today. Both are read at the consumer's pinned tag, so a stale value
+      reds the consumer's gate with no consumer-side fix.
+      `tests/test_check_vendored_copies.py::TestShippedRegistry` fails on a
+      stale sha; the paths are the manual half.
+- [ ] **Cross-repo sequencing.** When a consumer's registry rows encode a layout
+      that only exists on an unmerged branch of that consumer, the consumer's MR
+      merges FIRST. Concretely, today: `weisssrv-app-template`'s copier
+      conversion must be merged to its `main` before this tag is cut, because
+      every one of its rows encodes the post-conversion `template/…` layout —
+      cut first and all of them red with no consumer-side fix (the registry is
+      library-owned, the tag immutable, so only a follow-up patch release
+      clears it). Verify against the MERGED tree, not a working copy:
+
+      ```bash
+      scripts/check-vendored-copies.py --consumer weisssrv-app-template \
+        --repo-root <app-template checkout on main> --lib-path .
+      scripts/check-vendored-copies.py --consumer weisssrv-cluster-template \
+        --repo-root <cluster-template checkout on main> --lib-path .
+      ```
+
+      Nothing mechanical backstops this: the library's own pipeline no longer
+      clones the templates, so the coupling is a manual step by design.
+- [ ] The collection's
+      [MIGRATING.md](../ansible_collections/weisssrv/infra/MIGRATING.md)
+      `# Unreleased (next release)` heading is retitled to the tag being cut,
+      and a fresh empty `# Unreleased (next release)` opened above it. It is the
+      only per-release migration record for the collection (see
+      [No changelog file](#no-changelog-file)); leaving it untitled makes the
+      next cycle's delta read as one pending set with this one's.
 - [ ] A breaking change is written as `feat!:` or carries a `BREAKING CHANGE:`
       trailer — otherwise it ships as a patch and consumers get it unannounced.
 

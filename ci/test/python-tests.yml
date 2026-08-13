@@ -29,7 +29,7 @@ spec:
       default: ""
       description: >-
         Extra pip requirement specs installed alongside pytest/pyyaml, e.g.
-        "ruamel.yaml==0.18.10". Word-split; pin every entry. Routed through a
+        "copier==9.17.0". Word-split; pin every entry. Routed through a
         job variable, so a version-ceiling pin (`<`) is safe here — see the
         PIP_PACKAGES note below.
     setup_command:

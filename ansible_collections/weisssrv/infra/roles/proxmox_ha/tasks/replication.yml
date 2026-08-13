@@ -259,15 +259,12 @@
 
 - name: Update storage replication jobs
   vars:
-    # Get current job state for comparison
     _current: "{{ proxmox_ha_current_jobs_detail.get(item.id, {}) }}"
-    # Normalize desired values for comparison
     _desired_schedule: "{{ item.schedule }}"
     _desired_comment: "{{ item.comment | default('') }}"
-    # Normalize current values
     _current_schedule: "{{ _current.schedule | default('') }}"
     _current_comment: "{{ _current.comment | default('') }}"
-    # Detect drift (only schedule and comment can be updated, target requires delete+recreate)
+    # Only schedule and comment are updatable in place.
     _has_drift: >-
       {{ _desired_schedule != _current_schedule or
          _desired_comment != _current_comment }}
@@ -289,7 +286,6 @@
     - inventory_hostname == item.source_node
     # Skip if VM has migrated away from this node (source drift)
     - item.id.split('-')[0] in proxmox_ha_local_vmids
-    # Only update if there's actual drift
     - _has_drift | bool
   loop: "{{ proxmox_ha_replication_jobs | default([]) }}"
   loop_control:
@@ -398,8 +394,7 @@
   when: proxmox_ha_source_drift_jobs | length > 0
   tags: [proxmox_ha_replication]
 
-# Also check for jobs that exist in Proxmox on a DIFFERENT node than configured
-# This helps identify when the actual state doesn't match config
+# Report jobs that exist on a DIFFERENT node than configured.
 - name: Detect jobs running from unexpected source nodes
   ansible.builtin.set_fact:
     proxmox_ha_unexpected_source_jobs: >-

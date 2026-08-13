@@ -1,15 +1,12 @@
 ---
 # CI for weisssrv-lib itself. Two runner classes: the lint/test/security/review
 # jobs are TAG-LESS and non-root safe (`pip install --user`, `python -m`, no
-# apt, no /usr/local/bin writes) and land on the shared runner; the two molecule
-# image builds, the molecule matrix and the image retag need privileged
+# apt, no /usr/local/bin writes) and land on the shared runner; the three image
+# builds, the molecule matrix and the image retag need privileged
 # Docker-in-Docker and are tagged `infrastructure`.
 #
-# ADMIN PREREQUISITES:
-#   1. `infrastructure` is a PROJECT runner: it must be enabled for this project
-#      (Settings > CI/CD > Runners) or every tagged job sits pending.
-#   2. The app-template project must list weisssrv-lib on its CI/CD job-token
-#      allowlist, so python-tests can clone it for the cross-repo contract test.
+# ADMIN PREREQUISITE: `infrastructure` is a PROJECT runner — it must be enabled
+# for this project (Settings > CI/CD > Runners) or every tagged job sits pending.
 #
 # The ci/ templates are `spec:inputs` files, not standalone pipelines, so they
 # cannot be `glab ci lint`'d in isolation: ci-templates-parse below is the
@@ -96,6 +93,19 @@ include:
       tags: ["infrastructure"]
       changes:
         - "docker/molecule-test/**/*"
+  # The deploy job image (docker/ansible-deploy/README.md). No job in THIS
+  # pipeline consumes it — it is built here so consumers can pull it at a
+  # release tag instead of re-installing the op CLI, ansible and git on every
+  # deploy. `changes` is its own context alone, disjoint from both molecule
+  # contexts for the same reason they are disjoint from each other.
+  - local: /ci/build/docker-build.yml
+    inputs:
+      job_name: build-ansible-deploy
+      image_name: ansible-deploy
+      context: docker/ansible-deploy
+      tags: ["infrastructure"]
+      changes:
+        - "docker/ansible-deploy/**/*"
   # MR-targeted molecule child pipeline. Every other input already matches this
   # repo (roles_dir/ci_file/jobs_include/global_triggers/changes and the two
   # image jobs); integration_dir points at a dir that does not exist, which is
@@ -124,10 +134,17 @@ include:
         # Self-application: a template-only MR must EXECUTE a rendered job, and
         # this one's before_script is where the pip_extra variable-routing lives.
         - "ci/**/*"
-  # Self-applied with a deliberately trivial check: this repo tracks no upstream
-  # versions, so the CONTENT is a no-op, but rendering the job still exercises
-  # its inputs, interpolation, rules and artifact behaviour in the MR that
-  # changes it instead of in a consumer.
+        # The molecule image pins the same linter versions as this job's
+        # inputs; a one-sided bump must render the job that proves them equal.
+        - "docker/molecule-ci/requirements.txt"
+  # Self-applied with a deliberately trivial check. The CONTENT is a no-op:
+  # check-versions.py reads a service registry keyed off a consumer's
+  # `*_version` vars file, and this repo has none — its own upstream pins
+  # (the two base images, the static docker CLI, the pip pins in
+  # docker/molecule-ci/requirements.txt) are bumped by hand and are NOT
+  # tracked here. Rendering the job still exercises its inputs,
+  # interpolation, rules and artifact behaviour in the MR that changes it
+  # instead of in a consumer.
   - local: /ci/maintenance/version-check.yml
     inputs:
       tags: []
@@ -149,6 +166,8 @@ include:
     inputs:
       tags: []
       image: python:3.13-slim
+      # Explicit copy of the template default; the parity gate holds all three
+      # copies (here, the template, the molecule image) equal.
       yamllint_version: "1.38.0"
       config: "-c .yamllint"
       targets: "ci/ lint/ taskfiles/ ansible_collections/ .gitlab/ .gitlab-ci.yml"
@@ -177,30 +196,33 @@ include:
       tags: []
       image: python:3.13-slim
       config: "--config lint/ruff.toml"
-      targets: "scripts tests cli"
+      # examples/ carries a runnable *.example.py that tests/test_examples.py
+      # loads, so it is linted like any other shipped source.
+      targets: "scripts tests cli examples"
       changes:
         - "scripts/**/*.py"
         - "tests/**/*.py"
         - "cli/**/*.py"
+        - "examples/**/*.py"
         - "lint/ruff.toml"
         - ".gitlab-ci.yml"
   - local: /ci/lint/docs-link-check.yml
     inputs:
       tags: []
       image: python:3.13
-      # AGENTS.md and cli/README.md are deliberately absent: the checker's
-      # default roots are docs/ + top-level README.md/CLAUDE.md, so triggering
-      # on them would imply coverage the job does not have.
+      # The checker's default roots are every git-TRACKED *.md, so the job
+      # already covers AGENTS.md, cli/README.md, lint/README.md and
+      # taskfiles/README.md — `changes:` has to match that scope or an MR
+      # touching only one of them never fires the gate.
       changes:
-        - "docs/**/*"
-        - "README.md"
+        - "**/*.md"
         - "scripts/check-doc-links.py"
   - local: /ci/test/python-tests.yml
     inputs:
       tags: []
       # The FULL python image (not -slim) ships git — needed by the
-      # check-taskfile / tree.py tests that init throwaway repos — so no apt
-      # package is required and the job stays non-root safe.
+      # check-taskfile and vendored-copy tests that init throwaway repos — so no
+      # apt package is required and the job stays non-root safe.
       image: python:3.13
       apt_packages: ""
       test_dir: "tests cli/tests"
@@ -208,21 +230,7 @@ include:
       pyyaml_version: "6.0.2"
       # copier: without it the CLI's new-cluster tests skip (it is an optional
       # extra of the package, not a runtime dependency).
-      pip_packages: "ruamel.yaml==0.18.10 copier==9.17.0"
-      # Clone the app template so test_template_contract.py's cross-repo half
-      # RUNS here (WEISSSRV_TEMPLATE_REQUIRED below turns its skip into a
-      # failure). Needs weisssrv-lib on the template project's job-token
-      # allowlist (admin prerequisite, see header).
-      #
-      # WEISSSRV_TEMPLATE_REF defaults to the template's default branch. Point it
-      # (as a pipeline variable) at the template's MR branch when a change spans
-      # both repos — GitLab cannot merge two projects atomically, so whichever
-      # lands first would otherwise red the other.
-      setup_command: >-
-        git clone --depth 1
-        ${WEISSSRV_TEMPLATE_REF:+--branch "$WEISSSRV_TEMPLATE_REF"}
-        "${CI_SERVER_PROTOCOL}://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/eric/weisssrv-app-template.git"
-        "$WEISSSRV_TEMPLATE_ROOT"
+      pip_packages: "copier==9.17.0"
       changes:
         - "scripts/**/*"
         - "tests/**/*"
@@ -239,6 +247,13 @@ include:
         # the test that guards them.
         - "ci/**/*"
         - ".gitlab-ci.yml"
+        # test_lint_version_parity.py holds the molecule image's linter pins
+        # equal to the ci/lint template defaults.
+        - "docker/**/*"
+        # test_release_version.py asserts the release literals in the
+        # copy-paste pin snippets equal cli/pyproject.toml's version.
+        - "README.md"
+        - "terraform/modules/*/README.md"
   # cpu_selector keeps its default: gitleaks SIGILLs on the legacy-CPU nodes and
   # the shared runner allowlists exactly that override. allow_failure keeps its
   # default too — findings block here, which is the point of shipping the gate.
@@ -290,13 +305,13 @@ include:
     inputs:
       tags: []
 
-# Republish the two molecule images under the tag semantic-release just cut, so
-# a consumer pins the image at the SAME ref it pins the templates at
+# Republish every image this repo builds under the tag semantic-release just
+# cut, so a consumer pins the image at the SAME ref it pins the templates at
 # (molecule-ci:vX.Y.Z). The build jobs are path-gated, so most releases ship an
 # image built by an earlier pipeline: the source is this pipeline's :<short-sha>
 # when it rebuilt, else the current :latest. Both immutable tags stay published
 # either way — this only adds the version alias.
-publish-molecule-image-tags:
+publish-image-tags:
   stage: release
   tags: ["infrastructure"]
   # Writes tags consumers pin; must not be cancelled by the next merge.
@@ -342,7 +357,7 @@ publish-molecule-image-tags:
       done
       docker info >/dev/null 2>&1 || { echo "docker daemon did not become ready"; exit 1; }
       echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
-      for img in molecule-ci molecule-test; do
+      for img in molecule-ci molecule-test ansible-deploy; do
         ref="${CI_REGISTRY_IMAGE}/${img}"
         if docker pull "${ref}:${CI_COMMIT_SHORT_SHA}" >/dev/null 2>&1; then
           src="${ref}:${CI_COMMIT_SHORT_SHA}"
@@ -364,16 +379,11 @@ publish-molecule-image-tags:
     - if: '$CI_COMMIT_BRANCH == "main"'
 
 # Same-named override MERGES with the included python-tests job at the map
-# level: these variables land on it without touching its scripts. The env pair
-# makes the template-contract test's cross-repo half mandatory here (an
-# explicit-but-invalid root aborts collection; a missing checkout fails instead
-# of skipping).
+# level: these variables land on it without touching its scripts.
 python-tests:
   variables:
     KUBERNETES_MEMORY_LIMIT: "2Gi"
     KUBERNETES_MEMORY_REQUEST: "512Mi"
-    WEISSSRV_TEMPLATE_ROOT: "/tmp/weisssrv-app-template"
-    WEISSSRV_TEMPLATE_REQUIRED: "1"
     # Full clone: TestReleaseLineage binds galaxy.yml / cli/pyproject.toml to the
     # tag semantic-release will cut, and on the shallow default those assertions
     # vanish the moment the last release falls outside the clone depth — i.e.
@@ -472,11 +482,17 @@ ci-templates-parse:
     - |
       python - <<'PY'
       import glob, os, sys, yaml
+
+      class Loader(yaml.SafeLoader):
+          """SafeLoader that understands GitLab's `!reference [job, key]`."""
+
+      Loader.add_constructor("!reference", lambda l, n: l.construct_sequence(n))
+
       bad = 0
       found = sorted(glob.glob("ci/**/*.yml", recursive=True))
       for f in found:
           try:
-              list(yaml.safe_load_all(open(f)))
+              list(yaml.load_all(open(f), Loader=Loader))
               print("ok  ", f)
           except Exception as e:  # noqa: BLE001
               bad = 1
@@ -576,45 +592,32 @@ molecule-tests:
         SCENARIO: default
       - ROLE: adguard_home
         SCENARIO: default
-      # tls: the AdGuard-over-HTTPS branch (self-contained scenario, no -c base).
+      # Second scenario: the AdGuard-over-HTTPS branch, self-contained (no -c base).
       - ROLE: adguard_home
         SCENARIO: tls
       - ROLE: adguard_sync
         SCENARIO: default
       - ROLE: alloy_host
         SCENARIO: default
-      # apt_signed_repo is the shared signed-apt-repo pipeline backing
-      # alloy_host + the consumer-side roles; its scenario hermetically tests
-      # both the accept (correct fingerprint) and reject paths.
       - ROLE: apt_signed_repo
         SCENARIO: default
       - ROLE: base
         SCENARIO: default
-      # compose_app is the shared compose-lifecycle super-role (compose systemd
-      # unit + write_prom_metrics lib + nginx task flow); its scenario asserts
-      # the rendered unit body and the metrics lib without a Docker runtime.
       - ROLE: compose_app
         SCENARIO: default
-      # docker_engine renders + asserts the journald daemon.json on the
-      # skip-install path (no real repo or daemon in the container).
       - ROLE: docker_engine
         SCENARIO: default
-      # encrypted_swap contract-tests the crypttab/systemd render on the skip
-      # path (a dm-crypt random-key swap cannot be created in a container).
       - ROLE: encrypted_swap
         SCENARIO: default
       - ROLE: gitlab
         SCENARIO: default
       - ROLE: home_assistant
         SCENARIO: default
-      # immich + immich_ml run on their skip-install path (no Docker runtime in
-      # the container): compose file, .env, nginx site, units and backup wrapper
-      # are rendered and asserted instead.
       - ROLE: immich
         SCENARIO: default
       - ROLE: immich_ml
         SCENARIO: default
-      # k3s runs server + agent as separate jobs to halve wall time.
+      # Split into two jobs to halve wall time.
       - ROLE: k3s
         SCENARIO: default
       - ROLE: k3s
@@ -633,9 +636,6 @@ molecule-tests:
         SCENARIO: default
       - ROLE: postfix_null_client
         SCENARIO: default
-      # prometheus_exporter is the shared install pipeline backing zfs_exporter +
-      # unbound_exporter; its scenario contract-tests both artifact branches
-      # (tarball + deb) on the skip path.
       - ROLE: prometheus_exporter
         SCENARIO: default
       - ROLE: proxmox_backup
@@ -652,13 +652,9 @@ molecule-tests:
         SCENARIO: default
       - ROLE: resolv_conf
         SCENARIO: default
-      # empty-search: the opt-out branch (`resolv_conf_search_domains: []`), so a
-      # regression that emits a bare `search ` trips CI.
+      # Second scenario: the opt-out branch (`resolv_conf_search_domains: []`).
       - ROLE: resolv_conf
         SCENARIO: empty-search
-      # restic_offsite runs against a local file repo + a fake snapshot tree (no
-      # network), asserting subcommands, metric names, 0600 secret files, timer
-      # enable, and the freshness-guard abort.
       - ROLE: restic_offsite
         SCENARIO: default
       - ROLE: smtp_relay
@@ -675,15 +671,10 @@ molecule-tests:
         SCENARIO: default
       - ROLE: zfs_arc_cap
         SCENARIO: default
-      # zfs_encryption validates template rendering, file modes, systemd
-      # ordering hooks and per-pool service enable. It cannot exercise
-      # `zfs load-key` (no kernel module in a container) or live 1Password
-      # Connect calls, but covers the deploy contract with mocked inputs.
       - ROLE: zfs_encryption
         SCENARIO: default
       - ROLE: zfs_exporter
         SCENARIO: default
-      # zvol_mount uses loop devices in prepare; works under privileged DinD.
       - ROLE: zvol_mount
         SCENARIO: default
   rules:

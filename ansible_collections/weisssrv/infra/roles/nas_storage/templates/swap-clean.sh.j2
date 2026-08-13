@@ -51,7 +51,7 @@ vm_state() { { qm status "$1" 2>/dev/null || true; } | awk '{print $2}'; }
 # Emitted on EVERY exit by the cleanup() EXIT trap, so a single unsafe-abort
 # night or a guest-stop escalation is directly alertable — not only via the
 # indirect 2-day swap-build-up proxy.
-PROM_DIR="/var/lib/node_exporter"
+PROM_DIR="{{ nas_storage_backup_artifact_metrics_dir | default(node_exporter_host_textfile_dir | default('/var/lib/node_exporter')) }}"
 PROM_FILE="${PROM_DIR}/swap_clean.prom"
 run_success=0
 swap_cleared_bytes=0
@@ -61,6 +61,7 @@ write_prom_metrics() {
   local ts tmp sval
   ts="$(date +%s)"
   tmp="${PROM_FILE}.$$"
+  mkdir -p "$PROM_DIR" 2>/dev/null || true
   {
     echo "# HELP swap_clean_last_run_success Whether the last run succeeded (1=cleared/nothing-to-do/deliberate-skip, 0=failed or aborted-unsafe)"
     echo "# TYPE swap_clean_last_run_success gauge"

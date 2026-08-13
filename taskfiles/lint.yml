@@ -18,6 +18,10 @@ vars:
   # Files/globs shellcheck covers (matches ci/lint/shellcheck.yml direct_globs
   # for a scripts-only repo). Override in the consumer Taskfile if needed.
   SHELLCHECK_GLOBS: 'scripts/*.sh'
+  # Optional directory searched recursively for *.sh, mirroring the CI job's
+  # find_dir. Empty skips the recursion. The CI job additionally lints *.sh.j2
+  # through a Jinja neutralizer; that half is CI-only.
+  SHELLCHECK_FIND_DIR: ''
   DOC_LINK_SCRIPT: 'scripts/check-doc-links.py'
 
 tasks:
@@ -36,7 +40,33 @@ tasks:
   shellcheck:
     desc: ShellCheck the repo's shell scripts (warning severity, SC1091/SC2034 excluded).
     cmds:
-      - 'shellcheck --severity=warning --exclude=SC1091,SC2034 {{.SHELLCHECK_GLOBS}}'
+      # Mirrors ci/lint/shellcheck.yml: a glob matching nothing is SKIPPED with
+      # a note (passing it through literally would error "No such file"), and a
+      # run that checked no file at all FAILS rather than reporting green.
+      - |
+        set -u
+        linted=0
+        failed=0
+        for f in {{.SHELLCHECK_GLOBS}}; do
+          if [ -e "$f" ]; then
+            shellcheck --severity=warning --exclude=SC1091,SC2034 "$f" || failed=1
+            linted=$((linted + 1))
+          else
+            echo "no files match '$f' — skipping"
+          fi
+        done
+        find_dir='{{.SHELLCHECK_FIND_DIR}}'
+        if [ -n "$find_dir" ] && [ -d "$find_dir" ]; then
+          find "$find_dir" -name '*.sh' -type f \
+            -exec shellcheck --severity=warning --exclude=SC1091,SC2034 {} + || failed=1
+          linted=$((linted + $(find "$find_dir" -name '*.sh' -type f | wc -l)))
+        fi
+        [ "$linted" -gt 0 ] || {
+          echo "ERROR: shellcheck matched no files — SHELLCHECK_GLOBS and SHELLCHECK_FIND_DIR cover nothing"
+          exit 1
+        }
+        [ "$failed" -eq 0 ] && echo "ShellCheck passed ($linted file(s) checked)"
+        exit "$failed"
 
   doc-links:
     desc: Resolve relative Markdown cross-links offline (skipped if the script is absent).

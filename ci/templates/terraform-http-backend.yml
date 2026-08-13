@@ -1,15 +1,14 @@
 spec:
   inputs:
     api_url:
-      default: "https://git.ericsweiss.com/api/v4"
+      default: "${CI_API_V4_URL}"
       description: >-
-        GitLab API base the state is hosted on. Defaults to this instance, so a
-        consumer that includes the file with no inputs renders exactly what it
-        rendered before this input existed. A consumer on ANOTHER instance must
-        override it — TF_HTTP_PASSWORD is `${CI_JOB_TOKEN}`, which is only valid
-        against the instance that issued it, so a foreign address gets a
-        401/404 on `terraform init`. `${CI_API_V4_URL}` tracks whichever
-        instance the pipeline runs on.
+        GitLab API base the state is hosted on. The default tracks whichever
+        instance the pipeline runs on, which is the only value that can be
+        right everywhere: TF_HTTP_PASSWORD is `${CI_JOB_TOKEN}`, valid only
+        against the instance that issued it, so a hard-coded foreign address
+        gets a 401/404 on `terraform init`. Override only to point at a
+        DIFFERENT project's state on the same instance.
     state_name:
       default: "cloudflare"
       description: >-

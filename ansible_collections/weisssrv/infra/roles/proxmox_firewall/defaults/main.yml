@@ -51,6 +51,36 @@ proxmox_firewall_extra_aliases: []
 # (sg-k3s-ingress-pub). Empty = no WAN WireGuard rule at all.
 proxmox_firewall_wan_wireguard_vips: []
 
+# Admin surfaces of the DNS appliances, rendered into sg-dns. Entry schema is
+# shared with proxmox_firewall_metrics_scrape_ports below and asserted in
+# tasks/main.yml: {port, sources[], comment?}, where `sources` names IPSets or
+# aliases and must be non-empty. The default keeps the resolver UI/API on the
+# two admin sets only — the plaintext :3000 API carries a reusable admin
+# credential, so any in-cluster scraper that needs it must be added here
+# deliberately.
+proxmox_firewall_dns_admin_ports:
+  - port: 443
+    sources: [admin_ts, admin_lan]
+    comment: resolver HTTPS admin UI
+  - port: 3000
+    sources: [admin_ts, admin_lan]
+    comment: resolver plaintext admin API
+
+# Application scrape targets appended to sg-metrics. Same entry schema as
+# proxmox_firewall_dns_admin_ports above — {port, sources[], comment?} — so the
+# two hand-authored lists a site writes next to each other take the same shape.
+# sg-metrics is applied on EVERY node, so only the exporters this collection's
+# own roles bind are built in; an app's port here opens fleet-wide, which is why
+# its scrapers are named rather than defaulted.
+proxmox_firewall_metrics_scrape_ports: []
+
+# Open the cleartext Proxmox live-migration channel (TCP 60000-60050) in
+# sg-pve-cluster and sg-host-egress. Off: the cluster runs the secure
+# SSH-tunnelled channel (weisssrv.infra.proxmox_ha pins `migration: type=secure`
+# in datacenter.cfg), so the range carries nothing and pre-authorising it would
+# make a flip to `insecure` invisible at the packet filter.
+proxmox_firewall_insecure_migration_ports: false
+
 # Per-application security groups, rendered into cluster.fw after the
 # infrastructure groups the role owns itself (sg-dns, sg-host-admin,
 # sg-vm-admin, sg-k3s-*, sg-nfs-server, sg-metrics, sg-pve-cluster,

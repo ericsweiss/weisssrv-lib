@@ -77,6 +77,7 @@
         sg_host_admin: "{{ cluster_fw_sections.get('group sg-host-admin', '') }}"
         sg_metrics: "{{ cluster_fw_sections.get('group sg-metrics', '') }}"
         sg_ingress_pub: "{{ cluster_fw_sections.get('group sg-k3s-ingress-pub', '') }}"
+        sg_pve_cluster: "{{ cluster_fw_sections.get('group sg-pve-cluster', '') }}"
       ansible.builtin.assert:
         that:
           # Admin access is source-scoped to the two admin sets, never open.
@@ -85,17 +86,29 @@
           - "'IN ACCEPT -source +dc/admin_ts -p tcp -dport 22 -log nolog' in sg_host_admin"
           - "'IN ACCEPT -source +dc/admin_lan -p tcp -dport 22 -log nolog' in sg_host_admin"
           - "'IN ACCEPT -p tcp -dport 22 -log nolog' not in sg_host_admin"
-          # sg-dns: DoT, the resolver ports, and the admin API — including the
-          # explicit k3s_nodes:3000 rule the in-cluster exporter scrapes, which
-          # must not depend on admin_lan happening to cover the cluster nodes.
+          # sg-dns: DoT and the resolver ports are built in; the admin
+          # surfaces come from proxmox_firewall_dns_admin_ports, whose sources
+          # this scenario extends with k3s_nodes on :3000 only.
           - "'IN ACCEPT -source +dc/admin_lan -p udp -dport 853 -log nolog' in sg_dns"
           - "'IN ACCEPT -source +dc/admin_lan -p udp -dport 53 -log nolog' in sg_dns"
           - "'IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 3000 -log nolog' in sg_dns"
-          - "'IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 443 -log nolog' in sg_dns"
-          # sg-metrics scrape targets stay scoped to the cluster nodes.
+          - "'IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog' in sg_dns"
+          - "'IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 443 -log nolog' not in sg_dns"
+          # sg-metrics: the collection's own exporters are built in, app ports
+          # only arrive via proxmox_firewall_metrics_scrape_ports, and every
+          # scrape target stays source-scoped.
           - "'IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9100 -log nolog' in sg_metrics"
           - "'IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9101 -log nolog' in sg_metrics"
+          - "'IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 32400 -log nolog' in sg_metrics"
           - "'IN ACCEPT -source +dc/core-cluster -p tcp -dport 31100 -log nolog' in sg_metrics"
+          # An entry with two sources fans out to one rule per source, the same
+          # way the sg-dns list does — the two seams share one schema.
+          - "'IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9993 -log nolog' in sg_metrics"
+          - "'IN ACCEPT -source +dc/admin_lan -p tcp -dport 9993 -log nolog' in sg_metrics"
+          - "'-dport 8123' not in sg_metrics"
+          # The cleartext live-migration range is not pre-authorised while the
+          # cluster runs the secure channel.
+          - "'-dport 60000:60050' not in sg_pve_cluster"
           # The WAN WireGuard rule is -dest-scoped to the VIP, so the node's own
           # :51820/udp (flannel) is never opened to the WAN.
           - "'IN ACCEPT -dest 192.168.0.99 -p udp -dport 51820 -log nolog' in sg_ingress_pub"
@@ -103,6 +116,84 @@
         fail_msg: >-
           A role-owned security group lost or widened a rule — check the
           [group …] blocks in templates/cluster.fw.j2.
+
+    # The two hand-authored port lists share one schema, and `sources` must be a
+    # LIST: a scalar has a length, so a length-only guard passes it and the
+    # template iterates it per character into rules naming IPSets that do not
+    # exist. Singular-vs-plural is the likely author error, since the metrics
+    # seam's key was a scalar `source` before this release.
+    - name: Drive the port-list schema guard — a scalar `sources`
+      block:
+        - name: Include the schema guard with a scalar sources value
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            proxmox_firewall_dns_admin_ports: []
+            proxmox_firewall_metrics_scrape_ports:
+              - {port: 3000, sources: k3s_nodes, comment: scalar not a list}
+      rescue:
+        - name: Record that the scalar sources value was rejected
+          ansible.builtin.set_fact:
+            firewall_scalar_sources_rejected: true
+
+    - name: Drive the port-list schema guard — an entry with no sources key
+      block:
+        - name: Include the schema guard with a sources-less entry
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            proxmox_firewall_dns_admin_ports:
+              - {port: 3000, comment: no sources key}
+            proxmox_firewall_metrics_scrape_ports: []
+      rescue:
+        - name: Record that the sources-less entry was rejected
+          ansible.builtin.set_fact:
+            firewall_missing_sources_rejected: true
+
+    # `port:` with the value omitted on the next line is `defined` and null, so
+    # a presence-only test passes it and the template renders `-dport None`.
+    - name: Drive the port-list schema guard — a valueless `port`
+      block:
+        - name: Include the schema guard with a null port
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            proxmox_firewall_dns_admin_ports: []
+            proxmox_firewall_metrics_scrape_ports:
+              - {port: null, sources: [k3s_nodes], comment: value omitted}
+      rescue:
+        - name: Record that the valueless port was rejected
+          ansible.builtin.set_fact:
+            firewall_null_port_rejected: true
+
+    # A mapping is a sequence and is not a string, so the list test admitted it;
+    # the template then iterates its KEYS, which happens to render — the assert
+    # must reject what it advertises.
+    - name: Drive the port-list schema guard — a mapping `sources`
+      block:
+        - name: Include the schema guard with a mapping sources value
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            proxmox_firewall_dns_admin_ports:
+              - {port: 3000, sources: {admin_ts: null}}
+            proxmox_firewall_metrics_scrape_ports: []
+      rescue:
+        - name: Record that the mapping sources value was rejected
+          ansible.builtin.set_fact:
+            firewall_mapping_sources_rejected: true
+
+    - name: Assert the port-list schema guard fails closed on every shape
+      ansible.builtin.assert:
+        that:
+          - firewall_scalar_sources_rejected | default(false)
+          - firewall_missing_sources_rejected | default(false)
+          - firewall_null_port_rejected | default(false)
+          - firewall_mapping_sources_rejected | default(false)
+        fail_msg: >-
+          The port-list schema guard accepted a scalar or mapping `sources`, an
+          entry with no `sources` key, or a `port:` with no value — each renders
+          a cluster.fw pve-firewall refuses to compile, AFTER the role wrote it
+          and notified the reload handler.
+        success_msg: >-
+          port-list schema guard fails closed on scalar/mapping/missing sources
+          and on a valueless port
 
     # Per-application groups come from proxmox_firewall_security_groups
     # (molecule.yml supplies a stand-in site list). One entry's `rules` is an

@@ -1,0 +1,65 @@
+---
+# Schema guard for the two hand-authored port lists ({port, sources[],
+# comment?}). cluster.fw.j2 dereferences entry.sources with no default, so a
+# typo or a missing key would otherwise surface as a raw undefined-variable
+# error from mid-render instead of a message naming the variable and the entry.
+#
+# `sources` is asserted to be a LIST, not just non-empty: a scalar
+# (`sources: k3s_nodes`) has a length too, and the template's
+# `{% for src in entry.sources %}` iterates it per character — one rule per
+# letter, each naming an IPSet that does not exist, which pve-firewall then
+# refuses to compile. Singular-vs-plural is the likely author error here,
+# because the metrics seam's key was `source` (a scalar) before this release.
+# A MAPPING is rejected for the same reason it is not a list, even though
+# iterating one happens to yield its keys.
+#
+# `port` is asserted to have a VALUE, not merely to be defined: `port:` with the
+# number omitted on the next line is `defined` and null, and the template
+# renders it as `-dport None` into cluster.fw — a datacenter-wide file
+# pve-firewall refuses to compile, written and handler-notified before anyone
+# sees it.
+#
+# Split into its own file so molecule can drive it from fabricated inventory.
+
+- name: Assert the sg-dns admin-port entries carry a port and a list of sources
+  ansible.builtin.assert:
+    that:
+      - item.port is defined
+      - item.port is not none
+      - item.sources is defined
+      - item.sources is sequence
+      - item.sources is not string
+      - item.sources is not mapping
+      - item.sources | length > 0
+    fail_msg: >-
+      proxmox_firewall_dns_admin_ports entry {{ item }} is malformed: every
+      entry needs a `port` with a value and a non-empty `sources` LIST naming
+      IPSets or aliases (e.g. `- {port: 3000, sources: [admin_ts, admin_lan]}`)
+      — a bare scalar is iterated per character by the template, and an empty
+      `port` renders as `-dport None`.
+    quiet: true
+  loop: "{{ proxmox_firewall_dns_admin_ports | default([]) }}"
+  loop_control:
+    label: "{{ item.port | default('?') }}"
+
+- name: Assert the sg-metrics scrape-port entries carry a port and a list of sources
+  ansible.builtin.assert:
+    that:
+      - item.port is defined
+      - item.port is not none
+      - item.sources is defined
+      - item.sources is sequence
+      - item.sources is not string
+      - item.sources is not mapping
+      - item.sources | length > 0
+    fail_msg: >-
+      proxmox_firewall_metrics_scrape_ports entry {{ item }} is malformed:
+      every entry needs a `port` with a value and a non-empty `sources` LIST
+      naming IPSets or aliases (e.g. `- {port: 32400, sources: [k3s_nodes],
+      comment: plex}`) — a bare scalar is iterated per character by the
+      template, and an empty `port` renders as `-dport None`. sg-metrics is
+      applied on EVERY node, so the scrapers are named rather than defaulted.
+    quiet: true
+  loop: "{{ proxmox_firewall_metrics_scrape_ports | default([]) }}"
+  loop_control:
+    label: "{{ item.port | default('?') }}"

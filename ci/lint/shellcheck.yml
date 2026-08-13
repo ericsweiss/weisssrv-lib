@@ -60,13 +60,14 @@ spec:
       - scheduler_failure
   script:
     - echo "Running ShellCheck..."
-    # `linted` is carried across these script blocks (the runner concatenates
-    # them into ONE shell script) and checked at the end: a green job that
-    # checked nothing is exactly the silent pass this gate exists to prevent —
-    # the same guard ci/lint/yaml-lint.yml applies to its targets. Which is also
-    # why neither find block may `exit 0` early any more: that would skip the
-    # accounting along with the checks.
+    # `linted` and `failed` are carried across these script blocks (the runner
+    # concatenates them into ONE shell script) and both are checked in the
+    # final block. A green job that checked nothing is the silent pass this
+    # gate prevents, the same guard ci/lint/yaml-lint.yml applies to its
+    # targets. No block exits on its own: an early exit would suppress the
+    # other blocks' findings AND skip the accounting.
     - linted=0
+    - failed=0
     - |
       # Direct files/globs (scripts/ + any repo-root helper scripts). Iterate
       # the globs and lint only files that actually exist: a tenant whose tree
@@ -84,7 +85,7 @@ spec:
           echo "no files match '$f' — skipping"
         fi
       done
-      [ "$rc" -eq 0 ] || { echo "ShellCheck failed on one or more direct files"; exit "$rc"; }
+      [ "$rc" -eq 0 ] || { echo "ShellCheck failed on one or more direct files"; failed=1; }
     - |
       FIND_DIR="$[[ inputs.find_dir ]]"
       # Unset OR absent skips: a set-but-missing dir would make `find` exit
@@ -100,17 +101,15 @@ spec:
         # shellcheck failure on any earlier file goes green. `-exec ... {} +`
         # returns non-zero if shellcheck fails on ANY file.
         #
-        # That rc must be CAPTURED, not left to fall out of the block: the
-        # runner checks only the exit status of the block's LAST command, and
-        # since the `linted` accounting was added the last command is an
-        # assignment, which always succeeds. Capturing it and exiting
-        # explicitly keeps both — the accounting and the failure — the way the
-        # direct-glob and *.sh.j2 blocks already do.
+        # rc must be CAPTURED: the runner checks only the block's LAST command,
+        # which here is the `linted` assignment and always succeeds. It is
+        # folded into `failed` rather than exited on, so the *.sh.j2 block
+        # still runs.
         rc=0
         find "$FIND_DIR" -name '*.sh' -type f \
           -exec shellcheck --severity=$[[ inputs.severity ]] --exclude=$[[ inputs.exclude ]] {} + || rc=1
         linted=$((linted + $(find "$FIND_DIR" -name '*.sh' -type f | wc -l)))
-        [ "$rc" -eq 0 ] || { echo "ShellCheck failed on one or more role shell scripts"; exit "$rc"; }
+        [ "$rc" -eq 0 ] || { echo "ShellCheck failed on one or more role shell scripts"; failed=1; }
       fi
     - |
       FIND_DIR="$[[ inputs.find_dir ]]"
@@ -152,7 +151,7 @@ spec:
           linted=$((linted + 1))
         done < "$tmpl_list"
         rm -f "$rendered" "$tmpl_list"
-        [ "$rc" -eq 0 ] || { echo "ShellCheck failed on one or more *.sh.j2 templates"; exit "$rc"; }
+        [ "$rc" -eq 0 ] || { echo "ShellCheck failed on one or more *.sh.j2 templates"; failed=1; }
       fi
     - |
       # An individual skip is a layout difference between consumers; ALL of them
@@ -161,6 +160,10 @@ spec:
       # having read no file at all.
       [ "$linted" -gt 0 ] || {
         echo "ERROR: shellcheck matched no files — direct_globs and find_dir cover nothing in this repo"
+        exit 1
+      }
+      [ "$failed" -eq 0 ] || {
+        echo "ShellCheck FAILED ($linted file(s) checked) — see the block output above"
         exit 1
       }
       echo "ShellCheck passed ($linted file(s) checked)"

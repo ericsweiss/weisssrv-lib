@@ -7,7 +7,7 @@ galaxy_info:
     Shared pinned Docker Engine (CE) install: apt repo + held engine/plugins +
     journald daemon.json for docker-compose app guests
   license: MIT
-  min_ansible_version: "2.15"
+  min_ansible_version: "2.18"
   platforms:
     - name: Debian
       versions:

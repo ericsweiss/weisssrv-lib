@@ -1,6 +1,5 @@
 ---
-# Grafana Alloy — journald log collection agent
-# Installs Alloy from the Grafana APT repository and ships journald logs to Loki
+# Alloy from the Grafana APT repo, shipping journald to Loki.
 
 - name: Assert the required Alloy inputs are present
   ansible.builtin.assert:

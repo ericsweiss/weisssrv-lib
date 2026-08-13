@@ -4,6 +4,14 @@
   hosts: all
   become: true
   gather_facts: true
+  # Mirrors the role's own handler: the de-provisioning tasks included at the end
+  # of this play notify it, and include_tasks (unlike include_role) does not
+  # bring the role's handlers into the play.
+  handlers:
+    - name: Reload systemd for etcd snapshot copy
+      ansible.builtin.systemd:
+        daemon_reload: true
+      when: not (k3s_skip_install | default(false))
   tasks:
     - name: Check if k3s config directory exists
       ansible.builtin.stat:
@@ -431,6 +439,42 @@
         fail_msg: "failure branch did not preserve the prior success timestamp"
         success_msg: "failure branch keeps success=0 with the preserved last-good timestamp"
 
+    # De-provisioning path (k3s_etcd_snapshot_offnode_enabled: false). The
+    # scenario opts IN, so this file would otherwise be executed by no scenario
+    # at all — and an armed timer left behind keeps copying etcd snapshots
+    # (whole-cluster Secret material) off-node. Runs at the END of verify
+    # because it removes the artifacts every assertion above inspects.
+    #
+    # include_tasks, not include_role: include_role would also execute the
+    # role's meta dependencies inside verify. The relative path resolves from
+    # this playbook's own directory.
+    - name: Run the off-node etcd snapshot de-provisioning path
+      ansible.builtin.include_tasks: ../../tasks/etcd-snapshot-offnode-absent.yml
+
+    - name: Stat the de-provisioned etcd snapshot copy artifacts
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: etcd_offnode_removed
+      loop:
+        - /etc/systemd/system/k3s-etcd-snapshot-copy.timer
+        - /etc/systemd/system/k3s-etcd-snapshot-copy.service
+        - /usr/local/sbin/k3s-etcd-snapshot-copy.sh
+
+    - name: Verify the opt-out removed the units and the script
+      ansible.builtin.assert:
+        that:
+          - etcd_offnode_removed.results | map(attribute='stat.exists') | select | list | length == 0
+        fail_msg: >-
+          k3s_etcd_snapshot_offnode_enabled: false left artifacts behind:
+          {{ etcd_offnode_removed.results | selectattr('stat.exists')
+             | map(attribute='item') | list }}
+        success_msg: "off-node snapshot opt-out removed both units and the script"
+
+    - name: Re-run the de-provisioning path on the now-clean host
+      # The stat gate must make this a no-op — a host that never had the
+      # feature does no systemd work at all.
+      ansible.builtin.include_tasks: ../../tasks/etcd-snapshot-offnode-absent.yml
+
     - name: Display test results
       ansible.builtin.debug:
         msg:
@@ -446,4 +490,5 @@
           - "version assert rejects an empty kube-vip pin"
           - "metrics-server override renders on the first server only"
           - "audit args + audit/v1 policy render on the audit-enabled server only"
+          - "off-node snapshot opt-out de-provisions units and script"
           - "(k3s binary install skipped in container testing)"

@@ -5,7 +5,7 @@ galaxy_info:
   author: Eric Weiss
   description: NAS storage management (ZFS, NFS, Samba, mergerfs, media-mover, SMART)
   license: MIT
-  min_ansible_version: "2.15"
+  min_ansible_version: "2.18"
   platforms:
     - name: Debian
       versions:

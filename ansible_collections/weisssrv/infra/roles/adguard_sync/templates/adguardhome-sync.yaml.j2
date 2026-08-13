@@ -10,10 +10,19 @@ origin:
   username: {{ adguard_sync_admin_user | to_json }}
   password: {{ adguard_sync_admin_password | to_json }}
 
+{% if adguard_sync_replicas | default([]) | length > 0 %}
+replicas:
+{% for replica in adguard_sync_replicas %}
+  - url: {{ replica.url | to_json }}
+    username: {{ replica.username | default(adguard_sync_admin_user) | to_json }}
+    password: {{ replica.password | default(adguard_sync_admin_password) | to_json }}
+{% endfor %}
+{% else %}
 replica:
   url: {{ adguard_sync_replica | to_json }}
   username: {{ adguard_sync_admin_user | to_json }}
   password: {{ adguard_sync_admin_password | to_json }}
+{% endif %}
 
 features:
 {% for feature, config in adguard_sync_features.items() %}

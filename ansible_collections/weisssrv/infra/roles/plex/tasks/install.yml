@@ -13,7 +13,28 @@
 
 # The Intel media driver ships in non-free, so the components are enabled before
 # the driver install below (which refreshes the cache itself).
-- name: Enable non-free and non-free-firmware repositories
+- name: Check for the deb822 Debian sources file
+  ansible.builtin.stat:
+    path: "{{ plex_debian_sources_path }}"
+  register: plex_debian_sources
+
+# Same mechanism weisssrv.infra.k3s uses for the NVIDIA driver's components:
+# rewrite EVERY Components line in the deb822 file to the canonical set. That
+# covers all partial states (`main`, `main non-free-firmware`, already-full),
+# stays idempotent, and adds no second sources entry for suites debian.sources
+# already carries.
+- name: Enable contrib/non-free/non-free-firmware components
+  ansible.builtin.replace:
+    path: "{{ plex_debian_sources_path }}"
+    regexp: '^Components:.*$'
+    replace: 'Components: main contrib non-free non-free-firmware'
+  when:
+    - not (plex_skip_gpu_drivers | bool)
+    - plex_debian_sources.stat.exists | default(false)
+
+# Pre-deb822 hosts only (no debian.sources): one-line entries are the sole way
+# to reach non-free there.
+- name: Enable non-free repositories on a pre-deb822 host
   ansible.builtin.apt_repository:
     repo: "{{ item }}"
     state: present
@@ -21,11 +42,14 @@
   loop:
     - "deb https://deb.debian.org/debian {{ ansible_distribution_release }} non-free non-free-firmware"
     - "deb https://deb.debian.org/debian {{ ansible_distribution_release }}-updates non-free non-free-firmware"
-  when: not (plex_skip_gpu_drivers | bool)
+  when:
+    - not (plex_skip_gpu_drivers | bool)
+    - not (plex_debian_sources.stat.exists | default(false))
 
-# Drops superseded plaintext entries from hosts provisioned before the https
-# switch, so apt no longer fetches non-free over http.
-- name: Remove legacy plaintext non-free repositories
+# Plaintext non-free entries are removed everywhere so apt fetches over https
+# only; the https one-line entries are removed only where debian.sources already
+# carries those suites, which would otherwise leave a duplicate target.
+- name: Remove plaintext one-line non-free repositories
   ansible.builtin.apt_repository:
     repo: "{{ item }}"
     state: absent
@@ -33,6 +57,21 @@
   loop:
     - "deb http://deb.debian.org/debian {{ ansible_distribution_release }} non-free non-free-firmware"
     - "deb http://deb.debian.org/debian {{ ansible_distribution_release }}-updates non-free non-free-firmware"
+
+- name: Remove one-line non-free repositories superseded by deb822
+  ansible.builtin.apt_repository:
+    repo: "{{ item }}"
+    state: absent
+    update_cache: false
+  loop:
+    - "deb https://deb.debian.org/debian {{ ansible_distribution_release }} non-free non-free-firmware"
+    - "deb https://deb.debian.org/debian {{ ansible_distribution_release }}-updates non-free non-free-firmware"
+  when:
+    # Skip-gated like the deb822 rewrite above: a skip host's stock main-only
+    # debian.sources satisfies the stat, and removing its one-line entries
+    # would strip non-free with no replacement written.
+    - not (plex_skip_gpu_drivers | bool)
+    - plex_debian_sources.stat.exists | default(false)
 
 - name: Update apt cache after adding non-free repos
   ansible.builtin.apt:

@@ -22,6 +22,15 @@ restic_offsite_rclone_deb_sha256: "a9da2eaa70428c6dcc5acbb0b7eac0faec4c61643e0b4
 # `rclone:b2:<bucket>/<path>`.
 restic_offsite_repo: ""
 
+# rclone remote rendered into rclone.conf. The name is the `rclone:<name>:`
+# segment of restic_offsite_repo. `b2` is the only type whose credentials the
+# role knows by name (restic_offsite_b2_key_id / _b2_application_key, asserted
+# non-empty); any other type takes all of its settings from the options map
+# below, which is rendered verbatim as `key = value` lines.
+restic_offsite_rclone_remote_name: b2
+restic_offsite_rclone_remote_type: b2
+restic_offsite_rclone_remote_options: {}
+
 # restic metadata cache. REQUIRED, deliberately without a default: it holds the
 # repo index — including file PATHS — in PLAINTEXT, so it must be placed on an
 # encrypted, non-exported dataset deliberately. Keep it out of any
@@ -91,9 +100,9 @@ restic_offsite_verify_groups: 12
 # Quarterly restore drill. `restic check` proves the repository is internally
 # consistent; it does NOT prove this host can still decrypt and restore it — a
 # rotated repo password, a broken env file or a restore path that no longer maps
-# all pass check and fail the day they are needed. The drill restores the
-# smallest few files of the newest snapshot and byte-compares them against the
-# ZFS snapshot subtree they came from, emitting
+# all pass check and fail the day they are needed. The drill restores a small
+# sample of the newest snapshot, spread across the file sources, and
+# byte-compares it against the ZFS snapshot subtree it came from, emitting
 # backup_restore_drill_last_success_seconds / _last_run_seconds /
 # _files_compared. Set enabled false to drop the units entirely (they are also
 # removed on the next run, so the flag is a real off switch, not a no-op).
@@ -101,26 +110,21 @@ restic_offsite_restore_drill_enabled: true
 # Sample size + hard byte cap. B2 egress is billed and volume proves nothing
 # extra here: repo-wide bit-rot is the rotating deep verify's job.
 restic_offsite_restore_drill_sample_files: 5
-restic_offsite_restore_drill_max_bytes: 8388608   # 8 MiB
-# Run ONE drill until one PASSES. A Persistent=true
-# timer does NOT fire on first enable — with no stamp under
-# /var/lib/systemd/timers, systemd computes the next elapse from the unit's
-# activation time, so a quarterly OnCalendar leaves up to a full quarter in which
-# backup_restore_drill_last_success_seconds (written only by a PASSING drill)
-# does not exist and a staleness alert's absent() arm fires on a healthy system.
-# Seeding also proves the drill inside the deploy that installed it.
-#
-# The gate is LEVEL-triggered, not edge-triggered: the seed runs whenever the
-# units changed OR that proof metric is still absent, so a seed that failed once
-# is retried on the next converge instead of being skipped forever behind
-# unchanged units. Once a drill has passed, both arms are false and no re-run
-# re-spends B2 egress.
-#
-# The seed FAILS the play when the drill fails — including on a repository that
-# has no snapshot yet, which is a legitimate first-converge state (the drill
-# names that case explicitly rather than reporting it as unreachable). Set this
-# false for that first converge (or for any host where the nightly backup has
-# never run) and back to true once a snapshot exists.
+restic_offsite_restore_drill_max_bytes: 16777216  # 16 MiB
+# Minimum candidate size. Without a floor the sampler takes the globally
+# smallest files, which on a real estate are 1-byte marker files: the drill
+# passes having proven almost no bytes.
+restic_offsite_restore_drill_min_bytes: 4096
+# How many DISTINCT file sources must contribute at least one sampled file, or
+# the drill fails. Only restic_offsite_sources count — a zvol source's
+# filesystem is unmounted between runs, so it has no comparand by construction
+# and is never in the denominator. Raise it to the number of sources that must
+# stay provable; 1 keeps a single-source deployment working.
+restic_offsite_restore_drill_min_sources: 1
+# Run ONE drill at install time until one PASSES: a Persistent=true timer does
+# not fire on first enable, so the proof metric would be absent for a full
+# quarter and the staleness alert's absent() arm would page on a healthy host.
+# Set false for a first converge on a repository with no snapshot yet (README).
 restic_offsite_restore_drill_seed: true
 # 05:00 on the 5th of Jan/Apr/Jul/Oct — a quarter, offset well clear of both the
 # nightly backup window and the Sunday deep verify.

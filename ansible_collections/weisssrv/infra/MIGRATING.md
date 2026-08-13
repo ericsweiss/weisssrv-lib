@@ -23,6 +23,351 @@ request.** Most renames have no back-compat shim, and several roles now assert
 inputs that used to be defaults — a half-migrated inventory does not fail
 cleanly, it provisions with a role default.
 
+---
+
+# Unreleased (next release)
+
+Nothing yet.
+
+---
+
+# v0.7.0
+
+Everything from [How to check a migration](#how-to-check-a-migration) down is
+the one-time **v0.6.0 adoption map** — the un-prefixed -> prefixed rename a repo
+works through once. This section is the delta for a consumer already on the
+collection: what the next release breaks, what it now asserts, and what it adds.
+The tag is whatever `semantic-release` cuts from the commit subjects; the
+release note names it.
+
+> **Lifecycle.** There is no changelog file for the collection
+> ([VERSIONING.md](../../../docs/VERSIONING.md) § No changelog file), so this is
+> the only per-release migration record. At tag time the release MR **retitles
+> this heading to the tag being cut** and opens a fresh empty
+> `# Unreleased (next release)` above it — a checklist bullet in VERSIONING
+> covers it. Released sections are kept **in full, newest first**, so a consumer
+> jumping several releases works through each delta in order instead of reading
+> two releases' breaking changes as one pending set. Nothing here is ever
+> squashed or replaced; prune a section only when no supported consumer can
+> still be on the release below it.
+
+Work it in this order. The four subsections are ordered by what fails you
+first: a pipeline that will not create, a play that fails at role entry, a
+default that moved under you, and only then the seams you may adopt at leisure.
+
+## Breaking — act in the same MR as the bump
+
+Each of these breaks a consumer that bumps without changing anything else.
+
+| Surface | What changed | What to do |
+|---|---|---|
+| `proxmox_firewall` sg-metrics | Six application scrape ports are no longer built in. Only the exporters this collection's own roles bind survive (9100, 9101, 9134, 9167). | Re-declare the app ports as site data in the NEW `proxmox_firewall_metrics_scrape_ports` or those scrapes close on every node. The removed rules, as a copy-paste inventory block, are below the table. Entry schema is shared with `proxmox_firewall_dns_admin_ports`: `{port, sources[], comment?}`, `sources` a non-empty LIST (asserted; a bare scalar is rejected) — sg-metrics applies on every node, so the scrapers are named, not defaulted. |
+| `proxmox_firewall` sg-dns | The resolver admin surfaces moved out of the template. The NEW `proxmox_firewall_dns_admin_ports` (`{port, sources[], comment?}`) defaults to :443 and :3000 on the admin sets ONLY — the old template also opened both to `k3s_nodes`. | Add `k3s_nodes` to the relevant entry's `sources` if an in-cluster path needs it (a reverse proxy reaching the resolver's own TLS listener, or an in-cluster scraper on the plaintext API). |
+| `nas_storage` exports | An export whose `bind_source` is outside `nas_storage_zfs_mount_roots`, is not a declared `nas_storage_mergerfs_mounts` target, and carries no explicit BOOLEAN `zfs:` key now FAILS the play. `zfs:` is load-bearing in BOTH directions: `zfs: true` applies the mounted-dataset guard and the `zfs-mount` boot ordering to a source the roots do not cover, `zfs: false` declares a plain bind. | Add the pool root to `nas_storage_zfs_mount_roots`, or set `zfs: true`/`zfs: false` on the export. A non-boolean value (`zfs: ""` from a var that rendered empty, `zfs: "maybe"`) is rejected too — it is consumed through `\| bool`, which would silently classify it as non-ZFS. |
+| `nas_storage` MergerFS unions | EVERY union whose branches are all outside `nas_storage_zfs_mount_roots` — including branches EQUAL to a root, which never matched the derived pattern — now FAILS the play instead of silently losing its `x-systemd.requires=zfs-mount.service` anchor. The check no longer skips unions that omit `systemd_requires`, because the anchor is derived from the branch set, not from that key. `zfs:` on the union overrides the derivation the same way it does on an export, and must likewise be a boolean. | Add the pool root to `nas_storage_zfs_mount_roots`, or set `zfs: true`/`zfs: false` on the union. Expect changed tasks on the next converge in TWO fstab shapes: a ZFS-branched union that omitted `systemd_requires` now GAINS `nofail` and the `zfs-mount.service` anchor where it previously had neither, and a union classified NOT ZFS-backed (`zfs: false`) that declares `systemd_requires` LOSES the `x-systemd.requires=`/`x-systemd.after=zfs-mount.service` pair it was previously given unconditionally, keeping only `nofail` and its `requires-mounts-for` entries. Both are rewritten mount options on a live filesystem. |
+| `nas_storage_zfs_bind_source_pattern` | An EMPTY `nas_storage_zfs_mount_roots` now derives a never-matching pattern. It used to derive `^()/`, an empty alternation matching every absolute path — so a site declaring "no ZFS roots here" got the exact opposite. | Nothing, unless you relied on the inverted behaviour; declare the sources with `zfs: true` instead. |
+| `weisssrv-new-project` CLI | The `rename`, `prune`, `wire` and `verify` subcommands are REMOVED, along with the `weisssrv_lib_cli.{rename,prune,wire,verify,tree,kustomization}` modules. The app template is a copier template as of this release, so scaffolding is rendering, not mutating a fork. | Render the template instead: `new-cluster` is unchanged, and a NEW `new-app` renders the app template the same way (same flags, same optional `cluster` extra). The console script and distribution names are unchanged. Internals moved with the shape — `weisssrv_lib_cli.cluster` is now `weisssrv_lib_cli.templates` and `ClusterError` is `TemplateError`, which matters only to something importing the package rather than running the console script. `weisssrv-lib-cli` now declares NO runtime dependencies (ruamel.yaml dropped); `copier` remains the optional `cluster` extra. |
+| `scripts/check-netpol-except-parity.py` | The built-in `UNRESTRICTED_EGRESS_OK` allowlist is now EMPTY, and a new `--config FILE` supplies it (`canonical_except_lists`, `fence_networks`, `unrestricted_egress_ok`). Fail-closed. | Ship a config file naming your peer-less egress rules, each with a reason — a blank reason is rejected. The canonical except-lists and fence networks keep their previous values as built-in defaults. |
+| `scripts/check-alertmanager-behaviour.py` | `--config FILE` is REQUIRED; the route/alert module constants and the hard-coded extractor path are gone (`--extract-script`, `--repo-root`). | Move the routing table, synthetic alerts and upstream alerts into a config file — `examples/alertmanager-behaviour.example.yaml` is the shape. Config-load failures exit 2. |
+| `scripts/check-backup-artifact-apps.py` | `--host-vars FILE` and `--rules FILE` are REQUIRED; the module constants are gone. | Pass both paths. A missing file exits 2. |
+| `scripts/check-scrape-netpol.py` | Two surfaces. **Programmatic**: `main()` takes argv, the `EXEMPT_NAMESPACES` dict is gone in favour of repeatable `--exempt NS=REASON` (reason mandatory), and `OBSERVABILITY_NS` became `--observability-namespace`. **Runtime exit codes**, which reach a caller that touched neither: an EMPTY corpus on stdin is now an operator error (exit 2) where it used to pass 0, the YAML-parse arm plus a malformed `--exempt` moved from exit 1 to exit 2, and a corpus that HAS documents but holds NO SCRAPE TARGET at all is now exit 2 as well — it used to pass 0, which is how the gate stayed green when the observability stage dropped out of the render loop. | Pass exemptions on the command line. Make sure the corpus actually arrives AND covers the stage defining the ServiceMonitors/PodMonitors — either failure now reds the job. Scrape targets with none ingress-restricted among them still pass; only zero targets is the error. Any wrapper branching on `rc == 1` for "finding" versus `rc > 1` for "broken" already reads these correctly; one testing `rc != 0` as "finding" does not. |
+| `scripts/check-pvc-storageclass.py` | A corpus that HAS documents but declares NO CLAIM — no PersistentVolumeClaim, no `volumeClaimTemplate`, no chart persistence block that sizes a volume — is now an operator error (exit 2) where it used to pass 0. Same zero-subjects arm `check-secretstore-scope.py` already carried, closing the last of the three stdin gates that could pass vacuously. The success line now reports the claim count alongside the document count. **Programmatic**: `violations()`, `_claim_violations()` and `_values_violations()` return `(violations, subjects_seen)` tuples instead of a bare list. | Make sure the `kustomize build` paths feeding stdin cover the stages that declare storage. A caller importing the module rather than running the script unpacks the tuple; nothing in this library or its consumers' Taskfiles does. |
+| `scripts/check-taskfile.sh` | It now follows `includes:` recursively. A Taskfile that includes a fragment referencing a missing `scripts/` file FAILS where it previously passed — which is the point. | Fix the reference, or pass fragments individually. New env `CHECK_TASKFILE_MAX_DEPTH` (default 10); a missing include target is a failure, matching go-task. |
+| `terraform/modules/authentik-sso` | An application that no ENABLED `policy_bindings` entry names now FAILS the plan, including a read-only drift-plan job. Reaches a consumer that passes no new input. | Audit for unbound applications and add a binding, or set `allow_unbound = true` on a tile that really is open to every authenticated user. Full entry, together with the other two `authentik-sso` additions, under [Library surfaces outside the collection](#library-surfaces-outside-the-collection). |
+
+### The six sg-metrics rules this release deletes
+
+They were library-side, so a consumer's inventory has no copy of them — on the
+bump the six openings vanish with a green play. This is the whole set, verbatim
+from v0.6.2's `cluster.fw.j2`; keep the ones your site still scrapes and drop
+the rest. **31100 is the one entry whose source is `core-cluster`, not
+`k3s_nodes`** — it is the Loki push NodePort (host -> k8s), not a Prometheus
+scrape, and is unreconstructible from the k3s_nodes-only example in the role
+README.
+
+```yaml
+proxmox_firewall_metrics_scrape_ports:
+  - {port: 8123, sources: [k3s_nodes], comment: home-assistant}
+  - {port: 32400, sources: [k3s_nodes], comment: plex}
+  - {port: 3000, sources: [k3s_nodes], comment: adguard API}
+  - {port: 7472, sources: [k3s_nodes], comment: metallb speaker}
+  - {port: 7473, sources: [k3s_nodes], comment: metallb controller}
+  - {port: 31100, sources: [core-cluster], comment: loki push NodePort}
+```
+
+## Newly asserted — loud where it used to be silent
+
+These fail at role entry rather than provisioning something wrong. A `--check`
+run exercises all of them.
+
+| Role | Now asserted | Escape hatch |
+|---|---|---|
+| `adguard_home` | `adguard_home_dhcp_enabled: true` fails. The role only ever implemented the disable direction, so `true` was a silent no-op. | Set it false (the only value the role ever honoured). |
+| `compose_app` | `compose_app_nginx_site_template` is a non-empty absolute path. | — |
+| `encrypted_swap` | `encrypted_swap_source_device` is stat'd before anything is written to crypttab or fstab. | NEW `encrypted_swap_require_source_device` (default `true`) — set false to self-skip loudly instead of failing. The skip arm also REMOVES the crypttab entry, the mapper fstab line and the enabled finalize unit an earlier converge wrote, so a host that lost its backing device stops failing `systemd-cryptsetup@<mapper>` on every boot. The plaintext backing fstab line is left alone. |
+| `immich` | `immich_nginx_real_ip_from` must resolve non-empty; it used to emit no `set_real_ip_from` at all. | Point `immich_nginx_real_ip_groups` at your own proxy group, set `_real_ip_from` directly, or set NEW `immich_nginx_trust_no_proxy: true`. |
+| `k3s` | Every member of `k3s_server_group` names the same `k3s_kube_vip_interface`, and the evaluating host must BE a member of that group — a misnamed group resolves to `[]`, and an empty set agrees with itself. The DaemonSet is rendered once and runs on all servers, so a per-host override was silently ignored. | Converge a mixed-NIC control plane on one interface name, and point `k3s_server_group` at the group that actually holds the servers. |
+| `proxmox_vm` | The memory reconcile FAILS instead of shrinking a live guest's allocation. | NEW `proxmox_vm_memory_shrink_ok` (default `false`) for a deliberate downsize. |
+| `proxmox_vm` | `proxmox_vm_disk_size` matches `^[0-9]+[Gg]?$` on the WINDOWS create path — that boot disk is allocated as a bare GiB count. The Linux path still accepts M/G/T. | — |
+| `restic_offsite` | `restic_offsite_repo_password` is non-empty, and `_b2_key_id`/`_b2_application_key` are non-empty when the remote type is `b2`. Both `no_log`. | — |
+| `restic_offsite` | `restic_offsite_zvol_sources` repeats neither a `zvol` nor a `name`. | — |
+| `zvol_mount` | `zvol_mount_disks` is defined and non-empty (previously a raw undefined-variable error). | — |
+
+## Changed defaults and behaviour
+
+Nothing to declare, but the deploy behaves differently. Grouped by whether it
+can surprise you.
+
+**Semantics that moved:**
+
+| Role | Change |
+|---|---|
+| `adguard_home` | An empty `adguard_home_rewrites` / `_user_rules` now means "manage none" in fact as well as in the docs: the reconcilers skip instead of deleting every live record. Removing the LAST rewrite or rule through codification now needs NEW `adguard_home_prune_rewrites` / `_prune_user_rules` (default `false`). |
+| `apt_signed_repo` | `apt_signed_repo_keyring_mode` default moves from `""` (skip the permission task, keyring left at gpg's umask-dependent mode) to `"0644"`. A keyring that ended up 0600 is corrected on the next run — expect one `changed` per host. The now-redundant explicit `0644` was dropped from `docker_engine` and `gitlab`. |
+| `base` | `base_is_virtual_machine` is now `virtualization_role == 'guest'` (any hypervisor) and gates unattended-upgrades only. The old KVM-only expression lives on as NEW `base_is_kvm_guest`, which gates qemu-guest-agent. A VMware/Xen/Hyper-V/cloud guest now gets unattended-upgrades disabled, as the README always claimed; KVM guests are unaffected. |
+| `base` | `base_ssh_password_authentication` / `_pubkey_authentication` are `\| bool`-coerced in defaults. A site passing the STRING `"false"` previously rendered `PasswordAuthentication yes` while the lockout guard believed it was off; it now renders `no`. Real booleans are unaffected. |
+| `k3s` | Three opt-in features now CONVERGE ON OPT-OUT. `k3s_etcd_snapshot_offnode_enabled: false` stops and disables the copy timer, removes the NFS mount and deletes the units/script; `k3s_metrics_server_override_enabled: false` removes the manifest; `k3s_audit_enabled: false` removes the audit policy. A flag flip used to leave all three running. |
+| `k3s` | The agent-token reconcile reads `k3s_token \| default('')`, so a site that scopes `k3s_token` to the server group no longer dies mid-play on an undefined variable. The agent preflight's `fail_msg` now names `k3s_agent_token`, the variable it actually checks. |
+| `nas_storage` | The metric scripts (`archive-backupctl`, `media-mover`, `swap-clean`) resolve their textfile dir from `nas_storage_backup_artifact_metrics_dir` instead of hard-coding `/var/lib/node_exporter`, and mkdir it before writing. A site that moved the textfile dir was silently losing those three metric sets. |
+| `nas_storage` | smbd stops binding TCP/139 — NEW `nas_storage_samba_ports` (`445`) and `nas_storage_samba_disable_netbios` (`true`). Widen the port list only for a client that cannot speak SMB over 445. |
+| `proxmox_firewall` | The TCP 60000-60050 cleartext-migration rules in sg-pve-cluster and sg-host-egress are now opt-in behind NEW `proxmox_firewall_insecure_migration_ports` (default `false`), because `proxmox_ha` pins `migration: type=secure`. |
+| `proxmox_ha` | The role reconciles datacenter.cfg's `migration:` key via `pvesh set /cluster/options`. PVE's own default is already secure, so this PINS rather than changes behaviour — but it WILL write datacenter.cfg on first run for a cluster that never declared the key, and it reverts a live `insecure`. NEW `proxmox_ha_migration_type` (default `secure`; `""` leaves the key unmanaged) and `_migration_network` (empty carries the live network through, since the property string is replaced wholesale). |
+| `proxmox_ha` | Orphan HA rules and resources are now REPORTED as warnings, matching replication. Nothing is ever deleted; the warning names the manual `ha-manager` command. |
+| `proxmox_vm` | The cloud-init assert moved after the existence probe and now carries the same `proxmox_vm_exists.rc != 0` gate as the tasks it protects, so a reconcile-only run against an existing guest no longer fails on gateway/DNS values it never reads. |
+| `restic_offsite` | The zvol clone name is now `<zvol>-<suffix>` (was `<parent-of-zvol>-<suffix>`), so two sources under one parent no longer collide. **A stale clone left at the OLD name by a crashed pre-upgrade run is not cleaned up by the EXIT trap — destroy it by hand.** |
+| `restic_offsite` | Restore-drill selection is rebuilt: candidates are bucketed per file source and drawn round-robin instead of taking the head of a globally size-sorted list, below-floor candidates are skipped, and the drill logs a per-source breakdown. `restic_offsite_restore_drill_max_bytes` default rises 8 -> 16 MiB to pay for the spread. NEW `_restore_drill_min_bytes` (4096) and `_restore_drill_min_sources` (1, clamped to the number of configured file sources so it cannot wedge; only file sources count, zvol sources have no comparand). |
+| `acme_certs` | `Le_ReloadCmd` is reconciled on every run. On a host whose cert arrived by another route the first converge re-runs `--install-cert`, which triggers one distribution pass (the explicit distribution task is suppressed that run, so nothing is pushed twice). |
+| `acme_certs` | `homelab-cert-reload.sh` no longer emits `<HOST>_IP` / `<HOST>_CERT_DIR` shell variables — the IP and cert_dir are passed positionally. This fixes FQDN targets (which rendered an invalid assignment and broke distribution to EVERY target) and two hosts differing only by `.` vs `-` colliding on one variable. Anything grepping the deployed script for those names must be updated. |
+| `nfs_tls` | NEW `nfs_tls_scrub_client_cert` (default `true`, today's behaviour). Set false when another role owns `nfs_tls_cert_path`/`_key_path` — the defaults are also `acme_certs`' local install path, and the two roles would otherwise delete and reinstall the same files on alternate converges. |
+| `plex` | non-free is enabled by normalising the deb822 `Components:` line (the same mechanism `k3s/tasks/gpu.yml` uses, via NEW `plex_debian_sources_path`), falling back to one-line entries only on a pre-deb822 host; the superseded one-line entries are removed. |
+| `qol` | The whole role is gated on `os_family == Debian` (previously only the package install was, so a shell change could outrun it). Dotfile paths resolve from passwd rather than assuming `/home/<user>`. |
+| `unbound` | The readiness probe digs `@unbound_interface` instead of a hardcoded 127.0.0.1, so moving the listen address no longer breaks it. NEW `unbound_probe_name` (default `google.com`) — a host without public egress must point it at a name its forwarders answer. |
+| `zfs_encryption` | No behaviour change. `zfs_encryption_connect_vault` still defaults to `Homelab`; the README now carries a "Scoping the Connect token" section with the ordering constraint (the Connect server must serve the vault BEFORE the token is scoped to it) and the wedged-boot failure mode. Re-scoping is a live sequence, not a bump. |
+
+**One-off writes and restarts** — real changes to live state on the first
+converge after the bump, none of them behavioural. Budget for them in the deploy
+plan rather than reading them as drift:
+
+| Role | What moves | Consequence |
+|---|---|---|
+| `home_assistant` | configuration.yaml loses three restating comments. | The role sha256-compares against the deployed file, so it pushes once and runs `ha core check`. |
+| `immich_ml` | The deployed compose file loses its meta-comment, the site-specific asides and the VRAM narrative (all moved to the README). | Notifies "Restart compose stack" — a full `docker compose down`/up of the ML stack. Budget one ML outage window. |
+| `immich` | `immich_metrics_bind` (NEW, default `0.0.0.0` = today's binding) is prefixed onto all three published metrics ports, so the port strings render as `0.0.0.0:8081:8081`. | One stack restart. The binding is unchanged; the seam is there so a site that does not scrape from off-host can pin loopback in one place. |
+| `nas_storage` | smartd.conf renders per-group comments instead of the four pool-named headers. | One smartd restart. Same disks, same `-s` schedules, `-o`/`-S` still dropped for the NVMe group. |
+| `nas_storage` | `nfs-server-zfs.conf` loses its dated incident narration. | A deliberate one-time nfsd bounce. The handler's stop path can hang under live NFS clients (it is async/poll-bounded). |
+| `vfio_passthrough` | Three rendered templates change comment text. | Fires the GRUB/initramfs rebuild handlers and the reboot-required warning once on an enabled GPU host. The binding is unchanged — no reboot is actually required for this release. |
+
+## New variables (defaults preserve today's behaviour)
+
+Per [EXTENSIBILITY.md](../../../docs/EXTENSIBILITY.md), a seam defaults to
+current behaviour and needs no action. They are listed because several are the
+escape hatch for an assert above, and because a consumer whose backends differ
+from weisssrv's is why they exist.
+
+| Role | Variable | Default | What it unlocks |
+|---|---|---|---|
+| `acme_certs` | `acme_certs_textfile_dir` | `node_exporter_host_textfile_dir \| default('/var/lib/node_exporter')` | A moved textfile dir, set once. |
+| `adguard_home` | `adguard_home_web_bind`, `_dns_bind` | `0.0.0.0` | The addresses the first-install setup wizard binds. No change for existing hosts — the wizard only runs on a fresh install. |
+| `adguard_home` | `adguard_home_after_units`, `_wants_units` | `[unbound.service]` | Set them empty when pointing `adguard_home_upstream_dns` at a public resolver. The unit renders byte-identically at the default. |
+| `adguard_home` | `adguard_home_dns_probe_name` | `google.com` | The name the post-deploy dig smoke test resolves. |
+| `adguard_home` | `adguard_home_prune_rewrites`, `_prune_user_rules` | `false` | Codified removal of the LAST rewrite or rule (see the reconcile gate above). |
+| `adguard_sync` | `adguard_sync_replicas` | `[]` | A list of `{url, username, password}` (credentials falling back to `adguard_sync_admin_user`/`_password`) rendering upstream's `replicas:` block. When non-empty, `adguard_sync_replica` is ignored; it is required only while this is empty. |
+| `adguard_sync` | `adguard_sync_textfile_dir` | as `acme_certs` above | — |
+| `base` | `base_ssh_authorized_keys_exclusive` | `false` (additive, as today) | Makes `ssh_authorized_keys` authoritative so a removed key is revoked. It also removes keys installed outside Ansible. The whole list now ships in ONE `authorized_key` call (a looped `exclusive: true` would leave only the last key). |
+| `base` | `base_is_kvm_guest` | KVM-guest detection | qemu-guest-agent, split out of `base_is_virtual_machine` (above). |
+| `home_assistant` | `home_assistant_enable_prometheus`, `_enable_default_config`, `_tts_platforms`, `_includes` | today's values | Emptying `_includes` or `_tts_platforms` omits the block — what a consumer whose HAOS lacks the `!include` targets needs. |
+| `immich` | `immich_metrics_bind` | `0.0.0.0` | Pinning the metrics ports to loopback in one place. |
+| `immich` | `immich_nginx_trust_no_proxy` | `false` | Opting out of the real-IP assert. |
+| `k3s` | — | — | (no new seams; see the opt-out convergence above) |
+| `nas_storage` | `nas_storage_zfs_mount_roots` | `[/mnt/tank, /mnt/ssd, /mnt/nvme]` | Replaces a hard-coded `^/mnt/(tank\|ssd\|nvme)/` regex that gated BOTH the mounted-dataset guard and the fstab zfs-mount ordering, plus the derived `nas_storage_zfs_bind_source_pattern`. A site whose datasets live elsewhere MUST set it — both protections silently did nothing there. |
+| `nas_storage` | `nas_storage_samba_password` | `lookup('env', 'SAMBA_NAS_PASSWORD', default='')` | samba.yml no longer reads the environment inline, so Vault/SOPS/ansible-vault can supply it. No change for `op run --` consumers. |
+| `nas_storage` | `nas_storage_smartd_disk_groups` | the four pool groups | `{name, disks, schedule, ata?}`, replacing the four fixed pool-named lists in the template and the coverage assert. The legacy `nas_storage_smartd_{tank,ssd,nvme,archive}_disks` survive as the default groups' inputs, so existing inventories are unchanged; a different pool layout sets the groups directly instead of forking the template. |
+| `node_exporter_host` | `node_exporter_host_corosync_collector` | `node_exporter_host_proxmox` | Set false on a standalone (non-clustered) PVE host so the collector is not deployed at all — it would otherwise publish mtime 0, which `PmxcfsStale` treats as stale by design. Turning it off also reconciles a previously deployed collector away. |
+| `proxmox_backup` | per-entry `pool`, `nodes`, `mountpoint`, `sparse` | — | `type: zfspool` entries. `pool` joins server/export/path in the create-fixed drift assert (its drift is what defeats at-rest encryption); nodes/mountpoint/sparse join the mutable reconcile, where an undefined desired value inherits the live one rather than clearing it. |
+| `proxmox_lxc` | `proxmox_lxc_netmask_bits` | `24` | Interpolated into `pct create --net0`. Any LAN that is not a /24 MUST set it (`proxmox_vm_cloudinit_prefix_len` is the VM counterpart). Create-time only. |
+| `restic_offsite` | `restic_offsite_rclone_remote_name`, `_rclone_remote_type`, `_rclone_remote_options` | `b2` / `b2` / `{}` | rclone.conf renders the b2 account/key only for the b2 type; any other type takes all settings from the options map, rendered verbatim as `key = value`. |
+| `qol` | `qol_admin_home`, `qol_admin_shell` | `""` (resolve from passwd), `/bin/zsh` | Set `qol_admin_home` only when the home cannot be looked up. |
+
+`nas_storage` also gained the task files `mergerfs_needs_remount.yml` and
+`mergerfs_remount_gate.yml`, extracted verbatim from `mergerfs.yml` so the
+remount decision facts are testable without FUSE. No variable or behaviour
+change.
+
+## Library surfaces outside the collection
+
+The collection is not the only pinned surface. These move in the same release.
+
+**New — `ci/deploy/`.** `deploy-base.yml` (`.deploy-base`), `kubectl-setup.yml`
+and `ansible-deploy.yml`, extracted from the two cluster pipelines. `op_vault`
+is REQUIRED on the first two (a vault name is site data, not a library
+default), and `job_name` / `needs` / `resource_group` / `environment_name` /
+`changes` are REQUIRED on `ansible-deploy` — `needs` above all, because the only
+value the library could default it to is `[]`, which in GitLab starts the job at
+pipeline creation and bypasses every gate. `deploy-base` sets `LOKI_PUSH_USER`/`_PASSWORD` on
+the base — closing an observed drift — so the Loki item must exist in `op_vault`
+for every job that extends it. The per-job secret map is a same-name map-merge
+on the consumer side, not an input. The cluster template adopts `deploy-base`
+in this release; `kubectl-setup` and `ansible-deploy` have no consumer yet and
+are registered as `not_yet_adopted` in [CONSUMERS.yml](../../../docs/CONSUMERS.yml).
+
+**New — `ci/github/`.** `ci.example.yml` and `build-image.example.yml`, promoted
+to published vendorable references now that the CLI fixtures that carried them
+are gone. The example lints `scripts` and kubeconforms `kubernetes/flux` alone —
+the optional manifests that used to sit in a second directory are copier-gated
+files, and a rendered tenant carries no test suite. The library is canonical for
+these two and for `ci/release/github-release-workflow.example.yml`; their
+`docs/CI-SHAPES.md` pointers are qualified "(app template)" because that doc
+lives in the template repo and NOT in the rendered tenant they are vendored
+into. Whether any of them needs re-vendoring at bump time is a question for
+`scripts/check-vendored-copies.py --consumer weisssrv-app-template`, which names
+exactly the files that drifted — this paragraph deliberately states no count,
+because a claim about another repo's tree cannot stay true across the release
+window. Registry paths for that consumer follow its copier layout (`template/…`,
+jinja conditional directory names included), and `build-image.example.yml`'s is
+gated on `enable_image_build` as well as the shape: the GitLab shape already
+gated its own build job on that answer, so an unconditional GitHub workflow left
+the two shapes disagreeing about what `enable_image_build: false` means and gave
+a tenant that never builds an image a `packages: write` workflow on every push.
+Both GitHub workflows also ANNOUNCE their no-Dockerfile skip (a `::warning::`
+and a step-summary line) instead of exiting green in silence — a byte-identical
+file cannot tell "runs an upstream image" from "the Dockerfile was renamed".
+
+**Terraform modules — `authentik-sso` grows three capabilities.** All three are
+additive; a caller that passes nothing new renders the same objects, with one
+behaviour change to check on the first plan.
+
+- **NEW `custom_scope_mappings`.** Scope property mappings the module AUTHORS,
+  keyed by an identifier and referenced from `oauth2_scope_mappings` or a
+  provider's `scope_mappings` as `custom:<key>`, interleaved with managed ids in
+  one ordered list. This is what an application that refuses a login over a
+  claim authentik does not emit by default needs (the stock `email` scope
+  hardcodes `email_verified: false`); until now the mapping had to be created in
+  the UI and then showed up as permanent drift.
+- **NEW `applications[*].allow_unbound`, and an unbound application now FAILS
+  the plan.** Every `authentik_application` carries a `precondition` asserting
+  some ENABLED `policy_bindings` entry names its slug — an unbound application is
+  reachable by every authenticated user, and forgetting one used to produce a
+  perfectly valid plan. A binding with `enabled = false` does not count, because
+  the policy engine never evaluates it, so suspending an application's last
+  binding fails the plan instead of quietly opening the app. A caller with a
+  deliberately open tile sets `allow_unbound = true` on it; a caller with an
+  accidental one has a real finding to fix. This is the arm that reaches a
+  consumer passing no new input, and it is also listed under
+  [Breaking](#breaking--act-in-the-same-mr-as-the-bump).
+- **`prevent_destroy` on applications, all three provider kinds, groups, the
+  custom mappings and the embedded outpost.** Unconditional, not a per-object
+  flag like `cloudflare-zone`'s — a flag has to route the object to a second
+  resource address, and an address change here IS the destroy+create it would be
+  protecting against. Consequence: removing an object is now
+  `terraform state rm 'module.<name>.<resource>.this["<key>"]'` then the map
+  entry then the object in authentik, and setting `embedded_outpost` back to
+  null is refused rather than silently destroying authentik's own outpost.
+  Renames are unaffected — `moved {}` is not blocked by `prevent_destroy`.
+
+One quieter change with the same intent: a group with no attributes now gets
+`attributes = null` instead of `jsonencode({})`, so the module stops asserting an
+empty object on groups whose attributes it does not manage (an adopted group
+carrying attributes no longer plans as a wipe).
+
+**Changed CI template inputs:**
+
+| Template | Change |
+|---|---|
+| `ci/review/pr-agent.yml` | `op_openai_key_ref` and `op_gitlab_token_ref` no longer default to `op://Homelab/...`; they default to `""` and are REQUIRED when `secrets_source: 1password` (the job exits 1 naming the missing input). Consumers on `secrets_source: env` are unaffected. **Security note for the release: the GitLab credential on EITHER path must be a project access token with Developer + `api` on the reviewed project, never an instance or admin PAT.** |
+| `ci/templates/terraform-http-backend.yml` | `api_url` default moves from a literal instance URL to `${CI_API_V4_URL}`. Same value on that instance, so no consumer's rendered `TF_HTTP_*` changes; a consumer that was overriding it can drop the override. |
+| `ci/templates/dep-cache.yml` | Now a `spec:inputs` template (was a plain fragment). NEW `key_files` and `cache_paths`, both defaulting to today's hard-coded values, so the render is byte-identical. A consumer whose pin files are not `requirements.txt` / `ansible/requirements.yml` passes its own `key_files`. |
+| `ci/build/docker-build.yml` | NEW `login_registry` / `login_user` / `login_password`, defaulting to the `$CI_REGISTRY` trio the job used to hard-code. NEW `schedule_when` (`on_success` \| `never`, default `on_success`) makes the scheduled rebuild opt-out-able. Every build now applies OCI provenance labels (`org.opencontainers.image.{source,revision,version,title}`) with `--label`, which overrides a same-key `LABEL` in a consumer's Dockerfile. |
+| `ci/validate/terraform.yml` | `terraform-validate` now FAILS when `module_glob` matches no directory containing a `versions.tf` (previously a green no-op). A consumer whose glob was wrong goes red — point it at the level that holds the modules. |
+| `ci/lint/shellcheck.yml` | A failure in one of the three script blocks no longer exits immediately; all three run and the final accounting block exits. Pass/fail is unchanged, output is more complete. |
+
+**New library scripts.** Six cluster-invariant gates are promoted out of
+weisssrv and now ship here, parameterised so they are not weisssrv-shaped:
+`check-pvc-storageclass.py`, `check-secretstore-scope.py`,
+`check-scrape-netpol.py`, `check-netpol-except-parity.py`,
+`check-alertmanager-behaviour.py` and `check-backup-artifact-apps.py` (each with
+the required flags listed under Breaking above). **None of them is drop-in.**
+`check-pvc-storageclass.py` and `check-secretstore-scope.py` take no new flags,
+but both gained the exit-code contract in the next section, so diff your local
+copy against the library's before deleting it. Two example configs ship with
+them:
+`examples/netpol-except.example.yaml` and
+`examples/alertmanager-behaviour.example.yaml`.
+
+**New vendored-copy registry.** `scripts/vendored-paths.yml` records every
+library file copied into a consumer — per consumer, split into `vendored`
+(byte-identical) and `forked` (deliberately divergent, with the library-side sha
+they were last reconciled against) — and `scripts/check-vendored-copies.py` is
+the gate a consumer runs against a library checkout. It reaches past `scripts/`
+to the lint profiles, the vendored `.github/workflows/*` and
+`tests/test_check_lib_pins.py`, which the three consumer-local gates do not.
+Consumers should replace their hand-maintained lists with a call to it; the
+registry records the TARGET state, so each consumer's gate is red until its own
+adoption MR lands.
+
+**Gates that no longer pass on nothing.** Five gates used to report green on an
+input they never inspected — four promoted ones plus the new
+`check-vendored-copies.py`; each now exits **2** on that shape, so an adopting
+consumer must point them at real data. This is the arm
+that reaches a caller passing no new flag at all — a `kustomize build` that
+renders nothing, or a corpus that fails to arrive, reds the job where it used to
+pass. Exit 1 keeps its old meaning ("the invariant is violated"), so a wrapper
+that treats any non-zero as a finding will misreport these:
+
+- `check-pvc-storageclass.py`: an EMPTY corpus is an operator error, and the
+  YAML-parse arm moved from exit 1 to exit 2. So is a corpus that ARRIVED but
+  declares no claim at all — no PVC, no `volumeClaimTemplate`, no chart
+  persistence block that sizes a volume — which is what a render loop that never
+  reached the storage-declaring stages produces. The success line reports the
+  claim count next to the document count.
+- `check-scrape-netpol.py`: same empty-corpus contract, and a new
+  `OperatorError` carries BOTH the YAML-parse arm and a malformed `--exempt`
+  from exit 1 to exit 2. A corpus that arrived but holds NO scrape target is the
+  same operator error, for the same reason: the observability stage never
+  rendered, so every namespace went unexamined. Scrape targets with none
+  ingress-restricted among them is still a pass — default-deny is a per-namespace
+  choice — and both counts are on the success line.
+- `check-secretstore-scope.py`: an EMPTY corpus is an operator error, and a
+  `ClusterSecretStore` that is referenced but not defined in the corpus is now a
+  VIOLATION rather than a note — that reference is exactly the runtime failure
+  the gate exists to catch. A store genuinely managed outside the linted tree is
+  declared with the new repeatable `--external-store NAME`. Also, a
+  `ClusterExternalSecret` with `namespaceSelector: {}` now correctly fans out to
+  every namespace instead of being skipped.
+- `check-netpol-except-parity.py`: a run that inspects ZERO NetworkPolicy
+  documents, or is pointed at a path that does not exist, is an operator error
+  (the latter used to be an uncaught traceback). A scanned manifest that does
+  not parse is the same class — it used to be reported as a drifted except-list
+  on exit 1. The success line now reports the count scanned.
+- `check-vendored-copies.py`: a missing library checkout exits 2, not 1, and the
+  `--ref` working-tree fallback is decided per REF rather than per path — a file
+  the library added after the pinned tag is reported as not shipped by that
+  release instead of being compared against a newer tree.
+
+`check-alertmanager-behaviour.py` changes three behaviours in the same spirit:
+the resolved receiver is compared exactly against amtool's first output token (a
+prefix test passed `critical-page` for an expected `critical`), `--repo-root`
+is now the extractor's cwd as well, so the gate runs from any directory, and the
+extracted config and rules are parsed ONCE up front. That last one matters
+because the extractor copies the `alertmanager.yaml` block scalar out of the
+ExternalSecret without parsing it: a YAML typo inside that block left the outer
+manifest valid, the extractor green, and the malformed body arriving mid-check
+as an uncaught traceback on exit 1. It is now an operator error (exit 2).
+
+`examples/netpol-except.example.yaml` now ships BOTH canonical except-lists:
+declaring `canonical_except_lists` replaces the built-ins wholesale, so the
+one-set example silently retired `reserved-full` for anyone who copied it.
+
+**Other script behaviour:**
+
+- `scripts/check-versions.py`: NEW `report_title` config key (default
+  `"Version Check Report"`). The table heading is no longer hard-coded to
+  `"Homelab Version Check Report"` — a consumer that wants the old heading sets
+  the key.
+- `scripts/generate-hosts-env.py`: a `group:` naming a group-of-groups now
+  resolves to the union of its descendants instead of raising. The error wording
+  for an empty required export changed from `(<target> renamed/removed?)` to one
+  of three distinct causes; a consumer asserting on the old string must update.
+
 ## How to check a migration
 
 ```bash
@@ -1082,7 +1427,32 @@ falls back silently, which is why the tables above matter.
 | `smtp_relay` | `smtp_relay_config` identity (`relayhost`/`myhostname`/`myorigin`), `_upstream_user`, `_upstream_password`, `_sasl_user`, `_sasl_password` | always |
 | `vfio_passthrough` | `vfio_passthrough_pci_ids` | when passthrough is enabled |
 | `zfs_encryption` | `zfs_encryption_connect_url`, Connect token | when `zfs_encryption_pools` is non-empty |
+| `zvol_mount` | `zvol_mount_disks` (shape: `name` / `mount_point` / `fstype` / `scsi_slot`; conventionally the same list as the guest's `proxmox_vm_additional_disks`) | always |
+
+Added in the next release. The escape hatch for each is in
+[Newly asserted](#newly-asserted--loud-where-it-used-to-be-silent), except the
+`nas_storage` and `proxmox_firewall` rows — those break a consumer that bumps
+without changing anything else, so they are in
+[Breaking](#breaking--act-in-the-same-mr-as-the-bump) instead:
+
+| Role | Asserted | Condition |
+|---|---|---|
+| `adguard_home` | `adguard_home_dhcp_enabled` is false | always |
+| `compose_app` | `compose_app_nginx_site_template` is a non-empty absolute path | when the nginx front end is configured |
+| `encrypted_swap` | `encrypted_swap_source_device` exists as a block device | when `encrypted_swap_require_source_device` |
+| `immich` | `immich_nginx_real_ip_from` resolves non-empty | unless `immich_nginx_trust_no_proxy` |
+| `k3s` | every `k3s_server_group` member names the same `k3s_kube_vip_interface` | on every server |
+| `nas_storage` | every export `bind_source` is under a ZFS mount root, a declared MergerFS target, or carries an explicit BOOLEAN `zfs:` | always |
+| `nas_storage` | every MergerFS union has a branch INSIDE a ZFS mount root, or carries an explicit BOOLEAN `zfs:` | always |
+| `nas_storage` | a declared `zfs:` on any export or union is a boolean, whichever branch classified it | when `zfs:` is present |
+| `proxmox_firewall` | every `_dns_admin_ports` / `_metrics_scrape_ports` entry has a valued `port` and a non-empty `sources` LIST | always |
+| `proxmox_vm` | the requested memory does not shrink a live guest | unless `proxmox_vm_memory_shrink_ok` |
+| `proxmox_vm` | `proxmox_vm_disk_size` is a bare GiB count | Windows guests |
+| `restic_offsite` | `restic_offsite_repo_password` non-empty (`no_log`) | when enabled |
+| `restic_offsite` | `restic_offsite_b2_key_id`, `_b2_application_key` non-empty (`no_log`) | when `restic_offsite_rclone_remote_type == 'b2'` |
+| `restic_offsite` | `restic_offsite_zvol_sources` repeats no `zvol` and no `name` | when enabled |
 
 Values read from the environment rather than a variable, because they must not
 reach argv or a fact: `SSH_PUBLIC_KEY` (proxmox_vm, proxmox_lxc),
-`TAILSCALE_AUTH_KEY` (tailscale), `SAMBA_NAS_PASSWORD` (nas_storage).
+`TAILSCALE_AUTH_KEY` (tailscale), `SAMBA_NAS_PASSWORD` (nas_storage — now
+reachable as `nas_storage_samba_password` for a non-env secret backend).

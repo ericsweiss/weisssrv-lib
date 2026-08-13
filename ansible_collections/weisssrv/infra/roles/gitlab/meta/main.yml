@@ -5,7 +5,7 @@ galaxy_info:
   author: Eric Weiss
   description: GitLab EE (Omnibus) installation, TLS, SSO, backups and Git-SSH hardening
   license: MIT
-  min_ansible_version: "2.15"
+  min_ansible_version: "2.18"
   platforms:
     - name: Debian
       versions:

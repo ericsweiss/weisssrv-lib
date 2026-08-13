@@ -37,6 +37,7 @@ Ordering is the playbook's job — run a base role first, and create the guest
 | `plex_pfx_passphrase` | PKCS#12 passphrase (secret); asserted when the hook is on | yes, with the hook |
 | `plex_cert_domain` | Fallback SNI for the cert probe | no (`""`) |
 | `plex_skip_gpu_drivers` | Skip non-free repos + VA-API drivers | no (`false`) |
+| `plex_debian_sources_path` | deb822 sources file whose `Components:` line gets non-free (`/etc/apt/sources.list.d/debian.sources`); a host without it falls back to one-line entries | no |
 | `plex_skip_service` | Skip enable/start/readiness **and the bind-mount check** (test containers) | no (`false`) |
 | `plex_service_after` | Units the service is ordered after and pulls in | no (`[network-online.target]`) |
 

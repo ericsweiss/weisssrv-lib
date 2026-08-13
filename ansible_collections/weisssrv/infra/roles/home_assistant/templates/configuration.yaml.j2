@@ -26,19 +26,26 @@ openid:
   username_field: "{{ home_assistant_oidc_username_field }}"
   block_login: {{ home_assistant_oidc_block_login | bool | ternary('true', 'false') }}
 
-# Prometheus metrics endpoint
+{% if home_assistant_enable_prometheus %}
 prometheus:
+{% endif %}
+{% if home_assistant_enable_default_config %}
 
-# Default configuration
 default_config:
+{% endif %}
+{% if home_assistant_tts_platforms | length > 0 %}
 
-# Text to speech
 tts:
-  - platform: google_translate
+{% for platform in home_assistant_tts_platforms %}
+  - platform: {{ platform }}
+{% endfor %}
+{% endif %}
+{% if home_assistant_includes | length > 0 %}
 
-automation: !include automations.yaml
-script: !include scripts.yaml
-scene: !include scenes.yaml
+{% for key, target in home_assistant_includes.items() %}
+{{ key }}: !include {{ target }}
+{% endfor %}
+{% endif %}
 {% if home_assistant_extra_config | length > 0 %}
 
 {{ home_assistant_extra_config }}

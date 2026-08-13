@@ -11,18 +11,31 @@ this is the *offsite* one.
 
 ## Required inputs
 
-Everything describing WHAT to back up is site data and has no safe default —
-the role asserts the first two when enabled:
+Everything describing WHAT to back up is site data and has no safe default. The
+role asserts the repository, the cache dir and the credentials when enabled — a
+credential set to the empty string would otherwise render an empty
+`RESTIC_PASSWORD`/rclone account and converge green:
 
-| Variable | Meaning |
-|---|---|
-| `restic_offsite_repo` | e.g. `rclone:b2:<bucket>/<path>` |
-| `restic_offsite_cache_dir` | **must sit on an encrypted dataset**, and outside any snapshotted or replicated one — see below |
-| `restic_offsite_sources` | `[{name, mountpoint}]`, empty by default |
-| `restic_offsite_zvol_sources` | `[{name, zvol, fstype, mount_opts}]`, empty by default |
-| `restic_offsite_excludes` | restic patterns against `<bind_root>/<source>/…`, empty by default |
-| `restic_offsite_repo_password` | restic repository password |
-| `restic_offsite_b2_key_id` / `restic_offsite_b2_application_key` | rclone B2 credentials |
+| Variable | Meaning | Asserted |
+|---|---|:-:|
+| `restic_offsite_repo` | e.g. `rclone:b2:<bucket>/<path>` | ● |
+| `restic_offsite_cache_dir` | **must sit on an encrypted dataset**, and outside any snapshotted or replicated one — see below | ● |
+| `restic_offsite_repo_password` | restic repository password | ● |
+| `restic_offsite_b2_key_id` / `restic_offsite_b2_application_key` | rclone B2 credentials (only for the `b2` remote type) | ● |
+| `restic_offsite_sources` | `[{name, mountpoint}]`, empty by default | |
+| `restic_offsite_zvol_sources` | `[{name, zvol, fstype, mount_opts}]`, empty by default; names and zvols must be unique | |
+| `restic_offsite_excludes` | restic patterns against `<bind_root>/<source>/…`, empty by default | |
+
+### rclone remote
+
+`rclone.conf` renders one remote, named `restic_offsite_rclone_remote_name`
+(default `b2`, which is the `rclone:<name>:` segment of `restic_offsite_repo`).
+`b2` is the only `restic_offsite_rclone_remote_type` whose credentials the role
+knows by name; any other type takes all of its settings from
+`restic_offsite_rclone_remote_options`, rendered verbatim as `key = value`
+lines. The control script's `-o rclone.args` override (below) is the rclone
+backend's own defaults minus `--b2-hard-delete`, which is a no-op for a non-B2
+remote.
 
 ### Where the cache goes
 
@@ -64,7 +77,9 @@ re-reads only changed files instead of re-hashing the whole estate:
   the `.zfs/snapshot/<prefix>-*` subtree.
 - **File-bearing data zvols** (`restic_offsite_zvol_sources`) — a file walk
   can't see a live zvol, so the control script **clones** the newest snapshot to
-  a throwaway sibling zvol and mounts its filesystem read-only (`ro,noload`) at
+  a throwaway sibling zvol (`<zvol>-<restic_offsite_zvol_clone_suffix>`, derived
+  from the full path so two sources under one parent cannot collide) and mounts
+  its filesystem read-only (`ro,noload`) at
   `<restic_offsite_zvol_mount_root>/<name>`. An **EXIT trap** unmounts +
   destroys every clone so a crashed run never strands one. A pre-existing
   dataset with the derived clone name is destroyed **only** if its `origin`
@@ -122,9 +137,9 @@ visible within a day or two.
 
 The refusal exits **90**, not 2. `run_forget` also returns whatever
 `restic forget --prune` exits with, and restic documents 2 as a go runtime
-error — sharing the code made a *crashed* prune indistinguishable from a
-deliberate refusal, so the run recorded `retention_blocked 1`, reported success
-and exited 0. Now only 90 is the refusal:
+error, so a shared code would make a *crashed* prune indistinguishable from a
+deliberate refusal — the run would record `retention_blocked 1`, report success
+and exit 0. Only 90 is the refusal:
 
 | `run_forget` | `_last_prune_success` | `_retention_blocked` | `_last_run_success` | unit |
 |---|:-:|:-:|:-:|:-:|
@@ -152,10 +167,10 @@ reported as "repository lock" so the journal line is actionable.
 it declines to reap is logged with the reason — held by another host, its PID is
 still running here, its timestamp is unparseable, or its age is inside the
 staleness threshold — and the summary line is `removed N stale lock(s)` /
-`N lock(s) remain and none met the staleness test`. It used to exit 0 having
-done nothing in exactly the common case (a live run holds the lock), which reads
-as "the lock is gone" and is how someone talks themselves into force-unlocking a
-run that is still working.
+`N lock(s) remain and none met the staleness test`. Exiting 0 having done
+nothing in the common case (a live run holds the lock) would read as "the lock
+is gone", which is how someone talks themselves into force-unlocking a run that
+is still working.
 
 A repository it cannot **read at all** is its own verdict, not "no locks". The
 lock count propagates restic's exit status instead of folding a failed probe
@@ -169,9 +184,9 @@ wrapper (`restic_ro`: `list locks`, `cat lock`, `cat config`, and the read-only
 `snapshots`/`stats` in `status`). restic opens the repository with a read lock
 even for `cat`, and it does not ignore stale locks while acquiring — so with a
 locking probe the exact scenario the reaper exists for, a stale **exclusive**
-lock, made `cat lock` wait out the full `--retry-lock` and then fail, the loop
-skipped every lock, and nothing was ever reaped. `restic unlock` itself still
-goes through the normal wrapper.
+lock, makes `cat lock` wait out the full `--retry-lock` and then fail, the loop
+skips every lock, and nothing is ever reaped. `restic unlock` itself still goes
+through the normal wrapper.
 
 ### Deep verify
 
@@ -192,23 +207,38 @@ day they are needed. `restic-offsitectl drill` — wired to a quarterly
 instead of silently lapsing) — closes that gap:
 
 1. Take the newest snapshot's file list and sort it by size ascending.
-2. Sample the smallest files whose comparand on this host **predates the
-   snapshot**, up to `restic_offsite_restore_drill_sample_files` and a hard
+2. Keep the candidates that are at least
+   `restic_offsite_restore_drill_min_bytes` and whose comparand on this host
+   **predates the snapshot**, bucket them **per file source**, and draw
+   round-robin across the sources up to
+   `restic_offsite_restore_drill_sample_files` and a hard
    `restic_offsite_restore_drill_max_bytes` cap.
 3. Restore just those into a temp dir and `cmp` them against the ZFS snapshot
    subtree they were taken from — immutable, so any difference is corruption,
    not churn. (The only tolerated difference is a comparand rewritten *during*
    the drill, detected by an mtime re-read.)
 
-It is deliberately tiny: B2 egress is billed and volume proves nothing extra
-here — repo-wide bit-rot is the rotating deep verify's job. A mismatch, a failed
-restore, or a run that could sample **nothing** all fail the unit and leave
-`backup_restore_drill_last_success_seconds` at its previous value. Set
-`restic_offsite_restore_drill_enabled: false` to drop the units (they are
-removed, not just left unstarted).
+**Both selection bounds carry weight.** Without the size floor the sample is
+whatever the estate's smallest files are — marker and version files of a byte or
+two, so the drill passes having proven essentially no bytes. Without the
+round-robin the globally-smallest-first list is dominated by whichever source
+owns the smallest files, so one source is proven and the rest are not, with no
+difference in the verdict. The drill logs the per-source breakdown
+(`sampled <src>=<n> …`, the number of sources covered, and how many candidates
+fell under the floor) so what was proven is readable in the journal, and
+`restic_offsite_restore_drill_min_sources` **fails** a drill that covered fewer
+sources than required. Only `restic_offsite_sources` count towards that
+requirement — a zvol source's filesystem is mounted only during a run, so it has
+no comparand between runs and is never drillable. A requirement above the number
+of configured sources is clamped (with a log line) rather than wedging the drill
+permanently.
 
-Only file sources are drillable: a zvol source's filesystem is mounted only
-during a run, so there is nothing to compare against between runs.
+It stays deliberately small: egress is billed and volume proves nothing extra
+here — repo-wide bit-rot is the rotating deep verify's job. A mismatch, a failed
+restore, too few sources covered, or a run that could sample **nothing** all
+fail the unit and leave `backup_restore_drill_last_success_seconds` at its
+previous value. Set `restic_offsite_restore_drill_enabled: false` to drop the
+units (they are removed, not just left unstarted).
 
 A sampled path containing a glob metacharacter (`* ? [ ] \`) is **skipped with a
 logged note**, not drilled: restic matches an `--include` with `filepath.Match`

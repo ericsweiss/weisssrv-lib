@@ -32,13 +32,10 @@
     state: directory
     mode: "0755"
 
-# Raise the kernel inotify ceilings so a container-dense node never exhausts the
-# host-global per-UID inotify-instance pool and kills a fresh molecule CI
-# container's systemd PID 1 ("Too many open files"). See k3s_inotify_* in
-# defaults/main.yml for the full failure mode. The drop-in persists across
-# reboots (sysctl --system); the live apply (sysctl_set/reload) is skipped under
-# k3s_skip_install so the molecule container only writes the file — verify.yml
-# asserts it — and does not touch the shared host's /proc/sys.
+# See k3s_inotify_* in defaults/main.yml for the failure mode. The drop-in
+# persists across reboots; the live apply is skipped under k3s_skip_install so a
+# test container only writes the file and never touches the shared host's
+# /proc/sys.
 - name: Raise kernel inotify limits for systemd-in-Docker CI containers
   ansible.posix.sysctl:
     name: "{{ item.name }}"

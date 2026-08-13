@@ -171,10 +171,12 @@
         owner: root
         group: root
         mode: "0755"
+      when: node_exporter_host_corosync_collector | bool
 
     - name: Deploy corosync health collector unit + timer
       ansible.builtin.include_role:
         name: weisssrv.infra.textfile_collector
+      when: node_exporter_host_corosync_collector | bool
       vars:
         textfile_collector_name: corosync-health-collector
         textfile_collector_service_description: Sample corosync + pmxcfs health to node_exporter textfile collector
@@ -252,10 +254,9 @@
         textfile_collector_on_unit_inactive_sec: 5min
         textfile_collector_accuracy_sec: 30s
 
-    # The zpool timer is only in this list when its unit was rendered above:
-    # with node_exporter_host_zpool_collector false the unit does not exist and
-    # systemd would fail the whole play with "Could not find the requested
-    # service zpool-status-collector.timer".
+    # A timer is only in this list when its unit was rendered above: with the
+    # collector's seam false the unit does not exist and systemd would fail the
+    # whole play with "Could not find the requested service ...".
     - name: Enable + start the collector timers
       ansible.builtin.systemd:
         name: "{{ item }}"
@@ -263,7 +264,9 @@
         state: started
         daemon_reload: true
       loop: >-
-        {{ ['corosync-health-collector.timer', 'smartmon-collector.timer']
+        {{ ['smartmon-collector.timer']
+           + (['corosync-health-collector.timer']
+              if node_exporter_host_corosync_collector | bool else [])
            + (['zpool-status-collector.timer']
               if node_exporter_host_zpool_collector | bool else []) }}
       when: not ansible_check_mode
@@ -290,6 +293,29 @@
             - /etc/systemd/system/zpool-status-collector.service
             - /usr/local/sbin/zpool-status-collector.sh
             - "{{ node_exporter_host_textfile_dir }}/zfs_pool_status.prom"
+
+    # Same for a host that is not clustered: an armed timer would keep
+    # publishing the mtime-0 series PmxcfsStale fires on.
+    - name: Reconcile the corosync collector away when disabled
+      when: not node_exporter_host_corosync_collector | bool
+      block:
+        - name: Stop + disable the corosync collector timer if present
+          ansible.builtin.systemd:
+            name: corosync-health-collector.timer
+            enabled: false
+            state: stopped
+          failed_when: false
+          when: not ansible_check_mode
+
+        - name: Remove the corosync collector unit, timer, script and metrics
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /etc/systemd/system/corosync-health-collector.timer
+            - /etc/systemd/system/corosync-health-collector.service
+            - /usr/local/sbin/corosync-health-collector.sh
+            - "{{ node_exporter_host_textfile_dir }}/corosync_health.prom"
 
 # Deliberately no auto-clean when node_exporter_host_proxmox flips to false: a
 # wrong cleanup on a real Proxmox host is worse than stale files on a demoted

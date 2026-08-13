@@ -55,13 +55,48 @@
         src: /home/testuser/.ssh/authorized_keys
       register: auth_keys_content
 
-    - name: Verify authorized_keys contains test key
+    # The whole key list is deployed in ONE authorized_key call, joined by
+    # newlines (a looped exclusive: true would leave only the last key), so a
+    # broken join shows up as one malformed line rather than two keys.
+    - name: Verify the additive path lands every key on its own line
+      vars:
+        # splitlines(), not split('\n'): ansible-core does not unescape a Jinja
+        # string literal, so '\n' inside a folded block is two characters.
+        _auth_lines: >-
+          {{ (auth_keys_content.content | b64decode).splitlines()
+             | map('trim') | reject('equalto', '') | list }}
       ansible.builtin.assert:
         that:
-          - "'ssh-ed25519' in (auth_keys_content.content | b64decode)"
-          - "'TestKeyForMolecule' in (auth_keys_content.content | b64decode)"
-        fail_msg: "authorized_keys does not contain expected test key"
-        success_msg: "authorized_keys contains expected test key"
+          - _auth_lines | select('search', 'TestKeyForMolecule test@molecule') | list | length == 1
+          - _auth_lines | select('search', 'SecondTestKeyForMolecule second@molecule') | list | length == 1
+          # Additive is the default: the key prepare seeded outside Ansible must
+          # survive, or dropping the flag would silently revoke operator keys.
+          - _auth_lines | select('search', 'ForeignKeyNotInInventory') | list | length == 1
+          - _auth_lines | length == 3
+        fail_msg: "additive authorized_keys must hold both managed keys on separate lines plus the foreign key"
+        success_msg: "additive authorized_keys: both managed keys on separate lines, foreign key kept"
+
+    - name: Read the exclusive-user authorized_keys
+      ansible.builtin.slurp:
+        src: /home/keyexcl/.ssh/authorized_keys
+      register: excl_keys_content
+
+    # base_ssh_authorized_keys_exclusive makes the list authoritative. Both
+    # managed keys must survive the rewrite (the join is what stops exclusive
+    # from keeping only the last one) and the unlisted key must be revoked.
+    - name: Verify the exclusive path revokes only the unlisted key
+      vars:
+        _excl_lines: >-
+          {{ (excl_keys_content.content | b64decode).splitlines()
+             | map('trim') | reject('equalto', '') | list }}
+      ansible.builtin.assert:
+        that:
+          - _excl_lines | select('search', 'TestKeyForMolecule test@molecule') | list | length == 1
+          - _excl_lines | select('search', 'SecondTestKeyForMolecule second@molecule') | list | length == 1
+          - _excl_lines | select('search', 'ForeignKeyNotInInventory') | list | length == 0
+          - _excl_lines | length == 2
+        fail_msg: "exclusive authorized_keys must keep every managed key and drop the unlisted one"
+        success_msg: "exclusive authorized_keys: both managed keys kept, unlisted key revoked"
 
     - name: Check sudoers file exists for testuser
       ansible.builtin.stat:

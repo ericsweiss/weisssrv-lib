@@ -21,15 +21,28 @@ One-way sync of AdGuard Home settings from a **primary** instance to a
 | `adguard_sync_enabled` | Run the role on this host (the primary) | no (`false`) |
 | `adguard_sync_version` | Pinned adguardhome-sync release | yes |
 | `adguard_sync_origin` | Primary AdGuard API URL | yes |
-| `adguard_sync_replica` | Replica AdGuard API URL | yes |
-| `adguard_sync_admin_user` / `_admin_password` | Credentials, valid on **both** endpoints | yes |
+| `adguard_sync_replica` | Replica AdGuard API URL | yes, unless `adguard_sync_replicas` is set |
+| `adguard_sync_replicas` | Two or more replicas: `{url, username, password}` entries, credentials falling back to the admin pair | no (`[]`) |
+| `adguard_sync_admin_user` / `_admin_password` | Credentials, valid on **every** endpoint | yes |
 | `adguard_sync_schedule` | Timer `OnCalendar` | no (`*:0/5`) |
 | `adguard_sync_features` | Which config sections to sync | no (see `defaults/main.yml`) |
+| `adguard_sync_textfile_dir` | Where the run metrics land; aliases `node_exporter_host_textfile_dir` | no (`/var/lib/node_exporter`) |
 
 ```yaml
 adguard_sync_enabled: true
 adguard_sync_origin: "https://dns-01.{{ internal_domain }}"
 adguard_sync_replica: "https://dns-02.{{ internal_domain }}"
+```
+
+Three or more instances use the list form instead, which renders upstream's
+`replicas:` block and ignores `adguard_sync_replica`:
+
+```yaml
+adguard_sync_replicas:
+  - url: "https://dns-02.{{ internal_domain }}"
+  - url: "https://dns-03.{{ internal_domain }}"
+    username: "sync"          # optional per-entry override
+    password: "{{ dns_03_sync_password }}"
 ```
 
 Fronting the two endpoints with an ingress proxy gives you TLS, but it also
@@ -54,7 +67,7 @@ tick, so make every change on the primary.
 
 The tool's own metrics API is disabled (`api.port: 0`), so the unit writes a
 node_exporter textfile on every run (`ExecStopPost=+…-metrics.sh`, under
-`node_exporter_host_textfile_dir`):
+`adguard_sync_textfile_dir`, which aliases `node_exporter_host_textfile_dir`):
 
 - `adguardhome_sync_last_run_success` — `1` on a clean run, `0` on failure
 - `adguardhome_sync_last_success_timestamp_seconds` — preserved across failures, so

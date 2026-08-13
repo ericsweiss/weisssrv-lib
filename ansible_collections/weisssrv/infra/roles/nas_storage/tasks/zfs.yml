@@ -48,15 +48,11 @@
   failed_when: "nas_storage_zfs_result.rc != 0 or 'DATASET_MISSING' in nas_storage_zfs_result.stdout"
   when: item.0.name in nas_storage_zfs_imported_pools.stdout_lines
 
-# The zfs-scrub-<schedule>@.timer template units are shipped by
-# zfsutils-linux and exist for any imported pool, so enabling/starting them
-# is expected to succeed. We deliberately do NOT blanket-swallow with
-# failed_when: false — that masked a misspelled nas_storage_zfs_scrub_schedule (which
-# builds a non-existent unit name) and let scrubs silently never run on the
-# multi-TB raidz pools. The imported-pool when: gate already covers the
-# exported/absent-pool steady state; any remaining failure here (e.g. a bad
-# schedule -> "Unit ... not found") is a real misconfiguration and must
-# surface.
+# zfsutils-linux ships the zfs-scrub-<schedule>@.timer template units, so the
+# enable/start is expected to succeed for any imported pool. Deliberately NOT
+# failed_when:false — that would hide a bad nas_storage_zfs_scrub_schedule
+# (non-existent unit name) and leave scrubs silently unscheduled. The
+# imported-pool when: gate already covers the exported/absent-pool case.
 - name: Enable ZFS scrub timer
   ansible.builtin.systemd:
     name: "zfs-scrub-{{ nas_storage_zfs_scrub_schedule | default('monthly') }}@{{ item.name }}.timer"

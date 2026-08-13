@@ -19,6 +19,45 @@
           restic_offsite_enabled is true. The cache holds repository PATHS in
           plaintext — place it on an encrypted dataset.
 
+    # A credential set to the empty string renders an empty RESTIC_PASSWORD and
+    # an empty rclone account: every task converges green and the backup is
+    # non-functional until the next run's metric is read. (An OMITTED variable
+    # already fails loudly — the role ships no default for any of the three.)
+    # no_log: the assert must never render a secret into output.
+    - name: Assert the offsite credentials are non-empty
+      ansible.builtin.assert:
+        that:
+          - restic_offsite_repo_password | default('') | length > 0
+        fail_msg: >-
+          restic_offsite_repo_password must be a non-empty value when
+          restic_offsite_enabled is true.
+      no_log: true
+
+    - name: Assert the B2 credentials are non-empty
+      ansible.builtin.assert:
+        that:
+          - restic_offsite_b2_key_id | default('') | length > 0
+          - restic_offsite_b2_application_key | default('') | length > 0
+        fail_msg: >-
+          restic_offsite_b2_key_id and restic_offsite_b2_application_key must be
+          non-empty values for the b2 rclone remote (set
+          restic_offsite_rclone_remote_type + _remote_options for another
+          backend).
+      when: restic_offsite_rclone_remote_type == 'b2'
+      no_log: true
+
+    # The control script derives each throwaway clone's name from the zvol path,
+    # so two entries naming the same zvol clone onto each other mid-run.
+    - name: Assert the zvol sources are unique
+      ansible.builtin.assert:
+        that:
+          - (restic_offsite_zvol_sources | map(attribute='zvol') | unique | list | length)
+            == (restic_offsite_zvol_sources | length)
+          - (restic_offsite_zvol_sources | map(attribute='name') | unique | list | length)
+            == (restic_offsite_zvol_sources | length)
+        fail_msg: >-
+          restic_offsite_zvol_sources must not repeat a zvol or a source name.
+
     # restic stays Debian-packaged; restic_offsite_restic_version is advisory:
     # an exact Debian version pins, empty tracks the distro.
     - name: Install restic
@@ -270,20 +309,10 @@
       when: restic_offsite_restore_drill_enabled | bool
 
     # The gate, as one named fact so it is assertable (molecule pins both arms).
-    #
-    # `units is changed` alone is EDGE-triggered, and that made the seed
-    # single-shot: the templates land changed once, the seed runs once, and if
-    # that one run fails (repo unreachable that minute, a transient B2 error, a
-    # deploy interrupted after the templates but before the service finished)
-    # every later converge finds the units unchanged and skips the seed
-    # forever. The play goes green with the proof metric still absent — i.e.
-    # exactly the state the seed exists to prevent, and the state whose alert
-    # arm is absent(), so the re-run looks fine while the drill has never
-    # passed. OR-ing in "the proof metric does not exist yet" makes the gate
-    # LEVEL-triggered: it retries until a drill actually passes, then stops.
-    #
-    # It still cannot re-spend B2 egress on a healthy host: once one drill has
-    # passed, the metric is there and both arms are false on every re-run.
+    # LEVEL-triggered: units changed OR the proof metric is still absent, so a
+    # failed seed retries next converge instead of being skipped forever. Once a
+    # drill has passed both arms are false and no re-run re-spends B2 egress.
+    # Why the seed exists at all: README, "Restore drill".
     - name: Decide whether the first restore drill still needs seeding
       ansible.builtin.set_fact:
         restic_offsite_drill_seed_due: >-
@@ -291,22 +320,10 @@
              or ((restic_offsite_drill_proof.matched | default(0) | int) == 0) }}
       when: restic_offsite_restore_drill_enabled | bool
 
-    # Seed the FIRST drill at install time. A Persistent=true timer does NOT
-    # fire when it is first enabled: with no /var/lib/systemd/timers stamp yet,
-    # systemd computes the next elapse from the unit's activation time, so a
-    # quarterly OnCalendar means the first drill is up to three months out. The
-    # proof metric (backup_restore_drill_last_success_seconds) is written only
-    # by a PASSING drill, so until then the staleness alert has nothing to read
-    # and its absent() arm pages on a system that is in fact fine.
-    #
-    # Gated (not run unconditionally): a re-run of the role on a host whose
-    # drill has already passed must not re-spend B2 egress. It also proves the
-    # drill end-to-end inside the deploy that installed it — a failure here is
-    # a real one (unreachable repo, wrong password, no comparable path) and is
-    # worth failing the deploy for, which is exactly what the quarterly alert
-    # would otherwise report weeks later. A repository with no snapshot yet is
-    # the one legitimate failure (the drill names it as such): set
-    # restic_offsite_restore_drill_seed false for that first converge.
+    # Seed the FIRST drill at install time (a Persistent=true timer does not
+    # fire on first enable). Fails the play when the drill fails — including on
+    # a repository with no snapshot yet; set restic_offsite_restore_drill_seed
+    # false for that first converge. README, "Restore drill".
     - name: Seed the first restore drill so the proof metric exists
       ansible.builtin.systemd:
         name: backup-restore-drill.service
