@@ -1,12 +1,14 @@
 """scripts/flux-env.sh — the multi-ConfigMap substitution wrapper.
 
 Functional coverage runs the real script against the real sibling
-flux-render.sh; FLUX_EXTRA_CONFIGMAPS is pinned to "" so fixtures control the
-whole input list.
+flux-render.sh. FLUX_EXTRA_CONFIGMAPS is pinned to "" by default so fixtures
+control the whole input list; the cases that exercise the unset branch pass
+extra_configmaps=None instead.
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -32,14 +34,33 @@ def write_cm(path: Path, data: dict[str, str]) -> Path:
     return path
 
 
-def run(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
+def run(
+    args: list[str], cwd: Path, extra_configmaps: str | None = ""
+) -> subprocess.CompletedProcess:
+    # Inherit the environment (python needs its site-packages for PyYAML); pin
+    # only the input list so fixtures control it. extra_configmaps=None leaves
+    # the variable UNSET, which is the `-` vs `:-` branch the script documents.
+    env = {**os.environ}
+    if extra_configmaps is None:
+        env.pop("FLUX_EXTRA_CONFIGMAPS", None)
+    else:
+        env["FLUX_EXTRA_CONFIGMAPS"] = extra_configmaps
     return subprocess.run(
         ["bash", str(SCRIPT), *args],
         cwd=cwd,
-        env={"PATH": "/usr/bin:/bin:/usr/local/bin", "FLUX_EXTRA_CONFIGMAPS": ""},
+        env=env,
         capture_output=True,
         text=True,
     )
+
+
+SIBLING_CM = Path("kubernetes/infrastructure/sources/cluster-config.yaml")
+
+
+def write_sibling_cm(root: Path, data: dict[str, str]) -> Path:
+    path = root / SIBLING_CM
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return write_cm(path, data)
 
 
 def test_bash_syntax_is_valid() -> None:
@@ -86,6 +107,54 @@ def test_a_missing_configmap_is_a_loud_error(tmp_path: Path) -> None:
     proc = run(["merged-configmap", "absent.yaml"], cwd=tmp_path)
     assert proc.returncode != 0
     assert "ConfigMap not found" in proc.stderr
+
+
+def test_k8s_version_reads_only_the_first_of_several_files(tmp_path: Path) -> None:
+    a = write_cm(tmp_path / "a.yaml", {"k3s_version": "v1.33.4+k3s1"})
+    b = write_cm(tmp_path / "b.yaml", {"k3s_version": "v1.99.0+k3s1"})
+    proc = run(["k8s-version", f"{a.name} {b.name}"], cwd=tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    # MAJOR.MINOR.0 from the FIRST file — the second is never consulted.
+    assert proc.stdout.strip() == "1.33.0"
+
+
+def test_k8s_version_fails_when_the_first_file_lacks_the_pin(tmp_path: Path) -> None:
+    a = write_cm(tmp_path / "a.yaml", {"foo_version": "1"})
+    b = write_cm(tmp_path / "b.yaml", {"k3s_version": "v1.33.4+k3s1"})
+    proc = run(["k8s-version", f"{a.name} {b.name}"], cwd=tmp_path)
+    assert proc.returncode != 0
+    assert "could not derive k3s_version" in proc.stderr
+
+
+def test_k8s_version_without_an_argument_dies_with_usage(tmp_path: Path) -> None:
+    proc = run(["k8s-version"], cwd=tmp_path)
+    assert proc.returncode != 0
+    assert "usage" in proc.stderr
+
+
+def test_unset_extra_configmaps_appends_the_sibling_cluster_config(tmp_path: Path) -> None:
+    versions = write_cm(tmp_path / "versions.yaml", {"foo_version": "1"})
+    write_sibling_cm(tmp_path, {"cluster_domain": "example.com"})
+    proc = run(["export-versions", versions.name], cwd=tmp_path, extra_configmaps=None)
+    assert proc.returncode == 0, proc.stderr
+    assert "export foo_version=1" in proc.stdout
+    # The default (`-`, not `:-`) pulled the sibling in without it being named.
+    assert "export cluster_domain=example.com" in proc.stdout
+
+
+def test_unset_extra_configmaps_is_loud_when_the_sibling_is_absent(tmp_path: Path) -> None:
+    versions = write_cm(tmp_path / "versions.yaml", {"foo_version": "1"})
+    proc = run(["export-versions", versions.name], cwd=tmp_path, extra_configmaps=None)
+    assert proc.returncode != 0
+    assert str(SIBLING_CM) in proc.stderr
+
+
+def test_empty_extra_configmaps_adds_nothing(tmp_path: Path) -> None:
+    versions = write_cm(tmp_path / "versions.yaml", {"foo_version": "1"})
+    write_sibling_cm(tmp_path, {"cluster_domain": "example.com"})
+    proc = run(["export-versions", versions.name], cwd=tmp_path, extra_configmaps="")
+    assert proc.returncode == 0, proc.stderr
+    assert "cluster_domain" not in proc.stdout
 
 
 def test_an_unknown_subcommand_dies_with_the_menu(tmp_path: Path) -> None:

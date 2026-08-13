@@ -72,10 +72,16 @@ rather than an environment variable. The two-phase rollout still works —
    `terraform import 'module.tailnet.tailscale_dns_split_nameservers.this["internal.example.com"]' internal.example.com`.
 
 Resolving a nameserver by `device_hostname` derives the 100.x address at plan
-time (`addresses[0]`, the device's IPv4), so a rebuilt device self-heals instead
-of leaving a stale literal. The lookup waits up to 60s for the device to appear;
-that duration is a literal rather than an input because the provider parses it
-during `terraform validate`, where a variable reference is still unknown.
+time, so a rebuilt device self-heals instead of leaving a stale literal. The
+module picks the device's single non-IPv6 tailnet address rather than
+`addresses[0]` — the API's ordering is convention, not contract, and an IPv6
+nameserver here breaks resolution for every tailnet client of the domain. A
+device that exposes no IPv4, or more than one, fails the plan with a
+precondition naming the domain and the device instead of programming a bad
+nameserver; pass `nameservers` explicitly for such a device. The lookup waits up
+to 60s for the device to appear; that duration is a literal rather than an input
+because the provider parses it during `terraform validate`, where a variable
+reference is still unknown.
 
 ## Apply is supervised
 
@@ -83,15 +89,19 @@ A bad ACL can sever tailnet and SSH access to every node. Apply it
 interactively, never with `-auto-approve`, and keep a non-tailnet path (console
 access or a LAN session) open until the post-apply checks pass.
 
-Two guardrails are hardcoded on the ACL resource, and neither is an input —
-`lifecycle` blocks cannot take variables, so unlike `cloudflare-zone`'s
-per-record `protected` flag there is no per-consumer switch to route:
+Three guardrails are hardcoded, and none is an input — `lifecycle` blocks cannot
+take variables, so unlike `cloudflare-zone`'s per-record `protected` flag there
+is no per-consumer switch to route. Two are on the ACL resource:
 
 - `reset_acl_on_destroy = false` — destroying the resource must not revert the
   tailnet to the default allow-all policy. That is a silent security
   regression, not a rollback.
 - `lifecycle { prevent_destroy = true }` — any plan that would destroy the ACL
   resource errors out instead.
+
+The third is on `tailscale_dns_split_nameservers.this`: it also carries
+`prevent_destroy = true`, because destroying a Split-DNS entry silences that
+domain for the whole tailnet.
 
 Because the module is sourced at a pinned `?ref=`, a consumer **cannot** remove
 that block. To stop managing the ACL, drop it from state and then delete the
@@ -107,5 +117,14 @@ but the state entry. Re-adopt it later with `terraform import`. The only other
 path is vendoring the module source into the consumer repo and editing it
 there.
 
-Removing an entry from `split_dns` *is* allowed to destroy that Split-DNS
-record; unlike the old gate, it can only happen from a deliberate code edit.
+Removing an entry from `split_dns` is **not** a plain code edit either — the
+`prevent_destroy` above turns it into a hard plan error. Drop it from state
+first, then delete the key:
+
+```bash
+terraform state rm 'module.<name>.tailscale_dns_split_nameservers.this["internal.example.com"]'
+```
+
+The live Split-DNS mapping survives that, so resolution keeps working; delete
+the entry in the Tailscale admin console as well if the mapping should really go
+away.

@@ -94,6 +94,19 @@ does not `include:` them. What has to be portable is what they *call*:
   which is what reaches past `scripts/` — the older per-consumer gates iterate
   `scripts/` only and cannot see `.github/`. Adoption is per consumer and has not
   landed yet.
+- **PLANNED — the GitHub Actions cluster pipeline.** A tenant repo already has
+  a complete `github` CI shape (the app template renders it). A CLUSTER repo
+  does not: the generated deploy/validate/verify pipeline exists only as GitLab
+  CI, so the cluster template's `git_backend: github` stays validator-blocked
+  until this lands. Building it means reusable Actions workflows under
+  `ci/github/` for: the per-playbook deploy matrix (concurrency groups replace
+  `resource_group`), the validation-gate -> deploy -> verify-always graph, the
+  gate-script suite, and an integration-test fan-out to replace the molecule
+  child pipeline — plus self-hosted-runner guidance, since deploy jobs need
+  network reach into the cluster. Every seam it needs (forge-neutral scripts,
+  `secret_ref`, the vendored-workflow registry with conditional consumer paths)
+  is already in place; nothing else should be built in a GitLab-only shape in
+  the meantime.
 - **The known gap** is `scripts/version-bump-mr.py`, which speaks the GitLab MR
   API only. Adding GitHub support means the same `--platform` flag and a PR call
   — not a second script.

@@ -73,6 +73,7 @@ Each of these breaks a consumer that bumps without changing anything else.
 | `scripts/check-scrape-netpol.py` | Two surfaces. **Programmatic**: `main()` takes argv, the `EXEMPT_NAMESPACES` dict is gone in favour of repeatable `--exempt NS=REASON` (reason mandatory), and `OBSERVABILITY_NS` became `--observability-namespace`. **Runtime exit codes**, which reach a caller that touched neither: an EMPTY corpus on stdin is now an operator error (exit 2) where it used to pass 0, the YAML-parse arm plus a malformed `--exempt` moved from exit 1 to exit 2, and a corpus that HAS documents but holds NO SCRAPE TARGET at all is now exit 2 as well — it used to pass 0, which is how the gate stayed green when the observability stage dropped out of the render loop. | Pass exemptions on the command line. Make sure the corpus actually arrives AND covers the stage defining the ServiceMonitors/PodMonitors — either failure now reds the job. Scrape targets with none ingress-restricted among them still pass; only zero targets is the error. Any wrapper branching on `rc == 1` for "finding" versus `rc > 1` for "broken" already reads these correctly; one testing `rc != 0` as "finding" does not. |
 | `scripts/check-pvc-storageclass.py` | A corpus that HAS documents but declares NO CLAIM — no PersistentVolumeClaim, no `volumeClaimTemplate`, no chart persistence block that sizes a volume — is now an operator error (exit 2) where it used to pass 0. Same zero-subjects arm `check-secretstore-scope.py` already carried, closing the last of the three stdin gates that could pass vacuously. The success line now reports the claim count alongside the document count. **Programmatic**: `violations()`, `_claim_violations()` and `_values_violations()` return `(violations, subjects_seen)` tuples instead of a bare list. | Make sure the `kustomize build` paths feeding stdin cover the stages that declare storage. A caller importing the module rather than running the script unpacks the tuple; nothing in this library or its consumers' Taskfiles does. |
 | `scripts/check-taskfile.sh` | It now follows `includes:` recursively. A Taskfile that includes a fragment referencing a missing `scripts/` file FAILS where it previously passed — which is the point. | Fix the reference, or pass fragments individually. New env `CHECK_TASKFILE_MAX_DEPTH` (default 10); a missing include target is a failure, matching go-task. |
+| `terraform/modules/authentik-sso` | An application that no ENABLED `policy_bindings` entry names now FAILS the plan, including a read-only drift-plan job. Reaches a consumer that passes no new input. | Audit for unbound applications and add a binding, or set `allow_unbound = true` on a tile that really is open to every authenticated user. Full entry, together with the other two `authentik-sso` additions, under [Library surfaces outside the collection](#library-surfaces-outside-the-collection). |
 
 ### The six sg-metrics rules this release deletes
 
@@ -230,6 +231,43 @@ a tenant that never builds an image a `packages: write` workflow on every push.
 Both GitHub workflows also ANNOUNCE their no-Dockerfile skip (a `::warning::`
 and a step-summary line) instead of exiting green in silence — a byte-identical
 file cannot tell "runs an upstream image" from "the Dockerfile was renamed".
+
+**Terraform modules — `authentik-sso` grows three capabilities.** All three are
+additive; a caller that passes nothing new renders the same objects, with one
+behaviour change to check on the first plan.
+
+- **NEW `custom_scope_mappings`.** Scope property mappings the module AUTHORS,
+  keyed by an identifier and referenced from `oauth2_scope_mappings` or a
+  provider's `scope_mappings` as `custom:<key>`, interleaved with managed ids in
+  one ordered list. This is what an application that refuses a login over a
+  claim authentik does not emit by default needs (the stock `email` scope
+  hardcodes `email_verified: false`); until now the mapping had to be created in
+  the UI and then showed up as permanent drift.
+- **NEW `applications[*].allow_unbound`, and an unbound application now FAILS
+  the plan.** Every `authentik_application` carries a `precondition` asserting
+  some ENABLED `policy_bindings` entry names its slug — an unbound application is
+  reachable by every authenticated user, and forgetting one used to produce a
+  perfectly valid plan. A binding with `enabled = false` does not count, because
+  the policy engine never evaluates it, so suspending an application's last
+  binding fails the plan instead of quietly opening the app. A caller with a
+  deliberately open tile sets `allow_unbound = true` on it; a caller with an
+  accidental one has a real finding to fix. This is the arm that reaches a
+  consumer passing no new input, and it is also listed under
+  [Breaking](#breaking--act-in-the-same-mr-as-the-bump).
+- **`prevent_destroy` on applications, all three provider kinds, groups, the
+  custom mappings and the embedded outpost.** Unconditional, not a per-object
+  flag like `cloudflare-zone`'s — a flag has to route the object to a second
+  resource address, and an address change here IS the destroy+create it would be
+  protecting against. Consequence: removing an object is now
+  `terraform state rm 'module.<name>.<resource>.this["<key>"]'` then the map
+  entry then the object in authentik, and setting `embedded_outpost` back to
+  null is refused rather than silently destroying authentik's own outpost.
+  Renames are unaffected — `moved {}` is not blocked by `prevent_destroy`.
+
+One quieter change with the same intent: a group with no attributes now gets
+`attributes = null` instead of `jsonencode({})`, so the module stops asserting an
+empty object on groups whose attributes it does not manage (an adopted group
+carrying attributes no longer plans as a wipe).
 
 **Changed CI template inputs:**
 

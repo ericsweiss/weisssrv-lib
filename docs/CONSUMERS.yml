@@ -68,9 +68,26 @@ consumers:
           every deploy-ansible-* job keys on ansible/requirements.yml.
       terraform_modules:
         status: >-
-          Not consumed. weisssrv's terraform/{cloudflare,tailscale,authentik}
-          are root modules written before the shapes were extracted; they are a
-          candidate for adoption, not a current pin.
+          Adopted, all three. terraform/{cloudflare,tailscale,authentik} are
+          thin callers of cloudflare-zone / tailscale-acl / authentik-sso
+          holding only site data. The refs are NOT uniform and that is
+          deliberate: authentik pins v0.7.0 (the release carrying the
+          prevent_destroy guards, custom_scope_mappings and the
+          unbound-application precondition its shapes need), the other two
+          v0.6.2 until the next WEISSSRV_LIB_REF bump. This consumer is the only
+          one that PLANS these modules against live infrastructure — the cluster
+          template's render check is static — so a behavioural module change is
+          judged here.
+        files:
+          - terraform/cloudflare/main.tf     # cloudflare-zone
+          - terraform/tailscale/main.tf      # tailscale-acl
+          - terraform/authentik/main.tf      # authentik-sso
+        enforced_by: >-
+          nothing. Bump by hand alongside WEISSSRV_LIB_REF, then
+          `terraform init -upgrade` and read the plan — each root passes the
+          identity-bearing inputs explicitly (zone settings, flow slugs, scope
+          mapping lists) so a changed library default cannot move live state on
+          a ref bump unreviewed.
       vendored_copies: >-
         Recorded in the library at scripts/vendored-paths.yml under
         consumers.weisssrv, and checked from here by
@@ -325,8 +342,9 @@ pin_surfaces:
       template/tests/test_lib_pins.py::test_terraform_module_sources_pin_the_same_ref
     note: >-
       SCOPE — cluster-template only, and only for the `?ref=` in the modules it
-      renders. weisssrv's terraform/ is NOT gated: bump its module refs by hand
-      and confirm with `terraform init -upgrade` before the plan.
+      renders. weisssrv's terraform/ is NOT gated: it holds THREE module refs
+      (one per root) which may legitimately sit at different tags, so bump them
+      by hand and confirm with `terraform init -upgrade` before the plan.
   - id: vendored_script_copies
     enforced: >-
       weisssrv scripts/test_vendored_byte_identity.py (never skips) +

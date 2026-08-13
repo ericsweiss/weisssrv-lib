@@ -834,7 +834,7 @@ lockfile.
 |---|---|---|
 | `cloudflare-zone` | zone settings + DNS records with per-record destroy/drift protection | `account_id`, `zone_name` |
 | `tailscale-acl` | tailnet ACL policy + Split-DNS nameservers | `acl_policy`, `split_dns` |
-| `authentik-sso` | OAuth2/proxy/SAML providers, applications, groups, policy bindings, embedded outpost | none (every map defaults to `{}`) |
+| `authentik-sso` | OAuth2/proxy/SAML providers, applications, groups, policy bindings, custom scope mappings, embedded outpost | none (every map defaults to `{}`) |
 
 Behaviour to know before adopting:
 
@@ -849,6 +849,14 @@ Behaviour to know before adopting:
   `["authorization_code","refresh_token"]`** (no ROPC/implicit/hybrid/
   client_credentials), defaults `matching_mode` to `strict`, and **rejects**
   regex redirect URIs containing an unescaped dot.
+- **`authentik-sso` fails the plan on an application no ENABLED `policy_bindings`
+  entry names** (it would be reachable by every authenticated user); a binding
+  with `enabled = false` does not count, because the policy engine never
+  evaluates it, and `allow_unbound` declares an open tile deliberate. Every object except policy bindings carries
+  unconditional `prevent_destroy` — no per-object flag, because a flag would
+  route the object to a different resource address, and an address change here
+  is the destroy+create the flag exists to prevent. Removal is
+  `terraform state rm` plus the map entry; renames use `moved {}`.
 
 Full input/output tables and the per-module consumption pattern are in each
 module's `README.md`. `ci/validate/terraform.yml` covers them with

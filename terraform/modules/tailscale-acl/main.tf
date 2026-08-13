@@ -50,5 +50,22 @@ resource "tailscale_dns_split_nameservers" "this" {
   # is untouched), then drop it from var.split_dns.
   lifecycle {
     prevent_destroy = true
+
+    # `one([])` is null, not an error, so without this a device with no IPv4
+    # would program `nameservers = [null]` instead of failing the plan.
+    precondition {
+      condition = (
+        each.value.device_hostname == null
+        || length([
+          for a in data.tailscale_device.split_dns[each.key].addresses : a
+          if !strcontains(a, ":")
+        ]) == 1
+      )
+      error_message = format(
+        "split_dns[%q]: tailnet device %q does not expose exactly one IPv4 address. Pass `nameservers` explicitly for this domain instead of `device_hostname`.",
+        each.key,
+        each.value.device_hostname == null ? "" : each.value.device_hostname
+      )
+    }
   }
 }

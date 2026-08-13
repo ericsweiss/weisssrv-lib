@@ -157,10 +157,11 @@ def test_the_manifest_overrides_reach_the_extractor(run):
     assert argv[1].startswith("alertmanager ") and argv[1].endswith("--am-config alertmanager-secret.yaml")
 
 
-def test_a_missing_tool_fails_before_any_extraction(run):
-    proc, calls = run(drop=("promtool",))
+@pytest.mark.parametrize("tool", ["promtool", "amtool"])
+def test_a_missing_tool_fails_before_any_extraction(run, tool):
+    proc, calls = run(drop=(tool,))
     assert proc.returncode == 1
-    assert "promtool not found on PATH" in proc.stderr
+    assert f"{tool} not found on PATH" in proc.stderr
     assert calls == []
 
 

@@ -10,7 +10,7 @@ job. This image bakes that half.
 | Baked | Pin |
 | --- | --- |
 | base | `python:3.11-slim`, manifest-list digest |
-| 1Password CLI (`op`) | version + per-arch sha256 in the Dockerfile |
+| 1Password CLI (`op`) | version + per-arch sha256 in the Dockerfile (only the amd64 one is exercised — see Architecture) |
 | `ansible` | `requirements.txt` (exact `==` pin) |
 | `git`, `openssh-client`, `jq`, `curl`, `ca-certificates`, `unzip` | apt, unpinned (Debian stable) |
 | python3 + pip | from the base |
@@ -27,6 +27,18 @@ job. This image bakes that half.
 - **`kubectl`** — [`ci/deploy/kubectl-setup.yml`](../../ci/deploy/kubectl-setup.yml)
   installs its own sha256-pinned copy over whatever is on PATH, so a copy here
   would be a second pin for the same tool that no job would ever use.
+
+## Architecture
+
+The Dockerfile is arch-portable (index-digest base, `dpkg --print-architecture`
+for the `op` download), but the **published tag is amd64-only**:
+`ci/build/docker-build.yml` runs a plain `docker build` on the amd64
+`infrastructure` runner, with no `buildx --platform` and no manifest list. So an
+arm64 runner pulling the published tag gets a no-matching-manifest failure, and
+the Dockerfile's arm64 `op` sha256 is never verified by CI — it is kept for a
+future multi-arch build. amd64 is the family's working assumption elsewhere too
+([`ci/templates/install-1password.yml`](../../ci/templates/install-1password.yml)
+hard-codes `arch=amd64` in its apt source).
 
 ## Adopting it
 
@@ -52,7 +64,7 @@ Each pin is bumped by hand — nothing tracks upstream for this image.
 
 - **Base image**: `docker buildx imagetools inspect python:3.11-slim`, and
   replace the digest on the `FROM` line. Use the INDEX digest, not a
-  platform-specific one, or the image stops building on the other arch.
+  platform-specific one, or the Dockerfile stops building on the other arch.
 - **`op`**: pick the version, then take both shas —
   `curl -fsSL https://cache.agilebits.com/dist/1P/op2/pkg/v<version>/op_linux_<arch>_v<version>.zip | sha256sum`
   for `amd64` and `arm64` — and move the version and both literals together.

@@ -146,6 +146,17 @@ class TestExtractedBodyIsParsedOnce:
         with pytest.raises(mod.ExtractionError, match="is empty"):
             mod._load_extracted(path, "Alertmanager config")
 
+    def test_main_exits_two_when_amtool_is_absent(self, tmp_path, capsys, monkeypatch):
+        """amtool is the whole route check, so its absence is an operator error."""
+        monkeypatch.setattr(mod.shutil, "which", lambda _name: None)
+        extract = tmp_path / "extract.py"
+        extract.write_text("")
+        rc = mod.main(
+            ["--config", str(EXAMPLE), "--repo-root", str(tmp_path), "--extract-script", str(extract)]
+        )
+        assert rc == 2
+        assert "amtool not found on PATH" in capsys.readouterr().err
+
     def test_main_exits_two_on_a_malformed_body(self, tmp_path, capsys, monkeypatch):
         """End to end: exit 2, not the traceback-on-1 the old code produced."""
         monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/amtool")

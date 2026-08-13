@@ -16,8 +16,13 @@
 # Dockerfile, so the image is self-contained (docker/README.md).
 #
 #   docker build -t <registry>/ansible-deploy:latest docker/ansible-deploy/
-# Pinned by manifest-list digest (multi-arch index — this image builds for
-# amd64 + arm64) so the rolling `3.11-slim` tag can't silently change the base.
+# Pinned by manifest-list digest (the multi-arch index, not a platform-specific
+# digest) so the rolling `3.11-slim` tag can't silently change the base and the
+# Dockerfile stays buildable on either arch. The PUBLISHED tag is amd64-only:
+# ci/build/docker-build.yml runs a plain `docker build` on the amd64
+# `infrastructure` runner, so the arm64 arm below is never exercised in CI. It
+# is kept for a future multi-arch (`buildx --platform`) build; until then its
+# sha256 is unverified by any job.
 # Same 3.11 line the deploy jobs run on today, slim because everything the
 # toolchain needs is installed explicitly below.
 # Bump deliberately: resolve the new digest with
@@ -45,9 +50,10 @@ RUN apt-get update -qq \
 # 1Password CLI, from the versioned archive rather than the apt repo
 # ci/templates/install-1password.yml uses: that repo carries only the CURRENT
 # version (older .debs are pruned from the pool), so an apt install cannot be
-# pinned to a version a rebuild will still find. Detect arch for multi-platform
-# builds; verify the pinned sha256 before extract, the same discipline every
-# other downloaded binary in this repo gets.
+# pinned to a version a rebuild will still find. Arch is detected so the
+# Dockerfile stays portable, but only the amd64 arm runs in CI (see the FROM
+# comment); the sha256 is verified before extract either way, the same
+# discipline every other downloaded binary in this repo gets.
 # Bump: change all three literals together, taking the shas from
 #   curl -fsSL .../op_linux_<arch>_v<version>.zip | sha256sum
 RUN ARCH=$(dpkg --print-architecture) \

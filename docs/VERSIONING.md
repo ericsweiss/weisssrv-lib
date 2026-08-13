@@ -59,10 +59,15 @@ The pairs that need an explicit act are the published images, because they live
 in a registry rather than in git. The release pipeline's `publish-image-tags`
 job runs after `semantic-release` and retags the `molecule-ci` /
 `molecule-test` / `ansible-deploy` images this pipeline built to `:vX.Y.Z`,
-appending that validated tag↔image pair to the registry. So a consumer that
-pins `ref: vX.Y.Z` can pin `…/molecule-test:vX.Y.Z` and know the two were
-exercised against each other. The job is a no-op when no release was cut, and
-warns rather than reddening when an image was never pushed at all.
+appending that tag↔image pair to the registry. The two molecule images are
+*exercised* by the pipeline that cuts the tag, so a consumer that pins
+`ref: vX.Y.Z` can pin `…/molecule-test:vX.Y.Z` and know the two were run against
+each other. `ansible-deploy` is retagged for pin alignment only — no job in this
+pipeline runs it; what holds it to the tag is `tests/test_ansible_deploy_image.py`,
+a static assertion that `docker/ansible-deploy/requirements.txt`'s `ansible==`
+pin equals the `ansible_version` default in `ci/deploy/deploy-base.yml`. The job
+is a no-op when no release was cut, and warns rather than reddening when an
+image was never pushed at all.
 
 `:vX.Y.Z` image tags exist only from the first release that carried that job,
 and `ansible-deploy:vX.Y.Z` only from the release that added that image —

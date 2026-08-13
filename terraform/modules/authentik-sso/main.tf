@@ -13,12 +13,22 @@ data "authentik_certificate_key_pair" "signing" {
 }
 
 locals {
-  oauth2_scope_mapping_ids = toset(concat(
+  # A scope reference is either a MANAGED id (a blueprint-provided mapping, read
+  # through a data source) or "custom:<key>" naming an entry of
+  # var.custom_scope_mappings that this module authors. One ordered list carries
+  # both, because the API stores property_mappings in list order and a caller
+  # routinely interleaves the two (a replacement `email` scope between the stock
+  # `openid` and `profile`).
+  oauth2_scope_refs = concat(
     var.oauth2_scope_mappings,
     flatten([
       for key, p in var.oauth2_providers : p.scope_mappings == null ? [] : p.scope_mappings
     ]),
-  ))
+  )
+
+  oauth2_scope_mapping_ids = toset([
+    for ref in local.oauth2_scope_refs : ref if !startswith(ref, "custom:")
+  ])
 
   saml_property_mapping_ids = toset(concat(
     var.saml_property_mappings,
@@ -38,12 +48,55 @@ locals {
     for key, p in var.saml_providers :
     key => p.property_mappings == null ? var.saml_property_mappings : p.property_mappings
   }
+
+  # Slugs that at least one ENABLED binding gates. A disabled binding is not
+  # evaluated by the policy engine, so it is not protection. An application
+  # missing from this set is reachable by every authenticated user (precondition
+  # below).
+  bound_application_slugs = toset([
+    for key, b in var.policy_bindings : b.application if b.enabled
+  ])
+
+  group_attributes = {
+    for key, g in var.groups :
+    key => merge(g.attributes, lookup(var.group_secret_attributes, key, {}))
+  }
 }
 
 data "authentik_property_mapping_provider_scope" "oauth2" {
   for_each = local.oauth2_scope_mapping_ids
 
   managed = each.value
+}
+
+# Caller-authored scope mappings. authentik's own scope mappings are
+# blueprint-managed objects it restores on upgrade, so a claim the server does
+# not emit by default (a `email_verified: True` assertion, an app-specific
+# groups claim) has to be a mapping of its own rather than an edit to a stock
+# one.
+resource "authentik_property_mapping_provider_scope" "custom" {
+  for_each = var.custom_scope_mappings
+
+  name        = each.value.name
+  scope_name  = each.value.scope_name
+  description = each.value.description
+  expression  = each.value.expression
+
+  lifecycle {
+    # Destroying a mapping a provider still references strips the claim from
+    # that provider's tokens, which is a login failure for any app that requires
+    # it. Removal is a two-step change — see README "Removing an object".
+    prevent_destroy = true
+  }
+}
+
+locals {
+  # Both reference spaces in one lookup table, so a provider's ordered list
+  # resolves without caring which kind each entry is.
+  scope_mapping_ids = merge(
+    { for managed, d in data.authentik_property_mapping_provider_scope.oauth2 : managed => d.id },
+    { for key, m in authentik_property_mapping_provider_scope.custom : "custom:${key}" => m.id },
+  )
 }
 
 data "authentik_property_mapping_provider_saml" "saml" {
@@ -74,8 +127,8 @@ resource "authentik_provider_oauth2" "this" {
   signing_key        = data.authentik_certificate_key_pair.signing.id
 
   property_mappings = [
-    for managed in local.oauth2_scope_mappings[each.key] :
-    data.authentik_property_mapping_provider_scope.oauth2[managed].id
+    for ref in local.oauth2_scope_mappings[each.key] :
+    local.scope_mapping_ids[ref]
   ]
 
   allowed_redirect_uris = [
@@ -94,6 +147,23 @@ resource "authentik_provider_oauth2" "this" {
   access_token_validity      = each.value.access_token_validity
   refresh_token_validity     = each.value.refresh_token_validity
   refresh_token_threshold    = each.value.refresh_token_threshold
+
+  lifecycle {
+    # A renamed map key plans as destroy+create, which mints a new provider and
+    # breaks every session and token issued by the old one. Removal is a
+    # two-step change — see README "Removing an object".
+    prevent_destroy = true
+
+    # `custom:` refs are resolved through a map, so a typo would otherwise
+    # surface as a bare "Invalid index" naming neither the provider nor the key.
+    precondition {
+      condition = alltrue([
+        for ref in local.oauth2_scope_mappings[each.key] :
+        contains(keys(local.scope_mapping_ids), ref)
+      ])
+      error_message = "oauth2_providers[\"${each.key}\"].scope_mappings names a scope mapping that is neither a managed id nor a \"custom:<key>\" entry of custom_scope_mappings."
+    }
+  }
 }
 
 resource "authentik_provider_proxy" "this" {
@@ -123,6 +193,13 @@ resource "authentik_provider_proxy" "this" {
   # property_mappings is deliberately unset: authentik auto-assigns the default
   # scope mappings to proxy providers, and the provider only manages this field
   # when it is configured — setting it leaves a permanent phantom diff.
+
+  lifecycle {
+    # Destroy+create here takes the application behind this provider off the
+    # embedded outpost mid-apply, so every request to it 404s until the outpost
+    # list is rewritten. See README "Removing an object".
+    prevent_destroy = true
+  }
 }
 
 resource "authentik_provider_saml" "this" {
@@ -159,6 +236,13 @@ resource "authentik_provider_saml" "this" {
   sign_logout_response = each.value.sign_logout_response
 
   default_relay_state = each.value.default_relay_state
+
+  lifecycle {
+    # The service provider trusts this provider's issuer and signing key, so a
+    # destroy+create breaks the federation until the SP side is re-pointed. See
+    # README "Removing an object".
+    prevent_destroy = true
+  }
 }
 
 resource "authentik_group" "this" {
@@ -167,10 +251,23 @@ resource "authentik_group" "this" {
   name         = coalesce(each.value.name, each.key)
   is_superuser = each.value.is_superuser
   users        = [for username in each.value.users : data.authentik_user.member[username].pk]
-  attributes = jsonencode(merge(
-    each.value.attributes,
-    lookup(var.group_secret_attributes, each.key, {}),
-  ))
+
+  # null, not `jsonencode({})`, for a group with no attributes: the field is
+  # Optional and the provider owns what an unset value means. Encoding an empty
+  # object instead would assert a value on every group whose attributes this
+  # module does not manage — a diff against an adopted group that carries any.
+  attributes = (
+    length(local.group_attributes[each.key]) == 0
+    ? null
+    : jsonencode(local.group_attributes[each.key])
+  )
+
+  lifecycle {
+    # A destroy takes the memberships and every policy binding pointing at the
+    # group with it, so a renamed key would revoke access for its members. See
+    # README "Removing an object".
+    prevent_destroy = true
+  }
 }
 
 locals {
@@ -201,6 +298,27 @@ resource "authentik_application" "this" {
 
   open_in_new_tab    = each.value.open_in_new_tab
   policy_engine_mode = each.value.policy_engine_mode
+
+  lifecycle {
+    # The map key is the slug, and the slug is the OIDC issuer path
+    # (/application/o/<slug>/), so a renamed key plans as destroy+create and
+    # every client configured against the old issuer fails. See README
+    # "Removing an object".
+    prevent_destroy = true
+
+    # An application with no policy binding is reachable by EVERY authenticated
+    # user — the one guardrail here that fails OPEN, and a missing binding
+    # otherwise produces a perfectly valid plan. A precondition rather than a
+    # `check` block, because check assertions are warnings: this has to fail the
+    # plan, including a read-only drift-plan job.
+    precondition {
+      condition = (
+        each.value.allow_unbound ||
+        contains(local.bound_application_slugs, each.key)
+      )
+      error_message = "applications[\"${each.key}\"] has no enabled entry in policy_bindings; an unbound application is open to every authenticated user. A binding with enabled = false does not count, because the policy engine never evaluates it. Add a binding, or set allow_unbound = true to declare that deliberate."
+    }
+  }
 }
 
 resource "authentik_policy_binding" "this" {
@@ -226,4 +344,13 @@ resource "authentik_outpost" "embedded" {
   # config and service_connection are deliberately unset: both are
   # Optional+Computed, so leaving them alone lets the authentik-managed values
   # round-trip instead of being diffed and rewritten.
+
+  lifecycle {
+    # The embedded outpost is authentik's OWN object, adopted by import. A
+    # destroy removes forward auth for every proxy provider at once and the
+    # replacement is not something Terraform can recreate faithfully. Setting
+    # embedded_outpost back to null is the same destroy — detach with
+    # `terraform state rm` instead (README "Removing an object").
+    prevent_destroy = true
+  }
 }
