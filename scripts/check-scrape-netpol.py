@@ -188,8 +188,9 @@ def analyze(
                 restricted.add(ns)
             for rule in spec.get("ingress") or []:
                 peers = rule.get("from")
-                if peers is None and namespace_wide:
-                    # No `from` = allow every source, so the scrape gets through.
+                if not peers and namespace_wide:
+                    # Omitted `from` and empty `from: []` both mean "every
+                    # source" in the API, so the scrape gets through.
                     allowed.add(ns)
                     continue
                 for peer in peers or []:

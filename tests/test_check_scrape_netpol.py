@@ -288,3 +288,20 @@ def test_scrape_targets_with_none_ingress_restricted_still_pass(monkeypatch, cap
     out = capsys.readouterr().out
     assert "0 scraped ingress-restricted" in out
     assert "1 scraped namespaces seen" in out
+
+
+def test_an_empty_from_list_is_an_allow_all(monkeypatch):
+    """`from: []` and an omitted `from` both match every source in the API;
+    the empty-list spelling must not read as a blocked scrape."""
+    allow_all_empty_from = """
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-all, namespace: ns}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from: []
+"""
+    assert _run(allow_all_empty_from + SERVICE_MONITOR, monkeypatch) == 0

@@ -146,3 +146,18 @@ def test_a_prefix_matching_alert_name_does_not_satisfy_the_gate():
 def test_the_exact_active_alert_satisfies_the_gate_quoted_or_bare():
     assert mod.alert_exists('          - alert: "BackupArtifactCompanionMissing"\n', "BackupArtifactCompanionMissing")
     assert mod.alert_exists("          - alert: BackupArtifactCompanionMissing\n", "BackupArtifactCompanionMissing")
+
+
+def test_a_for_less_alert_does_not_absorb_the_next_rules_arms():
+    """`for:` is optional: when the guarded alert omits it, the scan must stop
+    at the next alert declaration instead of counting its arms."""
+    rules = """
+        - alert: BackupArtifactStale
+          expr: >-
+            absent(backup_artifact_last_mtime_seconds{app="gitlab"})
+        - alert: SomeOtherAlert
+          expr: >-
+            absent(backup_artifact_last_mtime_seconds{app="not-ours"})
+          for: 30m
+"""
+    assert mod.alert_arm_apps(rules) == {"gitlab"}

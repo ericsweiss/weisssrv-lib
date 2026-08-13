@@ -66,7 +66,12 @@
   loop:
     - "deb https://deb.debian.org/debian {{ ansible_distribution_release }} non-free non-free-firmware"
     - "deb https://deb.debian.org/debian {{ ansible_distribution_release }}-updates non-free non-free-firmware"
-  when: plex_debian_sources.stat.exists | default(false)
+  when:
+    # Skip-gated like the deb822 rewrite above: a skip host's stock main-only
+    # debian.sources satisfies the stat, and removing its one-line entries
+    # would strip non-free with no replacement written.
+    - not (plex_skip_gpu_drivers | bool)
+    - plex_debian_sources.stat.exists | default(false)
 
 - name: Update apt cache after adding non-free repos
   ansible.builtin.apt:

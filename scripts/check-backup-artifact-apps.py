@@ -97,11 +97,12 @@ def alert_arm_apps(rules_text: str) -> set[str]:
     start = _alert_start(lines, ALERT)
     if start is None:
         raise SystemExit(f"ERROR: no `alert: {ALERT}` rule found in the rules file")
-    # The expr block ends at the alert's `for:` key, at the same indentation as
-    # the `expr:` that opened it.
+    # The expr block ends at the alert's `for:` key — or at the NEXT alert
+    # declaration, since `for:` is optional and its absence must not let a
+    # later alert's arms satisfy this one.
     body: list[str] = []
     for ln in lines[start + 1 :]:
-        if re.match(r"\s*for:\s", ln):
+        if re.match(r"\s*for:\s", ln) or re.match(r"\s*-\s*alert:\s", ln):
             break
         body.append(ln)
     return set(ARM_RE.findall("\n".join(body)))
