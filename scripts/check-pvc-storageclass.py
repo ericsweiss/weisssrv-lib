@@ -66,7 +66,10 @@ def _claim_violations(docs: list[dict]) -> tuple[list[str], int]:
                 claims.append((f"{where} volumeClaimTemplate {tname!r}", t.get("spec") or {}))
         for label, spec in claims:
             seen += 1
-            if not isinstance(spec, dict) or "storageClassName" not in spec:
+            # `storageClassName: null` deserializes as unset, so the default
+            # StorageClass captures it exactly like a missing key; only the
+            # explicit "" (bind a static PV) counts as pinned.
+            if not isinstance(spec, dict) or spec.get("storageClassName") is None:
                 out.append(
                     f"  {label}: no storageClassName — the default StorageClass "
                     f'would capture this claim (use "" to bind a static PV)'

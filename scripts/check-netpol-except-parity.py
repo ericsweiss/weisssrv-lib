@@ -231,11 +231,19 @@ def unfenced_reach(blocks):
         net, _ = _nets([cidr])
         cuts, _ = _nets(excepts)
         allowed.extend(_exclude(net, cuts))
+    # Collapse before the fence check: a fenced range assembled from smaller
+    # peers (two /17s covering a fenced /16) must not slip past a per-block
+    # subnet test.
+    collapsed = []
+    for version in (4, 6):
+        collapsed.extend(
+            ipaddress.collapse_addresses([net for net in allowed if net.version == version])
+        )
     return sorted(
         {
             str(fence)
             for fence in FENCE_NETS
-            for net in allowed
+            for net in collapsed
             if net.version == fence.version and fence.subnet_of(net)
         }
     )

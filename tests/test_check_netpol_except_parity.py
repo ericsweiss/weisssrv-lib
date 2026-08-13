@@ -448,3 +448,12 @@ class TestAMalformedConfigIsAnOperatorError:
         rc, err = self._run(tmp_path, "a: [1\n", capsys)
         assert rc == 2
         assert "--config" in err
+
+
+def test_a_fence_assembled_from_smaller_peers_is_still_reached():
+    """Two /17s covering a fenced /16 must not slip past a per-block subnet
+    test — reachability is judged on the collapsed union."""
+    reached = mod.unfenced_reach(
+        [("192.168.0.0/17", []), ("192.168.128.0/17", [])]
+    )
+    assert "192.168.0.0/16" in reached

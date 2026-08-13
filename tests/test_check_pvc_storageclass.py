@@ -183,3 +183,19 @@ def test_the_success_line_reports_the_claims_it_checked(monkeypatch, capsys):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_an_explicit_null_storageclass_is_unpinned(monkeypatch, capsys):
+    """`storageClassName: null` deserializes as unset, so the default
+    StorageClass captures the claim exactly like a missing key."""
+    pvc_null = """
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: cache, namespace: ns}
+spec:
+  storageClassName: null
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 1Gi}}
+"""
+    assert _run(pvc_null, monkeypatch) == 1
+    assert "no storageClassName" in capsys.readouterr().err

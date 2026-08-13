@@ -133,3 +133,16 @@ def test_declared_companions_with_no_rule_are_a_violation():
 def test_neither_declared_nor_alerted_is_clean():
     """Companions are opt-in: a cluster using none is a valid state."""
     assert mod.check_companions(HOST_VARS, "              - alert: Unrelated\n", Path("h.yml"), Path("r.yaml")) == []
+
+
+def test_a_commented_out_alert_does_not_satisfy_the_gate():
+    assert not mod.alert_exists("          # - alert: BackupArtifactCompanionMissing\n", "BackupArtifactCompanionMissing")
+
+
+def test_a_prefix_matching_alert_name_does_not_satisfy_the_gate():
+    assert not mod.alert_exists("          - alert: BackupArtifactCompanionMissingLegacy\n", "BackupArtifactCompanionMissing")
+
+
+def test_the_exact_active_alert_satisfies_the_gate_quoted_or_bare():
+    assert mod.alert_exists('          - alert: "BackupArtifactCompanionMissing"\n', "BackupArtifactCompanionMissing")
+    assert mod.alert_exists("          - alert: BackupArtifactCompanionMissing\n", "BackupArtifactCompanionMissing")

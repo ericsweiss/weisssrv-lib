@@ -70,9 +70,19 @@ def collector_companions(host_vars_text: str) -> dict[str, list[str]]:
     return out
 
 
+def _alert_start(lines: list[str], alert: str) -> int | None:
+    """Index of an exact, active `- alert: <name>` declaration.
+
+    Exact-match so a commented-out rule or a name that merely starts with the
+    expected one (`<name>Legacy`) cannot satisfy the gate.
+    """
+    pattern = re.compile(rf"""^\s*-\s*alert:\s*["']?{re.escape(alert)}["']?\s*(?:#.*)?$""")
+    return next((i for i, line in enumerate(lines) if pattern.match(line)), None)
+
+
 def alert_exists(rules_text: str, alert: str) -> bool:
-    """Whether the rules corpus defines `alert: <name>`."""
-    return any(f"alert: {alert}" in ln for ln in rules_text.splitlines())
+    """Whether the rules corpus defines the exact active alert."""
+    return _alert_start(rules_text.splitlines(), alert) is not None
 
 
 def alert_arm_apps(rules_text: str) -> set[str]:
@@ -84,10 +94,9 @@ def alert_arm_apps(rules_text: str) -> set[str]:
     buys nothing over scoping to the alert's own block.
     """
     lines = rules_text.splitlines()
-    try:
-        start = next(i for i, ln in enumerate(lines) if f"alert: {ALERT}" in ln)
-    except StopIteration:
-        raise SystemExit(f"ERROR: no `alert: {ALERT}` rule found in the rules file") from None
+    start = _alert_start(lines, ALERT)
+    if start is None:
+        raise SystemExit(f"ERROR: no `alert: {ALERT}` rule found in the rules file")
     # The expr block ends at the alert's `for:` key, at the same indentation as
     # the `expr:` that opened it.
     body: list[str] = []
