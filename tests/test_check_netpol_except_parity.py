@@ -457,3 +457,26 @@ def test_a_fence_assembled_from_smaller_peers_is_still_reached():
         [("192.168.0.0/17", []), ("192.168.128.0/17", [])]
     )
     assert "192.168.0.0/16" in reached
+
+
+def test_a_deficient_configured_canonical_list_still_trips_the_fence(tmp_path, monkeypatch):
+    """canonical_except_lists is site data: a configured list that omits a
+    fence network satisfies the per-peer equality arm, so containment must
+    run on literal /0 rules too."""
+    deficient = [c for c in mod.LAN_FENCE if not c.startswith("192.168.")]
+    monkeypatch.setattr(mod, "CANONICAL", {"lan-fence": deficient})
+    doc = {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {"name": "egress-deficient", "namespace": "ns"},
+        "spec": {
+            "podSelector": {},
+            "policyTypes": ["Egress"],
+            "egress": [
+                {"to": [{"ipBlock": {"cidr": "0.0.0.0/0", "except": deficient}}]}
+            ],
+        },
+    }
+    path = _write(tmp_path, doc)
+    violations = mod.check_paths([path])
+    assert any("192.168.0.0/16" in v for v in violations), violations

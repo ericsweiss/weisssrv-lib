@@ -71,20 +71,32 @@ NS_NAME_LABEL = "kubernetes.io/metadata.name"
 
 
 def _selects_observability(peer: dict, observability_ns: str) -> bool:
-    """True if a NetworkPolicy `from` peer matches the observability namespace."""
+    """True if a NetworkPolicy `from` peer provably matches the observability
+    namespace.
+
+    Only the `kubernetes.io/metadata.name` label is guaranteed on a namespace;
+    any OTHER requirement in the selector depends on namespace labels the
+    corpus does not carry, so a selector that adds one cannot be proven to
+    match. Refusing to credit it errs toward a visible false-block rather
+    than a silent false-allow.
+    """
     nssel = peer.get("namespaceSelector")
     if nssel is None:
         return False
     labels = nssel.get("matchLabels") or {}
-    if labels.get(NS_NAME_LABEL) == observability_ns:
-        return True
-    for expr in nssel.get("matchExpressions") or []:
-        if expr.get("key") != NS_NAME_LABEL:
-            continue
-        values = expr.get("values") or []
-        if expr.get("operator") == "In" and observability_ns in values:
-            return True
-    return False
+    exprs = nssel.get("matchExpressions") or []
+    name_matched = labels.get(NS_NAME_LABEL) == observability_ns
+    extra_requirements = any(k != NS_NAME_LABEL for k in labels)
+    for expr in exprs:
+        if (
+            expr.get("key") == NS_NAME_LABEL
+            and expr.get("operator") == "In"
+            and observability_ns in (expr.get("values") or [])
+        ):
+            name_matched = True
+        else:
+            extra_requirements = True
+    return name_matched and not extra_requirements
 
 
 def _policy_types(spec: dict) -> set[str]:

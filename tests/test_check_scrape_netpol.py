@@ -305,3 +305,15 @@ spec:
     - from: []
 """
     assert _run(allow_all_empty_from + SERVICE_MONITOR, monkeypatch) == 0
+
+
+def test_a_selector_with_extra_requirements_is_not_credited(monkeypatch):
+    """Only the metadata.name label is guaranteed on a namespace; a selector
+    adding requirements the corpus cannot evaluate must not be credited —
+    the gate errs toward a visible block, never a silent allow."""
+    allow_extra_label = OBS_ALLOW.replace(
+        "matchLabels: {kubernetes.io/metadata.name: observability}",
+        "matchLabels: {kubernetes.io/metadata.name: observability, team: platform}",
+    )
+    assert "team: platform" in allow_extra_label
+    assert _run(DEFAULT_DENY + allow_extra_label + SERVICE_MONITOR, monkeypatch) == 1

@@ -363,14 +363,19 @@ def scan_paths(paths):
                                 (block.get("cidr"), list(block.get("except") or []))
                             )
                     cidrs = [cidr for cidr, _ in blocks]
-                    # A rule built only from literal /0 peers is already fully
-                    # owned by the per-peer arm below, which names the offending
-                    # except-list; reporting it twice would just be noise. A
-                    # MIXED rule (a fenced /0 plus a bare half) is not owned by
-                    # either arm alone, so it still runs through the containment
-                    # test.
+                    # The per-peer arm below names any literal-/0 block whose
+                    # except-list is not canonical; the coverage report is
+                    # suppressed only for those, to keep one message per
+                    # defect. A rule whose lists ALL classify as canonical is
+                    # per-peer-silent, so containment is its only guard — the
+                    # canonical lists are config-overridable, and a configured
+                    # list that omits a fence network must not pass on the
+                    # strength of list equality alone.
                     all_default = cidrs and all(is_default_route(c) for c in cidrs)
-                    reachable = [] if all_default else unfenced_reach(blocks)
+                    per_peer_reports = all_default and any(
+                        classify(exc) is None for _, exc in blocks
+                    )
+                    reachable = [] if per_peer_reports else unfenced_reach(blocks)
                     if reachable and key not in UNRESTRICTED_EGRESS_OK:
                         violations.append(
                             f"{path}: NetworkPolicy {key} egress rule [{index}] "
