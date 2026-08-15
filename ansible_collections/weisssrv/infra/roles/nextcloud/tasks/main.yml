@@ -190,7 +190,7 @@
       - "only the containers whose definition changed (ExecReload matches ExecStart so"
       - "`systemctl reload` re-applies without a full down/up)."
 
-- name: Wait for Nextcloud to finish installing
+- name: Wait for Nextcloud to finish installing or upgrading
   ansible.builtin.command:
     cmd: docker compose exec -T -u www-data nextcloud php occ status --output=json
     chdir: "{{ nextcloud_compose_dir }}"
@@ -201,9 +201,25 @@
   delay: "{{ nextcloud_install_wait_delay }}"
   # One short-circuiting expression: `and` skips the from_json parse while the
   # command still fails during first-install init (stdout not yet JSON).
+  #
+  # `installed` alone is NOT a sufficient gate on a VERSION BUMP. It stays true
+  # straight through an upgrade, and `occ status` is one of the few commands
+  # Nextcloud still answers while one is pending — so the gate passed in ~0.5s
+  # against an upgrade-pending instance and the next occ call died on
+  # "only a limited number of commands are available". That is precisely how a
+  # 34.0.2 -> 34.0.3 bump broke `Configure the OIDC provider` a second and a
+  # half after the compose restart, while the config:system:set and app:list
+  # either side of it succeeded (both are in the permitted set).
+  #
+  # So require the two fields that actually describe readiness. `default(true)`
+  # on both is the fail-safe direction: a field missing from an older/newer occ
+  # keeps us waiting rather than charging ahead, and the retry budget
+  # (nextcloud_install_wait_*, 60 x 10s by default) rides out the migration.
   until: >-
     nextcloud_status.rc == 0
     and (nextcloud_status.stdout | from_json).installed | default(false)
+    and not ((nextcloud_status.stdout | from_json).needsDbUpgrade | default(true))
+    and not ((nextcloud_status.stdout | from_json).maintenance | default(true))
   when: not (nextcloud_skip_install | default(false))
 
 # Nextcloud's SSRF guard refuses server-side fetches to private addresses, so

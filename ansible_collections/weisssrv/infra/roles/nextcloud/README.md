@@ -58,7 +58,7 @@ a host nginx that terminates TLS and proxies to the loopback-bound web port.
 | `nextcloud_backup_lib_path` | Where `compose_app`'s `write_prom_metrics` helper lands | no |
 | `nextcloud_backup_nfs_enabled` / `_nfs_server` / `_nfs_export` / `_mountpoint` / `_nfs_options` | NFS-backed backup landing | server+export when enabled |
 | `nextcloud_skip_install` | Render-only mode (alias: `skip_nextcloud_deploy`) | no (`false`) |
-| `nextcloud_install_wait_retries` / `_install_wait_delay` | First-install readiness wait before `occ` runs | no (`60`, `10s`) |
+| `nextcloud_install_wait_retries` / `_install_wait_delay` | Readiness wait before `occ` runs — covers first install **and** the post-version-bump migration | no (`60`, `10s`) |
 
 ### Worked example
 
