@@ -19,21 +19,37 @@
   when: "'user_oidc' not in (nextcloud_app_list.stdout | from_json).enabled | default({})"
   changed_when: true
 
+# The client secret arrives on stdin and is read by `$(cat)` inside the
+# container: no_log keeps it out of Ansible's output, but an argv-borne secret
+# is readable in /proc/<pid>/cmdline on the guest for as long as the docker CLI,
+# the shim and php run.
 - name: Configure the OIDC provider
   ansible.builtin.command:
-    cmd: >-
-      docker compose exec -T -u www-data nextcloud php occ user_oidc:provider
-      {{ nextcloud_oidc_provider_id | quote }}
-      --clientid={{ nextcloud_oidc_client_id | quote }}
-      --clientsecret={{ nextcloud_oidc_client_secret | quote }}
-      --discoveryuri={{ nextcloud_oidc_discovery_uri | quote }}
-      --scope={{ nextcloud_oidc_scope | quote }}
-      --unique-uid={{ nextcloud_oidc_unique_uid }}
-      --mapping-uid={{ nextcloud_oidc_mapping_uid | quote }}
-      --mapping-display-name={{ nextcloud_oidc_mapping_display_name | quote }}
-      --mapping-email={{ nextcloud_oidc_mapping_email | quote }}
-      --mapping-groups={{ nextcloud_oidc_mapping_groups | quote }}
-      --group-provisioning={{ nextcloud_oidc_group_provisioning }}
+    # argv, so the shell script below reaches `sh -c` verbatim instead of being
+    # re-split by the module's shlex parse of a single command string.
+    argv:
+      - docker
+      - compose
+      - exec
+      - -T
+      - -u
+      - www-data
+      - nextcloud
+      - sh
+      - -c
+      - >-
+        php occ user_oidc:provider {{ nextcloud_oidc_provider_id | quote }}
+        --clientid={{ nextcloud_oidc_client_id | quote }}
+        --clientsecret="$(cat)"
+        --discoveryuri={{ nextcloud_oidc_discovery_uri | quote }}
+        --scope={{ nextcloud_oidc_scope | quote }}
+        --unique-uid={{ nextcloud_oidc_unique_uid | quote }}
+        --mapping-uid={{ nextcloud_oidc_mapping_uid | quote }}
+        --mapping-display-name={{ nextcloud_oidc_mapping_display_name | quote }}
+        --mapping-email={{ nextcloud_oidc_mapping_email | quote }}
+        --mapping-groups={{ nextcloud_oidc_mapping_groups | quote }}
+        --group-provisioning={{ nextcloud_oidc_group_provisioning | quote }}
+    stdin: "{{ nextcloud_oidc_client_secret }}"
     chdir: "{{ nextcloud_compose_dir }}"
   no_log: true
   # Idempotent upsert with no change signal: a first deploy or re-key mutates

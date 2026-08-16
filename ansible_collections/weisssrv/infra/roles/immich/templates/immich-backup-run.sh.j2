@@ -41,10 +41,8 @@ DUMP_TMP="${DUMP_FILE}.partial"
 # Best-effort cleanup on an interrupted run (a SIGKILL cannot fire it — the
 # stale-partial sweep after retention covers that).
 trap 'rm -f -- "$DUMP_TMP"' EXIT
-# Passed to write_prom_metrics so a run that produced nothing still reports the
-# newest EXISTING dump's size: 0 means "no artefact at all", which is a
-# different alert from "tonight's dump failed". Matches the final name only, so
-# an in-progress .partial can never be sized as a healthy artefact.
+# Matches the final name only, so an in-progress .partial can never be sized as
+# a healthy artefact (see write_prom_metrics).
 ARTIFACT_GLOB="${BACKUP_DIR}/immich-*.sql.gz"
 
 mkdir -p "$PROM_DIR"
@@ -55,11 +53,7 @@ mkdir -p "$PROM_DIR"
 # and exit non-zero BEFORE dumping.
 if [ "$NFS_ENABLED" = "1" ] && ! mountpoint -q "$BACKUP_DIR"; then
   echo "immich-backup: BACKUP_DIR ${BACKUP_DIR} is NFS-backed but not mounted — aborting" >&2
-  # No ARTIFACT_GLOB here (matching the gitlab wrapper): the glob points INSIDE
-  # the unmounted mountpoint, so it would size a shadow directory on the root
-  # disk — exactly the un-offsited state this guard refuses to trust — and a
-  # healthy-looking size would suppress BackupArtifactEmpty. Size 0 is the truth
-  # for a landing zone nothing can reach.
+  # No ARTIFACT_GLOB on the fail-closed path (see write_prom_metrics).
   write_prom_metrics immich_backup 0 0 0 "$PROM_FILE"
   exit 1
 fi

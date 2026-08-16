@@ -4,6 +4,13 @@ go-task include fragments a consumer vendors so `task <x>` reproduces what the
 matching CI template runs. They are part of the tag-versioned surface: vendor
 them at the same library tag your `include:` block pins.
 
+**Nothing vendors them today.** No consumer has an `includes:` block at all —
+each hand-writes these task bodies in its own Taskfile — so a change here
+reaches nobody until one adopts. Adoption is additive, not a replacement: these
+fragments are a strict SUBSET of what a consumer's `task lint` runs (no ruff, no
+ansible-lint, no repo-specific gates), so a consumer that includes them still
+keeps its own lint tasks and drops only the three covered here.
+
 | File | Tasks | Mirrors |
 |---|---|---|
 | `lint.yml` | `yamllint`, `shellcheck`, `doc-links` (and `default` = all three) | `ci/lint/yaml-lint.yml`, `ci/lint/shellcheck.yml` (direct globs + optional `find_dir` recursion; NOT the `*.sh.j2` Jinja neutralizer, which stays CI-only), `ci/lint/docs-link-check.yml` |

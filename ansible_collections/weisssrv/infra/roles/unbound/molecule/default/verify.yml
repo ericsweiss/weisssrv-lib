@@ -96,11 +96,3 @@
       register: dns_test
       changed_when: false
       ignore_errors: true
-
-    - name: Display test results
-      ansible.builtin.debug:
-        msg:
-          - "Unbound {{ unbound_installed.stdout_lines[0] | default('') }} active on 127.0.0.1:5335"
-          - "Drop-in managed.conf deployed with DoT forwarders; no legacy drop-in left"
-          - "Remote-control via local Unix socket (no TLS control certs)"
-          - "DNS resolution: {{ 'working' if dns_test.rc == 0 else 'skipped (no network in container)' }}"

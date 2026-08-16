@@ -13,43 +13,19 @@
     state: present
   when: ansible_facts['os_family'] == "Debian"
 
-# Boot ordering: ZFS branch dirs have no .mount units — zfs-mount-generator is
-# not enabled here (see the nfs.yml bind-mount comment) — so requires-mounts-for
-# alone orders against nothing and the mergerfs mount can race the ZFS mounts
-# and capture empty branch stubs. A union with any branch under
-# nas_storage_zfs_mount_roots therefore anchors on the bulk zfs-mount.service
-# like the ZFS-backed export binds do (nofail keeps a missing branch from
-# blocking boot); requires-mounts-for is kept as documentation of the branch set.
-#
-# The anchor is derived from the BRANCH SET, so it is emitted independently of
-# `systemd_requires` — nesting it inside that key made deleting one inventory
-# line silently drop the anchor and the boot race back in. Only the
-# requires-mounts-for fan-out, which is that key's own content, stays inside it.
+- name: Derive the fstab options for each MergerFS union
+  ansible.builtin.include_tasks: mergerfs_opts.yml
+
 - name: Configure MergerFS mounts in fstab
   ansible.posix.mount:
     path: "{{ item.target }}"
     src: "{{ item.sources | join(':') }}"
     fstype: fuse.mergerfs
-    opts: >-
-      {{ item.options | join(',') }},fsname={{ item.name }}{%- if _zfs_backed_branches | bool -%}
-      ,nofail,x-systemd.requires=zfs-mount.service,x-systemd.after=zfs-mount.service{%- elif item.systemd_requires is defined -%}
-      ,nofail{%- endif -%}
-      {%- for req in item.systemd_requires | default([]) -%}
-      ,x-systemd.requires-mounts-for={{ req }}{%- endfor -%}
+    opts: "{{ nas_storage_mergerfs_fstab_opts[item.name] }}"
     state: mounted
   loop: "{{ nas_storage_mergerfs_mounts }}"
   loop_control:
     label: "{{ item.name }}"
-  vars:
-    # Derived from the branch set, overridden by an explicit boolean `zfs:` on
-    # the union. A branch EQUAL to a mount root does not count — the pattern
-    # matches paths INSIDE a root — so such a union needs `zfs: true` (or its own
-    # root in nas_storage_zfs_mount_roots).
-    # tasks/assert_zfs_classification.yml checks EVERY union and fails the play
-    # rather than letting an unanchored one race the ZFS mounts silently.
-    _zfs_backed_branches: >-
-      {{ item.zfs | default(item.sources
-         | select('match', nas_storage_zfs_bind_source_pattern) | list | length > 0) }}
   register: nas_storage_mergerfs_fstab_changed
 
 - name: Verify MergerFS mount status and fstab options
@@ -76,21 +52,19 @@
 
     echo "FSTAB_OPTS: $fstab_opts"
 
+    required_opts="{{ (nas_storage_mergerfs_required_opts | default(item.options | default([]), true)) | join(' ') }}"
     missing_opts=""
-    if ! echo "$fstab_opts" | grep -q "inodecalc=path-hash"; then
-      missing_opts="${missing_opts}inodecalc=path-hash "
-    fi
-    if ! echo "$fstab_opts" | grep -q "noforget"; then
-      missing_opts="${missing_opts}noforget "
-    fi
+    for opt in $required_opts; do
+      if ! echo "$fstab_opts" | grep -qF -- "$opt"; then
+        missing_opts="${missing_opts}${opt} "
+      fi
+    done
 
     if [ -n "$missing_opts" ]; then
       echo "STATUS: FSTAB_MISSING_OPTIONS - $missing_opts"
       exit 1
     fi
 
-    # Runtime options are not verifiable, so a correct fstab plus a live mount
-    # is taken as proof they are applied.
     echo "STATUS: OK - MergerFS mounted with correct fstab options"
     exit 0
   args:
@@ -125,7 +99,7 @@
     set -o pipefail
     MOUNTPOINT="{{ item.target }}"
 
-    bind_exports=$(findmnt --list --noheadings -o TARGET | grep "^/export" | while read exp; do
+    bind_exports=$(findmnt --list --noheadings -o TARGET | grep "^/export" | while IFS= read -r exp; do
       src=$(findmnt --noheadings -o SOURCE "$exp" 2>/dev/null)
       if [ "$src" = "$MOUNTPOINT" ]; then
         echo "$exp"
@@ -257,7 +231,7 @@
     set -o pipefail
     MOUNTPOINT="{{ item.target }}"
 
-    findmnt --list --noheadings -o TARGET,SOURCE -t none | while read target source; do
+    findmnt --list --noheadings -o TARGET,SOURCE -t none | while read -r target source; do
       if [ "$source" = "$MOUNTPOINT" ]; then
         echo "Unmounting: $target (bind from $source)"
         umount "$target" || echo "Warning: failed to unmount $target"
@@ -357,14 +331,20 @@
       exit 1
     fi
 
-    # Verify fstab has correct options
     fstab_opts=$(grep "^[^#].*[[:space:]]{{ item.target }}[[:space:]]" /etc/fstab | awk '{print $4}')
-    if echo "$fstab_opts" | grep -q "inodecalc=path-hash" && echo "$fstab_opts" | grep -q "noforget"; then
+    required_opts="{{ (nas_storage_mergerfs_required_opts | default(item.options | default([]), true)) | join(' ') }}"
+    missing_opts=""
+    for opt in $required_opts; do
+      if ! echo "$fstab_opts" | grep -qF -- "$opt"; then
+        missing_opts="${missing_opts}${opt} "
+      fi
+    done
+    if [ -z "$missing_opts" ]; then
       echo "SUCCESS: MergerFS mounted, fstab has correct options"
       echo "FSTAB: $fstab_opts"
       exit 0
     else
-      echo "WARNING: Fstab options may be incomplete: $fstab_opts"
+      echo "WARNING: Fstab options may be incomplete ($missing_opts): $fstab_opts"
       exit 1
     fi
   args:

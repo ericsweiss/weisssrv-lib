@@ -261,6 +261,59 @@ def test_shell_meta_does_not_flag_inert_defaults(default: str) -> None:
     assert not _SHELL_META.search(default)
 
 
+# A dependency list is a consumer-supplied VALUE, so what matters is what it can
+# contain, not what this repo happens to default it to. Every ecosystem here has
+# a ceiling syntax carrying `<` (`black<26.5.0`, `pkg<1.2`), so these inputs are
+# routed through `variables:` whatever their default looks like.
+_DEPENDENCY_LIST_RE = re.compile(r"(packages|_extra)$")
+
+
+def _dependency_list_inputs(spec: dict) -> set[str]:
+    return {
+        name
+        for name in spec["spec"]["inputs"]
+        if _DEPENDENCY_LIST_RE.search(name)
+    }
+
+
+def test_the_dependency_list_pattern_matches_the_inputs_it_names() -> None:
+    """A pattern that matched nothing would green every template at once."""
+    found = {
+        (path.name, name)
+        for path in _TEMPLATES
+        for name in _dependency_list_inputs(_split_docs(path.read_text(encoding="utf-8"))[0] or {"spec": {"inputs": {}}})
+    }
+    assert {name for _template, name in found} == {
+        "apt_packages",
+        "pip_packages",
+        "pip_extra",
+    }, found
+
+
+@pytest.mark.parametrize("path", _TEMPLATES, ids=lambda p: str(p.relative_to(_LIB_ROOT)))
+def test_dependency_list_inputs_are_variable_routed(path: Path) -> None:
+    """A benign DEFAULT is not a reason to interpolate a package list.
+
+    test_metachar_defaults_are_variable_routed only inspects inputs whose
+    default already carries an operator, so `apt_packages: "git"` looked safe
+    while accepting `pkg<1.2` from a consumer and handing the shell a live `<`.
+    """
+    spec, body = _split_docs(path.read_text(encoding="utf-8"))
+    if spec is None:
+        return
+    names = _dependency_list_inputs(spec)
+    if not names:
+        return
+
+    body_yaml = _load(_INPUT_RE.sub(lambda m: f"__INPUT_{m.group(1)}__", body))
+    script = "\n".join(_script_lines(body_yaml))
+    for name in names:
+        assert f"__INPUT_{name}__" not in script, (
+            f"input '{name}' is a dependency list and is interpolated into a "
+            f"script line in {path.name}; route it through variables:"
+        )
+
+
 @pytest.mark.parametrize("path", _TEMPLATES, ids=lambda p: str(p.relative_to(_LIB_ROOT)))
 def test_metachar_defaults_are_variable_routed(path: Path) -> None:
     """An input default containing shell operators must not be interpolated

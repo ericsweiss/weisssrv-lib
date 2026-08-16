@@ -1,5 +1,4 @@
 # {{ ansible_managed }}
-# Proxmox VE Node Firewall Configuration for {{ inventory_hostname }}
 
 [OPTIONS]
 
@@ -13,7 +12,6 @@ log_level_out: nolog
 {{ rule }}
 {% endfor %}
 
-# All Proxmox hosts need cluster communication and admin access
 GROUP sg-pve-cluster
 GROUP sg-host-admin
 GROUP sg-metrics

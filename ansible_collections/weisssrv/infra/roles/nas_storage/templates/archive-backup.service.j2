@@ -9,8 +9,8 @@ Description=Replicate ZFS datasets to archive pool
 After=zfs-mount.service zfs-mount-encrypted.service
 # On a SUCCESSFUL archive replication, immediately trigger the offsite B2 backup
 # (restic_offsite role) so it uploads the consistent point-in-time this run just
-# produced. OnSuccess is systemd >= 249 (Debian 13/trixie ships 257). restic-offsite
-# has its own freshness guard + fallback timer, so a skipped OnSuccess is safe.
+# produced. OnSuccess needs systemd >= 249. restic-offsite has its own freshness
+# guard + fallback timer, so a skipped OnSuccess is safe.
 OnSuccess=restic-offsite.service
 
 [Service]

@@ -8,10 +8,10 @@ it quietly takes the role default. `adguard_tls_server_name` left behind in
 `group_vars` renders an empty DoT SNI on both resolvers, on every deploy, with a
 green play.
 
-This file is the complete old -> new map across all 40 roles: every renamed
-variable, every externalized default (same name, site value now empty) and every
-required input. It is mechanical on purpose: work through it once per adopted
-role rather than trusting a grep.
+This file is the complete old -> new map, role by role: every renamed variable,
+every externalized default (same name, site value now empty) and every required
+input. It is mechanical on purpose: work through it once per adopted role rather
+than trusting a grep.
 
 Six roles — `gitlab`, `home_assistant`, `immich`, `immich_ml`, `nextcloud`,
 `plex` — are **new to the collection**. For those, "migrating" means deleting the
@@ -29,6 +29,150 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.8.0
+
+## Breaking — act in the same MR as the bump
+
+| Surface | What changed | What to do |
+|---|---|---|
+| `adguard_home` dependencies | `meta/main.yml` no longer declares `weisssrv.infra.unbound`. The role used to install, configure and start unbound on every AdGuard host regardless of `adguard_home_upstream_dns` — which is what made "point it at a public resolver to drop that dependency" untrue. | Apply `weisssrv.infra.unbound` **before** `weisssrv.infra.adguard_home` in the playbook if you are on the default `127.0.0.1:5335` upstream; the post-deploy dig probe resolves through it. Nothing to do at a public upstream, beyond emptying `adguard_home_after_units` / `_wants_units` as before. A host that already runs unbound keeps running it — the role never removed it, and now simply stops re-converging it. |
+| `unbound` legacy drop-ins | `unbound_legacy_dropins` now defaults to `[]`; it used to name one site's file (`weisssrv.conf`), which is site data. | Name the superseded drop-in in the resolver group's inventory if the hosts still carry one — unbound merges `/etc/unbound/unbound.conf.d/` with a SORTED glob, so a leftover that sorts after the managed file wins every scalar it duplicates. |
+| `qol` dependencies | `meta/main.yml` no longer declares `weisssrv.infra.base`, so running dotfiles no longer applies SSH hardening, fail2ban and resolv.conf management as a side effect. | List `base` ahead of `qol` in the play where the admin account and its home must exist first. `qol_admin_user` still aliases `admin_user`, which is what keeps the two roles on the same account. |
+| `nas_storage` Samba guest mapping | `map to guest = never` (was `bad user`): an unknown user gets an auth failure instead of being mapped to the guest account. | Nothing to do unless a share sets `guest_ok: true` — those shares stop serving unauthenticated clients. Give those clients real accounts, or pin `map to guest = bad user` in the share's own config. The first converge restarts smbd. |
+| Terraform module `required_version` | Floors rise so the shipped `terraform test` suites can run: `authentik-sso` needs `>= 1.11` (`override_during`), `cloudflare-zone` and `tailscale-acl` need `>= 1.7` (`mock_provider`). | Nothing to do at Terraform 1.11+ (all known consumers run 1.15). A root below its module's floor fails `init` until the binary is upgraded. |
+| CLI exit codes | `weisssrv-lib-cli` exits **3** (was 2) when copier is not installed; 2 now exclusively means a validation failure. | Update any wrapper that branches on the exit code; the README's exit table is the contract. |
+| `scripts/check-hpa-vpa-invariant.py` (vendored) | Under `--require-chart-native-vpas` it also enforces the VPA memory-cap rule: `maxAllowed.memory` **above** a container's memory limit fails in every shape, and **equal to** it fails where the policy also controls limits (`controlledValues: RequestsAndLimits` or unset, mode not `Off`). `RequestsOnly` cap == limit stays correct, and a target the kustomize corpus does not render is skipped. | The re-vendor turns this on, so run the gate over the rendered corpus in the bump MR: re-derive each flagged cap from its limit (same commit as any limit change), or park it in the policy file's new `vpa_cap_allowlist` (`namespace/VerticalPodAutoscaler/name`, one rationale per entry) while it waits. |
+
+## Newly asserted — loud where it used to be silent
+
+| Role | What is asserted now | Why it used to be silent |
+|---|---|---|
+| `acme_certs` | every `acme_certs_distribution_targets` entry declares a NON-EMPTY `restart_service` **or** `restart_command` | neither key rendered `RELOAD='systemctl restart '` into the receiver, which then failed only on the first run that actually pushed a cert; an empty string passed the presence check. The receiver now also refuses to record a cert as applied when no reload was baked in (exit 5) |
+| `adguard_home` | a staged archive matches `adguard_home_archive_sha256` or an entry in a `checksums.txt` staged beside it | the cache path skipped `get_url`'s checksum entirely and installed whatever was on disk |
+| `alloy_host` | no `alloy_host_extra_args` entry contains a `"` | the args are joined into a double-quoted `CUSTOM_ARGS=` assignment, so an embedded quote silently changed what the unit runs |
+| `proxmox_lxc` | `proxmox_host` is set (its undocumented `local-lvm` storage fallback is gone with it) | every pct/pvesh call delegates to it, so the run failed later with a message about delegation |
+| `proxmox_lxc` | `proxmox_lxc_searchdomain` (alias `internal_domain`) is non-empty on the create path | `pct create --searchdomain ""` succeeded |
+| `proxmox_lxc` | `proxmox_lxc_idmap_gid` sorts above `proxmox_lxc_video_gid` and `proxmox_lxc_render_gid` on a GPU container | a lower value emitted overlapping `lxc.idmap` ranges and `pct start` refused the container |
+| `proxmox_backup` | `id`/`type`/`content` per storage entry, `id`/`storage`/`schedule` per vzdump job | a missing key surfaced as a Jinja undefined after the `pvesh get` reads had already run |
+| `unbound_exporter` | `ansible_architecture == 'x86_64'` | the role installs the upstream `.x86_64.deb` that `unbound_exporter_checksum` pins; another architecture 404'd or failed in dpkg |
+
+## Changed defaults and behaviour
+
+- `nas_storage` no longer carries its own ARC-cap implementation: it includes
+  `weisssrv.infra.zfs_arc_cap` and passes `nas_storage_zfs_arc_max_bytes`
+  through. The variable and its alias are unchanged, but the rendered
+  `/etc/modprobe.d/zfs.conf` differs, so the next converge on a capped NAS
+  rebuilds the initramfs once. Do not also list `zfs_arc_cap` in the NAS play.
+- `nextcloud_oidc_allow_local_remote_servers` is RENDERED rather than used as a
+  task gate, and the reconcile no longer sits behind `nextcloud_oidc_enabled`.
+  The guard is widened only while OIDC is on **and** the toggle is `true`, so
+  turning either off now restores Nextcloud's SSRF guard on a host where an
+  earlier run widened it (it previously stayed widened forever).
+- `base_ssh_permit_root_login` accepts YAML's unquoted `no`/`yes` (booleans):
+  the value is normalized to sshd's spelling in the new derived
+  `base_ssh_permit_root_login_effective`, which the hardening drop-in, the
+  `sshd -T` check and the lockout guard all read.
+- Guest firewalls honour `guest_firewall_log_level_in`, defaulting to
+  `proxmox_firewall_log_level_in` (previously a hard-coded `nolog`), so a guest
+  can be put into triage mode the same way a host can.
+- The GitLab fail2ban jail matches `_SYSTEMD_UNIT=<gitlab_ssh_service_name>.service`
+  instead of a hard-coded `ssh.service`.
+- The MergerFS health probe derives its required fstab options from each
+  union's own `options` instead of two hard-coded ones, so a union declaring a
+  different option set is no longer permanently classified "needs remount".
+- `nas_storage`'s archive replication emits `archive_backup_last_prune_success`;
+  a failed `zfs destroy` no longer passes silently. The gauge previously read a
+  flag set in the forked per-dataset child and lost with it, so it was a
+  constant `1`; it now reports the run's real retention state.
+
+**One-off writes and restarts** — real changes to live state on the first
+converge after the bump. Budget for them in the deploy plan rather than reading
+them as drift:
+
+| Role | What moves | Consequence |
+|---|---|---|
+| `gitlab` | gitlab.rb's banner comments become one-line section headers. | Notifies `Reconfigure gitlab` — a full `gitlab-ctl reconfigure` with the service bounce it implies. Budget a GitLab window; nothing in the rendered configuration changes. |
+| `immich` | immich.env drops a restating comment. | `Restart compose stack` — one Immich outage window. |
+| `nextcloud` | Both exporter publications gain an explicit bind address (NEW `nextcloud_exporter_bind_address` / `_postgres_exporter_bind_address`, both defaulting to `0.0.0.0` = today's binding). | `Restart compose stack` — one Nextcloud outage window. The binding is unchanged. |
+| `nas_storage` | smb.conf drops restating comments, and `map to guest` changes (see Breaking). | One smbd restart, which drops established SMB sessions. |
+| `nas_storage` | smartd.conf's trade-off narration collapses into the flag legend. | One smartd restart. Same disks, same `-s` schedules. |
+| `unbound` | unbound-managed.conf drops restating section comments. | One `Restart unbound` per resolver; the handler serializes them, so keep the usual one-resolver-at-a-time window. |
+| `alloy_host` | config.alloy drops two restating comments. | One `Restart alloy`; journald shipping resumes on restart. |
+| `base` | jail.local drops restating comments. | One `Restart fail2ban`. Jails, bans and ignore lists are unchanged; in-memory ban state is lost as it is on any restart. |
+| `postfix_null_client`, `smtp_relay` | main.cf/master.cf/aliases/virtual/sasl_passwd drop restating comments; master.cf gains a header stating that it replaces Debian's packaged table. | `Reload postfix`, `Newaliases` and the `Postmap` rebuilds fire once. A reload, not a restart — no queued mail is affected. |
+| `zfs_arc_cap` | The modprobe.d header no longer claims the file is compute-host-only, because `nas_storage` now renders it too. | One `update-initramfs -u` per capped host — including the NAS, which is separately re-rendered by the ARC-cap consolidation above. |
+| `proxmox_firewall` | host.fw drops two restating comments. | One `pve-firewall` reload per node; rules unchanged. |
+| `vfio_passthrough` | The grub template's notify-list comment is corrected (it names the 2 handlers the task really notifies). | One `update-grub` per VFIO host and a reboot-required warning; the rendered cmdline is unchanged, so the reboot can ride the next maintenance window. |
+| `adguard_sync` | adguardhome-sync.yaml's header and the `api.port` comment are rewritten. | Systemd daemon-reload only; the next timer run picks the config up. |
+
+## New variables (defaults preserve today's behaviour)
+
+| Role | Variable | Default | What it unlocks |
+|---|---|---|---|
+| `adguard_home` | `adguard_home_archive_cache_dir` | `""` | Opt-in local mirror of the release tarball, named `AdGuardHome_linux_<arch>-v<version>.tar.gz`. Empty (the default) -> the GitHub download runs exactly as before, so an existing host sees no change. Set it, and a staged archive for the current pin is installed instead. |
+| `adguard_home` | `adguard_home_archive_sha256` | `""` | Digest a staged archive must match. Empty falls back to a `checksums.txt` staged in the same directory; with neither, a staged archive FAILS the play rather than being installed unverified. |
+| `alloy_host` | `alloy_host_extra_args` | `[]` | Extra Alloy CLI arguments appended to the managed `CUSTOM_ARGS` line — where a `--server.http.listen-addr` matching `alloy_host_http_port` goes. |
+| `k3s` | `k3s_kubelet_args` | `[]` | Declared; both config templates already read it. |
+| `nas_storage` | `nas_storage_mergerfs_required_opts` | `[]` | fstab options the MergerFS health probe requires; empty derives them from each union's own `options`. |
+| `nas_storage` | `nas_storage_zfs_arc_skip_initramfs` | `false` | Passed through as `zfs_arc_cap_skip_initramfs`: render `/etc/modprobe.d/zfs.conf` but skip the `update-initramfs` rebuild, for molecule and check-mode runs with no real `/boot`. |
+| `nas_storage` | `nas_storage_swap_clean_*`, `_zfs_scrub_enabled` / `_zfs_scrub_schedule`, `_smartd_enabled`, `_backup_artifact_metrics_dir`, `_media_mover_min_age` / `_media_mover_schedule` | unchanged | Declared in `defaults/` instead of existing only as template fallbacks. |
+| `nextcloud` | `nextcloud_exporter_bind_address` / `nextcloud_postgres_exporter_bind_address` | `0.0.0.0` | Narrow the unauthenticated exporter publications instead of relying only on the guest firewall. |
+| `proxmox_firewall` | `proxmox_firewall_cluster_rules` / `proxmox_firewall_host_rules` | `[]` | Declared; both were already documented and read by the templates. |
+
+## Scheduled removals
+
+The legacy migration cleanups in `base` (the `atlantic-gro-fix` /
+`e1000e-tso-fix` oneshots), `docker_engine` (the pre-standardization Docker repo
+line) and `adguard_sync` (the root-owned sync home) run on every host on every
+run for artefacts only the original site ever had. They are removed at the next
+breaking release, together with the molecule assertions that check for their
+absence; a consumer that adopted the collection after v0.7.0 never had them.
+
+> **Lifecycle.** There is no changelog file for the collection
+> ([VERSIONING.md](../../../docs/VERSIONING.md) § No changelog file), so this is
+> the only per-release migration record. At tag time the release MR **retitles
+> this heading to the tag being cut** and opens a fresh empty
+> `# Unreleased (next release)` above it — a checklist bullet in VERSIONING
+> covers it, and `tests/test_docs_registry.py::TestMigratingSections` fails a
+> bump whose newest titled section is not `galaxy.yml`'s version, or a released
+> tag with no section at all. A release with nothing to
+> migrate still gets a section saying so; "no section" and "nothing to do" must
+> not look the same. Released sections are kept **in full, newest first**, so a
+> consumer jumping several releases works through each delta in order instead of
+> reading two releases' breaking changes as one pending set. Nothing here is ever
+> squashed or replaced; prune a section only when no supported consumer can
+> still be on the release below it.
+
+---
+
+# v0.7.4
+
+No migration steps. The release is a `nextcloud` fix (wait out the post-upgrade
+migration before running `occ`); no variable renamed, asserted or defaulted
+differently.
+
+---
+
+# v0.7.3
+
+No migration steps. Galaxy installs retry through forge restarts and flux-lint
+catches unparseable placeholders — both CI-side, neither reaches a role's
+variable API.
+
+---
+
+# v0.7.2
+
+No migration steps. `prevent_destroy` on the cloudflare-zone settings override
+is a Terraform-module change, outside the collection.
+
+---
+
+# v0.7.1
+
+No migration steps. Gate precision only (unprovable namespace selectors,
+config-deficient canonical lists).
+
 ---
 
 # v0.7.0
@@ -36,20 +180,7 @@ Nothing yet.
 Everything from [How to check a migration](#how-to-check-a-migration) down is
 the one-time **v0.6.0 adoption map** — the un-prefixed -> prefixed rename a repo
 works through once. This section is the delta for a consumer already on the
-collection: what the next release breaks, what it now asserts, and what it adds.
-The tag is whatever `semantic-release` cuts from the commit subjects; the
-release note names it.
-
-> **Lifecycle.** There is no changelog file for the collection
-> ([VERSIONING.md](../../../docs/VERSIONING.md) § No changelog file), so this is
-> the only per-release migration record. At tag time the release MR **retitles
-> this heading to the tag being cut** and opens a fresh empty
-> `# Unreleased (next release)` above it — a checklist bullet in VERSIONING
-> covers it. Released sections are kept **in full, newest first**, so a consumer
-> jumping several releases works through each delta in order instead of reading
-> two releases' breaking changes as one pending set. Nothing here is ever
-> squashed or replaced; prune a section only when no supported consumer can
-> still be on the release below it.
+collection: what this release breaks, what it asserts, and what it adds.
 
 Work it in this order. The four subsections are ordered by what fails you
 first: a pipeline that will not create, a play that fails at role entry, a
@@ -1429,7 +1560,7 @@ falls back silently, which is why the tables above matter.
 | `zfs_encryption` | `zfs_encryption_connect_url`, Connect token | when `zfs_encryption_pools` is non-empty |
 | `zvol_mount` | `zvol_mount_disks` (shape: `name` / `mount_point` / `fstype` / `scsi_slot`; conventionally the same list as the guest's `proxmox_vm_additional_disks`) | always |
 
-Added in the next release. The escape hatch for each is in
+Added in v0.7.0. The escape hatch for each is in
 [Newly asserted](#newly-asserted--loud-where-it-used-to-be-silent), except the
 `nas_storage` and `proxmox_firewall` rows — those break a consumer that bumps
 without changing anything else, so they are in

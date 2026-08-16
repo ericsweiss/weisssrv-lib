@@ -21,7 +21,8 @@ provisioner:
   inventory:
     group_vars:
       all:
-        tailscale_version: 1.94.1
+        # tailscale_version is deliberately NOT set: the scenario must exercise
+        # the shipped default, and pkgs.tailscale.com prunes older builds.
         tailscale_enabled: true
         tailscale_accept_routes: false
         tailscale_accept_dns: false

@@ -1,10 +1,7 @@
 ---
-# Verify the nic_tuning role's observable state:
-#   1. ip_forward sysctl drop-in is written with the right content and perms
-#   2. kernel's actual net.ipv4.ip_forward is 1
-#   3. per-interface ethtool drop-in exists in /etc/network/interfaces.d/ and
-#      contains the expected post-up line(s) + the `logger` failure guard
-#   4. (idempotence is enforced by the test_sequence step in molecule.yml)
+# Verifies the ip_forward sysctl drop-in (content, perms, live kernel value)
+# and the per-interface ethtool drop-in in /etc/network/interfaces.d/ (post-up
+# lines plus the `logger` failure guard).
 - name: Verify
   hosts: all
   gather_facts: false

@@ -2,7 +2,9 @@
 #
 # Exact pins, not lower bounds: this file is COPYed and pip-installed by
 # docker/molecule-ci/Dockerfile, so a rebuild must be reproducible and must never
-# silently pull a new major.
+# silently pull a new major. The claim is scoped to pip — the sibling
+# requirements.yml pins galaxy collections as major-line RANGES because those
+# specs are shared with galaxy.yml, and that file's header says why.
 #
 # Three pins below (ansible-lint, black, yamllint) are the molecule side of a
 # parity contract with the ci/lint template defaults — see

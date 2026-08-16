@@ -349,8 +349,8 @@
     - name: Assert 100.fw and 150.fw carry their respective inventory_hostname
       ansible.builtin.assert:
         that:
-          - "'for proxmox-firewall-test' in (guest_fw_content.content | b64decode)"
-          - "'for dns-01' in (dns01_guest_fw_content.content | b64decode)"
+          - "'Guest: proxmox-firewall-test' in (guest_fw_content.content | b64decode)"
+          - "'Guest: dns-01' in (dns01_guest_fw_content.content | b64decode)"
         fail_msg: >-
           Per-vmid files don't carry the matching inventory_hostname
           comment line — most likely the molecule platform reused a

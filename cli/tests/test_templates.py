@@ -17,7 +17,7 @@ import pytest
 import yaml
 
 from weisssrv_lib_cli import __version__, templates
-from weisssrv_lib_cli.cli import main
+from weisssrv_lib_cli.cli import build_parser, main
 
 TEMPLATE = Path(__file__).resolve().parent / "fixtures" / "copier-template"
 
@@ -111,8 +111,51 @@ class TestDestinationGuards:
     def test_missing_copier_reports_the_extra(self, tmp_path, monkeypatch):
         # `None` in sys.modules makes `import copier` raise ImportError.
         monkeypatch.setitem(sys.modules, "copier", None)
-        with pytest.raises(templates.TemplateError, match=r"\[cluster\]"):
+        with pytest.raises(templates.MissingCopierError, match=r"\[cluster\]"):
             templates.render(str(TEMPLATE), tmp_path / "out", defaults=True)
+
+
+class _FakeCopier:
+    """Records the kwargs `run_copy` is called with; renders nothing."""
+
+    class errors:  # noqa: N801 - mirrors copier.errors
+        class CopierError(Exception):
+            pass
+
+    def __init__(self):
+        self.kwargs = None
+
+    def run_copy(self, src, dest, **kwargs):
+        self.kwargs = kwargs
+
+
+class TestCopierKwargs:
+    """`--trust` is the one flag that lets a template execute arbitrary code."""
+
+    @pytest.fixture
+    def fake(self, monkeypatch):
+        fake = _FakeCopier()
+        monkeypatch.setattr(templates, "_copier", lambda: fake)
+        return fake
+
+    def test_unsafe_is_off_by_default(self, fake, tmp_path):
+        templates.render(str(TEMPLATE), tmp_path / "out", defaults=True)
+        assert fake.kwargs["unsafe"] is False
+
+    def test_trust_maps_to_unsafe(self, fake, tmp_path):
+        templates.render(str(TEMPLATE), tmp_path / "out", defaults=True, trust=True)
+        assert fake.kwargs["unsafe"] is True
+
+    def test_cli_does_not_trust_without_the_flag(self, fake, tmp_path):
+        assert main(["new-cluster", str(TEMPLATE), str(tmp_path / "out"), "--defaults"]) == 0
+        assert fake.kwargs["unsafe"] is False
+
+    def test_cli_trust_flag_reaches_copier(self, fake, tmp_path):
+        rc = main(
+            ["new-cluster", str(TEMPLATE), str(tmp_path / "out"), "--defaults", "--trust"]
+        )
+        assert rc == 0
+        assert fake.kwargs["unsafe"] is True
 
 
 @copier_required
@@ -195,6 +238,30 @@ class TestRenderCommands:
         rc = main([command, str(tmp_path / "nope"), str(tmp_path / "out")])
         assert rc == 2
         assert _PUBLISHED[command] in capsys.readouterr().err
+
+    @pytest.mark.parametrize("command", sorted(_PUBLISHED))
+    def test_source_defaults_to_that_commands_published_template(self, command, tmp_path):
+        args = build_parser().parse_args([command, str(tmp_path / "out")])
+        assert args.source == _PUBLISHED[command]
+        assert args.destination == tmp_path / "out"
+
+    @pytest.mark.parametrize("command", sorted(_PUBLISHED))
+    def test_missing_copier_returns_3(self, command, tmp_path, capsys, monkeypatch):
+        monkeypatch.setitem(sys.modules, "copier", None)
+        rc = main([command, str(TEMPLATE), str(tmp_path / "out"), "--defaults"])
+        # Not 2: an uninstalled extra is an environment problem, not a typo.
+        assert rc == 3
+        assert "[cluster]" in capsys.readouterr().err
+
+    @copier_required
+    @pytest.mark.parametrize("command", sorted(_PUBLISHED))
+    def test_a_render_failure_returns_1(self, command, tmp_path, capsys):
+        bad = tmp_path / "bad-template"
+        bad.mkdir()
+        (bad / "copier.yml").write_text("_min_copier_version: '999.0.0'\n", encoding="utf-8")
+        rc = main([command, str(bad), str(tmp_path / "out"), "--defaults"])
+        assert rc == 1
+        assert "copier failed" in capsys.readouterr().err
 
     @copier_required
     @pytest.mark.parametrize("command", sorted(_PUBLISHED))

@@ -76,6 +76,13 @@ spec:
         needs a root runner AND the consumer adding
         `before_script: [!reference [.install-1password, before_script]]`
         (this template defines no before_script, so that override is additive).
+        The two modes differ in BLAST RADIUS, not just plumbing: this job runs on
+        `merge_request_event` with CI config the branch under review supplies, so
+        in `1password` mode the `op` session it opens is reachable from that
+        config and reaches every item the service account can see — not just the
+        two below. Scope the service account to a vault holding only these two
+        items, or stay on `env`, where the exposure is capped at the two masked
+        variables.
     openai_key:
       default: "$OPENAI__KEY"
       description: >-

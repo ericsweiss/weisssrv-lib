@@ -202,14 +202,10 @@
   # One short-circuiting expression: `and` skips the from_json parse while the
   # command still fails during first-install init (stdout not yet JSON).
   #
-  # `installed` alone is NOT a sufficient gate on a VERSION BUMP. It stays true
+  # `installed` alone is NOT a sufficient gate on a VERSION BUMP: it stays true
   # straight through an upgrade, and `occ status` is one of the few commands
-  # Nextcloud still answers while one is pending — so the gate passed in ~0.5s
-  # against an upgrade-pending instance and the next occ call died on
-  # "only a limited number of commands are available". That is precisely how a
-  # 34.0.2 -> 34.0.3 bump broke `Configure the OIDC provider` a second and a
-  # half after the compose restart, while the config:system:set and app:list
-  # either side of it succeeded (both are in the permitted set).
+  # Nextcloud answers while one is pending — every other occ call refuses with
+  # "only a limited number of commands are available".
   #
   # So require the two fields that actually describe readiness. `default(true)`
   # on both is the fail-safe direction: a field missing from an older/newer occ
@@ -224,20 +220,21 @@
 
 # Nextcloud's SSRF guard refuses server-side fetches to private addresses, so
 # OIDC discovery fails whenever the provider resolves to one. The toggle is
-# global — accepted-risk detail in the README.
-- name: Allow server-side requests to local addresses
+# global — accepted-risk detail in the README. The value is RENDERED, not
+# gated on nextcloud_oidc_enabled: the widening exists only to serve discovery,
+# so turning OIDC off (or the toggle off) has to restore the guard on a host
+# where an earlier run widened it.
+- name: Converge server-side requests to local addresses
   ansible.builtin.command:
     cmd: >-
       docker compose exec -T -u www-data nextcloud
       php occ config:system:set allow_local_remote_servers
-      --value=true --type=boolean
+      --value={{ ((nextcloud_oidc_enabled | default(false) | bool) and (nextcloud_oidc_allow_local_remote_servers | default(true) | bool)) | ternary('true', 'false') }}
+      --type=boolean
     chdir: "{{ nextcloud_compose_dir }}"
   # Idempotent occ upsert with no change signal.
   changed_when: false
-  when:
-    - not (nextcloud_skip_install | default(false))
-    - nextcloud_oidc_enabled | default(false)
-    - nextcloud_oidc_allow_local_remote_servers | default(true)
+  when: not (nextcloud_skip_install | default(false))
 
 - name: Configure OIDC SSO
   ansible.builtin.include_tasks: sso.yml
@@ -249,9 +246,21 @@
 # this token (NEXTCLOUD_AUTH_TOKEN).
 - name: Set the serverinfo token consumed by the exporter
   ansible.builtin.command:
-    cmd: >-
-      docker compose exec -T -u www-data nextcloud
-      php occ config:app:set serverinfo token --value={{ nextcloud_serverinfo_token | quote }}
+    # The token arrives on stdin: no_log hides it from Ansible's output, but an
+    # argv-borne secret is readable in /proc/<pid>/cmdline on the guest while
+    # the docker CLI, the shim and php run.
+    argv:
+      - docker
+      - compose
+      - exec
+      - -T
+      - -u
+      - www-data
+      - nextcloud
+      - sh
+      - -c
+      - php occ config:app:set serverinfo token --value="$(cat)"
+    stdin: "{{ nextcloud_serverinfo_token }}"
     chdir: "{{ nextcloud_compose_dir }}"
   no_log: true
   # Idempotent occ upsert with no change signal; ok can hide a first-set/rotate.

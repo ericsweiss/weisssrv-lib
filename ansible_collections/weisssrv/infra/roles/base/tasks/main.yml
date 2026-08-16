@@ -1,6 +1,4 @@
 ---
-# Base role: common packages, SSH hardening, and user setup
-
 # Configure Proxmox repositories first (disable enterprise, enable community).
 # All include_tasks below use apply: — tags on the include line alone do not
 # propagate to the included (untagged) tasks, so a tag-subset run like

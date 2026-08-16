@@ -11,5 +11,7 @@ galaxy_info:
       versions:
         - trixie
 
-dependencies:
-  - role: weisssrv.infra.base
+# No meta dependency: running dotfiles must not pull in SSH hardening, fail2ban
+# and resolv.conf management. `qol_admin_user` aliases the inventory-wide
+# `admin_user`, which is what keeps this role and `base` on the same account.
+dependencies: []

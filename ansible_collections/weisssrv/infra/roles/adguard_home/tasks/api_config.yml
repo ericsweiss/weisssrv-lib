@@ -89,9 +89,7 @@
   loop: "{{ adguard_home_existing_rewrites.json | default([]) }}"
   when:
     - not ansible_check_mode
-    # Only delete if domain is in codified list (we want to manage it)
     - item.domain in adguard_home_codified_domains
-    # But this specific (domain, answer) pair is not in codified list (it's stale/wrong)
     - adguard_home_codified_pairs | selectattr('domain', 'equalto', item.domain) |
       selectattr('answer', 'equalto', item.answer) | list | length == 0
   no_log: true
@@ -125,7 +123,6 @@
   loop: "{{ adguard_home_rewrites }}"
   when:
     - not ansible_check_mode
-    # Use refreshed data to check if entry already exists
     - >
       adguard_home_existing_rewrites_refreshed.json | default([]) |
       selectattr('domain', 'equalto', item.domain) |

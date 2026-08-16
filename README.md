@@ -8,7 +8,7 @@ consumer at a pinned tag.
 
 ## Current release
 
-**v0.7.4.** Every pin example on this page and in `docs/` is written as
+**v0.8.0.** Every pin example on this page and in `docs/` is written as
 `<CURRENT_TAG>`; substitute the release you are adopting, so a release bump
 touches the few copy-paste snippets that must be runnable rather than a dozen
 stale examples. This line is the authority for the literal; the runnable
@@ -46,12 +46,16 @@ ci/            GitLab CI templates (include:project + spec:inputs)
                copy, vendored not included)
   maintenance/ version-check (read-only report) + version-bump-bot (one bump MR,
                never auto-merged)
+  deploy/      the Ansible deploy toolchain: deploy-base, kubectl-setup,
+               ansible-deploy — shipped and versioned, only deploy-base adopted
+  github/      ci.example.yml + build-image.example.yml (Actions reference
+               copies, vendored not included)
   templates/   shared fragments: dep-cache, install-1password,
                terraform-http-backend
   internal/    this library's own pipeline wiring (molecule child pipeline) —
                not a consumer contract
 ansible_collections/weisssrv/infra/
-               40 host-configuration roles, consumed by FQCN
+               every host-configuration role, consumed by FQCN
                (weisssrv.infra.<role>)
 terraform/
   modules/     reusable module shapes: cloudflare-zone, tailscale-acl,
@@ -197,7 +201,8 @@ here rather than restating it.
 
 ```bash
 python3 -m pytest tests cli/tests -q     # scripts + CLI tests
-yamllint -c .yamllint ci/ lint/ taskfiles/ .gitlab-ci.yml
+# same target set the pipeline's yaml-lint job passes
+yamllint -c .yamllint ci/ lint/ taskfiles/ ansible_collections/ .gitlab/ .gitlab-ci.yml
 shellcheck --severity=warning --exclude=SC1091,SC2034 scripts/*.sh
 ruff check --config lint/ruff.toml scripts tests cli examples
 gitleaks detect --no-git --config lint/gitleaks.toml   # what CI's secret_detection runs
@@ -207,6 +212,10 @@ python3 -c "import glob,yaml; L=type('L',(yaml.SafeLoader,),{}); L.add_construct
 # collection changes only:
 ANSIBLE_COLLECTIONS_PATH=$PWD:~/.ansible/collections \
   ansible-lint ansible_collections/weisssrv/infra/roles/*
+# the collection's own shell, which CI reaches via find_dir: ansible_collections.
+# The *.sh.j2 half needs the template's Jinja neutralizer, so only CI covers it.
+find ansible_collections -name '*.sh' -print0 \
+  | xargs -0 shellcheck --severity=warning --exclude=SC1091,SC2034
 ```
 
 The library's own pipeline (`.gitlab-ci.yml`) runs those by **including its own
@@ -230,8 +239,10 @@ scripts, lint profiles, the CLI. A cluster is assembled from these blocks by
 What deliberately stays out: site data of every kind (domains, IPs, hostnames,
 pool names, credentials — those are inputs), Kubernetes manifests (they live in
 the cluster template so a cluster is self-contained, with no remote kustomize
-bases), and weisssrv's own pipeline glue (`validation-gate`, the
-deploy/maintenance job matrix, `repo-sync`/`repo-policy` checks). There is **no
+bases), and weisssrv's own pipeline glue (`validation-gate`, its hand-written
+per-playbook deploy jobs, `repo-sync`/`repo-policy` checks). The reusable half
+of that deploy layer **is** here, as `ci/deploy/*` — shipped and versioned, with
+only `deploy-base` adopted so far. There is **no
 Renovate** anywhere — version bumps come from
 `ci/maintenance/version-bump-bot.yml`, which each CONSUMER schedules against its
 own version-check command and config. This library ships the template but does

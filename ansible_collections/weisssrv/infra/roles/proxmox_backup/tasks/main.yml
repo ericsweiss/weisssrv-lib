@@ -3,6 +3,39 @@
 # (jobs.cfg), reconciled via pvesh. Both files live on the clustered /etc/pve
 # filesystem, so wire this role into a play that targets a single node.
 
+# Named here rather than as a Jinja undefined error from inside a pvesh
+# argument list, which surfaces after the reads have already run and names a
+# variable instead of the offending entry.
+- name: Assert every storage entry carries its required keys
+  ansible.builtin.assert:
+    that:
+      - item.id is defined and item.id | length > 0
+      - item.type is defined and item.type | length > 0
+      - item.content is defined and item.content | length > 0
+    fail_msg: >-
+      proxmox_backup_storage entry {{ item }} needs id, type and content
+      (see README § Configuration).
+    quiet: true
+  loop: "{{ proxmox_backup_storage }}"
+  loop_control:
+    label: "{{ item.id | default('<no id>') }}"
+  tags: [proxmox_backup, proxmox_backup_storage]
+
+- name: Assert every vzdump job carries its required keys
+  ansible.builtin.assert:
+    that:
+      - item.id is defined and item.id | length > 0
+      - item.storage is defined and item.storage | length > 0
+      - item.schedule is defined and item.schedule | length > 0
+    fail_msg: >-
+      proxmox_backup_vzdump_jobs entry {{ item }} needs id, storage and
+      schedule (see README § Configuration).
+    quiet: true
+  loop: "{{ proxmox_backup_vzdump_jobs }}"
+  loop_control:
+    label: "{{ item.id | default('<no id>') }}"
+  tags: [proxmox_backup, proxmox_backup_jobs]
+
 # Storage entries (/storage)
 - name: Manage Proxmox storage entries
   when: proxmox_backup_storage | length > 0
@@ -20,20 +53,23 @@
         _proxmox_backup_current_storage_ids: >-
           {{ proxmox_backup_storage_current_raw.stdout | from_json | map(attribute='storage') | list }}
 
+    # argv, not a command string: a site value containing whitespace would
+    # otherwise be re-split by the module into extra arguments.
     - name: Create missing Proxmox storage entries
-      ansible.builtin.command: >-
-        pvesh create /storage
-        --storage {{ item.id }}
-        --type {{ item.type }}
-        {% if item.server is defined %}--server {{ item.server }}{% endif %}
-        {% if item.export is defined %}--export {{ item.export }}{% endif %}
-        {% if item.path is defined %}--path {{ item.path }}{% endif %}
-        {% if item.pool is defined %}--pool {{ item.pool }}{% endif %}
-        --content {{ item.content }}
-        {% if item.nodes is defined %}--nodes {{ item.nodes }}{% endif %}
-        {% if item.mountpoint is defined %}--mountpoint {{ item.mountpoint }}{% endif %}
-        {% if item.sparse is defined %}--sparse {{ item.sparse | ternary(1, 0) }}{% endif %}
-        {% if item.options is defined %}--options {{ item.options }}{% endif %}
+      ansible.builtin.command:
+        argv: >-
+          {{ ['pvesh', 'create', '/storage',
+              '--storage', item.id,
+              '--type', item.type]
+             + (['--server', item.server] if item.server is defined else [])
+             + (['--export', item.export] if item.export is defined else [])
+             + (['--path', item.path] if item.path is defined else [])
+             + (['--pool', item.pool] if item.pool is defined else [])
+             + ['--content', item.content]
+             + (['--nodes', item.nodes] if item.nodes is defined else [])
+             + (['--mountpoint', item.mountpoint] if item.mountpoint is defined else [])
+             + (['--sparse', item.sparse | ternary('1', '0')] if item.sparse is defined else [])
+             + (['--options', item.options] if item.options is defined else []) }}
       when: item.id not in _proxmox_backup_current_storage_ids
       loop: "{{ proxmox_backup_storage }}"
       loop_control:
@@ -102,13 +138,14 @@
              _current_nodes != _desired_nodes or
              _current_mountpoint != _desired_mountpoint or
              _current_sparse != _desired_sparse }}
-      ansible.builtin.command: >-
-        pvesh set /storage/{{ item.id }}
-        --content {{ item.content }}
-        {% if item.nodes is defined %}--nodes {{ item.nodes }}{% endif %}
-        {% if item.mountpoint is defined %}--mountpoint {{ item.mountpoint }}{% endif %}
-        {% if item.sparse is defined %}--sparse {{ item.sparse | ternary(1, 0) }}{% endif %}
-        {% if item.options is defined %}--options {{ item.options }}{% endif %}
+      ansible.builtin.command:
+        argv: >-
+          {{ ['pvesh', 'set', '/storage/' ~ item.id,
+              '--content', item.content]
+             + (['--nodes', item.nodes] if item.nodes is defined else [])
+             + (['--mountpoint', item.mountpoint] if item.mountpoint is defined else [])
+             + (['--sparse', item.sparse | ternary('1', '0')] if item.sparse is defined else [])
+             + (['--options', item.options] if item.options is defined else []) }}
       when:
         - item.id in _proxmox_backup_current_storage_ids
         - _has_drift | bool
@@ -149,23 +186,24 @@
           {{ proxmox_backup_current_raw.stdout | from_json | map(attribute='id') | list }}
 
     - name: Create missing vzdump backup jobs
-      ansible.builtin.command: >-
-        pvesh create /cluster/backup
-        --id {{ item.id }}
-        --storage {{ item.storage }}
-        --schedule "{{ item.schedule }}"
-        --mode {{ item.mode | default('snapshot') }}
-        --compress {{ item.compress | default('zstd') }}
-        --enabled {{ item.enabled | default(true) | ternary(1, 0) }}
-        --all {{ item.all | default('vmid' not in item) | ternary(1, 0) }}
-        {% if item.vmid is defined %}--vmid {{ item.vmid | join(',') }}{% endif %}
-        {% if item.exclude is defined %}--exclude {{ item.exclude | join(',') }}{% endif %}
-        {% if item.prune_backups is defined %}--prune-backups "{{ item.prune_backups }}"{% endif %}
-        {% if item.bwlimit is defined %}--bwlimit {{ item.bwlimit }}{% endif %}
-        {% if item.notification_mode is defined %}--notification-mode {{ item.notification_mode }}{% endif %}
-        {% if item.mailnotification is defined %}--mailnotification {{ item.mailnotification }}{% endif %}
-        {% if item.mailto is defined %}--mailto "{{ item.mailto }}"{% endif %}
-        {% if item.script is defined %}--script {{ item.script }}{% endif %}
+      ansible.builtin.command:
+        argv: >-
+          {{ ['pvesh', 'create', '/cluster/backup',
+              '--id', item.id,
+              '--storage', item.storage,
+              '--schedule', item.schedule,
+              '--mode', item.mode | default('snapshot'),
+              '--compress', item.compress | default('zstd'),
+              '--enabled', item.enabled | default(true) | ternary('1', '0'),
+              '--all', item.all | default('vmid' not in item) | ternary('1', '0')]
+             + (['--vmid', item.vmid | join(',')] if item.vmid is defined else [])
+             + (['--exclude', item.exclude | join(',')] if item.exclude is defined else [])
+             + (['--prune-backups', item.prune_backups] if item.prune_backups is defined else [])
+             + (['--bwlimit', item.bwlimit | string] if item.bwlimit is defined else [])
+             + (['--notification-mode', item.notification_mode] if item.notification_mode is defined else [])
+             + (['--mailnotification', item.mailnotification] if item.mailnotification is defined else [])
+             + (['--mailto', item.mailto] if item.mailto is defined else [])
+             + (['--script', item.script] if item.script is defined else []) }}
       when: item.id not in _proxmox_backup_current_job_ids
       loop: "{{ proxmox_backup_vzdump_jobs }}"
       loop_control:
@@ -230,23 +268,24 @@
              (item.bwlimit is defined and
               (_current.bwlimit | default('') | string) != (item.bwlimit | string)) or
              (_delete_fields | length > 0) }}
-      ansible.builtin.command: >-
-        pvesh set /cluster/backup/{{ item.id }}
-        --storage {{ item.storage }}
-        --schedule "{{ item.schedule }}"
-        --mode {{ item.mode | default('snapshot') }}
-        --compress {{ item.compress | default('zstd') }}
-        --enabled {{ item.enabled | default(true) | ternary(1, 0) }}
-        --all {{ item.all | default('vmid' not in item) | ternary(1, 0) }}
-        {% if item.vmid is defined %}--vmid {{ item.vmid | join(',') }}{% endif %}
-        {% if item.exclude is defined %}--exclude {{ item.exclude | join(',') }}{% endif %}
-        {% if item.prune_backups is defined %}--prune-backups "{{ item.prune_backups }}"{% endif %}
-        {% if item.bwlimit is defined %}--bwlimit {{ item.bwlimit }}{% endif %}
-        {% if item.notification_mode is defined %}--notification-mode {{ item.notification_mode }}{% endif %}
-        {% if item.mailnotification is defined %}--mailnotification {{ item.mailnotification }}{% endif %}
-        {% if item.mailto is defined %}--mailto "{{ item.mailto }}"{% endif %}
-        {% if item.script is defined %}--script {{ item.script }}{% endif %}
-        {% if _delete_fields | length > 0 %}--delete {{ _delete_fields | join(',') }}{% endif %}
+      ansible.builtin.command:
+        argv: >-
+          {{ ['pvesh', 'set', '/cluster/backup/' ~ item.id,
+              '--storage', item.storage,
+              '--schedule', item.schedule,
+              '--mode', item.mode | default('snapshot'),
+              '--compress', item.compress | default('zstd'),
+              '--enabled', item.enabled | default(true) | ternary('1', '0'),
+              '--all', item.all | default('vmid' not in item) | ternary('1', '0')]
+             + (['--vmid', item.vmid | join(',')] if item.vmid is defined else [])
+             + (['--exclude', item.exclude | join(',')] if item.exclude is defined else [])
+             + (['--prune-backups', item.prune_backups] if item.prune_backups is defined else [])
+             + (['--bwlimit', item.bwlimit | string] if item.bwlimit is defined else [])
+             + (['--notification-mode', item.notification_mode] if item.notification_mode is defined else [])
+             + (['--mailnotification', item.mailnotification] if item.mailnotification is defined else [])
+             + (['--mailto', item.mailto] if item.mailto is defined else [])
+             + (['--script', item.script] if item.script is defined else [])
+             + (['--delete', _delete_fields | join(',')] if _delete_fields | length > 0 else []) }}
       when:
         - item.id in _proxmox_backup_current_job_ids
         - _has_drift | bool

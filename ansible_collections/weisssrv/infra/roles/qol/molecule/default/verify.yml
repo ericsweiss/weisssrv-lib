@@ -112,6 +112,28 @@
       register: vundle_git
       failed_when: not vundle_git.stat.exists
 
+    # The sentinel is named for the sha1 of the plugin list, so editing
+    # qol_nvim_plugins re-runs PluginInstall instead of silently no-op'ing.
+    - name: Check the PluginInstall sentinel is named for the plugin list
+      ansible.builtin.stat:
+        path: >-
+          /home/testuser/.vim/bundle/.vundle-installed-{{
+          (qol_nvim_plugins | join(',')) | hash('sha1') }}
+      register: vundle_sentinel
+
+    - name: Check the configured plugin was actually installed
+      ansible.builtin.stat:
+        path: /home/testuser/.vim/bundle/vim-fugitive
+      register: vundle_plugin_dir
+
+    - name: Verify PluginInstall ran and left its list-keyed sentinel
+      ansible.builtin.assert:
+        that:
+          - vundle_sentinel.stat.exists
+          - vundle_plugin_dir.stat.isdir | default(false)
+        fail_msg: "PluginInstall did not install the configured plugin or write its sentinel"
+        success_msg: "PluginInstall installed the configured plugin and wrote the list-keyed sentinel"
+
     - name: Check if shell is set to zsh for testuser
       ansible.builtin.command: getent passwd testuser
       register: testuser_passwd

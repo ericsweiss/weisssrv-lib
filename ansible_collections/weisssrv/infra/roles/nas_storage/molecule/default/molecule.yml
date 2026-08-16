@@ -168,6 +168,12 @@ provisioner:
             path: /tank/media/unified
             read_only: true
             guest_ok: false
+        # ARC cap pass-through to weisssrv.infra.zfs_arc_cap. verify.yml drives
+        # tasks/zfs_arc.yml (zfs.yml as a whole is skipped below) and asserts
+        # this byte count reaches the rendered modprobe.d file. skip_initramfs
+        # suppresses the rebuild handler — the container has no /boot kernel.
+        nas_storage_zfs_arc_max_bytes: "8589934592"
+        nas_storage_zfs_arc_skip_initramfs: true
         nas_storage_skip_zfs_operations: true
         nas_storage_skip_mergerfs: true
         nas_storage_skip_nfs_reload: true

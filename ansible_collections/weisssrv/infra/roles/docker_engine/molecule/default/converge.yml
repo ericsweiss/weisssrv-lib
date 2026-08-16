@@ -1,9 +1,5 @@
 ---
-# Render-only converge: docker_engine_skip_install skips the apt repo add, the
-# pinned engine install/hold, and the service enable/start (all need the real
-# download.docker.com repo + a running daemon). What remains — the /etc/docker
-# directory and the journald daemon.json — renders in a plain container, so
-# verify can assert the daemon configuration the shared role installs.
+# Render-only converge (see molecule.yml).
 - name: Converge
   hosts: all
   become: true

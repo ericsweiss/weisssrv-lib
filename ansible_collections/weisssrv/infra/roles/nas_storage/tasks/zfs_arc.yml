@@ -1,0 +1,17 @@
+---
+# One implementation of the cap: weisssrv.infra.zfs_arc_cap owns
+# /etc/modprobe.d/zfs.conf, the initramfs rebuild that makes it bind at early
+# boot (before the data pools import and the ARC grows to the ~half-RAM default
+# and swap-thrashes the pinned guests on this memory-over-committed host) and
+# the live sysfs write, which reads the value back so a kernel-rejected write
+# fails instead of reporting changed. Empty value -> nothing is managed.
+#
+# Split out of zfs.yml so molecule can drive the pass-through without the pool
+# operations around it (the scenario sets nas_storage_skip_zfs_operations).
+- name: Cap the ZFS ARC
+  ansible.builtin.include_role:
+    name: weisssrv.infra.zfs_arc_cap
+  vars:
+    zfs_arc_cap_max_bytes: "{{ nas_storage_zfs_arc_max_bytes }}"
+    zfs_arc_cap_skip_initramfs: "{{ nas_storage_zfs_arc_skip_initramfs | default(false) }}"
+  when: nas_storage_zfs_arc_max_bytes | default('') | string | length > 0

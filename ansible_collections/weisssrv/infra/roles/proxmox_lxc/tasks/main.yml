@@ -1,6 +1,4 @@
 ---
-# Proxmox LXC container provisioning
-
 # Named up front rather than as an undefined-variable error from inside the
 # `pct create` shell command, where the failure points at the wrong thing.
 - name: Assert the required LXC network inputs are set
@@ -10,10 +8,13 @@
       - proxmox_lxc_nameserver | default('') | length > 0
       - proxmox_lxc_netmask_bits | int > 0
       - proxmox_lxc_netmask_bits | int <= 32
+      - proxmox_lxc_searchdomain | default('') | length > 0
     fail_msg: >-
       proxmox_lxc_gateway (the container's default gateway — no generic
-      default) and proxmox_lxc_nameserver (alias: dns_servers) are required on
-      the create path, and proxmox_lxc_netmask_bits
+      default), proxmox_lxc_nameserver (alias: dns_servers) and
+      proxmox_lxc_searchdomain (alias: internal_domain — `pct create` takes it
+      verbatim, so an empty value writes an empty --searchdomain) are required
+      on the create path, and proxmox_lxc_netmask_bits
       ({{ proxmox_lxc_netmask_bits | default('<undefined>') }}) must be an IPv4
       prefix length.
     quiet: true
@@ -27,11 +28,23 @@
   ansible.builtin.set_fact:
     proxmox_lxc_id: "{{ vmid | default(proxmox_lxc_target_ip.split('.')[-1]) }}"
 
-# Storage selection logic: auto-select based on Proxmox host role if not specified
+# The very next task indexes hostvars[proxmox_host], and every pct/pvesh call
+# below delegates either to proxmox_host or to the node resolved from it — so
+# this has to come first, where the message names the missing input instead of
+# surfacing as a hostvars lookup error.
+- name: Assert the delegate Proxmox host is set
+  ansible.builtin.assert:
+    that:
+      - proxmox_host is defined
+      - proxmox_host | length > 0
+    fail_msg: >-
+      proxmox_host (the node this container is created and reconciled on) is
+      required — every pct/pvesh call in this role delegates to it.
+    quiet: true
+
 - name: Determine Proxmox host role
   ansible.builtin.set_fact:
     _proxmox_lxc_host_role: "{{ hostvars[proxmox_host]['proxmox_role'] | default('compute') }}"
-  when: proxmox_host is defined
 
 - name: Auto-select storage based on Proxmox host role
   ansible.builtin.set_fact:
@@ -40,18 +53,13 @@
         proxmox_lxc_storage |
         default(proxmox_storage_defaults[_proxmox_lxc_host_role] | default('local-ssd'))
       }}
-  when: proxmox_host is defined
-
-- name: Use explicitly defined storage when proxmox_host not set
-  ansible.builtin.set_fact:
-    _proxmox_lxc_effective_storage: "{{ proxmox_lxc_storage | default('local-lvm') }}"
-  when: proxmox_host is not defined
 
 - name: Display storage selection
-  vars:
-    _host_info: "{% if proxmox_host is defined %} (host: {{ proxmox_host }}, role: {{ _proxmox_lxc_host_role }}){% endif %}"
   ansible.builtin.debug:
-    msg: "Container {{ inventory_hostname }} will use storage: {{ _proxmox_lxc_effective_storage }}{{ _host_info }}"
+    msg: >-
+      Container {{ inventory_hostname }} will use storage:
+      {{ _proxmox_lxc_effective_storage }} (host: {{ proxmox_host }},
+      role: {{ _proxmox_lxc_host_role }})
 
 - name: Check if container already exists
   delegate_to: "{{ proxmox_host }}"
@@ -102,24 +110,19 @@
       ({{ proxmox_host }}), which may not hold the container.
   when: proxmox_lxc_exists.rc == 0
 
-# Verify storage pool exists on target host before proceeding
-# Only check when creating a new container - existing containers may be on different storage during migrations
+# Create-path only: an existing container may sit on different storage after a migration.
 - name: Get available storage pools on target host
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.command: pvesm status
   register: proxmox_lxc_storage_list
   changed_when: false
   check_mode: false
-  when:
-    - proxmox_host is defined
-    - proxmox_lxc_exists.rc != 0
+  when: proxmox_lxc_exists.rc != 0
 
 - name: Check if required storage pool exists
   ansible.builtin.set_fact:
     _proxmox_lxc_storage_exists: "{{ proxmox_lxc_storage_list.stdout_lines | select('match', '^' + _proxmox_lxc_effective_storage + '\\s') | list | length > 0 }}"
-  when:
-    - proxmox_host is defined
-    - proxmox_lxc_exists.rc != 0
+  when: proxmox_lxc_exists.rc != 0
 
 - name: Fail if required storage pool does not exist
   ansible.builtin.fail:
@@ -132,7 +135,6 @@
       Available storage pools on {{ proxmox_host }}:
       {{ proxmox_lxc_storage_list.stdout | default('(unable to retrieve)') }}
   when:
-    - proxmox_host is defined
     - proxmox_lxc_exists.rc != 0
     - not _proxmox_lxc_storage_exists | default(true)
     - not ansible_check_mode
@@ -227,7 +229,6 @@
   register: proxmox_lxc_template_download
   changed_when: "'downloading' in (proxmox_lxc_template_download.stdout | default(''))"
 
-# Detect host video and render group GIDs for GPU passthrough
 - name: Get host video group GID
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
@@ -263,8 +264,32 @@
     - proxmox_lxc_video_gid_result.stdout is defined
     - proxmox_lxc_render_gid_result.stdout is defined
 
-# Configure host UID/GID passthrough for unprivileged containers
-# Runs on every deployment to reconcile drift
+# Checked before anything is written, because the idmap generator runs AFTER
+# `pct create`: an inconsistent pair caught later leaves a created container
+# that `pct start` refuses. The generator emits the passed-through GIDs in
+# ascending order and fills the gaps between them, so the container GID must
+# sort ABOVE both GPU GIDs; a lower one produces overlapping ranges. Both idmap
+# points must also fall inside the mapped range.
+- name: Assert the idmap points are consistent with the GPU GIDs
+  ansible.builtin.assert:
+    that:
+      - proxmox_lxc_idmap_gid | int > proxmox_lxc_video_gid | int
+      - proxmox_lxc_idmap_gid | int > proxmox_lxc_render_gid | int
+      - proxmox_lxc_idmap_uid | int < proxmox_lxc_idmap_range | int
+      - proxmox_lxc_idmap_gid | int < proxmox_lxc_idmap_range | int
+    fail_msg: >-
+      proxmox_lxc_idmap_gid ({{ proxmox_lxc_idmap_gid }}) must be greater than
+      both proxmox_lxc_video_gid ({{ proxmox_lxc_video_gid }}) and
+      proxmox_lxc_render_gid ({{ proxmox_lxc_render_gid }}), and both idmap
+      points must be below proxmox_lxc_idmap_range
+      ({{ proxmox_lxc_idmap_range }}) — otherwise the generated lxc.idmap
+      ranges overlap and pct start rejects the container.
+    quiet: true
+  when:
+    - proxmox_lxc_unprivileged | default(true)
+    - proxmox_lxc_gpu_passthrough | default(false)
+
+# Reconciled every run, not create-time only.
 - name: Configure subuid/subgid for container UID/GID passthrough
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
@@ -283,7 +308,6 @@
     fi
 
     {% if proxmox_lxc_gpu_passthrough | default(false) %}
-    # GPU passthrough requires video and render groups (dynamically detected)
     VIDEO_GID="{{ proxmox_lxc_video_gid }}"
     RENDER_GID="{{ proxmox_lxc_render_gid }}"
 
@@ -313,8 +337,8 @@
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
     pct create {{ proxmox_lxc_id }} \
-      {{ proxmox_lxc_template_storage }}:vztmpl/{{ proxmox_lxc_template }} \
-      --hostname {{ inventory_hostname }} \
+      {{ (proxmox_lxc_template_storage ~ ':vztmpl/' ~ proxmox_lxc_template) | quote }} \
+      --hostname {{ inventory_hostname | quote }} \
       --cores {{ proxmox_lxc_cores }} \
       --memory {{ proxmox_lxc_memory }} \
       --swap {{ proxmox_lxc_swap }} \
@@ -409,7 +433,7 @@
 - name: Configure bind mounts
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
-    pct set {{ proxmox_lxc_id }} --mp{{ idx }} {{ item.host_path }},{{ item.options }}
+    pct set {{ proxmox_lxc_id }} --mp{{ idx }} {{ (item.host_path ~ ',' ~ item.options) | quote }}
   loop: "{{ proxmox_lxc_bind_mounts | default([]) }}"
   loop_control:
     index_var: idx
@@ -594,20 +618,17 @@
     - not ansible_check_mode
     - proxmox_lxc_exists.rc != 0
 
-# Bootstrap the admin user for Ansible access.
 
 - name: Wait for container network connectivity
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
     set -o pipefail
-    # Use bash /dev/tcp to test connectivity (works without iputils-ping on minimal Debian)
+    # 30 x 2s: a default route via the gateway, then either a TCP-22 probe of the
+    # gateway or an assigned address on eth0. bash /dev/tcp rather than ping, which
+    # needs iputils-ping on a minimal Debian container.
     for i in $(seq 1 30); do
-      # Test TCP connection to gateway on common ports (SSH or HTTP) or use /proc/net/route
-      # First check if we have an IP assigned and a default route
       route_check='ip route show default 2>/dev/null | grep -q "via {{ proxmox_lxc_gateway }}"'
       if pct exec {{ proxmox_lxc_id }} -- bash -c "$route_check"; then
-        # Gateway is in routing table, verify we can reach it via TCP on port 22 (SSH is common)
-        # Fall back to checking if the interface is up with an IP
         tcp_check='timeout 2 bash -c "</dev/tcp/{{ proxmox_lxc_gateway }}/22" 2>/dev/null'
         ip_check='ip addr show eth0 2>/dev/null | grep -q "inet "'
         if pct exec {{ proxmox_lxc_id }} -- bash -c "$tcp_check || $ip_check"; then
@@ -751,14 +772,29 @@
     - proxmox_lxc_exists.rc != 0
   changed_when: true
 
+# Staged, validated, then moved into place: a redirect straight into
+# /etc/sudoers.d leaves a half-written or unparsable file that breaks sudo for
+# every account in the container. The username reaches the inner shell as a
+# positional argument, so it is never re-parsed as shell text.
 - name: Configure passwordless sudo for the admin user
   delegate_to: "{{ proxmox_host }}"
-  ansible.builtin.shell: |
-    pct exec {{ proxmox_lxc_id }} -- bash -c '
-      echo "{{ proxmox_lxc_admin_user }} ALL=(ALL) NOPASSWD: ALL" \
-        > /etc/sudoers.d/{{ proxmox_lxc_admin_user }} &&
-      chmod 440 /etc/sudoers.d/{{ proxmox_lxc_admin_user }}
-    '
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      pct exec {{ proxmox_lxc_id }} -- bash -c '
+        set -euo pipefail
+        user="$1"
+        # mktemp name starts with a dot, which sudo skips while it is staged.
+        tmp="$(mktemp /etc/sudoers.d/.staged.XXXXXX)"
+        printf "%s ALL=(ALL) NOPASSWD: ALL\n" "$user" > "$tmp"
+        chmod 440 "$tmp"
+        # visudo is absent until the sudo package lands; validate when we can.
+        if command -v visudo >/dev/null 2>&1; then
+          visudo -cf "$tmp" >/dev/null
+        fi
+        mv "$tmp" "/etc/sudoers.d/${user}"
+      ' _ {{ proxmox_lxc_admin_user | quote }}
+    executable: /bin/bash
   when:
     - not ansible_check_mode
     - proxmox_lxc_exists.rc != 0

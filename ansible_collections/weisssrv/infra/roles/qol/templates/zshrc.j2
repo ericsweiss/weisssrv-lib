@@ -1,14 +1,13 @@
+# {{ ansible_managed }}
+# Overwritten on every deploy — put personal edits in ~/.local.zsh.
 source ~/.zprofile
 source ~/.alias.zsh
 source ~/.local.zsh
 
-# Path to your Oh My Zsh installation.
 export ZSH="$HOME/.oh-my-zsh"
 
-# Theme configuration
 ZSH_THEME="{{ qol_omz_theme | default('risto') }}"
 
-# Plugins configuration
 plugins=(
 {% for plugin in qol_omz_plugins | default(['git']) %}
 	{{ plugin }}

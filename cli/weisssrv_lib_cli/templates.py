@@ -29,6 +29,15 @@ class TemplateError(ValueError):
     """Bad arguments or an unusable source/destination (exit 2)."""
 
 
+class MissingCopierError(TemplateError):
+    """The `cluster` extra is not installed (exit 3).
+
+    A subclass of TemplateError so a caller that only knows the two original
+    classes keeps catching it; the distinct exit code separates "fix your
+    environment" from "fix your arguments".
+    """
+
+
 class RenderError(RuntimeError):
     """copier itself failed to render the template (exit 1)."""
 
@@ -85,7 +94,7 @@ def _copier():
     try:
         import copier
     except ImportError as exc:
-        raise TemplateError(_INSTALL_HINT) from exc
+        raise MissingCopierError(_INSTALL_HINT) from exc
     return copier
 
 

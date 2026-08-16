@@ -3,15 +3,13 @@
 # customise via the base_fail2ban_* variables.
 
 [DEFAULT]
-# Networks that are never banned
 ignoreip = {{ base_fail2ban_ignoreip | join(' ') }}
 
-# Default ban settings
 bantime = {{ base_fail2ban_default_bantime }}
 findtime = {{ base_fail2ban_default_findtime }}
 maxretry = {{ base_fail2ban_default_maxretry }}
 
-# Use systemd backend (preferred on Debian with journald)
+# systemd backend, preferred on Debian with journald
 backend = systemd
 
 {% if base_is_container | default(false) %}
@@ -27,18 +25,13 @@ banaction_allports = iptables-allports
 {% endif %}
 
 {% if base_fail2ban_email_enabled %}
-# Email notifications
 destemail = {{ base_fail2ban_email_dest }}
 sender = {{ base_fail2ban_email_sender }}
 mta = sendmail
 action = {{ base_fail2ban_email_action }}
 {% else %}
-# Email notifications disabled
 action = %(action_)s
 {% endif %}
-
-# SSH Protection
-# Protects against brute-force attacks on SSH (port {{ base_fail2ban_sshd_port }})
 
 [sshd]
 enabled = {{ base_fail2ban_sshd_enabled | lower }}
@@ -47,9 +40,7 @@ filter = sshd
 maxretry = {{ base_fail2ban_sshd_maxretry }}
 bantime = {{ base_fail2ban_sshd_bantime }}
 findtime = {{ base_fail2ban_sshd_findtime }}
-# sshd logs to journal on systemd systems
 backend = systemd
-# Match aggressive mode for SSH attacks (catches more patterns)
 mode = aggressive
 
 {% if base_fail2ban_pveproxy_enabled %}
@@ -68,10 +59,7 @@ findtime = {{ base_fail2ban_pveproxy_findtime }}
 {% endif %}
 
 {% if base_fail2ban_recidive_enabled and not (base_is_container | default(false)) %}
-# Off on LXC containers because:
-#   - The 'route' banaction doesn't support banaction_allports
-#   - Duplicate route entries error when multiple jails ban the same IP
-#   - The sshd jail's own 1h bantime is sufficient protection there
+# Off on LXC containers — see the base role's tasks/fail2ban.yml header.
 
 [recidive]
 enabled = true
@@ -81,6 +69,5 @@ bantime = {{ base_fail2ban_recidive_bantime }}
 findtime = {{ base_fail2ban_recidive_findtime }}
 maxretry = {{ base_fail2ban_recidive_maxretry }}
 backend = auto
-# Ban on all ports for repeat offenders
 banaction = iptables-allports
 {% endif %}

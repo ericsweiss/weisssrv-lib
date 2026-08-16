@@ -1,6 +1,5 @@
 // {{ ansible_managed }}
 
-// Read system journal
 loki.source.journal "system" {
   // Forward STRAIGHT to loki.write, passing the rules by reference. The
   // __journal_* metadata only exists inside the source's own relabel pass, so
@@ -33,7 +32,6 @@ loki.relabel "journal" {
   }
 }
 
-// Ship to Loki
 loki.write "default" {
   endpoint {
     url = "{{ alloy_host_loki_url }}"

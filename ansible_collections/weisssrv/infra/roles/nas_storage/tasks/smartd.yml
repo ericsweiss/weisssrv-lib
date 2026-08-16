@@ -1,6 +1,4 @@
 ---
-# SMART monitoring configuration
-
 - name: Install smartmontools
   ansible.builtin.apt:
     name: smartmontools

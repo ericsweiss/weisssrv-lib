@@ -22,8 +22,9 @@ compose it into a play only where you want it.
 | `qol_nvim_colorscheme` | `onedark` | applied with `silent!`, so a scheme without its plugin degrades instead of erroring |
 
 `qol_admin_user` is deliberately an alias of the inventory-wide `admin_user`:
-this role has a `meta` dependency on `weisssrv.infra.base`, and the two must
-agree on the user.
+the alias is what keeps this role and `weisssrv.infra.base` on the same account.
+The role declares no `meta` dependency, so list `base` ahead of it in the play
+where the account and its home have to exist first.
 
 ## Version pins
 

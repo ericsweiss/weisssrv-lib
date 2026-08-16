@@ -1,16 +1,8 @@
 # {{ ansible_managed }}
-# SMART monitoring configuration for {{ ansible_facts['hostname'] }}
-
 # All drives explicitly listed — no DEVICESCAN (it aborts long self-tests on
-# drives that enter standby).
-#
-# TRADE-OFF: a static list means a drive added or replaced in a pool is
-# UNMONITORED until it is added to a group. smartd.yml catches that at deploy
-# time by failing when an imported pool has a member absent from the union of
-# all groups.
-
-# Long self-tests are staggered per group so the drives do not thrash
-# simultaneously.
+# drives that enter standby). A drive missing from every group is therefore
+# UNMONITORED; smartd.yml fails the deploy when an imported pool has such a
+# member.
 
 {% for group in nas_storage_smartd_disk_groups | default([]) %}
 {% if group.disks | default([]) | length > 0 %}
@@ -21,9 +13,6 @@
 
 {% endif %}
 {% endfor %}
-# SMART test schedule:
-#   S = Short self-test, daily at 2am
-#   L = Long self-test, monthly at 3am on the group's staggered day
-# Flags: -a monitor all attributes; -o/-S ATA offline-collection and
-# attribute autosave (ATA only — they log warnings on NVMe, so a group of NVMe
-# devices sets ata: false); -m root mails alerts via postfix.
+# -s is the group's own schedule regex (nas_storage_smartd_disk_groups);
+# -a monitor all attributes; -o/-S are ATA-only (they log warnings on NVMe, so
+# an NVMe group sets ata: false); -m root mails alerts via postfix.

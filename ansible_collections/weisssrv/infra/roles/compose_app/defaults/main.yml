@@ -1,11 +1,6 @@
 ---
-# compose_app: shared scaffolding for single-project docker-compose app guests.
-# Callers include this role's task files with the vars below — nothing here is
-# app-specific; every value a caller diverges on is a parameter:
-#   tasks/docker.yml     -> install Docker Engine (via docker_engine)
-#   tasks/nginx.yml      -> host-nginx TLS terminator task flow
-#   tasks/main.yml       -> compose systemd-unit lifecycle (deploy/enable/start)
-#   tasks/backup_lib.yml -> deploy the write_prom_metrics helper library
+# Shared scaffolding for single-project docker-compose app guests. Nothing here
+# is app-specific; every value a caller diverges on is a parameter.
 
 # Render-only escape hatch mirrored from each caller's own skip flag: gates the
 # service-touching steps so a molecule scenario can render + assert without a
@@ -20,7 +15,6 @@ compose_app_working_directory: /opt/compose
 compose_app_requires_mounts_for: []
 compose_app_requires_mounts_comment: []
 compose_app_reconcile_comment: []
-# systemd treats `yes` and `true` identically; standardised on `yes`.
 compose_app_remain_after_exit: "yes"
 
 # Backup-metrics helper library (tasks/backup_lib.yml)
@@ -28,10 +22,8 @@ compose_app_backup_lib_dest: /usr/local/lib/compose-app-backup-lib.sh
 # Noun in the size-gauge HELP line ("Size of the most recent <object> in bytes").
 compose_app_backup_size_help_object: dump
 
-# Host nginx TLS terminator (tasks/nginx.yml)
-# Cert material (paths + dir mode) and the self-signed placeholder parameters
-# are per-app; the site template stays in the caller's role (byte-unchanged) and
-# is passed by an eagerly-resolved absolute path (compose_app_nginx_site_template).
+# Host nginx TLS terminator (tasks/nginx.yml). The site template stays in the
+# caller's role and is passed by an eagerly-resolved ABSOLUTE path.
 compose_app_nginx_cert_dir: /etc/nginx/ssl
 compose_app_nginx_cert_dir_mode: "0750"
 compose_app_nginx_ssl_cert: /etc/nginx/ssl/fullchain.pem

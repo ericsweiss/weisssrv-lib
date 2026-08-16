@@ -1,20 +1,18 @@
 #!/usr/bin/env bash
 # {{ ansible_managed }}
-# One-time post-reboot finalization of a DEFERRED encrypted-swap activation,
-# INCLUDING recovery from the boot race: the retained plaintext fstab fallback
-# and systemd-cryptsetup@ both want the same backing LV at boot, and either can
-# win. Run after swap.target (both contenders have been attempted):
-#   - mapper ACTIVE as swap  -> drop the plaintext fallback (finalize).
-#   - mapper NOT active      -> the plaintext line won the race. Boot-time is the
-#     SAFE moment to fix that: memory is empty, so swapoff of the plaintext
-#     device cannot OOM anything. Complete the switch here (swapoff dev -> open
-#     mapper -> swapon mapper), verify, THEN finalize. Any failure restores the
-#     plaintext fallback and exits green — the host must never end up swapless;
-#     a swap-absence alert surfaces a persistently unactivated mapper.
-# Idempotent: a no-op once the plaintext line is already commented.
+# Finalizes a deferred encrypted-swap activation after reboot, including
+# recovery from the boot race between the retained plaintext fstab line and
+# systemd-cryptsetup@ (README). Must run after swap.target, so both contenders
+# have been attempted. Invariants: never exit swapless (any failure restores the
+# plaintext fallback and exits green), and no-op once the plaintext line is
+# commented.
 set -uo pipefail
 
 dev="{{ encrypted_swap_source_device }}"
+# Same path, escaped for use as an ERE/sed pattern: the device is a per-host
+# override and by-id/by-path names carry '.', '+' and '[', which would silently
+# stop the fstab match from finding the plaintext line.
+dev_re="{{ encrypted_swap_source_device | regex_escape }}"
 mapper_name="{{ encrypted_swap_mapper_name }}"
 mapper="/dev/mapper/${mapper_name}"
 
@@ -44,7 +42,7 @@ restore_plaintext_swap() {
 if ! mapper_active; then
   # Recovery arm — only meaningful while the deferred plaintext line still
   # exists uncommented (otherwise there is nothing to race against).
-  if ! grep -Eq "^${dev}[[:space:]]+[^[:space:]]+[[:space:]]+swap[[:space:]]" /etc/fstab; then
+  if ! grep -Eq "^${dev_re}[[:space:]]+[^[:space:]]+[[:space:]]+swap[[:space:]]" /etc/fstab; then
     echo "encrypted-swap-finalize: ${mapper} not active and no plaintext fallback line — nothing to do" >&2
     exit 0
   fi
@@ -82,6 +80,6 @@ swapoff "$dev" 2>/dev/null || true
 
 # Comment the plaintext swap fstab line exactly once. Matches only an UNcommented
 # "<dev> <mnt> swap ..." line (the commented form no longer starts with the
-# device), so re-runs are no-ops. The device path is a fixed LVM path with no
-# regex metacharacters, and '#' is the sed delimiter (so its slashes are literal).
-sed -ri "s#^(${dev}[[:space:]]+[^[:space:]]+[[:space:]]+swap[[:space:]].*)#\# \1#" /etc/fstab
+# device), so re-runs are no-ops. The pattern uses the regex-escaped device path
+# and '#' as the sed delimiter (so the path's slashes are literal).
+sed -ri "s#^(${dev_re}[[:space:]]+[^[:space:]]+[[:space:]]+swap[[:space:]].*)#\# \1#" /etc/fstab

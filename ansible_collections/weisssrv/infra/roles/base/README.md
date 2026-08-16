@@ -27,7 +27,7 @@ Foundational system configuration applied to all managed hosts. Provides essenti
 - Disable root login
 - Disable password authentication (key-based only)
 - Enable pubkey authentication
-- Disable challenge-response authentication
+- Disable keyboard-interactive authentication (`KbdInteractiveAuthentication no`)
 - Disable X11 forwarding
 - MaxAuthTries set to 3
 - ClientAlive keepalive (300s interval, 2 max)
@@ -91,6 +91,7 @@ admin_user: ops                  # `root` (the default) manages no admin user
 admin_email: ops@example.com     # used by fail2ban notifications
 ssh_port: 22
 ssh_permit_root_login: "no"      # "prohibit-password" where migration needs it
+                                 # unquoted no/yes (YAML booleans) are accepted too
 ssh_password_authentication: false
 ssh_pubkey_authentication: true
 

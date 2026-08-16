@@ -4,11 +4,11 @@ unbound_port: 5335
 # Filename of the role-managed drop-in under /etc/unbound/unbound.conf.d/.
 unbound_dropin_name: managed.conf
 
-# Drop-ins this role previously owned; removed on every run (never the current
+# Drop-in names a site used to own, removed on every run (never the current
 # unbound_dropin_name). unbound merges the drop-in dir with a SORTED glob, so a
-# leftover that sorts after the managed file wins every duplicated scalar.
-unbound_legacy_dropins:
-  - weisssrv.conf
+# leftover that sorts after the managed file wins every duplicated scalar — name
+# the file the site is migrating away from here. Site data, so empty by default.
+unbound_legacy_dropins: []
 
 # Listen addresses. unbound_interface is the readiness-probe target and the sole
 # default entry; add ::1 to unbound_interfaces to also serve IPv6 loopback, and

@@ -138,7 +138,7 @@
   vars:
     _sshd_effective: "{{ base_sshd_effective_config.stdout | lower }}"
     _want_pwauth: "{{ base_ssh_password_authentication | ternary('yes', 'no') }}"
-    _want_rootlogin: "{{ base_ssh_permit_root_login | lower | replace('prohibit-password', 'without-password') }}"
+    _want_rootlogin: "{{ base_ssh_permit_root_login_effective | replace('prohibit-password', 'without-password') }}"
   when: not ansible_check_mode
 
 - name: Ensure SSH service is enabled and running

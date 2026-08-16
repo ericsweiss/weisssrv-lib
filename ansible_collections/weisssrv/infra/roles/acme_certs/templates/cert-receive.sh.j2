@@ -25,7 +25,17 @@ EXPECT_DOMAIN="{{ acme_certs_domain }}"
 # the reload runs verbatim. restart_command values that carry their own `sudo`
 # still work — sudo root->root needs no password or tty on these Debian hosts
 # (no `Defaults requiretty`).
-RELOAD={{ (acme_certs_target.restart_command | default('systemctl restart ' ~ (acme_certs_target.restart_service | default('')))) | quote }}
+{% set _restart_command = acme_certs_target.restart_command | default('') | trim %}
+{% set _restart_service = acme_certs_target.restart_service | default('') | trim %}
+{% if _restart_command %}
+RELOAD={{ _restart_command | quote }}
+{% elif _restart_service %}
+RELOAD={{ ('systemctl restart ' ~ _restart_service) | quote }}
+{% else %}
+# Neither key set on this target — the role asserts against it, so an empty
+# RELOAD means a hand-installed receiver. Step 6 refuses to run.
+RELOAD=''
+{% endif %}
 DELIM="===CERT-RECEIVE-BUNDLE-BOUNDARY==="
 MAX_BYTES=65536
 
@@ -100,9 +110,12 @@ mv -f "${CERT_DIR}/.fullchain.pem.new" "${CERT_DIR}/fullchain.pem"
 install -o "$OWNER" -g "$GROUP" -m "$KEY_MODE"  "$TMP/privkey.pem"  "${CERT_DIR}/.privkey.pem.new"
 mv -f "${CERT_DIR}/.privkey.pem.new" "${CERT_DIR}/privkey.pem"
 
-# 6. Reload the consuming service. Marker is written ONLY after a clean reload,
-#    so a failed reload re-fires (self-heals) on the next push instead of being
-#    masked by a stale "applied" hash.
+# 6. Reload the consuming service. A receiver with no reload baked in cannot
+#    complete the push, and must not record the cert as applied — refuse rather
+#    than run `bash -c ''` and report success. Marker is written ONLY after a
+#    clean reload, so a failed reload re-fires (self-heals) on the next push
+#    instead of being masked by a stale "applied" hash.
+[ -n "$RELOAD" ] || fail "no reload command baked into this receiver" 5
 if bash -c "$RELOAD"; then
   printf '%s\n' "$new_hash" > "${CERT_DIR}/.applied-fullchain.sha256"
   echo "OK"

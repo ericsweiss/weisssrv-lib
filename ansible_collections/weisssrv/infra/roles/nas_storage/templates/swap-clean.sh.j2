@@ -28,13 +28,13 @@ set -euo pipefail
 # so the *.sh.j2 shellcheck lint - which rewrites Jinja expressions to the literal
 # token JINJA before shellcheck runs - sees an assigned variable rather than a
 # bare undefined token.
-min_clear_mb="{{ nas_storage_swap_clean_min_mb | default(512) }}"
-margin_mb="{{ nas_storage_swap_clean_margin_mb | default(2048) }}"
-arc_shrink_bytes="{{ (nas_storage_swap_clean_arc_shrink_mb | default(2048)) * 1048576 }}"
+min_clear_mb="{{ nas_storage_swap_clean_min_mb }}"
+margin_mb="{{ nas_storage_swap_clean_margin_mb }}"
+arc_shrink_bytes="{{ nas_storage_swap_clean_arc_shrink_mb * 1048576 }}"
 # Ordered "vmid:name:timeout" candidates to gracefully stop (only as many as
 # needed) when ARC-shrink headroom alone cannot cover the swap. Empty => never
 # stops a guest (pure abort-and-retry, the pre-escalation behaviour).
-stop_guests="{{ nas_storage_swap_clean_stop_guests | default([]) | join(' ') }}"
+stop_guests="{{ nas_storage_swap_clean_stop_guests | join(' ') }}"
 # Last-resort swap device for the post-swapon guard (the standard Proxmox LVM
 # swap LV; under encrypted_swap this is busy as the cryptswap backing device, so
 # the fallback swapon is a harmless no-op there).
@@ -51,7 +51,7 @@ vm_state() { { qm status "$1" 2>/dev/null || true; } | awk '{print $2}'; }
 # Emitted on EVERY exit by the cleanup() EXIT trap, so a single unsafe-abort
 # night or a guest-stop escalation is directly alertable — not only via the
 # indirect 2-day swap-build-up proxy.
-PROM_DIR="{{ nas_storage_backup_artifact_metrics_dir | default(node_exporter_host_textfile_dir | default('/var/lib/node_exporter')) }}"
+PROM_DIR="{{ nas_storage_backup_artifact_metrics_dir }}"
 PROM_FILE="${PROM_DIR}/swap_clean.prom"
 run_success=0
 swap_cleared_bytes=0
@@ -127,8 +127,8 @@ cleanup() {
 #   1. Any fstab swap device is absent — a swapoff -a / swapon -a would then
 #      leave the box with ZERO swap (the encrypted_swap deferred-activation
 #      window, where fstab names the not-yet-present /dev/mapper/cryptswap).
-#   2. restic-offsite is mid-run (it chains ~07:15 off archive-backup, swap-clean
-#      runs 07:00) — do not cycle swap out from under it.
+#   2. restic-offsite is mid-run (it chains off archive-backup, which shares the
+#      same nightly window) — do not cycle swap out from under it.
 preflight_skip_reason() {
   local dev fstype
   # fstab fields: <device> <mountpoint> <fstype> <options> <dump> <pass>.
@@ -146,8 +146,8 @@ preflight_skip_reason() {
     esac
   done < /etc/fstab
   # is-active non-zero also covers systemctl/D-Bus errors — deliberately
-  # fail-open: scheduling (restic ~07:15+) is the primary separation and the
-  # memory safety-gate below prevents harm; failing closed would let a broken
+  # fail-open: the schedule separation is the primary guard and the memory
+  # safety-gate below prevents harm; failing closed would let a broken
   # systemctl silently disable swap-clean forever.
   if systemctl is-active --quiet restic-offsite.service; then
     echo "restic-offsite.service active"

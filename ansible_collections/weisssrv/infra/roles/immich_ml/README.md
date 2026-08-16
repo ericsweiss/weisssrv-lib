@@ -10,7 +10,7 @@ keeping its own CPU ML container as the failover.
 ## Design
 
 - **GPU share, not exclusive passthrough**: the host's `/dev/dri` is bind-mounted
-  into the guest (`weisssrv.infra.proxmox_lxc`, `lxc_gpu_passthrough`), so the
+  into the guest (`weisssrv.infra.proxmox_lxc`, `proxmox_lxc_gpu_passthrough`), so the
   kernel driver arbitrates between consumers. The `-openvino` image bundles its
   own Intel compute-runtime; the host supplies only the kernel driver.
 - **Version lockstep**: `immich_ml_version` defaults to the inventory-wide

@@ -1,23 +1,14 @@
 ---
 # Mocks the zfs_exporter binary since there is no real ZFS in Docker.
-# The role's download/extract tasks are skipped via the `creates:` idempotency guard.
+# The mock reports the pinned version, so the role's version-check gate skips
+# the download/extract path.
 - name: Converge
   hosts: all
   become: true
   pre_tasks:
-    - name: Wait for apt locks to be released
-      ansible.builtin.shell: |
-        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
-              fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
-              fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
-          sleep 1
-        done
-      args:
-        executable: /bin/bash
-      changed_when: false
-      when: ansible_os_family == "Debian"
+    - name: Container warm-up (apt locks, dpkg state, cache, systemd)
+      ansible.builtin.include_tasks: ../../../../molecule-shared/tasks/container-warmup.yml
 
-    # Mock the zfs_exporter binary — real binary needs ZFS kernel modules
     - name: Create mock zfs_exporter binary
       ansible.builtin.copy:
         dest: /usr/local/bin/zfs_exporter

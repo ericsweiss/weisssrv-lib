@@ -60,11 +60,29 @@
     name: alloy
     selection: hold
 
-- name: Disable Alloy usage reporting
+# The joined args land inside a double-quoted shell assignment, so an embedded
+# `"` would close it early and turn the rest of the line into further shell
+# words — silently changing what the unit runs.
+- name: Assert no Alloy extra argument contains a double quote
+  ansible.builtin.assert:
+    that:
+      - '''"'' not in item'
+    fail_msg: >-
+      alloy_host_extra_args entry {{ item | to_json }} contains a double quote,
+      which would break out of the CUSTOM_ARGS assignment in /etc/default/alloy.
+    quiet: true
+  loop: "{{ alloy_host_extra_args }}"
+  loop_control:
+    label: "{{ item | truncate(40) }}"
+
+# One managed CUSTOM_ARGS line: --disable-reporting plus whatever the site
+# needs, which is where a --server.http.listen-addr matching
+# alloy_host_http_port goes.
+- name: Set Alloy command-line arguments
   ansible.builtin.lineinfile:
     path: /etc/default/alloy
     regexp: '^CUSTOM_ARGS='
-    line: 'CUSTOM_ARGS="--disable-reporting"'
+    line: 'CUSTOM_ARGS="{{ (["--disable-reporting"] + alloy_host_extra_args) | join(" ") }}"'
   notify: Restart alloy
 
 - name: Deploy Alloy configuration

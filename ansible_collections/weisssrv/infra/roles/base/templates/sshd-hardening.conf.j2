@@ -4,7 +4,7 @@
 # before any cloud-init-generated drop-in (50-cloud-init.conf), which on the
 # Proxmox cloud-init VM image can otherwise set PasswordAuthentication and win.
 Port {{ base_ssh_port }}
-PermitRootLogin {{ base_ssh_permit_root_login }}
+PermitRootLogin {{ base_ssh_permit_root_login_effective }}
 PasswordAuthentication {{ base_ssh_password_authentication | ternary('yes', 'no') }}
 PubkeyAuthentication {{ base_ssh_pubkey_authentication | ternary('yes', 'no') }}
 # KbdInteractiveAuthentication replaces the deprecated

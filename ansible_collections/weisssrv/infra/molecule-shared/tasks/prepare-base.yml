@@ -1,11 +1,7 @@
 ---
-# Shared Molecule prepare header: wait for systemd, then ensure the ansible
-# temp dir exists. Imported at the top of each scenario's prepare.yml (and of
-# prepare-common.yml) via
-#   ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/prepare-base.yml
-# mirroring the container-warmup.yml pattern (a scenario dir sits 4 levels under
-# the collection root). Scenarios whose role installs apt packages import
-# prepare-apt-disable.yml right after this.
+# Waits for systemd, then ensures the ansible temp dir exists. Imported at the
+# top of every scenario prepare.yml (and of prepare-common.yml); a role that
+# installs apt packages imports prepare-apt-disable.yml right after.
 - name: Wait for systemd to be ready
   ansible.builtin.raw: |
     for i in $(seq 1 30); do

@@ -1,7 +1,4 @@
 ---
-# Proxmox VE High Availability management (Proxmox 9+)
-# Manages HA rules, resources, and ZFS replication
-
 - name: Ensure we're running on a Proxmox VE cluster
   ansible.builtin.assert:
     that:

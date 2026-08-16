@@ -159,14 +159,3 @@
           - service_status.status.UnitFileState == 'enabled'
         fail_msg: "alloy service is not enabled"
         success_msg: "alloy service is enabled"
-
-    - name: Display test results
-      ansible.builtin.debug:
-        msg:
-          - "alloy_host installed and configured:"
-          - "  - Binary: /usr/bin/alloy (executable)"
-          - "  - Config: /etc/alloy/config.alloy"
-          - "  - Service: alloy.service (enabled)"
-          - "  - GPG key: /etc/apt/keyrings/grafana.gpg"
-          - "  - APT source: /etc/apt/sources.list.d/grafana.list"
-          - "(Actual journald shipping requires systemd journal + Loki endpoint)"

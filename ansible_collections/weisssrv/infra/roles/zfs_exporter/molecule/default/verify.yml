@@ -4,7 +4,6 @@
   become: true
   gather_facts: true
   tasks:
-    # Verify binary is installed
     - name: Check if zfs_exporter binary exists
       ansible.builtin.stat:
         path: /usr/local/bin/zfs_exporter
@@ -33,12 +32,15 @@
       ansible.builtin.assert:
         that:
           - "'ZFS Exporter for Prometheus' in (service_content.content | b64decode)"
-          - "'/usr/local/bin/zfs_exporter' in (service_content.content | b64decode)"
-          - "'9134' in (service_content.content | b64decode)"
+          # Whole ExecStart line: a bare port substring matches any digit run
+          # in the unit, so it would pass with the flag dropped entirely.
+          - >-
+            ('ExecStart=/usr/local/bin/zfs_exporter --web.listen-address=:' ~ zfs_exporter_port)
+            in (service_content.content | b64decode)
         fail_msg: "Service file missing expected configuration"
         success_msg: "Service file has correct configuration"
 
-    # Verify service is enabled (may not be actively running with mock binary)
+    # Mock binary: enabled, not necessarily running.
     - name: Check service status
       ansible.builtin.systemd:
         name: zfs-exporter
@@ -50,12 +52,3 @@
           - service_status.status.UnitFileState == 'enabled'
         fail_msg: "zfs-exporter service is not enabled"
         success_msg: "zfs-exporter service is enabled"
-
-    - name: Display test results
-      ansible.builtin.debug:
-        msg:
-          - "zfs_exporter installed and configured:"
-          - "  - Binary: /usr/local/bin/zfs_exporter (executable)"
-          - "  - Service: zfs-exporter.service (enabled)"
-          - "  - Port: 9134"
-          - "(Real ZFS metrics require ZFS kernel modules)"

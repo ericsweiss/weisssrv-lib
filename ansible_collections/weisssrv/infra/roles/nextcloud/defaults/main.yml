@@ -40,7 +40,6 @@ nextcloud_additional_disks: "{{ vm_additional_disks | default([]) }}"
 nextcloud_uid: 33
 nextcloud_gid: 33
 
-# Database
 nextcloud_db_name: nextcloud
 nextcloud_db_user: nextcloud
 nextcloud_db_password: "{{ lookup('ansible.builtin.env', 'NEXTCLOUD_POSTGRES_PASSWORD', default='') }}"
@@ -88,9 +87,11 @@ nextcloud_php_upload_limit: "16G"
 # Web port: loopback-only, since the host nginx terminates TLS and proxies here.
 nextcloud_http_bind_address: "127.0.0.1"
 nextcloud_http_bind_port: 8080
-# Exporter port: published on all interfaces for an off-host Prometheus; scope
-# it with the guest firewall.
+# Exporter port and bind address. The default publishes on all interfaces for
+# an off-host Prometheus and is scoped with the guest firewall; set the bind
+# address to the guest's own LAN address (or 127.0.0.1) to narrow it.
 nextcloud_exporter_port: 9205
+nextcloud_exporter_bind_address: "0.0.0.0"
 nextcloud_serverinfo_token: "{{ lookup('ansible.builtin.env', 'NEXTCLOUD_SERVERINFO_TOKEN', default='') }}"
 
 # Opt-in postgres_exporter sidecar: database-level metrics, which the
@@ -102,9 +103,11 @@ nextcloud_serverinfo_token: "{{ lookup('ansible.builtin.env', 'NEXTCLOUD_SERVERI
 nextcloud_postgres_exporter_enabled: false
 nextcloud_postgres_exporter_version: ""
 nextcloud_postgres_exporter_image: "quay.io/prometheuscommunity/postgres-exporter:{{ nextcloud_postgres_exporter_version }}"
-# Host port, published on all interfaces like the app exporter above — the
-# endpoint is unauthenticated, so scope it with the guest firewall.
+# Host port and bind address, defaulting like the app exporter above — the
+# endpoint is unauthenticated, so scope it with the guest firewall or narrow
+# the bind address.
 nextcloud_postgres_exporter_port: 9187
+nextcloud_postgres_exporter_bind_address: "{{ nextcloud_exporter_bind_address }}"
 
 # Host nginx TLS front end. The site's cert distributor (acme_certs) delivers
 # the real cert to these paths and reloads nginx; a self-signed placeholder is

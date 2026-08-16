@@ -1,5 +1,4 @@
 # {{ ansible_managed }}
-# Mail aliases - see aliases(5) for format
 
 {% for alias, target in postfix_null_client_aliases.items() %}
 {{ alias }}: {{ target }}

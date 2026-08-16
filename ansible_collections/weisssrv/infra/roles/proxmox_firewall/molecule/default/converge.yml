@@ -3,17 +3,15 @@
   hosts: all
   become: true
   pre_tasks:
-    - name: Wait for apt locks to be released
-      ansible.builtin.shell: |
-        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
-              fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
-              fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
-          sleep 1
-        done
-      args:
-        executable: /bin/bash
-      changed_when: false
-      when: ansible_os_family == "Debian"
+    # Docker platform only, for the same reason prepare.yml restricts its hosts:
+    # the rest of this scenario's inventory is `ansible_connection: local`
+    # pseudo-hosts that exist to feed the render with realistic hostvars. They
+    # all resolve to the one molecule-ci pod, so warming them up runs five apt
+    # transactions at once against a single dpkg lock and probes for a systemd
+    # that pod does not run.
+    - name: Container warm-up (apt locks, dpkg state, cache, systemd)
+      ansible.builtin.include_tasks: ../../../../molecule-shared/tasks/container-warmup.yml
+      when: ansible_connection | default('ssh') != 'local'
   roles:
     - role: weisssrv.infra.proxmox_firewall
 

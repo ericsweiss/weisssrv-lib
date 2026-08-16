@@ -30,6 +30,23 @@ platforms:
     tmpfs:
       - /run
       - /tmp
+  # Client-only host with nfs_tls_scrub_client_cert: false — the escape hatch
+  # for a host whose PEMs another role owns. The prepare-staged PEMs must
+  # SURVIVE converge, otherwise nfs_tls and acme_certs delete and reinstall the
+  # same files on alternate converges.
+  - name: nfs-tls-noscrub-test
+    image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: /lib/systemd/systemd
+    stop_signal: SIGRTMIN+3
+    tty: true
+    tmpfs:
+      - /run
+      - /tmp
   # Opted-out host (nfs_tls_enabled: false): starts from an already-configured
   # tlshd (enabled unit + /etc/tlshd.conf staged in prepare) and exercises the
   # de-list reconcile — the unit must be stopped/disabled and the config removed.
@@ -58,6 +75,9 @@ provisioner:
         nfs_tls_is_server: true
       nfs-tls-client-test:
         nfs_tls_is_server: false
+      nfs-tls-noscrub-test:
+        nfs_tls_is_server: false
+        nfs_tls_scrub_client_cert: false
       nfs-tls-optout-test:
         nfs_tls_enabled: false
         nfs_tls_is_server: false

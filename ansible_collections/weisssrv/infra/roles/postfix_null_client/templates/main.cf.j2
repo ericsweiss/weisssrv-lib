@@ -1,5 +1,4 @@
 # {{ ansible_managed }}
-# Postfix null client configuration - forwards all mail to relay
 
 smtpd_banner = $myhostname ESMTP $mail_name (Debian/GNU)
 biff = no
@@ -15,16 +14,13 @@ mynetworks = {{ postfix_null_client_config.mynetworks }}
 inet_interfaces = {{ postfix_null_client_config.inet_interfaces }}
 recipient_delimiter = +
 
-# TLS parameters
 smtp_tls_security_level = {{ postfix_null_client_config.smtp_tls_security_level }}
 smtp_tls_CAfile = {{ postfix_null_client_config.smtp_tls_CAfile }}
 
-# SASL authentication
 smtp_sasl_auth_enable = {{ postfix_null_client_config.smtp_sasl_auth_enable }}
 smtp_sasl_security_options = {{ postfix_null_client_config.smtp_sasl_security_options }}
 smtp_sasl_password_maps = {{ postfix_null_client_config.smtp_sasl_password_maps }}
 
-# Aliases and virtual mappings
 alias_maps = hash:/etc/aliases
 alias_database = hash:/etc/aliases
 {% if postfix_null_client_virtual_aliases is defined %}

@@ -9,6 +9,15 @@ base_admin_email: "{{ admin_email | default('root@localhost', true) }}"
 
 base_ssh_port: "{{ ssh_port | default(22) }}"
 base_ssh_permit_root_login: "{{ ssh_permit_root_login | default('no') }}"
+# Normalized to sshd's own spelling and used everywhere the value is rendered or
+# compared: YAML parses an unquoted `no`/`yes` as a boolean, which would write
+# `PermitRootLogin False` (sshd rejects it) and read as != 'no' in the lockout
+# guard below — i.e. the guard would report a surviving login path for the one
+# spelling that disables root login.
+base_ssh_permit_root_login_effective: >-
+  {{ (base_ssh_permit_root_login is boolean)
+     | ternary(base_ssh_permit_root_login | ternary('yes', 'no'),
+               base_ssh_permit_root_login | string | lower) }}
 # Coerced here, not at each use site: a quoted or env-supplied "false" is
 # truthy to Python, so the template's ternary and the lockout guard's | bool
 # would disagree and write PasswordAuthentication yes behind a passing assert.
@@ -26,7 +35,7 @@ base_ssh_authorized_keys_exclusive: false
 # molecule/default/verify.yml share ONE expression — see README.
 base_ssh_login_path_survives: >-
   {{ (base_admin_user != 'root' and base_ssh_authorized_keys | default([]) | length > 0)
-     or (base_ssh_permit_root_login | string | lower != 'no')
+     or (base_ssh_permit_root_login_effective != 'no')
      or (base_ssh_password_authentication | bool) }}
 
 base_timezone: "{{ timezone | default('Etc/UTC') }}"
@@ -48,7 +57,8 @@ base_common_packages:
   - lsb-release
   - sudo  # required by the sudoers task's visudo validate (and admin user sudo)
 
-# VM-specific packages (only installed on VMs, not LXC or bare metal)
+# Installed on KVM guests only (base_is_kvm_guest) — not LXC, bare metal, or a
+# non-KVM hypervisor.
 base_vm_packages:
   - qemu-guest-agent
 
@@ -63,7 +73,6 @@ base_fail2ban_ignoreip:
   - 127.0.0.1/8
   - ::1
 
-# Default jail settings (can be overridden per-jail)
 base_fail2ban_default_bantime: 1h
 base_fail2ban_default_findtime: 10m
 base_fail2ban_default_maxretry: 5
@@ -74,22 +83,21 @@ base_fail2ban_recidive_bantime: 1w
 base_fail2ban_recidive_findtime: 1d
 base_fail2ban_recidive_maxretry: 3
 
-# SSH jail configuration
 base_fail2ban_sshd_enabled: true
 base_fail2ban_sshd_port: "{{ base_ssh_port }}"
 base_fail2ban_sshd_maxretry: 5
 base_fail2ban_sshd_bantime: 1h
 base_fail2ban_sshd_findtime: 10m
 
-# Proxmox web UI (pveproxy) jail - only for Proxmox hosts
-# Uses the custom 'proxmox' filter (filter.d/proxmox.conf) with the systemd journal backend
-base_fail2ban_pveproxy_enabled: false  # Explicitly enabled on proxmox hosts
+# pveproxy jail, using the role's own filter.d/proxmox.conf on the journal
+# backend. Enable it only on Proxmox hosts.
+base_fail2ban_pveproxy_enabled: false
 base_fail2ban_pveproxy_port: 8006
 base_fail2ban_pveproxy_maxretry: 5
 base_fail2ban_pveproxy_bantime: 1h
 base_fail2ban_pveproxy_findtime: 10m
 
-# Email notifications (optional - uses the local SMTP relay)
+# Uses the local SMTP relay.
 base_fail2ban_email_enabled: false
 base_fail2ban_email_dest: "{{ base_admin_email }}"
 base_fail2ban_email_sender: "fail2ban@{{ inventory_hostname }}"

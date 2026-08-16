@@ -12,7 +12,7 @@ The tag below is an example: use the tag your repo pins (docs/VERSIONING.md).
 
 ```hcl
 module "tailnet" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/tailscale-acl?ref=v0.7.4"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/tailscale-acl?ref=v0.8.0"
 
   acl_policy = file("${path.module}/policy.hujson")
 
@@ -56,14 +56,18 @@ hostnames already looked up).
 
 A gated, defaulted-off Split-DNS variable (`enable_split_dns = false` + `count`)
 is a trap: once the entry exists, every plan or apply that does not set the flag
-computes `count = 0` and **plans a destroy of live production DNS** — and a
-scheduled drift-plan job silently shows the same destroy, masking real drift.
-`prevent_destroy` does not save you, because the removal comes from the
-expression, not from a `terraform destroy`.
+computes `count = 0` and **plans a destroy of live production DNS**.
+`prevent_destroy` turns that into a hard plan error rather than a silent
+deletion — it rejects any plan that destroys the instance, count-driven removals
+included, and only dropping the resource or module block from configuration
+bypasses it. But the error is the failure mode: every plan that forgets the flag
+fails, a scheduled drift-plan job fails with it, and real drift is masked behind
+a permanently red gate.
 
-Making the input required removes the failure mode: an unset value is a hard
-error, plan and apply always see the same value, and staging is a code change
-rather than an environment variable. The two-phase rollout still works —
+Making the input required removes that: an unset value fails at the variable
+instead of somewhere inside the module, plan and apply always see the same
+value, and staging is a code change rather than an environment variable. The
+two-phase rollout still works —
 
 1. **Phase A**: `split_dns = {}`, apply the ACL alone.
 2. **Phase B**: once the resolver device is registered
@@ -128,3 +132,18 @@ terraform state rm 'module.<name>.tailscale_dns_split_nameservers.this["internal
 The live Split-DNS mapping survives that, so resolution keeps working; delete
 the entry in the Tailscale admin console as well if the mapping should really go
 away.
+
+## Tests
+
+```bash
+cd terraform/modules/tailscale-acl
+terraform init -backend=false
+terraform test
+```
+
+`tests/validation.tftest.hcl` covers every variable validation, the
+device-hostname IPv4 selection and the split-DNS precondition. `terraform
+validate` evaluates no caller values, so it runs none of them; the runs are
+plan-only against a `mock_provider`, so they need no credentials and create no
+state. CI runs the same command through `ci/validate/terraform.yml` with
+`test: true`.

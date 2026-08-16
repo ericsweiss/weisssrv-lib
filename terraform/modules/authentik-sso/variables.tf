@@ -160,7 +160,10 @@ variable "oauth2_providers" {
         if r.matching_mode == "regex"
       ]
     ]))
-    error_message = "regex redirect URIs must escape every literal dot (https://app\\.example\\.com/callback) — an unescaped dot matches look-alike domains."
+    # The doubled backslashes are HCL escapes: the message reads
+    # `url = "https://app\\.example\\.com/callback"`, which is how the pattern
+    # has to be written in a quoted HCL string (a single `\.` does not parse).
+    error_message = "regex redirect URIs must escape every literal dot — write url = \"https://app\\\\.example\\\\.com/callback\" — because an unescaped dot matches look-alike domains."
   }
 
   validation {
@@ -280,9 +283,13 @@ variable "applications" {
   default = {}
 
   validation {
+    # `a.provider_type` bare, not `coalesce(a.provider_type, "oauth2")`: the
+    # null case is already short-circuited, so the only value the coalesce
+    # rewrote was the empty string — which it turned into "oauth2" and waved
+    # through, leaving `""` to fail later against the provider map instead.
     condition = alltrue([
       for slug, a in var.applications :
-      a.provider_type == null || contains(["oauth2", "proxy", "saml"], coalesce(a.provider_type, "oauth2"))
+      a.provider_type == null || contains(["oauth2", "proxy", "saml"], a.provider_type)
     ])
     error_message = "applications[*].provider_type must be \"oauth2\", \"proxy\", \"saml\", or unset."
   }

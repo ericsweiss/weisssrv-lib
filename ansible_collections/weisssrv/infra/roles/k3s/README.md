@@ -123,6 +123,7 @@ k3s_taints:
   - key: example.com/nas
     value: "true"
     effect: PreferNoSchedule
+k3s_kubelet_args: []               # extra kubelet-arg entries, servers + agents
 
 # /etc/hosts pins (both default to [])
 k3s_registry_host_pins:
@@ -140,6 +141,15 @@ vm_additional_disks:
     mount_point: /mnt/postgres-data
     fstype: ext4
 ```
+
+### CNI backend
+
+`k3s_flannel_backend` defaults to `wireguard-native`, which encrypts every
+cross-node pod packet (UDP/51820) so a standalone consumer gets the secure
+backend rather than plaintext `vxlan`. Rolling back to `vxlan` is a
+cluster-wide change: the node's flannel interface is recreated, so open the
+VXLAN port (UDP/8472) in the site firewall and expect stale `flannel.1` routes
+on nodes that carried the previous backend.
 
 Both join tokens are secrets: supply them from the site's secret store.
 `k3s_agent_token` falls back to `k3s_token` when unset, which is convenient for

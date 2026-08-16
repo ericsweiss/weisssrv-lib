@@ -25,6 +25,7 @@ Both write to the same Loki backend; labels distinguish the source.
 | `alloy_host_wal_max_segment_age` | WAL segment cut interval — bounds replay lag and disk use | no (`1h`) |
 | `alloy_host_journal_max_age` | how far back a restarted Alloy re-reads the journal | no (`3h`) |
 | `alloy_host_http_port` | Alloy HTTP listen port, used by the post-deploy `/-/ready` probe | no (`12345`) |
+| `alloy_host_extra_args` | Extra Alloy CLI arguments appended to `CUSTOM_ARGS`; where a `--server.http.listen-addr` matching the port above goes. Asserted free of `"` — the args are joined into a double-quoted shell assignment | no (`[]`) |
 
 Point `alloy_host_loki_url` at an authenticated ingress hostname; a plaintext
 in-cluster endpoint (a NodePort, say) is a legitimate outage fallback and skips

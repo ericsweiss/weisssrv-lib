@@ -3,7 +3,7 @@
 Description=Run media mover daily
 
 [Timer]
-OnCalendar={{ nas_storage_media_mover_schedule | default('*-*-* 06:00:00') }}
+OnCalendar={{ nas_storage_media_mover_schedule }}
 Persistent=true
 
 [Install]

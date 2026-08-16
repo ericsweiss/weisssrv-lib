@@ -43,9 +43,11 @@ a host nginx that terminates TLS and proxies to the loopback-bound web port.
 | `nextcloud_nginx_real_ip_trusted_addresses` | Proxy sources whose `X-Forwarded-For` nginx trusts | no (`[]`) |
 | `nextcloud_nginx_enabled` / `_nginx_cert_dir` / `_nginx_ssl_certificate(_key)` / `_nginx_server_names` | Host TLS front end | no |
 | `nextcloud_http_bind_address` / `_http_bind_port` / `_exporter_port` | Published ports | no (`127.0.0.1:8080`, `9205`) |
+| `nextcloud_exporter_bind_address` | Interface the app exporter publishes on (unauthenticated — narrow it, or scope it at the firewall) | no (`0.0.0.0`) |
 | `nextcloud_postgres_exporter_enabled` | Add a `postgres-exporter` sidecar (DB-level metrics) | no (`false`) |
 | `nextcloud_postgres_exporter_version` / `_image` | Its image pin; the image derives from the version, or override it outright | when enabled |
 | `nextcloud_postgres_exporter_port` | Host port for that exporter (unauthenticated — scope it at the firewall) | no (`9187`) |
+| `nextcloud_postgres_exporter_bind_address` | Interface that exporter publishes on | no (tracks `nextcloud_exporter_bind_address`) |
 | `nextcloud_php_memory_limit` / `_php_upload_limit` | PHP tuning | no (`1024M`, `16G`) |
 | `nextcloud_oidc_enabled` | Wire OIDC SSO through the `user_oidc` app | no (`false`) |
 | `nextcloud_oidc_discovery_uri` / `_client_id` / `_client_secret` | Provider discovery + credentials | when OIDC |
@@ -109,6 +111,11 @@ widens every server-side fetch surface (federation "add remote share", the
 `text` app's link previews), not just discovery. That is low risk while
 provisioning is SSO-only and `files_external` is disabled; with untrusted
 accounts, pair it with a default-deny egress policy on the guest.
+
+The value is converged in both directions on every run, independent of
+`nextcloud_oidc_enabled`: the guard is widened only when OIDC is on **and** the
+toggle is `true`, so turning either off restores the guard on a host where an
+earlier run widened it.
 
 ## Backups
 

@@ -47,7 +47,7 @@ here rather than restating it.
 |---|---|---|
 | `vfio_passthrough_enabled` | `false` | Master gate. Set true on the GPU host only. |
 | `vfio_passthrough_pci_ids` | `[]` | `vendor:device` IDs bound to vfio-pci (REQUIRED when enabled). List every function of a multifunction GPU. |
-| `vfio_passthrough_blacklist_modules` | `[nouveau]` | VGA drivers HARD-blacklisted (never load; no softdep — it would be dead). |
+| `vfio_passthrough_blacklist_modules` | `[nouveau, i2c_nvidia_gpu]` | Drivers HARD-blacklisted (never load; no softdep — it would be dead): the nouveau VGA driver, plus `i2c_nvidia_gpu`, which claims the card's UCSI/USB-C function. |
 | `vfio_passthrough_softdep_modules` | `[snd_hda_intel, xhci_hcd]` | Host drivers that load at boot but must yield their function → `softdep … pre: vfio-pci`. |
 | `vfio_passthrough_force_load` | `true` | Write `/etc/modules-load.d/vfio-pci.conf` to force-load vfio-pci at boot (belt-and-suspenders fallback to the cmdline `vfio-pci.ids=`). |
 | `vfio_passthrough_cmdline_params` | `[intel_iommu=on, iommu=pt]` | IOMMU cmdline params appended via the GRUB drop-in. The role *also* appends `vfio-pci.ids=<vfio_passthrough_pci_ids>` (from the template) for the earliest bind — don't add an `ids=` here. |

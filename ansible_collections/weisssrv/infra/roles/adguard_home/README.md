@@ -88,6 +88,8 @@ printf '%s' "$password" | adguard-admin-hash.py --config … --user <user> recon
 | `adguard_home_web_bind` / `_dns_bind` | Listen addresses written by the first-install wizard | no (`0.0.0.0`) |
 | `adguard_home_after_units` / `_wants_units` | Extra systemd ordering for the upstream resolver | no (`[unbound.service]`) |
 | `adguard_home_dns_probe_name` | Name resolved by the post-deploy smoke test | no (`google.com`) |
+| `adguard_home_archive_cache_dir` | Local mirror holding `AdGuardHome_linux_<arch>-v<version>.tar.gz`; used instead of the GitHub download when present. Empty disables the lookup | no (`""`) |
+| `adguard_home_archive_sha256` | sha256 the staged archive must match; empty falls back to a `checksums.txt` staged in the same directory | no (`""`) |
 | `adguard_home_skip_api_config` | Skip password + API reconciliation | no (`false`) |
 | `adguard_home_skip_resolv_conf_update` | Leave `/etc/resolv.conf` alone | no (`false`) |
 | `adguard_home_user` / `_group` / `_install_path` | Service identity and prefix | no (`adguard`, `adguard`, `/opt/AdGuardHome`) |
@@ -185,7 +187,14 @@ replica  (base settings reconciled locally; rewrites/rules arrive by sync)
 
 ## Dependencies
 
-- `weisssrv.infra.unbound` — the default upstream resolver on 127.0.0.1:5335
+`meta/main.yml` declares none — ordering is the playbook's job, so pointing
+`adguard_home_upstream_dns` at a public resolver really does drop the resolver
+below rather than installing it anyway.
+
+- `weisssrv.infra.unbound` — the default upstream resolver on 127.0.0.1:5335.
+  **Apply it before this role** at the default upstream: the post-deploy dig
+  probe resolves through it. `adguard_home_after_units` / `_wants_units` carry
+  the matching systemd ordering, and go empty alongside it.
 - `weisssrv.infra.acme_certs` — distributes the TLS material
 - `weisssrv.infra.adguard_sync` — replicates primary → replica
 
@@ -199,3 +208,23 @@ replica  (base settings reconciled locally; rewrites/rules arrive by sync)
   reconcile over the localhost API, and the wizard binds
   `adguard_home_web_bind` (`0.0.0.0` by default). Restrict that bind address or
   firewall `adguard_home_http_port` to trusted networks.
+- On a **fresh host** there is a window between the service starting and the
+  role's `/control/install/configure` POST in which the setup wizard is reachable
+  on that bind address and takes **no credentials** — the instance has none yet.
+  Whoever reaches the port first sets the admin password. Provision fresh
+  resolvers behind the firewall rules, or bind the wizard to loopback for the
+  first run and widen `adguard_home_web_bind` afterwards.
+- The archive cache is opt-in (`adguard_home_archive_cache_dir` is empty by
+  default) and is treated as a **root trust boundary**, because its contents are
+  unpacked and installed as root with no upstream signature. Before any digest is
+  compared, the role asserts that the cache directory, the staged archive, and
+  the `checksums.txt` (when one is consulted) are each owned by **root (uid 0)**
+  and **not writable by group or other**; the play fails naming the offending
+  path if not. This is checked ahead of the verification rather than as part of
+  it: a digest only proves the bytes match a value that lives in the same
+  directory, so a writer who can swap the archive can swap the `checksums.txt`
+  beside it, and the comparison would still pass.
+- Only then is the staged archive verified — against `adguard_home_archive_sha256`
+  if set, otherwise against a `checksums.txt` staged in the same directory — and
+  the play fails if neither is available. Setting the pin is the stronger
+  statement: it lives in inventory rather than in the directory being trusted.

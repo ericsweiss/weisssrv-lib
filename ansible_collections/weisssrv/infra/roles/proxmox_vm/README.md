@@ -148,15 +148,19 @@ The entry is passed verbatim, so it carries any Proxmox options (`0000:01:00,pci
 for PCIe passthrough on q35). A passthrough guest cannot live-migrate and its RAM
 is host-pinned/mlock'd, so pin it (`proxmox_vm_cpu_type: host`) and leave it non-ballooned.
 
-## Files
-
-- `tasks/main.yml` - Main orchestration
-- `defaults/main.yml` - Default values
-
 ## Dependencies
 
-- Proxmox host must be accessible
-- Cloud-init template must be downloadable
+Environment: the delegate Proxmox host must be reachable, and the cloud-init
+image (`proxmox_vm_cloudinit_image_url`) downloadable from it on first run.
+
+Companion roles — none is a `meta` dependency, all are composed by the play:
+
+- `weisssrv.infra.zvol_mount` — formats and mounts the extra zvols this role
+  creates from `proxmox_vm_additional_disks`, inside the guest
+- `weisssrv.infra.proxmox_firewall` — renders the per-guest `.fw` rules this
+  role enables with `firewall=1` on `net0`
+- `weisssrv.infra.k3s` — the usual consumer of the VMs, and the role whose
+  `zvol_mount` pass reuses the same `host_vars` disk block
 
 ## Reconciliation vs. create-time-only
 

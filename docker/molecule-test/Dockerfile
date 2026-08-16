@@ -13,7 +13,6 @@
 #   docker buildx imagetools inspect ghcr.io/hifis-net/debian-systemd:trixie
 FROM ghcr.io/hifis-net/debian-systemd:trixie@sha256:d1ef7a336af9e98fb94bc0fe18d0bc7f863bae943c8cecadad2d8d08db09e687
 
-# Suppress interactive prompts during apt installs
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Packages the collection's roles install via apt, consolidated into a single
@@ -83,6 +82,31 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     # NOTE: intentionally NOT removing /var/lib/apt/lists/* — roles with
     # `update_cache: true` then hit a warm cache instead of re-downloading all
     # package metadata (~30MB image cost).
+
+# AdGuard Home release tarball, staged where the adguard_home role looks
+# (adguard_home_archive_cache_dir) so DNS scenarios install from disk instead of
+# fetching github.com mid-test — a stalled TLS handshake there costs a whole
+# molecule attempt. Keep this in step with the version the scenarios pin; a
+# mismatch is not fatal, the role just falls back to the upstream download,
+# which is why tests/test_pin_parity.py gates it rather than the build.
+# Verified against upstream checksums.txt at build time; checksums.txt is
+# staged alongside so the role re-verifies the archive at converge.
+ARG ADGUARD_HOME_VERSION=0.107.78
+# --retry: this is the one network fetch in the build that reaches github.com,
+# and a single 5xx from the release CDN otherwise fails the whole image.
+RUN ARCH=$(dpkg --print-architecture) \
+    && AGH_URL="https://github.com/AdguardTeam/AdGuardHome/releases/download/v${ADGUARD_HOME_VERSION}" \
+    && mkdir -p /var/cache/adguard-home /tmp/agh \
+    && cd /tmp/agh \
+    && curl -fsSL --retry 3 --retry-delay 5 --retry-connrefused \
+       -O "${AGH_URL}/AdGuardHome_linux_${ARCH}.tar.gz" \
+    && curl -fsSL --retry 3 --retry-delay 5 --retry-connrefused \
+       -O "${AGH_URL}/checksums.txt" \
+    && grep -E "[[:space:]][*]?([.]/)?AdGuardHome_linux_${ARCH}[.]tar[.]gz$" checksums.txt | sha256sum -c - \
+    && mv "AdGuardHome_linux_${ARCH}.tar.gz" \
+       "/var/cache/adguard-home/AdGuardHome_linux_${ARCH}-v${ADGUARD_HOME_VERSION}.tar.gz" \
+    && cp checksums.txt /var/cache/adguard-home/checksums.txt \
+    && cd / && rm -rf /tmp/agh
 
 # Pre-create the ansible tmp directory (avoids "Failed to create
 # temporary directory" errors during molecule prepare)

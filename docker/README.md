@@ -12,6 +12,12 @@ toolkit consumes, and the one a consumer's Ansible deploy jobs run in.
 Every base is pinned by manifest-list digest; bump deliberately with
 `docker buildx imagetools inspect <image>:<tag>`.
 
+`molecule-test` also stages the AdGuard Home release tarball under
+`/var/cache/adguard-home` (the `adguard_home` role's
+`adguard_home_archive_cache_dir`) so DNS scenarios install from disk instead of
+fetching github.com mid-test. Its `ADGUARD_HOME_VERSION` build arg must track
+the version the scenarios pin; a mismatch costs the cache, not the run.
+
 ## Consuming the published images
 
 This library's own pipeline builds and pushes all three images to its project
@@ -45,7 +51,7 @@ default branch). The `ref` below is an example: use the tag your repo pins
 ```yaml
 include:
   - project: eric/weisssrv-lib
-    ref: v0.7.4
+    ref: v0.8.0
     file: /ci/build/docker-build.yml
     inputs:
       job_name: build-molecule-ci

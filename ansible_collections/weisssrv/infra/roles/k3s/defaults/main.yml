@@ -1,6 +1,4 @@
 ---
-# K3s installation defaults
-
 # /etc/hosts pins on every node, as [{name, ip}]. Two uses:
 #
 #   k3s_registry_host_pins — a registry whose PUBLIC name resolves through an
@@ -55,7 +53,6 @@ k3s_install_script_checksum: ""
 # their post-join kubectl calls to its first member.
 k3s_server_group: k3s_servers
 
-# Role configuration
 k3s_role: agent  # or 'server'
 k3s_is_first_server: false
 
@@ -80,7 +77,6 @@ k3s_additional_disks: "{{ vm_additional_disks | default([]) }}"
 k3s_cluster_cidr: "10.42.0.0/16"
 k3s_service_cidr: "10.43.0.0/16"
 
-# Components to disable
 k3s_disable:
   - servicelb
   - traefik
@@ -88,12 +84,15 @@ k3s_disable:
 # Flannel CNI backend. Default to wireguard-native so cross-node pod traffic
 # is encrypted out of the box; a standalone consumer of this role (or a dropped
 # group_var) gets the secure backend rather than plaintext vxlan. Set to vxlan
-# to roll back (see group_vars/k3s.yml for the full rationale and caveats).
+# to roll back (see README.md for the full rationale and caveats).
 k3s_flannel_backend: "wireguard-native"
 
-# Node configuration
 k3s_labels: {}
 k3s_taints: []
+# Extra `kubelet-arg` entries, rendered into both the server and the agent
+# config (e.g. "system-reserved=memory=512Mi"). Declared so it is discoverable
+# rather than existing only as a template default.
+k3s_kubelet_args: []
 
 # NVIDIA GPU node. When true, agent.yml includes tasks/gpu.yml, which installs
 # the NVIDIA driver + nvidia-container-toolkit so k3s auto-detects the `nvidia`
@@ -138,12 +137,10 @@ k3s_kube_vip_resources:
   limits:
     memory: 192Mi
 
-# metrics-server durability override (first server only, opt-in). k3s packages
-# metrics-server itself as a single replica with no memory limit, and it is the
-# only metric source every HPA and the VPA recommender read. When enabled the
-# role writes a HelmChartConfig into the server manifests dir — and asserts
-# first that this k3s actually packages metrics-server as a HelmChart, because
-# against a static wrangler AddOn a HelmChartConfig is silently inert.
+# metrics-server durability override (first server only, opt-in). Writes a
+# HelmChartConfig into the server manifests dir, asserting first that this k3s
+# packages metrics-server as a HelmChart — against a static wrangler AddOn a
+# HelmChartConfig is silently inert.
 k3s_metrics_server_override_enabled: false
 k3s_metrics_server_replicas: 2
 k3s_metrics_server_resources:
@@ -153,15 +150,9 @@ k3s_metrics_server_resources:
   limits:
     memory: 256Mi
 
-# kube-apiserver audit logging (servers only, opt-in). k3s ships audit logging
-# OFF: without it there is no record of who read a Secret or granted themselves
-# a ClusterRole, so a credential-theft or privilege-escalation event leaves no
-# trace anywhere in the cluster. Enabling renders a `kube-apiserver-arg` block
-# into /etc/rancher/k3s/config.yaml and writes the policy file below — a server
-# config change, so it costs a rolling control-plane restart (see README.md).
-#
-# OFF BY DEFAULT so the rendered server config stays byte-identical for every
-# existing consumer until they opt in.
+# kube-apiserver audit logging (servers only, opt-in; README.md). Enabling is a
+# server config change, so it costs a rolling control-plane restart. OFF BY
+# DEFAULT keeps the rendered server config byte-identical until a site opts in.
 k3s_audit_enabled: false
 
 # Where the apiserver writes the audit log and reads its policy. Both live under
@@ -170,36 +161,18 @@ k3s_audit_enabled: false
 k3s_audit_log_path: /var/lib/rancher/k3s/server/logs/audit.log
 k3s_audit_policy_path: /var/lib/rancher/k3s/server/audit-policy.yaml
 
-# Rotation, enforced by the apiserver itself (lumberjack): keep maxbackup files
-# of maxsize MB, discarding anything older than maxage days. The worst case is
-# bounded at maxsize * (maxbackup + 1) = ~1.1 GB per server; the policy below is
-# narrow enough that real volume is a small fraction of that.
+# Rotation, enforced by the apiserver itself: maxbackup files of maxsize MB,
+# discarding anything older than maxage days. Bounds on-disk audit at
+# maxsize * (maxbackup + 1) per server.
 k3s_audit_maxage: 30
 k3s_audit_maxbackup: 10
 k3s_audit_maxsize: 100
 
-# The audit policy, rendered verbatim to k3s_audit_policy_path. Overridable
-# wholesale; the role asserts it is an audit.k8s.io/v1 Policy with rules before
-# writing, because the apiserver EXITS on a missing or unparseable policy file
-# and would otherwise roll the control plane into a crash loop.
-#
-# Deliberately minimal: rules are evaluated in order, FIRST MATCH WINS, and
-# there is NO catch-all — an event matching nothing is not logged. So this
-# captures the security-relevant surface and nothing else:
-#
-#   * Metadata on secrets/configmaps/serviceaccounts — who touched which
-#     credential object, when, from where. Metadata (not Request/RequestResponse)
-#     on purpose: a body-level entry would write the Secret's own contents into
-#     a plaintext log file.
-#   * RequestResponse on RBAC WRITES — the full before/after of any privilege
-#     grant, which is the one place the body is the evidence.
-#   * Metadata on RBAC reads — enumerating permissions is reconnaissance worth
-#     recording, but a RequestResponse on `list clusterroles` would dump the
-#     entire RBAC tree into the log on every controller resync.
-#
-# The two `None` rules are noise suppression AND a deny-first guard: they are
-# redundant while there is no catch-all, and become load-bearing the moment
-# anyone appends one. Keep them first.
+# Rendered verbatim to k3s_audit_policy_path and overridable wholesale; the role
+# asserts it is an audit.k8s.io/v1 Policy with rules first, because the
+# apiserver EXITS on an unparseable policy and would crash-loop the control
+# plane. Rules are FIRST MATCH WINS with no catch-all, so the two `None` rules
+# must stay first — they become load-bearing the moment one is appended.
 k3s_audit_policy:
   apiVersion: audit.k8s.io/v1
   kind: Policy
@@ -260,19 +233,10 @@ k3s_audit_policy:
             - configmaps
             - serviceaccounts
 
-# Off-node etcd snapshot copy (see README.md)
-# k3s writes scheduled etcd snapshots to k3s_etcd_snapshot_dir on each server's
-# LOCAL disk only; losing the servers (or the hypervisors under them) loses
-# etcd. When enabled, a systemd timer on the server nodes mounts an NFS export
-# and copies the newest snapshot there, writing an
-# etcd_snapshot_last_copy_timestamp_seconds textfile metric for a staleness
-# alert.
-#
-# OFF BY DEFAULT: it needs companion changes outside this role — the NFS export
-# itself (clients = the server IPs, xprtsec=tls), weisssrv.infra.node_exporter_host
-# on the servers to scrape the metric, the firewall path for :2049, and
-# weisssrv.infra.nfs_tls on the servers (an xprtsec=tls mount hangs without the
-# kernel TLS handshake daemon; TLS-only clients need no cert of their own).
+# Off-node etcd snapshot copy (README.md). OFF BY DEFAULT: it needs companion
+# changes outside this role — the NFS export, weisssrv.infra.node_exporter_host
+# on the servers, the firewall path for :2049, and weisssrv.infra.nfs_tls (an
+# xprtsec=tls mount hangs without the kernel TLS handshake daemon).
 k3s_etcd_snapshot_offnode_enabled: false
 
 # Local directory k3s writes its scheduled/on-demand etcd snapshots to.
@@ -285,18 +249,15 @@ k3s_etcd_snapshot_dir: /var/lib/rancher/k3s/server/db/snapshots
 k3s_etcd_snapshot_nfs_server: ""
 k3s_etcd_snapshot_nfs_export: /k3s-etcd
 k3s_etcd_snapshot_mountpoint: /mnt/etcd-snapshots
-# xprtsec=tls (require TLS). noauto+nofail keep this backup-only mount off the
-# boot path entirely: it is started on demand by k3s-etcd-snapshot-copy.service
-# (RequiresMountsFor=) on each timer fire, so a NAS-down boot never blocks or
-# degrades remote-fs.target. _netdev orders it after the network when it does
-# mount. Mirrors the k3s NFS PV mount options.
+# noauto+nofail keep this backup-only mount off the boot path — the copy unit
+# pulls it on demand via RequiresMountsFor — so a NAS-down boot never blocks or
+# degrades remote-fs.target.
 k3s_etcd_snapshot_nfs_options: "vers=4.2,xprtsec=tls,_netdev,noauto,nofail"
 
 # node_exporter textfile dir (shared with node_exporter_host, which must run on
 # the servers for the metric to be scraped).
 k3s_etcd_snapshot_textfile_dir: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
 
-# How often the copy timer fires and how many copies to retain per server on the
-# export (matches k3s's own snapshot retention of 5).
+# Copy-timer cadence and per-server retention on the export.
 k3s_etcd_snapshot_copy_oncalendar: "hourly"
 k3s_etcd_snapshot_retention: 5

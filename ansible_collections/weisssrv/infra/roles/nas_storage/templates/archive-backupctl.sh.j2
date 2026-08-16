@@ -14,7 +14,7 @@ SNAP_PREFIX="archsync"
 # enable in zfs.yml fires only when the pool happens to be imported during a
 # deploy). The schedule token must match the zfs-scrub-<schedule>@ units
 # zfsutils-linux ships and zfs.yml enables.
-SCRUB_TIMER="zfs-scrub-{{ nas_storage_zfs_scrub_schedule | default('monthly') }}@{{ nas_storage_archive_backup_pool }}.timer"
+SCRUB_TIMER="zfs-scrub-{{ nas_storage_zfs_scrub_schedule }}@{{ nas_storage_archive_backup_pool }}.timer"
 {% raw %}
 
 # Retention: the newest N snapshots always, plus the newest snapshot of each of
@@ -71,26 +71,65 @@ done
 unset _src _dst
 
 {% endraw %}
-PROM_DIR="{{ nas_storage_backup_artifact_metrics_dir | default(node_exporter_host_textfile_dir | default('/var/lib/node_exporter')) }}"
+PROM_DIR="{{ nas_storage_backup_artifact_metrics_dir }}"
 {% raw %}
 PROM_FILE="${PROM_DIR}/archive_backup.prom"
+# Prune failures are detected in the forked per-dataset child ("$0" __run-one),
+# whose variables die with it — the marker carries them back to the parent that
+# writes the textfile.
+PRUNE_FAIL_MARKER="${PROM_DIR}/.archive_prune_failed"
 
 # Per-dataset replication state, keyed by SRC_LIST entry. Seeded from the
 # previous textfile by _load_prev_dataset_metrics so an aborted or deferring
 # run re-emits last-known values instead of dropping series.
 declare -A _DS_SUCCESS_TS=() _DS_DEFERRED=()
 
+# Flipped to 0 by any failed snapshot destroy: a run can replicate perfectly
+# and still leave retention broken, which only shows up when the pool fills.
+PRUNE_OK=1
+# Child-side twin of PRUNE_OK: cmd_run_one turns it into exit 76, which is how
+# a prune failure normally reaches the parent.
+_PRUNE_FAILED=0
+
 log() { echo "[$(date -Is)] $*"; }
 
-# Write Prometheus textfile metrics for node_exporter scraping
+# Record a failed snapshot destroy inside the per-dataset child. Two routes back
+# to the parent: exit 76 (cmd_run_one) is the primary one, the marker covers a
+# child that dies before it can return. A marker that cannot be written is
+# FATAL — the `|| note_prune_failure` callers then fail the child rather than
+# letting the parent report retention as healthy.
+note_prune_failure() {
+  PRUNE_OK=0
+  _PRUNE_FAILED=1
+  if mkdir -p "$PROM_DIR" && : > "$PRUNE_FAIL_MARKER"; then
+    return 0
+  fi
+  log "FATAL: cannot write ${PRUNE_FAIL_MARKER}; a retention failure would go unreported"
+  return 1
+}
+
 write_prom_metrics() {
   local success="$1" duration="$2"
   local ts
   ts="$(date +%s)"
   local tmp="${PROM_FILE}.$$"
-  # The redirect below swallows its own failure, so a missing textfile dir would
-  # silently produce no metrics and no error.
-  mkdir -p "$PROM_DIR" 2>/dev/null || true
+  if ! mkdir -p "$PROM_DIR"; then
+    log "FATAL: cannot create ${PROM_DIR}; no metrics written"
+    return 1
+  fi
+  # Read the children's marker but do NOT consume it here: the gauge it feeds is
+  # only published by the mv below, so a marker deleted first would take the
+  # retention failure with it whenever the write fails. Covers the ERR-trap path
+  # too — whichever call writes the textfile folds in the children's failures.
+  local had_marker=0
+  if [[ -e "$PRUNE_FAIL_MARKER" ]]; then
+    had_marker=1
+    PRUNE_OK=0
+  fi
+  # The status is captured with `|| wrote=1` rather than tested as `if ! { … }`:
+  # a compound command's FAILED REDIRECTION does not reliably negate, so the
+  # `if !` form reads an unwritable textfile as a successful write.
+  local wrote=0
   {
     echo "# HELP archive_backup_last_run_duration_seconds Duration of last backup run"
     echo "# TYPE archive_backup_last_run_duration_seconds gauge"
@@ -113,12 +152,32 @@ write_prom_metrics() {
         echo "archive_backup_last_success_timestamp_seconds ${prev}"
       fi
     fi
+    echo "# HELP archive_backup_last_prune_success Whether every snapshot destroy in the last run succeeded (1=pruned, 0=retention blocked)"
+    echo "# TYPE archive_backup_last_prune_success gauge"
+    echo "archive_backup_last_prune_success ${PRUNE_OK}"
     _emit_dataset_gauge archive_backup_dataset_last_success_timestamp_seconds \
       "Unix timestamp of each dataset's last successful replication" _DS_SUCCESS_TS
     _emit_dataset_gauge archive_backup_dataset_deferred_runs \
       "Consecutive runs this dataset was deferred by the vzdump-quiesce guard (0 after any success or failure)" _DS_DEFERRED
-  } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
-  mv "$tmp" "$PROM_FILE" 2>/dev/null || rm -f "$tmp"
+  } > "$tmp" || wrote=1
+  if [[ "$wrote" -ne 0 ]]; then
+    log "FATAL: cannot write ${tmp}; metrics not updated"
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! mv "$tmp" "$PROM_FILE"; then
+    log "FATAL: cannot publish ${PROM_FILE}; metrics not updated"
+    rm -f "$tmp"
+    return 1
+  fi
+  # Published — only now is the marker safe to drop, and only if this run read
+  # one: a child that dropped its marker after the read above keeps it for the
+  # next run rather than having it deleted unreported.
+  if [[ "$had_marker" -eq 1 ]]; then
+    rm -f "$PRUNE_FAIL_MARKER" \
+      || log "WARNING: could not remove ${PRUNE_FAIL_MARKER}; the next run will report retention blocked"
+  fi
+  return 0
 }
 
 # _emit_dataset_gauge <metric> <help> <assoc-array-name>: exposition block for
@@ -302,7 +361,6 @@ latest_backup_snapshot_fullname() {
 prune_snaps_dataset() {
   local ds="$1"
 
-  # List snapshots newest -> oldest (note -S)
   mapfile -t snaps < <(
     zfs list -H -t snapshot -o name -S creation -r "$ds" 2>/dev/null \
       | grep -E "^${ds}@${SNAP_PREFIX}-" || true
@@ -312,45 +370,43 @@ prune_snaps_dataset() {
   declare -A keep=()
   local i=0
 
-  # Keep newest KEEP_RECENT
   for s in "${snaps[@]}"; do
     if (( i < KEEP_RECENT )); then
       keep["$s"]=1
     fi
-    ((i++))
+    i=$((i+1))
   done
 
-  # Keep monthly (last snapshot per month), scanning newest -> oldest
   declare -A kept_month=()
   local kept_m=0
 
   for s in "${snaps[@]}"; do
     [[ -n "${keep[$s]:-}" ]] && continue
 
-    # Snapshot name includes a timestamp like archsync-YYYYMMDD-HHMMSS
-    # Extract YYYYMM from it.
     local snap_name="${s#${ds}@}"
     local yyyymm
     yyyymm="$(echo "$snap_name" | sed -n 's/^'"${SNAP_PREFIX}"'-\([0-9]\{6\}\)[0-9]\{2\}-[0-9]\{6\}$/\1/p')"
 
-    # If format ever differs, skip monthly logic for that snapshot.
     [[ -z "$yyyymm" ]] && continue
 
     if [[ -z "${kept_month[$yyyymm]:-}" ]]; then
       keep["$s"]=1
       kept_month["$yyyymm"]=1
-      ((kept_m++))
+      kept_m=$((kept_m+1))
       ((kept_m >= KEEP_MONTHLY)) && break
     fi
   done
 
-  # Destroy anything not kept.
+  # Destroy anything not kept. A failed destroy is reported, not swallowed:
+  # retention wedging silently fills the pool.
+  local rc=0
   for s in "${snaps[@]}"; do
     if [[ -z "${keep[$s]:-}" ]]; then
       log "Prune: destroying snapshot $s"
-      zfs destroy "$s"
+      zfs destroy "$s" || { log "Prune: FAILED to destroy $s"; rc=1; }
     fi
   done
+  return "$rc"
 }
 
 # Prune for dataset tree (root + children datasets)
@@ -358,9 +414,11 @@ prune_snaps_tree() {
   local root="$1"
   dataset_present "$root" || return 0
 
+  local rc=0
   while IFS= read -r ds; do
-    prune_snaps_dataset "$ds"
+    prune_snaps_dataset "$ds" || rc=1
   done < <(zfs list -H -o name -r "$root")
+  return "$rc"
 }
 
 # POOL DEFAULTS
@@ -455,8 +513,8 @@ replicate_one() {
       fi
       zfs rename "$reseed_tmp" "$dst"
       lock_backup_tree "$dst"
-      prune_snaps_tree "$src" || true
-      prune_snaps_tree "$dst" || true
+      prune_snaps_tree "$src" || note_prune_failure
+      prune_snaps_tree "$dst" || note_prune_failure
       return 0
     fi
     log "Discarding incomplete re-seed temp ${reseed_tmp}"
@@ -464,7 +522,6 @@ replicate_one() {
     zfs destroy -r "$reseed_tmp"
   fi
 
-  # Resume partial receives first (if any)
   if dataset_present "$dst"; then
     maybe_resume_receive "$dst"
   fi
@@ -527,8 +584,8 @@ replicate_one() {
     zfs destroy -r "$dst"
     zfs rename "$reseed_tmp" "$dst"
     lock_backup_tree "$dst"
-    prune_snaps_tree "$src" || true
-    prune_snaps_tree "$dst" || true
+    prune_snaps_tree "$src" || note_prune_failure
+    prune_snaps_tree "$dst" || note_prune_failure
     return 0
   fi
 
@@ -557,8 +614,8 @@ replicate_one() {
   fi
 
   # Prune both sides (keeps common set small and the comm faster)
-  prune_snaps_tree "$src" || true
-  prune_snaps_tree "$dst" || true
+  prune_snaps_tree "$src" || note_prune_failure
+  prune_snaps_tree "$dst" || note_prune_failure
 }
 
 # COMMANDS
@@ -573,6 +630,20 @@ cmd_run() {
   fi
   _BACKUP_METRICS_ACTIVE=1
   _load_prev_dataset_metrics
+  # Start from a clean slate: the gauge describes THIS run's retention, so a
+  # marker left by an earlier interrupted run must not pin it to 0 forever.
+  PRUNE_OK=1
+  # Not fatal here — replication is still worth doing without a textfile dir,
+  # and write_prom_metrics fails loudly on it at the end of the run.
+  mkdir -p "$PROM_DIR" 2>/dev/null \
+    || log "WARNING: cannot create ${PROM_DIR}; this run will end without metrics"
+  if [[ -e "$PRUNE_FAIL_MARKER" ]]; then
+    # Left by a run that died before publishing its textfile, so the failure it
+    # carries was never reported. Say so on the way out.
+    log "WARNING: discarding orphaned ${PRUNE_FAIL_MARKER} from an earlier run; its prune failure was never published"
+    rm -f "$PRUNE_FAIL_MARKER" \
+      || log "WARNING: could not remove ${PRUNE_FAIL_MARKER}; this run will report retention blocked"
+  fi
   if ! pool_present; then
     log "Pool '${POOL_DST}' not present (exported/unplugged). Nothing to do."
     exit 0
@@ -593,6 +664,14 @@ cmd_run() {
     rc=0
     "$0" __run-one "$src" || rc=$?
     if [[ "$rc" -eq 0 ]]; then
+      _DS_SUCCESS_TS["$src"]="$(date +%s)"
+      _DS_DEFERRED["$src"]=0
+    elif [[ "$rc" -eq 76 ]]; then
+      # Replicated fine, pruned badly: the dataset keeps its success timestamp
+      # (the copy IS current) while the run's prune gauge goes to 0. The child's
+      # marker says the same thing; this path does not depend on it.
+      log "Replication OK for ${src} but snapshot pruning FAILED; retention blocked"
+      PRUNE_OK=0
       _DS_SUCCESS_TS["$src"]="$(date +%s)"
       _DS_DEFERRED["$src"]=0
     elif [[ "$rc" -eq 75 ]]; then
@@ -642,7 +721,10 @@ cmd_run() {
 cmd_run_one() {
   local src="$1"
   [[ -n "${MAP[$src]:-}" ]] || { log "__run-one: '${src}' is not in SRC_LIST"; exit 2; }
+  # errexit exits with replicate_one's own code on 73/75/failure, so this line
+  # is reached only after a clean replication. 76: replicated, did not prune.
   replicate_one "$src" "${MAP[$src]}"
+  [[ "$_PRUNE_FAILED" -eq 0 ]] || exit 76
 }
 
 cmd_enable() {

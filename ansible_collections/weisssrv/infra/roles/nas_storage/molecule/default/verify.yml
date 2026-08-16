@@ -31,13 +31,10 @@
       failed_when: exports_check.rc != 0
       changed_when: false
 
-    # exports.j2 xprtsec precedence (the per-client override that keeps a
-    # plaintext client on a mixed export whose other clients require TLS —
-    # the HAOS .154 lockout-class regression guard). Exports require TLS
-    # (xprtsec=tls), so this guards that no xprtsec at all leaks onto the .154
-    # line. grep each rendered client line directly; client lines are
-    # backslash-continued so each client spec lands on its own physical line,
-    # which is exactly what we match.
+    # exports.j2 xprtsec precedence: a per-client value overrides the
+    # export-level one, including opting one client out of TLS on a mixed
+    # export. Client lines are backslash-continued, so each client spec lands
+    # on its own physical line and greps as one.
 
     - name: Assert plaintext export has no xprtsec on its client line
       ansible.builtin.command: >-
@@ -78,8 +75,7 @@
 
     # _zfs_anchor selection (nfs.yml): an encrypted bind source must order on
     # the LATE zfs-mount-encrypted.service, a plaintext one on the early
-    # zfs-mount.service — the wrong anchor re-creates the empty-mountpoint
-    # capture incident the anchor logic guards against.
+    # zfs-mount.service; the wrong anchor captures an empty mountpoint.
     - name: Read the /export/appdata bind fstab entry (encrypted source)
       ansible.builtin.command: >-
         grep -E '^/mnt/ssd/appdata[[:space:]]+/export/appdata[[:space:]]' /etc/fstab
@@ -103,8 +99,7 @@
 
     # An explicit `zfs:` on the export OVERRIDES the mount-root derivation, in
     # both directions. Definedness alone must not silence the classification
-    # assert while the guard and the anchor still key off the pattern — that was
-    # the fail-open the assert exists to close.
+    # assert while the guard and the anchor still key off the pattern.
     - name: Read the /export/declared-plain bind fstab entry (zfs false, outside the roots)
       ansible.builtin.command: >-
         grep -E '^/srv/plainbind[[:space:]]+/export/declared-plain[[:space:]]' /etc/fstab
@@ -888,9 +883,13 @@
             nas_storage_exports:
               - {path: /export/other, bind_source: /srv/pool2/data}
       rescue:
+        # Pinned to the message of the assert this case exists to trip: a bare
+        # `true` here would record success for ANY failure, including a typo in
+        # the fabricated inventory above.
         - name: Record that the undeclared export was rejected
           ansible.builtin.set_fact:
-            nas_classify_export_rejected: true
+            nas_classify_export_rejected: >-
+              {{ 'outside nas_storage_zfs_mount_roots' in (ansible_failed_result | to_json) }}
 
     - name: Drive the classification guard — a union anchored on nothing
       block:
@@ -908,7 +907,8 @@
       rescue:
         - name: Record that the unanchored union was rejected
           ansible.builtin.set_fact:
-            nas_classify_union_rejected: true
+            nas_classify_union_rejected: >-
+              {{ 'no branch INSIDE' in (ansible_failed_result | to_json) }}
 
     # The anchor is derived from the branch set, so a union that never declares
     # systemd_requires is checked too — scoping the guard to that key left the
@@ -928,7 +928,8 @@
       rescue:
         - name: Record that the systemd_requires-less union was rejected
           ansible.builtin.set_fact:
-            nas_classify_bare_union_rejected: true
+            nas_classify_bare_union_rejected: >-
+              {{ 'no branch INSIDE' in (ansible_failed_result | to_json) }}
 
     # `zfs:` is read through `| bool`, which maps a non-boolean to False rather
     # than erroring — so presence alone is not a declaration. An empty string is
@@ -946,12 +947,12 @@
       rescue:
         - name: Record that the non-boolean zfs value was rejected
           ansible.builtin.set_fact:
-            nas_classify_nonboolean_rejected: true
+            nas_classify_nonboolean_rejected: >-
+              {{ 'Export /export/other declares' in (ansible_failed_result | to_json)
+                 and 'not a boolean' in (ansible_failed_result | to_json) }}
 
-    # The type check is independent of the classification branch. Folded into
-    # the classification `or` it only ran when the derived clause had already
-    # failed, so a value typo on a source the roots DO cover stayed accepted and
-    # still reached `| bool` — the anchor gone with a green play.
+    # The type check is its own assert, independent of the classification
+    # branch: a value typo on a source the roots DO cover must still be caught.
     - name: Drive the classification guard — a non-boolean `zfs:` on an IN-ROOT export
       block:
         - name: Include the guard with a typo'd zfs on a matching bind source
@@ -965,7 +966,9 @@
       rescue:
         - name: Record that the in-root non-boolean zfs value was rejected
           ansible.builtin.set_fact:
-            nas_classify_inroot_nonboolean_rejected: true
+            nas_classify_inroot_nonboolean_rejected: >-
+              {{ 'Export /export/tv declares' in (ansible_failed_result | to_json)
+                 and 'not a boolean' in (ansible_failed_result | to_json) }}
 
     - name: Drive the classification guard — a non-boolean `zfs:` on an anchored union
       block:
@@ -983,17 +986,19 @@
       rescue:
         - name: Record that the anchored-union non-boolean zfs value was rejected
           ansible.builtin.set_fact:
-            nas_classify_union_nonboolean_rejected: true
+            nas_classify_union_nonboolean_rejected: >-
+              {{ 'MergerFS union media declares' in (ansible_failed_result | to_json)
+                 and 'not a boolean' in (ansible_failed_result | to_json) }}
 
     - name: Assert the classification guard fails closed on every shape
       ansible.builtin.assert:
         that:
-          - nas_classify_export_rejected | default(false)
-          - nas_classify_union_rejected | default(false)
-          - nas_classify_bare_union_rejected | default(false)
-          - nas_classify_nonboolean_rejected | default(false)
-          - nas_classify_inroot_nonboolean_rejected | default(false)
-          - nas_classify_union_nonboolean_rejected | default(false)
+          - nas_classify_export_rejected | default(false) | bool
+          - nas_classify_union_rejected | default(false) | bool
+          - nas_classify_bare_union_rejected | default(false) | bool
+          - nas_classify_nonboolean_rejected | default(false) | bool
+          - nas_classify_inroot_nonboolean_rejected | default(false) | bool
+          - nas_classify_union_nonboolean_rejected | default(false) | bool
         fail_msg: >-
           The classification guard accepted an export bind source outside the
           mount roots with no `zfs:` declaration, a union with no branch INSIDE
@@ -1087,6 +1092,122 @@
         fail_msg: "An established NFS client must block the unexport/unmount cycle"
         success_msg: "active-client path: safe_to_remount false"
 
+    # The fstab option string itself, in all four shapes the anchor rule decides,
+    # plus both directions of the explicit `zfs:` override. The mount that
+    # consumes it needs FUSE (converge sets nas_storage_skip_mergerfs), so the
+    # derivation is driven from fabricated inventory the same way the two
+    # decision files above are.
+    #
+    # The two override unions are the SAME shapes the classification guard above
+    # accepts on an explicit boolean: driving them through both files keeps the
+    # guard's verdict and the rendered anchor from drifting apart.
+    - name: Derive the fstab options for the four anchor shapes and both overrides
+      ansible.builtin.include_tasks: ../../tasks/mergerfs_opts.yml
+      vars:
+        nas_storage_zfs_bind_source_pattern: "^(/mnt/tank|/mnt/nvme)/"
+        nas_storage_mergerfs_mounts:
+          - name: zfs-with-req
+            target: /mnt/media
+            sources: [/mnt/nvme/media, /mnt/tank/media]
+            options: [defaults, "cache.files=partial"]
+            systemd_requires: [/mnt/tank, /mnt/nvme]
+          - name: zfs-no-req
+            target: /mnt/media2
+            sources: [/mnt/nvme/media2, /mnt/tank/media2]
+            options: [defaults]
+          - name: plain-with-req
+            target: /mnt/plain
+            sources: [/srv/a, /srv/b]
+            options: [defaults]
+            systemd_requires: [/srv/a]
+          - name: plain-no-req
+            target: /mnt/plain2
+            sources: [/srv/c, /srv/d]
+            options: [defaults]
+          # Branches EQUAL to the mount roots never match the pattern, so this
+          # union is anchored only because `zfs: true` says so.
+          - name: override-true
+            target: /mnt/roots
+            sources: [/mnt/nvme, /mnt/tank]
+            options: [defaults]
+            zfs: true
+          # Branches inside the roots DO match, so this union is unanchored only
+          # because `zfs: false` says so.
+          - name: override-false
+            target: /mnt/optout
+            sources: [/mnt/nvme/optout, /mnt/tank/optout]
+            options: [defaults]
+            zfs: false
+
+    - name: Assert the anchor is derived from the branch set, not systemd_requires
+      ansible.builtin.assert:
+        that:
+          - nas_storage_mergerfs_fstab_opts['zfs-with-req'] == zfs_anchor ~ req_tank ~ req_nvme
+          - nas_storage_mergerfs_fstab_opts['zfs-no-req'] ==
+            'defaults,fsname=zfs-no-req,nofail,x-systemd.requires=zfs-mount.service,x-systemd.after=zfs-mount.service'
+          - nas_storage_mergerfs_fstab_opts['plain-with-req'] ==
+            'defaults,fsname=plain-with-req,nofail,x-systemd.requires-mounts-for=/srv/a'
+          - nas_storage_mergerfs_fstab_opts['plain-no-req'] == 'defaults,fsname=plain-no-req'
+        fail_msg: "MergerFS fstab options wrong: {{ nas_storage_mergerfs_fstab_opts }}"
+        success_msg: "fstab options carry the zfs-mount anchor exactly on the ZFS-branched unions"
+      vars:
+        zfs_anchor: >-
+          defaults,cache.files=partial,fsname=zfs-with-req,nofail,x-systemd.requires=zfs-mount.service,x-systemd.after=zfs-mount.service
+        req_tank: ",x-systemd.requires-mounts-for=/mnt/tank"
+        req_nvme: ",x-systemd.requires-mounts-for=/mnt/nvme"
+
+    # Both directions, or a dropped `item.zfs | default(...)` would still pass:
+    # the derivation alone gets override-true wrong AND override-false right.
+    - name: Assert an explicit `zfs:` overrides the derived classification
+      ansible.builtin.assert:
+        that:
+          - nas_storage_mergerfs_fstab_opts['override-true'] ==
+            'defaults,fsname=override-true,nofail,x-systemd.requires=zfs-mount.service,x-systemd.after=zfs-mount.service'
+          - nas_storage_mergerfs_fstab_opts['override-false'] == 'defaults,fsname=override-false'
+        fail_msg: "The explicit `zfs:` override was ignored: {{ nas_storage_mergerfs_fstab_opts }}"
+        success_msg: "explicit `zfs:` wins over the branch-set derivation in both directions"
+
+    # The same two unions the opts render above: the guard must ACCEPT both
+    # (an explicit boolean is a declaration), including the root-branched one it
+    # rejects without it.
+    - name: Drive the classification guard — the same explicit `zfs:` overrides
+      ansible.builtin.include_tasks: ../../tasks/assert_zfs_classification.yml
+      vars:
+        nas_storage_zfs_mount_roots: [/mnt/tank, /mnt/nvme]
+        nas_storage_zfs_bind_source_pattern: "^(/mnt/tank|/mnt/nvme)/"
+        nas_storage_exports: []
+        nas_storage_mergerfs_mounts:
+          - name: override-true
+            target: /mnt/roots
+            sources: [/mnt/nvme, /mnt/tank]
+            zfs: true
+          - name: override-false
+            target: /mnt/optout
+            sources: [/mnt/nvme/optout, /mnt/tank/optout]
+            zfs: false
+
+    # The ARC-cap seam: nas_storage owns no cap of its own, it hands
+    # nas_storage_zfs_arc_max_bytes + _skip_initramfs to weisssrv.infra.zfs_arc_cap.
+    # Driven here because converge skips zfs.yml wholesale
+    # (nas_storage_skip_zfs_operations), so nothing else exercises the hand-off.
+    - name: Drive the ARC cap pass-through
+      ansible.builtin.include_tasks: ../../tasks/zfs_arc.yml
+
+    - name: Read the rendered ARC modprobe.d file
+      ansible.builtin.slurp:
+        src: /etc/modprobe.d/zfs.conf
+      register: nas_zfs_arc_conf
+
+    - name: Assert the NAS byte count reached the rendered cap
+      ansible.builtin.assert:
+        that:
+          - "'options zfs zfs_arc_max=' ~ nas_storage_zfs_arc_max_bytes
+             in (nas_zfs_arc_conf.content | b64decode)"
+        fail_msg: >-
+          The ARC cap pass-through dropped the byte count:
+          {{ nas_zfs_arc_conf.content | b64decode }}
+        success_msg: "nas_storage_zfs_arc_max_bytes reaches zfs_arc_cap's modprobe.d render"
+
     # De-provisioning path (nas_storage_archive_backup_enabled: false).
     # molecule.yml opts IN, so converge only ever runs archive_backup.yml and
     # archive_backup_absent.yml would otherwise be executed by no scenario at
@@ -1144,22 +1265,3 @@
       # (or a second converge after the opt-out) does no systemd work at all,
       # which is also what keeps `systemctl stop` off a unit that no longer exists.
       ansible.builtin.include_tasks: ../../tasks/archive_backup_absent.yml
-
-    - name: Display test results
-      ansible.builtin.debug:
-        msg:
-          - "✓ NFS server installed"
-          - "✓ /etc/exports configured"
-          - "✓ Exports file contains expected paths"
-          - "✓ Bind mounts anchored per encryption state (fstab + nfs-server drop-in)"
-          - "✓ Media-mover script + timer deployed and enabled"
-          - "✓ Swap-clean script + timer deployed, enabled, metrics rendered"
-          - "✓ Samba installed"
-          - "✓ smb.conf configured"
-          - "✓ smb.conf contains expected shares"
-          - "✓ NFS service loaded"
-          - "✓ Samba service loaded"
-          - "✓ archive-backupctl contract (SRC_LIST-derived + type-coupled)"
-          - "✓ archive-backup opt-out de-provisions units, script and schedule"
-          - "✓ backup-artifact collector: pattern, size, companion and mount-guard arms"
-          - "✓ pve-cluster archive: fail-closed guards, retention, archive contents"

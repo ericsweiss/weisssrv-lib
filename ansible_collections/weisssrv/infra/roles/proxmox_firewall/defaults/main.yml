@@ -93,3 +93,14 @@ proxmox_firewall_insecure_migration_ports: false
 # within a group). Empty by default so a site that has not supplied its groups
 # renders none — never another deployment's rules. Worked example: role README.
 proxmox_firewall_security_groups: []
+
+# Raw extra lines emitted verbatim, in order, under the `[RULES]` section of
+# cluster.fw and host.fw respectively. Declared here so both are discoverable
+# rather than existing only as a `| default([])` in a template.
+#
+# POSITION DIFFERS, and pve-firewall is first-match-wins: cluster.fw's `[RULES]`
+# is the last section, so those lines are genuinely appended, while host.fw
+# renders these lines FIRST — ahead of the security groups and the egress DROP —
+# so a host rule OUTRANKS every group rule and can allow past the default-deny.
+proxmox_firewall_cluster_rules: []
+proxmox_firewall_host_rules: []

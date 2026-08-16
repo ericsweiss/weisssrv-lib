@@ -36,11 +36,15 @@
           - "nextcloud_compose_doc.services['nextcloud-exporter'].image == 'ghcr.io/xperimental/nextcloud-exporter:0.9.1'"
         fail_msg: "an image tag did not resolve from its version pin"
 
+    # Every published port carries an explicit bind address, so the full
+    # `<address>:<host port>:<container port>` triple is asserted: the exporter
+    # defaults to all interfaces for an off-host Prometheus, and silently
+    # narrowing OR widening that is as much a regression as a wrong port.
     - name: Assert the web port is loopback-bound and the exporter is exposed
       ansible.builtin.assert:
         that:
           - "'127.0.0.1:8080:80' in nextcloud_compose_doc.services.nextcloud.ports"
-          - "'9205:9205' in nextcloud_compose_doc.services['nextcloud-exporter'].ports"
+          - "'0.0.0.0:9205:9205' in nextcloud_compose_doc.services['nextcloud-exporter'].ports"
         fail_msg: "port bindings are wrong"
 
     - name: Assert the opt-in postgres exporter is absent by default
@@ -67,7 +71,8 @@
           - >-
             nextcloud_pgexporter_doc.services['nextcloud-postgres-exporter'].image
             == 'quay.io/prometheuscommunity/postgres-exporter:0.19.0'
-          - "'9187:9187' in nextcloud_pgexporter_doc.services['nextcloud-postgres-exporter'].ports"
+          # Inherits nextcloud_exporter_bind_address, hence the same 0.0.0.0.
+          - "'0.0.0.0:9187:9187' in nextcloud_pgexporter_doc.services['nextcloud-postgres-exporter'].ports"
           # Credentials reuse the stack's .env, split across URI/USER/PASS.
           - >-
             nextcloud_pgexporter_doc.services['nextcloud-postgres-exporter'].environment.DATA_SOURCE_URI

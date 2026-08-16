@@ -16,8 +16,6 @@
       ansible.builtin.set_fact:
         bk: "{{ backup_artifact.content | b64decode | from_json }}"
 
-    # (a) Absent storage + job are created with the exact expected argument
-    #     vectors, and nothing else is mutated.
     - name: A — absent storage/job trigger exactly one create each
       ansible.builtin.assert:
         that:
@@ -26,16 +24,14 @@
           - bk.a_total == 2
         fail_msg: "Expected storage_create=1/job_create=1/total=2, got {{ bk.a_storage_create }}/{{ bk.a_job_create }}/{{ bk.a_total }}"
 
-    # (b) Matching live state (with Proxmox-reordered comma lists) is the
-    #     idempotency contract: ZERO mutations, or every deploy churns.
+    # (b) The idempotency contract: matching live state churns nothing, and
+    #     stands in for the scenario's absent `idempotence` step.
     - name: B — already-correct state triggers NO mutations
       ansible.builtin.assert:
         that:
           - bk.b_total == 0
         fail_msg: "Expected 0 mutations for matching state, got {{ bk.b_total }}"
 
-    # (c) A drifted job schedule is corrected with exactly one job set and
-    #     no storage mutation.
     - name: C — drifted job schedule triggers exactly one job set
       ansible.builtin.assert:
         that:
@@ -43,8 +39,6 @@
           - bk.c_total == 1
         fail_msg: "Expected job_set=1/total=1 for schedule drift, got {{ bk.c_job_set }}/{{ bk.c_total }}"
 
-    # (c2) A guest-selection drift (all=1 job gaining an exclude) is corrected
-    #      with exactly one job set carrying --exclude and no storage mutation.
     - name: C2 — added exclude triggers exactly one job set
       ansible.builtin.assert:
         that:
@@ -52,9 +46,7 @@
           - bk.c2_total == 1
         fail_msg: "Expected job_set=1/total=1 for exclude drift, got {{ bk.c2_job_set }}/{{ bk.c2_total }}"
 
-    # (c3) A REMOVED optional field (live job has a stale exclude the config no
-    #      longer sets) is cleared with exactly one job set carrying
-    #      --delete exclude — proving removals are reconciled, not just adds.
+    # (c3) Removals are reconciled, not just adds.
     - name: C3 — removed exclude triggers exactly one job set with --delete
       ansible.builtin.assert:
         that:
@@ -62,8 +54,6 @@
           - bk.c3_total == 1
         fail_msg: "Expected job_set=1/total=1 for exclude removal, got {{ bk.c3_job_set }}/{{ bk.c3_total }}"
 
-    # (d) Drifted mutable storage content is corrected with exactly one
-    #     storage set and no job mutation.
     - name: D — drifted storage content triggers exactly one storage set
       ansible.builtin.assert:
         that:
@@ -71,8 +61,8 @@
           - bk.d_total == 1
         fail_msg: "Expected storage_set=1/total=1 for content drift, got {{ bk.d_storage_set }}/{{ bk.d_total }}"
 
-    # (f) A job with a `script` path deploys the node_exporter_host hookscript
-    #     first (pvesh rejects a missing --script), then creates the job.
+    # (f) The hookscript must land BEFORE the job: pvesh rejects a missing
+    #     --script path.
     - name: F — job with script deploys the hookscript and creates the job
       ansible.builtin.assert:
         that:
@@ -81,9 +71,6 @@
           - bk.f_total == 1
         fail_msg: "Expected hook=true/job_create=1/total=1, got {{ bk.f_hook }}/{{ bk.f_job_create }}/{{ bk.f_total }}"
 
-    # (g) A zfspool entry carries the dataset, node restriction, mountpoint and
-    #     allocation mode on the create path; without them the id is created
-    #     against the wrong dataset or without its node scope.
     - name: G — absent zfspool entry is created with pool/nodes/mountpoint/sparse
       ansible.builtin.assert:
         that:
@@ -97,8 +84,8 @@
           - bk.g2_total == 0
         fail_msg: "Expected 0 mutations for a matching zfspool entry, got {{ bk.g2_total }}"
 
-    # (g3) `pool` is create-fixed and is the mapping that decides which dataset
-    #      new guest disks inherit their properties (encryption included) from.
+    # (g3) `pool` is create-fixed and decides which dataset new guest disks
+    #      inherit their properties (encryption included) from.
     - name: G3 — a zfspool id pointing at the wrong dataset fails loud
       ansible.builtin.assert:
         that:
@@ -113,8 +100,7 @@
           - bk.g4_total == 1
         fail_msg: "Expected storage_set=1/total=1 for nodes drift, got {{ bk.g4_storage_set }}/{{ bk.g4_total }}"
 
-    # (e) Create-fixed drift (server IP -> hostname migration) must fail
-    #     loud with ZERO mutations — recreation is a deliberate manual step.
+    # (e) Create-fixed drift must fail loud: recreation is a manual step.
     - name: E — fixed-property drift fails loud with NO mutations
       ansible.builtin.assert:
         that:

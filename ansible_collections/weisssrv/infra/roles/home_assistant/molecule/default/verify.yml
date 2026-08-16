@@ -1,18 +1,7 @@
 ---
-# Two contracts are verified here.
-#
-# 1. RENDER (from the render-only converge): /tmp/ha-configuration.yaml and
-#    /tmp/ha-secrets.yaml are slurped and asserted on — Jinja errors, dropped
-#    trusted-proxy entries, broken !secret refs, a missing SSL block and OIDC
-#    drift are the real failure modes of a config push.
-# 2. DEPLOY (driven from here with home_assistant_render_only=false): the
-#    stateful path talks to HAOS over raw ssh/scp, so local shims at
-#    /usr/local/bin execute the "remote" command against a fake /config and an
-#    `ha` shim honours a fault file. Four runs: success, unchanged (no-op),
-#    check-failure rollback, and first-deploy cleanup.
-#
-# YAML quoting: `that:` entries are double-quoted because the expressions
-# contain unquoted colons that YAML would read as flow-mapping separators.
+# Verifies the rendered configuration.yaml/secrets.yaml, then drives the deploy
+# path through local ssh/scp/ha shims (success, unchanged, check-failure
+# rollback, first-deploy cleanup) with home_assistant_render_only=false.
 - name: Verify
   hosts: all
   become: true
@@ -30,6 +19,8 @@
 
     - name: Assert both rendered files exist with the expected modes
       ansible.builtin.assert:
+        # `that:` entries are double-quoted throughout: an unquoted colon in the
+        # expression makes YAML parse the entry as a mapping (always truthy).
         that:
           - "home_assistant_t_cfg_stat.stat.exists"
           - "home_assistant_t_cfg_stat.stat.mode == '0644'"
@@ -481,11 +472,3 @@
       ansible.builtin.file:
         path: /tmp/ha-core-check-fail
         state: absent
-
-    - name: Display test results
-      ansible.builtin.debug:
-        msg:
-          - "configuration.yaml: http/trusted_proxies, ssl block, OIDC discovery URL from a variable, prometheus, default_config"
-          - "secrets.yaml: both OIDC keys, double-quoted via to_json"
-          - "deploy: atomic install, unchanged re-run is a no-op, check-failure rollback, first-deploy cleanup"
-          - "All home_assistant role contract assertions passed"

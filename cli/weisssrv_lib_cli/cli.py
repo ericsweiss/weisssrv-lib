@@ -36,7 +36,12 @@ def _add_render_command(sub, name: str) -> None:
     )
     parser.add_argument(
         "source",
-        help=f"copier template: a VCS URL (e.g. {url}) or a local template path",
+        nargs="?",
+        default=url,
+        help=(
+            "copier template: a VCS URL or a local template path "
+            f"(default: {url})"
+        ),
     )
     parser.add_argument(
         "destination", type=Path, help="directory to render into (absent or empty)"
@@ -91,6 +96,11 @@ def _render(args) -> int:
             trust=args.trust,
             published=published,
         )
+    except templates.MissingCopierError as exc:
+        # Its own code: an unusable environment is not a usage error, and a
+        # calling script has to tell the two apart to know what to fix.
+        print(f"error: {exc}", file=sys.stderr)
+        return 3
     except templates.TemplateError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

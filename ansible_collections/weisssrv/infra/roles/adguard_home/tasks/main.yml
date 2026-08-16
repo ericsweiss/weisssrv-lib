@@ -1,7 +1,4 @@
 ---
-# AdGuard Home installation and configuration
-# Runs as unprivileged user with CAP_NET_BIND_SERVICE
-
 # Empty here means AdGuard advertises an empty DoT/DoH/DoQ SNI on every deploy
 # with a green play, so require it up front rather than at the API call.
 - name: Validate the TLS server name is set when TLS is enabled
@@ -79,7 +76,7 @@
     state: directory
     owner: root
     group: "{{ adguard_home_group }}"
-    mode: "2750"  # setgid so new files inherit group
+    mode: "2750"
 
 - name: Create AdGuard Home data directory
   ansible.builtin.file:
@@ -123,6 +120,115 @@
 - name: Download and install AdGuard Home
   when: adguard_home_needs_install
   block:
+    # Feeds the trust assert below. `stat` defaults to follow: false and must
+    # STAY there — following would report the target's ownership while the
+    # symlink itself (lrwxrwxrwx, and replaceable by whoever owns the link) is
+    # the thing an attacker repoints. Unfollowed, a symlinked cache directory
+    # stats as woth -> the assert denies, which is the intended answer.
+    - name: Look for the staged-archive cache directory
+      ansible.builtin.stat:
+        path: "{{ adguard_home_archive_cache_dir }}"
+      register: adguard_home_archive_cache_stat
+      when: adguard_home_archive_cache_dir | length > 0
+
+    # The cache file name carries the version, so a cache staged for a different
+    # pin simply misses and the upstream download runs.
+    - name: Look for a locally staged AdGuard Home archive
+      ansible.builtin.stat:
+        path: "{{ adguard_home_archive_cache_dir }}/AdGuardHome_linux_{{ adguard_home_arch }}-v{{ adguard_home_version }}.tar.gz"
+        checksum_algorithm: sha256
+      register: adguard_home_staged_archive
+      when: adguard_home_archive_cache_dir | length > 0
+
+    # A staged archive bypasses get_url's checksum, so verify it here or the
+    # cache directory becomes an unauthenticated path to root on the resolver.
+    # Preference: the explicit pin, else the upstream checksums.txt staged
+    # alongside it. Neither -> fail; do not install unverified bytes.
+    - name: Look for a staged checksums.txt
+      ansible.builtin.stat:
+        path: "{{ adguard_home_archive_cache_dir }}/checksums.txt"
+      register: adguard_home_staged_checksums
+      when:
+        - adguard_home_staged_archive.stat.exists | default(false)
+        - adguard_home_archive_sha256 | length == 0
+
+    # A digest only proves the bytes match SOMETHING an attacker also controls:
+    # whoever can replace the archive in this directory can replace the
+    # checksums.txt beside it, and can point a symlink at whatever the pin was
+    # computed over. The comparison below is therefore only as trustworthy as
+    # the directory itself, so establish the trust boundary FIRST — the cache
+    # directory and every staged file must be root-owned and closed to group and
+    # other writers. Ordered ahead of the slurp so an untrusted checksums.txt is
+    # never even read.
+    - name: Assert the staged-archive cache is a root-owned trust boundary
+      ansible.builtin.assert:
+        that:
+          - adguard_home_archive_cache_stat.stat.isdir | default(false)
+          - adguard_home_archive_cache_stat.stat.uid | default(-1) == 0
+          - not (adguard_home_archive_cache_stat.stat.wgrp | default(true))
+          - not (adguard_home_archive_cache_stat.stat.woth | default(true))
+          - adguard_home_staged_archive.stat.uid | default(-1) == 0
+          - not (adguard_home_staged_archive.stat.wgrp | default(true))
+          - not (adguard_home_staged_archive.stat.woth | default(true))
+          # Skipped when the stat did not run (an explicit pin is set, or no
+          # checksums.txt is staged) — nothing is trusted from a file that is
+          # not consulted.
+          - >-
+            not (adguard_home_staged_checksums.stat.exists | default(false))
+            or (adguard_home_staged_checksums.stat.uid == 0
+                and not adguard_home_staged_checksums.stat.wgrp
+                and not adguard_home_staged_checksums.stat.woth)
+        fail_msg: >-
+          {{ adguard_home_archive_cache_dir }} is not a trusted staging path.
+          Its contents are unpacked and installed as root with no upstream
+          signature, so the directory and every file staged in it must be owned
+          by root (uid 0) and not writable by group or other — otherwise the
+          digest check below only proves the bytes match a value the same writer
+          controls. Found directory
+          uid={{ adguard_home_archive_cache_stat.stat.uid | default('absent') }}
+          mode={{ adguard_home_archive_cache_stat.stat.mode | default('absent') }},
+          archive uid={{ adguard_home_staged_archive.stat.uid | default('absent') }}
+          mode={{ adguard_home_staged_archive.stat.mode | default('absent') }},
+          checksums.txt uid={{ adguard_home_staged_checksums.stat.uid | default('unused') }}
+          mode={{ adguard_home_staged_checksums.stat.mode | default('unused') }}.
+          Correct the ownership and modes, or unset
+          adguard_home_archive_cache_dir to install from the upstream download.
+        quiet: true
+      when: adguard_home_staged_archive.stat.exists | default(false)
+
+    - name: Read the staged checksums.txt
+      ansible.builtin.slurp:
+        src: "{{ adguard_home_archive_cache_dir }}/checksums.txt"
+      register: adguard_home_staged_checksums_content
+      when: adguard_home_staged_checksums.stat.exists | default(false)
+
+    - name: Verify the staged AdGuard Home archive
+      ansible.builtin.assert:
+        that:
+          - >-
+            (adguard_home_archive_sha256 | length > 0
+             and adguard_home_staged_archive.stat.checksum == adguard_home_archive_sha256)
+            or (adguard_home_staged_checksums_content.content is defined
+                and (adguard_home_staged_checksums_content.content | b64decode)
+                    is search(adguard_home_staged_archive.stat.checksum ~ '\s+\S*AdGuardHome_linux_' ~ adguard_home_arch ~ '\.tar\.gz'))
+        fail_msg: >-
+          The staged archive {{ adguard_home_staged_archive.stat.path }}
+          (sha256 {{ adguard_home_staged_archive.stat.checksum }}) is not
+          verified: set adguard_home_archive_sha256 to that digest, or stage the
+          release's checksums.txt beside it. Remove the archive to fall back to
+          the upstream download.
+        quiet: true
+      when: adguard_home_staged_archive.stat.exists | default(false)
+
+    - name: Resolve the AdGuard Home archive to unpack
+      ansible.builtin.set_fact:
+        adguard_home_archive_path: >-
+          {{ adguard_home_staged_archive.stat.path
+             if adguard_home_staged_archive.stat.exists | default(false)
+             else '/tmp/AdGuardHome_linux_' ~ adguard_home_arch ~ '.tar.gz' }}
+
+    # github.com's TLS handshake stalls often enough to cost a whole CI run:
+    # bound each attempt and retry rather than failing the play on one stall.
     - name: Download AdGuard Home
       ansible.builtin.get_url:
         url: "https://github.com/AdguardTeam/AdGuardHome/releases/download/v{{ adguard_home_version }}/AdGuardHome_linux_{{ adguard_home_arch }}.tar.gz"
@@ -130,10 +236,16 @@
         dest: "/tmp/AdGuardHome_linux_{{ adguard_home_arch }}.tar.gz"
         mode: "0644"
         checksum: "sha256:https://github.com/AdguardTeam/AdGuardHome/releases/download/v{{ adguard_home_version }}/checksums.txt"
+        timeout: 60
+      register: adguard_home_download
+      retries: 3
+      delay: 5
+      until: adguard_home_download is succeeded
+      when: not (adguard_home_staged_archive.stat.exists | default(false))
 
     - name: Extract AdGuard Home
       ansible.builtin.unarchive:
-        src: "/tmp/AdGuardHome_linux_{{ adguard_home_arch }}.tar.gz"
+        src: "{{ adguard_home_archive_path }}"
         dest: /tmp
         remote_src: true
 
@@ -147,7 +259,7 @@
         name: AdGuardHome
         state: stopped
       when: adguard_home_service.stat.exists
-      changed_when: false  # Service stop/start is deployment process, not config drift
+      changed_when: false
 
     - name: Install AdGuard Home binary
       ansible.builtin.copy:
@@ -210,17 +322,18 @@
 # reconciliation on every later run.
 - name: Validate AdGuard admin password is set
   ansible.builtin.assert:
+    # An assert result carries the conditional text and the messages, never the
+    # value, so this task prints its fail_msg rather than a censored placeholder.
     that:
       - adguard_home_admin_password is defined
       - adguard_home_admin_password | length > 0
     fail_msg: >-
       adguard_home_admin_password is not set — supply it from the site's
       secret store.
-    success_msg: "AdGuard admin password is set"
+    quiet: true
   when: >-
     not adguard_home_initial_config.stat.exists
     or not (adguard_home_skip_api_config | default(false))
-  no_log: true
 
 # Without this the instance stays in setup mode and serves no DNS: the wizard
 # POST is what writes AdGuardHome.yaml and binds the DNS listener.
@@ -250,9 +363,8 @@
     timeout: 60
   when: not adguard_home_initial_config.stat.exists
 
-# AdGuard Home has no password API, so the admin's bcrypt hash is reconciled in
-# AdGuardHome.yaml by files/adguard-admin-hash.py — see that file's docstring
-# for why it parses the document and rewrites exactly one line.
+# No password API — the bcrypt hash is reconciled in AdGuardHome.yaml by
+# files/adguard-admin-hash.py (see its docstring).
 - name: Check if AdGuard Home config exists (for password check)
   ansible.builtin.stat:
     path: "{{ adguard_home_install_path }}/AdGuardHome.yaml"

@@ -12,13 +12,18 @@
     - name: Disable apt background services
       ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/prepare-apt-disable.yml
 
+    # Bounded like the shared container-warmup wait: a stuck lock must fail with
+    # a diagnostic rather than hang until the job timeout.
     - name: Wait for apt locks to be released
       ansible.builtin.raw: |
-        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
-              fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
-              fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+        for i in $(seq 1 120); do
+          fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+          fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+          fuser /var/cache/apt/archives/lock >/dev/null 2>&1 || exit 0
           sleep 1
         done
+        echo "apt/dpkg lock still held after 120s" >&2
+        exit 1
       changed_when: false
 
     # The image ships fail2ban disabled; iptables is what the NAT redirect

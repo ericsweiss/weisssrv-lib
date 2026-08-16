@@ -1,6 +1,4 @@
 ---
-# Proxmox VM provisioning with cloud-init
-
 - name: Set VM ID
   ansible.builtin.set_fact:
     proxmox_vm_id: "{{ vmid | default(proxmox_vm_target_ip.split('.')[-1]) }}"
@@ -13,7 +11,6 @@
   ansible.builtin.set_fact:
     _proxmox_vm_is_windows: "{{ (proxmox_vm_guest_type | default('linux')) == 'windows' }}"
 
-# Storage selection logic: auto-select based on Proxmox host role if not specified
 - name: Determine Proxmox host role
   ansible.builtin.set_fact:
     _proxmox_vm_host_role: "{{ hostvars[proxmox_host]['proxmox_role'] | default('compute') }}"
@@ -101,8 +98,7 @@
       proxmox_host ({{ proxmox_host }}), which may not hold the VM.
   when: proxmox_vm_exists.rc == 0
 
-# Verify storage pool exists on target host before proceeding
-# Only check when creating a new VM - existing VMs may be on different storage during migrations
+# Create-path only: an existing VM may sit on different storage after a migration.
 - name: Get available storage pools on target host
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.command: pvesm status
@@ -206,12 +202,12 @@
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
     qm create {{ proxmox_vm_id }} \
-      --name {{ inventory_hostname }} \
+      --name {{ inventory_hostname | quote }} \
       --memory {{ proxmox_vm_memory }}{{ ' --balloon ' + (proxmox_vm_balloon | string) if proxmox_vm_balloon is defined else '' }} \
       --cores {{ proxmox_vm_cores }} \
-      --cpu {{ proxmox_vm_cpu_type }} \
+      --cpu {{ proxmox_vm_cpu_type | quote }} \
       --net0 virtio,bridge={{ proxmox_vm_bridge }},firewall=1 \
-      --ostype {{ proxmox_vm_ostype }} \
+      --ostype {{ proxmox_vm_ostype | quote }} \
       --agent enabled={{ proxmox_vm_agent_enabled | ternary(1, 0) }}{{ ' --pool ' + proxmox_resource_pool if proxmox_resource_pool is defined else '' }}
   when:
     - not ansible_check_mode
@@ -304,13 +300,13 @@
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
     qm create {{ proxmox_vm_id }} \
-      --name {{ inventory_hostname }} \
+      --name {{ inventory_hostname | quote }} \
       --memory {{ proxmox_vm_memory }}{{ ' --balloon ' + (proxmox_vm_balloon | string) if proxmox_vm_balloon is defined else '' }} \
       --cores {{ proxmox_vm_cores }} \
       --machine {{ proxmox_vm_windows_machine }} \
       --bios ovmf \
-      --cpu {{ proxmox_vm_cpu_type }} \
-      --ostype {{ proxmox_vm_windows_ostype }} \
+      --cpu {{ proxmox_vm_cpu_type | quote }} \
+      --ostype {{ proxmox_vm_windows_ostype | quote }} \
       --scsihw virtio-scsi-pci \
       --net0 virtio,bridge={{ proxmox_vm_bridge }},firewall=1 \
       --agent enabled={{ proxmox_vm_agent_enabled | ternary(1, 0) }}{{ ' --pool ' + proxmox_resource_pool if proxmox_resource_pool is defined else '' }}
@@ -338,7 +334,10 @@
     executable: /bin/bash
   register: proxmox_vm_net0_firewall
   changed_when: "'CHANGED' in (proxmox_vm_net0_firewall.stdout | default(''))"
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    # Don't qm config a VM that was never created on a skip-create run.
+    - proxmox_vm_exists.rc == 0 or not (proxmox_vm_skip_create | default(false))
 
 # Memory ballooning floor (proxmox_vm_balloon) is set at qm create above; reconcile VMs
 # created before it was added, or when the floor changes. `qm set --balloon <min>`
@@ -429,7 +428,7 @@
 - name: Resize disk
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |
-    qm resize {{ proxmox_vm_id }} scsi0 {{ proxmox_vm_disk_size }}
+    qm resize {{ proxmox_vm_id }} scsi0 {{ proxmox_vm_disk_size | quote }}
   when:
     - not ansible_check_mode
     - proxmox_vm_exists.rc != 0
@@ -574,7 +573,7 @@
     - name: Configure cloud-init settings
       ansible.builtin.shell: |
         qm set {{ proxmox_vm_id }} \
-          --ciuser {{ proxmox_vm_cloudinit_user }} \
+          --ciuser {{ proxmox_vm_cloudinit_user | quote }} \
           --sshkeys {{ _proxmox_vm_ci_ssh_key_tmp.path | quote }} \
           --ipconfig0 ip={{ proxmox_vm_target_ip }}/{{ proxmox_vm_cloudinit_prefix_len }},gw={{ proxmox_vm_cloudinit_gateway }} \
           --nameserver "{{ proxmox_vm_cloudinit_dns | join(' ') }}"
@@ -672,7 +671,6 @@
     - not ansible_check_mode
     - proxmox_vm_exists.rc == 0
 
-# Additional persistent disks (ZFS zvols)
 # Each disk pins an explicit, unique scsi_slot. Attaching by list position would
 # remap a live data-bearing zvol onto the wrong device if the list is ever
 # reordered or an entry removed, so the slot is required and validated here.
@@ -704,8 +702,8 @@
   ansible.builtin.shell:
     cmd: |
       set -euo pipefail
-      if ! zfs list {{ item.zvol }} 2>/dev/null; then
-        zfs create -p {{ '-s ' if (item.sparse | default(false) | bool) else '' }}-V {{ item.size }} {{ item.zvol }}
+      if ! zfs list {{ item.zvol | quote }} 2>/dev/null; then
+        zfs create -p {{ '-s ' if (item.sparse | default(false) | bool) else '' }}-V {{ item.size | quote }} {{ item.zvol | quote }}
         echo "created"
       else
         echo "exists"
@@ -730,7 +728,7 @@
   ansible.builtin.shell:
     cmd: |
       set -euo pipefail
-      EXPECTED_PATH="/dev/zvol/{{ item.zvol }}"
+      EXPECTED_PATH=/dev/zvol/{{ item.zvol | quote }}
       SCSI_SLOT="scsi{{ item.scsi_slot }}"
       ALLOW_REMAP="{{ 1 if (item.allow_remap | default(false) | bool) else 0 }}"
       # vzdump_backup: false sets backup=0 so the nightly vzdump skips this

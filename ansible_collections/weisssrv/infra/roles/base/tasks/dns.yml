@@ -1,6 +1,4 @@
 ---
-# Configure /etc/resolv.conf.
-
 # A host that RUNS the resolver (base_is_resolver_host) is a chicken-and-egg
 # case on first deploy: the resolver roles run later, and only then does
 # 127.0.0.1 answer. So use external bootstrap DNS until it does, and keep

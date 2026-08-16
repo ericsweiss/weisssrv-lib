@@ -136,9 +136,10 @@
         that:
           # 7b: agent enabled=0 -> exactly one `qm set --agent 1`
           - meta_drift.agent_set == 1
-          # 7b-ii: stub reports memory 4096 against the desired 2048 -> exactly
-          #        one `qm set --memory 2048`. Zero would mean an inventory
-          #        memory change reaches an existing guest through nothing.
+          # 7b-ii: stub reports memory 1024 against the desired 2048 -> exactly
+          #        one `qm set --memory 2048` (growth arm; the shrink arm is
+          #        7b-iii). Zero would mean an inventory memory change reaches
+          #        an existing guest through nothing.
           - meta_drift.memory_set == 1
           # 7c: onboot:0 + stale startup -> exactly one combined onboot/startup set
           #     written with the canonical desired `order=100,up=0` string

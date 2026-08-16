@@ -45,11 +45,16 @@ adguard_sync_replicas:
     password: "{{ dns_03_sync_password }}"
 ```
 
-Fronting the two endpoints with an ingress proxy gives you TLS, but it also
-makes the sync timer depend on that proxy being up. DNS resolution itself is
-unaffected (each instance serves port 53 directly); what stops during such an
-outage is drift correction, and the next tick after recovery catches up. Point
-the URLs at the instances' HTTP ports directly to avoid the dependency.
+Fronting the two endpoints with an ingress proxy gives you TLS and is the
+recommended shape. It makes the sync timer depend on that proxy being up, but
+DNS resolution itself is unaffected (each instance serves port 53 directly):
+what stops during such an outage is drift correction, and the next tick after
+recovery catches up.
+
+Pointing the URLs at the instances' plain HTTP ports removes that dependency at
+the cost of putting the AdGuard **admin** credential on the wire in cleartext on
+every tick — take the shortcut only where an eavesdropper on that LAN segment is
+an accepted risk.
 
 ## What is and is not synced
 
@@ -106,3 +111,6 @@ curl -u "$user:$pass" "$replica/control/dns_info"
   families)
 - credentials come from the site's secret store, never from git; the tasks that
   touch them use `no_log`
+- the sync authenticates with HTTP Basic on every tick, so an `http://` replica
+  URL sends the admin credential in cleartext — use `https://` endpoints unless
+  that exposure is accepted

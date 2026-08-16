@@ -48,7 +48,9 @@ one node. It no-ops while both lists are empty.
 
 ## Configuration
 
-Variables live in the reconciling node's host vars:
+Variables live in the reconciling node's host vars. Every storage entry needs
+`id`, `type` and `content`; every job needs `id`, `storage` and `schedule` —
+both are asserted at role entry.
 
 ```yaml
 proxmox_backup_storage:

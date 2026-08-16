@@ -24,7 +24,7 @@ REQUIRE_MOUNT={{ '1' if (nas_storage_backup_require_mounted_dataset | default(tr
 # Same question on the SOURCE side: /etc/pve is the pmxcfs FUSE mountpoint.
 REQUIRE_SRC_MOUNT={{ '1' if (nas_storage_pve_cluster_backup_require_src_mount | default(true) | bool) else '0' }}
 KEEP="{{ nas_storage_pve_cluster_backup_keep }}"
-PROM_DIR="{{ nas_storage_backup_artifact_metrics_dir | default(node_exporter_host_textfile_dir | default('/var/lib/node_exporter')) }}"
+PROM_DIR="{{ nas_storage_backup_artifact_metrics_dir }}"
 # Files (relative to SRC) that must be INSIDE the archive before it is published
 # — the content half of the two mount guards below. See
 # nas_storage_pve_cluster_backup_required_files.
@@ -107,7 +107,7 @@ fi
 # Fail closed on an unmounted SOURCE. /etc/pve is pmxcfs, a FUSE mount: with
 # pve-cluster.service not running the path still EXISTS as an empty plain
 # directory, and every check downstream passes on it — tar exits 0, the archive
-# is valid gzip framing, `tar -tzf` reads it. That would publish ~112 bytes of
+# is valid gzip framing, `tar -tzf` reads it. That would publish an archive of
 # nothing as the night's cluster-identity backup with success=1 and a non-zero
 # size, while retention retires one real archive per night behind it.
 if [ "$REQUIRE_SRC_MOUNT" = "1" ] && ! mountpoint -q "$SRC"; then

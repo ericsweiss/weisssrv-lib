@@ -31,6 +31,14 @@ provisioner:
           - ripgrep
           - htop
           - tmux
+        # One small repo instead of the three defaults: PluginInstall is this
+        # scenario's largest network cost and the sentinel-hash path is the
+        # part worth exercising.
+        qol_nvim_plugins:
+          - tpope/vim-fugitive
+        # onedark.vim is not installed here, so name a built-in scheme rather
+        # than leaning on init.vim's `silent!` fallback.
+        qol_nvim_colorscheme: default
         qol_omz_plugins:
           - git
           - sudo

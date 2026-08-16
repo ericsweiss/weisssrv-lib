@@ -1,17 +1,19 @@
 ---
-# Shared molecule container warm-up, included from converge pre_tasks via
-#   ansible.builtin.include_tasks: ../../../../molecule-shared/tasks/container-warmup.yml
-# (a scenario dir sits 4 levels under the collection root).
-# Waits out the apt/dpkg races a fresh systemd container starts with, then
-# refreshes the apt cache and confirms systemd is up.
+# Included from converge pre_tasks: waits out the apt/dpkg races a fresh systemd
+# container starts with, then refreshes the cache and confirms systemd is up.
 
+# Bounded: an unbounded wait turns a stuck lock into a job-timeout kill with no
+# diagnostic, so it fails on its own after two minutes and names the cause.
 - name: Wait for apt locks to be released
   ansible.builtin.shell: |
-    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
-          fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
-          fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+    for i in $(seq 1 120); do
+      fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+      fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+      fuser /var/cache/apt/archives/lock >/dev/null 2>&1 || exit 0
       sleep 1
     done
+    echo "apt/dpkg lock still held after 120s" >&2
+    exit 1
   args:
     executable: /bin/bash
   changed_when: false

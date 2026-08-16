@@ -16,7 +16,7 @@ One source of truth for everything the family shares:
   deploy toolchain in `ci/deploy/` (includes like the rest, just not adopted by
   any consumer yet), plus the `*.example.yml` GitHub workflows, which are the
   one thing here a forge-portable consumer VENDORS rather than includes.
-- **`ansible_collections/weisssrv/infra/`** — 40 host-configuration roles,
+- **`ansible_collections/weisssrv/infra/`** — every host-configuration role,
   consumed by FQCN (`weisssrv.infra.<role>`), versioned by the same tag.
 - **`terraform/modules/`** — three module shapes (cloudflare-zone,
   tailscale-acl, authentik-sso).

@@ -42,9 +42,11 @@
   ansible.builtin.assert:
     that: zfs_encryption_connect_token | length > 0
     fail_msg: >-
-      zfs_encryption_connect_token is empty. Run with `op run -- env
-      ZFS_ENCRYPTION_CONNECT_TOKEN="$(op read 'op://Homelab/ZFS Encryption Connect Token/credential')"
-      ansible-playbook ...`.
+      zfs_encryption_connect_token is empty. Supply it from the site's secret
+      store — e.g. `op run -- env ZFS_ENCRYPTION_CONNECT_TOKEN="$(op read
+      'op://{{ zfs_encryption_connect_vault }}/<token item>/credential')"
+      ansible-playbook ...` — or set zfs_encryption_key_command to fetch keys
+      another way. See README § Scoping the Connect token.
   when:
     - zfs_encryption_pools | default([]) | length > 0
     - zfs_encryption_key_command | default('') | length == 0

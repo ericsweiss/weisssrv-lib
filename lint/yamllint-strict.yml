@@ -1,11 +1,10 @@
 ---
 # Strict yamllint profile, aligned with the ansible-lint production profile
-# (160-char line limit, truthy/octal rules). weisssrv applies this to its
-# ansible/ tree via the ansible-lint job (which honors `# noqa yaml[...]`
-# exemptions that raw yamllint cannot) — do NOT point a bare `yamllint` run at
-# this config for an ansible tree; use it for non-ansible YAML that should hold
-# to the stricter line-length/truthy/octal rules. Provided here so a consumer
-# that wants the stricter profile has a single shared source.
+# (160-char line limit, truthy/octal rules). No consumer vendors it today — it
+# is offered for a repo that wants the stricter rules. Apply it THROUGH
+# ansible-lint on an ansible tree (ansible-lint honors `# noqa yaml[...]`
+# exemptions that a bare `yamllint` run cannot); point a bare `yamllint` run at
+# it only for non-ansible YAML.
 extends: default
 
 rules:

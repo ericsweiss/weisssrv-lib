@@ -223,16 +223,3 @@
           authenticating upstream with a revoked credential, with nothing
           reporting changed
         success_msg: "the repair rebuilds a stale aliases.db and sasl_passwd.db"
-
-    - name: Display test results
-      ansible.builtin.debug:
-        msg:
-          - "Postfix installed and running"
-          - "main.cf configured with Gmail relay (port-25 AUTH off; submission enables SASL behind TLS)"
-          - "master.cf deployed"
-          - "SASL credentials deployed (Gmail relay + incoming auth)"
-          - "SASL database created for incoming authentication"
-          - "TLS certificate directory created"
-          - "Mailname configured correctly"
-          - "Queue collector installed with timer enabled and active"
-          - "Compiled-map repair rebuilds a stale aliases.db / sasl_passwd.db"

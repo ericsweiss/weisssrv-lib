@@ -14,7 +14,7 @@ no effect on that consumer's pipeline.
 | File | Vendor as | Consumed by |
 |---|---|---|
 | `yamllint-relaxed.yml` | `.yamllint` | `ci/lint/yaml-lint.yml` (`config: "-c .yamllint"`) |
-| `yamllint-strict.yml` | `.yamllint` (alternative profile) | `ci/lint/ansible-lint.yml`'s embedded yaml rules |
+| `yamllint-strict.yml` | `.yamllint` (alternative profile) | nothing today — vendor it and pass `-c .yamllint` if you want the stricter profile |
 | `ruff.toml` | `ruff.toml` at the repo root, or kept at `lint/ruff.toml` | `ci/lint/python-lint.yml` (`config: "--config <path>"`) |
 | `gitleaks.toml` | `.gitleaks.toml` at the repo root | `ci/security/secret-detection.yml`, via the ruleset below |
 | `secret-detection-ruleset.toml` | `.gitlab/secret-detection-ruleset.toml` | GitLab's managed Secret-Detection job |
@@ -41,11 +41,16 @@ Two pairs must be vendored together or they do nothing:
 ## Profiles
 
 `yamllint-relaxed.yml` is the baseline syntax check a whole-tree `yaml-lint` job
-runs: line-length off (inline documentation comments run long), comment rules as
-warnings. `yamllint-strict.yml` aligns with the ansible-lint production profile
-(160-char limit, truthy/octal rules) and is meant to be applied **through**
-ansible-lint, which honours `# noqa yaml[...]` exemptions that a bare `yamllint`
-run cannot.
+runs: yamllint's shipped `relaxed` (comment rules disabled, line-length at
+warning level), plus line-length off outright — inline documentation comments
+run long — and `document-start` back on as a warning. It only applies where it
+has been vendored: both templates pass `config: "-c .yamllint"`, while weisssrv
+passes no `config` at all and so lints on the template default `-d relaxed`,
+which is yamllint's own shipped profile rather than this file.
+
+`yamllint-strict.yml` aligns with the ansible-lint production profile (160-char
+limit, truthy/octal rules) and is meant to be applied **through** ansible-lint,
+which honours `# noqa yaml[...]` exemptions that a bare `yamllint` run cannot.
 
 `ruff.toml` selects `E4,E7,E9,F,W,B` — correctness rules only. Formatting rules
 are deliberately excluded: the family runs no formatter, so they would bury the
@@ -77,7 +82,7 @@ change here has been exercised:
 | `yamllint-relaxed.yml` | forked to `.yamllint`, which additionally disables `document-start` (a `spec:`-first CI template has no leading `---`) |
 | `pre-commit-config.yaml` | forked to `.pre-commit-config.yaml`, which adds a local `check-doc-links` hook |
 | `editorconfig` | forked to `.editorconfig`, prose differences only |
-| `yamllint-strict.yml` | not applied here at all — it is exercised only in a consumer, through ansible-lint |
+| `yamllint-strict.yml` | not applied here, and no consumer vendors it — an offered profile, exercised by nothing |
 
 ## Versioning
 

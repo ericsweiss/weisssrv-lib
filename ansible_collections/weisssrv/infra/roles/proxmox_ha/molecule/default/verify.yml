@@ -26,8 +26,6 @@
       ansible.builtin.set_fact:
         ha: "{{ ha_artifact.content | b64decode | from_json }}"
 
-    # (a) An absent resource must be created via `ha-manager add` and must NOT
-    #     be `set` (nothing exists to update yet).
     - name: A — absent resource triggers exactly one `ha-manager add` and no `set`
       ansible.builtin.assert:
         that:
@@ -35,8 +33,8 @@
           - ha.a_set == 0
         fail_msg: "Expected add=1/set=0 for absent resource, got add={{ ha.a_add }}/set={{ ha.a_set }}"
 
-    # (b) An already-correct resource is the idempotency contract: NO `set`
-    #     (and no `add`, since it already exists). This is the no-churn case.
+    # (b) The idempotency contract, and the scenario's stand-in for the
+    #     absent `idempotence` step.
     - name: B — already-correct resource triggers NO `ha-manager set` (idempotent)
       ansible.builtin.assert:
         that:
@@ -44,8 +42,6 @@
           - ha.b_add == 0
         fail_msg: "Expected add=0/set=0 for matching resource, got add={{ ha.b_add }}/set={{ ha.b_set }}"
 
-    # (c) A drifted resource (state started -> stopped) must be corrected with
-    #     exactly one `ha-manager set` and no `add`.
     - name: C — drifted resource triggers exactly one `ha-manager set` and no `add`
       ansible.builtin.assert:
         that:
@@ -86,8 +82,6 @@
           Expected vm_set=0/ct_set=1/add=0 for the two-resource index, got
           vm_set={{ ha.n_vm_set }}/ct_set={{ ha.n_ct_set }}/add={{ ha.n_add }}
 
-    # (d) An absent replication job whose source VM resides locally must be
-    #     created via `pvesr create-local-job` (and not `update`).
     - name: D — absent replication job is created via `pvesr create-local-job`
       ansible.builtin.assert:
         that:
@@ -145,8 +139,6 @@
           - ha.e_add == 0
         fail_msg: "Expected rules add=0/set=0 for matching rule, got add={{ ha.e_add }}/set={{ ha.e_set }}"
 
-    # (f) A drifted node-affinity rule (a node removed) must be corrected with
-    #     exactly one `rules set`.
     - name: F — drifted node-affinity rule triggers exactly one `rules set`
       ansible.builtin.assert:
         that:
@@ -163,8 +155,7 @@
           - ha.e2_add == 0
         fail_msg: "Expected rules add=0/set=0 for matching prioritised rule, got add={{ ha.e2_add }}/set={{ ha.e2_set }}"
 
-    # (g/h/i) Each non-node drift dimension (strict, comment, resources) must
-    #         independently trigger exactly one `rules set`.
+    # (g/h/i) Each non-node drift dimension fires independently.
     - name: G — strict drift triggers exactly one `rules set`
       ansible.builtin.assert:
         that:

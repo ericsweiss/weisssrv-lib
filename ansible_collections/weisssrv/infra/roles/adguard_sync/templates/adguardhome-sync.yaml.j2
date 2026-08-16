@@ -1,5 +1,4 @@
 # {{ ansible_managed }}
-# AdGuard Home Sync configuration
 
 {# to_json emits a safe double-quoted JSON string (valid YAML), so a rotated
    password/username/url containing YAML-significant characters (leading
@@ -37,4 +36,4 @@ features:
 {% endfor %}
 
 api:
-  port: 0  # Disable API server
+  port: 0  # metrics API off — the failure signal is the ExecStopPost .prom

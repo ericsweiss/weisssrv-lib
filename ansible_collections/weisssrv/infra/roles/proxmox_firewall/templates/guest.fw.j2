@@ -1,11 +1,10 @@
 # {{ ansible_managed }}
-# Proxmox VE Guest Firewall Configuration for {{ inventory_hostname }}
-# VMID: {{ vmid }}
+# Guest: {{ inventory_hostname }}
 
 [OPTIONS]
 
 enable: 1
-log_level_in: nolog
+log_level_in: {{ guest_firewall_log_level_in | default(proxmox_firewall_log_level_in) }}
 log_level_out: {{ 'info' if guest_firewall_policy_out | default('') == 'DROP' else 'nolog' }}
 {% if guest_firewall_policy_out is defined %}
 {# Unlike host.fw, guest firewalls honor policy_out. Set

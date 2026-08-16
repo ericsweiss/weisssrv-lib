@@ -2,6 +2,20 @@
 # Unbound Exporter — Prometheus metrics for the Unbound DNS resolver.
 # Thin wrapper over the shared prometheus_exporter role (.deb install).
 
+# The pinned checksum covers ONE artefact, so the role can only install the
+# x86_64 .deb; fail here rather than as a 404 or a dpkg arch refusal that reads
+# like a corrupted download.
+- name: Assert the host architecture matches the pinned artefact
+  ansible.builtin.assert:
+    that:
+      - ansible_architecture == 'x86_64'
+    fail_msg: >-
+      unbound_exporter installs the upstream x86_64 .deb pinned by
+      unbound_exporter_checksum; this host reports
+      {{ ansible_architecture }}. Supply a per-architecture artefact and
+      checksum before enabling the role here.
+    success_msg: "Host architecture matches the pinned unbound_exporter artefact"
+
 - name: Install unbound_exporter via shared pipeline
   ansible.builtin.include_role:
     name: weisssrv.infra.prometheus_exporter

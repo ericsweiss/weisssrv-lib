@@ -12,7 +12,7 @@ resource "cloudflare_zone_settings_override" "this" {
 
   settings {
     # http2, polish, mirage and webp are read-only via the API; Auto Minify was
-    # retired by Cloudflare in 2024 (no minify setting exists).
+    # retired upstream (no minify setting exists).
     ssl                      = var.zone_settings.ssl
     always_use_https         = var.zone_settings.always_use_https
     min_tls_version          = var.zone_settings.min_tls_version

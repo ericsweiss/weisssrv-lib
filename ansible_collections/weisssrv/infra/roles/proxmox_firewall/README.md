@@ -34,6 +34,8 @@ network groupings, Security Groups for reusable rule sets, and the
   `guest_security_groups`
 - Optional `policy_out` (`guest_firewall_policy_out`; `DROP` turns a group's
   `OUT ACCEPT` rules into an enforced egress allowlist)
+- Inbound drop logging via `guest_firewall_log_level_in`, defaulting to the
+  host-wide `proxmox_firewall_log_level_in`
 
 ### Monitoring user and API token (pveum)
 
@@ -57,11 +59,11 @@ into the secret store the exporters read.
 | `proxmox_firewall_wan_wireguard_vips` | `[]` | VIPs the WAN WireGuard `-dest` rule is scoped to; empty = no such rule |
 | `proxmox_firewall_extra_aliases` | `[]` | `[ALIASES]` entries that are not inventory hosts (`{name, cidr, comment?}`) |
 | `proxmox_firewall_cluster_rules` | `[]` | Extra raw lines under cluster.fw `[RULES]` |
-| `proxmox_firewall_host_rules` | `[]` | Extra raw lines under host.fw `[RULES]` |
+| `proxmox_firewall_host_rules` | `[]` | Extra raw lines under host.fw `[RULES]`, rendered **before** the security groups and the egress DROP — first-match-wins, so they outrank every group rule |
 | `proxmox_firewall_host_group` | `proxmox` | Inventory group holding the nodes |
 | `proxmox_firewall_enabled` | `true` | Render and deploy at all |
 | `proxmox_firewall_egress_filtering` | `false` | Host-originated egress default-deny |
-| `proxmox_firewall_log_level_in` | `nolog` | host.fw inbound drop logging (`info` for triage) |
+| `proxmox_firewall_log_level_in` | `nolog` | host.fw inbound drop logging, and the default for guests (`info` for triage) |
 | `proxmox_firewall_config_dir` | `/etc/pve/firewall` | pmxcfs firewall dir |
 | `proxmox_firewall_node_dir` | `/etc/pve/nodes` | pmxcfs per-node dir |
 | `proxmox_firewall_staging_dir` | `/var/lib/pve-firewall-ansible` | Off-pmxcfs render staging |
@@ -69,7 +71,7 @@ into the secret store the exporters read.
 
 Per-host inventory keys the templates read: `firewall_ipsets`,
 `firewall_alias`, `firewall_alias_comment`, `guest_security_groups`,
-`guest_firewall_policy_out`, `vmid`, `proxmox_role`,
+`guest_firewall_policy_out`, `guest_firewall_log_level_in`, `vmid`, `proxmox_role`,
 `proxmox_firewall_node_ip` (test override for `ansible_host`); plus
 `firewall_ipset_special_entries` for non-host IPSet members.
 
@@ -115,20 +117,17 @@ credentialed surface:
   (9100, 9101, 9134, 9167). An app's scrape port is site data:
   `proxmox_firewall_metrics_scrape_ports: [{port: 32400, sources: [k3s_nodes], comment: plex}]`.
 
-  The template used to build in six application ports as well. They are removed
-  as of the release that added this seam, so a repo upgrading from the built-in
-  set re-declares whichever it still needs — note that 31100 is the one entry
-  whose source is NOT `k3s_nodes`:
+  Each entry's `sources` are IP-set names, so a port whose scraper is not the
+  k3s nodes names its own set:
 
   ```yaml
   proxmox_firewall_metrics_scrape_ports:
-    - {port: 8123, sources: [k3s_nodes], comment: home-assistant}
     - {port: 32400, sources: [k3s_nodes], comment: plex}
-    - {port: 3000, sources: [k3s_nodes], comment: adguard API}
-    - {port: 7472, sources: [k3s_nodes], comment: metallb speaker}
-    - {port: 7473, sources: [k3s_nodes], comment: metallb controller}
     - {port: 31100, sources: [core-cluster], comment: loki push NodePort}
   ```
+
+  Repos upgrading from the release where the template built these ports in
+  find the removed set in [MIGRATING.md](../../MIGRATING.md).
 - `sg-dns` builds in 53/853 and takes its admin surfaces from
   `proxmox_firewall_dns_admin_ports`, which defaults to the two admin sets on
   :443 and :3000. Admitting a scraper to the plaintext :3000 API means adding

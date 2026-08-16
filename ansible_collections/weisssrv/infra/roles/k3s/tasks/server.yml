@@ -1,6 +1,4 @@
 ---
-# K3s server installation
-
 - name: Validate required k3s variables
   ansible.builtin.assert:
     that:
@@ -132,27 +130,17 @@
       {{ inventory_hostname }} (have:
       {{ ansible_facts.interfaces | default([]) | sort | join(', ') }}). The API VIP
       ({{ k3s_api_vip | default('?') }}) would silently fail to announce. Set
-      k3s_kube_vip_interface in group_vars/k3s.yml or host_vars to the right interface.
+      k3s_kube_vip_interface in the inventory to the right interface.
     success_msg: "kube-vip interface {{ k3s_kube_vip_interface }} present"
 
 # The DaemonSet is rendered once, on the first server, so every node runs it
-# with THAT host's interface name. A per-host override elsewhere would satisfy
-# the per-host assert above and still be ignored — the exact silent no-announce
-# the assert exists to prevent.
+# with THAT host's interface name.
 #
-# Runs on EVERY server, not just the renderer. Role defaults are not present in
-# hostvars, so a peer that never overrides the variable resolves to Undefined
-# and is defaulted to THIS host's value — which means the renderer's own view
-# collapses to one value precisely when the renderer is the outlier. Every
-# server evaluating the set from its own vantage makes that case fail: the
-# non-overriding servers see both names. This task ordering also puts the
-# failure before the manifest is written below.
-#
-# The membership clause is what stops the assert passing VACUOUSLY: a misnamed
-# k3s_server_group resolves to [] through the `| default([])`, and `0 <= 1` is
-# true. It also pins the group being read to one this server belongs to. Under
-# `--limit <first-server>` only the renderer evaluates the set, which no in-play
-# assert can see — see the role README's --limit note.
+# Runs on EVERY server, not just the renderer: role defaults are absent from
+# hostvars, so a non-overriding peer resolves to this host's value and the
+# outlier case would be invisible from the renderer alone. The membership clause
+# stops the assert passing vacuously on a misnamed group. See the README --limit
+# note.
 - name: Assert every server names the same kube-vip interface
   vars:
     _kube_vip_interfaces: >-
@@ -219,6 +207,24 @@
   ansible.builtin.systemd:
     daemon_reload: true
   when: k3s_cred_reconcile_dropin is changed
+
+# The agent unit must never run on a server node (a node converted from agent
+# to server keeps a k3s-agent competing for the kubelet). Mirrors agent.yml's
+# stray-server-unit check.
+- name: Check if k3s-agent.service exists (agent service on server node)
+  ansible.builtin.stat:
+    path: /etc/systemd/system/k3s-agent.service
+  register: k3s_agent_service
+
+- name: Stop and disable k3s-agent.service if present (wrong service for server)
+  ansible.builtin.systemd:
+    name: k3s-agent
+    state: stopped
+    enabled: false
+    daemon_reload: true
+  when:
+    - k3s_agent_service.stat.exists
+    - not (k3s_skip_install | default(false))
 
 # Version detection + install-script staging (shared with agent.yml)
 - name: Detect k3s version and stage install script

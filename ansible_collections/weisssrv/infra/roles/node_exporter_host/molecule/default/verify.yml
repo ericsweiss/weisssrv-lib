@@ -56,15 +56,9 @@
         return_content: true
       register: node_exporter_host_metrics
 
-    # The flags parsing is not enough: an unsupported flag name would leave the
-    # exporter dead, and a filter that matches nothing would leave the series
-    # empty. Assert the two series the NodeSystemd* alerts select actually
-    # appear, for a unit that exists in every systemd container. The
-    # collector_success line is asserted first so the two failure modes stay
-    # distinguishable: 0 = the collector errored (no D-Bus system bus is the
-    # usual cause, since the Debian unit runs as `prometheus` and only root can
-    # use systemd's private socket), 1 with no series = the unit filter matched
-    # nothing.
+    # collector_success is asserted first so the two failure modes stay
+    # distinguishable: 0 means the collector errored (usually no D-Bus system
+    # bus), 1 with no series means the unit filter matched nothing.
     - name: Assert the systemd collector emits the series the alerts select
       ansible.builtin.assert:
         that:
@@ -92,10 +86,7 @@
         fail_msg: "prometheus-node-exporter is not enabled"
         success_msg: "prometheus-node-exporter is enabled"
 
-    # ── Corosync health collector (node_exporter_host_proxmox only) ───────
-    # The scenario sets node_exporter_host_proxmox: true so the collector tasks
-    # run; without it any drift in the script / service / timer would slip
-    # through untested.
+    # corosync collector — deploy contract + end-to-end run (proxmox gate on)
 
     - name: Verify corosync health collector script is present and executable
       ansible.builtin.stat:
@@ -182,11 +173,8 @@
           - "'proxmox_corosync_health_collector_last_success_seconds ' in (corosync_prom_content.content | b64decode)"
         fail_msg: "corosync_health.prom missing one or more metrics"
 
-    # ── zpool status collector (node_exporter_host_proxmox only) ──────────
-    # Same deploy-contract checks as the corosync collector above. The CI
-    # container has no zpool binary, so the end-to-end invocation exercises
-    # the no-ZFS path: only the last_success sentinel is emitted, which is
-    # exactly what a non-ZFS host should produce.
+    # zpool collector — no zpool binary in CI, so the run exercises the
+    # no-ZFS path: only the last_success sentinel is emitted.
 
     - name: Verify zpool collector script is present and executable
       ansible.builtin.stat:
@@ -241,10 +229,8 @@
           - "'zfs_pool_status_collector_last_success_seconds ' in (zpool_prom_content.content | b64decode)"
         fail_msg: "zfs_pool_status.prom missing the collector sentinel"
 
-    # ── smartmon collector (node_exporter_host_proxmox only) ──────────────
-    # Same deploy-contract checks as the collectors above. The CI container
-    # has no SMART-capable devices, so the end-to-end invocation exercises
-    # the degraded path: only the last_success sentinel is required.
+    # smartmon collector — no SMART-capable devices in CI, so the run
+    # exercises the degraded path: only the last_success sentinel is required.
 
     - name: Verify smartmon collector script is present and executable
       ansible.builtin.stat:
@@ -299,9 +285,8 @@
           - "'smartmon_collector_last_success_seconds ' in (smartmon_prom_content.content | b64decode)"
         fail_msg: "smartmon.prom missing the collector sentinel"
 
-    # ── vzdump backup metrics hookscript (node_exporter_host_proxmox only)
-    # A cluster-wide vzdump job runs on every node, so the hook must be present
-    # fleet-wide; verify deployment plus the job-end / backup-abort verdict.
+    # vzdump metrics hookscript — deployment plus the job-end / backup-abort
+    # verdict; a cluster-wide vzdump job runs on every node.
     - name: Verify vzdump metrics hookscript is present and executable
       ansible.builtin.stat:
         path: /usr/local/bin/vzdump-metrics-hook.sh
@@ -351,10 +336,8 @@
           - "'vzdump_backup_last_run_success 0' in (vzdump_prom_fail.content | b64decode)"
         fail_msg: "backup-abort did not downgrade job-end to vzdump_backup_last_run_success 0"
 
-    # ── node_exporter liveness gate ───────────────────────────────────────
-    # The failure this guards is a zombie exporter that systemd still reports as
-    # active, so the deploy contract is only half the test: the probe must also
-    # be able to FAIL. Both directions run against the live exporter here.
+    # liveness gate — guards a zombie exporter systemd still reports active, so
+    # the probe must be able to FAIL as well as pass; both directions run here.
 
     - name: Verify healthcheck script is present and executable
       ansible.builtin.stat:

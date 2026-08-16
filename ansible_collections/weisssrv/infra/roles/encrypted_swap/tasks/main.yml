@@ -1,15 +1,6 @@
 ---
-# dm-crypt plain-mode, random-key swap via /etc/crypttab + /etc/fstab;
-# activation is DEFERRED to the next reboot (details in README). No arrangement
-# ever yields zero swap: the plaintext backing line stays in fstab alongside a
-# higher-priority `nofail` mapper line, and the boot finalize unit drops the
-# plaintext device once the mapper is up.
-#
-# There is deliberately NO live switchover. Converting an ACTIVE swap device
-# needs a swapoff first, and systemd-cryptsetup's mkswap on the mapper
-# overwrites the plaintext device's swap header — so a switch that fails its
-# post-swapon check cannot roll back and leaves the host swapless. Swap is
-# ephemeral, so deferring activation to reboot costs nothing.
+# dm-crypt plain-mode random-key swap via crypttab + fstab; activation deferred
+# to reboot (README). No arrangement ever yields zero swap.
 
 - name: Configure encrypted swap
   when: encrypted_swap_enabled | default(true)
@@ -98,11 +89,7 @@
             update_cache: true
             cache_valid_time: 3600
 
-        # crypttab: systemd-cryptsetup opens <source> with a RANDOM key from
-        # /dev/urandom (plain mode — no `luks` option) and mkswaps the mapper
-        # (the `swap` option) at every boot, so the on-disk swap is
-        # unrecoverable after a reboot. Managed as a single keyed line so a
-        # future crypttab entry is untouched.
+        # Managed as a single keyed line so a future crypttab entry is untouched.
         - name: Ensure /etc/crypttab exists
           ansible.builtin.file:
             path: /etc/crypttab
@@ -124,10 +111,8 @@
             group: root
             mode: "0600"
 
-        # fstab: `nofail` lets `swapon -a` skip the mapper while it is still
-        # absent (the pre-reboot defer window), so swap is never zero in any
-        # state; `pri=` makes the kernel prefer the encrypted mapper the moment
-        # it comes up.
+        # `nofail` lets `swapon -a` skip the still-absent mapper during the
+        # defer window; `pri=` makes the kernel prefer it once it is up.
         - name: Ensure the encrypted-swap fstab line (mapper, higher priority, nofail)
           ansible.builtin.lineinfile:
             path: /etc/fstab

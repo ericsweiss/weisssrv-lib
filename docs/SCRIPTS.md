@@ -50,6 +50,10 @@ JSON renderers.
   `scripts/version-registry.py` / `.json` under the repo root. `.py` (a module
   defining `CONFIG` or `SERVICE_REGISTRY`) and `.json` are both accepted; the
   Python form keeps each entry's inline rationale.
+  **The `.py` form is imported**, so its top level executes in the job's
+  interpreter: it must be repo-owned and reviewed like any other source, and
+  `--config` / `$CHECK_VERSIONS_CONFIG` are code-execution inputs. Use the
+  `.json` form wherever the config path is not trusted.
 - **Config keys:** `vars_file`, `services`, `default_deploy_command`,
   `version_file_aliases`, `untracked_allowlist`, `cache_dir`, `repo_root`,
   `report_title` (heading on the table report; default `Version Check Report`).
@@ -263,9 +267,20 @@ VPA drive the same resource on one workload. With
 target has a mutating, cpu-excluding VPA, and enforces the no-CPU-limits policy
 across pod specs and HelmRelease `.spec.values`.
 
+The same flag enforces the VPA memory-cap rule, scoped to what each policy
+controls: `maxAllowed.memory` **above** the container's limit fails in every
+shape (the kubelet would reject the recommendation), and **equal to** it fails
+only where the policy also controls limits (`controlledValues: RequestsAndLimits`
+or unset, mode not `Off`) — there the updater rescales the limit with the
+request, so the ceiling never binds. Under `RequestsOnly` cap == limit is the
+correct shape. A VPA whose target workload is not rendered into this
+kustomize-only corpus has no limit to compare against and is skipped.
+
 - **Config:** `--policy-config` with `chart_native_hpa_targets`
-  (`namespace`/`kind`/`name`/`source`) and `cpu_limit_allowlist`
-  (`namespace/Kind/name`). Both optional; absent = empty.
+  (`namespace`/`kind`/`name`/`source`), `cpu_limit_allowlist`
+  (`namespace/Kind/name`) and `vpa_cap_allowlist`
+  (`namespace/VerticalPodAutoscaler/name`, the grace list for caps not yet
+  re-derived). All optional; absent = empty.
 - **Example:** [`autoscaling-policy.example.yaml`](../examples/autoscaling-policy.example.yaml).
 - Wire it as `extra_validation` for `ci/validate/flux-lint.yml`.
 
@@ -286,6 +301,12 @@ validate-helm-values.py [--kubeconform] [--repo-root DIR] [--releases FILE]
 - **Releases file** (default `<repo-root>/helm-values-releases.yaml`): a list (or
   a `releases:` mapping) of `{name, manifest, chart, repo_name, repo_url}`.
 - **Example:** [`helm-values-releases.example.yaml`](../examples/helm-values-releases.example.yaml).
+- **Kube version:** derived from the ConfigMap's `k3s_version` and passed to
+  both `helm --kube-version` and `kubeconform -kubernetes-version`. Unlike
+  `flux-render.sh k8s-version`, a missing or unparseable key falls back to
+  `KUBE_VERSION_FALLBACK` (`1.36.0`) rather than failing, so a malformed pin
+  cannot take out `flux:lint` — the rendered chart is then judged against a
+  version nobody chose, which is the trade this hook accepts.
 
 ### `check-kubectl-version-pin.py`
 
@@ -364,9 +385,11 @@ K8S_VER=$(scripts/flux-render.sh k8s-version "$CM")
   no current consumer trips this.
 - `k8s-version` parses `k3s_version` out of `.data` **with PyYAML** and reduces
   it to `major.minor.patch`. A missing or unparseable key is a hard **failure**,
-  not a fallback — it previously defaulted to a version nobody chose and
-  validated the whole cluster against it. A consumer whose ConfigMap has no such
-  key passes the template's `k8s_version` input instead.
+  not a fallback: validating a whole cluster against a version nobody chose is
+  worse than a red job. A consumer whose ConfigMap has no such key passes the
+  template's `k8s_version` input instead. Note the two paths that DO fall back
+  to `1.36.0` — flux-lint's simple (tenant) mode and
+  `validate-helm-values.py`'s `derive_kube_version`.
 - An empty or unreadable ConfigMap path, and a ConfigMap with no `.data`, are
   both errors.
 - **Dual-maintained:** weisssrv vendors this file and the flux-lint template
@@ -392,13 +415,13 @@ actual gate — this only makes the gap visible. Dual-maintained with weisssrv.
 
 ## Cluster invariant gates
 
-Six gates, in two invocation shapes. **Three read the rendered manifest corpus on
-stdin** — `check-pvc-storageclass.py`, `check-scrape-netpol.py` and
-`check-secretstore-scope.py` — where the corpus is what `task flux:lint`
-accumulates from `kustomize build | envsubst`, so they wire into
-`ci/validate/flux-lint.yml`'s `extra_validation` chain. **Three take paths or
-flags**: `check-netpol-except-parity.py` (manifest paths), and
-`check-alertmanager-behaviour.py` / `check-backup-artifact-apps.py` (flags).
+Seven gates, in two invocation shapes. **Four read the rendered manifest corpus
+on stdin** — `check-pvc-storageclass.py`, `check-scrape-netpol.py`,
+`check-default-deny-coverage.py` and `check-secretstore-scope.py` — where the
+corpus is what `task flux:lint` accumulates from `kustomize build | envsubst`,
+so they wire into `ci/validate/flux-lint.yml`'s `extra_validation` chain.
+**Three take paths or flags**: `check-netpol-except-parity.py` (manifest paths),
+and `check-alertmanager-behaviour.py` / `check-backup-artifact-apps.py` (flags).
 Where a gate needs site data it comes from a flag or a config file, never from
 the source, so the shipped file is identical in every consumer —
 `check-pvc-storageclass` needs none at all, and `check-secretstore-scope` only
@@ -448,8 +471,16 @@ cat rendered-corpus.yaml | scripts/check-scrape-netpol.py \
   cannot otherwise see. `namespaceSelector.any` is unattributable and skipped.
 - **`--exempt` requires a reason** (`NS=REASON`); an unexplained exemption is
   rejected at parse time.
-- The port is deliberately not checked: a chart-native monitor names a port that
-  only resolves once the chart is rendered.
+- **Namespace-level reachability only, so the pass is not proof the scrape
+  lands.** Neither half of the policy's own targeting is checked: the port,
+  because a chart-native monitor names one that only resolves once the chart is
+  rendered; and the policy's `spec.podSelector`, because the pods a monitor
+  selects are equally unresolved here. A namespace whose only observability
+  allow is attached to some OTHER workload — or admits a port the exporter does
+  not listen on — passes this gate with the scrape still REJECTed. The gate
+  catches the whole-namespace omission, which is the failure that actually
+  recurs; a `TargetDown` that survives a clean run is the signal to check the
+  live policy's selector and port.
 - **An empty corpus is an operator error, exit 2**, as it is for the two sibling
   stdin gates. **So is a corpus that arrived but holds no scrape target** — the
   observability stage never rendered, so every namespace went unexamined. Scrape
@@ -457,6 +488,55 @@ cat rendered-corpus.yaml | scripts/check-scrape-netpol.py \
   is a per-namespace choice); the success line prints both counts.
 - **Exit codes:** 0 clean, 1 on a blocked scrape, 2 on an operator error (an
   empty or target-less corpus, unparseable input, a malformed `--exempt`).
+
+### `check-default-deny-coverage.py` (PyYAML)
+
+Fails a namespace that owns a workload but carries no namespace-wide ingress
+default-deny. This is the half its sibling `check-scrape-netpol.py` structurally
+cannot see: that gate only inspects namespaces which ALREADY run an ingress-deny
+policy, so a namespace with no policy at all is invisible to it rather than a
+finding.
+
+```
+cat rendered-corpus.yaml | scripts/check-default-deny-coverage.py \
+    [--exempt NS=REASON ...]
+```
+
+- A namespace **owns a workload** when the corpus puts a Deployment /
+  StatefulSet / DaemonSet / ReplicaSet / Job / CronJob / Pod in it, **or** a
+  HelmRelease targets it — a chart's own workloads never appear in a kustomize
+  corpus, so the release is the only visible proxy.
+- **A document with no `metadata.namespace` is read as the API reads it: it is
+  in `default`.** So a namespace-less Deployment puts `default` in scope and
+  `default` must carry a fence like any other namespace; a namespace-less
+  NetworkPolicy fences it. (A HelmRelease still honours `spec.targetNamespace`,
+  falling back to that defaulted namespace.)
+- A namespace is **fenced** by a NetworkPolicy with `Ingress` in `policyTypes`
+  and an empty/absent `podSelector`. An app-scoped policy does not count: it
+  fences its own pods and leaves every other pod in the namespace open.
+- **A namespace-wide policy whose rule names no ports and admits every peer
+  counts as wide open, not as a fence.** Both spellings qualify: an empty
+  `ingress:` rule (`[{}]` — the API's "from anywhere, on any port"), and a rule
+  whose `from` holds a peer that selects everything (`{}`,
+  `namespaceSelector: {}`, `podSelector: {}` — an EMPTY label selector matches
+  every object in its scope). Peers within a rule are OR'd, so one wide peer
+  opens the rule whatever else it lists. A rule that names `ports` is never read
+  as wide open — it narrows the surface, and port-level policy is a different
+  mandate. NetworkPolicies are additive, so one wide-open policy re-opens the
+  namespace even with a real `default-deny-ingress` beside it, and the namespace
+  is reported unfenced.
+- **`flux-system` is the one built-in exemption** — universal to a Flux cluster,
+  whose gotk-components manifest ships its own policies and is regenerated
+  verbatim by Flux. Every other exemption is site state and arrives as
+  `--exempt NS=REASON`, **never as an edit to this file**: it is vendored
+  byte-identical, so a local exemption is reverted by the next re-vendor and
+  would leak one repo's policy into every other. A reason is mandatory.
+- Unused exemptions are printed, never fatal — a namespace can legitimately drop
+  out of the corpus.
+- **Exit codes:** 0 clean, 1 on an unfenced namespace, 2 on an operator error
+  (an empty corpus, a corpus holding no workload namespace at all — the shape a
+  render loop that never reached the app stages produces — unparseable input, or
+  a malformed `--exempt`).
 
 ### `check-secretstore-scope.py` (PyYAML)
 
@@ -830,6 +910,7 @@ generate-molecule-pipeline.py [BASE_SHA | --diff-base SHA | --changed-files-from
   collection layout). `MOLECULE_JOBS_INCLUDE` — the file the generated child
   `include: local:`s. `MOLECULE_GLOBAL_TRIGGERS` — extra global-trigger paths
   (space-separated; a trailing `/` makes it a prefix).
+  `MOLECULE_GLOBAL_TRIGGERS_MODE` — `extend` (default) or `replace`; see below.
 - The collection-root paths that force a full matrix follow `ROLES_DIR` (its
   parent): `requirements.yml`, `galaxy.yml`, `meta/`, `plugins/` and
   `molecule-shared/` — none of them is a role or scenario path, so without this a
@@ -837,6 +918,16 @@ generate-molecule-pipeline.py [BASE_SHA | --diff-base SHA | --changed-files-from
   `MOLECULE_JOBS_INCLUDE` are triggers too. A repo with no integration suite just
   omits the `integration-tests` job from `CI_FILE`; a job that IS present with a
   broken matrix still fails loudly.
+- **The rest of the default trigger set is the conventional layout, not a
+  derivation**: `scripts/molecule-retry.sh`, `scripts/generate-molecule-pipeline.py`,
+  `ansible/molecule/`, `ansible/playbooks/maintenance/`, `docker/molecule-test/`
+  and `docker/molecule-ci/`. A repo that keeps its image contexts or helpers
+  elsewhere would otherwise carry dead triggers *and* a full-matrix fan-out on
+  any `docker/` change, so `MOLECULE_GLOBAL_TRIGGERS_MODE=replace` drops that set
+  and takes `$MOLECULE_GLOBAL_TRIGGERS` as the whole of it — list your own copy
+  of the generator there, or a change to the selection logic stops re-running
+  everything. The derived and CI-file entries above are not replaceable. An
+  unknown mode value fails the job rather than being ignored.
 - **`$MOLECULE_GLOBAL_TRIGGERS` must be paired with the plan job's `changes:`.**
   A path listed here forces a full matrix *once the plan job runs* — but if that
   path is not also in the `changes:` list that creates the plan job, an MR

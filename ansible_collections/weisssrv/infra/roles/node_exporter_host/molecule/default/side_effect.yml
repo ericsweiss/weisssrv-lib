@@ -1,10 +1,12 @@
 ---
-# The zpool-collector state toggle, run AFTER the idempotence check because a
-# toggle inside converge is non-idempotent by construction. Off-state is the
-# Ceph/LVM-thin configuration the README advertises: the enable+start list must
-# not name the zpool timer, and a previously deployed collector must be
-# reconciled away, not merely left unmanaged.
-- name: Side effect — zpool collector off, then back on
+# The collector state toggles, run AFTER the idempotence check because a toggle
+# inside converge is non-idempotent by construction. Off-state is the
+# Ceph/LVM-thin (zpool) and unclustered (corosync) configuration the README
+# advertises: the enable+start list must not name the timer, and a previously
+# deployed collector must be reconciled away, not merely left unmanaged. The
+# systemd collector has no artifacts to reconcile — only the rendered
+# ExecStart flags — so it is asserted on the override.conf render.
+- name: Side effect — each collector seam off, then back on
   hosts: all
   become: true
   tasks:
@@ -37,3 +39,59 @@
         name: weisssrv.infra.node_exporter_host
       vars:
         node_exporter_host_zpool_collector: true
+
+    - name: Apply the role with the corosync collector switched off
+      ansible.builtin.include_role:
+        name: weisssrv.infra.node_exporter_host
+      vars:
+        node_exporter_host_corosync_collector: false
+
+    - name: Stat the artifacts the corosync off-state must remove
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/systemd/system/corosync-health-collector.timer
+        - /etc/systemd/system/corosync-health-collector.service
+        - /usr/local/sbin/corosync-health-collector.sh
+        - /var/lib/node_exporter/corosync_health.prom
+      register: node_exporter_host_corosync_leftovers
+
+    - name: Assert the corosync collector was reconciled away
+      ansible.builtin.assert:
+        that: node_exporter_host_corosync_leftovers.results | map(attribute='stat.exists') | select | length == 0
+        fail_msg: >-
+          Switching node_exporter_host_corosync_collector off left collector
+          artifacts behind: an unclustered host would keep publishing the
+          mtime-0 series PmxcfsStale fires on.
+
+    - name: Apply the role with the corosync collector back on
+      ansible.builtin.include_role:
+        name: weisssrv.infra.node_exporter_host
+      vars:
+        node_exporter_host_corosync_collector: true
+
+    - name: Apply the role with the systemd collector switched off
+      ansible.builtin.include_role:
+        name: weisssrv.infra.node_exporter_host
+      vars:
+        node_exporter_host_systemd_collector: false
+
+    - name: Read the ExecStart override rendered with the systemd collector off
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/prometheus-node-exporter.service.d/override.conf
+      register: node_exporter_host_override_off
+
+    - name: Assert the off-state drops every --collector.systemd flag
+      ansible.builtin.assert:
+        that:
+          - "'--collector.systemd' not in (node_exporter_host_override_off.content | b64decode)"
+          - "'--collector.textfile' in (node_exporter_host_override_off.content | b64decode)"
+        fail_msg: >-
+          node_exporter_host_systemd_collector: false still rendered a
+          --collector.systemd flag (or dropped the textfile collector with it).
+
+    - name: Apply the role with the systemd collector back on
+      ansible.builtin.include_role:
+        name: weisssrv.infra.node_exporter_host
+      vars:
+        node_exporter_host_systemd_collector: true

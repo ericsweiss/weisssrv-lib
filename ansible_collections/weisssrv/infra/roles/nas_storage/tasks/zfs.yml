@@ -1,6 +1,4 @@
 ---
-# ZFS dataset configuration and scrub timers
-
 # Pools can be legitimately absent at deploy time — the archive pool's
 # documented steady state is exported/unplugged. Probe each pool once and
 # skip its datasets/scrub timer when it is not imported, rather than
@@ -55,14 +53,14 @@
 # imported-pool when: gate already covers the exported/absent-pool case.
 - name: Enable ZFS scrub timer
   ansible.builtin.systemd:
-    name: "zfs-scrub-{{ nas_storage_zfs_scrub_schedule | default('monthly') }}@{{ item.name }}.timer"
+    name: "zfs-scrub-{{ nas_storage_zfs_scrub_schedule }}@{{ item.name }}.timer"
     enabled: true
     state: started
   loop: "{{ nas_storage_zfs_pools }}"
   loop_control:
     label: "{{ item.name }}"
   when:
-    - nas_storage_zfs_scrub_enabled | default(true)
+    - nas_storage_zfs_scrub_enabled
     - item.name in nas_storage_zfs_imported_pools.stdout_lines
 
 - name: Ensure zfs-auto-snapshot is installed
@@ -71,45 +69,5 @@
     state: present
   when: ansible_facts['os_family'] == "Debian"
 
-# Cap the ZFS ARC via a module parameter when nas_storage_zfs_arc_max_bytes is set. Baked
-# into the initramfs (Update initramfs handler) so it applies at early boot,
-# before the data pools import and the ARC grows to the ~half-RAM default and
-# swap-thrashes the pinned guests on this memory-over-committed host. Empty
-# default -> the file is not managed (no cap enforced, nothing removed).
-- name: Cap ZFS ARC via modprobe.d
-  ansible.builtin.template:
-    src: zfs-modprobe.conf.j2
-    dest: /etc/modprobe.d/zfs.conf
-    owner: root
-    group: root
-    mode: "0644"
-  when: nas_storage_zfs_arc_max_bytes | default('') | string | length > 0
-  notify: Update initramfs
-
-# The modprobe.d file + initramfs rebuild above only take effect at the next
-# boot. Apply the cap to the running kernel too so a changed nas_storage_zfs_arc_max_bytes
-# is live immediately (compare-then-set, matching the property task above).
-# Guarded on the sysfs param existing — the molecule container has no ZFS
-# module, so the file is absent there.
-- name: Check for running ZFS ARC parameter
-  ansible.builtin.stat:
-    path: /sys/module/zfs/parameters/zfs_arc_max
-  register: nas_storage_zfs_arc_max_param
-  when: nas_storage_zfs_arc_max_bytes | default('') | string | length > 0
-
-- name: Apply ZFS ARC cap to the running kernel
-  ansible.builtin.shell: |
-    current=$(cat /sys/module/zfs/parameters/zfs_arc_max)
-    if [ "$current" != {{ nas_storage_zfs_arc_max_bytes | quote }} ]; then
-      echo {{ nas_storage_zfs_arc_max_bytes | quote }} > /sys/module/zfs/parameters/zfs_arc_max
-      echo "CHANGED"
-    else
-      echo "OK"
-    fi
-  register: nas_storage_zfs_arc_runtime
-  changed_when: "'CHANGED' in nas_storage_zfs_arc_runtime.stdout"
-  # No check_mode:false — this task writes /sys, so a dry-run (task infra:check)
-  # must skip it rather than mutate the running kernel on the live NAS.
-  when:
-    - nas_storage_zfs_arc_max_bytes | default('') | string | length > 0
-    - nas_storage_zfs_arc_max_param.stat.exists | default(false)
+- name: Cap the ZFS ARC
+  ansible.builtin.include_tasks: zfs_arc.yml

@@ -202,18 +202,3 @@
           - timer_status.status.ActiveState == 'active'
         fail_msg: "Timer is not active"
         success_msg: "Timer is active"
-
-    - name: Display test results
-      ansible.builtin.debug:
-        msg:
-          - "adguardhome-sync installed and configured:"
-          - "  - Binary: /usr/local/bin/adguardhome-sync (executable)"
-          - "  - Version: {{ (sync_version.stdout | default('N/A')) | trim }}"
-          - "Configuration:"
-          - "  - Config file: /etc/adguardhome-sync.yaml (mode 0600, via LoadCredential)"
-          - "  - Contains origin/replica/features/api sections"
-          - "Systemd:"
-          - "  - Service: /etc/systemd/system/adguardhome-sync.service (sandboxed DynamicUser oneshot)"
-          - "  - Timer: /etc/systemd/system/adguardhome-sync.timer (every 5 min)"
-          - "  - Timer status: enabled and active"
-          - "(Actual sync requires two AdGuard Home instances - not tested)"

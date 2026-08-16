@@ -22,9 +22,7 @@
 {{ value | to_json | replace('#', '\\#') }}
 {%- endmacro %}
 
-# =============================================================================
-# Core Configuration
-# =============================================================================
+# --- Core Configuration ---
 
 external_url {{ rb(gitlab_external_url) }}
 
@@ -38,18 +36,14 @@ gitlab_rails['gitlab_email_reply_to'] = {{ rb(gitlab_email_reply_to) }}
 
 gitlab_rails['time_zone'] = {{ rb(gitlab_timezone) }}
 
-# =============================================================================
-# SSH Configuration
-# =============================================================================
+# --- SSH Configuration ---
 
 # Clone-URL host and port. The role REDIRECTs gitlab_ssh_port to 22 locally, so
 # sshd itself still listens on 22.
 gitlab_rails['gitlab_ssh_host'] = {{ rb(gitlab_ssh_host) }}
 gitlab_rails['gitlab_shell_ssh_port'] = {{ gitlab_ssh_port }}
 
-# =============================================================================
-# NGINX
-# =============================================================================
+# --- NGINX ---
 
 nginx['listen_https'] = {{ gitlab_nginx_listen_https | lower }}
 nginx['listen_port'] = {{ gitlab_nginx_listen_port }}
@@ -74,16 +68,12 @@ nginx['proxy_set_headers'] = {
   "X-Forwarded-Ssl" => "on"
 }
 
-# =============================================================================
-# Let's Encrypt (disabled — certs come from the external distributor)
-# =============================================================================
+# --- Let's Encrypt (disabled — certs come from the external distributor) ---
 
 letsencrypt['enable'] = false
 letsencrypt['auto_renew'] = false
 
-# =============================================================================
-# SMTP
-# =============================================================================
+# --- SMTP ---
 
 {% if gitlab_smtp_enabled %}
 gitlab_rails['smtp_enable'] = true
@@ -97,9 +87,7 @@ gitlab_rails['smtp_enable_starttls_auto'] = {{ gitlab_smtp_enable_starttls_auto 
 gitlab_rails['smtp_openssl_verify_mode'] = 'peer'
 {% endif %}
 
-# =============================================================================
-# Container Registry
-# =============================================================================
+# --- Container Registry ---
 
 {% if gitlab_registry_enabled %}
 registry_external_url {{ rb(gitlab_registry_external_url) }}
@@ -117,9 +105,7 @@ gitlab_rails['registry_path'] = {{ rb(gitlab_registry_data_dir) }}
 {% endif %}
 {% endif %}
 
-# =============================================================================
-# GitLab Pages
-# =============================================================================
+# --- GitLab Pages ---
 
 {% if gitlab_pages_enabled %}
 pages_external_url {{ rb(gitlab_pages_external_url) }}
@@ -135,9 +121,7 @@ pages_nginx['ssl_certificate_key'] = {{ rb(gitlab_nginx_ssl_certificate_key) }}
 pages_nginx['ssl_protocols'] = {{ rb(gitlab_nginx_ssl_protocols) }}
 {% endif %}
 
-# =============================================================================
-# SAML SSO
-# =============================================================================
+# --- SAML SSO ---
 
 {% if gitlab_saml_enabled %}
 gitlab_rails['omniauth_enabled'] = true
@@ -183,9 +167,7 @@ gitlab_rails['omniauth_providers'] = [
 ]
 {% endif %}
 
-# =============================================================================
-# Repository Storage (GitLab 18+)
-# =============================================================================
+# --- Repository Storage (GitLab 18+) ---
 
 {% if gitlab_git_data_dir != '/var/opt/gitlab/git-data' %}
 # GitLab 18+ takes gitaly['configuration'] rather than git_data_dirs, and the
@@ -200,9 +182,7 @@ gitaly['configuration'] = {
 }
 {% endif %}
 
-# =============================================================================
-# Backup
-# =============================================================================
+# --- Backup ---
 
 # manage_backup_path false: on a root-squashed NFS landing zone, Chef's
 # storage_directory resource cannot chown the path and aborts the ENTIRE
@@ -213,18 +193,14 @@ gitlab_rails['manage_backup_path'] = false
 gitlab_rails['backup_path'] = {{ rb(gitlab_backup_path) }}
 gitlab_rails['backup_keep_time'] = {{ gitlab_backup_keep_time }}
 
-# =============================================================================
-# Performance
-# =============================================================================
+# --- Performance ---
 
 puma['worker_processes'] = {{ gitlab_puma_workers }}
 sidekiq['concurrency'] = {{ gitlab_sidekiq_concurrency }}
 
 prometheus_monitoring['enable'] = true
 
-# =============================================================================
-# Monitoring endpoints
-# =============================================================================
+# --- Monitoring endpoints ---
 
 # Sources allowed to reach /-/metrics, /-/readiness and /-/liveness. GitLab
 # matches the real_ip from X-Forwarded-For, so a proxied probe is matched on its

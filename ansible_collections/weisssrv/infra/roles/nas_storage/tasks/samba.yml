@@ -1,6 +1,4 @@
 ---
-# Samba file sharing configuration
-
 - name: Install Samba packages
   ansible.builtin.apt:
     name:

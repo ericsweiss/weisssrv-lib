@@ -21,10 +21,12 @@ Library blobs are read at `--ref` when given (`git show <ref>:<path>`). The
 fallback to the checkout's working tree is decided ONCE, per REF, not per path:
 when the ref does not resolve the tag has not been cut yet (it is cut after the
 library MR merges), so a pre-release run compares against the branch it will be
-tagged from and says so. When the ref DOES resolve, a path missing at it is
-reported as "the library no longer ships …" — a file the library added after the
-tag is not shipped by that release, and silently comparing it against a newer
-working tree would green-light a copy the consumer's pin cannot deliver.
+tagged from and says so. When the ref DOES resolve, a path missing at it fails —
+a file the library added after the tag is not shipped by that release, and
+silently comparing it against a newer working tree would green-light a copy the
+consumer's pin cannot deliver. That failure names its DIRECTION: a path still in
+the library working tree means the pin lags a registry addition (bump it), not
+that the library dropped the file (drop the entry).
 
 There is no skip-when-missing path. An unavailable library checkout is an
 operator error (exit 2), because a gate that quietly disables itself is not one.
@@ -130,6 +132,25 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def missing_blob_problem(lib_root: Path, entry: Entry, ref: str | None, kind: str) -> str:
+    """Why a registered path has no blob at `ref` — the two causes invert the fix.
+
+    Present in the library working tree means the registry gained it AFTER the
+    tag the consumer pins: that release does not ship it, and the fix is to bump
+    the pin at adoption. Reporting it as "no longer ships" sends whoever reads it
+    to delete an entry the library just added.
+    """
+    if ref and (lib_root / entry.lib).is_file():
+        return (
+            f"{entry.consumer}: {entry.lib} is registered and in the library working tree, "
+            f"but {ref} does not carry it — that release does not ship it yet. Bump the pin "
+            f"once a tag containing it exists; do not drop the entry or the copy."
+        )
+    if kind == "vendored":
+        return f"{entry.consumer}: the library no longer ships {entry.lib} — drop the entry or the copy"
+    return f"{entry.consumer}: forked from {entry.lib}, which the library no longer ships"
+
+
 def check(
     repo_root: Path, lib_root: Path, vendored: list[Entry], forked: list[Entry], ref: str | None
 ) -> list[str]:
@@ -138,10 +159,7 @@ def check(
         upstream = lib_blob(lib_root, entry.lib, ref)
         local = repo_root / entry.consumer
         if upstream is None:
-            problems.append(
-                f"{entry.consumer}: the library no longer ships {entry.lib} — drop the entry "
-                "or the copy"
-            )
+            problems.append(missing_blob_problem(lib_root, entry, ref, "vendored"))
             continue
         if not local.is_file():
             problems.append(f"{entry.consumer}: registered as vendored but missing here")
@@ -153,9 +171,7 @@ def check(
         upstream = lib_blob(lib_root, entry.lib, ref)
         local = repo_root / entry.consumer
         if upstream is None:
-            problems.append(
-                f"{entry.consumer}: forked from {entry.lib}, which the library no longer ships"
-            )
+            problems.append(missing_blob_problem(lib_root, entry, ref, "forked"))
             continue
         if not local.is_file():
             problems.append(f"{entry.consumer}: registered as a fork but missing here")

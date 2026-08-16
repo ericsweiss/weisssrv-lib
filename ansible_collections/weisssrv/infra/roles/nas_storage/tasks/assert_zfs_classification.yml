@@ -1,31 +1,12 @@
 ---
-# Up-front classification guard for both consumers of
-# nas_storage_zfs_bind_source_pattern: NFS export bind sources and MergerFS
-# unions. The mounted-dataset guard (nfs.yml), the export fstab boot ordering
-# (nfs.yml) and the union's zfs-mount anchor (mergerfs.yml) all fail OPEN on a
-# source the pattern does not match, so an unmatched source has to be a
-# deliberate declaration rather than a silent skip.
-#
-# `zfs:` is the declaration, and it is load-bearing in both directions:
-# `zfs: false` = deliberately non-ZFS (plain bind, no guard, no anchor),
-# `zfs: true`  = ZFS-backed on a path the roots do not cover (guard + anchor
-#                applied anyway).
+# Classification guard for both consumers of nas_storage_zfs_bind_source_pattern
+# — NFS export bind sources and MergerFS unions — all of which fail OPEN on an
+# unmatched source. The `zfs:` contract is in the role README.
 #
 # `zfs:` must be a BOOLEAN, not merely present: both consumers read it through
-# `| bool`, which maps anything outside its truthy set to False rather than
-# erroring. A presence-only check therefore accepts `zfs: ""` (a var that
-# rendered empty) or `zfs: "maybe"` and silently classifies the source as NOT
-# ZFS-backed — dropping the mounted-dataset guard and the boot anchor by a value
-# typo instead of by an omission.
+# `| bool`, which maps anything else to False rather than erroring.
 #
-# The type check is its OWN task, not a term in the classification `or`: folded
-# into that `or` it only runs when the derived clause already failed, so a value
-# typo on a source the roots DO cover stays accepted and still reaches `| bool`.
-# The two questions are independent — is the declaration well-typed, and which
-# branch classified the source — so each gets its own assert and message.
-#
-# Split into its own file so molecule can drive it from fabricated inventory —
-# the live path needs a real fileserver.
+# Split into its own file so molecule can drive it from fabricated inventory.
 
 - name: Assert every declared export `zfs:` is a boolean
   ansible.builtin.assert:
@@ -75,14 +56,10 @@
     label: "{{ item.bind_source }}"
 
 # MergerFS targets are exempt from the export assert above (mergerfs.yml owns
-# their ordering), so the unions themselves are where that ordering is checked.
-# A union whose branches are the pool ROOTS (/mnt/tank, /mnt/nvme) does not
-# match the pattern — it matches paths INSIDE a root — and would silently lose
-# its zfs-mount anchor, re-introducing the boot race the anchor exists to close.
-#
-# EVERY union is checked, not only the ones declaring systemd_requires: the
-# anchor is derived from the branch set, so scoping the guard to that key left
-# the shape it exists to catch invisible whenever the key was absent.
+# their ordering), so the unions are checked here instead. A union whose branches
+# are the pool ROOTS does not match the pattern — it matches paths INSIDE a root
+# — and would silently lose its zfs-mount anchor. EVERY union is checked: the
+# anchor is derived from the BRANCH SET, not from `systemd_requires`.
 - name: Assert every MergerFS union is classified ZFS-backed or not
   ansible.builtin.assert:
     that:

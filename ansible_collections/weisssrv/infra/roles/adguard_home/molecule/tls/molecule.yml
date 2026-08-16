@@ -51,7 +51,14 @@ provisioner:
   inventory:
     group_vars:
       all:
-        adguard_home_version: 0.107.77
+        # Keep in step with docker/molecule-test/Dockerfile's
+        # ADGUARD_HOME_VERSION: matching pins install from the archive staged in
+        # the image instead of fetching github.com mid-test. The cache is
+        # opt-in, so the scenario names the image's staging directory; the
+        # image also stages the release checksums.txt there, which is what the
+        # role verifies the archive against before unpacking it.
+        adguard_home_archive_cache_dir: /var/cache/adguard-home
+        adguard_home_version: 0.107.78
         adguard_home_user: adguard
         adguard_home_group: adguard
         adguard_home_install_path: /opt/AdGuardHome

@@ -1,15 +1,10 @@
 ---
 # Contract test: four role invocations covering both branches of both gates.
-#   1-2. tarball / deb SKIP paths — version-check prints the pinned version so
-#        needs_install=false and nothing downloads.
-#   3.   tarball INSTALL path — file:// download_url pointing at a staged
-#        tarball fixture, exercising the real get_url -> unarchive -> copy ->
-#        cleanup chain (and staying idempotent on the second converge).
-#   4.   deb INSTALL path — a locally-built .deb served over file://, so the
-#        get_url -> apt(deb:) -> cleanup chain unbound_exporter depends on runs
-#        in CI too.
-# A mock binary + trivial unit are pre-staged per exporter so the service half
-# has something real to enable/start; the health-check uri is molecule-notest.
+#   1-2. tarball / deb SKIP paths — version-check reports the pinned version.
+#   3.   tarball INSTALL path — get_url -> unarchive -> copy -> cleanup.
+#   4.   deb INSTALL path — get_url -> apt(deb:) -> cleanup.
+# Mock binaries + trivial units are pre-staged so the service half has something
+# real to enable/start; the health-check uri is molecule-notest.
 - name: Converge
   hosts: all
   become: true
@@ -23,19 +18,9 @@
     _pe_deb_install_version: "7.7.7"
     _pe_deb_install_tmp: /tmp/pe-deb-install-fixture
   pre_tasks:
-    - name: Wait for apt locks to be released
-      ansible.builtin.shell: |
-        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
-              fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
-              fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
-          sleep 1
-        done
-      args:
-        executable: /bin/bash
-      changed_when: false
-      when: ansible_os_family == "Debian"
+    - name: Container warm-up (apt locks, dpkg state, cache, systemd)
+      ansible.builtin.include_tasks: ../../../../molecule-shared/tasks/container-warmup.yml
 
-    # Mock binaries + trivial units so the service half has something to run.
     - name: Create mock exporter binaries
       ansible.builtin.copy:
         dest: "{{ item }}"
@@ -64,12 +49,7 @@
         - { unit: "pe-deb-mock", bin: "/usr/local/bin/pe-deb-mock" }
         - { unit: "pe-install-mock", bin: "/usr/local/bin/pe-install-mock" }
 
-    # Tarball install-path fixture
-    # Build a tiny .tar.gz holding a sleep-loop binary at a nested archive
-    # member path, served back to the role over file:// so the real
-    # get_url -> unarchive -> copy -> cleanup chain runs without leaving CI.
-    # The role creates its own scratch tmp_dir, so only the fixture build dir
-    # is staged here.
+    # case 3 fixture — nested archive member, served over file://.
     - name: Stage tarball fixture build dir
       ansible.builtin.file:
         path: "{{ _pe_install_tmp }}/build/pe-install-mock-{{ _pe_install_version }}.linux-amd64"
@@ -93,11 +73,7 @@
           -C {{ _pe_install_tmp }}/build pe-install-mock-{{ _pe_install_version }}.linux-amd64
         creates: "{{ _pe_install_tmp }}/pe-install-mock-{{ _pe_install_version }}.linux-amd64.tar.gz"
 
-    # Deb install-path fixture
-    # Build a minimal .deb shipping a sleep-loop binary + unit, served back over
-    # file:// so the role's deb branch (get_url -> apt deb: -> cleanup) runs for
-    # real in CI instead of only being exercised on the live unbound_exporter
-    # deploy.
+    # case 4 fixture — minimal .deb, served over file://.
     - name: Stage deb fixture package tree
       ansible.builtin.file:
         path: "{{ _pe_deb_install_tmp }}/pkg/{{ item }}"
@@ -147,7 +123,7 @@
         creates: "{{ _pe_deb_install_tmp }}/pe-realdeb-mock.deb"
 
   tasks:
-    # Tarball branch — skip path (version-check prints the pinned version).
+    # case 1 — tarball SKIP path
     - name: Run shared pipeline (tarball branch)
       ansible.builtin.include_role:
         name: weisssrv.infra.prometheus_exporter
@@ -163,7 +139,7 @@
         prometheus_exporter_service_name: "pe-tarball-mock"
         prometheus_exporter_port: 19999
 
-    # Deb branch — skip path (version-check prints the pinned version).
+    # case 2 — deb SKIP path
     - name: Run shared pipeline (deb branch)
       ansible.builtin.include_role:
         name: weisssrv.infra.prometheus_exporter
@@ -178,10 +154,7 @@
         prometheus_exporter_service_name: "pe-deb-mock"
         prometheus_exporter_port: 19998
 
-    # Tarball branch — INSTALL path. version-check prints a stale version so
-    # needs_install=true; download_url is the staged file:// fixture, so the
-    # role actually downloads, extracts the nested member, copies the binary
-    # to binary_path, and cleans up the scratch archive + extracted dir.
+    # case 3 — tarball INSTALL path
     - name: Run shared pipeline (tarball install path)
       ansible.builtin.include_role:
         name: weisssrv.infra.prometheus_exporter
@@ -193,21 +166,15 @@
         prometheus_exporter_checksum: ""
         prometheus_exporter_binary_path: "/usr/local/bin/pe-install-mock"
         prometheus_exporter_archive_member: "pe-install-mock-{{ _pe_install_version }}.linux-amd64/pe-install-mock"
-        # version-check queries the installed binary: rc!=0 (binary absent) on
-        # the first converge => needs_install=true; prints the pinned version
-        # once installed => needs_install=false. This keeps the path idempotent.
+        # rc!=0 (binary absent) on the first converge => install; the pinned
+        # version once installed => skip. Keeps the path idempotent.
         prometheus_exporter_version_check_cmd: "/usr/local/bin/pe-install-mock --version"
         prometheus_exporter_service_name: "pe-install-mock"
         prometheus_exporter_port: 19997
-        # Extract under a dedicated scratch dir so the role's archive download
-        # + cleanup never touches the staged fixture under _pe_install_tmp.
+        # Dedicated scratch dir: the role's cleanup must not eat the fixture.
         prometheus_exporter_tmp_dir: "/tmp/pe-install-scratch"
 
-    # Deb branch — INSTALL path. version-check queries dpkg for the package,
-    # which is absent on the first converge (needs_install=true) and reports the
-    # pinned version once installed (needs_install=false, so it stays
-    # idempotent); download_url is the staged file:// .deb, so the role actually
-    # downloads and apt-installs the package and cleans up the scratch download.
+    # case 4 — deb INSTALL path
     - name: Run shared pipeline (deb install path)
       ansible.builtin.include_role:
         name: weisssrv.infra.prometheus_exporter

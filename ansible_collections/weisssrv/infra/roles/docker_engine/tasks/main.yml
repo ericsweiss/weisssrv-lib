@@ -1,11 +1,6 @@
 ---
 # Pinned Docker Engine (CE) + compose/buildx plugins from download.docker.com,
-# dpkg-held so an apt-upgrade never bumps them out from under a running compose
-# stack, plus the journald daemon.json.
-#
-# docker_engine_skip_install gates every step needing the real apt repo, the
-# Docker binary or a running daemon, so a render-only run can still assert the
-# daemon.json. It defaults false; callers gate the whole include on their own flag.
+# dpkg-held, plus the journald daemon.json.
 
 - name: Validate the pinned Docker versions are supplied
   ansible.builtin.assert:

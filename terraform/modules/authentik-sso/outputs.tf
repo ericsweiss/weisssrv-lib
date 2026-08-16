@@ -33,6 +33,11 @@ output "saml_provider_ids" {
   value       = { for key, p in authentik_provider_saml.this : key => p.id }
 }
 
+output "custom_scope_mapping_ids" {
+  description = "Scope-mapping ID per `custom_scope_mappings` key — the identifier a disaster-recovery re-import needs."
+  value       = { for key, m in authentik_property_mapping_provider_scope.custom : key => m.id }
+}
+
 output "policy_binding_ids" {
   description = "Binding UUID per `policy_bindings` key — the identifier a disaster-recovery re-import needs."
   value       = { for key, b in authentik_policy_binding.this : key => b.id }

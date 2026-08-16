@@ -1,7 +1,4 @@
 ---
-# Proxmox VE firewall configuration
-# Manages cluster.fw, ipsets, security groups, and per-node host.fw
-
 # An empty admin_lan IPSet locks :22 and :8006 out of every node, so name the
 # variable here rather than letting cluster.fw.j2 raise an undefined-variable
 # error mid-render.

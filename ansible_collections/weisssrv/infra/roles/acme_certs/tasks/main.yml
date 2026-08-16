@@ -1,8 +1,4 @@
 ---
-# ACME certificate management with acme.sh: issue on the authority host
-# (acme_certs_enabled) and distribute to acme_certs_distribution_targets over
-# SSH as acme_certs_ssh_user.
-
 - name: Validate the required acme.sh inputs
   ansible.builtin.assert:
     that:
@@ -146,7 +142,7 @@
 - name: Install acme.sh (default CA pinned to Let's Encrypt)
   ansible.builtin.shell: |
     cd /tmp/acme.sh-{{ acme_certs_sh_version }} && \
-    bash acme.sh --install --email {{ acme_certs_email }} \
+    bash acme.sh --install --email {{ acme_certs_email | quote }} \
       --server letsencrypt
   args:
     creates: /root/.acme.sh/acme.sh
@@ -249,6 +245,25 @@
       loop_control:
         label: "{{ item.host }}"
 
+    # The receiver bakes RELOAD from restart_command, falling back to
+    # `systemctl restart <restart_service>`. With neither key set — or either
+    # set to an empty/whitespace string — the receiver has no reload to run, and
+    # that only surfaces on the first run that actually pushes a cert, long
+    # after the receiver is installed.
+    - name: Assert every cert distribution target declares a reload
+      ansible.builtin.assert:
+        that:
+          - >-
+            (item.restart_service | default('') | trim | length > 0) or
+            (item.restart_command | default('') | trim | length > 0)
+        fail_msg: |
+          The acme_certs_distribution_targets entry for "{{ item.host }}"
+          declares neither restart_service nor restart_command. See
+          README.md § Target schema for the required keys.
+      loop: "{{ acme_certs_distribution_targets }}"
+      loop_control:
+        label: "{{ item.host }}"
+
     - name: Ensure root .ssh directory exists
       ansible.builtin.file:
         path: /root/.ssh
@@ -307,8 +322,7 @@
     - acme_certs_cert_exists.stat.exists | default(false)
     - not (acme_certs_local_cert_exists.stat.exists | default(false))
   register: acme_certs_install_result
-  # Guarded by the local-cert-absence `when:` above, so reaching this task IS
-  # the change.
+  # changed_when: true — the `when:` above is the guard.
   changed_when: true
 
 # --install-cert above only runs on a first local install, so a cert that
@@ -346,7 +360,7 @@
     - not (acme_certs_install_result.changed | default(false))
     - (acme_certs_reloadcmd_check.stdout | default('') | trim) == 'missing'
   register: acme_certs_reloadcmd_repair
-  # Guarded by the mismatch `when:` above, so reaching this task IS the change.
+  # changed_when: true — the `when:` above is the guard.
   changed_when: true
 
 - name: Set proper ownership on installed certificates
@@ -421,9 +435,6 @@
     - not (acme_certs_install_result.changed | default(false))
     - not (acme_certs_reloadcmd_repair.changed | default(false))
   register: acme_certs_distribution_result
-  # "OK: <host>" means a real push+reload, "unchanged: <host>" a skip, so an
-  # all-unchanged run converges to ok. Any non-zero rc fails the play (module
-  # default): rc=1 is a hard local error, rc=2 means the script delivered to
-  # every reachable target and at least one was unreachable. Either way the
-  # per-target metrics in cert_distribution_targets.prom name the host.
+  # "OK:" = a real push, "unchanged:" = a skip. rc 1 is a local error, rc 2
+  # means at least one target was unreachable (see cert_distribution_targets.prom).
   changed_when: "'OK:' in (acme_certs_distribution_result.stdout | default(''))"

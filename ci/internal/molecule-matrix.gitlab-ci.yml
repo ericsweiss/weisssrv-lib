@@ -62,9 +62,18 @@ spec:
         space-separated; a trailing `/` makes it a prefix). The generator
         already covers the CI file, the jobs include, the two image contexts,
         its own sources, and everything at the root of `roles_dir`'s parent
-        (requirements.yml, galaxy.yml, meta/, plugins/, molecule-shared/) — all
-        derived, so overriding `roles_dir` needs no matching edit here. This
-        input is for genuine per-consumer extras only.
+        (requirements.yml, galaxy.yml, meta/, plugins/, molecule-shared/) — the
+        last group derived, so overriding `roles_dir` needs no matching edit
+        here. This input is for genuine per-consumer extras only.
+    global_triggers_mode:
+      default: extend
+      options: [extend, replace]
+      description: >-
+        Whether `global_triggers` adds to the conventional-layout trigger set
+        (the image contexts, `ansible/molecule/`,
+        `ansible/playbooks/maintenance/` and the helper scripts) or stands in
+        for it. `replace` is for a repo that keeps those trees elsewhere; the
+        derived and CI-file triggers apply either way. See docs/SCRIPTS.md.
     child_file:
       default: molecule-child.yml
       description: Artifact the plan writes and the trigger runs.
@@ -133,6 +142,7 @@ spec:
     INTEGRATION_DIR: $[[ inputs.integration_dir ]]
     MOLECULE_JOBS_INCLUDE: $[[ inputs.jobs_include ]]
     MOLECULE_GLOBAL_TRIGGERS: $[[ inputs.global_triggers ]]
+    MOLECULE_GLOBAL_TRIGGERS_MODE: $[[ inputs.global_triggers_mode ]]
   before_script:
     - pip install --user --quiet "pyyaml==$[[ inputs.pyyaml_version ]]"
   script:

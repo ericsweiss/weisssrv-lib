@@ -264,7 +264,7 @@ continuously on a system that is fine.
 Consequences to expect:
 
 - The deploy that installs the units spends one drill's worth of B2 egress
-  (bounded by `restic_offsite_restore_drill_max_bytes`, 8 MiB by default) and
+  (bounded by `restic_offsite_restore_drill_max_bytes`, 16 MiB by default) and
   takes as long as that restore.
 - Re-running the role on a host whose drill has already **passed** does not
   re-drill: the proof metric is present, both gate arms are false, and no B2

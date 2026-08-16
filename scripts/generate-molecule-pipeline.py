@@ -56,9 +56,12 @@ scanning scenarios for inventory-file references, so a group_vars file selects
 only the scenarios that actually load it. The root of the tree holding the roles
 ($ROLES_DIR's parent — galaxy.yml, requirements.yml, meta/, plugins/,
 molecule-shared/) is a global trigger, derived rather than configured, so a
-collection-wide change can never emit the green no-op child. Extra global
-triggers can be added via $MOLECULE_GLOBAL_TRIGGERS (space-separated; a trailing
-"/" makes it a prefix).
+collection-wide change can never emit the green no-op child. The helper scripts,
+maintenance playbooks and image build contexts that also force a full matrix are
+the CONVENTIONAL layout, not derived: $MOLECULE_GLOBAL_TRIGGERS adds to them
+(space-separated; a trailing "/" makes it a prefix), and
+$MOLECULE_GLOBAL_TRIGGERS_MODE=replace makes it stand in for them, for a repo
+that keeps those trees elsewhere.
 """
 from __future__ import annotations
 
@@ -76,9 +79,7 @@ try:
 except ImportError:  # pragma: no cover - dependency guard mirrors sibling scripts
     sys.exit("PyYAML required: pip install pyyaml (or brew install python && pip3 install pyyaml)")
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
+# --- Configuration ---
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -115,6 +116,30 @@ NOOP_IMAGE = "alpine:3.23"
 # Consumer-supplied extra global triggers: space-separated; a trailing "/"
 # makes it a prefix.
 _EXTRA_TRIGGERS = os.environ.get("MOLECULE_GLOBAL_TRIGGERS", "").split()
+# How $MOLECULE_GLOBAL_TRIGGERS combines with the conventional-layout set below:
+# "extend" (default) adds to it, "replace" stands in for it. Only the layout
+# conventions are replaceable — the entries derived from $ROLES_DIR, the CI file
+# and the jobs include stay triggers either way, because they are what keeps a
+# collection-wide change from emitting a green no-op child.
+_TRIGGER_MODE = os.environ.get("MOLECULE_GLOBAL_TRIGGERS_MODE") or "extend"
+# The conventional layout's non-derivable triggers: this repo family's helper
+# scripts, the playbooks a verify can include, and the two image build contexts.
+# A repo that keeps those elsewhere sets MOLECULE_GLOBAL_TRIGGERS_MODE=replace
+# and lists its own paths — including its own copy of THIS script, or a change
+# to the selection logic stops re-running everything.
+_CONVENTIONAL_TRIGGER_FILES = (
+    "scripts/molecule-retry.sh",
+    "scripts/generate-molecule-pipeline.py",
+)
+_CONVENTIONAL_TRIGGER_PREFIXES = (
+    "ansible/molecule/",
+    # Playbooks a scenario's verify can include_tasks. Global rather than a
+    # per-role map, so a new consumer cannot rot the narrowing.
+    "ansible/playbooks/maintenance/",
+    "docker/molecule-test/",
+    # Includes the CI image's requirements.txt — the pip pins both suites run on.
+    "docker/molecule-ci/",
+)
 
 
 @functools.lru_cache(maxsize=None)
@@ -129,6 +154,11 @@ def _global_triggers(roles_prefix: str) -> tuple[frozenset[str], tuple[str, ...]
     entry to $MOLECULE_GLOBAL_TRIGGERS must add the same path to the plan job's
     `changes` list (ci/internal/molecule-matrix) — see docs/SCRIPTS.md.
     """
+    if _TRIGGER_MODE not in ("extend", "replace"):
+        raise ValueError(
+            f"MOLECULE_GLOBAL_TRIGGERS_MODE={_TRIGGER_MODE!r}: expected 'extend' or 'replace'"
+        )
+    replace = _TRIGGER_MODE == "replace"
     root = PurePosixPath(roles_prefix).parent
     files = {
         str(root / "requirements.yml"),
@@ -137,23 +167,18 @@ def _global_triggers(roles_prefix: str) -> tuple[frozenset[str], tuple[str, ...]
         # The shared job templates every molecule/integration job extends — a
         # template-only change must re-run everything, not emit a no-op child.
         MOLECULE_JOBS_INCLUDE,
-        "scripts/molecule-retry.sh",
-        # This generator: if the selection logic changed, run everything.
-        "scripts/generate-molecule-pipeline.py",
-    } | {e for e in _EXTRA_TRIGGERS if not e.endswith("/")}
+    }
+    if not replace:
+        files |= set(_CONVENTIONAL_TRIGGER_FILES)
+    files |= {e for e in _EXTRA_TRIGGERS if not e.endswith("/")}
     prefixes = (
         str(root / "meta") + "/",
         str(root / "plugins") + "/",
         str(root / "molecule-shared") + "/",
-        "ansible/molecule/",
-        # Playbooks a scenario's verify can include_tasks. Global rather than a
-        # per-role map, so a new consumer cannot rot the narrowing.
-        "ansible/playbooks/maintenance/",
-        "docker/molecule-test/",
-        # Includes the CI image's requirements.txt — the pip pins both suites
-        # run on.
-        "docker/molecule-ci/",
-    ) + tuple(e for e in _EXTRA_TRIGGERS if e.endswith("/"))
+    )
+    if not replace:
+        prefixes += _CONVENTIONAL_TRIGGER_PREFIXES
+    prefixes += tuple(e for e in _EXTRA_TRIGGERS if e.endswith("/"))
     return frozenset(files), prefixes
 
 
@@ -172,9 +197,7 @@ class CoverageError(RuntimeError):
     """A changed role/test has no matrix entry — a coverage bug, fail loud."""
 
 
-# ---------------------------------------------------------------------------
-# YAML loading (tolerant of GitLab custom tags such as !reference)
-# ---------------------------------------------------------------------------
+# --- YAML loading (tolerant of GitLab custom tags such as !reference) ---
 
 class _TagTolerantLoader(yaml.SafeLoader):
     """SafeLoader that survives GitLab's custom tags (e.g. `!reference`).
@@ -218,9 +241,7 @@ def _load_yaml(path: Path):
         return None
 
 
-# ---------------------------------------------------------------------------
-# Matrix parsing (single source of truth = the CI file)
-# ---------------------------------------------------------------------------
+# --- Matrix parsing (single source of truth = the CI file) ---
 
 def parse_molecule_matrix(ci_path: Path = CI_FILE) -> tuple[dict[str, list[str]], list[str]]:
     """Parse the molecule-tests / integration-tests parallel:matrix from the CI file.
@@ -277,9 +298,7 @@ def parse_molecule_matrix(ci_path: Path = CI_FILE) -> tuple[dict[str, list[str]]
     return ({r: sorted(s) for r, s in role_scenarios.items()}, sorted(integration))
 
 
-# ---------------------------------------------------------------------------
-# Dependency-graph derivation (from the repo, not hardcoded)
-# ---------------------------------------------------------------------------
+# --- Dependency-graph derivation (from the repo, not hardcoded) ---
 
 
 def _yaml_files(root: Path):
@@ -485,9 +504,7 @@ def build_inventory_consumers(
     return dict(consumers)
 
 
-# ---------------------------------------------------------------------------
-# Path classification
-# ---------------------------------------------------------------------------
+# --- Path classification ---
 
 def is_global_trigger(path: str, roles_prefix: str = ROLES_PREFIX) -> bool:
     """True if a change to `path` forces the full matrix."""
@@ -556,9 +573,7 @@ def classify_integration_path(
     )
 
 
-# ---------------------------------------------------------------------------
-# Selection
-# ---------------------------------------------------------------------------
+# --- Selection ---
 
 class Selection:
     """Result of computing the affected set."""
@@ -698,9 +713,7 @@ def select(
     )
 
 
-# ---------------------------------------------------------------------------
-# Rendering
-# ---------------------------------------------------------------------------
+# --- Rendering ---
 
 _HEADER = (
     "---\n"
@@ -760,9 +773,7 @@ def render_child_pipeline(selection: Selection) -> str:
     return _HEADER + yaml.safe_dump(doc, default_flow_style=False, sort_keys=False)
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
+# --- CLI ---
 
 def _git_changed_files(base: str, repo: Path = REPO) -> list[str]:
     """`git diff --name-only <base>...HEAD` (three-dot: HEAD vs the merge-base)."""

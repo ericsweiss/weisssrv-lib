@@ -48,9 +48,10 @@ the current release is named in the library
 
 ## Roles
 
-40 roles, addressed by FQCN. Each has its own `README.md` (variables, task flow,
-operator notes) and its own molecule scenario. Which roles a release added is in
-that release's notes, not here.
+Every role is addressed by FQCN, and the tables below are the inventory. Each
+has its own `README.md` (variables, task flow, operator notes) and its own
+molecule scenario. Which roles a release added is in that release's notes, not
+here.
 
 ### Host baseline and tuning
 
@@ -161,7 +162,7 @@ nas_storage_zfs_arc_max_bytes: "{{ zfs_arc_max_bytes | default('') }}"
 | `admin_user` | base, qol, proxmox_vm (cloud-init user), proxmox_lxc |
 | `admin_email` | base, smtp_relay |
 | `ssh_port`, `ssh_permit_root_login`, `ssh_password_authentication`, `ssh_pubkey_authentication`, `ssh_authorized_keys` | base |
-| `timezone` | base, immich, immich_ml |
+| `timezone` | base, gitlab, immich, immich_ml |
 | `dns_servers` | base, proxmox_vm (cloud-init DNS), proxmox_lxc (nameserver) |
 | `internal_domain` | k3s (TLS SANs), resolv_conf, smtp_relay, proxmox_lxc (search domain), zfs_encryption (Connect URL), nextcloud |
 | `external_domain` | nextcloud |
@@ -189,6 +190,13 @@ following the convention today are `acme_certs_textfile_dir`,
 `immich_backup_metrics_dir`, `k3s_etcd_snapshot_textfile_dir`,
 `nas_storage_backup_artifact_metrics_dir`, `nextcloud_backup_metrics_dir`,
 `restic_offsite_metrics_dir` and `smtp_relay_textfile_dir`.
+
+All but one are keys in their role's `defaults/main.yml`, so they appear in that
+role's variable table. `nas_storage_backup_artifact_metrics_dir` is the
+exception: `nas_storage` resolves the same expression inline at each call site
+(`tasks/backup_metrics.yml` and the four collector templates) instead of
+declaring a default. Setting it in the inventory works identically; it is just
+not discoverable from the role README.
 
 ## Consumers that differ from weisssrv
 
@@ -255,6 +263,8 @@ and is **removed in ansible-core 2.19** — use the singular form.
 
 ```
 galaxy.yml         collection metadata + runtime dependency contract
+CHANGELOG.md       a pointer to the GitLab Releases page — not a changelog
+LICENSE            ships in the artifact
 MIGRATING.md       old -> new variable map for adopting the collection
 meta/runtime.yml   requires_ansible floor
 requirements.yml   galaxy deps for TEST environments (what molecule installs)
@@ -263,9 +273,10 @@ plugins/           empty scaffold — see plugins/README.md before adding one
 molecule-shared/   the shared molecule base config + prepare tasks
 ```
 
-There is no `changelogs/` directory. Release notes are generated per tag by
-`ci/release/semantic-release.yml` from the conventional commits in the release —
-see [docs/VERSIONING.md](../../../docs/VERSIONING.md#no-changelog-file).
+There is no `changelogs/` directory, and `CHANGELOG.md` holds no entries.
+Release notes are generated per tag by `ci/release/semantic-release.yml` from
+the conventional commits in the release — see
+[docs/VERSIONING.md](../../../docs/VERSIONING.md#no-changelog-file).
 
 ## Testing a role
 

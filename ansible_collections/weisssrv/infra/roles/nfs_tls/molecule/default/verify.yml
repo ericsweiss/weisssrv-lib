@@ -3,10 +3,11 @@
 # cert paths, unit recognized. Verifying tlshd actually running would need
 # AF_TLSH netlink and a real NFSv4 client/server pair.
 #
-# Two platforms cover both render paths: the SERVER host ([authenticate.server]
-# with cert + key, PEMs spared) and the CLIENT-only host (key-free
-# [authenticate.client], staged PEMs removed by the least-privilege cleanup).
-# Assertions gate on nfs_tls_is_server from the scenario inventory.
+# Four platforms: SERVER ([authenticate.server] with cert + key, PEMs spared),
+# CLIENT-only (key-free [authenticate.client], staged PEMs scrubbed), CLIENT
+# with nfs_tls_scrub_client_cert: false (PEMs survive), and opted-out
+# (nfs_tls_enabled: false, de-list reconcile). Assertions gate on the
+# per-host vars from the scenario inventory.
 - name: Verify
   hosts: all
   become: true
@@ -145,6 +146,21 @@
       when:
         - nfs_tls_enabled | default(true)
         - not (nfs_tls_is_server | default(false))
+        - nfs_tls_scrub_client_cert | default(true)
+
+    - name: Assert the opt-out spared a client whose PEMs another role owns
+      ansible.builtin.assert:
+        that:
+          - server_pem_stat.results | map(attribute='stat.exists') | list == [true, true]
+        fail_msg: >-
+          The cert/key were removed despite nfs_tls_scrub_client_cert: false —
+          nfs_tls and the role that owns those paths would delete and reinstall
+          them on alternate converges.
+        success_msg: "nfs_tls_scrub_client_cert: false left the staged PEMs in place"
+      when:
+        - nfs_tls_enabled | default(true)
+        - not (nfs_tls_is_server | default(false))
+        - not (nfs_tls_scrub_client_cert | default(true))
 
     # 3. tlshd.service unit recognized by systemd (both hosts)
     # `systemctl cat` (not the systemd_service module) so this stays a read-only
@@ -191,13 +207,3 @@
         fail_msg: "/etc/tlshd.conf survived the opt-out reconcile — removal regressed."
         success_msg: "/etc/tlshd.conf removed after opt-out reconcile"
       when: not (nfs_tls_enabled | default(true))
-
-    # Summary
-    - name: Display test results
-      ansible.builtin.debug:
-        msg:
-          - "ktls-utils package installed"
-          - "/etc/tlshd.conf rendered for this host's role (server identity vs key-free client)"
-          - "PEM handling verified (server spared, client-only removed)"
-          - "tlshd.service unit recognized by systemd and enabled"
-          - "All nfs_tls role verifications passed"

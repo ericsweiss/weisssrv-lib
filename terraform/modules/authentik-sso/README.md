@@ -13,7 +13,7 @@ The tag below is an example: use the tag your repo pins (docs/VERSIONING.md).
 
 ```hcl
 module "sso" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/authentik-sso?ref=v0.7.4"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/authentik-sso?ref=v0.8.0"
 
   oauth2_providers = {
     grafana = {
@@ -199,7 +199,7 @@ Renaming a map key is the same operation in disguise (destroy + create) — use 
 
 `application_ids`, `application_uuids`, `group_ids`, `oauth2_provider_ids`,
 `oauth2_client_ids`, `proxy_provider_ids`, `saml_provider_ids`,
-`policy_binding_ids`.
+`custom_scope_mapping_ids`, `policy_binding_ids`.
 
 ## Security defaults
 
@@ -224,9 +224,11 @@ smoke test per app.
 `regex` mode with `re.fullmatch`, where `.` matches any character — so
 `https://app.example.com/callback` as a regex also matches
 `https://app-example.com/callback` and other registrable look-alike domains. The
-module therefore **rejects a regex redirect URI containing an unescaped dot**:
-write `https://app\.example\.com/callback`, and prefer `strict` unless a
-wildcard is genuinely required.
+module therefore **rejects a regex redirect URI containing an unescaped dot**.
+In an HCL quoted string `\.` is an invalid escape sequence, so double the
+backslash — `url = "https://app\\.example\\.com/callback"` — which is the
+single-backslash pattern authentik stores. Prefer `strict` unless a wildcard is
+genuinely required.
 
 **Consent flow.** The default authorization flow is authentik's
 implicit-consent flow: an already-signed-in user is redirected without a consent
@@ -283,9 +285,10 @@ import {
 **are**, so a disaster-recovery apply against a live server with an empty state
 silently duplicates groups and hard-fails on applications. If you rely on
 re-import for DR, keep the import blocks complete: enumerate the live pks/uuids
-after every apply that creates objects (the `policy_binding_ids` and
-`*_provider_ids` outputs give you the identifiers) rather than assuming an
-import file written at adoption time still covers everything.
+after every apply that creates objects (the `policy_binding_ids`,
+`custom_scope_mapping_ids` and `*_provider_ids` outputs give you the
+identifiers) rather than assuming an import file written at adoption time still
+covers everything.
 
 ### Migrating an existing root module onto this one
 
@@ -306,3 +309,18 @@ and re-applying is a no-op once state carries the new addresses. Keep any
 `import` blocks (and any import script) pointing at the new addresses in the
 same change — the two files describe the same identities and are the disaster
 recovery path.
+
+## Tests
+
+```bash
+cd terraform/modules/authentik-sso
+terraform init -backend=false
+terraform test
+```
+
+`tests/validation.tftest.hcl` covers every variable validation and every
+precondition — the unbound-application guardrail, the four cross-map reference
+checks and the scope-mapping resolution. `terraform validate` evaluates no
+caller values, so it runs none of them; the runs are plan-only against a
+`mock_provider`, so they need no credentials and create no state. CI runs the
+same command through `ci/validate/terraform.yml` with `test: true`.

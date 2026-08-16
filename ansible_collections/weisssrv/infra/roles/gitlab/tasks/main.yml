@@ -613,6 +613,9 @@
     - gitlab_status.rc != 0
   changed_when: true
 
+# Deliberately NOT gated on gitlab_skip_install: the SSH-redirect tasks below
+# run on every converge and their handler calls netfilter-persistent, so the
+# package is host config rather than part of the Omnibus install.
 - name: Install iptables-persistent for saving rules
   ansible.builtin.apt:
     name: iptables-persistent
@@ -654,7 +657,7 @@
       port = 22,{{ gitlab_ssh_port }}
       filter = sshd[mode=aggressive]
       backend = systemd
-      journalmatch = _SYSTEMD_UNIT=ssh.service + _COMM=sshd
+      journalmatch = _SYSTEMD_UNIT={{ gitlab_ssh_service_name }}.service + _COMM=sshd
       maxretry = 5
       findtime = 10m
       bantime = 1h

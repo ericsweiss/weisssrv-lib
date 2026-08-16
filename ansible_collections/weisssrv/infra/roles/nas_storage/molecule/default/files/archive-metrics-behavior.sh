@@ -25,7 +25,11 @@ grep -q 'main disabled for behavior test' "$WORK/archive-lib.sh" \
 
 # shellcheck disable=SC1091
 source "$WORK/archive-lib.sh"
+# Every path the script writes has to land in $WORK: write_prom_metrics now
+# fails loudly on an uncreatable PROM_DIR instead of writing nothing quietly.
 PROM_FILE="$WORK/archive_backup.prom"
+PROM_DIR="$WORK"
+PRUNE_FAIL_MARKER="$WORK/.archive_prune_failed"
 
 cat > "$PROM_FILE" <<'EOM'
 archive_backup_last_run_duration_seconds 10
@@ -64,6 +68,37 @@ grep -qxF 'archive_backup_dataset_deferred_runs{dataset="tank/share"} 0' "$PROM_
 # A dataset no longer in SRC_LIST must age out, not persist as an orphan series.
 grep -q 'tank/removed-from-src-list' "$PROM_FILE" \
   && fail "orphan series for a removed dataset was re-emitted"
+
+# Prune failures happen in the forked per-dataset child, so PRUNE_OK cannot
+# travel back in a variable — exit 76 and the marker file carry it. The subshell
+# below stands in for that child.
+PRUNE_OK=1
+( note_prune_failure )
+[ -e "$PRUNE_FAIL_MARKER" ] || fail "child prune failure left no marker"
+[ "$PRUNE_OK" = "1" ] || fail "test setup: the child's PRUNE_OK must not reach the parent"
+
+# Commit ordering: the marker is consumed only once the textfile is PUBLISHED.
+# A write that cannot land must keep it, or the retention failure it carries
+# disappears with no metric ever reporting it.
+saved_prom="$PROM_FILE"
+PROM_FILE="$WORK/no-such-dir/archive_backup.prom"
+if write_prom_metrics 0 42; then
+  fail "an unwritable textfile reported success"
+fi
+[ -e "$PRUNE_FAIL_MARKER" ] || fail "a failed write consumed the prune marker"
+PROM_FILE="$saved_prom"
+
+write_prom_metrics 0 42
+grep -qx 'archive_backup_last_prune_success 0' "$PROM_FILE" \
+  || fail "child prune failure did not reach the prune gauge"
+[ -e "$PRUNE_FAIL_MARKER" ] \
+  && fail "marker was not consumed, so the next run would report a stale prune failure"
+
+# A clean run must report 1 again once the marker is gone.
+PRUNE_OK=1
+write_prom_metrics 1 42
+grep -qx 'archive_backup_last_prune_success 1' "$PROM_FILE" \
+  || fail "prune gauge stuck at 0 with no marker present"
 
 # media-mover: failure branch preserves the last-success timestamp
 # media-mover.sh runs top-level code on source, so extract just the function.

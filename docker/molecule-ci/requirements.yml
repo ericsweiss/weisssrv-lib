@@ -5,8 +5,20 @@
 # job's before_script.
 
 collections:
-  # Pin to the tested major line (upper bound) so `ansible-galaxy install -r`
-  # never silently pulls a new major with breaking changes. Bump deliberately.
+  # Major-line ranges, NOT the exact pins the sibling requirements.txt uses.
+  # galaxy.yml states the collection's supported range to consumers, and an
+  # exact pin there would force every consumer onto one minor. The cost is that
+  # a rebuild can bake a newer minor than the last one: the image is
+  # reproducible on the pip side only.
+  #
+  # The gate (tests/test_ansible_collection.py § TestDependencyParity) is
+  # CONTAINMENT, not equality: this file must carry every galaxy.yml
+  # `dependencies` entry at the SAME spec, and must match the collection's own
+  # requirements.yml exactly — but both of those are supersets of galaxy.yml.
+  # The last two entries here are deliberately test-only (the molecule docker
+  # driver and its certificate helpers): no role addresses them, so adding them
+  # to galaxy.yml would grow every consumer's install. Bump a shared range in
+  # all three files at once; a test-only range in these two.
   - name: ansible.posix
     version: ">=2.1.0,<3.0.0"
   - name: community.general

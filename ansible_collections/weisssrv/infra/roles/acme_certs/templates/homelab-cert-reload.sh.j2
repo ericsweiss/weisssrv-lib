@@ -92,37 +92,27 @@ FULLCHAIN_SRC="{{ acme_certs_local_cert_dir }}/fullchain.pem"
 PRIVKEY_SRC="{{ acme_certs_local_cert_dir }}/privkey.pem"
 IDENTITY_FILE="{{ acme_certs_ssh_key_path }}"
 
-# Bail early if the cert files don't exist locally.
 [[ -r "$FULLCHAIN_SRC" && -r "$PRIVKEY_SRC" ]] || {
     echo "missing $FULLCHAIN_SRC or $PRIVKEY_SRC; nothing to distribute" >&2
     exit 1
 }
 
-# Helper: non-interactive ssh/scp with dedicated identity file.
-# StrictHostKeyChecking=yes (not accept-new): host keys for every
-# target are pinned in acme_certs_distribution_targets[*].host_key and
-# pre-loaded into /root/.ssh/known_hosts by this role. A fingerprint
-# mismatch — host rebuild without inventory update, or MITM —
-# fails the cert push loudly instead of silently trusting.
+# StrictHostKeyChecking=yes (not accept-new): every target's host_key is pinned
+# into known_hosts by this role, so a rebuilt host or a MITM fails the push
+# loudly instead of being trusted silently.
 SSH_OPTS=(-i "$IDENTITY_FILE" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts -o ConnectTimeout=10)
 SCP_OPTS=(-q -i "$IDENTITY_FILE" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts -o ConnectTimeout=10)
 
-# Per-target push. We capture failure per-host so a single dead target
-# doesn't abort distribution to the others; ANY_FAIL is set if any
-# target fails, and the script exits non-zero at the end (which the
-# trap catches and writes the failure metric).
+# ANY_FAIL: one dead target must not abort distribution to the rest; the script
+# exits 2 at the end.
 ANY_FAIL=0
 
 # Boundary between the two PEM parts in the bundle streamed to the receiver.
 # Not valid PEM/base64, so it can never collide with cert or key content.
 DELIM="===CERT-RECEIVE-BUNDLE-BOUNDARY==="
 
-# Sudo targets: one SSH round-trip. The key is pinned to
-# command="sudo /usr/local/sbin/cert-receive",restrict, so we just stream the
-# bundle to stdin; the receiver validates, installs, reloads, and decides
-# unchanged-vs-apply itself, printing OK / unchanged / FAIL. No scp, no remote
-# mktemp/chown/chmod, no pre-check probes — the forced command shrinks a leaked
-# key from a root shell to "install a validated cert + run one baked-in reload".
+# Sudo targets: stream the bundle to the forced-command receiver in one
+# round-trip; it validates, installs, reloads and prints OK/unchanged/FAIL.
 push_target_receiver() {
     local host="$1" ip="$2" ssh_user="$3" ssh_port="$4"
     local out rc
@@ -193,10 +183,8 @@ push_target_legacy() {
     # and chowned to ${ssh_user} so the scp needs no sudo; the install chain's
     # rm -rf cleans it up.
     #
-    # `if ! stage=$(ssh ...)` rather than a bare assignment + post-check: under
-    # `set -euo pipefail` a non-zero ssh exit would kill the script before the
-    # empty-string check, aborting distribution to every LATER target instead of
-    # failing just this one.
+    # `if ! stage=$(ssh ...)` not a bare assignment: under set -e a non-zero ssh
+    # would abort every LATER target.
     local stage
     if ! stage=$(ssh -p "$ssh_port" "${SSH_OPTS[@]}" "${ssh_user}@${ip}" \
             "set -e; \
@@ -324,7 +312,6 @@ fi
 
 echo "Certificate distribution complete."
 
-# Write run-level success metric.
 _CERT_END_TS="$(date +%s)"
 _CERT_DURATION=$(( _CERT_END_TS - _CERT_START_TS ))
 write_prom_metrics 1 "$_CERT_DURATION"

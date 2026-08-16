@@ -1,3 +1,7 @@
+# Every `prevent_destroy` below protects an object whose destroy+create is a
+# user-visible outage, so removing one is a two-step change — see README
+# "Removing an object". Each lifecycle block states only the outage it prevents.
+
 # Stock objects authentik creates and owns. Read by stable identifier, never
 # managed.
 data "authentik_flow" "authorization" {
@@ -84,8 +88,7 @@ resource "authentik_property_mapping_provider_scope" "custom" {
 
   lifecycle {
     # Destroying a mapping a provider still references strips the claim from
-    # that provider's tokens, which is a login failure for any app that requires
-    # it. Removal is a two-step change — see README "Removing an object".
+    # that provider's tokens — a login failure for any app that requires it.
     prevent_destroy = true
   }
 }
@@ -150,8 +153,7 @@ resource "authentik_provider_oauth2" "this" {
 
   lifecycle {
     # A renamed map key plans as destroy+create, which mints a new provider and
-    # breaks every session and token issued by the old one. Removal is a
-    # two-step change — see README "Removing an object".
+    # breaks every session and token issued by the old one.
     prevent_destroy = true
 
     # `custom:` refs are resolved through a map, so a typo would otherwise
@@ -197,7 +199,7 @@ resource "authentik_provider_proxy" "this" {
   lifecycle {
     # Destroy+create here takes the application behind this provider off the
     # embedded outpost mid-apply, so every request to it 404s until the outpost
-    # list is rewritten. See README "Removing an object".
+    # list is rewritten.
     prevent_destroy = true
   }
 }
@@ -239,8 +241,7 @@ resource "authentik_provider_saml" "this" {
 
   lifecycle {
     # The service provider trusts this provider's issuer and signing key, so a
-    # destroy+create breaks the federation until the SP side is re-pointed. See
-    # README "Removing an object".
+    # destroy+create breaks the federation until the SP side is re-pointed.
     prevent_destroy = true
   }
 }
@@ -264,8 +265,7 @@ resource "authentik_group" "this" {
 
   lifecycle {
     # A destroy takes the memberships and every policy binding pointing at the
-    # group with it, so a renamed key would revoke access for its members. See
-    # README "Removing an object".
+    # group with it, so a renamed key would revoke access for its members.
     prevent_destroy = true
   }
 }
@@ -302,9 +302,32 @@ resource "authentik_application" "this" {
   lifecycle {
     # The map key is the slug, and the slug is the OIDC issuer path
     # (/application/o/<slug>/), so a renamed key plans as destroy+create and
-    # every client configured against the old issuer fails. See README
-    # "Removing an object".
+    # every client configured against the old issuer fails.
     prevent_destroy = true
+
+    # provider_type/provider_key resolve through a map, so a typo would
+    # otherwise surface as a bare "Invalid index" naming neither.
+    precondition {
+      # A conditional, not `a == null || contains(…)`: both halves have to stay
+      # unevaluated when the application names no provider, or the right-hand
+      # template interpolates a null and the plan dies on "Invalid template
+      # interpolation value" instead of planning a provider-less launch tile.
+      # `?:` guarantees that; `||` short-circuits today but HCL does not promise
+      # it, and the error_message below shows what an eager evaluation costs.
+      condition = (
+        each.value.provider_type == null
+        ? true
+        : contains(keys(local.provider_ids), "${each.value.provider_type}/${each.value.provider_key}")
+      )
+      # Null-guarded per half, because error_message is evaluated EAGERLY — it
+      # renders even on the runs where the condition holds, so bare
+      # interpolations here failed the plan for every provider-less application
+      # (tests/validation.tftest.hcl "an_application_with_no_provider_plans").
+      # Conditionals rather than `coalesce(…, "<unset>")`: coalesce skips the
+      # empty string too, which would print "<unset>" for the empty-provider_key
+      # typo this message exists to name.
+      error_message = "applications[\"${each.key}\"] references provider \"${each.value.provider_type == null ? "<unset>" : each.value.provider_type}/${each.value.provider_key == null ? "<unset>" : each.value.provider_key}\", which is not a key of the matching provider map (oauth2_providers, proxy_providers or saml_providers)."
+    }
 
     # An application with no policy binding is reachable by EVERY authenticated
     # user — the one guardrail here that fails OPEN, and a missing binding
@@ -329,6 +352,20 @@ resource "authentik_policy_binding" "this" {
   order   = each.value.order
   enabled = each.value.enabled
   negate  = each.value.negate
+
+  lifecycle {
+    # Both sides resolve through a map, so a typo would otherwise surface as a
+    # bare "Invalid index" naming neither the binding nor the key.
+    precondition {
+      condition     = contains(keys(var.applications), each.value.application)
+      error_message = "policy_bindings[\"${each.key}\"].application = \"${each.value.application}\" is not an `applications` key (the key is the application slug)."
+    }
+
+    precondition {
+      condition     = contains(keys(var.groups), each.value.group)
+      error_message = "policy_bindings[\"${each.key}\"].group = \"${each.value.group}\" is not a `groups` key (the key, not the group's `name` override)."
+    }
+  }
 }
 
 resource "authentik_outpost" "embedded" {
@@ -346,11 +383,21 @@ resource "authentik_outpost" "embedded" {
   # round-trip instead of being diffed and rewritten.
 
   lifecycle {
-    # The embedded outpost is authentik's OWN object, adopted by import. A
+    # The embedded outpost is authentik's OWN object, adopted by import: a
     # destroy removes forward auth for every proxy provider at once and the
     # replacement is not something Terraform can recreate faithfully. Setting
-    # embedded_outpost back to null is the same destroy — detach with
-    # `terraform state rm` instead (README "Removing an object").
+    # embedded_outpost back to null is that same destroy — detach with
+    # `terraform state rm` instead.
     prevent_destroy = true
+
+    # proxy_provider_keys resolves through a map, so a typo would otherwise
+    # surface as a bare "Invalid index" naming neither the outpost nor the key.
+    precondition {
+      condition = alltrue([
+        for key in var.embedded_outpost.proxy_provider_keys :
+        contains(keys(var.proxy_providers), key)
+      ])
+      error_message = "embedded_outpost.proxy_provider_keys names a key that is not in proxy_providers; the outpost serves proxy providers this module manages."
+    }
   }
 }

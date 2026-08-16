@@ -12,7 +12,7 @@ The tag below is an example: use the tag your repo pins (docs/VERSIONING.md).
 
 ```hcl
 module "zone" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/cloudflare-zone?ref=v0.7.4"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/cloudflare-zone?ref=v0.8.0"
 
   account_id = var.cloudflare_account_id
   zone_name  = var.external_domain
@@ -67,8 +67,8 @@ posture.
 |---|---|---|---|
 | `account_id` | string | — | 32 hex chars; scopes the zone lookup so a like-named zone in another account cannot be picked up. |
 | `zone_name` | string | — | Bare FQDN. |
-| `manage_zone_settings` | bool | `true` | `false` skips the settings override (DNS-only token). Flipping `true → false` destroys the override, reverting the zone to the settings captured at creation. |
-| `zone_settings` | object | hardened baseline | `ssl=strict`, `always_use_https=on`, `min_tls_version=1.2`, `tls_1_3=on`, `http3=on`, `brotli=on`, `cache_level=aggressive`, `browser_cache_ttl=14400`, HSTS on for 1 year with subdomains, `preload=false`. |
+| `manage_zone_settings` | bool | `true` | `false` skips the settings override (DNS-only token). Flipping `true → false` on a managed zone is a plan error — the override carries `prevent_destroy`; see below. |
+| `zone_settings` | object | hardened baseline | `ssl=strict`, `always_use_https=on`, `min_tls_version=1.2`, `tls_1_3=on`, `http3=on`, `brotli=on`, `cache_level=aggressive`, `browser_cache_ttl=14400`, HSTS on for 1 year with subdomains, `preload=false`. Enum values (`ssl`, `min_tls_version`, `cache_level`, `tls_1_3`, the on/off toggles) are validated at plan time — Cloudflare rejects a bad one mid-apply. The two numeric settings are bounded instead: `browser_cache_ttl` to 0-31536000, and `hsts.max_age` to > 0 while `hsts.enabled` (0 is how HSTS is withdrawn), rising to >= 31536000 with `include_subdomains` when `preload = true` — the browser preload lists refuse anything shorter. |
 | `records` | map(object) | `{}` | See below. |
 
 Each `records` entry: `name`, `type` (A/AAAA/CNAME/TXT/MX/NS/CAA), exactly one
@@ -108,10 +108,27 @@ resources by its flags:
   moving *out of* `protected`, remove the entry from the protected map in a
   separate applied step first — `prevent_destroy` blocks the destroy half).
 
-A CI pipeline that applies this module unattended should additionally fail when
-the plan's delete count is non-zero unless an explicit override variable is set;
-`prevent_destroy` covers the records you remembered to flag, the delete-count
-gate covers the ones you did not.
+`prevent_destroy` covers the records you remembered to flag. Nothing covers the
+ones you did not: a pipeline that applies this module unattended is the place to
+add a delete-count gate over `terraform show -json` (fail when the plan deletes
+anything unless an override variable is set), and neither this library nor its
+consumers ship one today — the shared CI templates validate but never plan.
+
+## Turning zone settings off
+
+`cloudflare_zone_settings_override.this` is `count`-driven and carries
+`prevent_destroy`, and Terraform rejects *any* plan that destroys a protected
+instance — including one produced by driving `count` to 0. So
+`manage_zone_settings = false` on a zone that is already managed errors instead
+of reverting anything. Drop the override from state first, then flip the
+variable:
+
+```bash
+terraform state rm 'module.<name>.cloudflare_zone_settings_override.this[0]'
+```
+
+The live zone keeps whatever settings were last applied; only the state entry
+goes. Re-adopt it later with `terraform import`.
 
 ## Provider pin
 
@@ -119,3 +136,17 @@ gate covers the ones you did not.
 (`cloudflare_record` → `cloudflare_dns_record`, `cloudflare_zone_settings_override`
 → per-setting resources), so a v5 move is a module rewrite plus a
 `terraform state mv` per record — schedule it as its own change.
+
+## Tests
+
+```bash
+cd terraform/modules/cloudflare-zone
+terraform init -backend=false
+terraform test
+```
+
+`tests/validation.tftest.hcl` covers every variable validation, the four-way
+record routing and the zone-settings switch. `terraform validate` evaluates no
+caller values, so it runs none of them; the runs are plan-only against a
+`mock_provider`, so they need no credentials and create no state. CI runs the
+same command through `ci/validate/terraform.yml` with `test: true`.

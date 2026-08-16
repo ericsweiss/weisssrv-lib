@@ -1,7 +1,11 @@
 terraform {
-  # 1.5 floor: optional() object-attribute defaults and `import` blocks (the
-  # adoption path documented in README.md).
-  required_version = ">= 1.5, < 2.0"
+  # 1.11 floor: the module's own guardrails are only exercised by the shipped
+  # `tests/validation.tftest.hcl`, which runs under this same constraint —
+  # `mock_provider`/`override_resource` need 1.7 and `override_during = plan`
+  # (the only way an override lands in a plan-only run) needs 1.11. The module's
+  # configuration itself needs 1.5 for optional() attribute defaults and the
+  # `import` blocks the README's adoption path uses.
+  required_version = ">= 1.11, < 2.0"
 
   required_providers {
     authentik = {

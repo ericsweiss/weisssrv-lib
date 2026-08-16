@@ -183,7 +183,9 @@ class TestCli:
 
         A file the library adds AFTER the pinned tag is not in that release, so
         comparing the consumer's copy against the newer working tree would pass a
-        copy the pin cannot deliver.
+        copy the pin cannot deliver. The message must name THAT direction: the
+        adoption-window fix is bumping the pin, the opposite of the "no longer
+        ships" fix.
         """
         lib, consumer, registry = world
         _seed_git(lib)
@@ -194,9 +196,44 @@ class TestCli:
         registry.write_text(yaml.safe_dump(doc))
 
         assert _run(world, ["--ref", "HEAD"]) == 1
-        assert "no longer ships scripts/added-later.py" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "does not carry it" in err and "Bump the pin" in err
+        assert "no longer ships" not in err
         # Without a ref the same pair is byte-identical and passes.
         assert _run(world) == 0
+
+    def test_a_fork_added_after_a_resolving_ref_gets_the_same_direction(self, world, capsys):
+        """The fork arm reported the same wrong direction, and a fork entry is
+        the harder one to un-delete: `reason:` and `reconciled_sha256` go with
+        it."""
+        lib, consumer, registry = world
+        _seed_git(lib)
+        (lib / "lint" / "editorconfig").write_text("shared\n")
+        (consumer / ".editorconfig").write_text("local\n")
+        doc = yaml.safe_load(registry.read_text())
+        doc["consumers"]["demo"]["forked"].append(
+            {"lib": "lint/editorconfig", "consumer": ".editorconfig", "reason": "per-repo"}
+        )
+        registry.write_text(yaml.safe_dump(doc))
+
+        assert _run(world, ["--ref", "HEAD"]) == 1
+        err = capsys.readouterr().err
+        assert "does not carry it" in err and "no longer ships" not in err
+
+    def test_a_path_the_library_really_dropped_still_says_so(self, world, capsys):
+        """The other direction keeps its own wording: gone from the working tree
+        AND from the ref means the entry (or the copy) is what has to go."""
+        lib, _, _ = world
+        _seed_git(lib)
+        (lib / "scripts" / "tool.py").unlink()
+        subprocess.run(["git", "-C", str(lib), "rm", "-q", "scripts/tool.py"], check=True)
+        subprocess.run(
+            ["git", "-C", str(lib), "-c", "user.email=t@t", "-c", "user.name=t",
+             "commit", "-qm", "drop"],
+            check=True,
+        )
+        assert _run(world, ["--ref", "HEAD"]) == 1
+        assert "no longer ships scripts/tool.py" in capsys.readouterr().err
 
 
 class TestShippedRegistry:

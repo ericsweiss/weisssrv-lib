@@ -96,10 +96,15 @@ class TestAutoscalingPolicyExample:
         policy = hpa.load_policy(EXAMPLES / "autoscaling-policy.example.yaml")
         assert ("traefik", "Deployment", "traefik") in policy.chart_native_hpa_targets
         assert policy.cpu_limit_allowlist == set()
+        assert policy.vpa_cap_allowlist == set()
 
     def test_only_documented_top_level_keys(self):
         doc = yaml.safe_load((EXAMPLES / "autoscaling-policy.example.yaml").read_text())
-        assert set(doc) <= {"chart_native_hpa_targets", "cpu_limit_allowlist"}
+        assert set(doc) <= {
+            "chart_native_hpa_targets",
+            "cpu_limit_allowlist",
+            "vpa_cap_allowlist",
+        }
 
 
 class TestHelmValuesReleasesExample:

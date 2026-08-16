@@ -190,14 +190,3 @@
           — a lost handler would leave this host relaying root mail locally and
           authenticating with a revoked credential, with nothing reporting changed
         success_msg: "the repair rebuilds a stale aliases.db and sasl_passwd.db"
-
-    - name: Display test results
-      ansible.builtin.debug:
-        msg:
-          - "Postfix installed and running"
-          - "main.cf configured with relay, SASL, and TLS settings"
-          - "SASL credentials deployed with correct permissions (0600)"
-          - "SASL password database generated"
-          - "Mailname configured correctly"
-          - "Mail aliases configured with root forwarding"
-          - "Compiled-map repair rebuilds a stale aliases.db / sasl_passwd.db"

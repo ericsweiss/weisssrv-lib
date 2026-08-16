@@ -30,8 +30,8 @@ spec:
   resources: {requests: {storage: 75Gi}}
 """
 
-# The 2026-07 incident shape: no storageClassName, so the DefaultStorageClass
-# admission plugin rewrites it to local-path at create time.
+# No storageClassName: the DefaultStorageClass admission plugin rewrites it to
+# local-path at create time.
 PVC_UNPINNED = """
 apiVersion: v1
 kind: PersistentVolumeClaim

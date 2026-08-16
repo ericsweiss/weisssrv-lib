@@ -93,12 +93,3 @@
       loop: "{{ pe_services.results }}"
       loop_control:
         label: "{{ item.item }}"
-
-    - name: Display test results
-      ansible.builtin.debug:
-        msg:
-          - "prometheus_exporter shared pipeline verified:"
-          - "  - tarball branch skip path: binary intact, service enabled+active"
-          - "  - deb branch skip path: binary intact, service enabled+active"
-          - "  - tarball install path: download/extract/copy ran, binary installed, scratch cleaned"
-          - "  - deb install path: download/apt-install ran, package installed, scratch cleaned"

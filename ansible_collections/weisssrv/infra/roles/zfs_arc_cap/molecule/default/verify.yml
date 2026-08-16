@@ -29,3 +29,32 @@
           - "'options zfs zfs_arc_max=8589934592' in (zfs_conf_content.content | b64decode)"
         fail_msg: "zfs.conf is missing the expected `options zfs zfs_arc_max=8589934592` line"
         success_msg: "zfs.conf caps the ARC at the expected byte count (via the zfs_arc_max_bytes alias)"
+
+    # Empty value = total no-op, the documented contract for a host that never
+    # sets the knob. Every task gates on the same length test, so the role must
+    # neither render nor rewrite the file — an unguarded task would emit a
+    # capless `options zfs zfs_arc_max=` line and cap the ARC at zero.
+    - name: Apply the role with the cap unset
+      ansible.builtin.include_role:
+        name: weisssrv.infra.zfs_arc_cap
+      vars:
+        zfs_arc_cap_max_bytes: ""
+
+    - name: Re-read the modprobe.d file after the unset pass
+      ansible.builtin.slurp:
+        src: /etc/modprobe.d/zfs.conf
+      register: zfs_conf_after_unset
+
+    - name: Assert the unset pass left the rendered cap untouched
+      ansible.builtin.assert:
+        that:
+          - zfs_conf_after_unset.content == zfs_conf_content.content
+        fail_msg: "An empty zfs_arc_cap_max_bytes rewrote /etc/modprobe.d/zfs.conf"
+        success_msg: "empty zfs_arc_cap_max_bytes is a no-op"
+
+    - name: Assert the unset pass emitted no capless zfs_arc_max line
+      ansible.builtin.assert:
+        that:
+          - "(zfs_conf_after_unset.content | b64decode) is not search('zfs_arc_max=\\s*$')"
+        fail_msg: "zfs.conf carries a capless `zfs_arc_max=` line — the ARC would cap at zero"
+        success_msg: "no capless zfs_arc_max line was emitted"

@@ -53,7 +53,7 @@ acme_certs_distribution_targets:
     group: adguard
     cert_mode: "0644"
     key_mode: "0640"
-    restart_service: AdGuardHome  # or restart_command: <verbatim command>
+    restart_service: AdGuardHome  # REQUIRED — or restart_command: <verbatim command>
     ssh_user: <user>              # defaults to acme_certs_ssh_user
     ssh_port: 22
     ssh_no_sudo: false            # true = appliance, legacy scp push

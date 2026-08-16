@@ -81,8 +81,9 @@ services:
       nextcloud:
         condition: service_started
     ports:
-      # All-interfaces for an off-host Prometheus; scope it at the firewall.
-      - "{{ nextcloud_exporter_port }}:9205"
+      # Defaults to all interfaces for an off-host Prometheus; scope it at the
+      # firewall or narrow nextcloud_exporter_bind_address.
+      - "{{ nextcloud_exporter_bind_address }}:{{ nextcloud_exporter_port }}:9205"
     environment:
       NEXTCLOUD_SERVER: http://nextcloud
       NEXTCLOUD_AUTH_TOKEN: ${NEXTCLOUD_SERVERINFO_TOKEN}
@@ -99,8 +100,9 @@ services:
       nextcloud-db:
         condition: service_healthy
     ports:
-      # Unauthenticated: scope access at the firewall.
-      - "{{ nextcloud_postgres_exporter_port }}:9187"
+      # Unauthenticated: scope access at the firewall or narrow
+      # nextcloud_postgres_exporter_bind_address.
+      - "{{ nextcloud_postgres_exporter_bind_address }}:{{ nextcloud_postgres_exporter_port }}:9187"
     environment:
       DATA_SOURCE_URI: "nextcloud-db:5432/{{ nextcloud_db_name }}?sslmode=disable"
       DATA_SOURCE_USER: {{ nextcloud_db_user }}

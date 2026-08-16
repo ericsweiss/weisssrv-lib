@@ -13,8 +13,11 @@
 # consumer gains or drops an include, starts or stops vendoring a script, or
 # moves a pin to a new file.
 #
-# NOT machine-read. Nothing in CI parses this today; it is a reviewed inventory,
-# and a schema would only be worth adding once something consumes it.
+# MOSTLY NOT machine-read. `tests/test_docs_registry.py` parses the file and
+# holds every `enforced:` / `enforced_by:` claim to a gate that exists (the
+# consumer-side ones only when a sibling checkout is available). Everything else
+# here is reviewed prose, so keep the enforcement claims in those two keys —
+# a gate named only in a `note:` is ungated.
 
 consumers:
   - name: weisssrv
@@ -55,7 +58,12 @@ consumers:
           - /ci/maintenance/version-bump-bot.yml  # weisssrv runs a local bump job
         not_yet_adopted:
           # Extracted FROM this pipeline's local .deploy-base / .kubectl-setup;
-          # weisssrv still carries its own copies. Adopt on the next bump.
+          # weisssrv still carries its own copies. Adopt on the next bump — and
+          # adopt them as a PAIR: ansible-deploy.yml's job only carries the
+          # stage/rules/resource_group shell, and `extends: $[[ inputs.base ]]`
+          # is where the retry and the op/ssh toolchain come from, so the job
+          # template alone reproduces nothing. The per-job `variables:` op:// map
+          # stays consumer-side either way, as an extends-side override.
           - /ci/deploy/deploy-base.yml
           - /ci/deploy/kubectl-setup.yml
           - /ci/deploy/ansible-deploy.yml
@@ -70,12 +78,10 @@ consumers:
         status: >-
           Adopted, all three. terraform/{cloudflare,tailscale,authentik} are
           thin callers of cloudflare-zone / tailscale-acl / authentik-sso
-          holding only site data. The refs are NOT uniform and that is
-          deliberate: authentik pins v0.7.0 (the release carrying the
-          prevent_destroy guards, custom_scope_mappings and the
-          unbound-application precondition its shapes need), the other two
-          v0.6.2 until the next WEISSSRV_LIB_REF bump. This consumer is the only
-          one that PLANS these modules against live infrastructure — the cluster
+          holding only site data. All three `?ref=` pins equal
+          variables.WEISSSRV_LIB_REF — they move as one, and divergence is a
+          hard failure, not a supported state. This consumer is the only one
+          that PLANS these modules against live infrastructure — the cluster
           template's render check is static — so a behavioural module change is
           judged here.
         files:
@@ -83,11 +89,15 @@ consumers:
           - terraform/tailscale/main.tf      # tailscale-acl
           - terraform/authentik/main.tf      # authentik-sso
         enforced_by: >-
-          nothing. Bump by hand alongside WEISSSRV_LIB_REF, then
-          `terraform init -upgrade` and read the plan — each root passes the
-          identity-bearing inputs explicitly (zone settings, flow slugs, scope
-          mapping lists) so a changed library default cannot move live state on
-          a ref bump unreviewed.
+          weisssrv
+          scripts/test_site_configs.py::test_terraform_module_refs_match_the_ci_variable
+          — check-lib-pins.py reads only the include block and
+          ansible/requirements.yml, so this pin class is gated by the consumer's
+          own suite instead. The refs are still edited by hand: bump all three
+          with WEISSSRV_LIB_REF, then `terraform init -upgrade` and read the
+          plan — each root passes the identity-bearing inputs explicitly (zone
+          settings, flow slugs, scope mapping lists) so a changed library
+          default cannot move live state on a ref bump unreviewed.
       vendored_copies: >-
         Recorded in the library at scripts/vendored-paths.yml under
         consumers.weisssrv, and checked from here by
@@ -204,19 +214,19 @@ consumers:
         (release.yml, ci.yml, build-image.yml — from
         ci/release/github-release-workflow.example.yml and ci/github/*), and the
         lint-profile forks.
-        SINCE THE COPIER CONVERSION the registry's consumer paths follow the
-        template layout: anything rendered into a tenant sits under template/,
-        with the jinja conditional directory names (ci_shape,
-        enable_image_build) as literal path segments; only the copies this repo
-        runs on ITSELF stay unprefixed. Several files exist TWICE and are
-        registered twice, because they drift separately — scripts/
-        (check-doc-links.py, check-lib-pins.py, semantic-release.py), the lint
-        profiles (ruff.toml, .gitleaks.toml, .editorconfig) and
+        The registry's consumer paths follow the copier template layout:
+        anything rendered into a tenant sits under template/, with the jinja
+        conditional directory names (ci_shape, enable_image_build) as literal
+        path segments; only the copies this repo runs on ITSELF stay
+        unprefixed. Several files exist TWICE and are registered twice, because
+        they drift separately — scripts/ (check-doc-links.py,
+        check-lib-pins.py, semantic-release.py), the lint profiles (ruff.toml,
+        .gitleaks.toml, .editorconfig) and
         .gitlab/secret-detection-ruleset.toml, whose root copy is what this
         repo's OWN pipeline loads. Only .pre-commit-config.yaml exists on the
         tenant side alone. Moving any of them is a library-release event, since
-        the registry is library-owned — which is why the release checklist
-        sequences this repo's conversion MR ahead of the tag. build-image.yml's
+        the registry is library-owned: a consumer layout change lands on that
+        consumer's main before the tag encoding it is cut. build-image.yml's
         consumer path carries the enable_image_build conditional too, so a
         tenant that runs an upstream image gets no packages:write workflow.
       cli:
@@ -340,24 +350,25 @@ pin_surfaces:
     enforced: >-
       weisssrv-cluster-template
       template/tests/test_lib_pins.py::test_terraform_module_sources_pin_the_same_ref
+      + weisssrv
+      scripts/test_site_configs.py::test_terraform_module_refs_match_the_ci_variable
     note: >-
-      SCOPE — cluster-template only, and only for the `?ref=` in the modules it
-      renders. weisssrv's terraform/ is NOT gated: it holds THREE module refs
-      (one per root) which may legitimately sit at different tags, so bump them
-      by hand and confirm with `terraform init -upgrade` before the plan.
+      Both consumers hold every module `?ref=` equal to their single library
+      pin — the cluster template for the refs it renders, weisssrv for all
+      three of its roots. Divergence between roots is a red pipeline, not a
+      supported state, so bump them together and confirm with
+      `terraform init -upgrade` before the plan. The app template ships no
+      Terraform.
   - id: vendored_script_copies
     enforced: >-
       weisssrv scripts/test_vendored_byte_identity.py (never skips) +
       weisssrv-cluster-template tests/validate_render.py:check_vendored +
       weisssrv-app-template tests/validate_render.py:check_registered_copies
     note: >-
-      ALL THREE consumers now drive scripts/check-vendored-copies.py against
-      scripts/vendored-paths.yml; no hand-maintained scripts/-only list is left.
-      None of the three adoptions has LANDED — all three are the in-flight MRs
-      that ship alongside this release, so the registry describes the target
-      state and each consumer's gate is red until its own MR merges. The
-      per-consumer wrappers differ in what else they do and in how they read the
-      library, which is what "green" means differently:
+      ALL THREE consumers drive scripts/check-vendored-copies.py against
+      scripts/vendored-paths.yml; no hand-maintained scripts/-only list is left,
+      and all three gates are on their consumer's main. The per-consumer
+      wrappers differ in what else they do and in how they read the library:
       weisssrv (scripts/test_vendored_byte_identity.py) passes `--ref` at the
       pin from .gitlab-ci.yml and falls back to the checkout's working tree when
       the tag is not cut yet, announcing the fallback via a skip rather than
@@ -369,21 +380,14 @@ pin_surfaces:
       the RENDER's scripts/, so the copy is proved right before copier touches
       it and unchanged after.
       weisssrv-app-template (tests/validate_render.py:check_registered_copies)
-      is the registry gate alone; its OLD scripts/-only iterator
-      (tests/test_vendored_scripts.py, which REFUSED to compare unless the
-      checkout was provably at the pinned ref) is deleted by the copier
-      conversion, which is why that repo's registry rows already use the
-      post-conversion template/ layout.
+      is the registry gate alone; it ships no scripts/-only iterator, and its
+      registry rows use the copier template/ layout.
       Both template wrappers pass `--lib-path` with NO `--ref`, so they compare
       the library WORKING TREE unconditionally — which is exactly what makes the
       lib-merge -> tag -> consumer-MR order workable for them too.
-    successor: >-
-      scripts/check-vendored-copies.py, driven by scripts/vendored-paths.yml —
-      one registry in the library, read by every consumer, reaching the
-      non-scripts/ copies a hand-maintained list misses (the lint profiles, the
-      vendored GitHub workflows, tests/test_check_lib_pins.py). This IS what
-      runs in all three consumers now; what is still per-consumer is only
-      whether that consumer's adoption MR has merged.
+      One registry in the library, read by every consumer, reaches the
+      non-scripts/ copies a hand-maintained list misses: the lint profiles, the
+      vendored GitHub workflows, tests/test_check_lib_pins.py.
   - id: cli_install_spec
     enforced: false
   - id: image_tag

@@ -219,12 +219,7 @@
     # the single clustered config on one node). Each node writes its own .prom,
     # distinguished by the instance label at scrape time.
     - name: Install vzdump metrics hookscript
-      ansible.builtin.copy:
-        src: vzdump-metrics-hook.sh
-        dest: /usr/local/bin/vzdump-metrics-hook.sh
-        owner: root
-        group: root
-        mode: "0755"
+      ansible.builtin.include_tasks: vzdump_hook.yml
 
     # SMART health: smartd emails on attribute failures but exports nothing to
     # Prometheus, leaving dashboards blind to reallocated/pending/uncorrectable

@@ -1,8 +1,13 @@
 ---
+# The scenario deliberately leaves tailscale_version unset so the shipped
+# default is what gets installed; this play loads that default so the pin
+# assertion below has a value to compare against.
 - name: Verify
   hosts: all
   become: true
   gather_facts: true
+  vars_files:
+    - ../../defaults/main.yml
   tasks:
     - name: Check if Tailscale GPG key exists
       ansible.builtin.stat:

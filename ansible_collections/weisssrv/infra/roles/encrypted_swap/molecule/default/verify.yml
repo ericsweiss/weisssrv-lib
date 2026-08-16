@@ -96,10 +96,8 @@
       register: finalize_script
       failed_when: not finalize_script.stat.exists or not finalize_script.stat.executable
 
-    # The script must (a) refuse to drop the plaintext fallback unless the
-    # mapper is genuinely ACTIVE swap in /proc/swaps, and (b) carry the
-    # boot-race recovery arm that completes the switch when the plaintext
-    # line won the race (never a swapless exit either way).
+    # The script must refuse to drop the plaintext fallback unless the mapper is
+    # genuinely ACTIVE swap, and must carry the boot-race recovery arm.
     - name: Read the finalize script render
       ansible.builtin.slurp:
         src: /usr/local/sbin/encrypted-swap-finalize.sh
@@ -110,19 +108,14 @@
         that:
           - "'/proc/swaps' in (finalize_script_raw.content | b64decode)"
           - "'keeping plaintext fallback' in (finalize_script_raw.content | b64decode)"
-          # The active-swap gate MUST resolve the mapper symlink to its /dev/dm-N
-          # kernel name before matching /proc/swaps (dm devices never appear there
-          # by their /dev/mapper/ path) — otherwise mapper_active always reads
-          # false and the script wrongly enters recovery on every boot.
+          # The active-swap gate must resolve the mapper symlink to its
+          # /dev/dm-N name before matching /proc/swaps.
           - "'readlink -f' in (finalize_script_raw.content | b64decode)"
-          # Recovery arm: a lost boot race (plaintext won, mapper absent) is
-          # completed at boot-time — swapoff dev, open mapper, swapon, verify —
-          # with restore-on-failure, never a swapless exit.
+          # Recovery arm, with restore-on-failure and never a swapless exit.
           - "'attempting boot-time switch' in (finalize_script_raw.content | b64decode)"
           - "'restoring plaintext fallback' in (finalize_script_raw.content | b64decode)"
-          # Restoring the fallback MUST mkswap the backing device first: opening
-          # the mapper mkswaps through dm-crypt and destroys the plaintext swap
-          # signature, so a bare `swapon -a` would leave the host swapless.
+          # Restoring the fallback must mkswap the backing device first — the
+          # mapper open destroyed its plaintext swap signature.
           - "'mkswap \"$dev\"' in (finalize_script_raw.content | b64decode)"
         fail_msg: "finalize script missing the active-swap gate, the dm-device resolution, the boot-race recovery arm, or the mkswap restore"
         success_msg: "finalize gates on active swap (resolving the mapper device) and recovers a lost boot race safely"

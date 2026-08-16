@@ -12,7 +12,6 @@
     immich_compose_dir: /mnt/immich-app/compose
     immich_config_dir: /mnt/immich-app/config
   tasks:
-    # docker-compose.yml
     - name: Slurp docker-compose.yml
       ansible.builtin.slurp:
         src: "{{ immich_compose_dir }}/docker-compose.yml"
@@ -25,13 +24,15 @@
           - (immich_compose.content | b64decode) is search('immich-machine-learning:v3.0.3')
           - (immich_compose.content | b64decode) is search('immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357')
           - (immich_compose.content | b64decode) is search('valkey/valkey:9@sha256:4963247')
-          - (immich_compose.content | b64decode) is search('IMMICH_CONFIG_FILE: /config/immich-config.json')
-          - (immich_compose.content | b64decode) is search('IMMICH_TELEMETRY_INCLUDE: all')
-          - (immich_compose.content | b64decode) is search('IMMICH_TRUSTED_PROXIES: 172.28.0.1')
+          # Quoted whole: the ': ' inside the pattern would otherwise make YAML
+          # parse the list entry as a mapping (a truthy no-op, not a test).
+          - "(immich_compose.content | b64decode) is search('IMMICH_CONFIG_FILE: /config/immich-config.json')"
+          - "(immich_compose.content | b64decode) is search('IMMICH_TELEMETRY_INCLUDE: all')"
+          - "(immich_compose.content | b64decode) is search('IMMICH_TRUSTED_PROXIES: 172.28.0.1')"
           - (immich_compose.content | b64decode) is search('127.0.0.1:2283:2283')
           - (immich_compose.content | b64decode) is search('"0.0.0.0:8081:8081"')
           - (immich_compose.content | b64decode) is search('"0.0.0.0:8082:8082"')
-          - (immich_compose.content | b64decode) is search('subnet: 172.28.0.0/16')
+          - "(immich_compose.content | b64decode) is search('subnet: 172.28.0.0/16')"
         fail_msg: "docker-compose.yml missing expected image pins / telemetry / network config"
         success_msg: "docker-compose.yml pins images and wires metrics, config, trusted proxy, network"
 
@@ -164,7 +165,6 @@
         fail_msg: "bootstrap-mode config did not flip password login on / oauth off"
         success_msg: "bootstrap-mode config enables the admin-registration escape hatch"
 
-    # nginx site
     - name: Slurp the nginx site
       ansible.builtin.slurp:
         src: /etc/nginx/sites-available/immich.conf
@@ -209,7 +209,6 @@
       register: immich_placeholder_cert
       failed_when: not immich_placeholder_cert.stat.exists
 
-    # systemd units
     - name: Stat the systemd units
       ansible.builtin.stat:
         path: "{{ item }}"

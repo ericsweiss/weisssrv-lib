@@ -83,11 +83,20 @@ spec:
   variables:
     LOKI_PUSH_USER: "op://$[[ inputs.op_vault ]]/$[[ inputs.loki_item ]]/username"
     LOKI_PUSH_PASSWORD: "op://$[[ inputs.op_vault ]]/$[[ inputs.loki_item ]]/password"
+    # The package list reaches the shell as a VARIABLE, never as interpolated
+    # text: $[[ inputs.* ]] is textual substitution into the YAML scalar, so a
+    # version-ceiling pin (`ansible<12`) would render a literal `<` that the
+    # shell parses as an input redirection before any expansion happens. The
+    # result of a parameter expansion is word-split but never re-scanned for
+    # redirection operators, so this form is safe. Same rule as
+    # ci/test/python-tests.yml's APT_PACKAGES.
+    APT_PACKAGES: "$[[ inputs.apt_packages ]]"
   before_script:
     - !reference [.install-1password, before_script]
     - |
-      if [ -n "$[[ inputs.apt_packages ]]" ]; then
-        apt-get install -y --no-install-recommends $[[ inputs.apt_packages ]]
+      if [ -n "$APT_PACKAGES" ]; then
+        # shellcheck disable=SC2086  # intentional word-split of the package list
+        apt-get install -y --no-install-recommends $APT_PACKAGES
       fi
     - pip install --quiet "ansible==$[[ inputs.ansible_version ]]"
     - |

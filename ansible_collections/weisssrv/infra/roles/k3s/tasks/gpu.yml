@@ -175,7 +175,7 @@
 
 # Container-toolkit: accept NVIDIA_VISIBLE_DEVICES for unprivileged pods
 # The DCGM exporter injects the GPU via NVIDIA_VISIBLE_DEVICES=all (it does NOT
-# claim an nvidia.com/gpu device-plugin allocation — see dcgm-exporter.yaml). The
+# claim an nvidia.com/gpu device-plugin allocation). The
 # container toolkit IGNORES that env var for UNPRIVILEGED pods unless this flag is
 # set in /etc/nvidia-container-runtime/config.toml. Without it DCGM still starts
 # and its target reads up==1, but it emits ZERO DCGM_FI_DEV_* series — silent GPU

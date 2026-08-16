@@ -410,14 +410,3 @@
       args:
         executable: /bin/bash
       changed_when: true
-
-    - name: Display test results
-      ansible.builtin.debug:
-        msg:
-          - "Plex v2 apt repository configured (fingerprint-verified key, signed-by keyring)"
-          - "Plex Media Server installed: {{ plex_version_check.stdout }}"
-          - "Systemd override verified (support dir, TMPDIR, Restart, Group=media, SupplementaryGroups=plex, UMask, no claim token)"
-          - "Cert hook verified: artefact modes, first-install build, and revert on a served-cert mismatch"
-          - "Bind-mount preflight verified: mounted paths pass, a stale mountpoint dir fails, plex_skip_service still escapes"
-          - "plex user is a member of media (gid 2000) and video{{ '; render present' if plex_render_group_members.rc == 0 else '; no render group in this environment' }}"
-          - "GPU drivers skipped (plex_skip_gpu_drivers=true); service lifecycle skipped (plex_skip_service=true)"

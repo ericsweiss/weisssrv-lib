@@ -32,7 +32,7 @@ for a LAN-facing filtering resolver (`weisssrv.infra.adguard_home`).
 | `unbound_probe_name` | `google.com` | Name the readiness probe resolves; point it at a name the configured forwarders answer when the host has no public egress |
 | `unbound_access_control` | `["127.0.0.0/8 allow"]` | ACL lines; must cover what `unbound_interfaces` serves — every other netblock is refused |
 | `unbound_dropin_name` | `managed.conf` | Filename of the role-owned drop-in |
-| `unbound_legacy_dropins` | `["weisssrv.conf"]` | Drop-in names removed on every run; unbound merges the directory with a **sorted** glob, so a survivor that sorts after the managed file wins every duplicated scalar |
+| `unbound_legacy_dropins` | `[]` | Drop-in names removed on every run; unbound merges the directory with a **sorted** glob, so a survivor that sorts after the managed file wins every duplicated scalar |
 | `unbound_forwarders` | Cloudflare / Quad9 / Google, port 853 | DoT upstreams (`addr`, `port`, `name`); `forward-tls-upstream` is always on |
 | `unbound_num_threads` | `2` | |
 | `unbound_msg_cache_size` / `unbound_rrset_cache_size` | `16m` / `32m` | Sized for a 2 GB resolver guest |

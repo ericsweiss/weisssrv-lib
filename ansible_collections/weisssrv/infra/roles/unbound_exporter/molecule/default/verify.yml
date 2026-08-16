@@ -86,10 +86,3 @@
           - service_status.status.UnitFileState == 'enabled'
         fail_msg: "unbound-exporter service is not enabled"
         success_msg: "unbound-exporter service is enabled"
-
-    - name: Display test results
-      ansible.builtin.debug:
-        msg:
-          - "unbound_exporter {{ unbound_exporter_version }} at /usr/bin/unbound_exporter (executable, runs)"
-          - "unbound-exporter.service enabled on port {{ unbound_exporter_port }}"
-          - "(scraping real metrics needs an Unbound control socket)"

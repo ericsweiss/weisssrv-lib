@@ -79,9 +79,10 @@ spec:
         (substitute=true) extra shell injected after the render loop, with
         $RENDER_ALL / $K8S_VER / $FAILED in scope. It runs corpus gates over the
         accumulated render — this library ships check-pvc-storageclass.py,
-        check-scrape-netpol.py and check-secretstore-scope.py, which read the
-        corpus on stdin exactly as this input expects — alongside any
-        consumer-local script (an HPA/VPA invariant, a helm-values check).
+        check-scrape-netpol.py, check-default-deny-coverage.py and
+        check-secretstore-scope.py, which read the corpus on stdin exactly as
+        this input expects — alongside any consumer-local script (an HPA/VPA
+        invariant, a helm-values check).
     default_branch:
       default: "main"
       description: >-
@@ -243,10 +244,16 @@ spec:
         echo "=== Building + validating $ks (path $SRCPATH) ==="
         if ! RAW=$(kustomize build "$SRCPATH" 2>&1); then
           echo "ERROR: kustomize build failed for $SRCPATH:"
-          echo "$RAW"
+          printf '%s\n' "$RAW"
           FAILED=1
           continue
         fi
+        # Every read of a rendered manifest, and of anything derived from one,
+        # goes through printf '%s\n', never echo: a manifest whose first line
+        # begins `-n` or `-e` would be swallowed as an echo option, and echo's
+        # escape handling varies with the shell and its build (xpg_echo) while
+        # printf's does not.
+        #
         # Every ${var} reference in the pre-substitution output must be a known
         # ConfigMap key. envsubst renders unknown vars as empty (Flux does too),
         # so post-substitution grep would miss typos — check pre-substitution.
@@ -257,27 +264,25 @@ spec:
         MALFORMED=$(printf '%s\n' "$RAW" | sed 's/\$\$[{]/__FLUX_ESCAPED__/g' | grep -nE '\$\{[^A-Za-z_]' || true)
         if [ -n "$MALFORMED" ]; then
           echo "ERROR: $SRCPATH renders a \${ sequence Flux's envsubst mishandles (escape as \$\${ or assemble at runtime):"
-          echo "$MALFORMED" | head -5 | sed 's/^/  /'
+          printf '%s\n' "$MALFORMED" | head -5 | sed 's/^/  /'
           FAILED=1
           continue
         fi
         MISSING=""
-        for ref in $(echo "$RAW" | grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' | sort -u); do
+        for ref in $(printf '%s\n' "$RAW" | grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' | sort -u); do
           varname=${ref#\$\{}
           varname=${varname%\}}
           if [ -z "${!varname+x}" ]; then
             MISSING="$MISSING $varname"
           fi
         done
-        MISSING=$(echo "$MISSING" | tr ' ' '\n' | grep -v '^$' | sort -u || true)
+        MISSING=$(printf '%s\n' "$MISSING" | tr ' ' '\n' | grep -v '^$' | sort -u || true)
         if [ -n "$MISSING" ]; then
           echo "ERROR: placeholders in $SRCPATH reference keys not in versions-configmap:"
-          echo "$MISSING" | sed 's/^/  - /'
+          printf '%s\n' "$MISSING" | sed 's/^/  - /'
           FAILED=1
           continue
         fi
-        # printf '%s\n' (NOT echo): rendered manifests carry dashboard JSON with
-        # thousands of literal \n inside block scalars; echo would expand them.
         RENDERED=$(printf '%s\n' "$RAW" | envsubst "$FLUX_ENVSUBST_VARS")
         printf '%s\n---\n' "$RENDERED" >> "$RENDER_ALL"
         if ! printf '%s\n' "$RENDERED" | kubeconform -strict -ignore-missing-schemas \

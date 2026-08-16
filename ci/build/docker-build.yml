@@ -24,7 +24,9 @@ spec:
         (multi-arch INDEX digest, so it stays portable) — this is the one
         component of the job that runs PRIVILEGED, and it executes the binaries
         the sha256 pins below protect. Kept on the same 27.5.1 line as
-        docker_cli_version.
+        docker_cli_version, and held there — along with the library's own
+        pipeline, its molecule jobs and docker/molecule-ci/Dockerfile — by
+        tests/test_pin_parity.py.
     docker_cli_version:
       default: "27.5.1"
       description: Static docker CLI version (sha256-pinned per arch below).

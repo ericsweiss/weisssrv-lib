@@ -1,7 +1,6 @@
 # The JOB image an Ansible deploy runs in: the 1Password CLI, ansible at the
 # pinned version, and the git/ssh/jq toolchain the deploy jobs shell out to are
-# baked in, so a job's before_script stops re-installing them every run (over
-# half of a measured 115s deploy job in weisssrv).
+# baked in, so a job's before_script stops re-installing them every run.
 #
 # NOT baked, deliberately:
 #   - the weisssrv.infra collection. Its pin is per-consumer
@@ -16,20 +15,14 @@
 # Dockerfile, so the image is self-contained (docker/README.md).
 #
 #   docker build -t <registry>/ansible-deploy:latest docker/ansible-deploy/
-# Pinned by manifest-list digest (the multi-arch index, not a platform-specific
-# digest) so the rolling `3.11-slim` tag can't silently change the base and the
-# Dockerfile stays buildable on either arch. The PUBLISHED tag is amd64-only:
-# ci/build/docker-build.yml runs a plain `docker build` on the amd64
-# `infrastructure` runner, so the arm64 arm below is never exercised in CI. It
-# is kept for a future multi-arch (`buildx --platform`) build; until then its
-# sha256 is unverified by any job.
-# Same 3.11 line the deploy jobs run on today, slim because everything the
-# toolchain needs is installed explicitly below.
+# Pinned by manifest-list digest (the multi-arch index, not a platform digest)
+# so the rolling tag can't silently change the base. The published tag is
+# amd64-only — docker-build.yml runs a plain `docker build` on an amd64 runner,
+# so the arm64 arm below is never exercised and its sha256 is unverified.
 # Bump deliberately: resolve the new digest with
 #   docker buildx imagetools inspect python:3.11-slim
 FROM python:3.11-slim@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff
 
-# Suppress interactive prompts during apt installs
 ENV DEBIAN_FRONTEND=noninteractive
 
 # The toolchain a deploy job uses directly: git (ansible-galaxy installs the
@@ -69,7 +62,6 @@ RUN ARCH=$(dpkg --print-architecture) \
     && rm /tmp/op.zip \
     && op --version
 
-# pip dependencies (ansible, at the version a deploy job would otherwise install)
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --quiet --no-cache-dir -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt \

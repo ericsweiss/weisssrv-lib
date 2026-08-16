@@ -33,11 +33,11 @@
 
 - name: Include swap-clean tasks
   ansible.builtin.include_tasks: swap_clean.yml
-  when: nas_storage_swap_clean_enabled | default(false)
+  when: nas_storage_swap_clean_enabled
 
 - name: Include SMART monitoring tasks
   ansible.builtin.include_tasks: smartd.yml
-  when: nas_storage_smartd_enabled | default(true)
+  when: nas_storage_smartd_enabled
 
 - name: Include archive backup tasks
   when: nas_storage_archive_backup_enabled | bool

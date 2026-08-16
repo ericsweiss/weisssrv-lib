@@ -116,12 +116,18 @@ plex_claim: "{{ lookup('ansible.builtin.env', 'PLEX_CLAIM', default='') }}"
 With a Proxmox LXC in front, the guest side looks like:
 
 ```yaml
-lxc_bind_mounts:
-  - { host_path: /mnt/ssd/appdata/plex, container_path: /config }
-  - { host_path: /mnt/nvme/fast/plex-transcode, container_path: /transcode }
-  - { host_path: /mnt/media, container_path: /media }
-lxc_gpu_passthrough: true
-lxc_gpu_devices: [/dev/dri]
+proxmox_lxc_bind_mounts:
+  - host_path: /mnt/ssd/appdata/plex
+    container_path: /config
+    options: "mp=/config,backup=1"
+  - host_path: /mnt/nvme/fast/plex-transcode
+    container_path: /transcode
+    options: "mp=/transcode,backup=0"
+  - host_path: /mnt/media
+    container_path: /media
+    options: "mp=/media,ro=0"
+# /dev/dri is what the role passes through; there is no device list variable.
+proxmox_lxc_gpu_passthrough: true
 ```
 
 ## Testing

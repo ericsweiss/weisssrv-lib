@@ -3,49 +3,31 @@
 # nodes, and both run on the same box in a converged deployment.
 node_exporter_host_port: 9101
 
-# Textfile collector directory for custom script metrics
 node_exporter_host_textfile_dir: /var/lib/node_exporter
 
-# How often the liveness gate probes /metrics (README "Liveness gate"). Keep it
-# well inside the `for:` of whatever exporter-down alert covers this job, so the
-# self-heal normally lands before the alert does.
+# Keep well inside the `for:` of the exporter-down alert covering this job, so
+# the self-heal lands before the alert (README "Liveness gate").
 node_exporter_host_healthcheck_interval: 5min
 
-# Is this a bare-metal Proxmox host? Gates smartmontools, the drivetemp module
-# and the corosync/zpool/SMART/vzdump collectors — all of which are meaningless
-# (and the modprobe fails) in an unprivileged LXC or a guest VM. Set it from the
-# site's hypervisor group.
+# Bare-metal Proxmox host? Gates smartmontools, drivetemp and the
+# corosync/zpool/SMART/vzdump collectors, which fail or are meaningless in an
+# unprivileged LXC or a guest VM.
 node_exporter_host_proxmox: false
 
-# Storage-backend seam: the zpool-status collector is the one collector in the
-# Proxmox block that is ZFS-specific. It follows node_exporter_host_proxmox by
-# default; set false on a Proxmox host whose storage is not ZFS (Ceph, LVM-thin)
-# so the timer is not deployed at all rather than sampling an absent `zpool`.
+# Follows the Proxmox flag; set false on a Proxmox host whose storage is not ZFS
+# so the timer is never deployed (README "zpool-status collector").
 node_exporter_host_zpool_collector: "{{ node_exporter_host_proxmox }}"
 
-# Clustering seam, the corosync/pmxcfs counterpart of the zpool one above. A
-# STANDALONE PVE host runs no corosync and has no /etc/pve/ha/manager_status, so
-# the collector publishes mtime 0 — which PmxcfsStale treats as stale by design,
-# leaving an alert that can only be silenced. Set false there.
+# Set false on a STANDALONE PVE host: with no corosync the collector publishes
+# mtime 0, which PmxcfsStale treats as stale by design.
 node_exporter_host_corosync_collector: "{{ node_exporter_host_proxmox }}"
 
-# systemd collector. Default-OFF upstream, so node_systemd_* exists nowhere
-# unless it is asked for — and a "unit X failed" alert with no emitter is a gate
-# that can never fire. On here, with the unit set filtered: the collector's
-# unfiltered default enumerates every loaded unit (mounts, slices, scopes,
-# devices, sockets), which is a large, churny label set for no alerting value.
-# The include pattern is what bounds cardinality; the exclude mirrors upstream's
-# default as a second guard.
-#
-# Emits node_systemd_unit_state{name,state,type},
-# node_systemd_service_restart_total{name} (from
-# --collector.systemd.enable-restarts-metrics), node_systemd_units{state},
-# node_systemd_timer_last_trigger_seconds{name}, node_systemd_system_running and
-# node_systemd_version. Set false to drop the collector and its flags entirely.
+# Default-OFF upstream, so node_systemd_* exists nowhere unless asked for. The
+# include pattern bounds cardinality; series list in README "systemd collector".
 #
 # The patterns use `[.]` rather than `\.` on purpose: the value lands in a
-# systemd ExecStart= line, where a backslash starts a C escape sequence and an
-# unrecognised one makes systemd reject the whole command.
+# systemd ExecStart= line, where an unrecognised backslash escape makes systemd
+# reject the whole command.
 node_exporter_host_systemd_collector: true
 node_exporter_host_systemd_unit_include: ".+[.](service|timer)"
 node_exporter_host_systemd_unit_exclude: ".+[.](automount|device|mount|scope|slice)"

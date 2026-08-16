@@ -2,9 +2,10 @@
 
 Caps the ZFS ARC on the **compute** Proxmox hosts (`proxmox_role: compute`).
 
-This is the compute-host counterpart to the ARC cap `nas_storage` applies on the
-NAS host (same `zfs_arc_max_bytes` knob, different playbook lifecycle). Two
-cases make it load-bearing on a compute host:
+This is the one implementation of the ARC cap in the collection:
+`nas_storage` includes this role on the NAS host rather than carrying its own
+copy (same `zfs_arc_max_bytes` knob, different playbook lifecycle). Two cases
+make it load-bearing on a compute host:
 
 - **VFIO passthrough**: a GPU guest's RAM is host-pinned/mlock'd and therefore
   non-reclaimable, so the ~½-RAM default ARC collides with the pinned VM and
@@ -15,9 +16,9 @@ cases make it load-bearing on a compute host:
 
 ## What it does (only when `zfs_arc_cap_max_bytes` is set)
 
-1. Renders `/etc/modprobe.d/zfs.conf` with `options zfs zfs_arc_max=<bytes>`.
-   (Same filename `nas_storage` uses — the two roles never run on the same host,
-   so this cleanly supersedes any prior manual cap.)
+1. Renders `/etc/modprobe.d/zfs.conf` with `options zfs zfs_arc_max=<bytes>`,
+   cleanly superseding any prior manual cap in that file. The directory is
+   created first — kmod ships it on a full host, a minimal image may not.
 2. Notifies a **Rebuild initramfs** handler so the load-time module parameter is
    baked into the initramfs (the root pool imports at early boot).
 3. Writes the running kernel's `/sys/module/zfs/parameters/zfs_arc_max`
@@ -34,8 +35,10 @@ Empty (`zfs_arc_cap_max_bytes: ""`, the default) → the role manages nothing.
 
 ## Where it runs
 
-Compute hosts only. Do not run it on a host where `weisssrv.infra.nas_storage`
-already owns the ARC cap — the two write the same `/etc/modprobe.d/zfs.conf`.
+Compute hosts, directly from the play. On a NAS host it is included by
+`weisssrv.infra.nas_storage`, which passes `nas_storage_zfs_arc_max_bytes`
+through — do not also list it in the play there, or the cap is converged twice
+per run.
 
 ## Runtime cleanup note
 

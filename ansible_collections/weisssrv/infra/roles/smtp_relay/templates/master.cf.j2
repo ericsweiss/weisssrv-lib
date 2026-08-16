@@ -1,4 +1,8 @@
 # {{ ansible_managed }}
+# This file REPLACES Debian's packaged master.cf: the whole service table is
+# reproduced below so the submission stanza can be conditional. A Debian change
+# to the packaged table (a new default service, a changed postlogd line) is not
+# picked up — re-sync the table by hand when the postfix package changes it.
 
 # service type  private unpriv  chroot  wakeup  maxproc command + args
 #               (yes)   (yes)   (no)    (never) (100)

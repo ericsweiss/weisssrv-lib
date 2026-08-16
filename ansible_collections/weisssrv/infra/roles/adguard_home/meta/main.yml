@@ -11,5 +11,7 @@ galaxy_info:
       versions:
         - trixie
 
-dependencies:
-  - role: weisssrv.infra.unbound
+# Ordering is the playbook's job: the resolver behind adguard_home_upstream_dns
+# must be up before this role's post-deploy DNS probe. That is
+# weisssrv.infra.unbound at the default upstream, and nothing at a public one.
+dependencies: []

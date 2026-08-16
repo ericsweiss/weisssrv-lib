@@ -10,9 +10,9 @@ Type=oneshot
 # EXIT trap restarts every guest it stopped. Keep it well above the SUM of the
 # configured stop-guest timeouts plus swapoff + restarts, so a legitimate
 # reclaim is never cut short.
-TimeoutStartSec={{ nas_storage_swap_clean_service_timeout | default(1200) }}
+TimeoutStartSec={{ nas_storage_swap_clean_service_timeout }}
 # Low priority — memory hygiene, never urgent. Same load-shaping as media-mover.
-Nice={{ nas_storage_swap_clean_nice | default(10) }}
+Nice={{ nas_storage_swap_clean_nice }}
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 CPUWeight=20

@@ -1,7 +1,19 @@
 ---
-# Do NOT run this on a host where nas_storage already owns the cap: both write
-# /etc/modprobe.d/zfs.conf. That shared filename is deliberate, so this cleanly
-# supersedes a hand-written zfs.conf cap — but a stale cap in a DIFFERENTLY
+# kmod ships /etc/modprobe.d on a Debian/Proxmox host, but a minimal image
+# (a container, a debootstrap chroot) may not carry it, and the template below
+# does not create its own parent. Idempotent, so it is a no-op everywhere else.
+- name: Ensure the modprobe.d directory exists
+  ansible.builtin.file:
+    path: /etc/modprobe.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: zfs_arc_cap_max_bytes | default('') | string | length > 0
+
+# The single implementation of the ARC cap; nas_storage includes this role
+# rather than duplicating it. Writing /etc/modprobe.d/zfs.conf cleanly
+# supersedes a hand-written cap in that file — but a stale cap in a DIFFERENTLY
 # named modprobe.d file must be removed by hand, or the load-time value is
 # ambiguous (the running value is still made authoritative below).
 - name: Cap ZFS ARC via modprobe.d

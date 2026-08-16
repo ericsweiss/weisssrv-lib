@@ -685,21 +685,3 @@
         path: /etc/fail2ban/filter.d/gitlab-shell.conf
       register: gitlab_old_filter
       failed_when: gitlab_old_filter.stat.exists
-
-    - name: Display test results
-      ansible.builtin.debug:
-        msg:
-          - "gitlab.rb rendered with correct permissions (0600, root:root)"
-          - "Core settings verified (external URL, email, time zone from gitlab_timezone)"
-          - "NGINX plain-HTTP branch verified; TLS branch verified via side render"
-          - "Let's Encrypt disabled (the cert comes from the external distributor)"
-          - "SMTP relay settings and credentials verified"
-          - "Container Registry and Pages nginx TLS verified"
-          - "SAML provider, IdP settings and attribute statements verified; unset optional keys omitted"
-          - "Gitaly storage configuration verified ({{ gitlab_git_data_dir }})"
-          - "Backup path, retention, timer/service (both mount branches), wrapper metrics, secrets metrics and SKIP contract verified"
-          - "Shared write_prom_metrics library deployed and sourced"
-          - "Performance tuning verified (Puma workers: {{ gitlab_puma_workers }}, Sidekiq: {{ gitlab_sidekiq_concurrency }})"
-          - "SSH redirect NAT rules verified (one per chain, port {{ gitlab_ssh_port }}, drift cleaned)"
-          - "sshd AllowUsers restriction verified"
-          - "fail2ban gitlab-ssh jail verified (ports 22,{{ gitlab_ssh_port }}, sshd filter, journald)"

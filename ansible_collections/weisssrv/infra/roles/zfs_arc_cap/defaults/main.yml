@@ -1,13 +1,14 @@
 ---
-# zfs_arc_cap — cap the ZFS ARC on the compute Proxmox hosts. A byte count is
+# zfs_arc_cap — cap the ZFS ARC. Run directly on the compute Proxmox hosts and
+# included by weisssrv.infra.nas_storage on the NAS host. A byte count is
 # rendered into /etc/modprobe.d/zfs.conf, baked into the initramfs (so the cap
 # applies at EARLY boot, before the pool imports and the ARC grows to the
 # ~half-RAM default) AND written live to /sys/module/zfs/parameters/zfs_arc_max
 # so a change needs no reboot. Empty ("") makes the role a total no-op.
 #
 # Aliased to the conventional inventory-wide `zfs_arc_max_bytes`, which
-# weisssrv.infra.nas_storage (the NAS-host counterpart of the same knob) also
-# reads; set zfs_arc_cap_max_bytes directly to decouple. The cap matters most
+# weisssrv.infra.nas_storage also reads (it includes this role on the NAS
+# host); set zfs_arc_cap_max_bytes directly to decouple. The cap matters most
 # where a VFIO-passthrough guest's RAM is host-pinned and non-reclaimable, so
 # an uncapped ARC collides with the pinned VM and thrashes.
 zfs_arc_cap_max_bytes: "{{ zfs_arc_max_bytes | default('') }}"

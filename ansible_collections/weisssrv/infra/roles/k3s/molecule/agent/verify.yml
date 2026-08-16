@@ -1,5 +1,4 @@
 ---
-# Tests agent-specific configuration deployment
 - name: Verify
   hosts: all
   become: true
@@ -36,7 +35,6 @@
       ansible.builtin.debug:
         msg: "{{ k3s_config_text }}"
 
-    # Agent-specific configuration tests
     - name: Verify agent config has server URL
       ansible.builtin.assert:
         that:
@@ -124,18 +122,3 @@
           - not kube_vip_manifest.stat.exists
         fail_msg: "kube-vip should NOT be deployed on agent nodes"
         success_msg: "kube-vip correctly not deployed on agent node"
-
-    - name: Display test results
-      ansible.builtin.debug:
-        msg:
-          - "k3s agent configuration deployed successfully"
-          - "Config directory: /etc/rancher/k3s"
-          - "Config file: /etc/rancher/k3s/config.yaml (mode 0600)"
-          - "Agent-specific settings verified:"
-          - "  - Server URL: https://10.0.0.161:6443"
-          - "  - Node labels: node-type=general, workload=media"
-          - "  - Node taints: node.kubernetes.io/ingress=true:NoSchedule"
-          - "  - kube-vip NOT deployed (correct for agent)"
-          - "  - Agent token migrated in k3s-agent.service.env"
-          - "  - Empty agent token rejected by the validation assert"
-          - "(k3s binary install skipped in container testing)"

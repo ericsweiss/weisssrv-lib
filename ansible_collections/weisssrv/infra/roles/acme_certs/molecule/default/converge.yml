@@ -3,33 +3,8 @@
   hosts: all
   become: true
   pre_tasks:
-    - name: Wait for apt locks to be released
-      ansible.builtin.shell: |
-        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
-              fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
-              fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
-          sleep 1
-        done
-      args:
-        executable: /bin/bash
-      changed_when: false
-      when: ansible_os_family == "Debian"
-
-    # Recover an interrupted install. Deliberately no apt-cache clean: it races
-    # concurrent downloads in the container.
-    - name: Fix any interrupted dpkg state
-      ansible.builtin.shell: |
-        dpkg --configure -a || true
-      args:
-        executable: /bin/bash
-      changed_when: false
-      when: ansible_os_family == "Debian"
-
-    - name: Update apt cache
-      ansible.builtin.apt:
-        update_cache: true
-        cache_valid_time: 0
-      when: ansible_os_family == "Debian"
+    - name: Container warm-up (apt locks, dpkg state, cache, systemd)
+      ansible.builtin.include_tasks: ../../../../molecule-shared/tasks/container-warmup.yml
 
     - name: Install prerequisites
       ansible.builtin.apt:

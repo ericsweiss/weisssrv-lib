@@ -40,7 +40,7 @@
   changed_when: proxmox_ha_resource_add_result.rc == 0
   failed_when:
     - proxmox_ha_resource_add_result.rc != 0
-    - "'already exists' not in proxmox_ha_resource_add_result.stderr"
+    - "'already exists' not in proxmox_ha_resource_add_result.stderr | default('')"
   tags: [proxmox_ha_resources]
 
 - name: Update HA resources

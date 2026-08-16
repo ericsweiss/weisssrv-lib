@@ -1,11 +1,6 @@
 ---
-# Prepare playbook: Set up loopback device to simulate SCSI-attached ZFS zvol
-#
-# In production, Proxmox attaches zvols as SCSI devices with stable paths:
-#   /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi1
-# Docker containers don't have real SCSI devices, so we simulate this with:
-#   1. A loopback device backed by a disk image file
-#   2. A symlink at the expected SCSI path pointing to the loopback device
+# No real SCSI in Docker: a loop device plus a symlink at the by-id path
+# (/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi1) stand in for the zvol.
 - name: Prepare
   hosts: all
   gather_facts: false
@@ -19,7 +14,6 @@
     - name: Gather facts
       ansible.builtin.setup:
 
-    # Install packages needed by the role (filesystem formatting and mount checks)
     - name: Install required packages
       ansible.builtin.apt:
         name:
@@ -28,7 +22,6 @@
         state: present
         update_cache: true
 
-    # Create a loopback block device simulating a SCSI-attached zvol
     - name: Create test disk image (64MB)
       ansible.builtin.command: dd if=/dev/zero of=/tmp/test-disk.img bs=1M count=64
       args:
@@ -84,7 +77,6 @@
       register: zvol_loop_device
       changed_when: false
 
-    # This simulates what QEMU/Proxmox creates for SCSI-attached disks
     - name: Create /dev/disk/by-id directory
       ansible.builtin.file:
         path: /dev/disk/by-id

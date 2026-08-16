@@ -38,8 +38,6 @@
   when: proxmox_ha_current_replication_jobs_raw.stdout == '' or proxmox_ha_current_replication_jobs_raw.rc != 0
   tags: [proxmox_ha_replication]
 
-# Build a lookup with source, target, schedule, and comment info keyed by job
-# ID. Used for both source and target drift detection.
 - name: Build detailed current jobs lookup
   ansible.builtin.set_fact:
     proxmox_ha_current_jobs_detail: >-
@@ -82,7 +80,6 @@
     proxmox_ha_desired_job_ids: "{{ proxmox_ha_desired_jobs | map(attribute='id') | list }}"
   tags: [proxmox_ha_replication]
 
-# Get local VMIDs early - needed for both job creation (source drift skip) and later detection
 - name: Get list of local VMIDs on this node
   ansible.builtin.shell: |
     set -o pipefail
@@ -101,8 +98,7 @@
     proxmox_ha_local_vmids: "{{ proxmox_ha_local_vmids_raw.stdout_lines | default([]) | map('trim') | select() | list }}"
   tags: [proxmox_ha_replication]
 
-# A job that targets the wrong node must be deleted and recreated — `pvesr
-# update` cannot change a job's target.
+# `pvesr update` cannot change a job's target: delete and recreate.
 - name: Initialize target-drift tracking
   ansible.builtin.set_fact:
     proxmox_ha_drifted_job_ids: []
@@ -174,9 +170,6 @@
     - "'does not exist' not in proxmox_ha_drift_delete_result.stderr | default('')"
   tags: [proxmox_ha_replication]
 
-# Detect jobs with SOURCE drift (job exists on a different node than configured)
-# This happens after HA failover or manual migration. The old job must be deleted
-# before we can create a new one on the correct source node.
 - name: Initialize source drift tracking
   ansible.builtin.set_fact:
     proxmox_ha_source_drifted_job_ids: []
@@ -216,8 +209,7 @@
   when: proxmox_ha_source_drifted_job_ids | default([]) | length > 0
   tags: [proxmox_ha_replication]
 
-# Delete stale replication jobs that exist on the WRONG source node
-# This must happen BEFORE creating new jobs, as job IDs are cluster-unique
+# Must run BEFORE the create pass: job IDs are cluster-unique.
 - name: Delete stale replication jobs with source drift
   ansible.builtin.command: pvesr delete {{ item }}
   loop: "{{ proxmox_ha_source_drifted_job_ids | default([]) }}"
@@ -245,7 +237,6 @@
       (item.id in proxmox_ha_source_drifted_job_ids | default([]))
     - item.enabled | default(true)
     - inventory_hostname == item.source_node
-    # Skip if VM has migrated away from this node (source drift)
     - item.id.split('-')[0] in proxmox_ha_local_vmids
   loop: "{{ proxmox_ha_replication_jobs | default([]) }}"
   loop_control:
@@ -268,10 +259,8 @@
     _has_drift: >-
       {{ _desired_schedule != _current_schedule or
          _desired_comment != _current_comment }}
-    # Determine if we need to pass --comment argument:
-    # - If item.comment is defined: pass the value
-    # - If item.comment is not defined but current has a comment: pass empty string to clear
-    # - If both are empty: no --comment needed
+    # An empty --comment is required to CLEAR a comment; omitting it keeps
+    # the old one and the drift check never converges.
     _needs_comment_arg: "{{ (item.comment is defined) or (_current_comment | length > 0) }}"
     _comment_value: "{{ item.comment | default('') }}"
   ansible.builtin.command: >-
@@ -284,7 +273,6 @@
     - item.id not in proxmox_ha_source_drifted_job_ids | default([])
     - item.enabled | default(true)
     - inventory_hostname == item.source_node
-    # Skip if VM has migrated away from this node (source drift)
     - item.id.split('-')[0] in proxmox_ha_local_vmids
     - _has_drift | bool
   loop: "{{ proxmox_ha_replication_jobs | default([]) }}"
@@ -310,8 +298,7 @@
     - "'does not exist' not in proxmox_ha_replication_job_remove_result.stderr | default('')"
   tags: [proxmox_ha_replication]
 
-# `pvesr list` returns ALL cluster-wide jobs, but a node may only manage the
-# ones it sources — so orphan detection considers only those.
+# `pvesr list` is cluster-wide; orphan detection considers only jobs this node sources.
 - name: Build list of current job IDs originating from this node
   ansible.builtin.set_fact:
     proxmox_ha_current_local_job_ids: >-
@@ -326,7 +313,6 @@
 
 - name: Find orphaned replication jobs on this node
   ansible.builtin.set_fact:
-    # Orphaned = exists on this node (as source) but not in desired config for this node
     proxmox_ha_orphaned_job_ids: "{{ proxmox_ha_current_local_job_ids | default([]) | difference(proxmox_ha_desired_job_ids | default([])) }}"
   tags: [proxmox_ha_replication]
 
@@ -394,7 +380,6 @@
   when: proxmox_ha_source_drift_jobs | length > 0
   tags: [proxmox_ha_replication]
 
-# Report jobs that exist on a DIFFERENT node than configured.
 - name: Detect jobs running from unexpected source nodes
   ansible.builtin.set_fact:
     proxmox_ha_unexpected_source_jobs: >-

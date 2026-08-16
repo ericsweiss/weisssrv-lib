@@ -19,8 +19,19 @@ adguard_home_admin_user: admin
 adguard_home_web_bind: "0.0.0.0"
 adguard_home_dns_bind: "0.0.0.0"
 
-# Name resolved by the post-deploy DNS smoke test.
 adguard_home_dns_probe_name: google.com
+
+# Optional local mirror for the pinned release tarball, named
+# AdGuardHome_linux_<arch>-v<version>.tar.gz. OPT-IN (empty = no lookup, the
+# upstream download always runs). Set it and a staged archive is installed
+# instead of fetching github.com; staged for another version -> the download
+# runs anyway.
+adguard_home_archive_cache_dir: ""
+# A staged archive is verified before it is unpacked, the same way the download
+# is: this sha256 if set, otherwise a checksums.txt in the same directory (the
+# upstream release file). Neither present -> the play fails rather than
+# installing an unverified binary.
+adguard_home_archive_sha256: ""
 
 # Where files/adguard-admin-hash.py is installed; it is also the operator tool
 # for inspecting or resetting the admin hash (README § Admin password).
@@ -35,7 +46,6 @@ adguard_home_settle_seconds: 0
 # reconciler would fight that sync.
 adguard_home_is_primary: false
 
-# Skip API configuration (useful for integration tests)
 adguard_home_skip_api_config: false
 
 # Skip pointing the host's own resolver at this instance (the role otherwise
@@ -75,14 +85,12 @@ adguard_home_resolve_clients: true
 adguard_home_use_private_ptr_resolvers: false
 adguard_home_disable_ipv6: false
 
-# Cache configuration
 adguard_home_cache_enabled: true
 adguard_home_cache_size: 8388608
 adguard_home_cache_ttl_min: 0
 adguard_home_cache_ttl_max: 0
 adguard_home_cache_optimistic: false
 
-# Rate limiting
 adguard_home_ratelimit: 20
 adguard_home_ratelimit_whitelist: []
 

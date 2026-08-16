@@ -16,7 +16,9 @@ write_prom_metrics() {
   # Size the newest EXISTING artefact when this run produced none, so 0 keeps ONE
   # meaning: no artefact exists at all. A transient failure with good artefacts
   # still in the landing zone is already carried by ${prefix}_last_run_success 0,
-  # and must not also read as an empty landing path.
+  # and must not also read as an empty landing path. Callers therefore pass NO
+  # artifact_glob on a fail-closed unmounted-landing-zone path: sizing a shadow
+  # dir under the unmounted mountpoint would suppress *BackupArtifactEmpty.
   if [ "$size" -eq 0 ] && [ -n "$artifact_glob" ]; then
     # shellcheck disable=SC2012,SC2086 # ls -t for mtime order; the glob MUST expand
     newest="$(ls -1t $artifact_glob 2>/dev/null | head -1 || true)"

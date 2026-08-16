@@ -24,6 +24,10 @@ provisioner:
     defaults:
       remote_tmp: /tmp/ansible-tmp
 scenario:
+  # No `idempotence` step: converge deliberately drives add/set/delete paths
+  # case by case, so a second converge is expected to report changes. The
+  # no-churn contract is asserted in-scenario instead (case B requires ZERO
+  # stub mutations against already-matching state).
   test_sequence:
     - dependency
     - cleanup

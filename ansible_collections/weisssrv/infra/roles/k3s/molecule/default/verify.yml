@@ -474,21 +474,3 @@
       # The stat gate must make this a no-op — a host that never had the
       # feature does no systemd work at all.
       ansible.builtin.include_tasks: ../../tasks/etcd-snapshot-offnode-absent.yml
-
-    - name: Display test results
-      ansible.builtin.debug:
-        msg:
-          - "k3s config directory exists"
-          - "k3s config file exists with correct permissions (0600)"
-          - "k3s config contains tls-san, API VIP, cluster-cidr, and service-cidr"
-          - "inotify sysctl drop-in raises max_user_instances/max_user_watches"
-          - "secrets-encryption, agent-token, and flannel backend render"
-          - "cluster-init vs join stanza matches k3s_is_first_server"
-          - "kube-vip manifest deployed on the first server only (VIP, readOnly kubeconfig)"
-          - "kube-vip runs system-node-critical with bounded memory"
-          - "kube-vip interface assert rejects a nonexistent NIC"
-          - "version assert rejects an empty kube-vip pin"
-          - "metrics-server override renders on the first server only"
-          - "audit args + audit/v1 policy render on the audit-enabled server only"
-          - "off-node snapshot opt-out de-provisions units and script"
-          - "(k3s binary install skipped in container testing)"

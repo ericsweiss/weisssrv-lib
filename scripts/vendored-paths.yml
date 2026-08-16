@@ -31,6 +31,7 @@ consumers:
       - scripts/b2-bucket-drift.py
       - scripts/check-alertmanager-behaviour.py
       - scripts/check-backup-artifact-apps.py
+      - scripts/check-default-deny-coverage.py
       - scripts/check-deploy-coverage.sh
       - scripts/check-doc-links.py
       - scripts/check-hpa-vpa-invariant.py
@@ -191,6 +192,10 @@ consumers:
       - scripts/check-lib-pins.py
       - scripts/semantic-release.py
       # --- copies rendered into the generated cluster ---
+      - lib: scripts/check-backup-artifact-apps.py
+        consumer: template/scripts/check-backup-artifact-apps.py
+      - lib: scripts/check-default-deny-coverage.py
+        consumer: template/scripts/check-default-deny-coverage.py
       - lib: scripts/check-deploy-coverage.sh
         consumer: template/scripts/check-deploy-coverage.sh
       - lib: scripts/check-doc-links.py

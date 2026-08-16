@@ -1,0 +1,42 @@
+---
+# Derivation step for the fstab option string of every union, keyed by union
+# name. Split out of mergerfs.yml for the same reason as
+# mergerfs_needs_remount.yml — the mount around it needs FUSE and a real
+# fileserver, this part is pure derivation and is driven from fabricated
+# inventory in test.
+#
+# Boot ordering: ZFS branch dirs have no .mount units — zfs-mount-generator is
+# not enabled here (see the nfs.yml bind-mount comment) — so requires-mounts-for
+# alone orders against nothing and the mergerfs mount can race the ZFS mounts
+# and capture empty branch stubs. A union with any branch under
+# nas_storage_zfs_mount_roots therefore anchors on the bulk zfs-mount.service
+# like the ZFS-backed export binds do (nofail keeps a missing branch from
+# blocking boot); requires-mounts-for is kept as documentation of the branch set.
+#
+# The zfs-mount anchor is derived from the BRANCH SET, not from
+# `systemd_requires` — only the requires-mounts-for fan-out lives inside that key.
+
+- name: Reset the derived MergerFS fstab options
+  ansible.builtin.set_fact:
+    nas_storage_mergerfs_fstab_opts: {}
+
+- name: Derive the fstab options for each MergerFS union
+  ansible.builtin.set_fact:
+    nas_storage_mergerfs_fstab_opts: >-
+      {{ nas_storage_mergerfs_fstab_opts | combine({item.name: _mergerfs_opts}) }}
+  loop: "{{ nas_storage_mergerfs_mounts }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    # Derived from the branch set, overridden by an explicit boolean `zfs:`. A
+    # branch EQUAL to a mount root does not count — the pattern matches paths
+    # INSIDE a root — so such a union needs `zfs: true`.
+    _zfs_backed_branches: >-
+      {{ item.zfs | default(item.sources
+         | select('match', nas_storage_zfs_bind_source_pattern) | list | length > 0) }}
+    _mergerfs_opts: >-
+      {{ item.options | join(',') }},fsname={{ item.name }}{%- if _zfs_backed_branches | bool -%}
+      ,nofail,x-systemd.requires=zfs-mount.service,x-systemd.after=zfs-mount.service{%- elif item.systemd_requires is defined -%}
+      ,nofail{%- endif -%}
+      {%- for req in item.systemd_requires | default([]) -%}
+      ,x-systemd.requires-mounts-for={{ req }}{%- endfor -%}

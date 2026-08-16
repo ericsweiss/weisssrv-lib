@@ -17,6 +17,8 @@ FROM python:3.11@sha256:9139edd4aa848a1aa1c63865cd5d11b3a6aaaf3fb410a3ac7b3914e4
 # directly — the Debian docker.io package on Trixie doesn't include the
 # CLI (only the daemon), and docker-ce-cli isn't in the default repos.
 # Detect arch for multi-platform builds; verify the pinned sha256 before extract.
+# Version and both shas are held equal to ci/build/docker-build.yml's input
+# defaults by tests/test_pin_parity.py — bump them together.
 RUN ARCH=$(dpkg --print-architecture) \
     && case "$ARCH" in \
          amd64) DOCKER_ARCH=x86_64; DOCKER_SHA256=4f798b3ee1e0140eab5bf30b0edc4e84f4cdb53255a429dc3bbae9524845d640;; \
@@ -29,12 +31,10 @@ RUN ARCH=$(dpkg --print-architecture) \
     && rm /tmp/docker.tgz \
     && docker --version
 
-# pip dependencies (molecule + ansible + plugins)
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --quiet --no-cache-dir -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
 
-# Ansible collections
 COPY requirements.yml /tmp/requirements.yml
 RUN ansible-galaxy collection install -r /tmp/requirements.yml \
     && rm /tmp/requirements.yml

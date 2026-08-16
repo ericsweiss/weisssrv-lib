@@ -1,6 +1,4 @@
 ---
-# NFS server configuration
-
 - name: Ensure the shared media group exists
   ansible.builtin.group:
     name: "{{ nas_storage_media_group }}"

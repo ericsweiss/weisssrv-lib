@@ -188,7 +188,6 @@
     - adguard_home_tls_key_exists is defined
     - adguard_home_tls_cert_exists.stat.exists | default(false)
     - adguard_home_tls_key_exists.stat.exists | default(false)
-    # Check ALL fields that are being sent to detect any drift
     - >
       (adguard_home_current_tls_config.json.enabled | default(false)) != adguard_home_tls_enabled or
       (adguard_home_current_tls_config.json.server_name | default('')) != adguard_home_tls_server_name or

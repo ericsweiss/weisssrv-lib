@@ -21,8 +21,14 @@ variable "zone_name" {
 variable "manage_zone_settings" {
   description = <<-EOT
     Manage zone-wide TLS/cache settings. Requires Zone Settings:Edit on the
-    provider token. Flipping true -> false DESTROYS the override resource, which
-    reverts the zone to the settings captured when it was created.
+    provider token.
+
+    Flipping true -> false alone is a hard plan error: the override carries
+    `prevent_destroy`, which Terraform enforces against any plan that destroys
+    the instance, count-driven removals included. Stop managing the settings in
+    two steps —
+    `terraform state rm 'module.<name>.cloudflare_zone_settings_override.this[0]'`
+    (the live zone settings survive that), then set the variable false.
   EOT
   type        = bool
   default     = true
@@ -54,6 +60,74 @@ variable "zone_settings" {
     }), {})
   })
   default = {}
+
+  # The API rejects an out-of-set value mid-apply, after the earlier settings in
+  # the same override have already been written.
+  validation {
+    condition     = contains(["off", "flexible", "full", "strict", "origin_pull"], var.zone_settings.ssl)
+    error_message = "zone_settings.ssl must be one of off, flexible, full, strict, origin_pull (lower case)."
+  }
+
+  validation {
+    condition     = contains(["1.0", "1.1", "1.2", "1.3"], var.zone_settings.min_tls_version)
+    error_message = "zone_settings.min_tls_version must be one of 1.0, 1.1, 1.2, 1.3."
+  }
+
+  validation {
+    condition     = contains(["aggressive", "basic", "simplified"], var.zone_settings.cache_level)
+    error_message = "zone_settings.cache_level must be one of aggressive, basic, simplified."
+  }
+
+  # tls_1_3 is not a plain toggle: "zrt" enables TLS 1.3 with 0-RTT.
+  validation {
+    condition     = contains(["on", "off", "zrt"], var.zone_settings.tls_1_3)
+    error_message = "zone_settings.tls_1_3 must be \"on\", \"off\", or \"zrt\"."
+  }
+
+  validation {
+    condition = alltrue([
+      for toggle in [
+        var.zone_settings.always_use_https,
+        var.zone_settings.automatic_https_rewrites,
+        var.zone_settings.http3,
+        var.zone_settings.zero_rtt,
+        var.zone_settings.early_hints,
+        var.zone_settings.brotli,
+        var.zone_settings.development_mode,
+      ] : contains(["on", "off"], toggle)
+    ])
+    error_message = "zone_settings on/off toggles (always_use_https, automatic_https_rewrites, http3, zero_rtt, early_hints, brotli, development_mode) must be \"on\" or \"off\"."
+  }
+
+  # The two numeric settings are bounded rather than enumerated: the accepted
+  # step values vary by plan, but the bounds and the preload floor do not.
+  validation {
+    condition = (
+      var.zone_settings.browser_cache_ttl >= 0
+      && var.zone_settings.browser_cache_ttl <= 31536000
+    )
+    error_message = "zone_settings.browser_cache_ttl must be 0-31536000 seconds (0 = respect the origin's own Cache-Control)."
+  }
+
+  validation {
+    condition = (
+      !var.zone_settings.hsts.enabled
+      || var.zone_settings.hsts.max_age > 0
+    )
+    error_message = "zone_settings.hsts.max_age must be > 0 while hsts.enabled is true. max_age = 0 is how HSTS is WITHDRAWN — it tells every browser to forget the policy — so turn the header off with enabled = false instead of leaving it on with no lifetime."
+  }
+
+  validation {
+    condition = (
+      !var.zone_settings.hsts.preload
+      || (
+        var.zone_settings.hsts.enabled
+        && var.zone_settings.hsts.include_subdomains
+        && var.zone_settings.hsts.max_age >= 31536000
+      )
+    )
+    error_message = "zone_settings.hsts.preload requires enabled = true, include_subdomains = true and max_age >= 31536000 (12 months). The browser preload lists refuse a submission missing any of the three, so a shorter policy advertises a preload that will never be honoured."
+  }
 }
 
 variable "records" {

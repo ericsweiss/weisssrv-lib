@@ -3,11 +3,8 @@
   hosts: all
   become: true
   pre_tasks:
-    - name: Update apt cache
-      ansible.builtin.apt:
-        update_cache: true
-        cache_valid_time: 3600
-      when: ansible_os_family == "Debian"
+    - name: Container warm-up (apt locks, dpkg state, cache, systemd)
+      ansible.builtin.include_tasks: ../../../../molecule-shared/tasks/container-warmup.yml
 
     - name: Install prerequisites
       ansible.builtin.apt:

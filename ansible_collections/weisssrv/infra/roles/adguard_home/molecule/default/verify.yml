@@ -125,6 +125,8 @@
           - adguard_home_certs_dir.stat.exists
           - adguard_home_certs_dir.stat.isdir
           - adguard_home_certs_dir.stat.gr_name == 'adguard'
+          # setgid, so a cert dropped in by acme_certs inherits the group
+          - adguard_home_certs_dir.stat.mode == '2750'
         fail_msg: "Certs directory has incorrect permissions"
         success_msg: "Certs directory has correct permissions for cert distribution"
 
@@ -159,20 +161,3 @@
         path: /usr/local/sbin/adguard-admin-hash.py
       register: adguard_home_hash_helper
       failed_when: not adguard_home_hash_helper.stat.exists
-
-    - name: Display test results
-      ansible.builtin.debug:
-        msg:
-          - "AdGuard Home binary installed and executable"
-          - "adguard user exists with no login shell"
-          - "Systemd service file exists with correct security settings:"
-          - "  - User/Group: adguard"
-          - "  - CAP_NET_BIND_SERVICE capability for privileged port binding"
-          - "  - NoNewPrivileges=true, ProtectSystem hardening (strict in production, false in Docker tests)"
-          - "AdGuard Home service is active and enabled"
-          - "HTTP interface responding on port 3000"
-          - "Directory permissions correct:"
-          - "  - /opt/AdGuardHome owned by adguard"
-          - "  - /opt/AdGuardHome/data has 0700 permissions"
-          - "  - /opt/AdGuardHome/certs has setgid for cert distribution"
-          - "Config file AdGuardHome.yaml exists with password hash"

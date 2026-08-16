@@ -24,5 +24,9 @@ alloy_host_wal_max_segment_age: "1h"
 alloy_host_journal_max_age: "3h"
 
 # Alloy's HTTP listen port, used by the post-deploy /-/ready probe. Change it
-# together with any --server.http.listen-addr override.
+# together with a matching --server.http.listen-addr in alloy_host_extra_args.
 alloy_host_http_port: 12345
+
+# Extra Alloy command-line arguments, appended to the managed CUSTOM_ARGS line
+# after --disable-reporting.
+alloy_host_extra_args: []

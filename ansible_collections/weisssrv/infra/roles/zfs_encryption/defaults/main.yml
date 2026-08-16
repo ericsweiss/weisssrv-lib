@@ -4,17 +4,13 @@
 # is unreachable the per-pool units retry forever; the operator fallback is
 # `sudo zfs load-key <pool>` (README "Cold-cluster boot").
 
-# Connect access point. Must be reachable from the host at boot, before any
-# encrypted pool is mounted. Derived from zfs_encryption_internal_domain, which
-# aliases the conventional inventory-wide `internal_domain`; set the URL
-# directly to decouple. Asserted non-empty on any host with pools.
+# Must be reachable at boot, before any encrypted pool is mounted. Derived from
+# the inventory-wide `internal_domain` alias; set the URL directly to decouple.
 zfs_encryption_internal_domain: "{{ internal_domain | default('') }}"
 zfs_encryption_connect_url: "{{ ('https://connect.' ~ zfs_encryption_internal_domain) if zfs_encryption_internal_domain else '' }}"
 
-# Vault holding the passphrase items. The token deployed to every host with
-# pools can read this whole vault, so point it at one holding only the
-# passphrases; the ordering that keeps a re-scope from wedging boot is in the
-# README ("Scoping the Connect token").
+# The token can read this WHOLE vault, so point it at one holding only the
+# passphrases — README "Scoping the Connect token" for the re-scope ordering.
 zfs_encryption_connect_vault: "Homelab"
 
 # Connect access token, injected by the caller from 1Password (preferably a
@@ -22,30 +18,17 @@ zfs_encryption_connect_vault: "Homelab"
 # a non-empty zfs_encryption_pools.
 zfs_encryption_connect_token: ""
 
-# Where the Connect bearer token lands on the host. The script reads it 0400
-# root and pipes it to curl on stdin; the parent directory is created 0700.
+# Deployed 0400 root (parent dir 0700) and piped to curl on stdin.
 zfs_encryption_token_path: /etc/onepassword-connect/token
 
-# SECRETS-BACKEND SEAM. Empty (default) = fetch each passphrase from 1Password
-# Connect, as described above. Set to a shell command that PRINTS the passphrase
-# on stdout to use any other backend; the Connect code is then not rendered into
-# zfs-load-key.sh at all, and no Connect URL/token/vault is required or deployed.
-# The command runs as root from the per-pool unit with $ZFS_ENCRYPTION_POOL,
-# $ZFS_ENCRYPTION_ITEM and $ZFS_ENCRYPTION_FIELD in the environment (item/field
-# are opaque locators — a Vault path, an SOPS key, whatever the backend uses).
-# It owns its own retry/timeout: a non-zero exit maps to rc 2 (transient, the
-# unit retries), empty output to rc 3 (config error, the unit stops). See README.
+# Secrets-backend seam. Empty = 1Password Connect. Set to a command PRINTING the
+# passphrase on stdout for any other backend; the Connect code is then not
+# rendered at all. Contract + exit mapping: README "Using a secrets backend".
 zfs_encryption_key_command: ""
 
-# Per-host list of encrypted pools and their 1Password items.
-# Format:
-#   - name: tank          # ZFS pool name
-#     item: "ZFS Pool tank Passphrase"   # 1P item title in vault above
-#     field: passphrase   # field on the item that holds the passphrase
-# Empty list = deploy the script + unit template only (no token, no mount
-# anchor, no per-pool services) — for hosts whose pools are not yet encrypted
-# or that are intentionally plaintext. Anything left out of this list is
-# unencrypted at rest; see the README threat model.
+# Item shape: {name, item, field}. Empty = deploy the script + unit template
+# only (no token, no anchor, no per-pool services). Anything left out of this
+# list is unencrypted at rest — README "Threat model".
 zfs_encryption_pools: []
 
 # Proxmox guests (on THIS host) whose disks live on an encrypted pool and must
@@ -55,10 +38,7 @@ zfs_encryption_pools: []
 zfs_encryption_guest_vmids: []
 zfs_encryption_guest_ctids: []
 
-# How long the boot-time fetch retries before giving up. The unit will
-# also be retried by systemd on Restart=on-failure, so total wait can
-# exceed this; this controls how long ONE invocation tries before
-# returning failure.
+# Budget for ONE invocation; systemd's Restart=on-failure retries on top.
 zfs_encryption_fetch_timeout_seconds: 120
 
 # Sleep between Connect retries within a single fetch attempt.

@@ -15,3 +15,9 @@ chart_native_hpa_targets:
 # cpu_limit_allowlist: "namespace/Kind/name" workloads intentionally permitted a
 # CPU limit. Empty by design — add an entry only with an inline rationale.
 cpu_limit_allowlist: []
+
+# vpa_cap_allowlist: "namespace/VerticalPodAutoscaler/name" policies whose
+# maxAllowed.memory has not been re-derived against its container's limit yet.
+# A grace list for an adoption wave, not a standing exemption — an entry without
+# an inline rationale and a plan is drift with extra steps.
+vpa_cap_allowlist: []

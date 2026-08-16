@@ -1,6 +1,4 @@
 ---
-# Plex Media Server installation and configuration.
-
 - name: Include installation tasks
   ansible.builtin.include_tasks: install.yml
 

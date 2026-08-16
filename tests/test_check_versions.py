@@ -21,7 +21,6 @@ from pathlib import Path
 
 import pytest
 
-# Import the module with hyphenated name using importlib
 REPO = Path(__file__).resolve().parent.parent
 script_path = REPO / "scripts" / "check-versions.py"
 spec = importlib.util.spec_from_file_location("check_versions", script_path)
@@ -38,7 +37,6 @@ check_versions.load_config(FIXTURE_CONFIG, repo_root=FIXTURE_REPO)
 # the environment too.
 os.environ["CHECK_VERSIONS_CONFIG"] = str(FIXTURE_CONFIG)
 
-# Now import the functions we need
 parse_version_tuple = check_versions.parse_version_tuple
 version_greater = check_versions.version_greater
 fetch_plex_version = check_versions.fetch_plex_version
@@ -224,7 +222,6 @@ class TestVersionParsing(unittest.TestCase):
 class TestAptParsing(unittest.TestCase):
     """Tests for APT Packages file parsing."""
 
-    # Sample Plex Packages file content
     PLEX_PACKAGES_CONTENT = """Package: plexmediaserver
 Version: 1.42.0.10000-abc123
 Architecture: amd64
@@ -256,7 +253,6 @@ Description: Plex Media Server
  Stream your media.
 """
 
-    # Sample GitLab Packages file content
     GITLAB_PACKAGES_CONTENT = """Package: gitlab-ee
 Version: 18.9.1-ee.0
 Architecture: amd64
@@ -301,7 +297,6 @@ Description: GitLab Runner
             }
             version = fetch_plex_version(svc)
 
-            # Should return the highest version (1.43.0.10492-121068a07)
             assert version == "1.43.0.10492-121068a07"
 
     def test_plex_version_missing_package(self):
@@ -330,7 +325,6 @@ Description: GitLab Runner
             }
             version = fetch_gitlab_version(svc)
 
-            # Should return 18.9.1-ee.0 (highest non-RC version)
             # NOT 18.10.0~rc1-ee.0 (RC versions are skipped)
             assert version == "18.9.1-ee.0"
 
@@ -358,7 +352,6 @@ Architecture: amd64
             }
             version = fetch_gitlab_version(svc)
 
-            # Should return 18.8.0-ee.0 (only stable version)
             assert version == "18.8.0-ee.0"
 
     def test_gitlab_version_missing_package(self):
@@ -403,9 +396,7 @@ class TestFetchAptPackages(unittest.TestCase):
             result = fetch_apt_packages("https://example.com/Packages")
 
             assert result == mock_content.decode("utf-8")
-            # Verify urlopen was called (the uncompressed URL succeeded on first try)
             assert mock_urlopen.call_count == 1
-            # Verify the Request object has the correct URL
             call_args = mock_urlopen.call_args
             request_obj = call_args[0][0]  # First positional arg
             assert request_obj.full_url == "https://example.com/Packages"
@@ -428,10 +419,8 @@ class TestFetchAptPackages(unittest.TestCase):
             call_count[0] += 1
             url = req.full_url if hasattr(req, 'full_url') else str(req)
             if call_count[0] == 1:
-                # First call (uncompressed) fails with 404
                 raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
             else:
-                # Second call (.gz) succeeds
                 return self._create_mock_response(compressed_bytes, "application/gzip")
 
         with patch('urllib.request.urlopen', side_effect=mock_urlopen_side_effect):
@@ -456,10 +445,8 @@ class TestFetchAptPackages(unittest.TestCase):
         def mock_urlopen_side_effect(req, timeout=None):
             call_count[0] += 1
             if call_count[0] == 1:
-                # First call returns empty content (invalid - no "Package:" line)
                 return self._create_mock_response(b"")
             else:
-                # Second call (.gz) succeeds
                 return self._create_mock_response(compressed_bytes, "application/gzip")
 
         with patch('urllib.request.urlopen', side_effect=mock_urlopen_side_effect):
@@ -484,13 +471,11 @@ class TestFetchAptPackages(unittest.TestCase):
         def mock_urlopen_side_effect(req, timeout=None):
             call_count[0] += 1
             if call_count[0] == 1:
-                # First call returns HTML error page
                 return self._create_mock_response(
                     b"<!DOCTYPE html><html><body>Error</body></html>",
                     "text/html"
                 )
             else:
-                # Second call (.gz) succeeds
                 return self._create_mock_response(compressed_bytes, "application/gzip")
 
         with patch('urllib.request.urlopen', side_effect=mock_urlopen_side_effect):

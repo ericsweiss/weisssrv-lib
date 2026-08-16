@@ -268,6 +268,34 @@ class TestGlobalTriggers:
         finally:
             gmp._global_triggers.cache_clear()
 
+    def test_replace_mode_swaps_the_conventional_set_only(self, monkeypatch):
+        """`replace` drops the layout conventions (image contexts, helper
+        scripts) but must keep the derived + CI-file triggers, or a
+        collection-wide change emits a green no-op child."""
+        monkeypatch.setattr(gmp, "_TRIGGER_MODE", "replace")
+        monkeypatch.setattr(gmp, "_EXTRA_TRIGGERS", ["containers/", "hack/molecule-retry.sh"])
+        gmp._global_triggers.cache_clear()
+        try:
+            assert not gmp.is_global_trigger("docker/molecule-ci/Dockerfile")
+            assert not gmp.is_global_trigger("scripts/molecule-retry.sh")
+            assert gmp.is_global_trigger("containers/molecule-ci/Dockerfile")
+            assert gmp.is_global_trigger("hack/molecule-retry.sh")
+            assert gmp.is_global_trigger(gmp.CI_FILE_NAME)
+            assert gmp.is_global_trigger(gmp.MOLECULE_JOBS_INCLUDE)
+            assert gmp.is_global_trigger("ansible/requirements.yml")
+            assert gmp.is_global_trigger("ansible/molecule-shared/tasks/x.yml")
+        finally:
+            gmp._global_triggers.cache_clear()
+
+    def test_unknown_trigger_mode_fails_loud(self, monkeypatch):
+        monkeypatch.setattr(gmp, "_TRIGGER_MODE", "union")
+        gmp._global_triggers.cache_clear()
+        try:
+            with pytest.raises(ValueError, match="MOLECULE_GLOBAL_TRIGGERS_MODE"):
+                gmp.is_global_trigger("anything")
+        finally:
+            gmp._global_triggers.cache_clear()
+
     def test_global_triggers_follow_the_roles_prefix(self):
         """A caller configuring the layout by PARAMETER (not $ROLES_DIR) must
         still get that layout's global triggers."""
@@ -711,8 +739,10 @@ class TestRealCollection:
         assert gmp.collection_role_prefix(self.REAL_ROLES) == FQCN_NS
 
     def test_known_meta_dependency_edges(self, graph):
-        assert "base" in graph["qol"]
         assert "base" in graph["nas_storage"]
+        # qol declares `dependencies: []` on purpose — dotfiles must not drag in
+        # base's SSH hardening — so it must contribute no edge.
+        assert graph.get("qol", set()) == set()
 
     def test_known_include_role_edges(self, graph):
         assert "apt_signed_repo" in graph["docker_engine"]

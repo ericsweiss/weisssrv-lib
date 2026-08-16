@@ -19,7 +19,7 @@
     textfile_collector_service_description: Sample tank/backups/apps artifact mtimes to node_exporter textfile collector
     textfile_collector_timer_description: Periodically sample backup-artifact mtimes
     textfile_collector_script: /usr/local/sbin/backup-artifact-mtime-collector.sh
-    textfile_collector_textfile_dir: "{{ nas_storage_backup_artifact_metrics_dir | default(node_exporter_host_textfile_dir | default('/var/lib/node_exporter')) }}"
+    textfile_collector_textfile_dir: "{{ nas_storage_backup_artifact_metrics_dir }}"
     textfile_collector_extra_read_write_paths: []
     textfile_collector_on_unit_inactive_sec: 10min
     textfile_collector_timeout_start_sec: 30s

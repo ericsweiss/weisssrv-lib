@@ -1,8 +1,4 @@
 ---
-# Manage Proxmox HA node-affinity rules
-#
-# Reads `ha-manager rules list --output-format=json` (no yq dependency).
-
 - name: Check if ha-manager rules command exists
   ansible.builtin.command: ha-manager rules list --output-format=json
   register: proxmox_ha_rules_check
@@ -23,9 +19,7 @@
 
 - name: Parse current HA rules from JSON
   ansible.builtin.set_fact:
-    # The JSON output has 'rule' attribute (not 'id') containing the rule name
     proxmox_ha_current_ha_rule_ids: "{{ (proxmox_ha_rules_check.stdout | from_json | default([])) | map(attribute='rule') | list }}"
-    # Build a lookup dict keyed by rule name for drift detection
     proxmox_ha_current_ha_rules_lookup: >-
       {{ dict((proxmox_ha_rules_check.stdout | from_json | default([]))
          | map(attribute='rule')
@@ -54,9 +48,8 @@
       silently skipped, not applied.
   tags: [proxmox_ha_rules]
 
-# Remove BEFORE add/update so replacing a rule (e.g. swapping the flat
-# critical-services-no-nas for per-service affinity rules) never leaves a resource
-# in two node-affinity rules mid-run, which Proxmox's rule feasibility check can
+# Remove BEFORE add/update so replacing a rule never leaves a resource in two
+# node-affinity rules mid-run, which Proxmox's rule feasibility check can
 # reject. proxmox_ha_current_ha_rule_ids was captured above, before any mutation.
 - name: Remove HA rules
   ansible.builtin.command: ha-manager rules remove {{ item.name }}
@@ -88,14 +81,12 @@
   changed_when: proxmox_ha_rule_add_result.rc == 0
   failed_when:
     - proxmox_ha_rule_add_result.rc != 0
-    # Handle various Proxmox error messages for already-existing rules
     - "'already defined' not in (proxmox_ha_rule_add_result.stderr | default(''))"
     - "'already exists' not in (proxmox_ha_rule_add_result.stderr | default(''))"
   tags: [proxmox_ha_rules]
 
 - name: Update existing node-affinity HA rules
   vars:
-    # Current rule from the parsed JSON lookup.
     _current: "{{ proxmox_ha_current_ha_rules_lookup.get(item.name, {}) }}"
     # PVE9 `ha-manager rules list --output-format=json` returns `nodes` and
     # `resources` as HASHES ({"node": {"priority": 1}} / {"ct:150": {}}), not

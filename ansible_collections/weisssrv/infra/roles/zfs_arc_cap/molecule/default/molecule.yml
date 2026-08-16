@@ -2,7 +2,8 @@
 # The container has no ZFS module (so /sys/module/zfs/parameters/zfs_arc_max is
 # absent — the live-apply task self-skips on that stat) and no real /boot kernel
 # (so zfs_arc_cap_skip_initramfs suppresses the update-initramfs handler). What
-# is exercised: the modprobe.d render + its exact content.
+# is exercised: the modprobe.d render + its exact content, and the unset-value
+# branch (verify re-runs the role with an empty cap and asserts a no-op).
 platforms:
   - name: zfs-arc-cap-test
     image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}

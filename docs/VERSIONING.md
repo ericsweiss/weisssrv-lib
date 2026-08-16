@@ -75,13 +75,14 @@ before either, pin `:latest` or an immutable `:<short-sha>`.
 
 ## No changelog file
 
-This repo keeps **no** `CHANGELOG.md` and the collection keeps no
+This repo keeps **no hand-maintained changelog** and the collection keeps no
 `changelogs/changelog.yaml`. Release notes are generated per tag by the release
 job from the conventional commits in that release, and published on the GitLab
-Release — one source, written by the thing that cut the tag. A hand-maintained
-changelog alongside it went stale within a release and told consumers a
-different story than the tag notes, so it was deleted and `changelogs` is
-`build_ignore`d in `galaxy.yml` to keep a stray one out of the artifact.
+Release — one source, written by the thing that cut the tag. A second,
+hand-written changelog goes stale within a release and tells consumers a
+different story than the tag notes, so `changelogs` is `build_ignore`d in
+`galaxy.yml` to keep a stray one out of the artifact. The collection's
+`CHANGELOG.md` is a six-line pointer to that Releases page, not a changelog.
 
 To see what changed between two tags, read the releases, or
 `git log v0.5.0..v0.5.2`.
@@ -125,6 +126,11 @@ release-branch-only, so it first *runs* on the merge.
 | `fix:` / `perf:` / `refactor:` | PATCH |
 | any `type!:`, or a `BREAKING CHANGE:` trailer | MAJOR — MINOR while 0.x, see below |
 | `docs:` `ci:` `build:` `test:` `chore:` `style:` `revert:` | none — listed in the notes, never releases on its own |
+
+The behaviour comes from one file, the vendored `scripts/semantic-release.py`,
+so **this table is the canonical copy**. A consumer doc states only the
+consequence local to that repo and links here for the mapping; restating the
+table downstream is how the pre-1.0 row loses its `see below`.
 
 No releasable commit means no release (exit 0), so re-running on an
 already-released commit is a no-op. Because the bump comes from commit subjects,
@@ -239,7 +245,11 @@ Before merging the MR that will cut a tag:
 - [ ] Every changed template's parity note in `INCLUDE-CONTRACT.md` reflects the
       change, and any new input is listed in that template's input set.
 - [ ] `CONSUMERS.yml` still describes reality (a consumer that gained or dropped
-      an include, a script it now vendors, a new pin site).
+      an include, a script it now vendors, a new pin site). Its `enforced:`
+      claims are mechanical —
+      `tests/test_docs_registry.py::TestConsumersRegistry` fails a named gate
+      that does not exist, checking the consumer-side ones whenever a sibling
+      checkout is present. The prose around them is not.
 - [ ] `scripts/vendored-paths.yml` is re-taken against the tree being tagged:
       every `reconciled_sha256` is the sha of the library file **as this release
       ships it**, and every `consumer:` path matches **the layout the consumer
@@ -250,12 +260,11 @@ Before merging the MR that will cut a tag:
       stale sha; the paths are the manual half.
 - [ ] **Cross-repo sequencing.** When a consumer's registry rows encode a layout
       that only exists on an unmerged branch of that consumer, the consumer's MR
-      merges FIRST. Concretely, today: `weisssrv-app-template`'s copier
-      conversion must be merged to its `main` before this tag is cut, because
-      every one of its rows encodes the post-conversion `template/…` layout —
-      cut first and all of them red with no consumer-side fix (the registry is
-      library-owned, the tag immutable, so only a follow-up patch release
-      clears it). Verify against the MERGED tree, not a working copy:
+      merges FIRST — a repo restructure (a move into `template/`, a renamed
+      script directory) is the case that triggers it. Cut the tag first and
+      every row for that consumer reds with no consumer-side fix: the registry
+      is library-owned and the tag immutable, so only a follow-up patch release
+      clears it. Verify against the MERGED tree, not a working copy:
 
       ```bash
       scripts/check-vendored-copies.py --consumer weisssrv-app-template \
@@ -272,7 +281,10 @@ Before merging the MR that will cut a tag:
       and a fresh empty `# Unreleased (next release)` opened above it. It is the
       only per-release migration record for the collection (see
       [No changelog file](#no-changelog-file)); leaving it untitled makes the
-      next cycle's delta read as one pending set with this one's.
+      next cycle's delta read as one pending set with this one's. A release with
+      nothing to migrate still gets a section saying so.
+      `tests/test_docs_registry.py::TestMigratingSections` holds the newest
+      titled section equal to `galaxy.yml`'s version, so this one is mechanical.
 - [ ] A breaking change is written as `feat!:` or carries a `BREAKING CHANGE:`
       trailer — otherwise it ships as a patch and consumers get it unannounced.
 
@@ -311,6 +323,12 @@ infrastructure unless they run `terraform state mv` (or the release ships
 Provider constraints inside a module are part of its contract too: the consumer
 resolves them against its own lockfile, so widening or moving a constraint is at
 least MINOR, and moving to a provider major that renames resources is MAJOR.
+The module's own `required_version` is the same kind of promise and is checked
+first: **raising the floor is BREAKING**, because a consumer below it cannot
+`init` the module at all, however compatible the configuration is. It moves for
+the module's shipped `tests/*.tftest.hcl` as well as for its configuration —
+those run under the same constraint, and their mocking features have their own
+floors (`mock_provider` 1.7, `override_during` 1.11).
 
 Modules do not commit a `.terraform.lock.hcl` — the lockfile belongs to the
 consuming root module, which is what pins exact provider builds and hashes.

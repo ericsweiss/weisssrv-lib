@@ -1,6 +1,4 @@
 ---
-# Media mover script and scheduling
-
 # media-mover.sh.j2 references nas_storage_media_mover_src/nas_storage_media_mover_dst with no default()
 # filter, so an undefined value would otherwise fail with a bare 'undefined
 # variable' render error. Assert the contract up front with an actionable msg.

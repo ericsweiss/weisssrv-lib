@@ -13,8 +13,8 @@ platforms:
     tmpfs:
       - /run
       - /tmp
-# side_effect runs the zpool-collector state toggle AFTER the idempotence
-# check — a toggle inside converge can never be idempotent.
+# side_effect runs the collector state toggles AFTER the idempotence check —
+# a toggle inside converge can never be idempotent.
 scenario:
   test_sequence:
     - dependency

@@ -16,11 +16,12 @@ properties; a missing one fails the deploy.
   Property values in `nas_storage_zfs_pools[].properties` must be written in the
   human-readable form `zfs get -H -o value` prints (`1M`, not `1048576`).
 - Scrub timers (`zfs-scrub-<schedule>@<pool>.timer`) and `zfs-auto-snapshot`.
-- Optional ARC cap: `nas_storage_zfs_arc_max_bytes` renders
-  `/etc/modprobe.d/zfs.conf` and rebuilds the initramfs, so the cap applies at
-  early boot before the pools import; it is also written to
-  `/sys/module/zfs/parameters/zfs_arc_max` so a change takes effect immediately.
-  Empty (the default) leaves ARC alone and the file unmanaged.
+- Optional ARC cap: `nas_storage_zfs_arc_max_bytes` is handed to
+  `weisssrv.infra.zfs_arc_cap`, which renders `/etc/modprobe.d/zfs.conf` and
+  rebuilds the initramfs so the cap applies at early boot before the pools
+  import, and writes `/sys/module/zfs/parameters/zfs_arc_max` so a change takes
+  effect immediately. Empty (the default) leaves ARC alone and the file
+  unmanaged.
 - Pools that are not imported are skipped, not failed — a detachable archive
   pool's normal state is exported.
 
@@ -114,7 +115,9 @@ may it proceed and what must it unexport) live in
 container has no FUSE, so the molecule scenario drives those two files from
 fabricated probe results instead — no-change, fstab-changed, busy-process and
 active-client — and asserts the unexport stays scoped to the MergerFS-backed
-exports.
+exports. The option string itself is derived in `tasks/mergerfs_opts.yml` for
+the same reason, and the scenario asserts all four anchor shapes (ZFS-branched
+and not, each with and without `systemd_requires`).
 
 ### Media mover
 Timer-driven rsync from the hot tier to the bulk tier for files older than
@@ -152,7 +155,14 @@ plug/unplug/restore subcommands and the scrub-timer wiring.
   disables the guard.
 - Retention per dataset: the newest `nas_storage_archive_backup_keep_recent`
   snapshots, plus the newest of each of the last
-  `nas_storage_archive_backup_keep_monthly` calendar months.
+  `nas_storage_archive_backup_keep_monthly` calendar months. A failed
+  `zfs destroy` does not fail the run — replication still succeeded — but it
+  sets `archive_backup_last_prune_success 0`, so blocked retention is visible
+  before the pool fills. The per-dataset child carries that back as exit 76
+  (replicated, not pruned), with a marker file as the fallback for a child that
+  dies before returning; the marker is consumed only once the textfile is
+  published, so a failed write leaves it for the next run instead of dropping
+  the failure it carries.
 - **Raw re-seed**: a raw (`-w`) stream cannot continue a base that was received
   non-raw, so a source that has since been encrypted gets a one-time re-seed.
   It sends only the current snapshot of each dataset — `-R` would ship the whole
@@ -227,24 +237,39 @@ consumer needs no change; a site with a different pool layout sets
 
 ## Variables
 
+**Reference-deployment defaults, deliberately.** Several defaults below name a
+pool path (`nas_storage_zfs_mount_roots`, `_appdata_base`,
+`_backup_apps_base`), a uid/gid pair (`_appdata_owner`, `_media_gid`) or the
+four pool-named smartd groups. The collection's rule is that site data is an
+asserted input, and these are the documented exception: they are marked
+*reference-deployment* values here and in `defaults/main.yml`, kept because a
+site that shares the layout gets a working role with no inventory and one that
+does not overrides them wholesale. The classification guard
+(`assert_zfs_classification.yml`) is what keeps the mount-roots default from
+failing open on a different layout — anything it cannot classify is a hard
+failure, not a silent skip. Converting them to asserted inputs is a breaking
+change deferred to a future release.
+
 | Variable | Default | Purpose |
 |---|---|---|
 | `nas_storage_zfs_pools` | *(undefined)* | Pools + datasets + properties to enforce. Undefined skips all ZFS tasks. |
 | `nas_storage_zfs_scrub_enabled` | `true` | Enable the per-pool scrub timers. |
 | `nas_storage_zfs_scrub_schedule` | `monthly` | Token in `zfs-scrub-<schedule>@<pool>.timer`. |
 | `nas_storage_zfs_arc_max_bytes` | `{{ zfs_arc_max_bytes \| default('') }}` | ARC cap in bytes; empty = unmanaged. |
+| `nas_storage_zfs_arc_skip_initramfs` | `false` | Passed through as `zfs_arc_cap_skip_initramfs`: render the modprobe.d file but skip `update-initramfs` (no real `/boot`). |
 | `nas_storage_exports` | *(undefined)* | NFS exports. Undefined skips all NFS tasks. |
 | `nas_storage_zfs_mount_roots` | `/mnt/tank`, `/mnt/ssd`, `/mnt/nvme` | Mount roots whose bind sources count as ZFS-backed (guard + boot ordering). Empty = nothing is ZFS-backed by derivation. |
 | `nas_storage_zfs_bind_source_pattern` | derived from the roots | Regex the guard and the fstab opts test against; override only for a layout the roots cannot express. Never-matching when the roots list is empty. |
 | `nas_storage_encrypted_bind_sources` | `[]` | Bind sources on encrypted datasets (late mount anchor + nfsd ordering). |
-| `nas_storage_media_group` / `_media_gid` | `media` / `2000` | The shared group created by both the NFS and Samba tasks. |
-| `nas_storage_appdata_base` | `/mnt/ssd/appdata` | Bind source of the appdata export. |
+| `nas_storage_media_group` / `_media_gid` | `media` / `2000` | The shared group created by both the NFS and Samba tasks. Reference-deployment values — the gid must match what the site's clients already use. |
+| `nas_storage_appdata_base` | `/mnt/ssd/appdata` | Bind source of the appdata export. Reference-deployment path. |
 | `nas_storage_appdata_dirs` | `[]` | Per-app subdirectories to create under it. |
 | `nas_storage_appdata_owner` / `_group` / `_mode` | `1000` / `{{ nas_storage_media_gid }}` / `0775` | Ownership matching the export's squash ids. |
 | `nas_storage_samba_shares` | *(undefined)* | Samba shares. Undefined skips all Samba tasks. |
 | `nas_storage_samba_password` | `$SAMBA_NAS_PASSWORD` | Password for the `nas` account; empty leaves it unmanaged. |
 | `nas_storage_samba_ports` / `_samba_disable_netbios` | `445` / `true` | smbd listener scope (no 139/NetBIOS). |
 | `nas_storage_mergerfs_mounts` | *(undefined)* | MergerFS unions. Undefined skips all MergerFS tasks. |
+| `nas_storage_mergerfs_required_opts` | `[]` | fstab options the health probe requires; empty derives them from each union's own `options`. |
 | `nas_storage_media_mover_enabled` | `false` | Deploy the media mover. Requires `_src` and `_dst`. |
 | `nas_storage_media_mover_src` / `_dst` | *(required when enabled)* | Hot-tier source, bulk-tier destination. |
 | `nas_storage_media_mover_min_age` | `12h` | Only files older than this are moved. |
@@ -254,12 +279,18 @@ consumer needs no change; a site with a different pool layout sets
 | `nas_storage_swap_clean_enabled` | `false` | Deploy the nightly swap reset. |
 | `nas_storage_swap_clean_schedule` | `*-*-* 07:00:00` | Timer; keep it outside the backup window. |
 | `nas_storage_swap_clean_stop_guests` | `[]` | Ordered `vmid:name:timeout` escalation candidates. |
+| `nas_storage_swap_clean_random_delay` | `1800` | Timer `RandomizedDelaySec`. |
+| `nas_storage_swap_clean_min_mb` / `_margin_mb` / `_arc_shrink_mb` | `512` / `2048` / `2048` | Minimum reclaim worth a run, free-RAM headroom required before `swapoff`, and how far the ARC is squeezed to create it. |
+| `nas_storage_swap_clean_service_timeout` / `_nice` | `1200` / `10` | Unit `TimeoutStartSec` and `Nice`. |
+| `nas_storage_zfs_scrub_enabled` | `true` | Enable the per-pool scrub timers. |
+| `nas_storage_zfs_scrub_schedule` | `monthly` | Scrub timer instance (`zfs-scrub-<schedule>@<pool>.timer`). |
 | `nas_storage_smartd_enabled` | `true` | Deploy smartd config. |
-| `nas_storage_smartd_disk_groups` | four groups from the lists below | `{name, disks, schedule, ata?}` per monitoring group. |
+| `nas_storage_smartd_disk_groups` | four groups from the lists below | `{name, disks, schedule, ata?}` per monitoring group. The four group names are reference-deployment scaffolding; each disk list is empty, so an unused name emits nothing. |
 | `nas_storage_smartd_{tank,ssd,nvme,archive}_disks` | `[]` | Explicit by-id disk lists feeding the default groups. |
-| `nas_storage_backup_apps_base` | `/mnt/tank/backups/apps` | Landing zone for logical dumps. |
+| `nas_storage_backup_apps_base` | `/mnt/tank/backups/apps` | Landing zone for logical dumps. Reference-deployment path — override for a different pool layout. |
 | `nas_storage_backup_require_mounted_dataset` | `not skip_zfs_operations` | Fail-closed mount guard for the landing zone. |
 | `nas_storage_backup_artifact_metrics_enabled` | `true` | Deploy the collector + timer. |
+| `nas_storage_backup_artifact_metrics_dir` | tracks `node_exporter_host_textfile_dir` | Where every metric-writing wrapper in this role drops its `.prom`. |
 | `nas_storage_backup_artifact_apps` | `[]` | `name` + `pattern` (+ optional `companions`) per app. |
 | `nas_storage_archive_backup_enabled` | `false` | Deploy archive replication (off converges). |
 | `nas_storage_archive_backup_pool` | `""` | Destination pool; its root properties are rewritten. |

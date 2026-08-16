@@ -13,6 +13,8 @@ gitlab_version: ""
 gitlab_external_url: ""
 
 # Skip the apt package install/upgrade while still converging host config.
+# It covers the Omnibus package and its prerequisites only: iptables-persistent
+# is host config for the Git-SSH redirect and installs either way.
 gitlab_skip_install: false
 
 # Host shown in clone URLs. Derived from gitlab_external_url, which is right
@@ -36,18 +38,13 @@ gitlab_registry_enabled: false
 gitlab_registry_external_url: ""
 gitlab_registry_data_dir: "/var/opt/gitlab/gitlab-rails/shared/registry"
 
-# GitLab Pages.
 gitlab_pages_enabled: false
 gitlab_pages_external_url: ""
 
-# Web IDE extension host. It MUST be a different origin from
-# gitlab_external_url so the browser same-origin policy isolates extension code
-# from the GitLab session cookie (CVE-2026-5816). Set the bare parent hostname,
-# no wildcard prefix: GitLab generates <ext-id>.<domain> per extension, and the
-# Application Settings API rejects a wildcard with HTTP 400. DNS, certificate
-# and ingress for that name are the site's to provide.
-# Setting the domain enables the Application-Settings pass (no Omnibus key
-# exists for these on the pinned release); leaving it empty skips it entirely.
+# Web IDE extension host. MUST be a different origin from gitlab_external_url
+# (CVE-2026-5816) and a bare hostname, no wildcard — the Application Settings
+# API rejects one. Empty skips the settings pass. DNS/cert/ingress are the
+# site's to provide.
 gitlab_web_ide_extension_host_domain: ""
 gitlab_web_ide_settings_enabled: "{{ gitlab_web_ide_extension_host_domain | length > 0 }}"
 gitlab_web_ide_marketplace_enabled: true
@@ -55,7 +52,6 @@ gitlab_web_ide_single_origin_fallback: false
 # Admin PAT with `api` scope, used only for the settings above.
 gitlab_api_token: ""
 
-# SMTP relay.
 gitlab_smtp_enabled: false
 gitlab_smtp_address: ""
 gitlab_smtp_port: 587
@@ -70,7 +66,6 @@ gitlab_email_from: ""
 gitlab_email_display_name: "GitLab"
 gitlab_email_reply_to: ""
 
-# SAML SSO.
 gitlab_saml_enabled: false
 gitlab_saml_label: "SAML"
 gitlab_saml_icon_url: ""
@@ -86,11 +81,9 @@ gitlab_saml_admin_groups: []
 gitlab_saml_external_groups: []
 gitlab_saml_allow_all_users: false
 
-# NGINX. Omnibus's Let's Encrypt client stays off (hardcoded in gitlab.rb.j2):
-# the cert at the paths below is delivered by acme_certs (or any external
-# distributor). With listen_https true the web UI terminates TLS on
-# gitlab_nginx_listen_port; registry and pages nginx ALWAYS terminate TLS with
-# the same cert, so a certless bring-up also needs both of those disabled.
+# NGINX. Omnibus's Let's Encrypt client stays off; the cert below comes from an
+# external distributor. Registry and pages nginx ALWAYS terminate TLS with the
+# same cert, so a certless bring-up needs both of those disabled too.
 gitlab_nginx_listen_https: true
 gitlab_nginx_listen_port: 443
 gitlab_nginx_ssl_certificate: /etc/gitlab/ssl/fullchain.pem
@@ -101,20 +94,15 @@ gitlab_nginx_ssl_protocols: "TLSv1.3"
 # Proxy CIDRs whose X-Forwarded-For is trusted. Empty omits the directive.
 gitlab_nginx_real_ip_trusted_addresses: []
 
-# Sources allowed to reach the unauthenticated monitoring endpoints
-# (/-/metrics, /-/readiness, /-/liveness; /-/health is unrestricted). GitLab
-# matches the real_ip from X-Forwarded-For, so proxied probes are matched on
-# their REAL client IP — a probe running behind the proxy needs its own source
-# range listed here.
+# Sources allowed to reach the unauthenticated /-/metrics, /-/readiness and
+# /-/liveness endpoints (/-/health is unrestricted). Matched on the real_ip from
+# X-Forwarded-For, so a proxied probe needs its OWN source range listed.
 gitlab_monitoring_whitelist:
   - 127.0.0.1
 
-# Omnibus's bundled postgres_exporter (part of prometheus_monitoring). Both are
-# EMPTY by default, which omits the gitlab.rb lines entirely and leaves the
-# Omnibus defaults in force: the exporter runs, bound to localhost:9187.
-# Set the listen address to publish it for an off-host Prometheus — the endpoint
-# is unauthenticated, so scope it with the guest firewall. Set the enable flag
-# (true/false) only to override Omnibus's own choice.
+# Omnibus's bundled postgres_exporter. Empty omits the gitlab.rb lines and keeps
+# the Omnibus default (running, bound to localhost:9187). The endpoint is
+# unauthenticated, so scope any published listen address with the guest firewall.
 gitlab_postgres_exporter_enabled: ""
 gitlab_postgres_exporter_listen_address: ""
 
@@ -122,27 +110,23 @@ gitlab_postgres_exporter_listen_address: ""
 # snapshots are then the only DR copy).
 gitlab_backup_path: "/var/opt/gitlab/backups"
 
-# NFS-backed landing (relocates gitlab_backup_path onto a fileserver so the
-# tarball rides an offsite file walk). When enabled, gitlab_backup_path must BE
-# gitlab_backup_mountpoint: both the systemd unit and the wrapper fail closed on
-# an unmounted export by testing that exact path. Mount by hostname when the
-# export requires TLS — a wildcard cert has no IP SAN.
+# NFS-backed landing. When enabled, gitlab_backup_path must BE
+# gitlab_backup_mountpoint — the unit and the wrapper fail closed by testing
+# that exact path. Mount by hostname when the export requires TLS: a wildcard
+# cert has no IP SAN.
 gitlab_backup_nfs_enabled: false
 gitlab_backup_nfs_server: ""
 gitlab_backup_nfs_export: ""
 gitlab_backup_nfs_options: "vers=4.2,rw,hard,noatime,_netdev,nofail,xprtsec=tls"
 gitlab_backup_mountpoint: "/mnt/backups-offsite"
 
-# The Rails config `gitlab-ctl reconfigure` renders from gitlab.rb. The role
-# reads it back to prove the backup path actually converged: gitlab.rb alone is
-# inert, and a lost `notify: Reconfigure gitlab` leaves the two disagreeing with
-# every backup metric still green.
+# The Rails config `gitlab-ctl reconfigure` renders from gitlab.rb; the role
+# reads it back because gitlab.rb alone is inert — a lost reconfigure would
+# leave the two disagreeing with every backup metric still green.
 gitlab_effective_rails_config: "/var/opt/gitlab/gitlab-rails/etc/gitlab.yml"
 
-# Components excluded from the tarball (gitlab-backup SKIP=). The registry blob
-# store and CI artifacts dominate its size and are both reproducible (images are
-# re-pushable, artifacts are ephemeral job output), so the default scope is
-# DB + repos + config. Set to "" to back up everything — only with a dedicated,
+# Components excluded from the tarball (gitlab-backup SKIP=); the defaults are
+# both reproducible. Set to "" to back up everything — only with a dedicated,
 # off-root-disk landing zone.
 gitlab_backup_skip: "registry,artifacts"
 # Retention. Prune only runs after a SUCCESSFUL backup.
@@ -158,11 +142,11 @@ gitlab_backup_service_timeout: "3h"
 gitlab_backup_lib_path: /usr/local/lib/gitlab-backup-lib.sh
 gitlab_textfile_dir: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
 
-# Performance tuning (sized for ~16GB RAM).
+# Sized for a ~16GB guest; re-tune with the guest's RAM.
 gitlab_puma_workers: 3
 gitlab_sidekiq_concurrency: 15
 
-# Initial root password; used by the package's first install only.
+# Used by the package's first install only.
 gitlab_root_password: ""
 
 # Local jail for Git SSH brute force. The role writes the jail only when
@@ -170,21 +154,18 @@ gitlab_root_password: ""
 gitlab_fail2ban_enabled: true
 
 # sshd AllowUsers restriction. gitlab_ssh_port is WAN-facing and REDIRECTs to
-# the system sshd, so without a login restriction every local account accepts
-# internet pubkey attempts regardless of the firewall's source rules on 22.
-# Supply the full list when enabling: the Git user unrestricted, and each admin
-# account pinned to the networks it may log in from. Disabling REMOVES the
-# drop-in.
+# the system sshd, so without it every local account accepts internet pubkey
+# attempts regardless of the firewall's rules on 22. Supply the FULL list when
+# enabling; disabling REMOVES the drop-in.
 gitlab_ssh_allowusers_enabled: false
 gitlab_ssh_allowed_users: []
 # sshd unit restarted after the drop-in changes. Keep it in step with the base
 # role's own service name if that was overridden.
 gitlab_ssh_service_name: ssh
 
-# Kernel tuning required by Omnibus Redis (vm.overcommit_memory + THP off).
-# Keep it on for any host running the Omnibus stack; a test container that must
-# not mutate the host kernel sets it false.
+# vm.overcommit_memory + THP off, required by Omnibus Redis (see
+# tasks/main.yml). A test container that must not mutate the host kernel sets
+# this false.
 gitlab_kernel_tuning_enabled: true
 
-# Rails time zone.
 gitlab_timezone: "{{ timezone | default('UTC') }}"

@@ -119,16 +119,3 @@
         path: /opt/AdGuardHome/certs
       register: cert_dir
       failed_when: not cert_dir.stat.exists or not cert_dir.stat.isdir
-
-    - name: Display test results
-      ansible.builtin.debug:
-        msg:
-          - "acme.sh dependencies installed (cron, curl, openssl)"
-          - "eric .ssh directory created with correct permissions (0700)"
-          - "SSH private key deployed for cert distribution (0600)"
-          - "SSH public key deployed for cert distribution (0644)"
-          - "acme.sh installed at /root/.acme.sh/acme.sh"
-          - "homelab-cert-reload.sh deployed with correct permissions"
-          - "Certificate directory structure created"
-          - "NOTE: Actual certificate issuance requires manual Cloudflare API setup"
-          - "NOTE: Role may not be fully idempotent due to acme.sh installer handling"
