@@ -543,3 +543,16 @@ def test_an_unknown_selector_key_neither_fences_nor_defeats(monkeypatch) -> None
         "podSelector: {}", "podSelector: {matchLables: {app: x}}"
     )
     assert run(monkeypatch, DEPLOY.format(ns="apps") + "---\n" + typo_fence) == 1
+
+
+def test_an_absent_spec_podselector_never_fences(monkeypatch) -> None:
+    """spec.podSelector is REQUIRED — absent is not the all-pods default but a
+    policy the API rejects, and it must not read as the namespace's fence."""
+    no_selector = (
+        "---\n"
+        "apiVersion: networking.k8s.io/v1\n"
+        "kind: NetworkPolicy\n"
+        "metadata:\n  name: default-deny-ingress\n  namespace: apps\n"
+        "spec:\n  policyTypes: [Ingress]\n"
+    )
+    assert run(monkeypatch, DEPLOY.format(ns="apps") + no_selector) == 1

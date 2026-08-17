@@ -295,7 +295,11 @@ def analyze(docs: list[dict]) -> tuple[dict[str, set[str]], set[str]]:
             kind == "NetworkPolicy"
             and "Ingress" in _policy_types(spec)
             # Namespace-wide by SELECTION, not by truthiness: `{matchLabels: {}}`
-            # selects every pod just as `{}` and absent do (_selects_all_pods).
+            # selects every pod just as `{}` does (_selects_all_pods). At SPEC
+            # level `podSelector` is a REQUIRED field, so absent is not the
+            # all-pods default but a policy the API rejects — it can neither
+            # fence nor defeat.
+            and isinstance(spec.get("podSelector"), dict)
             and _selects_all_pods(spec.get("podSelector"))
         ):
             # Namespace-wide and ingress-typed: either the fence itself, or the

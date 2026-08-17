@@ -51,6 +51,11 @@ def _selects_observability(peer: dict, observability_ns: str) -> bool:
     this gate's bias forbids. A rule whose peers cover BOTH families is the
     explicit spelling of the omitted-`from` rule and is credited there.)
     """
+    # Peer-level keys first: a typo like `podSelecter:` leaves the recognised
+    # fields absent-or-empty, and the shortcut below would credit a peer
+    # server-side apply rejects.
+    if not isinstance(peer, dict) or set(peer) - {"ipBlock", "namespaceSelector", "podSelector"}:
+        return False
     # A peer combining ipBlock with a selector is API-invalid — it must not
     # be credited through the selector path either.
     if peer.get("ipBlock") is not None:
@@ -110,7 +115,7 @@ def _rule_ipblocks_cover_both_families(peers: list) -> bool:
     """
     families: set[int] = set()
     for peer in peers or []:
-        if not isinstance(peer, dict):
+        if not isinstance(peer, dict) or set(peer) - {"ipBlock", "namespaceSelector", "podSelector"}:
             continue
         ip_block = peer.get("ipBlock")
         # The API rejects a peer combining ipBlock with a selector, and an
@@ -268,11 +273,15 @@ def analyze(
                 continue
             pod_selector = spec.get("podSelector")
             # By SELECTION, not truthiness: `{matchLabels: {}}` is namespace-wide.
-            namespace_wide = _selects_all_pods(pod_selector)
+            # spec.podSelector is a REQUIRED field — an absent one is not the
+            # all-pods default but a policy the API rejects.
+            namespace_wide = isinstance(pod_selector, dict) and _selects_all_pods(pod_selector)
             if namespace_wide:
                 restricted.add(ns)
             for rule in spec.get("ingress") or []:
-                if not isinstance(rule, dict):
+                # Rule-level keys too: `form:` reads as an omitted `from` —
+                # the allow-all spelling — on a rule the API rejects.
+                if not isinstance(rule, dict) or set(rule) - {"from", "ports"}:
                     continue
                 peers = rule.get("from")
                 if not peers and namespace_wide:

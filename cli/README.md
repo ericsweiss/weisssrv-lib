@@ -26,15 +26,15 @@ the tag your repo pins (docs/VERSIONING.md).
 
 ```bash
 # No install:
-pipx run --spec 'git+https://git.ericsweiss.com/eric/weisssrv-lib.git@v0.9.3#subdirectory=cli' \
+pipx run --spec 'git+https://git.ericsweiss.com/eric/weisssrv-lib.git@v0.9.4#subdirectory=cli' \
   weisssrv-new-project --help
 
 # Install the console script. The spec is POSITIONAL: `pipx install --spec …`
 # fails with "unrecognized arguments: --spec" (pipx dropped that flag).
-pipx install 'git+https://git.ericsweiss.com/eric/weisssrv-lib.git@v0.9.3#subdirectory=cli'
+pipx install 'git+https://git.ericsweiss.com/eric/weisssrv-lib.git@v0.9.4#subdirectory=cli'
 
 # …with the copier extra, which rendering needs:
-pipx install 'weisssrv-lib-cli[cluster] @ git+https://git.ericsweiss.com/eric/weisssrv-lib.git@v0.9.3#subdirectory=cli'
+pipx install 'weisssrv-lib-cli[cluster] @ git+https://git.ericsweiss.com/eric/weisssrv-lib.git@v0.9.4#subdirectory=cli'
 
 # From a checkout of this library:
 pip install ./cli            # or: pip install './cli[cluster]'
@@ -43,7 +43,7 @@ PYTHONPATH=cli python3 -m weisssrv_lib_cli --help   # no install at all
 
 weisssrv-lib is an **internal-visibility** GitLab project, so `git+https://`
 needs credentials (a PAT with `read_repository` in the URL, or use
-`git+ssh://git@git.ericsweiss.com/eric/weisssrv-lib.git@v0.9.3#subdirectory=cli`).
+`git+ssh://git@git.ericsweiss.com/eric/weisssrv-lib.git@v0.9.4#subdirectory=cli`).
 
 ## new-cluster / new-app `[source] <destination>`
 

@@ -478,3 +478,47 @@ spec:
       ports: [{protocol: TCP, port: 9090}]
 """
     assert _run(DEFAULT_DENY + typo_except + SERVICE_MONITOR, monkeypatch) == 1
+
+
+def test_typoed_peer_or_rule_keys_and_absent_podselector_never_credit(monkeypatch):
+    """The remaining hierarchy levels: a `podSelecter:` peer key must not ride
+    the empty-selector shortcut, a `form:` rule key must not read as the
+    omitted-`from` allow-all, and an absent spec.podSelector (a REQUIRED
+    field) must not register the policy at all."""
+    typo_peer = """
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-typo-peer, namespace: ns}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - {namespaceSelector: {}, podSelecter: {matchLabels: {app: other}}}
+      ports: [{protocol: TCP, port: 9090}]
+"""
+    assert _run(DEFAULT_DENY + typo_peer + SERVICE_MONITOR, monkeypatch) == 1
+    typo_rule = """
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-typo-rule, namespace: ns}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - form:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: observability}}
+"""
+    assert _run(DEFAULT_DENY + typo_rule + SERVICE_MONITOR, monkeypatch) == 1
+    no_selector_deny = """
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: invalid-deny, namespace: ns}
+spec:
+  policyTypes: [Ingress]
+"""
+    # The invalid deny does not restrict, so the monitor-only namespace passes.
+    assert _run(no_selector_deny + SERVICE_MONITOR, monkeypatch) == 0

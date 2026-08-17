@@ -29,6 +29,14 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.9.4
+
+No migration steps. The netpol gates' shape rule now covers every level of
+the object: unknown PEER keys (`podSelecter:`) and unknown RULE keys
+(`form:`) never credit a scrape, and an absent `spec.podSelector` — a
+REQUIRED field, not an all-pods default — neither fences, defeats, nor
+registers a restriction in either gate.
+
 # v0.9.3
 
 No migration steps. The netpol gates extend v0.9.2's shape rule to UNKNOWN
