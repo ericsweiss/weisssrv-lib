@@ -426,3 +426,29 @@ spec:
       ports: [{protocol: TCP, port: 9090}]
 """
     assert _run(DEFAULT_DENY + bogus_pair + SERVICE_MONITOR, monkeypatch) == 1
+
+
+def test_wrong_typed_or_combined_shapes_never_credit(monkeypatch):
+    """API-invalid shapes must not prove the scrape is admitted: wrong-typed
+    selector terms, an ipBlock peer carrying a selector, and a falsey
+    non-list except are all rejected by the API and stay findings."""
+    combined = """
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-combined, namespace: ns}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - {ipBlock: {cidr: 0.0.0.0/0}, namespaceSelector: {}}
+        - ipBlock: {cidr: '::/0', except: {}}
+      ports: [{protocol: TCP, port: 9090}]
+"""
+    assert _run(DEFAULT_DENY + combined + SERVICE_MONITOR, monkeypatch) == 1
+    wrong_typed = OBS_ALLOW.replace(
+        "matchLabels: {kubernetes.io/metadata.name: observability}",
+        "matchLabels: [kubernetes.io/metadata.name]",
+    )
+    assert _run(DEFAULT_DENY + wrong_typed + SERVICE_MONITOR, monkeypatch) == 1

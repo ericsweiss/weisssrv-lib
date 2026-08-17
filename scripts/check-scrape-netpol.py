@@ -51,11 +51,23 @@ def _selects_observability(peer: dict, observability_ns: str) -> bool:
     this gate's bias forbids. A rule whose peers cover BOTH families is the
     explicit spelling of the omitted-`from` rule and is credited there.)
     """
-    nssel = peer.get("namespaceSelector")
-    if nssel is None:
+    # A peer combining ipBlock with a selector is API-invalid — it must not
+    # be credited through the selector path either.
+    if peer.get("ipBlock") is not None:
         return False
-    labels = nssel.get("matchLabels") or {}
-    exprs = nssel.get("matchExpressions") or []
+    nssel = peer.get("namespaceSelector")
+    if nssel is None or not isinstance(nssel, dict):
+        return False
+    labels = nssel.get("matchLabels")
+    exprs = nssel.get("matchExpressions")
+    # Typed before walked: wrong-typed terms belong to a policy the API
+    # rejects, which proves nothing about the scraper.
+    if labels is not None and not isinstance(labels, dict):
+        return False
+    if exprs is not None and not isinstance(exprs, list):
+        return False
+    labels = labels or {}
+    exprs = exprs or []
     # An EMPTY namespaceSelector needs no corpus knowledge to prove: `{}` (and
     # the equivalent `{matchLabels: {}}`) matches every namespace by API
     # semantics, observability included. But the API ANDs a peer's TWO
@@ -73,6 +85,8 @@ def _selects_observability(peer: dict, observability_ns: str) -> bool:
     name_matched = labels.get(NS_NAME_LABEL) == observability_ns
     extra_requirements = any(k != NS_NAME_LABEL for k in labels)
     for expr in exprs:
+        if not isinstance(expr, dict):
+            return False
         if (
             expr.get("key") == NS_NAME_LABEL
             and expr.get("operator") == "In"
@@ -95,7 +109,16 @@ def _rule_ipblocks_cover_both_families(peers: list) -> bool:
         if not isinstance(peer, dict):
             continue
         ip_block = peer.get("ipBlock")
-        if not isinstance(ip_block, dict) or ip_block.get("except"):
+        # The API rejects a peer combining ipBlock with a selector, and an
+        # `except` of any non-empty-list shape (including the falsey `{}`)
+        # is either narrowing or invalid — none of those may count toward
+        # the credit.
+        if not isinstance(ip_block, dict):
+            continue
+        if peer.get("namespaceSelector") is not None or peer.get("podSelector") is not None:
+            continue
+        excepts = ip_block.get("except")
+        if excepts is not None and excepts != []:
             continue
         # A real parse, not a `:` sniff: crediting is the fail-OPEN direction
         # here, so only a cidr the API itself would accept may count —
@@ -133,7 +156,16 @@ def _selects_all_pods(selector: object) -> bool:
         return True
     if not isinstance(selector, dict):
         return False
-    return not (selector.get("matchLabels") or selector.get("matchExpressions"))
+    labels = selector.get("matchLabels")
+    exprs = selector.get("matchExpressions")
+    # Typed, not truthy: `matchLabels: []` / `matchExpressions: {}` are
+    # API-invalid, and crediting an invalid policy is the silent false-allow
+    # this gate's bias forbids.
+    if labels is not None and not isinstance(labels, dict):
+        return False
+    if exprs is not None and not isinstance(exprs, list):
+        return False
+    return not (labels or exprs)
 
 
 def _find_monitor_toggles(node, path: str = "") -> list[str]:
@@ -195,7 +227,8 @@ def analyze(
         spec = doc.get("spec") or {}
 
         if kind in MONITOR_KINDS:
-            selector = spec.get("namespaceSelector") or {}
+            selector = spec.get("namespaceSelector")
+            selector = selector if isinstance(selector, dict) else {}
             match_names = selector.get("matchNames") or []
             if match_names:
                 targets = [str(n) for n in match_names]
@@ -226,6 +259,8 @@ def analyze(
             if namespace_wide:
                 restricted.add(ns)
             for rule in spec.get("ingress") or []:
+                if not isinstance(rule, dict):
+                    continue
                 peers = rule.get("from")
                 if not peers and namespace_wide:
                     # Omitted `from` and empty `from: []` both mean "every

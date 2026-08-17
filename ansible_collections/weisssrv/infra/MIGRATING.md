@@ -29,6 +29,14 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.9.2
+
+No migration steps. Both netpol gates now validate SHAPES before crediting or
+counting: wrong-typed selector terms (`matchLabels: []`, `matchExpressions:
+{}`), a peer combining `ipBlock` with a selector, and a falsey non-list
+`except` are API-invalid and neither fence a namespace, defeat a fence, nor
+prove a scrape is admitted; non-dict rules/expressions no longer traceback.
+
 # v0.9.1
 
 No migration steps. `check-default-deny-coverage.py`'s except-subtraction now

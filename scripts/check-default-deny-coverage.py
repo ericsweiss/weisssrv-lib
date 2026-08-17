@@ -170,7 +170,16 @@ def _selects_all_pods(selector: object) -> bool:
         return True
     if not isinstance(selector, dict):
         return False
-    return not (selector.get("matchLabels") or selector.get("matchExpressions"))
+    labels = selector.get("matchLabels")
+    exprs = selector.get("matchExpressions")
+    # Typed, not truthy: `matchLabels: []` / `matchExpressions: {}` are
+    # API-invalid — a policy carrying them never applies, so it must neither
+    # count as a fence nor as the wide-open peer that defeats one.
+    if labels is not None and not isinstance(labels, dict):
+        return False
+    if exprs is not None and not isinstance(exprs, list):
+        return False
+    return not (labels or exprs)
 
 
 def _peer_selects_everything(peer: object) -> bool:

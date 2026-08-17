@@ -519,3 +519,18 @@ def test_an_empty_matchlabels_allow_all_defeats_a_sibling_fence(monkeypatch) -> 
         )
     )
     assert run(monkeypatch, corpus) == 1
+
+
+def test_a_wrong_typed_selector_term_neither_fences_nor_defeats(monkeypatch, capsys) -> None:
+    """`matchLabels: []` / `matchExpressions: {}` are API-invalid: the policy
+    never applies, so it must not count as the namespace's fence — and the
+    same shape on an allow must not defeat a real one."""
+    invalid_fence = FENCED.format(ns="apps").replace(
+        "podSelector: {}", "podSelector: {matchLabels: []}"
+    )
+    assert run(monkeypatch, DEPLOY.format(ns="apps") + "---\n" + invalid_fence) == 1
+    invalid_allow = _ns_wide_policy("[{}]").replace(
+        "podSelector: {}", "podSelector: {matchExpressions: {}}"
+    )
+    corpus = DEPLOY.format(ns="apps") + "---\n" + FENCED.format(ns="apps") + invalid_allow
+    assert run(monkeypatch, corpus) == 0
