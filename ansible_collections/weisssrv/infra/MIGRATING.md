@@ -29,6 +29,14 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.9.3
+
+No migration steps. The netpol gates extend v0.9.2's shape rule to UNKNOWN
+keys: a selector carrying anything besides `matchLabels`/`matchExpressions`
+(the `matchLables:` typo class), or an `ipBlock` carrying anything besides
+`cidr`/`except`, never fences, defeats, or credits — server-side apply
+rejects those objects, so they must not act on any verdict.
+
 # v0.9.2
 
 No migration steps. Both netpol gates now validate SHAPES before crediting or

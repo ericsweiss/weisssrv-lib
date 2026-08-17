@@ -58,6 +58,10 @@ def _selects_observability(peer: dict, observability_ns: str) -> bool:
     nssel = peer.get("namespaceSelector")
     if nssel is None or not isinstance(nssel, dict):
         return False
+    # Unknown keys never credit: a `matchLables:` typo empties the recognised
+    # terms and would otherwise ride the empty-selector shortcut.
+    if set(nssel) - {"matchLabels", "matchExpressions"}:
+        return False
     labels = nssel.get("matchLabels")
     exprs = nssel.get("matchExpressions")
     # Typed before walked: wrong-typed terms belong to a policy the API
@@ -117,6 +121,10 @@ def _rule_ipblocks_cover_both_families(peers: list) -> bool:
             continue
         if peer.get("namespaceSelector") is not None or peer.get("podSelector") is not None:
             continue
+        # Same rule one level down: an `exept:` typo would read as an
+        # unexcepted block and credit a peer the API rejects.
+        if set(ip_block) - {"cidr", "except"}:
+            continue
         excepts = ip_block.get("except")
         if excepts is not None and excepts != []:
             continue
@@ -155,6 +163,11 @@ def _selects_all_pods(selector: object) -> bool:
     if selector is None or selector == {}:
         return True
     if not isinstance(selector, dict):
+        return False
+    # Unknown keys before empty terms: a typo like `matchLables:` leaves the
+    # recognised terms empty, and reading that as select-all would let a
+    # policy server-side apply REJECTS act on the verdict.
+    if set(selector) - {"matchLabels", "matchExpressions"}:
         return False
     labels = selector.get("matchLabels")
     exprs = selector.get("matchExpressions")

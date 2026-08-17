@@ -170,6 +170,11 @@ def _selects_all_pods(selector: object) -> bool:
         return True
     if not isinstance(selector, dict):
         return False
+    # Unknown keys before empty terms: a typo like `matchLables:` leaves the
+    # recognised terms empty, and reading that as select-all would let a
+    # policy server-side apply REJECTS act on the verdict.
+    if set(selector) - {"matchLabels", "matchExpressions"}:
+        return False
     labels = selector.get("matchLabels")
     exprs = selector.get("matchExpressions")
     # Typed, not truthy: `matchLabels: []` / `matchExpressions: {}` are

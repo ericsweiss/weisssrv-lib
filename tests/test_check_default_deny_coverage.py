@@ -534,3 +534,12 @@ def test_a_wrong_typed_selector_term_neither_fences_nor_defeats(monkeypatch, cap
     )
     corpus = DEPLOY.format(ns="apps") + "---\n" + FENCED.format(ns="apps") + invalid_allow
     assert run(monkeypatch, corpus) == 0
+
+
+def test_an_unknown_selector_key_neither_fences_nor_defeats(monkeypatch) -> None:
+    """A `matchLables:` typo empties the recognised terms; reading it as
+    select-all would certify a fence server-side apply rejects."""
+    typo_fence = FENCED.format(ns="apps").replace(
+        "podSelector: {}", "podSelector: {matchLables: {app: x}}"
+    )
+    assert run(monkeypatch, DEPLOY.format(ns="apps") + "---\n" + typo_fence) == 1

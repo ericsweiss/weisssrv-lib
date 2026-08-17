@@ -452,3 +452,29 @@ spec:
         "matchLabels: [kubernetes.io/metadata.name]",
     )
     assert _run(DEFAULT_DENY + wrong_typed + SERVICE_MONITOR, monkeypatch) == 1
+
+
+def test_unknown_selector_or_ipblock_keys_never_credit(monkeypatch):
+    """A `matchLables:`/`exept:` typo empties the recognised terms — riding
+    the empty-selector or unexcepted-/0 shortcut would credit a policy
+    server-side apply rejects."""
+    typo_selector = OBS_ALLOW.replace(
+        "matchLabels: {kubernetes.io/metadata.name: observability}",
+        "matchLables: {kubernetes.io/metadata.name: observability}",
+    )
+    assert _run(DEFAULT_DENY + typo_selector + SERVICE_MONITOR, monkeypatch) == 1
+    typo_except = """
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-any-address, namespace: ns}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: {cidr: 0.0.0.0/0, exept: [10.42.0.0/16]}
+        - ipBlock: {cidr: '::/0'}
+      ports: [{protocol: TCP, port: 9090}]
+"""
+    assert _run(DEFAULT_DENY + typo_except + SERVICE_MONITOR, monkeypatch) == 1
