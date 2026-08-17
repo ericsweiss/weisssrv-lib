@@ -140,6 +140,13 @@ WIDE_OPEN_RULES = {
     "a /0 excepting only public space": (
         "[{from: [{ipBlock: {cidr: 0.0.0.0/0, except: [203.0.113.0/24]}}]}]"
     ),
+    # An except the API rejects (equal to the cidr — for a /0 the one
+    # non-subnet spelling that exists) belongs to a policy that never admits;
+    # it must not erase the network and certify a fence the rejected policy
+    # does not provide.
+    "a /0 excepted by itself": (
+        "[{from: [{ipBlock: {cidr: 0.0.0.0/0, except: [0.0.0.0/0]}}]}]"
+    ),
 }
 
 # The other direction: rules that genuinely narrow, and must keep counting as a

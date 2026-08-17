@@ -133,7 +133,12 @@ def _excepts_cover_cidr(excepts: object, cidr: object) -> bool:
             exc = ipaddress.ip_network(str(raw).strip(), strict=False)
         except ValueError:
             continue
-        if exc.version != net.version:
+        # Only an except the API would accept may subtract: Kubernetes
+        # requires each entry to be a STRICT subnet of the cidr, so an equal
+        # or out-of-range entry belongs to a policy that never admits — and
+        # letting it erase the network would certify a fence the (rejected)
+        # policy does not provide.
+        if exc.version != net.version or exc == net or not exc.subnet_of(net):
             continue
         surviving = []
         for part in remaining:

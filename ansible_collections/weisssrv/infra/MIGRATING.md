@@ -29,6 +29,13 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.9.1
+
+No migration steps. `check-default-deny-coverage.py`'s except-subtraction now
+counts only entries the API would accept (a strict subnet of the cidr): a `/0`
+allow "excepted by itself" no longer certifies a fence the rejected policy
+does not provide.
+
 # v0.9.0
 
 ## Breaking — act in the same MR as the bump
