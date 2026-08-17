@@ -29,6 +29,24 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.9.0
+
+## Breaking — act in the same MR as the bump
+
+| Surface | What changed | What to do |
+|---|---|---|
+| Vendored-copy registry | INVERTED. The library no longer knows its consumers: `scripts/vendored-paths.yml` (per-consumer registry) and `docs/CONSUMERS.yml` (adoption ledger) are gone. The library now ships `scripts/vendorable-paths.yml` — an OFFER list of the paths it supports vendoring — and `scripts/check-vendored-copies.py` reads a CONSUMER-OWNED manifest instead (`--consumer NAME`/`--registry` dropped; `--manifest FILE` added, defaulting to `<repo-root>/scripts/vendored-manifest.yml`). | Create `scripts/vendored-manifest.yml` in the consumer, holding what the old registry's block for that consumer held (same `vendored:`/`forked:` entry forms, `reason:` + `reconciled_sha256` on forks), and drop `--consumer`/`--registry` from every gate invocation. A manifest `lib:` path must appear in the offer list at the pinned ref — vendoring an unoffered file now fails. Upside of owning the manifest: moving a vendored file inside a consumer repo is no longer a library-release event, and a fork's `reconciled_sha256` is re-taken where the fork lives. |
+| `check-default-deny-coverage.py` / `check-scrape-netpol.py` selector and ipBlock semantics | Both gates now read selectors as the API does, and both can turn a green pipeline red at adoption. Default-deny gate: `podSelector: {matchLabels: {}}` / `{matchExpressions: []}` is namespace-wide (a fence spelled that way stops failing; a wide-open allow spelled that way starts failing), and a `/0` `ipBlock` peer is wide open unless its `except` list reconstructs the entire address family (exact subtraction — no assumption about which ranges a cluster's pods occupy). Scrape gate: those same namespace-wide spellings now REGISTER as restricting a namespace — a namespace whose only default-deny used an empty-termed selector was previously invisible to the scrape gate and must now prove it admits observability; a rule whose unexcepted `/0` `ipBlock` peers span BOTH address families is credited as admitting it (one family alone proves nothing about the scraper's family and stays a finding). | Re-run `flux:lint` at adoption. Where the scrape gate newly fails, add the observability allow the namespace always needed (the gate was blind, the scrape was already broken); where the default-deny gate newly flags a `/0`-with-partial-excepts allow, narrow the CIDR to what the rule actually means to admit — a `/0` ingress allow is not a fence-compatible peer. |
+| `proxmox_lxc` idmap asserts | The range-membership assert (`proxmox_lxc_idmap_uid`/`_gid` `<` `proxmox_lxc_idmap_range`) now runs for EVERY unprivileged container; it was gated behind `proxmox_lxc_gpu_passthrough`, so a non-GPU container with an out-of-range point was created and then refused by `pct start`. | Nothing, unless an existing non-GPU container carries an out-of-range idmap point — the play now fails at the assert instead of at `pct start`; fix the inventory value it names. |
+
+## Behaviour changes — no action, but read before adopting
+
+| Surface | What changed |
+|---|---|
+| `nas_storage` | New pre-mount task detaches an export bind whose live source filesystem was deleted under it (`findmnt` source suffixed `//deleted` after a dataset migration/rename) so the fstab remount serves the new tree — previously the role read the stale bind as converged and every client mount RPC hung. |
+| `check-versions.py` JSON | A held service now reports `update_available: false` per-service (visibility stays via `held: true` + `latest_version`), so JSON consumers cannot act on a held update without deliberately parsing the hold. |
+| `ci/maintenance/version-check.yml` | New optional `github_token` input (default `"$GITHUB_TOKEN"`) forwarded to the job's `GITHUB_TOKEN` variable — pass a variable reference like `"$GH_API_TOKEN"`, never a literal. |
+
 # v0.8.0
 
 ## Breaking — act in the same MR as the bump
@@ -133,7 +151,7 @@ absence; a consumer that adopted the collection after v0.7.0 never had them.
 > the only per-release migration record. At tag time the release MR **retitles
 > this heading to the tag being cut** and opens a fresh empty
 > `# Unreleased (next release)` above it — a checklist bullet in VERSIONING
-> covers it, and `tests/test_docs_registry.py::TestMigratingSections` fails a
+> covers it, and `tests/test_migrating_sections.py::TestMigratingSections` fails a
 > bump whose newest titled section is not `galaxy.yml`'s version, or a released
 > tag with no section at all. A release with nothing to
 > migrate still gets a section saying so; "no section" and "nothing to do" must
@@ -338,8 +356,9 @@ pipeline creation and bypasses every gate. `deploy-base` sets `LOKI_PUSH_USER`/`
 the base — closing an observed drift — so the Loki item must exist in `op_vault`
 for every job that extends it. The per-job secret map is a same-name map-merge
 on the consumer side, not an input. The cluster template adopts `deploy-base`
-in this release; `kubectl-setup` and `ansible-deploy` have no consumer yet and
-are registered as `not_yet_adopted` in [CONSUMERS.yml](../../../docs/CONSUMERS.yml).
+in this release; `kubectl-setup` and `ansible-deploy` had no consumer yet and
+were registered as `not_yet_adopted` in the then-current `docs/CONSUMERS.yml`
+(retired in v0.9.0 with the registry inversion).
 
 **New — `ci/github/`.** `ci.example.yml` and `build-image.example.yml`, promoted
 to published vendorable references now that the CLI fixtures that carried them

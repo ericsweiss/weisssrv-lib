@@ -61,8 +61,9 @@ findings that matter.
 **This directory is the canonical copy of every profile below.** A fix goes in
 here first; every root-level or `.gitlab/`-level file in any repo of the family
 is a copy or a deliberate fork of one of these. Which is which is recorded in
-[`../scripts/vendored-paths.yml`](../scripts/vendored-paths.yml) and checked by
-`scripts/check-vendored-copies.py`: a `vendored` entry must stay
+each consumer's own `scripts/vendored-manifest.yml` (these profiles are on the
+offer list, [`../scripts/vendorable-paths.yml`](../scripts/vendorable-paths.yml))
+and checked by `scripts/check-vendored-copies.py`: a `vendored` entry must stay
 byte-identical, and a `forked` entry must still differ AND carry a
 `reconciled_sha256` of the library side, so a change made here fails the fork
 until someone absorbs it. The one exception is `.yamllint`: the copies in both

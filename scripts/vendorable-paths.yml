@@ -1,0 +1,72 @@
+---
+# The library's OFFER list: every path a consumer may vendor or fork.
+#
+# This file says nothing about who copies what — the library does not know its
+# consumers. Each consumer records its own copies in a manifest
+# (scripts/vendored-manifest.yml by convention) and gates them with
+# scripts/check-vendored-copies.py against a library checkout at its pinned
+# ref. What THIS list buys:
+#
+#   * the engine fails a manifest entry whose `lib:` path is not offered here,
+#     so a consumer cannot quietly grow a dependency on a library internal that
+#     no release contract covers;
+#   * tests/test_vendorable_paths.py holds every offered path to a file that
+#     exists, so the offer cannot rot ahead of the tree.
+#
+# Offering a path is a statement of intent: renames and deletions below are
+# release-noted in MIGRATING.md like any other consumer-facing change. Adding a
+# path is cheap — prefer offering a file over a consumer copying it unoffered.
+#
+# Sorted, one path per line. Comments group by area, nothing else.
+
+vendorable:
+  # CI example workflows (GitHub-shape consumers copy these as-is)
+  - ci/github/build-image.example.yml
+  - ci/github/ci.example.yml
+  - ci/release/github-release-workflow.example.yml
+  # Lint profiles — most consumers FORK these (per-repo allowlists/sections)
+  - lint/editorconfig
+  - lint/gitleaks.toml
+  - lint/pre-commit-config.yaml
+  - lint/ruff.toml
+  - lint/secret-detection-ruleset.toml
+  # Both yamllint profiles are offered even though today's consumers copy
+  # them under untracked names: lint/README.md documents vendoring either as
+  # `.yamllint`, and an unoffered file cannot be listed in any manifest.
+  - lint/yamllint-relaxed.yml
+  - lint/yamllint-strict.yml
+  # Gate and helper scripts
+  - scripts/b2-bucket-drift.py
+  - scripts/check-alertmanager-behaviour.py
+  - scripts/check-backup-artifact-apps.py
+  - scripts/check-default-deny-coverage.py
+  - scripts/check-deploy-coverage.sh
+  - scripts/check-doc-links.py
+  - scripts/check-hpa-vpa-invariant.py
+  - scripts/check-kubectl-version-pin.py
+  - scripts/check-lib-pins.py
+  - scripts/check-netpol-except-parity.py
+  - scripts/check-pvc-storageclass.py
+  - scripts/check-scrape-netpol.py
+  - scripts/check-secretstore-scope.py
+  - scripts/check-taskfile.sh
+  - scripts/check-versions.py
+  - scripts/extract-prometheus-config.py
+  - scripts/find-pve-host-for-vm.sh
+  - scripts/find-reachable-host.sh
+  - scripts/flux-env.sh
+  - scripts/flux-render.sh
+  - scripts/generate-hosts-env.py
+  - scripts/generate-versions-configmap.py
+  - scripts/kubeconform-skipped.py
+  - scripts/lint-prometheus-config.sh
+  - scripts/molecule-retry.sh
+  - scripts/resolve-tool.sh
+  - scripts/sanitize-junit-expected-failures.py
+  - scripts/semantic-release.py
+  - scripts/shell-lib.sh
+  - scripts/validate-helm-values.py
+  - scripts/version-bump-mr.py
+  - scripts/version-check-ci.py
+  # Test suites that travel with their script (canonical here, smoke-tested there)
+  - tests/test_check_lib_pins.py

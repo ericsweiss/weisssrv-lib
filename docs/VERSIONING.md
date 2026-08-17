@@ -187,13 +187,14 @@ and three of them are enforced by a gate (1, 2 and 4). Walk all five in one MR:
 | 1 | CI template `ref:` on every include entry | `.gitlab-ci.yml` (plus the single-source `WEISSSRV_LIB_REF` variable) | `scripts/check-lib-pins.py` — vendored; fails on drift or a branch ref; `--fix` rewrites them |
 | 2 | Ansible collection `version:` | `ansible/requirements.yml` | the same `scripts/check-lib-pins.py` — it reads the sibling `ansible/requirements.yml` and holds the collection `version:` equal to `WEISSSRV_LIB_REF`; `--fix` syncs it. The file it inspects is forge-independent, but the ref it compares against comes from `.gitlab-ci.yml`, so a consumer without one cannot run the gate |
 | 3 | Terraform module `?ref=` | each `main.tf` `source =` | nothing — `terraform init` happily fetches the old tag |
-| 4 | **Vendored scripts** (and the lint profiles, vendored suites and workflows alongside them) | the consumer's `scripts/`, plus the paths `scripts/vendored-paths.yml` records | `scripts/check-vendored-copies.py` — registry-driven, run from the consumer against a library checkout at its pinned `--ref`; fails on drift in either direction, on a converged fork, and on a fork whose library side moved since its `reconciled_sha256`. Per-consumer adoption is still landing |
+| 4 | **Vendored scripts** (and the lint profiles, vendored suites and workflows alongside them) | the consumer's `scripts/`, plus the paths its own `scripts/vendored-manifest.yml` records | `scripts/check-vendored-copies.py` — manifest-driven, run from the consumer against a library checkout at its pinned `--ref`; fails on drift in either direction, on a converged fork, on a fork whose library side moved since its `reconciled_sha256`, and on a manifest entry outside the library's offer list (`scripts/vendorable-paths.yml`) |
 | 5 | CLI install spec | wherever `pipx install …@<tag>` is written | nothing |
 
-[CONSUMERS.yml](CONSUMERS.yml) records which of the five each consumer actually
-has, and which files hold them — read it when cutting a release so no consumer
-is missed. A generated cluster is the easy case: all of its pins derive from one
-copier answer, `lib_ref`.
+Which of the five a given consumer has is that consumer's own record — the
+library keeps no registry of its consumers. Each consumer's gates catch a
+missed pin at ITS next bump; the library-side release checklist below covers
+only library-owned state. A generated cluster is the easy case: all of its
+pins derive from one copier answer, `lib_ref`.
 
 The procedure:
 
@@ -244,37 +245,16 @@ Before merging the MR that will cut a tag:
       pipeline instead of shipping.
 - [ ] Every changed template's parity note in `INCLUDE-CONTRACT.md` reflects the
       change, and any new input is listed in that template's input set.
-- [ ] `CONSUMERS.yml` still describes reality (a consumer that gained or dropped
-      an include, a script it now vendors, a new pin site). Its `enforced:`
-      claims are mechanical —
-      `tests/test_docs_registry.py::TestConsumersRegistry` fails a named gate
-      that does not exist, checking the consumer-side ones whenever a sibling
-      checkout is present. The prose around them is not.
-- [ ] `scripts/vendored-paths.yml` is re-taken against the tree being tagged:
-      every `reconciled_sha256` is the sha of the library file **as this release
-      ships it**, and every `consumer:` path matches **the layout the consumer
-      will be on when it adopts this tag** — not necessarily the layout on its
-      `main` today. Both are read at the consumer's pinned tag, so a stale value
-      reds the consumer's gate with no consumer-side fix.
-      `tests/test_check_vendored_copies.py::TestShippedRegistry` fails on a
-      stale sha; the paths are the manual half.
-- [ ] **Cross-repo sequencing.** When a consumer's registry rows encode a layout
-      that only exists on an unmerged branch of that consumer, the consumer's MR
-      merges FIRST — a repo restructure (a move into `template/`, a renamed
-      script directory) is the case that triggers it. Cut the tag first and
-      every row for that consumer reds with no consumer-side fix: the registry
-      is library-owned and the tag immutable, so only a follow-up patch release
-      clears it. Verify against the MERGED tree, not a working copy:
-
-      ```bash
-      scripts/check-vendored-copies.py --consumer weisssrv-app-template \
-        --repo-root <app-template checkout on main> --lib-path .
-      scripts/check-vendored-copies.py --consumer weisssrv-cluster-template \
-        --repo-root <cluster-template checkout on main> --lib-path .
-      ```
-
-      Nothing mechanical backstops this: the library's own pipeline no longer
-      clones the templates, so the coupling is a manual step by design.
+- [ ] `scripts/vendorable-paths.yml` still describes the tree being tagged:
+      every offered path exists (`tests/test_vendorable_paths.py` is the
+      mechanical half), and a path this release renames or stops shipping is
+      called out in MIGRATING.md — consumers' manifests name these paths at
+      the pinned tag, so a silent removal reds their gates with no
+      consumer-side fix. `reconciled_sha256` values live in consumer
+      manifests and are re-taken there, at adoption. (The old cross-repo
+      sequencing hazard — library-owned registry rows encoding a consumer
+      layout — retired with the registry inversion: a consumer that moves a
+      vendored file edits its own manifest in the same commit.)
 - [ ] The collection's
       [MIGRATING.md](../ansible_collections/weisssrv/infra/MIGRATING.md)
       `# Unreleased (next release)` heading is retitled to the tag being cut,
@@ -283,7 +263,7 @@ Before merging the MR that will cut a tag:
       [No changelog file](#no-changelog-file)); leaving it untitled makes the
       next cycle's delta read as one pending set with this one's. A release with
       nothing to migrate still gets a section saying so.
-      `tests/test_docs_registry.py::TestMigratingSections` holds the newest
+      `tests/test_migrating_sections.py::TestMigratingSections` holds the newest
       titled section equal to `galaxy.yml`'s version, so this one is mechanical.
 - [ ] A breaking change is written as `feat!:` or carries a `BREAKING CHANGE:`
       trailer — otherwise it ships as a patch and consumers get it unannounced.

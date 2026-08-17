@@ -987,6 +987,28 @@ class TestHeldUpdateGuard(unittest.TestCase):
         self.assertIn("foo_version", written_vars)
         self.assertNotIn("helm_chart_versions.metallb", written_vars)
 
+    def test_json_reports_a_held_update_as_not_available(self):
+        """The per-service JSON is the contract external tooling reads: a held
+        entry must say `update_available: false` so no consumer can act on it
+        without deliberately parsing the hold — the summary already excluded
+        held from `updates_available`, but a bump bot iterating `services`
+        never reads the summary. Visibility survives via held + latest_version."""
+        import json
+        SV = check_versions.ServiceVersion
+        held = SV(name="MetalLB", category="helm", current_version="0.15.3",
+                  latest_version="0.16.0", update_available=True,
+                  var_name="helm_chart_versions.metallb", held=True)
+        normal = SV(name="Foo", category="helm", current_version="1.0",
+                    latest_version="1.1", update_available=True, var_name="foo_version")
+        data = json.loads(check_versions.format_json([held, normal]))
+        by_name = {s["name"]: s for s in data["services"]}
+        self.assertFalse(by_name["MetalLB"]["update_available"])
+        self.assertTrue(by_name["MetalLB"]["held"])
+        self.assertEqual(by_name["MetalLB"]["latest_version"], "0.16.0")
+        self.assertTrue(by_name["Foo"]["update_available"])
+        self.assertEqual(data["summary"]["updates_available"], 1)
+        self.assertEqual(data["summary"]["updates_held"], 1)
+
     def test_single_update_skips_held(self):
         """`--update <service>` must also refuse to write a held version.
 

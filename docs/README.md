@@ -14,8 +14,9 @@
   weisssrv's (Ceph, a non-1Password secrets store, GitHub) adopts the library:
   the seam map, what is backend-specific by design, and the contract for adding
   an alternative.
-- [CONSUMERS.yml](CONSUMERS.yml) — the registry of every repo that pins this
-  library and every place it holds a pin. Read it before cutting a release.
+- Consumer pins are recorded consumer-side — this library does not keep a
+  registry of who pins it. What it publishes is the vendorable offer list,
+  [../scripts/vendorable-paths.yml](../scripts/vendorable-paths.yml).
 
 Vendored surfaces document themselves next to the files:
 [../lint/README.md](../lint/README.md) (linter configs) and

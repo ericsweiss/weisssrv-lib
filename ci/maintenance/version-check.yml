@@ -33,6 +33,23 @@ spec:
     report_path:
       default: "version-report.json"
       description: "Artifact the check writes; published on every outcome."
+    github_token:
+      default: ""
+      description: >-
+        OPTIONAL override for the GitHub token the checkers use for API auth
+        (unauthenticated release lookups rate-limit at 60/hr and some
+        endpoints refuse anonymous access outright). The default is EMPTY —
+        no export happens and the job's inherited GH_API_TOKEN /
+        GITHUB_TOKEN variables reach the checker with their normal
+        precedence untouched. Pass a variable REFERENCE — e.g.
+        `github_token: "$MY_RELEASE_LOOKUP_TOKEN"` — not a literal token:
+        the reference lands in a bridge job variable unexpanded and resolves
+        at runtime, so masked-variable protection still applies, and the
+        script then exports it under BOTH names the stock checker reads
+        (deliberately overriding any inherited value of either — that is
+        what passing the input means). The credential caveat below still
+        holds: on an MR this token is readable by the code under review, so
+        scope it to public-read.
     default_branch:
       default: "main"
       description: >-
@@ -81,7 +98,19 @@ spec:
       - scheduler_failure
   variables:
     REPORT_PATH: "$[[ inputs.report_path ]]"
+    VERSION_CHECK_GITHUB_TOKEN: "$[[ inputs.github_token ]]"
   script:
+    # The bridge hop: see the github_token input. Both names the stock checker
+    # reads are exported, before the consumer commands — but only when the
+    # bridge carried a value, so an empty resolution cannot blank a token the
+    # job inherited some other way.
+    - |
+      if [ -n "$VERSION_CHECK_GITHUB_TOKEN" ]; then
+        export GH_API_TOKEN="$VERSION_CHECK_GITHUB_TOKEN"
+        export GITHUB_TOKEN="$VERSION_CHECK_GITHUB_TOKEN"
+      else
+        echo "version-check: github_token resolved empty; GitHub lookups use whatever the job inherited (or run anonymous at 60/hr)"
+      fi
     # Block scalars so a multi-line command works and no shell metacharacter in
     # the value can collide with YAML flow syntax.
     - |

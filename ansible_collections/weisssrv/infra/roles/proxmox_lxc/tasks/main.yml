@@ -265,25 +265,48 @@
     - proxmox_lxc_render_gid_result.stdout is defined
 
 # Checked before anything is written, because the idmap generator runs AFTER
-# `pct create`: an inconsistent pair caught later leaves a created container
-# that `pct start` refuses. The generator emits the passed-through GIDs in
-# ascending order and fills the gaps between them, so the container GID must
-# sort ABOVE both GPU GIDs; a lower one produces overlapping ranges. Both idmap
-# points must also fall inside the mapped range.
+# `pct create`: an inconsistent value caught later leaves a created container
+# that `pct start` refuses. Range membership binds EVERY unprivileged
+# container — an out-of-range idmap point produces a mapping past the
+# delegated range with no GPU involved — so it is asserted separately from
+# the GPU ordering below rather than gated behind gpu_passthrough with it.
+- name: Assert the idmap points fall inside the mapped range
+  ansible.builtin.assert:
+    that:
+      # Numeric first: Ansible's `int` filter coerces a malformed value to 0,
+      # which would pass every range test below and still fail at pct start.
+      # The pattern also excludes 0 itself — a 0 point emits a zero-length
+      # leading range plus a container-root -> host-root map.
+      - (proxmox_lxc_idmap_uid | string) is match('^[1-9][0-9]*$')
+      - (proxmox_lxc_idmap_gid | string) is match('^[1-9][0-9]*$')
+      # Strictly below range - 1: the generator emits a trailing range after
+      # the point, and a point at range - 1 leaves it zero-length.
+      - proxmox_lxc_idmap_uid | int < (proxmox_lxc_idmap_range | int) - 1
+      - proxmox_lxc_idmap_gid | int < (proxmox_lxc_idmap_range | int) - 1
+    fail_msg: >-
+      proxmox_lxc_idmap_uid ({{ proxmox_lxc_idmap_uid }}) and
+      proxmox_lxc_idmap_gid ({{ proxmox_lxc_idmap_gid }}) must both be
+      integers between 1 and proxmox_lxc_idmap_range - 2
+      ({{ proxmox_lxc_idmap_range | int - 2 }}) — a malformed value, 0, or a
+      point at either end of the range produces an idmap the generator cannot
+      express and pct start rejects the container.
+    quiet: true
+  when:
+    - proxmox_lxc_unprivileged | default(true)
+
+# The generator emits the passed-through GIDs in ascending order and fills the
+# gaps between them, so the container GID must sort ABOVE both GPU GIDs; a
+# lower one produces overlapping ranges.
 - name: Assert the idmap points are consistent with the GPU GIDs
   ansible.builtin.assert:
     that:
       - proxmox_lxc_idmap_gid | int > proxmox_lxc_video_gid | int
       - proxmox_lxc_idmap_gid | int > proxmox_lxc_render_gid | int
-      - proxmox_lxc_idmap_uid | int < proxmox_lxc_idmap_range | int
-      - proxmox_lxc_idmap_gid | int < proxmox_lxc_idmap_range | int
     fail_msg: >-
       proxmox_lxc_idmap_gid ({{ proxmox_lxc_idmap_gid }}) must be greater than
       both proxmox_lxc_video_gid ({{ proxmox_lxc_video_gid }}) and
-      proxmox_lxc_render_gid ({{ proxmox_lxc_render_gid }}), and both idmap
-      points must be below proxmox_lxc_idmap_range
-      ({{ proxmox_lxc_idmap_range }}) — otherwise the generated lxc.idmap
-      ranges overlap and pct start rejects the container.
+      proxmox_lxc_render_gid ({{ proxmox_lxc_render_gid }}) — otherwise the
+      generated lxc.idmap ranges overlap and pct start rejects the container.
     quiet: true
   when:
     - proxmox_lxc_unprivileged | default(true)

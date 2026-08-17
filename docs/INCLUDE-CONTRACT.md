@@ -29,9 +29,8 @@ verbatim (see [README § Local gates](../README.md#local-gates)).
 Both templates are copier templates, so each has TWO pipelines: the one CI runs
 on the template repo itself, and the one it RENDERS. The consumer columns below
 are the **rendered** pipelines — that is the surface an input default reaches at
-scale. The template repos' own pipelines are recorded per consumer in
-[CONSUMERS.yml](CONSUMERS.yml) (`ci_includes` vs
-`rendered_tenant_ci_includes`), and they are NOT the same set: the app template's
+scale. Each template repo's own pipeline is its own record (its `.gitlab-ci.yml`
+against the rendered one), and they are NOT the same set: the app template's
 own pipeline includes `ci/test/python-tests.yml` (its copier-schema and render
 suite) and neither `flux-lint` nor `docker-build`, the reverse of its tenant
 column here.
@@ -612,9 +611,9 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
   ordering to gate on), `concurrency` for `resource_group`, `fetch-depth: 0`
   for `GIT_DEPTH: 0`, and `release.json` uploaded `if: always()`. That file is a
   reference copy, NOT a template: nothing `include:`s it and re-vendoring is a
-  manual step, but the copy IS registered in `scripts/vendored-paths.yml`, so
-  `scripts/check-vendored-copies.py` fails the consumer on drift. Editing it is
-  a coordinated two-repo change.
+  manual step, but a consumer that copies it lists it in its
+  `scripts/vendored-manifest.yml`, so `scripts/check-vendored-copies.py` fails
+  that consumer on drift. Editing it is a coordinated two-repo change.
 - **Requires:** the script vendored at `script_path`, `release` declared as the
   LAST stage (the job sets no `needs:`, so stage ordering gates it on the rest of
   the pipeline passing), and a `resource_group` — already set — to serialize
@@ -636,7 +635,14 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
   (python:3.11), `tags`, `setup_command` (`true`), `check_command`
   (**required**), `report_path` (`version-report.json`), `default_branch`
   (main), `changes` (`["**/*"]` — NOT `[]`, which matches nothing and would
-  delete the job silently). There is deliberately no credential input.
+  delete the job silently), `github_token` (`"$GITHUB_TOKEN"` — a variable
+  REFERENCE, filled into a bridge variable and exported as `GITHUB_TOKEN`
+  before the consumer commands; the default forwards an inherited
+  project/group `GITHUB_TOKEN` unchanged, and a job-level self-named
+  definition is avoided precisely because it would shadow that inheritance).
+  The token is the one deliberate credential surface, and the header's MR
+  caveat governs it: on a merge request the commands ARE the code under
+  review, so pass a token scoped to public-read.
 - **Stage split with the bot is deliberate:** this job defaults to `lint` so it
   runs inside a normal MR pipeline, while `version-bump-bot` defaults to
   `maintenance` because it only ever runs on a schedule or a manual web trigger.
@@ -840,11 +846,12 @@ canonical-copy header naming its source.
   "runs an upstream image" from "the Dockerfile was renamed", and a green job
   with every step skipped is invisible in the run list.
 
-The copy relationship is recorded once, in `scripts/vendored-paths.yml`, and
-checked from the consumer side by `scripts/check-vendored-copies.py` — the
-older per-consumer gates iterate `scripts/` only and cannot see `.github/`. An
-example that is not in that registry is a manual walk at bump time;
-[CONSUMERS.yml](CONSUMERS.yml) points each consumer's `vendored_copies` at it.
+The copy relationship is recorded in each consumer's
+`scripts/vendored-manifest.yml` and checked by
+`scripts/check-vendored-copies.py` — the older per-consumer gates iterate
+`scripts/` only and cannot see `.github/`. An example a consumer copies
+without a manifest entry is a manual walk at bump time; the offer list
+(`scripts/vendorable-paths.yml`) is what marks these files as vendorable.
 
 ---
 
@@ -1019,25 +1026,26 @@ their pipeline instead of drifting silently:
 
 | Consumer | Gate | Scope |
 |---|---|---|
-| weisssrv | `scripts/test_vendored_byte_identity.py` (never skips) | the library registry, plus one local smoke test — a script sharing a name with a library script must be registered |
-| weisssrv-app-template | `tests/validate_render.py:check_registered_copies` | the library registry alone — scripts, workflows and lint profiles, on both sides of the copier split |
-| weisssrv-cluster-template | `tests/validate_render.py:check_vendored` | the render's `scripts/` + the template repo's own, then the library registry over both |
+| weisssrv | `scripts/test_vendored_byte_identity.py` (never skips) | its own manifest, plus one local smoke test — a script sharing a name with a library script must be listed |
+| weisssrv-app-template | `tests/validate_render.py:check_registered_copies` | its own manifest — scripts, workflows and lint profiles, on both sides of the copier split |
+| weisssrv-cluster-template | `tests/validate_render.py:check_vendored` | the render's `scripts/` + the template repo's own, then its manifest over both |
 
 Every one of them drives
 [`scripts/check-vendored-copies.py`](../scripts/check-vendored-copies.py)
-against [`scripts/vendored-paths.yml`](../scripts/vendored-paths.yml); no
-hand-maintained `scripts/`-only list survives. That registry is what reaches the
-copies a `scripts/`-only iterator cannot see — the lint profiles, the vendored
-GitHub workflows, `tests/test_check_lib_pins.py`. All three gates are on their
-consumer's `main`, so the registry describes what runs today.
+against its own `scripts/vendored-manifest.yml`; no hand-maintained
+`scripts/`-only list survives. A manifest is what reaches the copies a
+`scripts/`-only iterator cannot see — the lint profiles, the vendored GitHub
+workflows, `tests/test_check_lib_pins.py` — and the library's offer list
+([`scripts/vendorable-paths.yml`](../scripts/vendorable-paths.yml)) bounds what
+a manifest may name.
 
 How each reads the library differs, and it matters at release time. weisssrv
 passes `--ref` at the pin from its `.gitlab-ci.yml` and falls back to the
 checkout's working tree when the tag is not cut yet, announcing the fallback as
 a skip rather than assuming it. Both template gates pass `--lib-path` with no
 `--ref`, so they compare the library working tree unconditionally. Either way
-the lib-merge → tag → consumer-MR order is workable, which is the point. The
-per-consumer list of vendored files is in [CONSUMERS.yml](CONSUMERS.yml), and
+the lib-merge → tag → consumer-MR order is workable, which is the point. Each
+consumer's `scripts/vendored-manifest.yml` lists its vendored files, and
 re-vendoring is part of the upgrade procedure in
 [VERSIONING.md](VERSIONING.md#upgrading-a-consumer).
 

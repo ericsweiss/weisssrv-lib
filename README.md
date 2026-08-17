@@ -8,7 +8,7 @@ consumer at a pinned tag.
 
 ## Current release
 
-**v0.8.0.** Every pin example on this page and in `docs/` is written as
+**v0.9.0.** Every pin example on this page and in `docs/` is written as
 `<CURRENT_TAG>`; substitute the release you are adopting, so a release bump
 touches the few copy-paste snippets that must be runnable rather than a dozen
 stale examples. This line is the authority for the literal; the runnable
@@ -25,9 +25,11 @@ checklist.
 | [weisssrv-app-template](https://git.ericsweiss.com/eric/weisssrv-app-template) | the tenant scaffold — repos that deploy *into* that cluster | CI template includes, vendored scripts, the CLI |
 | [weisssrv-cluster-template](https://git.ericsweiss.com/eric/weisssrv-cluster-template) | the copier template a **new cluster** is generated from | CI includes, the collection, all 3 Terraform modules — all through one `lib_ref` answer |
 
-The machine-readable registry of every pin site per consumer is
-[docs/CONSUMERS.yml](docs/CONSUMERS.yml); read it before cutting a release, and
-update it when a consumer gains or drops a pin.
+Each consumer records its own pin sites and vendored copies — the library
+knows nothing about who pins it. What it publishes instead is the offer list
+([scripts/vendorable-paths.yml](scripts/vendorable-paths.yml)) of paths a
+consumer may vendor, gated consumer-side by a `scripts/vendored-manifest.yml`
+each consumer owns (see `scripts/check-vendored-copies.py`).
 
 ## What's here
 
@@ -73,7 +75,7 @@ examples/      copy-and-edit config files for the helper scripts
 cli/           weisssrv-new-project — the copier wrapper that renders the
                cluster template (new-cluster) and the app template (new-app)
 docs/          the include contract, the scripts contract, versioning policy,
-               the consumer registry, the extensibility seam map
+               the extensibility seam map
 tests/         pytest for scripts/ (the CLI has its own cli/tests/)
 ```
 

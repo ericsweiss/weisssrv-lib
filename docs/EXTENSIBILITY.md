@@ -101,10 +101,11 @@ does not `include:` them. What has to be portable is what they *call*:
   kustomize + kubeconform, shellcheck, doc links, secret scan) and
   [`ci/github/build-image.example.yml`](../ci/github/build-image.example.yml).
   Same discipline: vendored byte-identically and re-vendored on a bump. The copy
-  relationship is recorded in [`scripts/vendored-paths.yml`](../scripts/vendored-paths.yml)
-  and checked by [`scripts/check-vendored-copies.py`](../scripts/check-vendored-copies.py),
+  relationship lives in each consumer's `scripts/vendored-manifest.yml` (these
+  files are on the offer list, [`scripts/vendorable-paths.yml`](../scripts/vendorable-paths.yml))
+  and is checked by [`scripts/check-vendored-copies.py`](../scripts/check-vendored-copies.py),
   which is what reaches past `scripts/` — a `scripts/`-only iterator cannot see
-  `.github/`. All three consumers run that gate.
+  `.github/`.
 - **PLANNED — the GitHub Actions cluster pipeline.** A tenant repo already has
   a complete `github` CI shape (the app template renders it). A CLUSTER repo
   does not: the generated deploy/validate/verify pipeline exists only as GitLab
@@ -144,5 +145,6 @@ does not `include:` them. What has to be portable is what they *call*:
    rename, a removal or a changed default does.
 5. **Versioning.** A new role or a new variable is a minor bump; a changed
    default or a rename is major. See [VERSIONING.md](VERSIONING.md).
-6. **Register it.** Add the row to the seam map above, and the consumer to
-   [CONSUMERS.yml](CONSUMERS.yml) if it is a new one.
+6. **Register it.** Add the row to the seam map above. A new consumer registers
+   nothing here — it records its own pins and, if it vendors files, its own
+   `scripts/vendored-manifest.yml`.

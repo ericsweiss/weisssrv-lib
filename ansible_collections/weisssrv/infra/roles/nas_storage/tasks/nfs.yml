@@ -131,6 +131,67 @@
 # them mkdir'd onto a bare root-fs mountpoint). No dedicated subdir-creation step
 # is needed.
 
+# A bind can keep serving the WRONG tree while looking converged: after a
+# dataset migration, a zfs rename or a staging-dir move, the live mount still
+# references the old filesystem while fstab already names the new path — and
+# the mount task below reads mounted + fstab-present as converged, because a
+# bind's live source is not part of what `state: mounted` compares (a remount
+# never re-points a bind either). Every client mount RPC against such an
+# export HANGS. Detect it by IDENTITY, not by name: a healthy bind's
+# mountpoint IS the source directory (same device:inode), so a mismatch —
+# including the unlinked-source case findmnt renders as `//deleted` — means a
+# stale layer. Lazy-detach every stacked layer (bounded), verify the
+# endpoint, and let the task below remount from fstab; the exports handler
+# then hands out fresh filehandles.
+- name: Detach export binds serving a stale source
+  ansible.builtin.shell: |
+    set -euo pipefail
+    path={{ item.path | quote }}
+    src={{ item.bind_source | quote }}
+    mounted() {
+      # findmnt: rc 0 mounted, rc 1 with no output = not a mountpoint (the
+      # one tolerable failure); anything else means detection itself broke,
+      # and reporting "ok" then would certify a stale bind as sound.
+      set +e
+      out="$(findmnt --mountpoint "$path" 2>&1 >/dev/null)"
+      rc=$?
+      set -e
+      if [ "$rc" -ne 0 ] && { [ "$rc" -ne 1 ] || [ -n "$out" ]; }; then
+        echo "findmnt failed (rc=$rc): $out" >&2
+        exit 1
+      fi
+      return "$rc"
+    }
+    identity() { stat -c '%d:%i' -- "$1" 2>/dev/null || echo "unreadable-$1"; }
+    detached=0
+    # Bounded: findmnt matches every STACKED mount at the target and umount -l
+    # pops one layer per call, so a single detach can leave a stale layer
+    # beneath — loop until the endpoint is healthy, absent, or the bound hits.
+    for _ in 1 2 3 4 5; do
+      mounted || break
+      [ "$(identity "$path")" = "$(identity "$src")" ] && break
+      umount -l "$path"
+      detached=1
+    done
+    if mounted && [ "$(identity "$path")" != "$(identity "$src")" ]; then
+      echo "ERROR: $path still serves a source other than $src after detach attempts" >&2
+      exit 1
+    fi
+    if [ "$detached" -eq 1 ]; then
+      echo "detached stale source"
+    else
+      echo "ok"
+    fi
+  args:
+    executable: /bin/bash
+  register: nas_storage_nfs_stale_bind
+  changed_when: "'detached stale source' in nas_storage_nfs_stale_bind.stdout"
+  notify: Reload NFS exports
+  loop: "{{ nas_storage_exports }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when: item.bind_source is defined
+
 - name: Configure bind mounts in fstab
   ansible.posix.mount:
     path: "{{ item.path }}"

@@ -9,9 +9,9 @@ gated here against cli/pyproject.toml's version — the one machine-readable
 copy.
 
 Scope is deliberately narrow: only these files, and only pin-example literals.
-Historical prose elsewhere legitimately names older tags (docs/CONSUMERS.yml's
-"Adopted (v0.6.0)", the migration notes in docs/INCLUDE-CONTRACT.md), and
-asserting over those would make the gate a nuisance rather than a guard.
+Historical prose elsewhere legitimately names older tags (the migration notes
+in docs/INCLUDE-CONTRACT.md and MIGRATING.md), and asserting over those would
+make the gate a nuisance rather than a guard.
 """
 from __future__ import annotations
 

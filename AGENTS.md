@@ -26,9 +26,10 @@ One source of truth for everything the family shares:
 - **`cli/`** — `weisssrv-new-project`, the copier wrapper that renders the
   cluster template (`new-cluster`) and the app template (`new-app`).
 
-Three consumers pin all of it at a **release tag**: weisssrv, the app template,
-and the cluster template. Who pins what, and where each pin lives, is
-[docs/CONSUMERS.yml](docs/CONSUMERS.yml).
+Consumers pin all of it at a **release tag**. The library does not track who
+pins what — each consumer records its own pin sites, and its vendored copies in
+its own `scripts/vendored-manifest.yml`, gated against the offer list
+[scripts/vendorable-paths.yml](scripts/vendorable-paths.yml).
 
 Start with [README.md](README.md), then
 [docs/INCLUDE-CONTRACT.md](docs/INCLUDE-CONTRACT.md) and

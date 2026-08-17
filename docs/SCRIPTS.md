@@ -512,14 +512,20 @@ cat rendered-corpus.yaml | scripts/check-default-deny-coverage.py \
   NetworkPolicy fences it. (A HelmRelease still honours `spec.targetNamespace`,
   falling back to that defaulted namespace.)
 - A namespace is **fenced** by a NetworkPolicy with `Ingress` in `policyTypes`
-  and an empty/absent `podSelector`. An app-scoped policy does not count: it
-  fences its own pods and leaves every other pod in the namespace open.
+  and a `podSelector` that selects every pod — absent, `{}`, or the equivalent
+  empty-termed spellings `{matchLabels: {}}` / `{matchExpressions: []}` (an
+  empty selector term matches everything). An app-scoped policy does not
+  count: it fences its own pods and leaves every other pod in the namespace
+  open.
 - **A namespace-wide policy whose rule names no ports and admits every peer
   counts as wide open, not as a fence.** Both spellings qualify: an empty
   `ingress:` rule (`[{}]` — the API's "from anywhere, on any port"), and a rule
   whose `from` holds a peer that selects everything (`{}`,
   `namespaceSelector: {}`, `podSelector: {}` — an EMPTY label selector matches
-  every object in its scope). Peers within a rule are OR'd, so one wide peer
+  every object in its scope — or a `/0` `ipBlock` whose `except` list leaves
+  any address admitted, judged by exact subtraction rather than by assuming
+  which ranges a cluster's pods occupy). Peers within a rule are OR'd, so one
+  wide peer
   opens the rule whatever else it lists. A rule that names `ports` is never read
   as wide open — it narrows the surface, and port-level policy is a different
   mandate. NetworkPolicies are additive, so one wide-open policy re-opens the
@@ -803,14 +809,16 @@ commit in the consuming repo at all.
 ### `check-vendored-copies.py` (PyYAML)
 
 Gates a consumer's copies of library files against a library checkout. The copy
-relationship is recorded once, in the library
-([`../scripts/vendored-paths.yml`](../scripts/vendored-paths.yml)), so a file the
-library starts or stops shipping reaches every consumer's gate at the next bump
-instead of being re-listed by hand in each of them.
+relationship is recorded where the copies live — each consumer's own
+`scripts/vendored-manifest.yml` — and the library publishes only the OFFER list
+([`../scripts/vendorable-paths.yml`](../scripts/vendorable-paths.yml)) of paths
+it supports vendoring: a manifest entry outside the offer fails, and a file the
+library stops shipping fails every manifest that still names it at the next
+bump.
 
 ```
-scripts/check-vendored-copies.py --consumer <name> [--repo-root DIR]
-    [--lib-path DIR] [--registry FILE] [--ref GIT_REF] [--list]
+scripts/check-vendored-copies.py [--manifest FILE] [--repo-root DIR]
+    [--lib-path DIR] [--ref GIT_REF] [--list]
 ```
 
 - **Two relationships.** `vendored` is byte-identical — drift in either
@@ -819,7 +827,7 @@ scripts/check-vendored-copies.py --consumer <name> [--repo-root DIR]
   fork belongs under `vendored`) and, when it records `reconciled_sha256`, the
   LIBRARY side must not have moved since the fork was last reconciled. That last
   arm is what a documentation-only fork list cannot catch.
-- **Registry entry forms:** a bare string when both repos use the same path, or a
+- **Manifest entry forms:** a bare string when both repos use the same path, or a
   mapping with `lib:` and `consumer:` when they differ (`lint/ruff.toml` ->
   `ruff.toml`; `ci/release/github-release-workflow.example.yml` ->
   `template/{% if ci_shape == 'github' %}.github{% endif %}/workflows/release.yml`
@@ -827,10 +835,13 @@ scripts/check-vendored-copies.py --consumer <name> [--repo-root DIR]
   and is written out in full). `reason:` is required on every fork.
 - **Scope is not limited to `scripts/`**: lint profiles, vendored test suites
   (the canonical `tests/test_check_lib_pins.py`) and vendored workflows are all
-  registrable — which is where the unguarded copies were.
-- **This gate itself need not be vendored.** A consumer that already has a
-  library checkout runs it from there with `--lib-path`; only the files it
-  compares are copies.
+  listable — which is where the unguarded copies were. What a manifest may
+  name is bounded by the library's offer list, `scripts/vendorable-paths.yml`.
+- **This gate itself is never vendored.** A consumer runs it from a library
+  checkout with `--lib-path`; only the files it compares are copies, and the
+  offer list deliberately excludes the engine (a copy of the gate would gate
+  itself with itself and drift invisibly between pins —
+  `tests/test_vendorable_paths.py` pins the exclusion).
 - **`--ref`** reads library blobs with `git show <ref>:<path>`. The working-tree
   fallback is decided once **per ref**, not per path: an unresolvable ref means
   the tag is not cut yet (it is cut after the library MR merges), so the run
@@ -839,15 +850,16 @@ scripts/check-vendored-copies.py --consumer <name> [--repo-root DIR]
   longer ships …" — a file added after the tag is not in that release, and
   comparing it against a newer working tree would pass a copy the consumer's pin
   cannot deliver.
-- **`reconciled_sha256` is a release-time value.** It records the LIBRARY blob as
-  the release ships it, and the consumer reads it at its pinned tag — so a
-  release that edits a forked file must re-take the sha in the registry.
-  `tests/test_check_vendored_copies.py::TestShippedRegistry` fails on a stale
-  one, because no consumer-side edit can clear it.
+- **`reconciled_sha256` lives in the consumer's manifest** and records the
+  LIBRARY blob the fork last absorbed. When the library side moves, the fork
+  fails until the consumer absorbs the change and re-takes the sha — in its
+  own manifest, in the same commit. No library release event is involved.
 - **`--lib-path`, else `$WEISSSRV_LIB_PATH`, else `../weisssrv-lib`.** There is
   no skip-when-missing path: an unavailable checkout is an operator error, exit 2.
-- **Exit codes:** 0 clean, 1 on drift, 2 on an operator error (unknown consumer,
-  malformed registry, no library checkout).
+- **Exit codes:** 0 clean, 1 on drift (or a symlinked/escaping copy), 2 on an
+  operator error (malformed or missing manifest, a manifest path outside the
+  repo, a missing or malformed offer list, a failing git repository, no
+  library checkout).
 
 ### `check-deploy-coverage.sh` (PyYAML for the CI parse)
 

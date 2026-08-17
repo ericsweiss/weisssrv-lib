@@ -118,6 +118,28 @@ WIDE_OPEN_RULES = {
         "[{from: [{namespaceSelector: {matchLabels: "
         "{kubernetes.io/metadata.name: observability}}}, {namespaceSelector: {}}]}]"
     ),
+    # An empty selector TERM is the same trap one level down: `matchLabels: {}`
+    # requires nothing, so the selector matches everything.
+    "an empty matchLabels selector": "[{from: [{podSelector: {matchLabels: {}}}]}]",
+    # An ipBlock usually narrows, but the whole address space with no except
+    # list admits every peer there is.
+    "an unexcepted 0.0.0.0/0 ipBlock": "[{from: [{ipBlock: {cidr: 0.0.0.0/0}}]}]",
+    "an unexcepted ::/0 ipBlock": "[{from: [{ipBlock: {cidr: '::/0'}}]}]",
+    # The prefix length is what admits everything — any /0 spelling counts,
+    # not just the two canonical ones.
+    "a long-form IPv6 /0 ipBlock": "[{from: [{ipBlock: {cidr: '0:0:0:0:0:0:0:0/0'}}]}]",
+    "a /0 with a nonzero address half": "[{from: [{ipBlock: {cidr: 10.0.0.0/0}}]}]",
+    "a zero-padded /00 prefix": "[{from: [{ipBlock: {cidr: 0.0.0.0/00}}]}]",
+    # Excepts that leave ANY address admitted narrow nothing this gate can
+    # prove: which space pods occupy is the cluster's business, so partial
+    # excepts — private-range or public-range alike — stay wide open.
+    "a /0 with partial private excepts": (
+        "[{from: [{ipBlock: {cidr: 0.0.0.0/0, "
+        "except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]}}]}]"
+    ),
+    "a /0 excepting only public space": (
+        "[{from: [{ipBlock: {cidr: 0.0.0.0/0, except: [203.0.113.0/24]}}]}]"
+    ),
 }
 
 # The other direction: rules that genuinely narrow, and must keep counting as a
@@ -133,6 +155,12 @@ FENCING_RULES = {
         "[{from: [{podSelector: {matchExpressions: [{key: app, operator: Exists}]}}]}]"
     ),
     "an ipBlock peer": "[{from: [{ipBlock: {cidr: 10.42.0.0/16}}]}]",
+    # Coverage is exact subtraction: excepts that reconstruct the entire
+    # family leave nothing admitted, whatever ranges the cluster's pods use.
+    "a /0 fully excepted away": (
+        "[{from: [{ipBlock: {cidr: 0.0.0.0/0, "
+        "except: [0.0.0.0/1, 128.0.0.0/1]}}]}]"
+    ),
     "an empty selector narrowed by ports": (
         "[{from: [{podSelector: {}}], ports: [{protocol: TCP, port: 8080}]}]"
     ),
@@ -437,3 +465,50 @@ def test_a_corpus_without_workloads_is_an_operator_error(monkeypatch, capsys) ->
 @pytest.mark.parametrize("ns", sorted(gate.EXEMPT_NAMESPACES))
 def test_every_exemption_carries_a_reason(ns: str) -> None:
     assert len(gate.EXEMPT_NAMESPACES[ns]) > 40
+
+
+def test_an_empty_matchlabels_default_deny_still_fences(monkeypatch) -> None:
+    """`podSelector: {matchLabels: {}}` selects every pod — the API treats it
+    exactly like `{}`, so a default-deny spelled that way is namespace-wide.
+    The truthiness reading called it app-scoped and failed the namespace."""
+    corpus = DEPLOY.format(ns="apps") + textwrap.dedent(
+        """\
+        ---
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        metadata:
+          name: default-deny-ingress
+          namespace: apps
+        spec:
+          podSelector:
+            matchLabels: {}
+          policyTypes: [Ingress]
+        """
+    )
+    assert run(monkeypatch, corpus) == 0
+
+
+def test_an_empty_matchlabels_allow_all_defeats_a_sibling_fence(monkeypatch) -> None:
+    """The same spelling on a wide-open ALLOW is namespace-wide too — additive
+    policies mean it re-opens the namespace past a real default-deny."""
+    corpus = (
+        DEPLOY.format(ns="apps")
+        + "---\n"
+        + FENCED.format(ns="apps")
+        + textwrap.dedent(
+            """\
+            ---
+            apiVersion: networking.k8s.io/v1
+            kind: NetworkPolicy
+            metadata:
+              name: allow-everything
+              namespace: apps
+            spec:
+              podSelector:
+                matchLabels: {}
+              policyTypes: [Ingress]
+              ingress: [{}]
+            """
+        )
+    )
+    assert run(monkeypatch, corpus) == 1

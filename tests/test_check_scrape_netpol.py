@@ -317,3 +317,112 @@ def test_a_selector_with_extra_requirements_is_not_credited(monkeypatch):
     )
     assert "team: platform" in allow_extra_label
     assert _run(DEFAULT_DENY + allow_extra_label + SERVICE_MONITOR, monkeypatch) == 1
+
+
+def test_an_empty_matchlabels_default_deny_restricts_the_namespace(monkeypatch):
+    """`podSelector: {matchLabels: {}}` selects every pod, so a default-deny
+    spelled that way restricts the namespace exactly like `{}` — the
+    truthiness reading called it app-scoped and the scrape gate never saw the
+    namespace as restricted at all."""
+    spelled = DEFAULT_DENY.replace("podSelector: {}", "podSelector: {matchLabels: {}}")
+    assert _run(spelled + SERVICE_MONITOR, monkeypatch) == 1
+    # The allow is app-scoped here so the RESTRICTION can only come from the
+    # empty-matchLabels policy — with the namespace-wide OBS_ALLOW the second
+    # assertion would pass against the pre-fix truthiness reading too.
+    scoped_allow = OBS_ALLOW.replace(
+        "podSelector: {}", "podSelector: {matchLabels: {app: app}}"
+    )
+    assert _run(spelled + scoped_allow + SERVICE_MONITOR, monkeypatch) == 0
+
+
+def test_an_empty_namespaceselector_peer_is_credited(monkeypatch):
+    """`namespaceSelector: {}` matches every namespace — observability included —
+    with no corpus knowledge required, so it counts as an allow rather than
+    falling through the label walk to a false-block."""
+    allow_all_ns = """
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-any-namespace, namespace: ns}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {}
+      ports: [{protocol: TCP, port: 9090}]
+"""
+    assert _run(DEFAULT_DENY + allow_all_ns + SERVICE_MONITOR, monkeypatch) == 0
+
+
+def test_an_empty_namespaceselector_anded_with_a_pod_restriction_is_not_credited(monkeypatch):
+    """The API ANDs a peer's two selectors: `namespaceSelector: {}` beside a
+    restrictive podSelector admits only those pods from any namespace — no
+    proof the scraper gets through, so the empty-selector shortcut must not
+    fire."""
+    cross_ns_allow = """
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-other-app, namespace: ns}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {}
+          podSelector: {matchLabels: {app: other}}
+      ports: [{protocol: TCP, port: 9090}]
+"""
+    assert _run(DEFAULT_DENY + cross_ns_allow + SERVICE_MONITOR, monkeypatch) == 1
+
+
+def test_a_dual_family_slash_zero_rule_is_credited(monkeypatch):
+    """`0.0.0.0/0` beside `::/0` (peers are OR'd) admits every address of
+    either family — the explicit spelling of the omitted-`from` rule the gate
+    already credits. One family ALONE is not credited: the corpus cannot
+    establish the scraper's family, and crediting it would be the silent
+    false-allow the gate's bias forbids."""
+    both = """
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-any-address, namespace: ns}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: {cidr: 0.0.0.0/0}
+        - ipBlock: {cidr: '::/0'}
+      ports: [{protocol: TCP, port: 9090}]
+"""
+    assert _run(DEFAULT_DENY + both + SERVICE_MONITOR, monkeypatch) == 0
+    v4_only = both.replace("        - ipBlock: {cidr: '::/0'}\n", "")
+    assert _run(DEFAULT_DENY + v4_only + SERVICE_MONITOR, monkeypatch) == 1
+    excepted = both.replace(
+        "ipBlock: {cidr: 0.0.0.0/0}",
+        "ipBlock: {cidr: 0.0.0.0/0, except: [10.42.0.0/16]}",
+    )
+    # An except list on either family breaks the whole-address-space proof.
+    assert _run(DEFAULT_DENY + excepted + SERVICE_MONITOR, monkeypatch) == 1
+
+
+def test_an_invalid_cidr_never_counts_toward_the_family_credit(monkeypatch):
+    """`garbage/0` must not pass as IPv4 — crediting is the fail-open
+    direction, so only a cidr the API itself would accept may count."""
+    bogus_pair = """
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-any-address, namespace: ns}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: {cidr: garbage/0}
+        - ipBlock: {cidr: '::/0'}
+      ports: [{protocol: TCP, port: 9090}]
+"""
+    assert _run(DEFAULT_DENY + bogus_pair + SERVICE_MONITOR, monkeypatch) == 1
