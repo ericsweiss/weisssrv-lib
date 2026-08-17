@@ -522,3 +522,30 @@ spec:
 """
     # The invalid deny does not restrict, so the monitor-only namespace passes.
     assert _run(no_selector_deny + SERVICE_MONITOR, monkeypatch) == 0
+
+
+def test_one_invalid_peer_poisons_the_whole_rule(monkeypatch):
+    """The API rejects a policy with any invalid peer — the valid /0 pair
+    beside it must not credit a rule that never applies. A string `values`
+    (substring membership) must not credit either."""
+    poisoned = """
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-poisoned, namespace: ns}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: {cidr: 0.0.0.0/0}
+        - ipBlock: {cidr: '::/0'}
+        - {podSelecter: {}}
+      ports: [{protocol: TCP, port: 9090}]
+"""
+    assert _run(DEFAULT_DENY + poisoned + SERVICE_MONITOR, monkeypatch) == 1
+    string_values = OBS_ALLOW.replace(
+        "        - namespaceSelector:\n            matchLabels: {kubernetes.io/metadata.name: observability}",
+        "        - namespaceSelector:\n            matchExpressions: [{key: kubernetes.io/metadata.name, operator: In, values: observability}]",
+    )
+    assert _run(DEFAULT_DENY + string_values + SERVICE_MONITOR, monkeypatch) == 1

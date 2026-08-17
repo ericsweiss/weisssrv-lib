@@ -29,6 +29,14 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.9.5
+
+No migration steps. Scrape-gate crediting is now atomic per rule and exact
+per expression: one invalid peer disqualifies the whole rule (the API
+rejects the whole policy), and a matchExpressions requirement only credits
+with known fields, operator `In`, and a real list of values (a string would
+do substring membership).
+
 # v0.9.4
 
 No migration steps. The netpol gates' shape rule now covers every level of

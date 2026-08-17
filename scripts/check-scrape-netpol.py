@@ -94,12 +94,17 @@ def _selects_observability(peer: dict, observability_ns: str) -> bool:
     name_matched = labels.get(NS_NAME_LABEL) == observability_ns
     extra_requirements = any(k != NS_NAME_LABEL for k in labels)
     for expr in exprs:
-        if not isinstance(expr, dict):
+        # The credited requirement must be fully valid: known fields only,
+        # and `values` a real list — a STRING would do substring membership
+        # and credit an expression the API rejects.
+        if not isinstance(expr, dict) or set(expr) - {"key", "operator", "values"}:
             return False
+        values = expr.get("values")
         if (
             expr.get("key") == NS_NAME_LABEL
             and expr.get("operator") == "In"
-            and observability_ns in (expr.get("values") or [])
+            and isinstance(values, list)
+            and observability_ns in values
         ):
             name_matched = True
         else:
@@ -115,8 +120,10 @@ def _rule_ipblocks_cover_both_families(peers: list) -> bool:
     """
     families: set[int] = set()
     for peer in peers or []:
+        # A single invalid peer rejects the WHOLE policy at the API — two
+        # valid /0 peers beside it must not credit a rule that never applies.
         if not isinstance(peer, dict) or set(peer) - {"ipBlock", "namespaceSelector", "podSelector"}:
-            continue
+            return False
         ip_block = peer.get("ipBlock")
         # The API rejects a peer combining ipBlock with a selector, and an
         # `except` of any non-empty-list shape (including the falsey `{}`)
