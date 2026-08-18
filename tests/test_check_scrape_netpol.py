@@ -549,3 +549,39 @@ spec:
         "        - namespaceSelector:\n            matchExpressions: [{key: kubernetes.io/metadata.name, operator: In, values: observability}]",
     )
     assert _run(DEFAULT_DENY + string_values + SERVICE_MONITOR, monkeypatch) == 1
+
+
+def test_an_invalid_ipblock_shape_poisons_the_whole_rule(monkeypatch):
+    """Invalid shapes ANYWHERE in the rule reject the whole policy at the
+    API, so a valid dual-family pair beside them must not credit; a pure
+    selector peer or a valid narrowing block only skips."""
+    base = """
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-any-address, namespace: ns}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: {cidr: 0.0.0.0/0}
+        - ipBlock: {cidr: '::/0'}
+        - PLACEHOLDER
+      ports: [{protocol: TCP, port: 9090}]
+"""
+    for bad in (
+        "ipBlock: {cidr: garbage/0}",
+        "ipBlock: {cidr: 10.0.0.0/8, exept: [10.1.0.0/16]}",
+        "ipBlock: {cidr: 10.0.0.0/8, except: {}}",
+        "{ipBlock: {cidr: 10.0.0.0/8}, podSelector: {}}",
+    ):
+        corpus = base.replace("PLACEHOLDER", bad)
+        assert _run(DEFAULT_DENY + corpus + SERVICE_MONITOR, monkeypatch) == 1, bad
+    for benign in (
+        "namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: other}}",
+        "ipBlock: {cidr: 10.0.0.0/8, except: [10.1.0.0/16]}",
+        "ipBlock: {cidr: 192.168.0.0/16}",
+    ):
+        corpus = base.replace("PLACEHOLDER", benign)
+        assert _run(DEFAULT_DENY + corpus + SERVICE_MONITOR, monkeypatch) == 0, benign

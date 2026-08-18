@@ -29,6 +29,14 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.9.6
+
+No migration steps. The scrape gate's dual-family ipBlock credit is now fully
+rule-atomic: an ipBlock of invalid SHAPE anywhere in the rule (wrong type,
+unknown keys, unparseable cidr, non-list except, or combined with a selector)
+disqualifies the whole rule from the credit — the API rejects the whole
+policy — while a valid selector peer or a valid narrowing block merely skips.
+
 # v0.9.5
 
 No migration steps. Scrape-gate crediting is now atomic per rule and exact
