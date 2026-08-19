@@ -146,6 +146,26 @@ spec:
         the job errors at pod creation. On a runner that sets no regex, overwrite
         is disabled and any value here is ignored, so this default is safe
         off-instance too; a runner with a different allowlist needs its own value.
+    job_memory_limit:
+      default: "4Gi"
+      description: >-
+        KUBERNETES_MEMORY_LIMIT for the job pod. Right-sized per job class so
+        concurrent pipelines pack into the runner namespace's limits.memory
+        quota instead of every job costing the runner default; raise it per
+        consumer only when the job really needs more (the runner's
+        memory_limit_overwrite_max_allowed is the hard ceiling).
+    job_memory_request:
+      default: "1Gi"
+      description: KUBERNETES_MEMORY_REQUEST for the job pod (scheduler reservation).
+    service_memory_limit:
+      default: "3Gi"
+      description: >-
+        KUBERNETES_SERVICE_MEMORY_LIMIT for the DinD service container — the
+        memory-heavy half of a docker build (BuildKit runs there, not in the
+        build container). Sized independently of job_memory_limit.
+    service_memory_request:
+      default: "512Mi"
+      description: KUBERNETES_SERVICE_MEMORY_REQUEST for the DinD service container.
 ---
 "$[[ inputs.job_name ]]":
   # Pushes an image later jobs may consume; do not interrupt.
@@ -168,6 +188,10 @@ spec:
     - name: $[[ inputs.dind_service ]]
       alias: docker
   variables:
+    KUBERNETES_MEMORY_LIMIT: $[[ inputs.job_memory_limit ]]
+    KUBERNETES_MEMORY_REQUEST: $[[ inputs.job_memory_request ]]
+    KUBERNETES_SERVICE_MEMORY_LIMIT: $[[ inputs.service_memory_limit ]]
+    KUBERNETES_SERVICE_MEMORY_REQUEST: $[[ inputs.service_memory_request ]]
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
     # Route `docker build` through the dind daemon's embedded BuildKit (enables

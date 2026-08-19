@@ -127,6 +127,14 @@ blast-radius bound for a bucket with no Object Lock, where a forget is
 unrecoverable past the hide-lifecycle window. If restic's forget summary no
 longer parses at all, the guard refuses rather than degrading to "no ceiling".
 
+**Pinned tags**: entries in `restic_offsite_keep_tags` become `--keep-tag`
+flags on the same shared array, so tagged snapshots are never forgotten by
+either path. The intended use is immutable data whose paths the nightly run
+excludes: tag one snapshot that still contains it
+(`restic-offsitectl restic tag --add <tag> <snapshot-id>`) and that snapshot
+pins the data in the repository while the regular GFS churn continues around
+it. The dry-run ceiling naturally accounts for kept-tag snapshots.
+
 A refusal is **not** a backup failure: the snapshot already landed, so the run
 still succeeds and records `restic_offsite_retention_blocked 1` with
 `restic_offsite_retention_pending_removals`. Clearing it is a deliberate act —

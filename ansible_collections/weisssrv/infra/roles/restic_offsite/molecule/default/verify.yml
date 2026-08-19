@@ -54,6 +54,15 @@
     # End-to-end SUCCESS path: source the EnvironmentFile (as the systemd unit
     # would) and run against the local file repo. The seeded fresh archsync tree
     # passes the freshness guard; restic inits + backs up + prunes.
+    - name: Verify keep-tag flags render into the shared retention array
+      ansible.builtin.command: grep -A12 "^FORGET_FLAGS=(" /usr/local/sbin/restic-offsitectl
+      register: keep_tag_flags
+      changed_when: false
+      failed_when: >-
+        keep_tag_flags.rc != 0
+        or '--keep-tag=legacy' not in keep_tag_flags.stdout
+        or ('{' ~ '%') in keep_tag_flags.stdout
+
     - name: Run restic-offsitectl run (success path)
       ansible.builtin.shell: |
         set -a

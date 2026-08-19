@@ -65,6 +65,10 @@ FORGET_FLAGS=(
   --keep-monthly "$KEEP_MONTHLY"
   --keep-yearly "$KEEP_YEARLY"
   --group-by "$FORGET_GROUP_BY"
+{% endraw -%}
+{% for tag in restic_offsite_keep_tags %}  --keep-tag={{ tag | quote }}
+{% endfor -%}
+{% raw -%}
 )
 
 log() { echo "[$(date -Is)] $*"; }
@@ -1184,6 +1188,11 @@ Commands:
                                one's skip reason — other host / live pid / too
                                young — is logged); never force-unlocks a live run.
   status                       Timer/service status + snapshots + repo stats
+  restic <args...>             Authenticated passthrough to bare restic for
+                               one-off ops the wrappers don't carry (e.g.
+                               \`restic tag --add legacy <snapshot-id>\` to pin
+                               a snapshot against retention via the keep-tags
+                               policy). No guardrails — you hold the knife.
 USAGE
 }
 
@@ -1200,6 +1209,7 @@ main() {
     prune) cmd_prune "$@" ;;
     unlock) cmd_unlock ;;
     status) cmd_status ;;
+    restic) restic "$@" ;;
     ""|help|-h|--help) usage ;;
     *) echo "Unknown command: $cmd" >&2; usage; exit 2 ;;
   esac

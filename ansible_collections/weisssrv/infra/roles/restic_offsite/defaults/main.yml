@@ -74,6 +74,12 @@ restic_offsite_forget_group_by: host
 # larger delete set. Apply an intended one with
 # `restic-offsitectl prune --max-remove <N>` (README "Retention").
 restic_offsite_forget_max_remove: 3
+# Snapshot tags the retention policy must NEVER forget (`--keep-tag`), e.g. a
+# one-time `legacy` snapshot pinning immutable data whose paths the nightly
+# run excludes — the pin is what keeps that data in the repository after the
+# regular snapshots referencing it age out. Tag snapshots by hand:
+# `restic-offsitectl restic tag --add <tag> <snapshot-id>`.
+restic_offsite_keep_tags: []
 # Wait this long for a concurrent holder's repository lock instead of failing
 # the run outright (restic --retry-lock; empty disables).
 restic_offsite_retry_lock: 15m

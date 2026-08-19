@@ -51,6 +51,9 @@ provisioner:
             mountpoint: /tmp/molsrc/appdata
         # Secrets: test values (dummy B2, real-enough restic password for the
         # local file repo).
+        # Exercise the keep-tags rendering: verify.yml asserts the flag pair
+        # lands in the rendered FORGET_FLAGS array.
+        restic_offsite_keep_tags: [legacy]
         restic_offsite_b2_key_id: molecule-b2-key-id
         restic_offsite_b2_application_key: molecule-b2-app-key
         restic_offsite_repo_password: molecule-test-password

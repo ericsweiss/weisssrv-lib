@@ -108,10 +108,35 @@ data "authentik_property_mapping_provider_saml" "saml" {
   managed = each.value
 }
 
-# Users are never managed here: their credentials and MFA live outside
-# Terraform. Only group membership is.
+# Managed user accounts (identity only): credentials and MFA always live
+# outside Terraform, in authentik's own enrollment/recovery flows. A destroy
+# would take the account, its sessions and its consent grants with it, so a
+# renamed map key must be a `moved {}` block, never a delete+create.
+resource "authentik_user" "this" {
+  for_each = var.users
+
+  username  = each.key
+  name      = each.value.name
+  email     = each.value.email
+  is_active = each.value.active
+  path      = each.value.path
+
+  lifecycle {
+    prevent_destroy = true
+    # Membership is owned by authentik_group.this (its `users` list). This
+    # resource never sets `groups`, and without the ignore Terraform would
+    # reconcile the user's server-side group list back to empty on every
+    # apply after the group resource assigns it — competing ownership.
+    ignore_changes = [groups]
+  }
+}
+
+# Pre-existing (UI-created) members referenced by group lists. Managed users
+# are excluded from the lookup set — a data source cannot resolve a resource
+# created in the same apply — and the membership expression below prefers the
+# resource pk for them instead.
 data "authentik_user" "member" {
-  for_each = local.group_usernames
+  for_each = setsubtract(local.group_usernames, toset(keys(var.users)))
 
   username = each.value
 }
@@ -251,7 +276,13 @@ resource "authentik_group" "this" {
 
   name         = coalesce(each.value.name, each.key)
   is_superuser = each.value.is_superuser
-  users        = [for username in each.value.users : data.authentik_user.member[username].pk]
+  users = [
+    for username in each.value.users :
+    contains(keys(var.users), username)
+    # The resource exposes the pk as its string `id`; the data source as `pk`.
+    ? tonumber(authentik_user.this[username].id)
+    : data.authentik_user.member[username].pk
+  ]
 
   # null, not `jsonencode({})`, for a group with no attributes: the field is
   # Optional and the provider owns what an unset value means. Encoding an empty

@@ -29,6 +29,25 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.11.0
+
+No migration steps. Additive only:
+
+- `restic_offsite` gains `restic_offsite_keep_tags` (default `[]`): entries
+  become `--keep-tag` flags on the shared retention array, so tagged
+  snapshots are never forgotten — the pin for immutable data whose paths the
+  nightly run excludes. `restic-offsitectl` gains a bare `restic`
+  passthrough subcommand for one-off authenticated ops (e.g. tagging).
+- Every consumer-included CI job template now declares right-sized
+  `KUBERNETES_MEMORY_LIMIT`/`_REQUEST` via new `job_memory_limit`/
+  `job_memory_request` inputs (defaults per job class), so concurrent
+  pipelines pack into the runner namespace quota instead of each job
+  costing the runner-wide default. Override per consumer only where a job
+  genuinely needs more.
+- The `authentik-sso` Terraform module gains an optional `users` map
+  (identity-only user accounts, `prevent_destroy`); group membership
+  resolution prefers managed users and falls back to pre-existing ones.
+
 # v0.10.0
 
 No migration steps. Additive only:

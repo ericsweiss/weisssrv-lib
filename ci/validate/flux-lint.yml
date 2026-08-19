@@ -100,6 +100,17 @@ spec:
         Path list for the MR / default-branch `changes:` rules. The second entry
         is the inventory file a substitute-mode consumer generates its
         versions-configmap from; drop it when versions live elsewhere.
+    job_memory_limit:
+      default: "2Gi"
+      description: >-
+        KUBERNETES_MEMORY_LIMIT for the job pod. Right-sized per job class so
+        concurrent pipelines pack into the runner namespace's limits.memory
+        quota instead of every job costing the runner default; raise it per
+        consumer only when the job really needs more (the runner's
+        memory_limit_overwrite_max_allowed is the hard ceiling).
+    job_memory_request:
+      default: "512Mi"
+      description: KUBERNETES_MEMORY_REQUEST for the job pod (scheduler reservation).
 ---
 "$[[ inputs.job_name ]]":
   needs: []
@@ -122,6 +133,8 @@ spec:
     paths:
       - .cache/flux-lint-tools
   variables:
+    KUBERNETES_MEMORY_LIMIT: $[[ inputs.job_memory_limit ]]
+    KUBERNETES_MEMORY_REQUEST: $[[ inputs.job_memory_request ]]
     SUBSTITUTE: "$[[ inputs.substitute ]]"
     KUBECONFORM_VERSION: "$[[ inputs.kubeconform_version ]]"
     KUBECONFORM_SHA256: "$[[ inputs.kubeconform_sha256 ]]"

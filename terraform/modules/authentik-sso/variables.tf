@@ -255,6 +255,24 @@ variable "group_secret_attributes" {
   sensitive   = true
 }
 
+variable "users" {
+  description = <<-EOT
+    User accounts managed as code, keyed by username. Identity fields only:
+    passwords and MFA are set by the user through authentik's own
+    enrollment/recovery flows, never through Terraform. Group MEMBERSHIP
+    stays on `groups[].users` — the single owner of that relation — where a
+    username matching a key here resolves to the managed resource and
+    anything else to a pre-existing (UI-created) user.
+  EOT
+  type = map(object({
+    name   = string
+    email  = string
+    active = optional(bool, true)
+    path   = optional(string, "users")
+  }))
+  default = {}
+}
+
 variable "applications" {
   description = <<-EOT
     Applications keyed by slug. `provider_type` + `provider_key` reference one of

@@ -478,3 +478,46 @@ run "group_attributes_merge_and_stay_null_when_empty" {
     error_message = "A group with no attributes must send null, not an empty JSON object."
   }
 }
+
+# Managed users: the resource plans, and a group list mixing a managed user
+# with a pre-existing one resolves the managed name to the resource (the data
+# lookup set must EXCLUDE it, or the plan fails on an unresolvable data read).
+run "a_managed_user_plans_and_resolves_group_membership" {
+  command = plan
+
+  variables {
+    users = {
+      "amy" = { name = "Amy", email = "amy@example.com" }
+    }
+    groups = {
+      "app-grafana" = { users = ["amy"] }
+    }
+  }
+
+  assert {
+    condition     = authentik_user.this["amy"].username == "amy"
+    error_message = "managed user resource did not plan with its username key"
+  }
+  assert {
+    condition     = !contains(keys(data.authentik_user.member), "amy")
+    error_message = "managed username leaked into the pre-existing-user data lookup set"
+  }
+}
+
+run "an_unmanaged_group_member_still_resolves_via_data" {
+  command = plan
+
+  variables {
+    users = {
+      "amy" = { name = "Amy", email = "amy@example.com" }
+    }
+    groups = {
+      "app-grafana" = { users = ["amy", "eric"] }
+    }
+  }
+
+  assert {
+    condition     = contains(keys(data.authentik_user.member), "eric")
+    error_message = "pre-existing username missing from the data lookup set"
+  }
+}

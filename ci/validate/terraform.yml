@@ -44,10 +44,24 @@ spec:
       type: array
       default: ["terraform/**/*"]
       description: Path list for the MR / default-branch `changes:` rules.
+    job_memory_limit:
+      default: "1Gi"
+      description: >-
+        KUBERNETES_MEMORY_LIMIT for the job pod. Right-sized per job class so
+        concurrent pipelines pack into the runner namespace's limits.memory
+        quota instead of every job costing the runner default; raise it per
+        consumer only when the job really needs more (the runner's
+        memory_limit_overwrite_max_allowed is the hard ceiling).
+    job_memory_request:
+      default: "256Mi"
+      description: KUBERNETES_MEMORY_REQUEST for the job pod (scheduler reservation).
 ---
 "$[[ inputs.fmt_job_name ]]":
   needs: []
   stage: $[[ inputs.fmt_stage ]]
+  variables:
+    KUBERNETES_MEMORY_LIMIT: $[[ inputs.job_memory_limit ]]
+    KUBERNETES_MEMORY_REQUEST: $[[ inputs.job_memory_request ]]
   tags: $[[ inputs.tags ]]
   retry:
     max: 2
@@ -72,6 +86,9 @@ spec:
 "$[[ inputs.validate_job_name ]]":
   needs: []
   stage: $[[ inputs.validate_stage ]]
+  variables:
+    KUBERNETES_MEMORY_LIMIT: $[[ inputs.job_memory_limit ]]
+    KUBERNETES_MEMORY_REQUEST: $[[ inputs.job_memory_request ]]
   tags: $[[ inputs.tags ]]
   retry:
     max: 2

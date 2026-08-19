@@ -1,7 +1,7 @@
 ---
 namespace: weisssrv
 name: infra
-version: 0.10.0
+version: 0.11.0
 readme: README.md
 authors:
   - Eric S. Weiss

@@ -13,7 +13,7 @@ The tag below is an example: use the tag your repo pins (docs/VERSIONING.md).
 
 ```hcl
 module "sso" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/authentik-sso?ref=v0.10.0"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/authentik-sso?ref=v0.11.0"
 
   oauth2_providers = {
     grafana = {
@@ -134,7 +134,8 @@ carry schema for API fields an older server does not serve.
 | `oauth2_grant_types` | list(string) | `["authorization_code","refresh_token"]` | Per-provider override via `grant_types`. |
 | `proxy_providers` | map(object) | `{}` | Forward-auth providers; `basic_auth_enabled` requires both attribute names. |
 | `saml_providers` | map(object) | `{}` | Requires `name` + `acs_url`. |
-| `groups` | map(object) | `{}` | Key = group name unless `name` overrides. `users` are usernames, resolved to pks. |
+| `groups` | map(object) | `{}` | Key = group name unless `name` overrides. `users` are usernames, resolved to pks — managed (`users` input) or pre-existing. |
+| `users` | map(object) | `{}` | Key = username. Identity only (`name`, `email`, `active`, `path`); passwords/MFA stay in authentik's enrollment/recovery flows. `prevent_destroy` — rename keys with `moved {}`. |
 | `group_secret_attributes` | map(map(string)), sensitive | `{}` | Merged into a group's `attributes` — where basic-auth injection credentials live. |
 | `applications` | map(object) | `{}` | Key = slug. `provider_type` (`oauth2`/`proxy`/`saml`) + `provider_key` wire the provider. Needs a `policy_bindings` entry unless `allow_unbound = true`. |
 | `policy_bindings` | map(object) | `{}` | `{application, group, order, enabled, negate}`. |
@@ -145,8 +146,12 @@ carry schema for API fields an older server does not serve.
 | `oauth2_scope_mappings` / `saml_property_mappings` | list(string) | stock managed IDs | Order matters (it is the order the API stores). Per-provider override available. |
 | `custom_scope_mappings` | map(object) | `{}` | Scope mappings this module authors; referenced as `custom:<key>`. |
 
-Users are never managed: only group membership is. Every username referenced in
-`groups[*].users` must already exist.
+User accounts may be managed via `users` (identity fields only — never
+credentials). A username in `groups[*].users` resolves to the managed
+resource when it matches a `users` key, otherwise to a pre-existing
+(UI-created) account, which must already exist. After creating a user, an
+admin sends them an enrollment/recovery link from authentik (Directory →
+Users → Reset password / email recovery) to set their own password + MFA.
 
 ## Custom scope mappings
 
