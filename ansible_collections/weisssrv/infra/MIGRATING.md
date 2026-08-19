@@ -29,6 +29,14 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.9.7
+
+No migration steps. The scrape gate's family-credit atomicity is closed
+STRUCTURALLY: a selector peer is only skipped when its whole LabelSelector is
+API-valid (known keys, typed terms, string label values, well-formed
+matchExpressions with known operators) — malformed selectors poison the
+credit like every other invalid shape, ending the level-by-level chase.
+
 # v0.9.6
 
 No migration steps. The scrape gate's dual-family ipBlock credit is now fully

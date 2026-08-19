@@ -585,3 +585,38 @@ spec:
     ):
         corpus = base.replace("PLACEHOLDER", benign)
         assert _run(DEFAULT_DENY + corpus + SERVICE_MONITOR, monkeypatch) == 0, benign
+
+
+def test_a_malformed_selector_peer_poisons_the_family_credit(monkeypatch):
+    """Atomicity closed structurally: a selector peer only SKIPS when the
+    whole selector is API-valid — scalar selectors, non-string label values,
+    and bad matchExpressions all poison the credit."""
+    base = """
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-any-address, namespace: ns}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: {cidr: 0.0.0.0/0}
+        - ipBlock: {cidr: '::/0'}
+        - PLACEHOLDER
+      ports: [{protocol: TCP, port: 9090}]
+"""
+    for bad in (
+        "namespaceSelector: not-a-mapping",
+        "podSelector: [a, list]",
+        "namespaceSelector: {matchLabels: {app: [1, 2]}}",
+        "namespaceSelector: {matchExpressions: [{key: app, operator: Sometimes}]}",
+        "podSelector: {matchExpressions: [{key: app, operator: In, values: observability}]}",
+    ):
+        corpus = base.replace("PLACEHOLDER", bad)
+        assert _run(DEFAULT_DENY + corpus + SERVICE_MONITOR, monkeypatch) == 1, bad
+    ok = base.replace(
+        "PLACEHOLDER",
+        "namespaceSelector: {matchExpressions: [{key: app, operator: Exists}]}",
+    )
+    assert _run(DEFAULT_DENY + ok + SERVICE_MONITOR, monkeypatch) == 0

@@ -112,6 +112,40 @@ def _selects_observability(peer: dict, observability_ns: str) -> bool:
     return name_matched and not extra_requirements
 
 
+def _label_selector_is_api_valid(selector: object) -> bool:
+    """Structural validity of a LabelSelector — the COMPLETE check, so the
+    atomicity rule below cannot be dodged one level deeper: known keys, typed
+    terms, string label values, and well-formed matchExpressions entries.
+    Absent (None) is valid; the API rejects everything else malformed."""
+    if selector is None:
+        return True
+    if not isinstance(selector, dict) or set(selector) - {"matchLabels", "matchExpressions"}:
+        return False
+    labels = selector.get("matchLabels")
+    if labels is not None:
+        if not isinstance(labels, dict):
+            return False
+        if not all(isinstance(k, str) and isinstance(v, str) for k, v in labels.items()):
+            return False
+    exprs = selector.get("matchExpressions")
+    if exprs is not None:
+        if not isinstance(exprs, list):
+            return False
+        for expr in exprs:
+            if not isinstance(expr, dict) or set(expr) - {"key", "operator", "values"}:
+                return False
+            if not isinstance(expr.get("key"), str):
+                return False
+            if expr.get("operator") not in ("In", "NotIn", "Exists", "DoesNotExist"):
+                return False
+            values = expr.get("values")
+            if values is not None and not (
+                isinstance(values, list) and all(isinstance(v, str) for v in values)
+            ):
+                return False
+    return True
+
+
 def _rule_ipblocks_cover_both_families(peers: list) -> bool:
     """True when the rule's unexcepted zero-prefix ipBlock peers span IPv4 AND
     IPv6 — together they admit every address, the scraper's included,
@@ -128,7 +162,14 @@ def _rule_ipblocks_cover_both_families(peers: list) -> bool:
             return False
         ip_block = peer.get("ipBlock")
         if ip_block is None:
-            # A pure selector peer — valid, contributes nothing here.
+            # A selector peer contributes nothing here — but only a VALID one
+            # may be skipped: a malformed selector rejects the whole policy,
+            # and skipping it would let sibling /0 peers credit a rule that
+            # never applies.
+            if not _label_selector_is_api_valid(
+                peer.get("namespaceSelector")
+            ) or not _label_selector_is_api_valid(peer.get("podSelector")):
+                return False
             continue
         if (
             not isinstance(ip_block, dict)

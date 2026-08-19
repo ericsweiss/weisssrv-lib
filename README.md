@@ -8,7 +8,7 @@ consumer at a pinned tag.
 
 ## Current release
 
-**v0.9.6.** Every pin example on this page and in `docs/` is written as
+**v0.9.7.** Every pin example on this page and in `docs/` is written as
 `<CURRENT_TAG>`; substitute the release you are adopting, so a release bump
 touches the few copy-paste snippets that must be runnable rather than a dozen
 stale examples. This line is the authority for the literal; the runnable
