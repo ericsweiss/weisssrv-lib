@@ -29,6 +29,14 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.9.8
+
+No migration steps. The scrape gate's selector validator now applies the
+apiserver's own label rules — key/value syntax (qualified names, 63-char
+bounded values) and operator cardinality (In/NotIn require non-empty values,
+Exists/DoesNotExist forbid them) — completing the structural validation of
+v0.9.7.
+
 # v0.9.7
 
 No migration steps. The scrape gate's family-credit atomicity is closed

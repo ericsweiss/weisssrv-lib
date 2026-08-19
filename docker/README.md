@@ -51,7 +51,7 @@ default branch). The `ref` below is an example: use the tag your repo pins
 ```yaml
 include:
   - project: eric/weisssrv-lib
-    ref: v0.9.7
+    ref: v0.9.8
     file: /ci/build/docker-build.yml
     inputs:
       job_name: build-molecule-ci

@@ -620,3 +620,38 @@ spec:
         "namespaceSelector: {matchExpressions: [{key: app, operator: Exists}]}",
     )
     assert _run(DEFAULT_DENY + ok + SERVICE_MONITOR, monkeypatch) == 0
+
+
+def test_label_syntax_and_operator_cardinality_poison_the_credit(monkeypatch):
+    """The validator applies the apiserver's own rules: bad label syntax,
+    In without values, and Exists with values all poison the credit; a
+    syntactically valid selector still merely skips."""
+    base = """
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-any-address, namespace: ns}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: {cidr: 0.0.0.0/0}
+        - ipBlock: {cidr: '::/0'}
+        - PLACEHOLDER
+      ports: [{protocol: TCP, port: 9090}]
+"""
+    for bad in (
+        "namespaceSelector: {matchLabels: {'bad key!': x}}",
+        "namespaceSelector: {matchLabels: {app: 'bad value!'}}",
+        "namespaceSelector: {matchExpressions: [{key: app, operator: In}]}",
+        "namespaceSelector: {matchExpressions: [{key: app, operator: In, values: []}]}",
+        "namespaceSelector: {matchExpressions: [{key: app, operator: Exists, values: [x]}]}",
+    ):
+        corpus = base.replace("PLACEHOLDER", bad)
+        assert _run(DEFAULT_DENY + corpus + SERVICE_MONITOR, monkeypatch) == 1, bad
+    ok = base.replace(
+        "PLACEHOLDER",
+        "namespaceSelector: {matchLabels: {app.kubernetes.io/name: other-thing}}",
+    )
+    assert _run(DEFAULT_DENY + ok + SERVICE_MONITOR, monkeypatch) == 0
