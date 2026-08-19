@@ -13,6 +13,52 @@
     state: present
   when: ansible_facts['os_family'] == "Debian"
 
+# Delegation kill-switch. A sysctl.d drop-in (not a live-only sysctl) because
+# only the drop-in survives a reboot, and the reboot is exactly when the leaked
+# slab this guards against gets reclaimed.
+- name: Deploy sysctl drop-in disabling NFSv4 delegations
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-z-weisssrv-nas-storage-nfs-leases.conf
+    content: |
+      # Managed by Ansible (nas_storage). fs.leases-enable=0 stops nfsd from
+      # granting NFSv4 delegations: the running kernel leaks one unreclaimable
+      # file_lock per GETATTR delegation-conflict check on a write-delegated
+      # file. Existing delegations persist until returned or reboot.
+      # Rationale and removal criteria: nas_storage README.
+      fs.leases-enable=0
+    owner: root
+    group: root
+    mode: "0644"
+  when: nas_storage_nfs_disable_delegations | bool
+
+# Reconcile the LIVE value on every enabled run, not only when the drop-in
+# changes: another sysctl pass (pve-firewall resets, an operator sysctl
+# --system with a stray file) can flip leases back on while the drop-in sits
+# unchanged on disk, and a handler would never fire.
+- name: Read live fs.leases-enable
+  ansible.builtin.command: sysctl -n fs.leases-enable
+  register: nas_storage_leases_live
+  changed_when: false
+  when:
+    - nas_storage_nfs_disable_delegations | bool
+    - nas_storage_nfs_apply_delegation_sysctl_live | bool
+
+- name: Apply the delegation kill-switch when the live value drifts
+  ansible.builtin.command: sysctl -p /etc/sysctl.d/99-z-weisssrv-nas-storage-nfs-leases.conf
+  when:
+    - nas_storage_nfs_disable_delegations | bool
+    - nas_storage_nfs_apply_delegation_sysctl_live | bool
+    - (nas_storage_leases_live.stdout | trim) != '0'
+  changed_when: true
+
+# Removing the drop-in does not force leases back on live: the kernel default
+# (1) returns at the next reboot, mirroring nic_tuning's ip_forward pattern.
+- name: Remove NFSv4 delegation sysctl drop-in when not requested
+  ansible.builtin.file:
+    path: /etc/sysctl.d/99-z-weisssrv-nas-storage-nfs-leases.conf
+    state: absent
+  when: not (nas_storage_nfs_disable_delegations | bool)
+
 - name: Create export root directory
   ansible.builtin.file:
     path: /export

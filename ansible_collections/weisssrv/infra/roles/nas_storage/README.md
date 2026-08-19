@@ -303,6 +303,8 @@ change deferred to a future release.
 | `nas_storage_pve_cluster_backup_require_src_mount` | `not skip_zfs_operations` | Fail-closed guard on the source. |
 | `nas_storage_pve_cluster_backup_required_files` | `user.cfg`, `corosync.conf`, `pve-root-ca.pem`, `priv/pve-root-ca.key`, `authkey.pub`, `priv/authkey.key` | Paths (relative to `_src`) that must be in the archive before it is published. |
 | `nas_storage_pve_cluster_backup_schedule` / `_random_delay` / `_keep` / `_nice` | `*-*-* 02:15:00` / `300` / `14` / `10` | Timer + retention. |
+| `nas_storage_nfs_disable_delegations` | `false` | Write (and, per the live gate below, apply) a sysctl.d drop-in with `fs.leases-enable=0` so nfsd grants no NEW NFSv4 delegations. Set on kernels whose nfsd leaks a `file_lock` per GETATTR delegation-conflict check (33 GB unreclaimable slab in 9 days, 2026-08-18); existing delegations persist until returned or reboot. Remove only once the running kernel carries the upstream fix AND a slab watch confirms `file_lock_cache` stays flat. |
+| `nas_storage_nfs_apply_delegation_sysctl_live` | `true` | Reconcile the live `fs.leases-enable` value with `sysctl -p` on every enabled run. Test scenarios set `false`: the sysctl is not container-namespaced. |
 | `nas_storage_skip_zfs_operations` | `false` | Skip all real-ZFS work (also disables both mount guards). Test use. |
 | `nas_storage_skip_mergerfs` | `false` | Skip MergerFS mount management. |
 | `nas_storage_skip_nfs_reload` | `false` | Skip `exportfs` reload / nfsd start. |

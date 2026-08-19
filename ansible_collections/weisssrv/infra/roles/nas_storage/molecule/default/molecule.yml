@@ -174,6 +174,12 @@ provisioner:
         # suppresses the rebuild handler — the container has no /boot kernel.
         nas_storage_zfs_arc_max_bytes: "8589934592"
         nas_storage_zfs_arc_skip_initramfs: true
+        # Exercise the delegation kill-switch: verify.yml asserts the sysctl.d
+        # drop-in lands with fs.leases-enable=0. Live apply stays OFF —
+        # fs.leases-enable is not container-namespaced, so a privileged
+        # container would set it on the CI host's kernel.
+        nas_storage_nfs_disable_delegations: true
+        nas_storage_nfs_apply_delegation_sysctl_live: false
         nas_storage_skip_zfs_operations: true
         nas_storage_skip_mergerfs: true
         nas_storage_skip_nfs_reload: true

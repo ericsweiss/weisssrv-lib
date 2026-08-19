@@ -25,6 +25,12 @@
       register: exports_file
       failed_when: not exports_file.stat.exists
 
+    - name: Verify NFSv4 delegation kill-switch drop-in landed with the exact sysctl
+      ansible.builtin.command: grep -qx "fs.leases-enable=0" /etc/sysctl.d/99-z-weisssrv-nas-storage-nfs-leases.conf
+      register: leases_dropin
+      changed_when: false
+      failed_when: leases_dropin.rc != 0
+
     - name: Verify exports file contains expected exports
       ansible.builtin.command: grep -q "/tank/media/unified" /etc/exports
       register: exports_check

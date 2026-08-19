@@ -191,6 +191,23 @@ nas_storage_backup_artifact_metrics_dir: >-
 # from its own `options`; a non-empty list overrides that for EVERY union.
 nas_storage_mergerfs_required_opts: []
 
+# NFSv4 delegations. false leaves kernel behaviour alone. true writes an
+# /etc/sysctl.d/ drop-in setting fs.leases-enable=0 and applies it live, so
+# nfsd grants no NEW delegations (existing ones persist until returned or the
+# next reboot). Motive: the 7.0.x kernel leaks one unreclaimable 192 B
+# file_lock per GETATTR delegation-conflict check on a write-delegated file —
+# 33 GB of slab in 9 days on a busy server (2026-08-18 incident). Trade-off:
+# clients lose delegation caching (more GETATTR round-trips), and local
+# fcntl(F_SETLEASE) users are refused (none ship on a NAS host).
+nas_storage_nfs_disable_delegations: false
+
+# Live application of the delegation sysctl. true applies drifted values with
+# `sysctl -p` at run time; false writes only the drop-in (picked up at boot /
+# `sysctl --system`). fs.leases-enable is NOT container-namespaced, so test
+# scenarios must set false — a privileged container would set it on the CI
+# host's kernel, an unprivileged one would fail.
+nas_storage_nfs_apply_delegation_sysctl_live: true
+
 # Component gates, declared so a typo cannot silently disable one.
 nas_storage_skip_zfs_operations: false  # pool/dataset/property work (needs real ZFS)
 nas_storage_skip_mergerfs: false        # mergerfs mount management

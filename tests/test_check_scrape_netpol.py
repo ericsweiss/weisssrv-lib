@@ -644,6 +644,8 @@ spec:
     for bad in (
         "namespaceSelector: {matchLabels: {'bad key!': x}}",
         "namespaceSelector: {matchLabels: {app: 'bad value!'}}",
+        "namespaceSelector: {matchLabels: {\"app\\n\": x}}",
+        "namespaceSelector: {matchLabels: {app: \"x\\n\"}}",
         "namespaceSelector: {matchExpressions: [{key: app, operator: In}]}",
         "namespaceSelector: {matchExpressions: [{key: app, operator: In, values: []}]}",
         "namespaceSelector: {matchExpressions: [{key: app, operator: Exists, values: [x]}]}",

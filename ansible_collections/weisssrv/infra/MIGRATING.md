@@ -29,6 +29,18 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.10.0
+
+No migration steps. Additive only:
+
+- `nas_storage` gains `nas_storage_nfs_disable_delegations` (default `false`,
+  no behaviour change unless set). Set `true` to stop nfsd granting NFSv4
+  delegations via a persisted `fs.leases-enable=0` drop-in — the mitigation
+  for the kernel `file_lock` slab leak in the GETATTR delegation-conflict
+  path (2026-08-18 incident; role README documents the removal criteria).
+- The scrape gate's label regexes now use `fullmatch()`, closing the
+  trailing-newline acceptance (`"app\n"`) the `$` anchor allowed.
+
 # v0.9.8
 
 No migration steps. The scrape gate's selector validator now applies the
