@@ -76,9 +76,22 @@
   ansible.builtin.assert:
     that:
       - nextcloud_mail_domain | default('') | length > 0
+      # SASL is all-or-nothing: a half-set pair must fail loud here, not
+      # silently downgrade to unauthenticated delivery attempts.
+      - >-
+        (nextcloud_smtp_user | default('') | length > 0)
+        == (nextcloud_smtp_password | default('') | length > 0)
+      # Credentials never ride plaintext: SASL requires an encrypted channel
+      # (tls = STARTTLS on 587, ssl = implicit TLS on 465).
+      - >-
+        (nextcloud_smtp_user | default('') | length == 0)
+        or (nextcloud_smtp_secure | default('') in ['tls', 'ssl'])
     fail_msg: >-
       nextcloud_smtp_host is set, so nextcloud_mail_domain (the sender domain)
-      is required.
+      is required; nextcloud_smtp_user/nextcloud_smtp_password must be set
+      together or not at all (a half-set pair would silently disable SMTP
+      auth); and credentials require nextcloud_smtp_secure to be "tls" or
+      "ssl" — SASL secrets never ride a plaintext connection.
     quiet: true
   when: nextcloud_smtp_enabled | default(false)
 
@@ -268,8 +281,9 @@
   when: not (nextcloud_skip_install | default(false))
 
 # Applied with occ because the image's SMTP_* env only autoconfigures a FRESH
-# install. mail_smtpauth stays off: the relay is expected to accept the guest by
-# network, so there is no credential to manage.
+# install. mail_smtpauth follows the credentials: both nextcloud_smtp_user and
+# _password set turns it on (SASL submission relay); both empty keeps the
+# legacy network-trusted posture with auth off.
 - name: Configure Nextcloud outgoing SMTP (relay)
   ansible.builtin.command:
     cmd: >-
@@ -290,6 +304,34 @@
   when:
     - not (nextcloud_skip_install | default(false))
     - nextcloud_smtp_enabled | default(false)
+
+# Credentials + the auth flag converge in EVERY direction, so this task is NOT
+# gated on smtp_enabled: clearing nextcloud_smtp_host (or the credential pair)
+# must clear the stored SASL state and turn auth back off — a skipped task
+# would leave stale credentials live in config.php (the SSRF-flag lesson).
+# Own task so no_log covers the whole invocation.
+# occ config:import over STDIN, not config:system:set: --value would put the
+# password on the container argv, visible in the host process list no matter
+# what no_log hides on the Ansible side. import also types mail_smtpauth as a
+# real int.
+- name: Configure Nextcloud SMTP credentials and auth flag
+  ansible.builtin.command:
+    cmd: docker compose exec -T -u www-data nextcloud php occ config:import
+    chdir: "{{ nextcloud_compose_dir }}"
+    stdin: >-
+      {{ {'system': {
+            'mail_smtpauth': (_smtp_auth_on | bool) | ternary(1, 0),
+            'mail_smtpname': (_smtp_auth_on | bool) | ternary(nextcloud_smtp_user, ''),
+            'mail_smtppassword': (_smtp_auth_on | bool) | ternary(nextcloud_smtp_password, '')
+         }} | to_json }}
+  vars:
+    _smtp_auth_on: >-
+      {{ (nextcloud_smtp_enabled | default(false))
+         and nextcloud_smtp_user | length > 0
+         and nextcloud_smtp_password | length > 0 }}
+  no_log: true
+  changed_when: false
+  when: not (nextcloud_skip_install | default(false))
 
 # The landing dir's root:root/0750 attrs belong to the LOCAL underlay only: once
 # the export is mounted, re-running the file task chowns the NFS root, which an

@@ -55,6 +55,7 @@ a host nginx that terminates TLS and proxies to the loopback-bound web port.
 | `nextcloud_oidc_allow_local_remote_servers` | Permit server-side fetches to private addresses (see below) | no (`true`) |
 | `nextcloud_smtp_host` | Relay host; empty skips the whole mail pass | no (`""`) |
 | `nextcloud_smtp_port` / `_smtp_secure` / `_mail_from_address` / `_mail_domain` | Outgoing mail details | when SMTP |
+| `nextcloud_smtp_user` / `_smtp_password` | SASL credentials for an authenticated submission relay (587 + `_smtp_secure: tls`). Both set turns `mail_smtpauth` on; both empty (default) keeps the network-trusted posture, and removal converges auth back OFF | no (`""`) |
 | `nextcloud_backup_enabled` / `_backup_keep_days` / `_backup_oncalendar` | Nightly dump timer | no (`true`, `3`, `02:30`) |
 | `nextcloud_backup_metrics_dir` | Where the wrapper writes `nextcloud_backup.prom`; aliases `node_exporter_host_textfile_dir` | no |
 | `nextcloud_backup_lib_path` | Where `compose_app`'s `write_prom_metrics` helper lands | no |

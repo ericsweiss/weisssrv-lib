@@ -144,6 +144,12 @@ nextcloud_oidc_allow_local_remote_servers: true
 nextcloud_smtp_host: ""
 nextcloud_smtp_enabled: "{{ nextcloud_smtp_host | length > 0 }}"
 nextcloud_smtp_port: "25"
+# SASL credentials for an authenticated submission relay (587). Both set
+# enables mail_smtpauth; both empty (the default) keeps the legacy
+# network-trusted posture. Set nextcloud_smtp_secure to "tls" for STARTTLS
+# on 587 — the usual null-client pairing.
+nextcloud_smtp_user: ""
+nextcloud_smtp_password: ""
 # Empty = no encryption (a LAN relay on 25); "tls" or "ssl" otherwise.
 nextcloud_smtp_secure: ""
 nextcloud_mail_from_address: nextcloud

@@ -29,6 +29,14 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.11.1
+
+No migration steps. Additive only: `nextcloud` gains
+`nextcloud_smtp_user`/`nextcloud_smtp_password` — both set enables
+`mail_smtpauth` for an authenticated submission relay (587 + STARTTLS),
+both empty keeps the legacy network-trusted posture, and removal converges
+auth back off.
+
 # v0.11.0
 
 No migration steps. Additive only:
