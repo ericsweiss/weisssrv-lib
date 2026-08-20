@@ -29,6 +29,13 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.12.1
+
+No migration steps. The flux-lint template's unknown-substitution-key check
+now strips Flux's `$${` escape before scanning (its malformed-`${` sibling
+already did), so a legitimately-escaped `$${var}` — e.g. a Grafana panel
+variable in a dashboard ConfigMap — no longer false-positives.
+
 # v0.12.0
 
 No migration steps. Additive only: every consumer-included CI job template

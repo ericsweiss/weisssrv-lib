@@ -291,7 +291,11 @@ spec:
           continue
         fi
         MISSING=""
-        for ref in $(printf '%s\n' "$RAW" | grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' | sort -u); do
+        # Strip Flux's `$${` escape first (same as the MALFORMED check above):
+        # an escaped sequence still CONTAINS `${var}` textually, and without
+        # the strip a legitimately-escaped Grafana panel var false-positives
+        # as an unknown substitution key.
+        for ref in $(printf '%s\n' "$RAW" | sed 's/\$\$[{]/__FLUX_ESCAPED__/g' | grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' | sort -u); do
           varname=${ref#\$\{}
           varname=${varname%\}}
           if [ -z "${!varname+x}" ]; then
