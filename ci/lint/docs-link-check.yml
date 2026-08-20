@@ -55,6 +55,14 @@ spec:
     job_memory_request:
       default: "128Mi"
       description: KUBERNETES_MEMORY_REQUEST for the job pod (scheduler reservation).
+    job_cpu_request:
+      default: "100m"
+      description: >-
+        KUBERNETES_CPU_REQUEST for the job pod — the scheduler reservation,
+        right-sized per job class so a full concurrency burst packs into the
+        runner nodes' allocatable CPU instead of every job costing the runner
+        default (no CPU limit, repo-wide: CPU is compressible and a limit
+        only buys CFS throttling).
 ---
 "$[[ inputs.job_name ]]":
   needs: []
@@ -62,6 +70,7 @@ spec:
   variables:
     KUBERNETES_MEMORY_LIMIT: $[[ inputs.job_memory_limit ]]
     KUBERNETES_MEMORY_REQUEST: $[[ inputs.job_memory_request ]]
+    KUBERNETES_CPU_REQUEST: $[[ inputs.job_cpu_request ]]
   image: $[[ inputs.image ]]
   tags: $[[ inputs.tags ]]
   retry:

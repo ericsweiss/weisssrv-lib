@@ -29,6 +29,15 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.12.0
+
+No migration steps. Additive only: every consumer-included CI job template
+declares a right-sized `KUBERNETES_CPU_REQUEST` via a new
+`job_cpu_request` input (defaults per job class, no CPU limits — CPU is
+compressible), completing the per-job resource declaration the v0.11.0
+memory inputs began. The runner-side
+`cpu_request_overwrite_max_allowed` ceiling ships in the consumer.
+
 # v0.11.1
 
 No migration steps. Additive only: `nextcloud` gains

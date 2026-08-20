@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "weisssrv-lib-cli"
 # Tracks the library release tag (see docs/VERSIONING.md); weisssrv_lib_cli
 # reads it back at runtime via importlib.metadata rather than duplicating it.
-version = "0.11.1"
+version = "0.12.0"
 description = "Render weisssrv copier templates (new-cluster, new-app)."
 readme = "README.md"
 requires-python = ">=3.9"
