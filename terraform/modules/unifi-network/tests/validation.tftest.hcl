@@ -620,6 +620,69 @@ run "rejects_a_policy_naming_an_unknown_network" {
   expect_failures = [unifi_firewall_policy.this]
 }
 
+# A network belongs to exactly one zone, so an endpoint naming zone "iot" and
+# network "guest" contradicts itself — the controller stores a rule matching
+# nothing, or rejects it outright.
+run "rejects_a_policy_network_outside_its_zone" {
+  command = plan
+
+  variables {
+    policies = [
+      {
+        name        = "iot-to-guest"
+        source      = { zone = "iot" }
+        destination = { zone = "iot", networks = ["guest"] }
+      },
+    ]
+  }
+
+  expect_failures = [unifi_firewall_policy.this]
+}
+
+# The built-in half of the same rule, which cannot be checked positively (the
+# zone's membership is a data read): a network this module has placed in a
+# custom zone is no longer reachable through `internal`.
+run "rejects_a_builtin_endpoint_naming_a_custom_zone_network" {
+  command = plan
+
+  variables {
+    policies = [
+      {
+        name        = "internal-to-iot"
+        source      = { zone = "internal", networks = ["iot"] }
+        destination = { zone = "iot" }
+      },
+    ]
+  }
+
+  expect_failures = [unifi_firewall_policy.this]
+}
+
+# The other direction of both: a custom endpoint naming its OWN network, and a
+# built-in endpoint naming a network that no custom zone claims (the management
+# network stays in Internal), must both plan.
+run "accepts_zone_consistent_network_endpoints" {
+  command = plan
+
+  variables {
+    policies = [
+      {
+        name        = "iot-to-internal"
+        source      = { zone = "iot", networks = ["iot"] }
+        destination = { zone = "internal", networks = ["default"] }
+      },
+    ]
+  }
+
+  assert {
+    condition = (
+      unifi_firewall_policy.this["iot-to-internal"].source.matching_target == "NETWORK"
+      && unifi_firewall_policy.this["iot-to-internal"].destination.matching_target == "NETWORK"
+    )
+    error_message = "An endpoint naming a network its own zone holds — and a built-in endpoint naming an unclaimed network — must both plan."
+  }
+}
+
 run "rejects_duplicate_policy_names" {
   command = plan
 
@@ -770,6 +833,97 @@ run "rejects_a_malformed_policy_port" {
   }
 
   expect_failures = [var.policies]
+}
+
+# Port 0 parses as a port list and is not a port. Each of the three below
+# reaches the controller as a rule that can never match.
+run "rejects_a_zero_policy_port" {
+  command = plan
+
+  variables {
+    policies = [
+      {
+        name        = "iot-to-dns"
+        protocol    = "tcp_udp"
+        source      = { zone = "iot" }
+        destination = { zone = "internal", ips = ["10.0.1.150"], port = "0" }
+      },
+    ]
+  }
+
+  expect_failures = [var.policies]
+}
+
+run "rejects_a_policy_port_above_the_range" {
+  command = plan
+
+  variables {
+    policies = [
+      {
+        name        = "iot-to-dns"
+        protocol    = "tcp_udp"
+        source      = { zone = "iot" }
+        destination = { zone = "internal", ips = ["10.0.1.150"], port = "70000" }
+      },
+    ]
+  }
+
+  expect_failures = [var.policies]
+}
+
+# A descending range is the transposition an author makes copying two ports out
+# of a runbook; the controller stores an empty range rather than complaining.
+run "rejects_a_descending_policy_port_range" {
+  command = plan
+
+  variables {
+    policies = [
+      {
+        name        = "iot-to-web"
+        protocol    = "tcp"
+        source      = { zone = "iot" }
+        destination = { zone = "internal", ips = ["10.0.1.150"], port = "443-80" }
+      },
+    ]
+  }
+
+  expect_failures = [var.policies]
+}
+
+# The forms the site data actually uses must survive the bounds check: a comma
+# list and an ascending range, on both a policy and a forward.
+run "accepts_port_lists_and_ascending_ranges" {
+  command = plan
+
+  variables {
+    policies = [
+      {
+        name        = "guest-to-gateway-dns"
+        action      = "BLOCK"
+        protocol    = "tcp_udp"
+        source      = { zone = "guest" }
+        destination = { zone = "gateway", port = "53,853" }
+      },
+      {
+        name        = "iot-to-plex-discovery"
+        protocol    = "tcp"
+        source      = { zone = "iot" }
+        destination = { zone = "internal", ips = ["10.0.1.20"], port = "32410-32414" }
+      },
+    ]
+    port_forwards = {
+      web = { wan_port = "8000-8100", ip = "10.0.1.100", port = "8000-8100" }
+      alt = { wan_port = "80,443", ip = "10.0.1.100", port = "80,443" }
+    }
+  }
+
+  assert {
+    condition = (
+      unifi_firewall_policy.this["guest-to-gateway-dns"].destination.port == "53,853"
+      && unifi_port_forward.this["web"].wan.port == "8000-8100"
+    )
+    error_message = "A comma-separated list and an ascending range must pass the port bounds check on both policies and port forwards."
+  }
 }
 
 run "rejects_a_malformed_policy_ip" {
@@ -1015,6 +1169,42 @@ run "rejects_a_non_numeric_port_forward_port" {
   variables {
     port_forwards = {
       https = { wan_port = "443", ip = "10.0.1.100", port = "https" }
+    }
+  }
+
+  expect_failures = [var.port_forwards]
+}
+
+run "rejects_a_zero_port_forward_port" {
+  command = plan
+
+  variables {
+    port_forwards = {
+      https = { wan_port = "0", ip = "10.0.1.100", port = "443" }
+    }
+  }
+
+  expect_failures = [var.port_forwards]
+}
+
+run "rejects_a_port_forward_port_above_the_range" {
+  command = plan
+
+  variables {
+    port_forwards = {
+      https = { wan_port = "443", ip = "10.0.1.100", port = "70000" }
+    }
+  }
+
+  expect_failures = [var.port_forwards]
+}
+
+run "rejects_a_descending_port_forward_range" {
+  command = plan
+
+  variables {
+    port_forwards = {
+      plex = { wan_port = "32414-32410", ip = "10.0.1.152", port = "32414-32410" }
     }
   }
 

@@ -332,6 +332,30 @@ variable "policies" {
     error_message = "policies[*].source/destination.port must be a port, a range (\"32410-32414\") or a comma-separated list."
   }
 
+  # The shape check says nothing about VALUE: "0", "70000" and the descending
+  # "443-80" all parse as digits and separators. Each one reaches the controller
+  # as a rule that can never match — a silent hole in an allowance, or a deny
+  # that denies nothing — so the bounds are checked here.
+  #
+  # A value that failed the shape check above is skipped rather than re-reported,
+  # so a non-numeric port gets the shape message and only that one. That skip is
+  # also what keeps `tonumber` from erroring on a value the regex already
+  # rejected.
+  validation {
+    condition = alltrue(flatten([
+      for p in var.policies : [
+        for endpoint in [p.source, p.destination] :
+        endpoint.port == null || !can(regex("^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$", endpoint.port)) ? true : alltrue([
+          for segment in split(",", endpoint.port) : (
+            alltrue([for bound in split("-", segment) : tonumber(bound) >= 1 && tonumber(bound) <= 65535])
+            && (length(split("-", segment)) == 1 || tonumber(split("-", segment)[0]) <= tonumber(split("-", segment)[1]))
+          )
+        ])
+      ]
+    ]))
+    error_message = "policies[*].source/destination.port must use ports in 1-65535, and a range must ascend — \"0\", \"70000\" and \"443-80\" all parse as a port list and match nothing on the controller."
+  }
+
   validation {
     condition = alltrue(flatten([
       for p in var.policies : [
@@ -525,6 +549,24 @@ variable "port_forwards" {
       ]
     ]))
     error_message = "port_forwards[*].wan_port and .port must be a port, a range (\"32410-32414\") or a comma-separated list."
+  }
+
+  # Bounds and ordering, exactly as on the policy ports above: a forward on port
+  # 0 or 70000 is a WAN rule the gateway can never match, and a descending range
+  # forwards nothing at all.
+  validation {
+    condition = alltrue(flatten([
+      for key, f in var.port_forwards : [
+        for port in [f.wan_port, f.port] :
+        !can(regex("^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$", port)) ? true : alltrue([
+          for segment in split(",", port) : (
+            alltrue([for bound in split("-", segment) : tonumber(bound) >= 1 && tonumber(bound) <= 65535])
+            && (length(split("-", segment)) == 1 || tonumber(split("-", segment)[0]) <= tonumber(split("-", segment)[1]))
+          )
+        ])
+      ]
+    ]))
+    error_message = "port_forwards[*].wan_port and .port must use ports in 1-65535, and a range must ascend (\"32410-32414\", not \"32414-32410\")."
   }
 }
 

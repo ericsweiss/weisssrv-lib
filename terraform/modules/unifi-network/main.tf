@@ -207,6 +207,31 @@ resource "unifi_firewall_policy" "this" {
       ])
       error_message = "policies[\"${each.key}\"] names a network key that is not in var.networks."
     }
+
+    # A network belongs to exactly ONE zone, so an endpoint naming a zone and a
+    # network from a DIFFERENT zone contradicts itself: the two halves of the
+    # match disagree, and the controller either rejects the policy or stores one
+    # that matches nothing.
+    #
+    # A CUSTOM-zone endpoint is checked against the membership this module
+    # declares. A BUILT-IN one cannot be checked the same way — that zone's
+    # membership is a data read, unknown at plan — so the test runs the other
+    # way round: a network this module has placed in a custom zone is not
+    # reachable through a built-in. Whether the controller ALSO leaves it in
+    # Internal is controller behaviour the provider neither performs nor detects
+    # (README), which is why a policy whose two halves disagree is refused
+    # rather than guessed at.
+    precondition {
+      condition = alltrue(flatten([
+        for endpoint in [each.value.source, each.value.destination] : [
+          for key in coalesce(endpoint.networks, []) :
+          contains(keys(var.zones), endpoint.zone)
+          ? contains(var.zones[endpoint.zone].networks, key)
+          : !contains(flatten([for z in var.zones : z.networks]), key)
+        ]
+      ]))
+      error_message = "policies[\"${each.key}\"] names a network that is not in the endpoint's own zone — a network belongs to exactly one zone, so `zone` and `networks` must agree (and a network held by a custom zone cannot be reached through a built-in one)."
+    }
   }
 }
 

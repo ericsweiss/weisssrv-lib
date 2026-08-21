@@ -106,11 +106,11 @@ validation in the root, so the failure names the missing item.
 | `networks` | map(object) | — | Keyed by identity string; the key is what every other input references. `subnet` is gateway form (`10.0.30.1/24`), validated against the network-address form. `vlan` omitted only for the built-in Default — at most ONE entry may omit it, and vlan ids and names must be unique. `purpose` is `corporate` or `guest` — `vlan-only` is rejected (`subnet` is required here). `dhcp = {enabled, start, stop, dns_servers, leasetime}`; a non-empty `dns_servers` sets `dns_enabled`, and omitting `dhcp` writes no `dhcp_server` at all. |
 | `zones` | map(object) | `{}` | Custom firewall zones keyed by DISPLAY NAME; `networks` lists `networks` keys, each of which may appear in at most one zone. Membership is a full replacement on every apply. |
 | `builtin_zone_names` | map(string) | `{internal="Internal", external="External", gateway="Gateway"}` | Short name → the controller's display name. Only the entries a policy endpoint actually names are read, so an unused one costs nothing; confirm the display names of the ones you use against the live controller. |
-| `policies` | list(object) | `[]` | `name` (unique — it is the resource key), `action` (`ALLOW`), `protocol` (`all`), `source`/`destination` `{zone, ips, networks, port}`, `create_allow_respond` (`true`, honoured for `ALLOW` only), `logging`. A `port` requires a tcp/udp/tcp_udp `protocol`. An endpoint sets at most one of `ips`/`networks` and neither may be empty — omit both for "any host in that zone". `zone` resolves against `zones` **and** `builtin_zone_names`. |
+| `policies` | list(object) | `[]` | `name` (unique — it is the resource key), `action` (`ALLOW`), `protocol` (`all`), `source`/`destination` `{zone, ips, networks, port}`, `create_allow_respond` (`true`, honoured for `ALLOW` only), `logging`. A `port` requires a tcp/udp/tcp_udp `protocol`. An endpoint sets at most one of `ips`/`networks` and neither may be empty — omit both for "any host in that zone", and any `networks` it does name must belong to that endpoint's own zone. `port` takes 1-65535, ascending ranges only. `zone` resolves against `zones` **and** `builtin_zone_names`. |
 | `wlans` | map(object) | `{}` | **sensitive.** `{ssid, network, passphrase, wpa3, l2_isolation, allow_2ghz_high_perf, hide}`. `security = "wpapsk"` and `wlan_bands = ["2g","5g"]` are fixed. |
 | `qos_rate_name` | string | `"Default"` | Client QoS rate (old "user group") every WLAN is assigned to; `unifi_wlan.user_group_id` is Required with no default. Read only when `wlans` is non-empty, so a gateway-only site never fails a plan on a rate name it does not use. |
 | `clients` | map(object) | `{}` | `{mac (colon form), name, fixed_ip, network, note}`. `fixed_ip` requires `network` and must lie inside that network's SUBNET — not inside its DHCP pool, and reserving outside the pool is the normal way to avoid colliding with a dynamic lease. |
-| `port_forwards` | map(object) | `{}` | `{protocol, wan_port, ip, port}`; ports are strings, so ranges and lists work. Primary WAN, any source. |
+| `port_forwards` | map(object) | `{}` | `{protocol, wan_port, ip, port}`; ports are strings, so ranges and lists work — each port 1-65535, each range ascending. Primary WAN, any source. |
 | `site_settings` | object | hardened baseline | `auto_upgrade=false`, `network_optimization=false`, `upnp=false` (also NAT-PMP), `ips_mode="ids"`, `igmp_snooping_networks=[]` — the empty list leaves the site's IGMP-snooping toggle **unmanaged**, see below. |
 
 Two input names deliberately do not match the provider attribute they drive:
@@ -185,6 +185,13 @@ Two behaviours to verify on the controller rather than assume:
   If the network did not leave, it sits in two zones and policy evaluation is
   ambiguous. (The lookup key is a `builtin_zone_names` key, and only the keys a
   policy references are read at all.)
+
+  Because that answer is unverified, a policy endpoint may not name a network
+  through a zone that does not hold it: a `networks` list on a custom-zone
+  endpoint must be that zone's own membership, and one on a **built-in**
+  endpoint may not name a network this module has placed in a custom zone. The
+  module refuses the contradiction rather than betting on which way the
+  controller resolves it.
 - **The built-in zone display names.** `Internal` / `External` / `Gateway` are
   the defaults here; capitalisation matters and localised controllers differ. A
   wrong name fails the data read.

@@ -296,6 +296,41 @@
           ansible.builtin.set_fact:
             firewall_empty_client_element_rejected: true
 
+    # `/` is a non-whitespace character, so a whitespace-only test admits it —
+    # and `+dc/admin/ts` is not an IPSet reference pve-firewall can resolve. The
+    # role has already written cluster.fw and notified the reload handler by the
+    # time it refuses to compile.
+    - name: Drive the client-scope schema guard — a punctuated set name
+      block:
+        - name: Include the schema guard with a `/` in a set name
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            proxmox_firewall_dns_admin_ports: []
+            proxmox_firewall_metrics_scrape_ports: []
+            proxmox_firewall_dns_client_sources: [admin/ts]
+            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, lan_clients]
+      rescue:
+        - name: Record that the punctuated set name was rejected
+          ansible.builtin.set_fact:
+            firewall_punctuated_set_name_rejected: true
+
+    # pve-firewall's ipset grammar is a leading LETTER then 1-63 more, i.e. a
+    # minimum of two characters: a single-character name and a digit-leading one
+    # are both refused by the schema, and neither is whitespace.
+    - name: Drive the client-scope schema guard — a name outside the ipset grammar
+      block:
+        - name: Include the schema guard with a one-character set name
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            proxmox_firewall_dns_admin_ports: []
+            proxmox_firewall_metrics_scrape_ports: []
+            proxmox_firewall_dns_client_sources: [admin_ts, a]
+            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, lan_clients]
+      rescue:
+        - name: Record that the too-short set name was rejected
+          ansible.builtin.set_fact:
+            firewall_short_set_name_rejected: true
+
     - name: Assert the hand-authored list guards fail closed on every shape
       ansible.builtin.assert:
         that:
@@ -308,17 +343,19 @@
           - firewall_empty_ingress_scope_rejected | default(false)
           - firewall_null_client_element_rejected | default(false)
           - firewall_empty_client_element_rejected | default(false)
+          - firewall_punctuated_set_name_rejected | default(false)
+          - firewall_short_set_name_rejected | default(false)
         fail_msg: >-
           A hand-authored list guard accepted a scalar or mapping `sources`, an
           entry with no `sources` key, a `port:` with no value, an empty
-          client-scope list, or a null/empty ELEMENT inside one — each writes a
-          cluster.fw that either refuses to compile or silently closes a whole
-          service surface, AFTER the role wrote it and notified the reload
-          handler.
+          client-scope list, or an ELEMENT that is null, empty, punctuated or
+          outside pve-firewall's ipset grammar — each writes a cluster.fw that
+          either refuses to compile or silently closes a whole service surface,
+          AFTER the role wrote it and notified the reload handler.
         success_msg: >-
           hand-authored list guards fail closed on scalar/mapping/missing
           sources, on a valueless port, on an empty client scope, and on a
-          null or empty element inside one
+          null, empty or ungrammatical set name inside one
 
     # Per-application groups come from proxmox_firewall_security_groups
     # (molecule.yml supplies a stand-in site list). One entry's `rules` is an
