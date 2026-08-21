@@ -19,6 +19,15 @@ variable "networks" {
     resolver. An empty list is the only way to express "no DHCP DNS" — upstream
     #429 means an explicit `[]` written to the controller never converges, so
     the module sends null instead.
+
+    Omitting `dhcp` entirely writes no `dhcp_server` block at all: the network
+    is served by a relay or by another server, and the controller keeps whatever
+    it already has.
+
+    Addresses are checked for SHAPE, never for containment: `dhcp.start`,
+    `dhcp.stop` and `clients[*].fixed_ip` are not cross-checked against the
+    subnet they belong to (README "What this module does not validate"). The
+    controller rejects an out-of-subnet value at apply time.
   EOT
   type = map(object({
     name = string
@@ -29,6 +38,9 @@ variable "networks" {
     # guest/Hotspot zone; anywhere else the controller rewrites it to
     # `corporate` and the apply fails with an inconsistent-result error. A guest
     # VLAN in a CUSTOM zone is `corporate` plus policies (README).
+    # `vlan-only` is rejected below: this module's `subnet` is required and
+    # gateway-form validated, which is exactly what a vlan-only network has not
+    # got.
     purpose         = optional(string, "corporate")
     domain_name     = optional(string)
     internet_access = optional(bool, true)
@@ -74,9 +86,23 @@ variable "networks" {
   validation {
     condition = alltrue([
       for key, n in var.networks :
-      contains(["corporate", "guest", "vlan-only"], n.purpose)
+      contains(["corporate", "guest"], n.purpose)
     ])
-    error_message = "networks[*].purpose must be corporate, guest or vlan-only. Use corporate for a guest VLAN that lives in a custom firewall zone — the controller rewrites `guest` to `corporate` outside its own Hotspot zone and the apply then fails."
+    error_message = "networks[*].purpose must be corporate or guest. The provider's third value, vlan-only, is not modelled here: it is the shape with NO gateway (`third_party_gateway`), while this module makes `subnet` required and validates it in gateway form. Use corporate for a guest VLAN that lives in a custom firewall zone — the controller rewrites `guest` to `corporate` outside its own Hotspot zone and the apply then fails."
+  }
+
+  # The map key is the resource address, so Terraform has no reason to object to
+  # two entries sharing a vlan id or a name: the collision surfaces as a
+  # controller error partway through the apply, or as two same-named networks
+  # that make every later lookup by name ambiguous.
+  validation {
+    condition     = length([for n in var.networks : n.vlan if n.vlan != null]) == length(distinct([for n in var.networks : n.vlan if n.vlan != null]))
+    error_message = "networks[*].vlan must be unique — two networks on one VLAN id is a controller error partway through the apply."
+  }
+
+  validation {
+    condition     = length(var.networks) == length(distinct([for n in var.networks : n.name]))
+    error_message = "networks[*].name must be unique — the name is what the controller UI and every `name=` import resolve against."
   }
 
   validation {
@@ -119,6 +145,14 @@ variable "zones" {
     networks = list(string)
   }))
   default = {}
+
+  # Two zones claiming one network never converge: each apply sends its own full
+  # membership list, so whichever runs last wins and the loser reports drift on
+  # every plan afterwards.
+  validation {
+    condition     = length(flatten([for z in var.zones : z.networks])) == length(distinct(flatten([for z in var.zones : z.networks])))
+    error_message = "Each `networks` key may appear in at most one `zones` entry — membership is a full replacement on every apply, so a network claimed by two zones flips between them and policy evaluation is ambiguous."
+  }
 }
 
 variable "builtin_zone_names" {
@@ -136,6 +170,10 @@ variable "builtin_zone_names" {
     `Gateway`, `Hotspot`, `Vpn`, `Dmz` on a UniFi OS 10.x console). Confirm them
     against the live controller before the first apply — a wrong name fails the
     data read with a lookup error, not a policy error.
+
+    Only the entries a `policies` endpoint actually names are read, so an
+    unreferenced default whose display name is wrong on this controller costs
+    nothing: adding a key here is free until a policy uses it.
   EOT
   type        = map(string)
   default     = { internal = "Internal", external = "External", gateway = "Gateway" }
@@ -157,12 +195,16 @@ variable "policies" {
 
     Set at most one of `ips` (literal addresses/CIDRs) or `networks`
     (`networks` keys) per endpoint; neither means any host in that zone. `port`
-    is a string so lists and ranges work: "53", "80,443", "32410-32414".
+    is a string so lists and ranges work: "53", "80,443", "32410-32414", and it
+    needs a port-bearing `protocol` (validated below).
 
     `create_allow_respond` writes the matching established/related return rule
-    and defaults on, which is what an ALLOW almost always wants. The controller
-    REJECTS it for `icmp`/`icmpv6` (validated below) — pair an ICMP allow with
-    an explicit reverse policy instead.
+    and defaults on, which is what an ALLOW almost always wants. It is honoured
+    for `action = "ALLOW"` only: a BLOCK or REJECT always writes false, because
+    the companion rule the controller would create is an ALLOW that Terraform
+    never holds in state, never reports as drift, and that outlives the deny it
+    was attached to. The controller also REJECTS it for `icmp`/`icmpv6`
+    (validated below) — pair an ICMP allow with an explicit reverse policy.
   EOT
   type = list(object({
     name     = string
@@ -225,6 +267,44 @@ variable "policies" {
     ]))
     error_message = "policies[*].source/destination may set `ips` or `networks`, not both — the provider derives one matching_target from whichever list is populated."
   }
+
+  # A port on `all`/`icmp` has nothing to match: the controller either 400s the
+  # apply or stores the policy with the port dropped, which is a rule far wider
+  # than the one that was written.
+  validation {
+    condition = alltrue(flatten([
+      for p in var.policies : [
+        for endpoint in [p.source, p.destination] :
+        endpoint.port == null ? true : contains(["tcp", "udp", "tcp_udp"], p.protocol)
+      ]
+    ]))
+    error_message = "policies[*].source/destination.port requires protocol tcp, udp or tcp_udp — port matching is meaningless on `all`, `icmp` and `icmpv6`, and the controller drops the port rather than the rule."
+  }
+
+  # Same shapes port_forwards already validates: a typo here is an opaque
+  # controller 400 during a supervised apply, after earlier policies landed.
+  validation {
+    condition = alltrue(flatten([
+      for p in var.policies : [
+        for endpoint in [p.source, p.destination] :
+        endpoint.port == null ? true : can(regex("^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$", endpoint.port))
+      ]
+    ]))
+    error_message = "policies[*].source/destination.port must be a port, a range (\"32410-32414\") or a comma-separated list."
+  }
+
+  validation {
+    condition = alltrue(flatten([
+      for p in var.policies : [
+        for endpoint in [p.source, p.destination] :
+        endpoint.ips == null ? [true] : [
+          for address in endpoint.ips :
+          can(regex("^[0-9]{1,3}(\\.[0-9]{1,3}){3}(/[0-9]{1,2})?$", address)) && can(cidrhost(strcontains(address, "/") ? address : "${address}/32", 0))
+        ]
+      ]
+    ]))
+    error_message = "policies[*].source/destination.ips must be bare IPv4 addresses or IPv4 CIDRs."
+  }
 }
 
 variable "wlans" {
@@ -286,7 +366,11 @@ variable "clients" {
     the controller as soon as it is seen on the wire, so an entry here ADOPTS
     the existing client (`allow_existing`) rather than creating one.
 
-    `fixed_ip` needs the `network` it belongs to (validated below).
+    `fixed_ip` needs the `network` it belongs to (validated below). It must lie
+    inside that network's SUBNET, which is not checked here (README "What this
+    module does not validate"); it does NOT have to lie inside the DHCP pool,
+    and normally should not — reserving outside the pool is the standard way to
+    keep a reservation from colliding with a dynamic lease.
 
     Upstream #428: an in-place UPDATE of a client fails with "inconsistent
     result after apply: .last_ip". Change a name or an address with
@@ -324,7 +408,7 @@ variable "clients" {
     condition = alltrue([
       for key, c in var.clients : c.fixed_ip == null || c.network != null
     ])
-    error_message = "clients[*].fixed_ip requires `network` — the controller needs the network the reservation belongs to, and a reservation outside its network's DHCP scope is never served."
+    error_message = "clients[*].fixed_ip requires `network` — the controller needs the network the reservation belongs to, and one whose address does not lie inside that network's subnet is never served."
   }
 }
 
@@ -377,6 +461,9 @@ variable "site_settings" {
     Site-wide controller settings. `unifi_setting` reads and writes ONLY the
     blocks declared here; every other setting on the site is left alone, and
     destroy is a state-only no-op (settings cannot be deleted, only reset).
+    That is BLOCK granularity, not attribute granularity — the `mgmt` and `usg`
+    blocks carry far more than the toggles below, and what keeps the rest intact
+    is each attribute being Optional+Computed in the provider (main.tf).
 
     The defaults are the hardened posture: no unattended firmware upgrades (a
     gateway that reboots itself takes the whole site with it), no "network
@@ -387,6 +474,10 @@ variable "site_settings" {
     `igmp_snooping_networks` lists `networks` keys; a non-empty list enables
     site IGMP snooping for exactly those networks. On Network 10.3+ this
     site-level setting — not `networks[*].igmp_snooping` — is the effective one.
+    The EMPTY default leaves the toggle unmanaged: the `igmp_snooping` block is
+    not written at all, so adopting this module never turns off snooping that
+    was configured in the UI. Emptying the list again stops managing the toggle
+    rather than disabling it — reset it in the console.
   EOT
   type = object({
     auto_upgrade           = optional(bool, false)

@@ -10,11 +10,26 @@ data "unifi_client_qos_rate" "default" {
   name = var.qos_rate_name
 }
 
+locals {
+  policy_zones = distinct(flatten([
+    for p in var.policies : [p.source.zone, p.destination.zone]
+  ]))
+
+  # Only the built-ins a policy names are read. Every entry is a data read on
+  # every plan — the read-only drift plan included — and a display name that is
+  # wrong on this controller fails it, so reading an unreferenced default would
+  # break the whole plan over a zone the configuration never uses.
+  builtin_zones_used = {
+    for key, name in var.builtin_zone_names : key => name
+    if contains(local.policy_zones, key)
+  }
+}
+
 # Built-in zones are READ, never managed: v0.55.0 cannot import one by name (the
 # fix landed after the tag), and a managed built-in would fight the controller
 # over `network_ids`, which the provider replaces wholesale on every apply.
 data "unifi_firewall_zone" "builtin" {
-  for_each = var.builtin_zone_names
+  for_each = local.builtin_zones_used
 
   name = each.value
 }
@@ -109,11 +124,18 @@ resource "unifi_firewall_zone" "this" {
       error_message = "zones[\"${each.key}\"].networks names a key that is not in var.networks."
     }
 
-    # merge() would let a custom zone shadow a built-in of the same key, and
-    # every policy naming that zone would quietly point at the wrong one.
+    # Two namespaces collide here, and both matter. A key clash lets a custom
+    # zone shadow a built-in in the merged lookup, so every policy naming that
+    # zone quietly points at the wrong one. A DISPLAY-NAME clash is worse: the
+    # key IS the zone's name on the controller, so `zones = { Internal = ... }`
+    # plans a second zone literally named Internal next to the data source
+    # reading the built-in one.
     precondition {
-      condition     = !contains(keys(var.builtin_zone_names), each.key)
-      error_message = "zones[\"${each.key}\"] collides with a builtin_zone_names key; policies resolve both from one namespace, so the names must be distinct."
+      condition = (
+        !contains(keys(var.builtin_zone_names), each.key)
+        && !contains(values(var.builtin_zone_names), each.key)
+      )
+      error_message = "zones[\"${each.key}\"] collides with a builtin zone — its `builtin_zone_names` key or its display name. Policies resolve both from one namespace and the key is the name written to the controller, so the names must be distinct."
     }
   }
 }
@@ -121,11 +143,16 @@ resource "unifi_firewall_zone" "this" {
 resource "unifi_firewall_policy" "this" {
   for_each = local.policies
 
-  name                 = each.value.name
-  action               = each.value.action
-  protocol             = each.value.protocol
-  logging              = each.value.logging
-  create_allow_respond = each.value.create_allow_respond
+  name     = each.value.name
+  action   = each.value.action
+  protocol = each.value.protocol
+  logging  = each.value.logging
+  # Derived, not passed straight through: the controller's auto-created
+  # established/related companion is an ALLOW. On a BLOCK or REJECT that leaves
+  # an allowance Terraform never holds in state, never reports as drift, and
+  # that survives the deny being deleted — so a deny always writes false,
+  # whatever the entry asked for.
+  create_allow_respond = each.value.action == "ALLOW" ? each.value.create_allow_respond : false
 
   # `matching_target` is derived, never an input: the controller rejects a
   # policy whose target disagrees with the match list that is populated
@@ -258,6 +285,14 @@ resource "unifi_port_forward" "this" {
 # written; `terraform destroy` drops the state entry and changes nothing on the
 # controller (settings can be reset, never deleted), so it carries no
 # prevent_destroy.
+#
+# "Only the blocks declared here" is BLOCK granularity. Inside a declared block,
+# the attributes left out — `mgmt`'s SSH and ui.com remote access, `usg`'s SYN
+# cookies, ALG modules, Geo-IP filter and conntrack timeouts — survive because
+# they are Optional+Computed and the provider round-trips them (0.52.1 stopped
+# it serialising zeros for unset numerics). That is a per-attribute property of
+# the provider, not a guarantee this module can make, so the first apply against
+# a console is plan-reviewed for any mgmt/usg attribute moving to null or false.
 resource "unifi_setting" "site" {
   mgmt = {
     auto_upgrade = var.site_settings.auto_upgrade
@@ -273,13 +308,23 @@ resource "unifi_setting" "site" {
     upnp_nat_pmp_enabled = var.site_settings.upnp
   }
 
-  igmp_snooping = {
-    enabled = length(var.site_settings.igmp_snooping_networks) > 0
-    network_ids = length(var.site_settings.igmp_snooping_networks) == 0 ? null : [
+  # Written only when the caller names networks. An empty list writes NO block:
+  # `enabled = false` would turn off snooping a site had configured in the UI on
+  # the first apply, which is a surprise the hardened-posture defaults should not
+  # spring. Emptying the list later stops managing the toggle, it does not
+  # disable it (variables.tf).
+  igmp_snooping = length(var.site_settings.igmp_snooping_networks) == 0 ? null : {
+    enabled = true
+    network_ids = [
       for key in var.site_settings.igmp_snooping_networks : lookup(local.network_ids, key, "")
     ]
   }
 
+  # `ips_mode` only: `enabled_categories` and `enabled_networks` are deliberately
+  # left to the console, because a signature-category selection is curated in the
+  # UI and re-declaring it here would fight it. The consequence belongs in the
+  # consuming repo's runbook — an IDS with no categories or no networks selected
+  # detects nothing, and a quiet week of "clean detections" then means nothing.
   ips = {
     ips_mode = var.site_settings.ips_mode
   }

@@ -37,6 +37,14 @@ variables {
         stop  = "10.0.40.249"
       }
     }
+    # No `dhcp` block: DHCP is served elsewhere, so `dhcp_server` must plan as
+    # null rather than as a scope with no addresses in it.
+    transit = {
+      name            = "Transit"
+      vlan            = 50
+      subnet          = "10.0.50.1/24"
+      internet_access = false
+    }
   }
 
   zones = {
@@ -59,6 +67,24 @@ variables {
       name        = "internal-to-iot"
       source      = { zone = "internal" }
       destination = { zone = "iot", networks = ["iot"] }
+    },
+    # Source-side match lists: both derivations live in the same expression as
+    # the destination's, and a matching_target disagreeing with the populated
+    # list is an apply-time 400 the plan cannot show.
+    {
+      name        = "iot-camera-to-nvr"
+      protocol    = "tcp"
+      source      = { zone = "iot", ips = ["10.0.30.3"], port = "554" }
+      destination = { zone = "internal", ips = ["10.0.1.20"], port = "554" }
+    },
+    # A deny: `create_allow_respond` is derived, so this entry's default `true`
+    # must NOT reach the controller as an auto-created reverse ALLOW.
+    {
+      name        = "guest-to-internal-block"
+      action      = "BLOCK"
+      logging     = true
+      source      = { zone = "guest", networks = ["guest"] }
+      destination = { zone = "internal" }
     },
   ]
 
@@ -85,6 +111,12 @@ variables {
       fixed_ip = "10.0.30.3"
       network  = "iot"
     }
+    # Name-only: no reservation, so `network_id` must plan as null rather than
+    # as the sentinel the lookup falls back to.
+    laptop = {
+      mac  = "00:17:88:7E:C7:A3"
+      name = "laptop"
+    }
   }
 
   port_forwards = {
@@ -101,13 +133,55 @@ run "a_whole_site_plans_clean" {
   command = plan
 
   assert {
-    condition     = keys(unifi_network.this) == ["default", "guest", "iot"]
+    condition     = keys(unifi_network.this) == ["default", "guest", "iot", "transit"]
     error_message = "Every networks entry must plan one unifi_network."
   }
 
   assert {
     condition     = keys(unifi_firewall_zone.this) == ["guest", "iot"]
     error_message = "Custom zones are keyed by their display name; built-ins are data sources, never resources."
+  }
+
+  # `network_ids` is the ONLY way v0.55.0 puts a network into a custom zone, so
+  # an empty list is a whole VLAN segmentation that plans and applies as a
+  # no-op.
+  assert {
+    condition = (
+      length(unifi_firewall_zone.this["iot"].network_ids) == 1
+      && length(unifi_firewall_zone.this["guest"].network_ids) == 1
+    )
+    error_message = "Each zone must carry the network ids of exactly the `networks` keys it lists — an empty network_ids applies cleanly and segments nothing."
+  }
+
+  # Only the built-ins a policy names are read: an unreferenced default whose
+  # display name is wrong on this controller would otherwise fail every plan.
+  assert {
+    condition     = keys(data.unifi_firewall_zone.builtin) == ["internal"]
+    error_message = "Built-in zones must be read only when a policy endpoint names them."
+  }
+
+  assert {
+    condition = (
+      unifi_network.this["iot"].dhcp_server.start == "10.0.30.50"
+      && unifi_network.this["iot"].dhcp_server.stop == "10.0.30.249"
+    )
+    error_message = "dhcp.start/stop must reach dhcp_server in that order — swapping them plans and applies without complaint."
+  }
+
+  assert {
+    condition     = unifi_network.this["transit"].dhcp_server == null
+    error_message = "A network with no `dhcp` block must plan no dhcp_server at all, not an empty scope."
+  }
+
+  assert {
+    condition = (
+      unifi_network.this["transit"].internet_access == false
+      && unifi_network.this["guest"].internet_access == true
+      && unifi_network.this["iot"].domain_name == "example.internal"
+      && unifi_network.this["iot"].igmp_snooping == true
+      && unifi_network.this["guest"].igmp_snooping == false
+    )
+    error_message = "internet_access, domain_name and the per-network igmp_snooping toggle must reach the network they were declared on."
   }
 
   # A DHCP DNS list is the only thing that turns the option on — an entry
@@ -146,6 +220,27 @@ run "a_whole_site_plans_clean" {
     error_message = "An endpoint with `networks` must derive matching_target = NETWORK."
   }
 
+  # The SOURCE endpoint derives from the same expression, and both of its
+  # branches are as unforgiving at apply time as the destination's.
+  assert {
+    condition = (
+      unifi_firewall_policy.this["iot-camera-to-nvr"].source.matching_target == "IP"
+      && unifi_firewall_policy.this["iot-camera-to-nvr"].source.port_matching_type == "SPECIFIC"
+      && unifi_firewall_policy.this["guest-to-internal-block"].source.matching_target == "NETWORK"
+    )
+    error_message = "A source endpoint must derive matching_target/port_matching_type from its own match list, not inherit the destination's."
+  }
+
+  assert {
+    condition = (
+      unifi_firewall_policy.this["guest-to-internal-block"].action == "BLOCK"
+      && unifi_firewall_policy.this["guest-to-internal-block"].create_allow_respond == false
+      && unifi_firewall_policy.this["guest-to-internal-block"].logging == true
+      && unifi_firewall_policy.this["internal-to-iot"].create_allow_respond == true
+    )
+    error_message = "create_allow_respond is honoured for ALLOW only — a BLOCK/REJECT must write false, or the controller creates a reverse ALLOW that outlives the deny and never appears in state."
+  }
+
   # The inversion is the whole point of the input name: allow_2ghz_high_perf
   # true means the AP must NOT steer capable clients off 2.4 GHz.
   assert {
@@ -169,6 +264,28 @@ run "a_whole_site_plans_clean" {
   assert {
     condition     = unifi_wlan.this["guest"].wlan_bands == toset(["2g", "5g"])
     error_message = "WLANs are fixed to 2.4 + 5 GHz — including 6g fails WLAN creation on this provider (#406)."
+  }
+
+  # Guest client isolation is the reason the input exists, and it sits next to a
+  # same-typed default-false neighbour that a swap would hide.
+  assert {
+    condition = (
+      unifi_wlan.this["guest"].l2_isolation == true
+      && unifi_wlan.this["guest"].hide_ssid == false
+      && unifi_wlan.this["iot"].l2_isolation == false
+    )
+    error_message = "l2_isolation must land on the WLAN that declared it (guest client isolation), and `hide` must not be wired to it."
+  }
+
+  # No assertion on the `laptop` entry's fixed_ip/network_id: both attributes are
+  # Optional+Computed, so an unset one is unknown at plan. It is in the fixture
+  # to plan the null branch of the network_id lookup at all.
+  assert {
+    condition = (
+      unifi_client.this["hue"].fixed_ip == "10.0.30.3"
+      && unifi_client.this["hue"].allow_existing == true
+    )
+    error_message = "A client reservation must plan the fixed_ip it declared and adopt the existing client rather than creating one."
   }
 
   assert {
@@ -244,6 +361,89 @@ run "rejects_a_vlan_outside_the_range" {
   expect_failures = [var.networks]
 }
 
+# The lower bound is its own comparison, and 0 is what a generator that treats
+# "no VLAN" as a number rather than an omission emits.
+run "rejects_a_vlan_of_zero" {
+  command = plan
+
+  variables {
+    networks = {
+      iot = {
+        name   = "IoT"
+        vlan   = 0
+        subnet = "10.0.30.1/24"
+      }
+    }
+  }
+
+  expect_failures = [var.networks]
+}
+
+run "rejects_duplicate_network_vlans" {
+  command = plan
+
+  variables {
+    networks = {
+      iot     = { name = "IoT", vlan = 30, subnet = "10.0.30.1/24" }
+      iot_dup = { name = "IoT copy", vlan = 30, subnet = "10.0.31.1/24" }
+    }
+  }
+
+  expect_failures = [var.networks]
+}
+
+run "rejects_duplicate_network_names" {
+  command = plan
+
+  variables {
+    networks = {
+      iot     = { name = "IoT", vlan = 30, subnet = "10.0.30.1/24" }
+      iot_dup = { name = "IoT", vlan = 31, subnet = "10.0.31.1/24" }
+    }
+  }
+
+  expect_failures = [var.networks]
+}
+
+# vlan-only is the provider's third purpose and the one shape this module cannot
+# express: `subnet` is required here and validated in gateway form.
+run "rejects_the_vlan_only_purpose" {
+  command = plan
+
+  variables {
+    networks = {
+      transit = {
+        name    = "Transit"
+        vlan    = 50
+        subnet  = "10.0.50.1/24"
+        purpose = "vlan-only"
+      }
+    }
+  }
+
+  expect_failures = [var.networks]
+}
+
+run "rejects_a_malformed_dhcp_address" {
+  command = plan
+
+  variables {
+    networks = {
+      iot = {
+        name   = "IoT"
+        vlan   = 30
+        subnet = "10.0.30.1/24"
+        dhcp = {
+          start = "10.0.30.50/24"
+          stop  = "10.0.30.249"
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.networks]
+}
+
 run "rejects_an_unknown_network_purpose" {
   command = plan
 
@@ -309,6 +509,36 @@ run "rejects_a_zone_colliding_with_a_builtin_key" {
   }
 
   expect_failures = [unifi_firewall_zone.this]
+}
+
+# The key IS the name written to the controller, so the display-name spelling is
+# the one an author reaching for a built-in would actually write.
+run "rejects_a_zone_colliding_with_a_builtin_display_name" {
+  command = plan
+
+  variables {
+    zones = {
+      iot      = { networks = ["iot"] }
+      Internal = { networks = ["default"] }
+    }
+  }
+
+  expect_failures = [unifi_firewall_zone.this]
+}
+
+# Two zones each send their whole membership list, so a network in both never
+# converges — the loser reports drift on every plan afterwards.
+run "rejects_a_network_claimed_by_two_zones" {
+  command = plan
+
+  variables {
+    zones = {
+      iot   = { networks = ["iot"] }
+      media = { networks = ["iot", "guest"] }
+    }
+  }
+
+  expect_failures = [var.zones]
 }
 
 run "rejects_a_policy_naming_an_unknown_zone" {
@@ -383,6 +613,92 @@ run "rejects_create_allow_respond_on_icmp" {
   expect_failures = [var.policies]
 }
 
+run "rejects_create_allow_respond_on_icmpv6" {
+  command = plan
+
+  variables {
+    policies = [
+      {
+        name        = "iot-ping6-homelab"
+        protocol    = "icmpv6"
+        source      = { zone = "iot" }
+        destination = { zone = "internal" }
+      },
+    ]
+  }
+
+  expect_failures = [var.policies]
+}
+
+run "rejects_an_unknown_policy_protocol" {
+  command = plan
+
+  variables {
+    policies = [
+      {
+        name        = "iot-to-dns"
+        protocol    = "sctp"
+        source      = { zone = "iot" }
+        destination = { zone = "internal" }
+      },
+    ]
+  }
+
+  expect_failures = [var.policies]
+}
+
+# One keyword away from the README's own DNS example: without a port-bearing
+# protocol the controller drops the port and keeps the rule.
+run "rejects_a_port_on_a_portless_protocol" {
+  command = plan
+
+  variables {
+    policies = [
+      {
+        name        = "iot-to-dns"
+        source      = { zone = "iot" }
+        destination = { zone = "internal", ips = ["10.0.1.150"], port = "53" }
+      },
+    ]
+  }
+
+  expect_failures = [var.policies]
+}
+
+run "rejects_a_malformed_policy_port" {
+  command = plan
+
+  variables {
+    policies = [
+      {
+        name        = "iot-to-dns"
+        protocol    = "tcp_udp"
+        source      = { zone = "iot" }
+        destination = { zone = "internal", ips = ["10.0.1.150"], port = "dns" }
+      },
+    ]
+  }
+
+  expect_failures = [var.policies]
+}
+
+run "rejects_a_malformed_policy_ip" {
+  command = plan
+
+  variables {
+    policies = [
+      {
+        name        = "iot-to-dns"
+        protocol    = "tcp_udp"
+        source      = { zone = "iot" }
+        destination = { zone = "internal", ips = ["10.0.1.150", "10.0.1.999"], port = "53" }
+      },
+    ]
+  }
+
+  expect_failures = [var.policies]
+}
+
 run "rejects_an_endpoint_matching_both_ips_and_networks" {
   command = plan
 
@@ -429,6 +745,24 @@ run "rejects_a_short_passphrase" {
         ssid       = "example-iot"
         network    = "iot"
         passphrase = "short"
+      }
+    }
+  }
+
+  expect_failures = [var.wlans]
+}
+
+# The upper bound is a separate comparison: 64 characters is one past WPA-PSK's
+# limit and the kind of value a generated passphrase lands on.
+run "rejects_a_long_passphrase" {
+  command = plan
+
+  variables {
+    wlans = {
+      iot = {
+        ssid       = "example-iot"
+        network    = "iot"
+        passphrase = "0123456789012345678901234567890123456789012345678901234567890123"
       }
     }
   }
@@ -485,6 +819,23 @@ run "rejects_a_dash_separated_mac" {
   expect_failures = [var.clients]
 }
 
+run "rejects_a_malformed_client_fixed_ip" {
+  command = plan
+
+  variables {
+    clients = {
+      hue = {
+        mac      = "00:17:88:7E:C7:A2"
+        name     = "hue-bridge"
+        fixed_ip = "10.0.30.3/32"
+        network  = "iot"
+      }
+    }
+  }
+
+  expect_failures = [var.clients]
+}
+
 run "rejects_a_client_naming_an_unknown_network" {
   command = plan
 
@@ -526,6 +877,18 @@ run "rejects_a_non_numeric_port_forward_port" {
   expect_failures = [var.port_forwards]
 }
 
+run "rejects_a_malformed_port_forward_ip" {
+  command = plan
+
+  variables {
+    port_forwards = {
+      plex = { wan_port = "32400", ip = "plex.internal", port = "32400" }
+    }
+  }
+
+  expect_failures = [var.port_forwards]
+}
+
 run "rejects_an_unknown_ips_mode" {
   command = plan
 
@@ -548,4 +911,30 @@ run "rejects_igmp_snooping_on_an_unknown_network" {
   }
 
   expect_failures = [unifi_setting.site]
+}
+
+# A gateway-only site: no APs, no reservations, no forwards. `wlans` is
+# sensitive and its default `{}` is the one value that runs `nonsensitive()`
+# over an unmarked result, which hard-errors if the shape ever changes; the
+# empty igmp list must write no settings block at all rather than an
+# `enabled = false` that turns off snooping the console already had.
+run "a_gateway_only_site_plans_clean" {
+  command = plan
+
+  variables {
+    wlans         = {}
+    clients       = {}
+    port_forwards = {}
+    site_settings = {}
+  }
+
+  assert {
+    condition     = length(unifi_wlan.this) == 0 && length(unifi_client.this) == 0 && length(unifi_port_forward.this) == 0
+    error_message = "Empty wlans/clients/port_forwards must plan no resources — and `wlans = {}` must survive the nonsensitive() unwrap."
+  }
+
+  assert {
+    condition     = unifi_setting.site.igmp_snooping == null
+    error_message = "An empty igmp_snooping_networks must write NO igmp_snooping block — `enabled = false` would disable snooping a site had configured in the UI."
+  }
 }

@@ -103,15 +103,15 @@ validation in the root, so the failure names the missing item.
 
 | Input | Type | Default | Notes |
 |---|---|---|---|
-| `networks` | map(object) | — | Keyed by identity string; the key is what every other input references. `subnet` is gateway form (`10.0.30.1/24`), validated against the network-address form. `vlan` omitted only for the built-in Default. `dhcp = {enabled, start, stop, dns_servers, leasetime}`; a non-empty `dns_servers` sets `dns_enabled`. |
-| `zones` | map(object) | `{}` | Custom firewall zones keyed by DISPLAY NAME; `networks` lists `networks` keys. Membership is a full replacement on every apply. |
-| `builtin_zone_names` | map(string) | `{internal="Internal", external="External", gateway="Gateway"}` | Short name → the controller's display name, read through a data source. Confirm the display names against the live controller. |
-| `policies` | list(object) | `[]` | `name` (unique — it is the resource key), `action` (`ALLOW`), `protocol` (`all`), `source`/`destination` `{zone, ips, networks, port}`, `create_allow_respond` (`true`), `logging`. `zone` resolves against `zones` **and** `builtin_zone_names`. |
+| `networks` | map(object) | — | Keyed by identity string; the key is what every other input references. `subnet` is gateway form (`10.0.30.1/24`), validated against the network-address form. `vlan` omitted only for the built-in Default; vlan ids and names must be unique. `purpose` is `corporate` or `guest` — `vlan-only` is rejected (`subnet` is required here). `dhcp = {enabled, start, stop, dns_servers, leasetime}`; a non-empty `dns_servers` sets `dns_enabled`, and omitting `dhcp` writes no `dhcp_server` at all. |
+| `zones` | map(object) | `{}` | Custom firewall zones keyed by DISPLAY NAME; `networks` lists `networks` keys, each of which may appear in at most one zone. Membership is a full replacement on every apply. |
+| `builtin_zone_names` | map(string) | `{internal="Internal", external="External", gateway="Gateway"}` | Short name → the controller's display name. Only the entries a policy endpoint actually names are read, so an unused one costs nothing; confirm the display names of the ones you use against the live controller. |
+| `policies` | list(object) | `[]` | `name` (unique — it is the resource key), `action` (`ALLOW`), `protocol` (`all`), `source`/`destination` `{zone, ips, networks, port}`, `create_allow_respond` (`true`, honoured for `ALLOW` only), `logging`. A `port` requires a tcp/udp/tcp_udp `protocol`. `zone` resolves against `zones` **and** `builtin_zone_names`. |
 | `wlans` | map(object) | `{}` | **sensitive.** `{ssid, network, passphrase, wpa3, l2_isolation, allow_2ghz_high_perf, hide}`. `security = "wpapsk"` and `wlan_bands = ["2g","5g"]` are fixed. |
 | `qos_rate_name` | string | `"Default"` | Client QoS rate (old "user group") every WLAN is assigned to; `unifi_wlan.user_group_id` is Required with no default. |
-| `clients` | map(object) | `{}` | `{mac (colon form), name, fixed_ip, network, note}`. `fixed_ip` requires `network`. |
+| `clients` | map(object) | `{}` | `{mac (colon form), name, fixed_ip, network, note}`. `fixed_ip` requires `network` and must lie inside that network's SUBNET — not inside its DHCP pool, and reserving outside the pool is the normal way to avoid colliding with a dynamic lease. |
 | `port_forwards` | map(object) | `{}` | `{protocol, wan_port, ip, port}`; ports are strings, so ranges and lists work. Primary WAN, any source. |
-| `site_settings` | object | hardened baseline | `auto_upgrade=false`, `network_optimization=false`, `upnp=false` (also NAT-PMP), `ips_mode="ids"`, `igmp_snooping_networks=[]`. |
+| `site_settings` | object | hardened baseline | `auto_upgrade=false`, `network_optimization=false`, `upnp=false` (also NAT-PMP), `ips_mode="ids"`, `igmp_snooping_networks=[]` — the empty list leaves the site's IGMP-snooping toggle **unmanaged**, see below. |
 
 Two input names deliberately do not match the provider attribute they drive:
 
@@ -123,10 +123,36 @@ Two input names deliberately do not match the provider attribute they drive:
   `usg.upnp_nat_pmp_enabled`: leaving NAT-PMP on while UPnP is off still lets a
   LAN host punch its own hole.
 
+`site_settings.igmp_snooping_networks` is opt-in, not a toggle: a non-empty list
+writes the `igmp_snooping` block and enables snooping for exactly those
+networks, and the empty default writes **no block at all**, so adopting this
+module never turns off snooping a site configured in the UI. Emptying the list
+again stops managing the setting rather than disabling it — reset it in the
+console if that is what you meant.
+
+## What this module does not validate
+
+Every address input is checked for SHAPE (bare IPv4, IPv4 CIDR, gateway-form
+subnet) and never for CONTAINMENT. `networks[*].dhcp.start`/`.stop` and
+`clients[*].fixed_ip` are not cross-checked against the subnet they belong to:
+Terraform has no `cidrcontains`, and the arithmetic that approximates it is
+worse than nothing when it is subtly wrong on a file that writes a gateway's
+segmentation. The controller rejects an out-of-subnet value at apply time, and a
+renumber is the case to re-read by hand — changing a `subnet` means changing its
+pool and its reservations in the same edit.
+
+IPv6 is not configured, and that is a posture, not an omission: no input touches
+any `ipv6_*` attribute, so every managed network keeps the provider default
+`ipv6_interface_type = "none"` and hands out no GUA. A site that wants IPv6 has
+to add the v6 attributes here *and* the v6 counterparts of every allowlist below
+the gateway (host firewall sets, ingress allowlists, network policies) in the
+same change — an IPv4-only allowlist under a v6-capable client is an open door
+that no plan shows.
+
 ## Outputs
 
-`network_ids`, `zone_ids` (custom **and** built-in keys, the same namespace
-policies resolve against), `wlan_ids`.
+`network_ids`, `zone_ids` (custom zone keys **and** the built-in keys the
+policies reference, in the one namespace policies resolve against), `wlan_ids`.
 
 ## What this module cannot manage
 
@@ -147,10 +173,17 @@ Two behaviours to verify on the controller rather than assume:
 
 - **Does a custom zone take its network out of `Internal`?** The provider issues
   exactly one API call, for the zone it manages: it neither moves nor detects
-  anything else. After the first custom-zone apply, read
-  `data.unifi_firewall_zone.builtin["internal"].network_ids` and check the
-  network left. If it did not, the network sits in two zones and policy
-  evaluation is ambiguous.
+  anything else. After the first custom-zone apply, read the built-in zone's
+  membership and check the network left it — from the caller, that data source
+  is inside the module:
+
+  ```bash
+  terraform state show 'module.network.data.unifi_firewall_zone.builtin["internal"]'
+  ```
+
+  If the network did not leave, it sits in two zones and policy evaluation is
+  ambiguous. (The lookup key is a `builtin_zone_names` key, and only the keys a
+  policy references are read at all.)
 - **The built-in zone display names.** `Internal` / `External` / `Gateway` are
   the defaults here; capitalisation matters and localised controllers differ. A
   wrong name fails the data read.
@@ -197,6 +230,21 @@ human-run, plan-reviewed step, and CI runs at most a read-only drift plan.
 Back the controller up (`.unf` export) before the first apply of a change that
 touches networks or zones.
 
+Two things to read in the first plan specifically:
+
+- **The `unifi_setting.site` `mgmt` and `usg` lines.** "Only the blocks declared
+  here are written" is block granularity: those two blocks also carry SSH,
+  ui.com remote access, SYN cookies, the ALG modules and every conntrack
+  timeout. Undeclared attributes survive because they are Optional+Computed and
+  the provider round-trips them, which is a property of the provider rather than
+  a promise this module can make. Any of them moving to `null`/`false` in the
+  plan is a real change — pin it as an input instead of approving it.
+- **The IDS selection.** The module writes `ips_mode` only; the signature
+  categories and the inspected networks stay UI-owned. On a console where IDS
+  has never been enabled there may be neither, in which case detection-only mode
+  inspects nothing — confirm the selection in the console before treating a
+  quiet week as evidence for promoting `ids` to `ips`.
+
 ## Adopting existing objects
 
 Everything below already exists on a controller that has ever been configured;
@@ -236,11 +284,18 @@ terraform init -backend=false
 terraform test
 ```
 
-`tests/validation.tftest.hcl` covers every variable validation, every
-cross-map precondition (dangling network/zone keys, a custom zone colliding with
-a built-in) and the derived attributes that have no other guard —
-`matching_target`, `dhcp_server.dns_enabled`, the `no2ghz_oui` inversion and the
-WPA3/PMF pairing. `terraform validate` evaluates no caller values, so it runs
-none of them; the runs are plan-only against a `mock_provider`, so they need no
-controller and create no state. CI runs the same command through
-`ci/validate/terraform.yml` with `test: true`.
+`tests/validation.tftest.hcl` covers every variable validation and every
+cross-map precondition — verified by mutation, neutering each one in turn and
+confirming a run goes red — plus the derived attributes that have no other
+guard: `matching_target` and `port_matching_type` on **both** endpoints, the
+ALLOW-only `create_allow_respond`, `dhcp_server.dns_enabled` and the DHCP
+start/stop pair, zone `network_ids` membership, `l2_isolation`, the `no2ghz_oui`
+inversion, the WPA3/PMF pairing and the conditional `igmp_snooping` block.
+`terraform validate` evaluates no caller values, so it runs none of them; the
+runs are plan-only against a `mock_provider`, so they need no controller and
+create no state. CI runs the same command through `ci/validate/terraform.yml`
+with `test: true`.
+
+A new `validation` block or `precondition` needs a new `run` in the same change:
+nothing else in the repo can execute one, and a mock plan is the only place a
+derived attribute is observable before it reaches a controller.

@@ -263,7 +263,7 @@ include:
   # terraform/modules/ is the library-side workload for this template. Both jobs
   # run in the lint stage (this pipeline has no validate stage), and validate
   # loops over the module dirs rather than the template's `terraform/*/` default.
-  # `test: true` because all three modules ship tests/validation.tftest.hcl —
+  # `test: true` because every module here ships tests/validation.tftest.hcl —
   # `terraform validate` evaluates no caller values, so the variable
   # `validation` blocks and the `precondition`s are only exercised by
   # `terraform test`. Every test file declares mock_provider, so no credentials.
