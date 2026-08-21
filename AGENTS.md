@@ -18,8 +18,8 @@ One source of truth for everything the family shares:
   one thing here a forge-portable consumer VENDORS rather than includes.
 - **`ansible_collections/weisssrv/infra/`** — every host-configuration role,
   consumed by FQCN (`weisssrv.infra.<role>`), versioned by the same tag.
-- **`terraform/modules/`** — three module shapes (cloudflare-zone,
-  tailscale-acl, authentik-sso).
+- **`terraform/modules/`** — four module shapes (cloudflare-zone,
+  tailscale-acl, authentik-sso, unifi-network).
 - **`scripts/`** — the gates and generators the CI jobs run.
 - **`lint/`**, **`taskfiles/`** — configs and go-task fragments a consumer
   vendors.

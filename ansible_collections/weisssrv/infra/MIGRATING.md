@@ -29,6 +29,14 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.13.0
+
+Nothing to migrate — new Terraform module only. `terraform/modules/unifi-network`
+codifies a UniFi site's networks/VLANs, firewall zones and zone-based policies,
+WLANs, client reservations, port forwards and site settings; no role, no CI
+template and no collection variable changed. Adopting it is opt-in: a consumer
+that does not call the module sees nothing new on the ref bump.
+
 # v0.12.1
 
 No migration steps. The flux-lint template's unknown-substitution-key check

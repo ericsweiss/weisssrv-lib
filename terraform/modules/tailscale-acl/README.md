@@ -12,7 +12,7 @@ The tag below is an example: use the tag your repo pins (docs/VERSIONING.md).
 
 ```hcl
 module "tailnet" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/tailscale-acl?ref=v0.12.1"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/tailscale-acl?ref=v0.13.0"
 
   acl_policy = file("${path.module}/policy.hujson")
 

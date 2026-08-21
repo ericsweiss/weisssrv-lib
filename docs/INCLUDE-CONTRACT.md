@@ -354,7 +354,7 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
   the job ("test: true but no module under module_glob ships a *.tftest.hcl").
 - **Self-applied** over `terraform/modules/` (`module_glob:
   "terraform/modules/*/"`, `validate_stage: lint` — this pipeline has no
-  validate stage, `test: true` — all three modules ship
+  validate stage, `test: true` — all four modules ship
   `tests/validation.tftest.hcl`).
 - **A `module_glob` that matches no module with a `versions.tf` FAILS the job**
   ("module_glob matched no module with a versions.tf"), the same accounting
@@ -880,6 +880,7 @@ lockfile.
 | `cloudflare-zone` | zone settings + DNS records with per-record destroy/drift protection | `account_id`, `zone_name` |
 | `tailscale-acl` | tailnet ACL policy + Split-DNS nameservers | `acl_policy`, `split_dns` |
 | `authentik-sso` | OAuth2/proxy/SAML providers, applications, groups, policy bindings, custom scope mappings, embedded outpost | none (every map defaults to `{}`) |
+| `unifi-network` | UniFi networks/VLANs, custom firewall zones + zone-based policies, WLANs, client reservations, port forwards, hardened site settings | `networks` |
 
 Behaviour to know before adopting:
 
@@ -902,6 +903,19 @@ Behaviour to know before adopting:
   route the object to a different resource address, and an address change here
   is the destroy+create the flag exists to prevent. Removal is
   `terraform state rm` plus the map entry; renames use `moved {}`.
+- **`unifi-network` takes `subnet` in GATEWAY form** (`10.0.30.1/24`, the host
+  part IS the gateway) — the provider's own syntax, and a network-address
+  `.0/24` fails the validation rather than planning a gateway the controller
+  will not accept. `unifi_network` and `unifi_firewall_zone` carry unconditional
+  `prevent_destroy`: destroying a network drops every client on that VLAN, and
+  destroying a zone silently returns its networks to the default zone —
+  segmentation gone, everything still routing.
+- **`unifi-network` manages objects, never devices.** Policy ORDER, mDNS
+  reflection, per-port VLANs and 6 GHz are provider gaps at `~> 0.55.0`, not
+  drift the module reports; the zone-per-network model is what makes unordered
+  policies safe (allowances against a default inter-zone deny). Its README's
+  "What this module cannot manage" table is the list, and the apply is
+  supervised — this is the gateway's own segmentation.
 
 Full input/output tables and the per-module consumption pattern are in each
 module's `README.md`. `ci/validate/terraform.yml` covers them with

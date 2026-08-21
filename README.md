@@ -8,11 +8,11 @@ consumer at a pinned tag.
 
 ## Current release
 
-**v0.12.1.** Every pin example on this page and in `docs/` is written as
+**v0.13.0.** Every pin example on this page and in `docs/` is written as
 `<CURRENT_TAG>`; substitute the release you are adopting, so a release bump
 touches the few copy-paste snippets that must be runnable rather than a dozen
 stale examples. This line is the authority for the literal; the runnable
-snippets that repeat it (`cli/README.md`, `docker/README.md`, the three
+snippets that repeat it (`cli/README.md`, `docker/README.md`, the four
 Terraform module READMEs) are held equal to it by
 `tests/test_release_version.py`, and `docs/VERSIONING.md` carries the release
 checklist.
@@ -23,7 +23,7 @@ checklist.
 | --- | --- | --- |
 | [weisssrv](https://git.ericsweiss.com/eric/weisssrv) | the homelab platform repo — one cluster, running | CI template includes, the `weisssrv.infra` collection, vendored scripts |
 | [weisssrv-app-template](https://git.ericsweiss.com/eric/weisssrv-app-template) | the tenant scaffold — repos that deploy *into* that cluster | CI template includes, vendored scripts, the CLI |
-| [weisssrv-cluster-template](https://git.ericsweiss.com/eric/weisssrv-cluster-template) | the copier template a **new cluster** is generated from | CI includes, the collection, all 3 Terraform modules — all through one `lib_ref` answer |
+| [weisssrv-cluster-template](https://git.ericsweiss.com/eric/weisssrv-cluster-template) | the copier template a **new cluster** is generated from | CI includes, the collection, the Terraform modules it renders (3 always, `unifi-network` optional) — all through one `lib_ref` answer |
 
 Each consumer records its own pin sites and vendored copies — the library
 knows nothing about who pins it. What it publishes instead is the offer list
@@ -61,7 +61,7 @@ ansible_collections/weisssrv/infra/
                (weisssrv.infra.<role>)
 terraform/
   modules/     reusable module shapes: cloudflare-zone, tailscale-acl,
-               authentik-sso
+               authentik-sso, unifi-network
 lint/          shared config files (two yamllint profiles, gitleaks + GitLab
                ruleset, ruff, editorconfig, pre-commit) — see lint/README.md
 scripts/       the gates + generators CI jobs run: version tracking, deploy/
@@ -122,20 +122,21 @@ reached by passing inputs, never by forking a job.
   runner and is therefore weisssrv-only unless the tenant registers its own.
 - **a generated cluster** (weisssrv-cluster-template's output): a *new*
   platform repo, so it consumes the widest surface — CI includes, the Ansible
-  collection, and all three Terraform modules — but it is **pre-bootstrap** on
-  day one. That changes two things: `flux-lint` must be passed
-  `require_cluster_root: false` until `flux bootstrap` has written the gotk
-  files, and every pin (includes, `requirements.yml`, module sources) comes from
-  a single copier answer, `lib_ref`, rather than from hand-edited literals. The
-  generated repo runs on whichever runner its own instance provides, so it
-  passes `tags` explicitly rather than inheriting weisssrv's.
+  collection, and the Terraform modules it opts into — but it is
+  **pre-bootstrap** on day one. That changes two things: `flux-lint` must be
+  passed `require_cluster_root: false` until `flux bootstrap` has written the
+  gotk files, and every pin (includes, `requirements.yml`, module sources)
+  comes from a single copier answer, `lib_ref`, rather than hand-edited
+  literals. The generated repo runs on whichever runner its own instance
+  provides, so it passes `tags` explicitly rather than inheriting weisssrv's.
 
 ## Terraform modules
 
-`terraform/modules/` ships the generic shape of the three external-state
+`terraform/modules/` ships the generic shape of the four external-state
 modules a cluster needs — `cloudflare-zone` (DNS + zone settings),
-`tailscale-acl` (tailnet policy + Split-DNS) and `authentik-sso` (SSO objects).
-Consumers pin a tag on the module source and pass their own site data:
+`tailscale-acl` (tailnet policy + Split-DNS), `authentik-sso` (SSO objects) and
+`unifi-network` (VLANs, firewall zones and zone policies, WLANs on a UniFi
+gateway). Consumers pin a tag on the module source and pass their own site data:
 
 ```hcl
 module "zone" {
