@@ -169,6 +169,13 @@ variable "zones" {
     condition     = length(flatten([for z in var.zones : z.networks])) == length(distinct(flatten([for z in var.zones : z.networks])))
     error_message = "Each `networks` key may appear in at most one `zones` entry — membership is a full replacement on every apply, so a network claimed by two zones flips between them and policy evaluation is ambiguous."
   }
+
+  # An empty custom zone applies cleanly and segments nothing — policies naming
+  # it look like enforcement while matching no traffic.
+  validation {
+    condition     = alltrue([for z in var.zones : length(z.networks) > 0])
+    error_message = "Every `zones` entry must list at least one `networks` key — an empty custom zone applies successfully but segments nothing."
+  }
 }
 
 variable "builtin_zone_names" {
@@ -449,6 +456,29 @@ variable "clients" {
       for key, c in var.clients : c.fixed_ip == null || c.network != null
     ])
     error_message = "clients[*].fixed_ip requires `network` — the controller needs the network the reservation belongs to, and one whose address does not lie inside that network's subnet is never served."
+  }
+
+  # The MAC is the controller-side identity: two entries with one MAC are two
+  # Terraform resources fighting over one object (and MACs compare
+  # case-insensitively there).
+  validation {
+    condition     = length(var.clients) == length(distinct([for c in var.clients : lower(c.mac)]))
+    error_message = "clients[*].mac must be unique ignoring case — two entries for one MAC would make multiple Terraform resources manage the same controller object."
+  }
+
+  # One address, one client — a duplicated reservation inside a network is an
+  # address conflict the controller happily configures.
+  validation {
+    condition = (
+      length([for c in var.clients : c if c.fixed_ip != null])
+      == length(distinct([
+        # Not coalesce(): it refuses an empty-string fallback when network is
+        # null, which the fixed_ip-requires-network validation reports on its
+        # own terms.
+        for c in var.clients : "${c.network == null ? "" : c.network}:${c.fixed_ip}" if c.fixed_ip != null
+      ]))
+    )
+    error_message = "clients[*].fixed_ip must be unique within each network — duplicate reservations assign one address to multiple clients."
   }
 }
 

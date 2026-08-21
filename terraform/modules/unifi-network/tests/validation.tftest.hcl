@@ -1102,3 +1102,42 @@ run "a_gateway_only_site_plans_clean" {
     error_message = "An empty igmp_snooping_networks must write NO igmp_snooping block — `enabled = false` would disable snooping a site had configured in the UI."
   }
 }
+
+run "rejects_an_empty_zone_membership" {
+  command = plan
+
+  variables {
+    zones = {
+      iot   = { networks = ["iot"] }
+      empty = { networks = [] }
+    }
+  }
+
+  expect_failures = [var.zones]
+}
+
+run "rejects_a_duplicate_client_mac" {
+  command = plan
+
+  variables {
+    clients = {
+      one = { mac = "AA:BB:CC:DD:EE:FF", name = "one" }
+      two = { mac = "aa:bb:cc:dd:ee:ff", name = "two" }
+    }
+  }
+
+  expect_failures = [var.clients]
+}
+
+run "rejects_a_duplicate_fixed_ip_in_one_network" {
+  command = plan
+
+  variables {
+    clients = {
+      one = { mac = "AA:BB:CC:DD:EE:01", name = "one", fixed_ip = "10.0.30.50", network = "iot" }
+      two = { mac = "AA:BB:CC:DD:EE:02", name = "two", fixed_ip = "10.0.30.50", network = "iot" }
+    }
+  }
+
+  expect_failures = [var.clients]
+}
