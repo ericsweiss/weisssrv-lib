@@ -83,6 +83,16 @@ variable "networks" {
     error_message = "networks[*].vlan must be 1-4094 (omit it only for the controller's built-in Default network)."
   }
 
+  # The vlan-uniqueness check below skips nulls, so nothing else catches a
+  # forgotten `vlan`. The controller has exactly one untagged network, and a
+  # second entry without a tag does not fail: it lands UNTAGGED on the same wire
+  # as the management network, sharing its broadcast domain while every zone,
+  # policy and WLAN keyed to it reads as a segment of its own.
+  validation {
+    condition     = length([for n in var.networks : n if n.vlan == null]) <= 1
+    error_message = "At most ONE `networks` entry may omit `vlan` — the controller's built-in Default network. A second untagged entry is almost always a forgotten `vlan`, and it shares the management network's untagged wire instead of getting a segment."
+  }
+
   validation {
     condition = alltrue([
       for key, n in var.networks :
@@ -113,14 +123,20 @@ variable "networks" {
     error_message = "networks[*].dhcp.dns_servers takes at most 4 addresses (controller limit)."
   }
 
+  # Both halves are needed and neither is redundant. The regex fixes the SHAPE —
+  # four dotted decimal octets, so an IPv6 address or a CIDR is rejected here
+  # and not by a parser that would happily accept it. `cidrhost` fixes the
+  # RANGE, which no readable regex does: "10.0.30.999" is four dotted octets and
+  # is not an address, and a DHCP scope bound the controller rejects is found at
+  # apply time, partway through a supervised run.
   validation {
     condition = alltrue(flatten([
       for key, n in var.networks : n.dhcp == null ? [true] : [
         for address in concat([n.dhcp.start, n.dhcp.stop], n.dhcp.dns_servers) :
-        can(regex("^[0-9]{1,3}(\\.[0-9]{1,3}){3}$", address))
+        can(regex("^[0-9]{1,3}(\\.[0-9]{1,3}){3}$", address)) && can(cidrhost("${address}/32", 0))
       ]
     ]))
-    error_message = "networks[*].dhcp start, stop and dns_servers must be bare IPv4 addresses."
+    error_message = "networks[*].dhcp start, stop and dns_servers must be bare IPv4 addresses with every octet in 0-255 — \"10.0.30.999\" has the right shape and is not an address."
   }
 }
 
@@ -265,14 +281,23 @@ variable "policies" {
     error_message = "policies[*].create_allow_respond must be false for an ALLOW on protocol icmp/icmpv6 — the controller rejects the auto-created return rule. Write an explicit reverse policy instead."
   }
 
+  # An EMPTY list is rejected alongside two populated ones, because
+  # `matching_target` is derived from which list is non-null, not from what is
+  # in it: `ips = []` derives IP with nothing to match, and the controller
+  # stores a rule that matches no host — an allowance that silently does
+  # nothing, or a BLOCK that silently blocks nothing. Omitting the key is how
+  # "any host in that zone" is written.
   validation {
     condition = alltrue(flatten([
       for p in var.policies : [
-        for endpoint in [p.source, p.destination] :
-        endpoint.ips == null || endpoint.networks == null
+        for endpoint in [p.source, p.destination] : (
+          (endpoint.ips == null || endpoint.networks == null)
+          && (endpoint.ips == null ? true : length(endpoint.ips) > 0)
+          && (endpoint.networks == null ? true : length(endpoint.networks) > 0)
+        )
       ]
     ]))
-    error_message = "policies[*].source/destination may set `ips` or `networks`, not both — the provider derives one matching_target from whichever list is populated."
+    error_message = "policies[*].source/destination may set one non-empty `ips` or `networks` list, not both — the provider derives one matching_target from whichever list is populated, so an empty one matches nothing and omitting both is how `any host in that zone` is written."
   }
 
   # A port on `all`/`icmp` has nothing to match: the controller either 400s the
@@ -362,6 +387,10 @@ variable "qos_rate_name" {
     to. `unifi_wlan.user_group_id` is Required with no default, and it is read
     from this name through `data.unifi_client_qos_rate`; "Default" is the stock
     controller name.
+
+    The lookup runs only when `wlans` is non-empty. The stock name is
+    controller- and locale-dependent, so a gateway-only site would otherwise
+    fail every plan on a rate it never assigns to anything.
   EOT
   type        = string
   default     = "Default"
@@ -403,12 +432,16 @@ variable "clients" {
     error_message = "clients[*].mac must be a colon-separated MAC (aa:bb:cc:dd:ee:ff) — `terraform import unifi_client` rejects any other separator."
   }
 
+  # Shape then range, as on the DHCP bounds above: a reservation that is four
+  # dotted octets but not an address is a controller error during the apply.
   validation {
     condition = alltrue([
       for key, c in var.clients :
-      c.fixed_ip == null ? true : can(regex("^[0-9]{1,3}(\\.[0-9]{1,3}){3}$", c.fixed_ip))
+      c.fixed_ip == null ? true : (
+        can(regex("^[0-9]{1,3}(\\.[0-9]{1,3}){3}$", c.fixed_ip)) && can(cidrhost("${c.fixed_ip}/32", 0))
+      )
     ])
-    error_message = "clients[*].fixed_ip must be a bare IPv4 address."
+    error_message = "clients[*].fixed_ip must be a bare IPv4 address with every octet in 0-255."
   }
 
   validation {
@@ -445,12 +478,14 @@ variable "port_forwards" {
     error_message = "port_forwards[*].protocol must be tcp, udp or tcp_udp."
   }
 
+  # Shape then range, as on the DHCP bounds and the client reservations: a
+  # forward whose target is not an address is a WAN port that answers nothing.
   validation {
     condition = alltrue([
       for key, f in var.port_forwards :
-      can(regex("^[0-9]{1,3}(\\.[0-9]{1,3}){3}$", f.ip))
+      can(regex("^[0-9]{1,3}(\\.[0-9]{1,3}){3}$", f.ip)) && can(cidrhost("${f.ip}/32", 0))
     ])
-    error_message = "port_forwards[*].ip must be a bare IPv4 address (the LAN target)."
+    error_message = "port_forwards[*].ip must be a bare IPv4 address with every octet in 0-255 (the LAN target)."
   }
 
   validation {

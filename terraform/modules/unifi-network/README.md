@@ -103,12 +103,12 @@ validation in the root, so the failure names the missing item.
 
 | Input | Type | Default | Notes |
 |---|---|---|---|
-| `networks` | map(object) | — | Keyed by identity string; the key is what every other input references. `subnet` is gateway form (`10.0.30.1/24`), validated against the network-address form. `vlan` omitted only for the built-in Default; vlan ids and names must be unique. `purpose` is `corporate` or `guest` — `vlan-only` is rejected (`subnet` is required here). `dhcp = {enabled, start, stop, dns_servers, leasetime}`; a non-empty `dns_servers` sets `dns_enabled`, and omitting `dhcp` writes no `dhcp_server` at all. |
+| `networks` | map(object) | — | Keyed by identity string; the key is what every other input references. `subnet` is gateway form (`10.0.30.1/24`), validated against the network-address form. `vlan` omitted only for the built-in Default — at most ONE entry may omit it, and vlan ids and names must be unique. `purpose` is `corporate` or `guest` — `vlan-only` is rejected (`subnet` is required here). `dhcp = {enabled, start, stop, dns_servers, leasetime}`; a non-empty `dns_servers` sets `dns_enabled`, and omitting `dhcp` writes no `dhcp_server` at all. |
 | `zones` | map(object) | `{}` | Custom firewall zones keyed by DISPLAY NAME; `networks` lists `networks` keys, each of which may appear in at most one zone. Membership is a full replacement on every apply. |
 | `builtin_zone_names` | map(string) | `{internal="Internal", external="External", gateway="Gateway"}` | Short name → the controller's display name. Only the entries a policy endpoint actually names are read, so an unused one costs nothing; confirm the display names of the ones you use against the live controller. |
-| `policies` | list(object) | `[]` | `name` (unique — it is the resource key), `action` (`ALLOW`), `protocol` (`all`), `source`/`destination` `{zone, ips, networks, port}`, `create_allow_respond` (`true`, honoured for `ALLOW` only), `logging`. A `port` requires a tcp/udp/tcp_udp `protocol`. `zone` resolves against `zones` **and** `builtin_zone_names`. |
+| `policies` | list(object) | `[]` | `name` (unique — it is the resource key), `action` (`ALLOW`), `protocol` (`all`), `source`/`destination` `{zone, ips, networks, port}`, `create_allow_respond` (`true`, honoured for `ALLOW` only), `logging`. A `port` requires a tcp/udp/tcp_udp `protocol`. An endpoint sets at most one of `ips`/`networks` and neither may be empty — omit both for "any host in that zone". `zone` resolves against `zones` **and** `builtin_zone_names`. |
 | `wlans` | map(object) | `{}` | **sensitive.** `{ssid, network, passphrase, wpa3, l2_isolation, allow_2ghz_high_perf, hide}`. `security = "wpapsk"` and `wlan_bands = ["2g","5g"]` are fixed. |
-| `qos_rate_name` | string | `"Default"` | Client QoS rate (old "user group") every WLAN is assigned to; `unifi_wlan.user_group_id` is Required with no default. |
+| `qos_rate_name` | string | `"Default"` | Client QoS rate (old "user group") every WLAN is assigned to; `unifi_wlan.user_group_id` is Required with no default. Read only when `wlans` is non-empty, so a gateway-only site never fails a plan on a rate name it does not use. |
 | `clients` | map(object) | `{}` | `{mac (colon form), name, fixed_ip, network, note}`. `fixed_ip` requires `network` and must lie inside that network's SUBNET — not inside its DHCP pool, and reserving outside the pool is the normal way to avoid colliding with a dynamic lease. |
 | `port_forwards` | map(object) | `{}` | `{protocol, wan_port, ip, port}`; ports are strings, so ranges and lists work. Primary WAN, any source. |
 | `site_settings` | object | hardened baseline | `auto_upgrade=false`, `network_optimization=false`, `upnp=false` (also NAT-PMP), `ips_mode="ids"`, `igmp_snooping_networks=[]` — the empty list leaves the site's IGMP-snooping toggle **unmanaged**, see below. |
@@ -133,7 +133,8 @@ console if that is what you meant.
 ## What this module does not validate
 
 Every address input is checked for SHAPE (bare IPv4, IPv4 CIDR, gateway-form
-subnet) and never for CONTAINMENT. `networks[*].dhcp.start`/`.stop` and
+subnet) and for octet RANGE — `10.0.30.999` is four dotted octets and is
+rejected — but never for CONTAINMENT. `networks[*].dhcp.start`/`.stop` and
 `clients[*].fixed_ip` are not cross-checked against the subnet they belong to:
 Terraform has no `cidrcontains`, and the arithmetic that approximates it is
 worse than nothing when it is subtly wrong on a file that writes a gateway's
@@ -290,7 +291,9 @@ confirming a run goes red — plus the derived attributes that have no other
 guard: `matching_target` and `port_matching_type` on **both** endpoints, the
 ALLOW-only `create_allow_respond`, `dhcp_server.dns_enabled` and the DHCP
 start/stop pair, zone `network_ids` membership, `l2_isolation`, the `no2ghz_oui`
-inversion, the WPA3/PMF pairing and the conditional `igmp_snooping` block.
+inversion, the WPA3/PMF pairing, the conditional `igmp_snooping` block and the
+two conditional data reads (the built-in zones, and the client QoS rate a
+gateway-only site must skip).
 `terraform validate` evaluates no caller values, so it runs none of them; the
 runs are plan-only against a `mock_provider`, so they need no controller and
 create no state. CI runs the same command through `ci/validate/terraform.yml`

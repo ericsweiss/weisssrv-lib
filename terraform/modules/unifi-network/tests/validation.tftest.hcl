@@ -311,6 +311,14 @@ run "a_whole_site_plans_clean" {
     condition     = unifi_port_forward.this["wg"].wan.interface == "wan" && unifi_port_forward.this["wg"].forward.port == "51820"
     error_message = "Port forwards must land on the primary WAN with the declared forward target."
   }
+
+  # The positive half of the counted QoS lookup; the gateway-only run below is
+  # the zero half. `user_group_id` is Required on every WLAN, so a site WITH
+  # WLANs must still read the rate.
+  assert {
+    condition     = length(data.unifi_client_qos_rate.default) == 1
+    error_message = "A site with WLANs must read the client QoS rate — `unifi_wlan.user_group_id` is Required with no default."
+  }
 }
 
 run "rejects_a_subnet_in_network_form" {
@@ -379,6 +387,22 @@ run "rejects_a_vlan_of_zero" {
   expect_failures = [var.networks]
 }
 
+# The vlan-uniqueness check skips nulls, so a forgotten `vlan` on a second
+# network is caught only here — and it applies cleanly, landing the network
+# untagged next to the management one.
+run "rejects_a_second_untagged_network" {
+  command = plan
+
+  variables {
+    networks = {
+      default = { name = "Default", subnet = "10.0.1.1/24" }
+      iot     = { name = "IoT", subnet = "10.0.30.1/24" }
+    }
+  }
+
+  expect_failures = [var.networks]
+}
+
 run "rejects_duplicate_network_vlans" {
   command = plan
 
@@ -436,6 +460,29 @@ run "rejects_a_malformed_dhcp_address" {
         dhcp = {
           start = "10.0.30.50/24"
           stop  = "10.0.30.249"
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.networks]
+}
+
+# Four dotted decimal octets, and not an address: the shape regex passes it, so
+# only the `cidrhost` half rejects it — before a supervised apply gets a
+# controller error partway through.
+run "rejects_an_out_of_range_dhcp_octet" {
+  command = plan
+
+  variables {
+    networks = {
+      iot = {
+        name   = "IoT"
+        vlan   = 30
+        subnet = "10.0.30.1/24"
+        dhcp = {
+          start = "10.0.30.50"
+          stop  = "10.0.30.999"
         }
       }
     }
@@ -762,6 +809,43 @@ run "rejects_an_endpoint_matching_both_ips_and_networks" {
   expect_failures = [var.policies]
 }
 
+# matching_target derives from which list is NON-NULL, not from what is in it:
+# an empty one derives IP/NETWORK with nothing to match, and the controller
+# stores a rule that matches no host. Omitting the key is how "any" is written,
+# so an empty list is never what the author meant.
+run "rejects_an_empty_policy_ips_list" {
+  command = plan
+
+  variables {
+    policies = [
+      {
+        name        = "iot-to-dns"
+        protocol    = "tcp_udp"
+        source      = { zone = "iot" }
+        destination = { zone = "internal", ips = [], port = "53" }
+      },
+    ]
+  }
+
+  expect_failures = [var.policies]
+}
+
+run "rejects_an_empty_policy_networks_list" {
+  command = plan
+
+  variables {
+    policies = [
+      {
+        name        = "internal-to-iot"
+        source      = { zone = "internal" }
+        destination = { zone = "iot", networks = [] }
+      },
+    ]
+  }
+
+  expect_failures = [var.policies]
+}
+
 run "rejects_an_unknown_policy_action" {
   command = plan
 
@@ -879,6 +963,23 @@ run "rejects_a_malformed_client_fixed_ip" {
   expect_failures = [var.clients]
 }
 
+run "rejects_an_out_of_range_client_fixed_ip" {
+  command = plan
+
+  variables {
+    clients = {
+      hue = {
+        mac      = "00:17:88:7E:C7:A2"
+        name     = "hue-bridge"
+        fixed_ip = "10.0.30.999"
+        network  = "iot"
+      }
+    }
+  }
+
+  expect_failures = [var.clients]
+}
+
 run "rejects_a_client_naming_an_unknown_network" {
   command = plan
 
@@ -932,6 +1033,18 @@ run "rejects_a_malformed_port_forward_ip" {
   expect_failures = [var.port_forwards]
 }
 
+run "rejects_an_out_of_range_port_forward_ip" {
+  command = plan
+
+  variables {
+    port_forwards = {
+      plex = { wan_port = "32400", ip = "192.168.0.999", port = "32400" }
+    }
+  }
+
+  expect_failures = [var.port_forwards]
+}
+
 run "rejects_an_unknown_ips_mode" {
   command = plan
 
@@ -974,6 +1087,14 @@ run "a_gateway_only_site_plans_clean" {
   assert {
     condition     = length(unifi_wlan.this) == 0 && length(unifi_client.this) == 0 && length(unifi_port_forward.this) == 0
     error_message = "Empty wlans/clients/port_forwards must plan no resources — and `wlans = {}` must survive the nonsensitive() unwrap."
+  }
+
+  # The QoS rate is looked up BY NAME, and the stock name is controller- and
+  # locale-dependent: reading it unconditionally fails the whole plan on a site
+  # that has no SSID to assign it to.
+  assert {
+    condition     = length(data.unifi_client_qos_rate.default) == 0
+    error_message = "A site with no WLANs must skip the client QoS rate lookup entirely — a gateway-only site must not fail its plan on a localized rate name it never uses."
   }
 
   assert {

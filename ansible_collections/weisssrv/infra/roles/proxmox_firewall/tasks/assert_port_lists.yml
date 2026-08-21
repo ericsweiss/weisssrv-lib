@@ -71,6 +71,17 @@
 # an EMPTY list renders the surface with no rules at all — DNS closed on every
 # VLAN, or the internal ingress closed to every user — in a cluster.fw that
 # compiles perfectly and reports nothing.
+#
+# The container being a non-empty list says nothing about what is IN it, and the
+# template interpolates each element straight into `+dc/{{ src }}`: a null
+# renders `+dc/None`, an empty string renders a bare `+dc/`, and a name with a
+# space in it splits the rule into two arguments.
+#
+# Both element tests are needed. `match` STRINGIFIES before matching, so a null
+# reaches it as "None" and passes — the same silent conversion the template
+# performs — and only the `string` test rejects it (a bare number too). `match`
+# is what rejects the empty and whitespace-bearing names the `string` test
+# admits.
 - name: Assert the client-scope source lists are non-empty lists of set names
   ansible.builtin.assert:
     that:
@@ -78,14 +89,17 @@
       - lookup('vars', item) is not string
       - lookup('vars', item) is not mapping
       - lookup('vars', item) | length > 0
+      - lookup('vars', item) | select('string') | list | length == lookup('vars', item) | length
+      - lookup('vars', item) | select('match', '^\S+$') | list | length == lookup('vars', item) | length
     fail_msg: >-
-      {{ item }} must be a non-empty LIST of IPSet names
+      {{ item }} must be a non-empty LIST of non-empty IPSet NAMES
       (e.g. `[admin_ts, dns_clients]`) — cluster.fw.j2 renders each entry as
       `+dc/<name>`, which resolves a datacenter IPSet only (a datacenter ALIAS
       is `dc/<name>`, a different syntax this list does not render). A bare
       scalar is iterated per character into rules naming sets that do not
-      exist, and an empty list silently removes every rule from the surface it
-      scopes.
+      exist, an empty list silently removes every rule from the surface it
+      scopes, and an element that is null, empty or carries whitespace renders
+      `+dc/None`, a bare `+dc/`, or a rule split across an argument boundary.
     quiet: true
   loop:
     - proxmox_firewall_dns_client_sources

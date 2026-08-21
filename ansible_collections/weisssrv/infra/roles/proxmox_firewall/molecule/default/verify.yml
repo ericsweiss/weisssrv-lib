@@ -261,6 +261,41 @@
           ansible.builtin.set_fact:
             firewall_empty_ingress_scope_rejected: true
 
+    # The container tests above say nothing about what is IN the list, and the
+    # template interpolates each element straight into `+dc/{{ src }}`. A name
+    # written on its own line with the value omitted is a null element, which
+    # renders `+dc/None` — a rule naming an IPSet that does not exist.
+    - name: Drive the client-scope schema guard — a null element
+      block:
+        - name: Include the schema guard with a null element in the list
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            proxmox_firewall_dns_admin_ports: []
+            proxmox_firewall_metrics_scrape_ports: []
+            proxmox_firewall_dns_client_sources: [null]
+            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, lan_clients]
+      rescue:
+        - name: Record that the null element was rejected
+          ansible.builtin.set_fact:
+            firewall_null_client_element_rejected: true
+
+    # An empty string renders a bare `+dc/` with no set name, which pve-firewall
+    # refuses to compile — and it sits NEXT TO a valid entry, so the list is a
+    # non-empty list of strings and every container test passes it.
+    - name: Drive the client-scope schema guard — an empty-string element
+      block:
+        - name: Include the schema guard with an empty-string element
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            proxmox_firewall_dns_admin_ports: []
+            proxmox_firewall_metrics_scrape_ports: []
+            proxmox_firewall_dns_client_sources: ["", admin_ts]
+            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, lan_clients]
+      rescue:
+        - name: Record that the empty-string element was rejected
+          ansible.builtin.set_fact:
+            firewall_empty_client_element_rejected: true
+
     - name: Assert the hand-authored list guards fail closed on every shape
       ansible.builtin.assert:
         that:
@@ -271,15 +306,19 @@
           - firewall_scalar_client_scope_rejected | default(false)
           - firewall_empty_dns_scope_rejected | default(false)
           - firewall_empty_ingress_scope_rejected | default(false)
+          - firewall_null_client_element_rejected | default(false)
+          - firewall_empty_client_element_rejected | default(false)
         fail_msg: >-
           A hand-authored list guard accepted a scalar or mapping `sources`, an
-          entry with no `sources` key, a `port:` with no value, or an empty
-          client-scope list — each writes a cluster.fw that either refuses to
-          compile or silently closes a whole service surface, AFTER the role
-          wrote it and notified the reload handler.
+          entry with no `sources` key, a `port:` with no value, an empty
+          client-scope list, or a null/empty ELEMENT inside one — each writes a
+          cluster.fw that either refuses to compile or silently closes a whole
+          service surface, AFTER the role wrote it and notified the reload
+          handler.
         success_msg: >-
           hand-authored list guards fail closed on scalar/mapping/missing
-          sources, on a valueless port, and on an empty client scope
+          sources, on a valueless port, on an empty client scope, and on a
+          null or empty element inside one
 
     # Per-application groups come from proxmox_firewall_security_groups
     # (molecule.yml supplies a stand-in site list). One entry's `rules` is an

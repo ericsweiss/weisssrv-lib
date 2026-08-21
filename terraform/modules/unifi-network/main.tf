@@ -4,16 +4,26 @@
 # never a device. README "What this module cannot manage" is the list, and the
 # consuming repo's runbook is where those steps live.
 
-# `unifi_wlan.user_group_id` is Required with no default; the stock client QoS
-# rate is the one every SSID here uses.
-data "unifi_client_qos_rate" "default" {
-  name = var.qos_rate_name
-}
-
 locals {
   policy_zones = distinct(flatten([
     for p in var.policies : [p.source.zone, p.destination.zone]
   ]))
+
+  # `for_each` and `count` both reject a value derived from a sensitive
+  # variable, and var.wlans is sensitive because it carries passphrases. The
+  # SHAPE of a WLAN is not a secret: splitting it out keeps both legal and keeps
+  # the plan readable, while `passphrase` is read straight from var.wlans below
+  # and therefore stays sensitive.
+  wlans = nonsensitive({
+    for key, w in var.wlans : key => {
+      ssid                 = w.ssid
+      network              = w.network
+      wpa3                 = w.wpa3
+      l2_isolation         = w.l2_isolation
+      allow_2ghz_high_perf = w.allow_2ghz_high_perf
+      hide                 = w.hide
+    }
+  })
 
   # Only the built-ins a policy names are read. Every entry is a data read on
   # every plan — the read-only drift plan included — and a display name that is
@@ -23,6 +33,20 @@ locals {
     for key, name in var.builtin_zone_names : key => name
     if contains(local.policy_zones, key)
   }
+}
+
+# `unifi_wlan.user_group_id` is Required with no default; the stock client QoS
+# rate is the one every SSID here uses.
+#
+# Read only when there is a WLAN to assign it to. The lookup is by NAME and the
+# stock rate's name is controller- and locale-dependent, so reading it
+# unconditionally fails every plan on a gateway-only site over a QoS rate that
+# site never uses — the same reason the built-in zones above are read only when
+# a policy names one.
+data "unifi_client_qos_rate" "default" {
+  count = length(local.wlans) > 0 ? 1 : 0
+
+  name = var.qos_rate_name
 }
 
 # Built-in zones are READ, never managed: v0.55.0 cannot import one by name (the
@@ -83,22 +107,6 @@ locals {
   )
 
   policies = { for p in var.policies : p.name => p }
-
-  # `for_each` rejects any value derived from a sensitive variable, and
-  # var.wlans is sensitive because it carries passphrases. The SHAPE of a WLAN
-  # is not a secret: splitting it out keeps for_each legal and keeps the plan
-  # readable, while `passphrase` is read straight from var.wlans below and
-  # therefore stays sensitive.
-  wlans = nonsensitive({
-    for key, w in var.wlans : key => {
-      ssid                 = w.ssid
-      network              = w.network
-      wpa3                 = w.wpa3
-      l2_isolation         = w.l2_isolation
-      allow_2ghz_high_perf = w.allow_2ghz_high_perf
-      hide                 = w.hide
-    }
-  })
 }
 
 resource "unifi_firewall_zone" "this" {
@@ -208,8 +216,10 @@ resource "unifi_wlan" "this" {
   name = each.value.ssid
   # PSK only, by design: this module has no RADIUS inputs, and `security` is a
   # Required attribute with no default.
-  security      = "wpapsk"
-  user_group_id = data.unifi_client_qos_rate.default.id
+  security = "wpapsk"
+  # Index 0, not a splat: the data source is counted on this map being non-empty
+  # (above), so inside this for_each it always exists.
+  user_group_id = data.unifi_client_qos_rate.default[0].id
   network_id    = lookup(local.network_ids, each.value.network, "")
   passphrase    = var.wlans[each.key].passphrase
 
