@@ -78,11 +78,16 @@ IN ACCEPT -source +dc/{{ src }} -p tcp -dport {{ entry.port }} -log nolog{% if e
 
 {% endfor %}
 {% endfor %}
+{# Standard DNS. The client scope is site data
+   (proxmox_firewall_dns_client_sources): resolution is a service every VLAN
+   needs, which is a wider set than the admin sets the resolver's own
+   management surfaces above are pinned to. Default = the two admin sets, so an
+   unsegmented site renders exactly what it always did. #}
 # Standard DNS
-IN ACCEPT -source +dc/admin_ts -p tcp -dport 53 -log nolog
-IN ACCEPT -source +dc/admin_ts -p udp -dport 53 -log nolog
-IN ACCEPT -source +dc/admin_lan -p tcp -dport 53 -log nolog
-IN ACCEPT -source +dc/admin_lan -p udp -dport 53 -log nolog
+{% for src in proxmox_firewall_dns_client_sources %}
+IN ACCEPT -source +dc/{{ src }} -p tcp -dport 53 -log nolog
+IN ACCEPT -source +dc/{{ src }} -p udp -dport 53 -log nolog
+{% endfor %}
 
 {# Per-application groups are site data, supplied as
    proxmox_firewall_security_groups (empty by default; worked example in the
@@ -128,10 +133,15 @@ IN ACCEPT -source +dc/admin_lan -p tcp -dport 6443 -log nolog
 
 [group sg-k3s-ingress-int]
 
-IN ACCEPT -source +dc/admin_ts -p tcp -dport 443 -log nolog
-IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog
-IN ACCEPT -source +dc/admin_ts -p tcp -dport 80 -log nolog
-IN ACCEPT -source +dc/admin_lan -p tcp -dport 80 -log nolog
+{# The internal ingress serves ordinary users, not just operators, so its client
+   scope is site data (proxmox_firewall_k3s_ingress_int_sources) rather than the
+   admin sets. Default = the two admin sets — unchanged for an unsegmented
+   site. Port stays the outer loop: :443 for every source, then :80. #}
+{% for port in [443, 80] %}
+{% for src in proxmox_firewall_k3s_ingress_int_sources %}
+IN ACCEPT -source +dc/{{ src }} -p tcp -dport {{ port }} -log nolog
+{% endfor %}
+{% endfor %}
 
 [group sg-k3s-ingress-pub]
 

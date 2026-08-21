@@ -54,6 +54,8 @@ into the secret store the exporters read.
 | `proxmox_firewall_smb_client_cidrs` | admin LAN | Sources allowed SMB (`sg-smb-server`) |
 | `proxmox_firewall_security_groups` | `[]` | Per-application groups (see below) |
 | `proxmox_firewall_dns_admin_ports` | `:443` + `:3000`, admin sets only | Resolver admin surfaces in `sg-dns` (`{port, sources[], comment?}`, asserted) |
+| `proxmox_firewall_dns_client_sources` | `[admin_ts, admin_lan]` | IPSets allowed to resolve (`:53` tcp+udp in `sg-dns`) — point at a wider client set once `admin_lan` shrinks to the management subnet |
+| `proxmox_firewall_k3s_ingress_int_sources` | `[admin_ts, admin_lan]` | IPSets allowed at the internal Traefik ingress (`:80`/`:443` in `sg-k3s-ingress-int`) — same split |
 | `proxmox_firewall_metrics_scrape_ports` | `[]` | Application scrape targets appended to `sg-metrics` (same `{port, sources[], comment?}` schema, asserted) |
 | `proxmox_firewall_insecure_migration_ports` | `false` | Open the cleartext live-migration range (60000-60050) |
 | `proxmox_firewall_wan_wireguard_vips` | `[]` | VIPs the WAN WireGuard `-dest` rule is scoped to; empty = no such rule |
@@ -132,7 +134,32 @@ credentialed surface:
   `proxmox_firewall_dns_admin_ports`, which defaults to the two admin sets on
   :443 and :3000. Admitting a scraper to the plaintext :3000 API means adding
   its set to that entry's `sources` — that API answers HTTP Basic in the clear.
-- Both lists share one schema, asserted at role entry: `port` is required and
+- The two **service** surfaces — resolution (`:53` in `sg-dns`) and the internal
+  ingress (`:80`/`:443` in `sg-k3s-ingress-int`) — take their client scope from
+  `proxmox_firewall_dns_client_sources` and
+  `proxmox_firewall_k3s_ingress_int_sources`. Both default to
+  `[admin_ts, admin_lan]`, so a site that leaves them alone renders what it
+  always did. On a segmented network they are what lets `admin_lan` shrink to
+  the management subnet without taking DNS or the apps down with it: declare the
+  client subnets as their own IPSets and name them here.
+
+  ```yaml
+  firewall_ipset_special_entries:
+    dns_clients:                       # every VLAN needs resolution
+      - {ip: 10.0.20.0/24, comment: home}
+      - {ip: 10.0.30.0/24, comment: iot}
+    lan_clients:                       # trusted user VLANs reach the apps
+      - {ip: 10.0.20.0/24, comment: home}
+
+  proxmox_firewall_admin_lan_cidrs: ["10.0.1.0/24"]   # management only
+  proxmox_firewall_dns_client_sources: [admin_ts, dns_clients]
+  proxmox_firewall_k3s_ingress_int_sources: [admin_ts, lan_clients]
+  ```
+
+  Each name renders one `+dc/<name>` rule per port, in list order. The resolver
+  *admin* surfaces stay on `proxmox_firewall_dns_admin_ports` — widening the
+  client scope must not widen the credentialed API with it.
+- Both port lists share one schema, asserted at role entry: `port` is required and
   `sources` must be a non-empty **list**. A bare scalar (`sources: k3s_nodes`)
   is rejected — the template iterates it per character, emitting rules that name
   IPSets which do not exist.

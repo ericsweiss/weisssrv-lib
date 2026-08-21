@@ -66,6 +66,26 @@ proxmox_firewall_dns_admin_ports:
     sources: [admin_ts, admin_lan]
     comment: resolver plaintext admin API
 
+# Client scopes for the two SERVICE surfaces the role owns — resolution (:53
+# tcp+udp in sg-dns) and the internal Traefik ingress (:80/:443 in
+# sg-k3s-ingress-int). Both are lists of IPSet (or alias) names, each rendered
+# as one `+dc/<name>` rule in the order given.
+#
+# They are separate from the admin sets on purpose. `admin_lan` is the
+# management plane (:22, :8006, :6443); a resolver and an app ingress are used
+# by every device on the network, so on a segmented site they belong to a wider,
+# differently-scoped set. The pattern: declare the client subnets as their own
+# IPSets via `firewall_ipset_special_entries` (e.g. `dns_clients` covering every
+# VLAN, `lan_clients` covering the trusted user VLANs), then point these two
+# variables at them — which lets `admin_lan` shrink to the management subnet
+# alone without taking DNS or the ingress down with it.
+#
+# The defaults are the two admin sets, i.e. exactly what the role rendered
+# before these variables existed: an unsegmented site changes nothing by
+# upgrading.
+proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
+proxmox_firewall_k3s_ingress_int_sources: [admin_ts, admin_lan]
+
 # Application scrape targets appended to sg-metrics. Same entry schema as
 # proxmox_firewall_dns_admin_ports above — {port, sources[], comment?} — so the
 # two hand-authored lists a site writes next to each other take the same shape.
