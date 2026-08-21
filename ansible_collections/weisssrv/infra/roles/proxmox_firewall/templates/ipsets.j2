@@ -36,12 +36,16 @@
 {%- endfor -%}
 
 {#- Render every discovered IPSet (sorted), so adding a set to a host's
-    firewall_ipsets in inventory is enough — no hardcoded whitelist to update. -#}
+    firewall_ipsets in inventory is enough — no hardcoded whitelist to update.
+    A set ipset_comments does not describe (any site-declared scope, e.g. a
+    dns_clients/lan_clients VLAN scope) gets NO header comment line at all —
+    emitting it unconditionally left a bare `# ` behind. -#}
 {%- for ipset_name in ipset_members.keys() | sort %}
 [IPSET {{ ipset_name }}]
 
-# {{ ipset_comments.get(ipset_name, '') }}
-{% for member in ipset_members[ipset_name] | sort(attribute='ip') -%}
+{% if ipset_comments.get(ipset_name) %}# {{ ipset_comments[ipset_name] }}
+{% endif %}
+{%- for member in ipset_members[ipset_name] | sort(attribute='ip') -%}
 {{ member.ip }}  # {{ member.name }}
 {% endfor %}
 {%- endfor -%}

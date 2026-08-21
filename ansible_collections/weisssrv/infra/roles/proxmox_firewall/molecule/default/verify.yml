@@ -452,6 +452,25 @@
           An inventory address rendered into the wrong IPSet — check
           firewall_ipsets / firewall_ipset_special_entries and templates/ipsets.j2.
 
+    # The IPSet header comment comes from a built-in map that only describes the
+    # sets this collection ships. A site-declared scope (dns_clients,
+    # lan_clients, …) has no entry, and the header line must then be omitted
+    # entirely rather than rendering an empty `# `.
+    - name: Site-declared IPSets render no empty header comment
+      vars:
+        dns_clients: "{{ cluster_fw_sections.get('IPSET dns_clients', '') }}"
+        empty_comment_lines: >-
+          {{ cluster_fw_text | regex_findall('^#[ \t]*$', multiline=True) }}
+      ansible.builtin.assert:
+        that:
+          - empty_comment_lines | length == 0
+          - "'192.168.0.0/24' in dns_clients"
+          - "'# K3s cluster nodes + API VIP' in cluster_fw_text"
+        fail_msg: >-
+          cluster.fw carries a bare `# ` line, or a described set lost its
+          header comment — check the ipset_comments lookup in
+          templates/ipsets.j2.
+
     - name: Host.fw exists
       ansible.builtin.stat:
         path: "{{ host_fw }}"
