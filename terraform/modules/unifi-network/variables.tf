@@ -203,8 +203,12 @@ variable "policies" {
     for `action = "ALLOW"` only: a BLOCK or REJECT always writes false, because
     the companion rule the controller would create is an ALLOW that Terraform
     never holds in state, never reports as drift, and that outlives the deny it
-    was attached to. The controller also REJECTS it for `icmp`/`icmpv6`
-    (validated below) — pair an ICMP allow with an explicit reverse policy.
+    was attached to. The controller also REJECTS it for `icmp`/`icmpv6`, so an
+    `ALLOW` on those protocols must set it false (validated below) and pair
+    with an explicit reverse policy. That validation is scoped to `ALLOW` for
+    the same reason the derivation is: on a BLOCK or REJECT the attribute never
+    reaches the controller, so an icmp deny left at the default is accepted and
+    writes false.
   EOT
   type = list(object({
     name     = string
@@ -250,12 +254,15 @@ variable "policies" {
   }
 
   # FirewallPolicyCreateRespondTrafficPolicyNotAllowed — an apply-time 400.
+  # Scoped to ALLOW to match the derivation in main.tf: a BLOCK/REJECT always
+  # writes false whatever the entry asked for, so the combination that can
+  # actually reach the controller is ALLOW + icmp/icmpv6 + true.
   validation {
     condition = alltrue([
       for p in var.policies :
-      contains(["icmp", "icmpv6"], p.protocol) ? !p.create_allow_respond : true
+      contains(["icmp", "icmpv6"], p.protocol) && p.action == "ALLOW" ? !p.create_allow_respond : true
     ])
-    error_message = "policies[*].create_allow_respond must be false for protocol icmp/icmpv6 — the controller rejects the auto-created return rule. Write an explicit reverse policy instead."
+    error_message = "policies[*].create_allow_respond must be false for an ALLOW on protocol icmp/icmpv6 — the controller rejects the auto-created return rule. Write an explicit reverse policy instead."
   }
 
   validation {

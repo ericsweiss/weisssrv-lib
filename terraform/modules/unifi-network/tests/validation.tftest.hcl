@@ -630,6 +630,49 @@ run "rejects_create_allow_respond_on_icmpv6" {
   expect_failures = [var.policies]
 }
 
+# The other direction of the same rule: the validation is scoped to ALLOW
+# because main.tf derives the attribute, so an icmp deny left at the default
+# `true` is accepted and still writes false. An explicit false on an icmp ALLOW
+# is the shape a real ICMP pair uses.
+run "accepts_icmp_denies_at_the_default_and_an_explicit_icmp_allow" {
+  command = plan
+
+  variables {
+    policies = [
+      {
+        name        = "iot-ping-homelab-block"
+        action      = "BLOCK"
+        protocol    = "icmp"
+        source      = { zone = "iot" }
+        destination = { zone = "internal" }
+      },
+      {
+        name        = "iot-ping6-homelab-reject"
+        action      = "REJECT"
+        protocol    = "icmpv6"
+        source      = { zone = "iot" }
+        destination = { zone = "internal" }
+      },
+      {
+        name                 = "homelab-to-iot-icmp"
+        protocol             = "icmp"
+        create_allow_respond = false
+        source               = { zone = "internal" }
+        destination          = { zone = "iot" }
+      },
+    ]
+  }
+
+  assert {
+    condition = (
+      unifi_firewall_policy.this["iot-ping-homelab-block"].create_allow_respond == false
+      && unifi_firewall_policy.this["iot-ping6-homelab-reject"].create_allow_respond == false
+      && unifi_firewall_policy.this["homelab-to-iot-icmp"].create_allow_respond == false
+    )
+    error_message = "An icmp/icmpv6 deny must be accepted at the default and derive create_allow_respond = false, and an explicit false on an icmp ALLOW must pass validation."
+  }
+}
+
 run "rejects_an_unknown_policy_protocol" {
   command = plan
 

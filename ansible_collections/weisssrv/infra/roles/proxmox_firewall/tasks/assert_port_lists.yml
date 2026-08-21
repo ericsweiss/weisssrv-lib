@@ -35,7 +35,7 @@
     fail_msg: >-
       proxmox_firewall_dns_admin_ports entry {{ item }} is malformed: every
       entry needs a `port` with a value and a non-empty `sources` LIST naming
-      IPSets or aliases (e.g. `- {port: 3000, sources: [admin_ts, admin_lan]}`)
+      IPSets (e.g. `- {port: 3000, sources: [admin_ts, admin_lan]}`)
       — a bare scalar is iterated per character by the template, and an empty
       `port` renders as `-dport None`.
     quiet: true
@@ -56,7 +56,7 @@
     fail_msg: >-
       proxmox_firewall_metrics_scrape_ports entry {{ item }} is malformed:
       every entry needs a `port` with a value and a non-empty `sources` LIST
-      naming IPSets or aliases (e.g. `- {port: 32400, sources: [k3s_nodes],
+      naming IPSets (e.g. `- {port: 32400, sources: [k3s_nodes],
       comment: plex}`) — a bare scalar is iterated per character by the
       template, and an empty `port` renders as `-dport None`. sg-metrics is
       applied on EVERY node, so the scrapers are named rather than defaulted.
@@ -65,7 +65,7 @@
   loop_control:
     label: "{{ item.port | default('?') }}"
 
-# The two client-scope lists are flat lists of IPSet/alias names, iterated by
+# The two client-scope lists are flat lists of IPSet names, iterated by
 # the same `{% for src in ... %}` construct. Both failure shapes are silent:
 # a scalar renders one rule per character naming IPSets that do not exist, and
 # an EMPTY list renders the surface with no rules at all — DNS closed on every
@@ -79,10 +79,13 @@
       - lookup('vars', item) is not mapping
       - lookup('vars', item) | length > 0
     fail_msg: >-
-      {{ item }} must be a non-empty LIST of IPSet or alias names
-      (e.g. `[admin_ts, dns_clients]`) — a bare scalar is iterated per character
-      by cluster.fw.j2 into rules naming sets that do not exist, and an empty
-      list silently removes every rule from the surface it scopes.
+      {{ item }} must be a non-empty LIST of IPSet names
+      (e.g. `[admin_ts, dns_clients]`) — cluster.fw.j2 renders each entry as
+      `+dc/<name>`, which resolves a datacenter IPSet only (a datacenter ALIAS
+      is `dc/<name>`, a different syntax this list does not render). A bare
+      scalar is iterated per character into rules naming sets that do not
+      exist, and an empty list silently removes every rule from the surface it
+      scopes.
     quiet: true
   loop:
     - proxmox_firewall_dns_client_sources

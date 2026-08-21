@@ -53,8 +53,9 @@ proxmox_firewall_wan_wireguard_vips: []
 
 # Admin surfaces of the DNS appliances, rendered into sg-dns. Entry schema is
 # shared with proxmox_firewall_metrics_scrape_ports below and asserted in
-# tasks/main.yml: {port, sources[], comment?}, where `sources` names IPSets or
-# aliases and must be non-empty. The default keeps the resolver UI/API on the
+# tasks/main.yml: {port, sources[], comment?}, where `sources` names IPSets and
+# must be non-empty (each entry renders as `+dc/<name>`, which resolves a
+# datacenter IPSet, not an alias). The default keeps the resolver UI/API on the
 # two admin sets only — the plaintext :3000 API carries a reusable admin
 # credential, so any in-cluster scraper that needs it must be added here
 # deliberately.
@@ -68,8 +69,9 @@ proxmox_firewall_dns_admin_ports:
 
 # Client scopes for the two SERVICE surfaces the role owns — resolution (:53
 # tcp+udp in sg-dns) and the internal Traefik ingress (:80/:443 in
-# sg-k3s-ingress-int). Both are lists of IPSet (or alias) names, each rendered
-# as one `+dc/<name>` rule in the order given.
+# sg-k3s-ingress-int). Both are lists of IPSet names, each rendered as one
+# `+dc/<name>` rule in the order given — that syntax resolves a datacenter
+# IPSet only, so a datacenter alias (`dc/<name>`) cannot be named here.
 #
 # They are separate from the admin sets on purpose. `admin_lan` is the
 # management plane (:22, :8006, :6443); a resolver and an app ingress are used
