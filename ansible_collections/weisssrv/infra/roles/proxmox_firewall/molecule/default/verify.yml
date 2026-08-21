@@ -89,19 +89,28 @@
           - "'IN ACCEPT -p tcp -dport 22 -log nolog' not in sg_host_admin"
           # sg-dns: DoT and the resolver ports are built in; the admin
           # surfaces come from proxmox_firewall_dns_admin_ports, whose sources
-          # this scenario extends with k3s_nodes on :3000 only.
-          - "'IN ACCEPT -source +dc/admin_lan -p udp -dport 853 -log nolog' in sg_dns"
-          - "'IN ACCEPT -source +dc/admin_lan -p udp -dport 53 -log nolog' in sg_dns"
-          - "'IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 3000 -log nolog' in sg_dns"
-          - "'IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog' in sg_dns"
-          - "'IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 443 -log nolog' not in sg_dns"
-          # The two client scopes (proxmox_firewall_dns_client_sources and
+          # this scenario extends with k3s_nodes on :3000 only. Both client
+          # scopes (proxmox_firewall_dns_client_sources and
           # proxmox_firewall_k3s_ingress_int_sources) are left at their role
-          # defaults here, so both surfaces must render exactly the four lines
-          # they did before the seams existed — same sources, same order.
-          - "'IN ACCEPT -source +dc/admin_ts -p tcp -dport 53 -log nolog' in sg_dns"
-          - "'IN ACCEPT -source +dc/admin_ts -p udp -dport 53 -log nolog' in sg_dns"
-          - "'IN ACCEPT -source +dc/admin_lan -p tcp -dport 53 -log nolog' in sg_dns"
+          # defaults here, so both surfaces must render exactly what they did
+          # before the seams existed — same sources, same order. Asserted as an
+          # ordered LIST, not membership: an extra rule, a duplicated one and a
+          # reordering are all invisible to `in`.
+          - >-
+            sg_dns | regex_findall('^IN ACCEPT .*$', multiline=True) ==
+            ['IN ACCEPT -source +dc/admin_ts -p udp -dport 853 -log nolog',
+             'IN ACCEPT -source +dc/admin_lan -p udp -dport 853 -log nolog',
+             'IN ACCEPT -source +dc/admin_ts -p tcp -dport 853 -log nolog',
+             'IN ACCEPT -source +dc/admin_lan -p tcp -dport 853 -log nolog',
+             'IN ACCEPT -source +dc/admin_ts -p tcp -dport 443 -log nolog # resolver HTTPS admin UI',
+             'IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog # resolver HTTPS admin UI',
+             'IN ACCEPT -source +dc/admin_ts -p tcp -dport 3000 -log nolog # resolver plaintext admin API',
+             'IN ACCEPT -source +dc/admin_lan -p tcp -dport 3000 -log nolog # resolver plaintext admin API',
+             'IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 3000 -log nolog # resolver plaintext admin API',
+             'IN ACCEPT -source +dc/admin_ts -p tcp -dport 53 -log nolog',
+             'IN ACCEPT -source +dc/admin_ts -p udp -dport 53 -log nolog',
+             'IN ACCEPT -source +dc/admin_lan -p tcp -dport 53 -log nolog',
+             'IN ACCEPT -source +dc/admin_lan -p udp -dport 53 -log nolog']
           - >-
             sg_ingress_int | regex_findall('^IN ACCEPT .*$', multiline=True) ==
             ['IN ACCEPT -source +dc/admin_ts -p tcp -dport 443 -log nolog',
@@ -136,6 +145,11 @@
     # template iterates it per character into rules naming IPSets that do not
     # exist. Singular-vs-plural is the likely author error, since the metrics
     # seam's key was a scalar `source` before this release.
+    # Every block below drives ONE malformed shape: the other three variables
+    # the guard covers are set to a valid value in the same `vars:`, so a rescue
+    # can only mean the shape under test was rejected. verify.yml carries no
+    # roles:, so role defaults are out of scope and an omitted variable would
+    # fail the include for the wrong reason.
     - name: Drive the port-list schema guard — a scalar `sources`
       block:
         - name: Include the schema guard with a scalar sources value
@@ -144,6 +158,8 @@
             proxmox_firewall_dns_admin_ports: []
             proxmox_firewall_metrics_scrape_ports:
               - {port: 3000, sources: k3s_nodes, comment: scalar not a list}
+            proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
+            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, admin_lan]
       rescue:
         - name: Record that the scalar sources value was rejected
           ansible.builtin.set_fact:
@@ -157,6 +173,8 @@
             proxmox_firewall_dns_admin_ports:
               - {port: 3000, comment: no sources key}
             proxmox_firewall_metrics_scrape_ports: []
+            proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
+            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, admin_lan]
       rescue:
         - name: Record that the sources-less entry was rejected
           ansible.builtin.set_fact:
@@ -172,6 +190,8 @@
             proxmox_firewall_dns_admin_ports: []
             proxmox_firewall_metrics_scrape_ports:
               - {port: null, sources: [k3s_nodes], comment: value omitted}
+            proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
+            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, admin_lan]
       rescue:
         - name: Record that the valueless port was rejected
           ansible.builtin.set_fact:
@@ -188,26 +208,78 @@
             proxmox_firewall_dns_admin_ports:
               - {port: 3000, sources: {admin_ts: null}}
             proxmox_firewall_metrics_scrape_ports: []
+            proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
+            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, admin_lan]
       rescue:
         - name: Record that the mapping sources value was rejected
           ansible.builtin.set_fact:
             firewall_mapping_sources_rejected: true
 
-    - name: Assert the port-list schema guard fails closed on every shape
+    # The client-scope lists are the seam a segmented site hand-edits, and the
+    # singular/plural slip renders one rule per CHARACTER of the name.
+    - name: Drive the client-scope schema guard — a scalar list
+      block:
+        - name: Include the schema guard with a scalar client-scope value
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            proxmox_firewall_dns_admin_ports: []
+            proxmox_firewall_metrics_scrape_ports: []
+            proxmox_firewall_dns_client_sources: dns_clients
+            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, lan_clients]
+      rescue:
+        - name: Record that the scalar client-scope value was rejected
+          ansible.builtin.set_fact:
+            firewall_scalar_client_scope_rejected: true
+
+    # An empty list renders a syntactically perfect cluster.fw with the surface
+    # it scopes closed — DNS for every VLAN, or the whole internal ingress.
+    - name: Drive the client-scope schema guard — an empty DNS client list
+      block:
+        - name: Include the schema guard with an empty DNS client list
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            proxmox_firewall_dns_admin_ports: []
+            proxmox_firewall_metrics_scrape_ports: []
+            proxmox_firewall_dns_client_sources: []
+            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, lan_clients]
+      rescue:
+        - name: Record that the empty DNS client list was rejected
+          ansible.builtin.set_fact:
+            firewall_empty_dns_scope_rejected: true
+
+    - name: Drive the client-scope schema guard — an empty ingress client list
+      block:
+        - name: Include the schema guard with an empty ingress client list
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            proxmox_firewall_dns_admin_ports: []
+            proxmox_firewall_metrics_scrape_ports: []
+            proxmox_firewall_dns_client_sources: [admin_ts, dns_clients]
+            proxmox_firewall_k3s_ingress_int_sources: []
+      rescue:
+        - name: Record that the empty ingress client list was rejected
+          ansible.builtin.set_fact:
+            firewall_empty_ingress_scope_rejected: true
+
+    - name: Assert the hand-authored list guards fail closed on every shape
       ansible.builtin.assert:
         that:
           - firewall_scalar_sources_rejected | default(false)
           - firewall_missing_sources_rejected | default(false)
           - firewall_null_port_rejected | default(false)
           - firewall_mapping_sources_rejected | default(false)
+          - firewall_scalar_client_scope_rejected | default(false)
+          - firewall_empty_dns_scope_rejected | default(false)
+          - firewall_empty_ingress_scope_rejected | default(false)
         fail_msg: >-
-          The port-list schema guard accepted a scalar or mapping `sources`, an
-          entry with no `sources` key, or a `port:` with no value — each renders
-          a cluster.fw pve-firewall refuses to compile, AFTER the role wrote it
-          and notified the reload handler.
+          A hand-authored list guard accepted a scalar or mapping `sources`, an
+          entry with no `sources` key, a `port:` with no value, or an empty
+          client-scope list — each writes a cluster.fw that either refuses to
+          compile or silently closes a whole service surface, AFTER the role
+          wrote it and notified the reload handler.
         success_msg: >-
-          port-list schema guard fails closed on scalar/mapping/missing sources
-          and on a valueless port
+          hand-authored list guards fail closed on scalar/mapping/missing
+          sources, on a valueless port, and on an empty client scope
 
     # Per-application groups come from proxmox_firewall_security_groups
     # (molecule.yml supplies a stand-in site list). One entry's `rules` is an
@@ -328,6 +400,37 @@
           proxmox_firewall_dns_client_sources /
           proxmox_firewall_k3s_ingress_int_sources did not move ONLY the two
           service surfaces — check the loops in templates/cluster.fw.j2.
+
+    # Referential integrity. Every `+dc/<name>` names an IPSet, and pve-firewall
+    # refuses to compile a datacenter-wide ruleset naming one that is not
+    # declared. That used to be structural — the template emitted the reference
+    # and the `[IPSET …]` next to it — but the two client scopes and every
+    # per-application group are now site-supplied strings, so a typo (or a set
+    # nobody declared) reaches the file. This one assertion covers all of them,
+    # in both renders.
+    - name: Every +dc/ reference resolves to a declared IPSet
+      vars:
+        referenced: "{{ cluster_fw_text | regex_findall('\\+dc/(\\S+)') | unique | sort }}"
+        declared: "{{ cluster_fw_text | regex_findall('^\\[IPSET (\\S+)\\]', multiline=True) | unique | sort }}"
+        custom_referenced: "{{ (cluster_fw_custom.content | b64decode) | regex_findall('\\+dc/(\\S+)') | unique | sort }}"
+        custom_declared: "{{ (cluster_fw_custom.content | b64decode) | regex_findall('^\\[IPSET (\\S+)\\]', multiline=True) | unique | sort }}"
+      ansible.builtin.assert:
+        that:
+          - referenced | length > 0
+          - referenced | difference(declared) | length == 0
+          - custom_referenced | difference(custom_declared) | length == 0
+          # The overridden-scope render is the one that exercises site-supplied
+          # set names, so it must actually carry them.
+          - "'dns_clients' in custom_referenced"
+          - "'lan_clients' in custom_referenced"
+        fail_msg: >-
+          A rule names an IPSet that cluster.fw never declares — pve-firewall
+          refuses to compile the whole datacenter ruleset, at handler time,
+          after the file is written. Check
+          proxmox_firewall_dns_client_sources,
+          proxmox_firewall_k3s_ingress_int_sources,
+          proxmox_firewall_security_groups and the site's
+          firewall_ipsets / firewall_ipset_special_entries.
 
     - name: Dynamic IPSets carry each inventory IP in its own set
       vars:

@@ -1,8 +1,9 @@
 ---
-# Schema guard for the two hand-authored port lists ({port, sources[],
-# comment?}). cluster.fw.j2 dereferences entry.sources with no default, so a
-# typo or a missing key would otherwise surface as a raw undefined-variable
-# error from mid-render instead of a message naming the variable and the entry.
+# Schema guard for every hand-authored source list this role renders: the two
+# port lists ({port, sources[], comment?}) and the two flat client-scope lists.
+# cluster.fw.j2 dereferences each with no default, so a typo or a missing key
+# would otherwise surface as a raw undefined-variable error from mid-render
+# instead of a message naming the variable and the entry.
 #
 # `sources` is asserted to be a LIST, not just non-empty: a scalar
 # (`sources: k3s_nodes`) has a length too, and the template's
@@ -63,3 +64,26 @@
   loop: "{{ proxmox_firewall_metrics_scrape_ports | default([]) }}"
   loop_control:
     label: "{{ item.port | default('?') }}"
+
+# The two client-scope lists are flat lists of IPSet/alias names, iterated by
+# the same `{% for src in ... %}` construct. Both failure shapes are silent:
+# a scalar renders one rule per character naming IPSets that do not exist, and
+# an EMPTY list renders the surface with no rules at all — DNS closed on every
+# VLAN, or the internal ingress closed to every user — in a cluster.fw that
+# compiles perfectly and reports nothing.
+- name: Assert the client-scope source lists are non-empty lists of set names
+  ansible.builtin.assert:
+    that:
+      - lookup('vars', item) is sequence
+      - lookup('vars', item) is not string
+      - lookup('vars', item) is not mapping
+      - lookup('vars', item) | length > 0
+    fail_msg: >-
+      {{ item }} must be a non-empty LIST of IPSet or alias names
+      (e.g. `[admin_ts, dns_clients]`) — a bare scalar is iterated per character
+      by cluster.fw.j2 into rules naming sets that do not exist, and an empty
+      list silently removes every rule from the surface it scopes.
+    quiet: true
+  loop:
+    - proxmox_firewall_dns_client_sources
+    - proxmox_firewall_k3s_ingress_int_sources

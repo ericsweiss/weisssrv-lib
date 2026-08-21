@@ -72,10 +72,22 @@ provisioner:
           - name: api-vip
             cidr: 192.168.0.161
             comment: k3s API VIP
+        # A segmented site declares its client scopes as their own sets, which
+        # is what the overridden-scope render below points the two client-scope
+        # variables at. Declared here so every `+dc/<name>` in the render
+        # resolves to an `[IPSET <name>]` — the referential integrity the
+        # template used to have structurally, before those sources became site
+        # data.
         firewall_ipset_special_entries:
           k3s_nodes:
             - ip: 192.168.0.161
               comment: k3s API VIP
+          dns_clients:
+            - ip: 192.168.0.0/24
+              comment: every VLAN the resolvers answer
+          lan_clients:
+            - ip: 192.168.0.0/24
+              comment: trusted user VLANs
     host_vars:
       proxmox-firewall-test:
         proxmox_firewall_node_ip: 192.168.0.102

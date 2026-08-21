@@ -158,11 +158,17 @@ credentialed surface:
 
   Each name renders one `+dc/<name>` rule per port, in list order. The resolver
   *admin* surfaces stay on `proxmox_firewall_dns_admin_ports` — widening the
-  client scope must not widen the credentialed API with it.
-- Both port lists share one schema, asserted at role entry: `port` is required and
-  `sources` must be a non-empty **list**. A bare scalar (`sources: k3s_nodes`)
-  is rejected — the template iterates it per character, emitting rules that name
-  IPSets which do not exist.
+  client scope must not widen the credentialed API with it. Every name must be
+  a set the site actually declares: a `+dc/` naming an undeclared IPSet makes
+  pve-firewall refuse the whole datacenter ruleset, at handler time, after the
+  file is written.
+- All four hand-authored lists share one schema, asserted at role entry. On the
+  port lists `port` is required and `sources` must be a non-empty **list**; the
+  two client-scope lists must themselves be non-empty lists. A bare scalar
+  (`dns_client_sources: dns_clients`) is rejected — the template iterates it per
+  character, emitting rules that name IPSets which do not exist — and so is an
+  empty list, which renders a cluster.fw that compiles perfectly with the
+  surface it scopes closed to everyone.
 
 **Per-application** groups are site data in `proxmox_firewall_security_groups`,
 empty by default so an unconfigured deployment renders none. Each entry is

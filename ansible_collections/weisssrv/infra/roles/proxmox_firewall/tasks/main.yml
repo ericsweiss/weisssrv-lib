@@ -13,9 +13,9 @@
     quiet: true
   when: proxmox_firewall_enabled | bool
 
-# Schema guard for the two hand-authored port lists, in its own file so molecule
-# can drive it from fabricated inventory.
-- name: Assert the hand-authored port lists match the shared schema
+# Schema guard for the hand-authored port and client-scope lists, in its own
+# file so molecule can drive it from fabricated inventory.
+- name: Assert the hand-authored source lists match the shared schema
   ansible.builtin.include_tasks: assert_port_lists.yml
   when: proxmox_firewall_enabled | bool
 
