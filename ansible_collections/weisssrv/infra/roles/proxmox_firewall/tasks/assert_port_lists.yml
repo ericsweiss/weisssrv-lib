@@ -1,8 +1,9 @@
 ---
-# Schema guard for the two hand-authored port lists ({port, sources[],
-# comment?}). cluster.fw.j2 dereferences entry.sources with no default, so a
-# typo or a missing key would otherwise surface as a raw undefined-variable
-# error from mid-render instead of a message naming the variable and the entry.
+# Schema guard for every hand-authored source list this role renders: the two
+# port lists ({port, sources[], comment?}) and the two flat client-scope lists.
+# cluster.fw.j2 dereferences each with no default, so a typo or a missing key
+# would otherwise surface as a raw undefined-variable error from mid-render
+# instead of a message naming the variable and the entry.
 #
 # `sources` is asserted to be a LIST, not just non-empty: a scalar
 # (`sources: k3s_nodes`) has a length too, and the template's
@@ -34,7 +35,7 @@
     fail_msg: >-
       proxmox_firewall_dns_admin_ports entry {{ item }} is malformed: every
       entry needs a `port` with a value and a non-empty `sources` LIST naming
-      IPSets or aliases (e.g. `- {port: 3000, sources: [admin_ts, admin_lan]}`)
+      IPSets (e.g. `- {port: 3000, sources: [admin_ts, admin_lan]}`)
       — a bare scalar is iterated per character by the template, and an empty
       `port` renders as `-dport None`.
     quiet: true
@@ -55,7 +56,7 @@
     fail_msg: >-
       proxmox_firewall_metrics_scrape_ports entry {{ item }} is malformed:
       every entry needs a `port` with a value and a non-empty `sources` LIST
-      naming IPSets or aliases (e.g. `- {port: 32400, sources: [k3s_nodes],
+      naming IPSets (e.g. `- {port: 32400, sources: [k3s_nodes],
       comment: plex}`) — a bare scalar is iterated per character by the
       template, and an empty `port` renders as `-dport None`. sg-metrics is
       applied on EVERY node, so the scrapers are named rather than defaulted.
@@ -63,3 +64,54 @@
   loop: "{{ proxmox_firewall_metrics_scrape_ports | default([]) }}"
   loop_control:
     label: "{{ item.port | default('?') }}"
+
+# The two client-scope lists are flat lists of IPSet names, iterated by
+# the same `{% for src in ... %}` construct. Both failure shapes are silent:
+# a scalar renders one rule per character naming IPSets that do not exist, and
+# an EMPTY list renders the surface with no rules at all — DNS closed on every
+# VLAN, or the internal ingress closed to every user — in a cluster.fw that
+# compiles perfectly and reports nothing.
+#
+# The container being a non-empty list says nothing about what is IN it, and the
+# template interpolates each element straight into `+dc/{{ src }}`: a null
+# renders `+dc/None`, an empty string renders a bare `+dc/`, and a name with a
+# space in it splits the rule into two arguments.
+#
+#
+# The element pattern is pve-firewall's own `ipset-name` grammar, not merely
+# "no whitespace": a leading letter, then 1-63 more of [A-Za-z0-9_-], i.e. the
+# 2-64 length bounds the schema registers. `/` and `#` are the ones that matter
+# — both are accepted by a whitespace-only test and both make pve-firewall
+# refuse to compile the file this role has already written. `\Z` rather than
+# `$`, because `$` also matches before a trailing newline.
+#
+# Both element tests are needed. `match` STRINGIFIES before matching, so a null
+# reaches it as "None" and passes — the same silent conversion the template
+# performs — and only the `string` test rejects it (a bare number too). `match`
+# is what rejects the empty, mis-charactered and over-long names the `string`
+# test admits.
+- name: Assert the client-scope source lists are non-empty lists of set names
+  ansible.builtin.assert:
+    that:
+      - lookup('vars', item) is sequence
+      - lookup('vars', item) is not string
+      - lookup('vars', item) is not mapping
+      - lookup('vars', item) | length > 0
+      - lookup('vars', item) | select('string') | list | length == lookup('vars', item) | length
+      - lookup('vars', item) | select('match', '^[A-Za-z][A-Za-z0-9_-]{1,63}\Z') | list | length == lookup('vars', item) | length
+    fail_msg: >-
+      {{ item }} must be a non-empty LIST of valid IPSet NAMES
+      (e.g. `[admin_ts, dns_clients]`) — cluster.fw.j2 renders each entry as
+      `+dc/<name>`, which resolves a datacenter IPSet only (a datacenter ALIAS
+      is `dc/<name>`, a different syntax this list does not render). A bare
+      scalar is iterated per character into rules naming sets that do not
+      exist, an empty list silently removes every rule from the surface it
+      scopes, and an element that is null or empty renders `+dc/None` or a bare
+      `+dc/`. Each name must match pve-firewall's own ipset grammar — a leading
+      letter, then 1-63 of letters, digits, `_` or `-` — so a name carrying a
+      space, a `/` or a `#` is rejected here rather than by pve-firewall
+      refusing to compile the file this role has already written.
+    quiet: true
+  loop:
+    - proxmox_firewall_dns_client_sources
+    - proxmox_firewall_k3s_ingress_int_sources

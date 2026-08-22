@@ -29,6 +29,57 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.13.0
+
+**Nothing is required.** Both changes are additive and the defaults reproduce
+the previous render byte-for-byte — a consumer that only bumps the ref sees no
+diff in `cluster.fw`.
+
+## `proxmox_firewall` — client scopes for the two service surfaces
+
+`templates/cluster.fw.j2` used to hard-code `+dc/admin_ts` / `+dc/admin_lan` as
+the sources of the `sg-dns` `:53` rules and the `sg-k3s-ingress-int` `:80`/`:443`
+rules. Those two surfaces are now parameterized:
+
+| Variable | Default | Renders into |
+|---|---|---|
+| `proxmox_firewall_dns_client_sources` | `[admin_ts, admin_lan]` | `sg-dns` `:53` tcp+udp |
+| `proxmox_firewall_k3s_ingress_int_sources` | `[admin_ts, admin_lan]` | `sg-k3s-ingress-int` `:443` then `:80` |
+
+Each list entry renders one `+dc/<name>` rule per port, in list order, in the
+same rule shape as before — so the defaults are literally the old four and four
+lines. Leave them unset and nothing changes.
+
+Set them when the site splits the **management** plane from the **client**
+plane, which is what VLAN segmentation forces: `admin_lan` shrinks to the
+management subnet (it gates `:22`, `:8006`, `:6443`), while resolution and the
+internal ingress still have to answer the user VLANs. Declare those subnets as
+their own IPSets with `firewall_ipset_special_entries` and point the two
+variables at them:
+
+```yaml
+firewall_ipset_special_entries:
+  dns_clients:
+    - {ip: 10.0.20.0/24, comment: home VLAN}
+    - {ip: 10.0.30.0/24, comment: iot VLAN}
+  lan_clients:
+    - {ip: 10.0.20.0/24, comment: home VLAN}
+
+proxmox_firewall_dns_client_sources: [admin_ts, dns_clients]
+proxmox_firewall_k3s_ingress_int_sources: [admin_ts, lan_clients]
+```
+
+The resolver's *admin* surfaces are deliberately not covered by this: they stay
+on `proxmox_firewall_dns_admin_ports`, because `:3000` answers a reusable admin
+credential in the clear and must not inherit the client scope.
+
+## `terraform/modules/unifi-network` — new module
+
+`terraform/modules/unifi-network` codifies a UniFi site's networks/VLANs,
+firewall zones and zone-based policies, WLANs, client reservations, port
+forwards and site settings. Adopting it is opt-in: a consumer that does not call
+the module sees nothing new on the ref bump.
+
 # v0.12.1
 
 No migration steps. The flux-lint template's unknown-substitution-key check

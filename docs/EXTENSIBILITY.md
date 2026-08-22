@@ -31,7 +31,7 @@ Two rules govern every seam:
 | Storage, metrics | `zpool status` collector ships with the Proxmox collectors | `node_exporter_host_zpool_collector` (defaults to `node_exporter_host_proxmox`) | `node_exporter_host` |
 | Certificates | acme.sh DNS-01 via Cloudflare | `acme_certs_dns_hook` — any dnsapi hook the pinned tarball ships | `acme_certs` |
 | Forge | GitLab CI templates, GitLab release/MR APIs | `--platform {gitlab,github}` on `semantic-release.py`; the three vendorable Actions workflows (`ci/github/`, `ci/release/*.example.yml`) | `ci/`, `scripts/` |
-| DNS / tailnet / IdP, as code | one Terraform module per provider: Cloudflare, Tailscale, Authentik | none — an alternative provider is a **sibling module**, not a flag (below) | `terraform/modules/` |
+| DNS / tailnet / IdP / LAN, as code | one Terraform module per provider: Cloudflare, Tailscale, Authentik, UniFi | none — an alternative provider is a **sibling module**, not a flag (below) | `terraform/modules/` |
 | Template source | `new-cluster` / `new-app` default to the published GitLab template URLs | the `source` positional takes any copier template — a VCS URL on any host, or a local path — and `--vcs-ref` picks the tag | `cli/weisssrv_lib_cli/templates.py` |
 
 ## Backend-specific by design
@@ -54,13 +54,14 @@ Everything else is backend-neutral already: `base`, `qol`, `apt_signed_repo`,
 `textfile_collector`, `node_exporter_host`, `unbound_exporter`, `alloy_host`,
 `restic_offsite`, `zvol_mount`, `acme_certs`.
 
-**`terraform/modules/` follows the same rule.** All three shapes are
-provider-locked (`cloudflare-zone`, `tailscale-acl`, `authentik-sso`), so a
-Route53 consumer adds a `route53-zone` module *beside* `cloudflare-zone` rather
-than adding a provider switch to it — same naming convention
-(`<provider>-<object>`), same README-states-the-provider rule. A consumer with
-no tailnet, or an IdP that is not Authentik, simply calls fewer modules: each
-root is a thin caller holding only site data, and no module includes another.
+**`terraform/modules/` follows the same rule.** All four shapes are
+provider-locked (`cloudflare-zone`, `tailscale-acl`, `authentik-sso`,
+`unifi-network`), so a Route53 consumer adds a `route53-zone` module *beside*
+`cloudflare-zone` rather than adding a provider switch to it — same naming
+convention (`<provider>-<object>`), same README-states-the-provider rule. A
+consumer with no tailnet, an IdP that is not Authentik, or a gateway that is
+not UniFi, simply calls fewer modules: each root is a thin caller holding only
+site data, and no module includes another.
 The one seam inside a module is the usual defaults rule — a new variable
 defaults to today's rendered plan, proven by a zero-diff `terraform plan`.
 

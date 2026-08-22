@@ -33,6 +33,7 @@ LITERAL_SITES: dict[str, re.Pattern[str]] = {
     "terraform/modules/cloudflare-zone/README.md": re.compile(rf"\?ref=({TAG})"),
     "terraform/modules/tailscale-acl/README.md": re.compile(rf"\?ref=({TAG})"),
     "terraform/modules/authentik-sso/README.md": re.compile(rf"\?ref=({TAG})"),
+    "terraform/modules/unifi-network/README.md": re.compile(rf"\?ref=({TAG})"),
 }
 
 
