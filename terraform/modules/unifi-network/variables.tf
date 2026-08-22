@@ -11,8 +11,11 @@ variable "networks" {
     network-address form (`10.0.30.0/24`) is rejected below — the controller
     would take .0 as the gateway.
 
-    `vlan` is omitted for the controller's built-in Default network only; every
-    other network needs one.
+    The controller's built-in Default network is keyed `default`, and that key
+    is the ONLY entry allowed to omit `vlan`; every other entry needs one. The
+    key is part of the module's contract, not a convention — reserving it is
+    what makes a single forgotten `vlan` visible, since one untagged network is
+    otherwise indistinguishable from the built-in.
 
     `dhcp.dns_servers` drives `dhcp_server.dns_enabled`: a non-empty list turns
     the DHCP DNS option on, an empty list leaves clients on the gateway's own
@@ -84,13 +87,19 @@ variable "networks" {
   }
 
   # The vlan-uniqueness check below skips nulls, so nothing else catches a
-  # forgotten `vlan`. The controller has exactly one untagged network, and a
-  # second entry without a tag does not fail: it lands UNTAGGED on the same wire
+  # forgotten `vlan`. An untagged entry does not fail: it lands on the same wire
   # as the management network, sharing its broadcast domain while every zone,
   # policy and WLAN keyed to it reads as a segment of its own.
+  #
+  # Reserving the KEY rather than counting untagged entries is what makes a lone
+  # forgotten `vlan` visible — a count of one is indistinguishable from the
+  # built-in. Map keys are unique, so this also bounds the untagged entries at
+  # one without a second rule.
   validation {
-    condition     = length([for n in var.networks : n if n.vlan == null]) <= 1
-    error_message = "At most ONE `networks` entry may omit `vlan` — the controller's built-in Default network. A second untagged entry is almost always a forgotten `vlan`, and it shares the management network's untagged wire instead of getting a segment."
+    condition = alltrue([
+      for key, n in var.networks : n.vlan != null || key == "default"
+    ])
+    error_message = "Only the `networks[\"default\"]` entry may omit `vlan` — that key is the controller's built-in Default network. Any other untagged entry shares the management network's wire instead of getting a segment of its own."
   }
 
   validation {
@@ -149,6 +158,14 @@ variable "zones" {
     Zone-per-network is the intended shape: inter-zone traffic is denied by
     default, so every allowance is an explicit `policies` entry and nothing is
     load-bearing on rule order.
+
+    The key may not be a name the controller reserves for a built-in zone
+    (`Internal`, `External`, `Gateway`, `Hotspot`, `Vpn`, `Dmz`, plus whatever
+    `builtin_zone_names` declares), and every member network must be
+    `corporate`: a `guest`-purpose network outside the controller's own Hotspot
+    zone is rewritten to `corporate` and fails the apply. Both are checked on
+    the resource, not here, because a variable validation cannot read another
+    variable at this module's Terraform floor.
 
     Membership is a FULL REPLACEMENT on every apply — the provider always sends
     the whole `network_ids` list — and it is the only way to set a network's

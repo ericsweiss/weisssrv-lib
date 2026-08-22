@@ -33,6 +33,21 @@ locals {
     for key, name in var.builtin_zone_names : key => name
     if contains(local.policy_zones, key)
   }
+
+  # Display names a custom zone may not take. `builtin_zone_names` covers the
+  # ones this configuration references — including a localised override — but
+  # its default names only three, so a zone called `Hotspot`, `Vpn` or `Dmz`
+  # would collide with a controller built-in nothing here has declared.
+  #
+  # The literal six are the documented English names on a UniFi OS 10.x console.
+  # They are a heuristic, not an authority: display names are locale-dependent,
+  # so a non-English controller's built-ins are caught by the
+  # `builtin_zone_names` half after they are declared there. Case-sensitive,
+  # because the display name written to the controller is.
+  reserved_zone_names = distinct(concat(
+    values(var.builtin_zone_names),
+    ["Internal", "External", "Gateway", "Hotspot", "Vpn", "Dmz"],
+  ))
 }
 
 # `unifi_wlan.user_group_id` is Required with no default; the stock client QoS
@@ -132,18 +147,41 @@ resource "unifi_firewall_zone" "this" {
       error_message = "zones[\"${each.key}\"].networks names a key that is not in var.networks."
     }
 
-    # Two namespaces collide here, and both matter. A key clash lets a custom
-    # zone shadow a built-in in the merged lookup, so every policy naming that
-    # zone quietly points at the wrong one. A DISPLAY-NAME clash is worse: the
-    # key IS the zone's name on the controller, so `zones = { Internal = ... }`
-    # plans a second zone literally named Internal next to the data source
-    # reading the built-in one.
+    # A `guest`-purpose network only keeps that purpose inside the controller's
+    # own Hotspot zone — which this module cannot manage, because built-in zones
+    # are read-only here. Anywhere else the controller rewrites the purpose to
+    # `corporate` and the apply dies with an inconsistent-result error, halfway
+    # through a supervised run that has already changed the gateway. Guest
+    # ISOLATION comes from the custom zone's default deny and the WLAN's
+    # `l2_isolation`, never from the purpose flag (variables.tf).
+    #
+    # A key that is not in var.networks is skipped rather than reported twice:
+    # the precondition above already names it.
     precondition {
-      condition = (
-        !contains(keys(var.builtin_zone_names), each.key)
-        && !contains(values(var.builtin_zone_names), each.key)
-      )
-      error_message = "zones[\"${each.key}\"] collides with a builtin zone — its `builtin_zone_names` key or its display name. Policies resolve both from one namespace and the key is the name written to the controller, so the names must be distinct."
+      condition = alltrue([
+        for key in each.value.networks :
+        contains(keys(var.networks), key) ? var.networks[key].purpose == "corporate" : true
+      ])
+      error_message = "zones[\"${each.key}\"].networks may hold only `corporate` networks — the controller rewrites a `guest` purpose to `corporate` outside its own Hotspot zone, and the apply then fails partway through."
+    }
+
+    # The `builtin_zone_names` KEY namespace: a clash lets a custom zone shadow
+    # a built-in in the merged lookup, so every policy naming that zone quietly
+    # points at the wrong one. The DISPLAY-NAME half is the reserved-names
+    # precondition below.
+    precondition {
+      condition     = !contains(keys(var.builtin_zone_names), each.key)
+      error_message = "zones[\"${each.key}\"] collides with a `builtin_zone_names` key — policies resolve custom and built-in zones from one namespace, so the names must be distinct."
+    }
+
+    # The key IS the zone's display name on the controller, so
+    # `zones = { Internal = ... }` plans a second zone literally named Internal
+    # next to the data source reading the built-in one — and on a name this
+    # configuration never declared (`Hotspot`), next to a built-in nothing here
+    # can see.
+    precondition {
+      condition     = !contains(local.reserved_zone_names, each.key)
+      error_message = "zones[\"${each.key}\"] takes a name the controller reserves for a built-in zone. The key is written to the controller as the zone's display name, so it must not be one of ${join(", ", local.reserved_zone_names)}."
     }
   }
 }

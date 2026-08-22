@@ -403,6 +403,21 @@ run "rejects_a_second_untagged_network" {
   expect_failures = [var.networks]
 }
 
+# The lone-untagged case the count rule could never see: one entry, no `vlan`,
+# and not the reserved key — a forgotten tag that lands the network on the
+# management wire while everything keyed to it reads as its own segment.
+run "rejects_a_lone_untagged_network_under_another_key" {
+  command = plan
+
+  variables {
+    networks = {
+      mgmt = { name = "Mgmt", subnet = "10.0.1.1/24" }
+    }
+  }
+
+  expect_failures = [var.networks]
+}
+
 run "rejects_duplicate_network_vlans" {
   command = plan
 
@@ -575,6 +590,62 @@ run "rejects_a_zone_colliding_with_a_builtin_display_name" {
 
 # Two zones each send their whole membership list, so a network in both never
 # converges — the loser reports drift on every plan afterwards.
+# `Hotspot` is a controller built-in that the DEFAULT builtin_zone_names does
+# not declare, so only the reserved-names list catches it — a custom zone by
+# that name collides with a built-in nothing in this configuration can see.
+run "rejects_a_zone_named_for_an_undeclared_builtin" {
+  command = plan
+
+  variables {
+    zones = {
+      iot     = { networks = ["iot"] }
+      Hotspot = { networks = ["guest"] }
+    }
+  }
+
+  expect_failures = [unifi_firewall_zone.this]
+}
+
+# The other half of the reserved set: a localised controller's built-in names
+# are not in the literal six, so the check reads them from builtin_zone_names.
+run "rejects_a_zone_colliding_with_an_overridden_builtin_name" {
+  command = plan
+
+  variables {
+    builtin_zone_names = { internal = "Intern", external = "Extern", gateway = "Kanal" }
+    zones = {
+      iot   = { networks = ["iot"] }
+      Kanal = { networks = ["guest"] }
+    }
+  }
+
+  expect_failures = [unifi_firewall_zone.this]
+}
+
+# `guest` purpose sticks only inside the controller's own Hotspot zone, which
+# this module cannot manage. In a custom zone the controller rewrites it and the
+# apply dies partway through, after the gateway has already changed.
+run "rejects_a_guest_purpose_network_in_a_custom_zone" {
+  command = plan
+
+  variables {
+    networks = {
+      default = { name = "Default", subnet = "10.0.1.1/24" }
+      guest   = { name = "Guest", vlan = 40, subnet = "10.0.40.1/24", purpose = "guest" }
+    }
+    zones    = { guest = { networks = ["guest"] } }
+    policies = []
+    wlans    = {}
+    clients  = {}
+    # The file-level fixture snoops `iot`, which this run's `networks` override
+    # removes — left set, the zone assertion would be masked by an unrelated
+    # settings precondition.
+    site_settings = {}
+  }
+
+  expect_failures = [unifi_firewall_zone.this]
+}
+
 run "rejects_a_network_claimed_by_two_zones" {
   command = plan
 
