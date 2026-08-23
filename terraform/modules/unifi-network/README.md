@@ -15,7 +15,7 @@ The tag below is an example: use the tag your repo pins (docs/VERSIONING.md).
 
 ```hcl
 module "network" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.13.0"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.13.1"
 
   networks = {
     # `subnet` is GATEWAY form: the host part is the gateway address.
@@ -238,7 +238,7 @@ human-run, plan-reviewed step, and CI runs at most a read-only drift plan.
 Back the controller up (`.unf` export) before the first apply of a change that
 touches networks or zones.
 
-Two things to read in the first plan specifically:
+Three things to read in the first plan specifically:
 
 - **The `unifi_setting.site` `mgmt` and `usg` lines.** "Only the blocks declared
   here are written" is block granularity: those two blocks also carry SSH,
@@ -252,6 +252,14 @@ Two things to read in the first plan specifically:
   has never been enabled there may be neither, in which case detection-only mode
   inspects nothing — confirm the selection in the console before treating a
   quiet week as evidence for promoting `ids` to `ips`.
+- **`setting_preference` moving `auto` -> `manual` on a network.** Expected, and
+  the one change here you want: every network this module writes is pinned to
+  `manual`. Under the provider default `auto` the controller owns the DHCP DNS
+  option, `domain_name` and `igmp_snooping`, and resets all three to its own
+  defaults on every write — so a converged site is silently unconfigured by the
+  next apply, which then fails with `Provider produced inconsistent result after
+  apply` (UniFi Network 10.5, provider 0.55.0). A site adopted before v0.13.1
+  sees this once, in place; there is nothing to migrate.
 
 ## Adopting existing objects
 
@@ -297,7 +305,8 @@ cross-map precondition — verified by mutation, neutering each one in turn and
 confirming a run goes red — plus the derived attributes that have no other
 guard: `matching_target` and `port_matching_type` on **both** endpoints, the
 ALLOW-only `create_allow_respond`, `dhcp_server.dns_enabled` and the DHCP
-start/stop pair, zone `network_ids` membership, `l2_isolation`, the `no2ghz_oui`
+start/stop pair, the pinned `setting_preference`, zone `network_ids`
+membership, `l2_isolation`, the `no2ghz_oui`
 inversion, the WPA3/PMF pairing, the conditional `igmp_snooping` block and the
 two conditional data reads (the built-in zones, and the client QoS rate a
 gateway-only site must skip).

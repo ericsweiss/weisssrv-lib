@@ -184,6 +184,17 @@ run "a_whole_site_plans_clean" {
     error_message = "internet_access, domain_name and the per-network igmp_snooping toggle must reach the network they were declared on."
   }
 
+  # The three attributes above are exactly what the controller resets when a
+  # network is written with the provider default `setting_preference = "auto"`,
+  # and it resets them on EVERY write — a silent unconfiguration that the plan
+  # shows as clean and the apply reports only as an inconsistent result.
+  assert {
+    condition = alltrue([
+      for network in unifi_network.this : network.setting_preference == "manual"
+    ])
+    error_message = "Every network must write setting_preference = \"manual\" — under \"auto\" the controller owns dhcp dns_enabled, domain_name and igmp_snooping and strips them back to its defaults."
+  }
+
   # A DHCP DNS list is the only thing that turns the option on — an entry
   # without one must leave clients on the gateway's resolver, not send an empty
   # list the provider can never converge (#429).

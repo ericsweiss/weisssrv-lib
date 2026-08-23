@@ -29,6 +29,25 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.13.1
+
+**Nothing to migrate.** No role or variable changed; the fix is in the
+`terraform/modules/unifi-network` module.
+
+## `unifi-network` — networks always write `setting_preference = "manual"`
+
+Every `unifi_network` the module writes is now pinned to `manual`. It used to
+inherit the provider default `auto`, under which the controller treats the DHCP
+DNS option, `domain_name` and `igmp_snooping` as its own and resets all three to
+its defaults on every write — the module's own values are stripped from a
+converged site, and the apply then fails with `Provider produced inconsistent
+result after apply`. Confirmed on UniFi Network 10.5 with provider 0.55.0.
+
+A consumer whose controller currently stores `auto` sees one in-place update per
+network on the next plan, which is the fix landing. Nothing else changes: the
+attributes the controller was stripping are the ones the module already
+declares.
+
 # v0.13.0
 
 **Nothing is required.** Both changes are additive and the defaults reproduce
