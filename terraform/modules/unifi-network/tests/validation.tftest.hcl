@@ -117,6 +117,18 @@ variables {
       mac  = "00:17:88:7E:C7:A3"
       name = "laptop"
     }
+    # Default-network reservation: plans the no-override branch — the
+    # controller rejects a virtual-network override onto the default network
+    # (api.err.VirtualNetworkOverrideUnsupportedForDefaultNetwork), so the
+    # module must emit a bare fixed-IP reservation for it. Like `laptop`,
+    # network_id is Optional+Computed and the planned null cannot be asserted;
+    # the entry exists to exercise the branch.
+    switch = {
+      mac      = "00:17:88:7E:C7:A4"
+      name     = "switch"
+      fixed_ip = "10.0.1.2"
+      network  = "default"
+    }
   }
 
   port_forwards = {

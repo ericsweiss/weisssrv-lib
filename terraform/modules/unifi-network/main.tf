@@ -316,6 +316,14 @@ resource "unifi_wlan" "this" {
   # pinning them to a guess is how a 2.4 GHz IoT client stops associating.
 
   lifecycle {
+    # The controller assigns the default AP group on every WLAN write and reads
+    # it back (UniFi Network 10.5, provider v0.55.0); this module never sets
+    # ap_group_ids, so without the ignore every apply plans its removal, the
+    # write round-trips the group straight back, and the run ends in a
+    # "Provider produced inconsistent result after apply" error — a standing
+    # flap. AP-group membership is console-owned.
+    ignore_changes = [ap_group_ids]
+
     precondition {
       condition     = contains(keys(var.networks), each.value.network)
       error_message = "wlans[\"${each.key}\"].network names a key that is not in var.networks."
@@ -326,11 +334,15 @@ resource "unifi_wlan" "this" {
 resource "unifi_client" "this" {
   for_each = var.clients
 
-  mac        = each.value.mac
-  name       = each.value.name
-  note       = each.value.note
-  fixed_ip   = each.value.fixed_ip
-  network_id = each.value.network == null ? null : lookup(local.network_ids, each.value.network, "")
+  mac      = each.value.mac
+  name     = each.value.name
+  note     = each.value.note
+  fixed_ip = each.value.fixed_ip
+  # The default network never gets a virtual-network override: the controller
+  # rejects it outright (api.err.VirtualNetworkOverrideUnsupportedForDefaultNetwork
+  # — observed on UniFi Network 10.5), and a client reserved on the default
+  # network is natively there, so a fixed IP is the whole reservation.
+  network_id = (each.value.network == null || each.value.network == "default") ? null : lookup(local.network_ids, each.value.network, "")
 
   # The client already exists the moment the controller sees the MAC; every
   # entry here adopts one rather than creating it.
@@ -413,6 +425,16 @@ resource "unifi_setting" "site" {
   }
 
   lifecycle {
+    # ips is CREATE-TIME INTENT only: UniFi Network 10.5 accepts the API write
+    # and keeps its own value (observed: ips_mode "ids" written, "disabled"
+    # read back, on create and on every later PUT — the same reset-on-write
+    # family as networks' setting_preference, but with no server-side knob to
+    # pin it). Without this ignore, every apply re-plans the write, the
+    # controller reverts it, and the run errors "inconsistent result" — while
+    # silently disabling IPS a operator enabled in the console. Day-2 IPS mode
+    # is therefore console-owned; the consuming repo's runbook must say so.
+    ignore_changes = [ips]
+
     precondition {
       condition = alltrue([
         for key in var.site_settings.igmp_snooping_networks : contains(keys(var.networks), key)

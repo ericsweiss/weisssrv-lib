@@ -15,7 +15,7 @@ The tag below is an example: use the tag your repo pins (docs/VERSIONING.md).
 
 ```hcl
 module "network" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.13.1"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.13.2"
 
   networks = {
     # `subnet` is GATEWAY form: the host part is the gateway address.
@@ -247,19 +247,40 @@ Three things to read in the first plan specifically:
   the provider round-trips them, which is a property of the provider rather than
   a promise this module can make. Any of them moving to `null`/`false` in the
   plan is a real change — pin it as an input instead of approving it.
-- **The IDS selection.** The module writes `ips_mode` only; the signature
-  categories and the inspected networks stay UI-owned. On a console where IDS
-  has never been enabled there may be neither, in which case detection-only mode
-  inspects nothing — confirm the selection in the console before treating a
-  quiet week as evidence for promoting `ids` to `ips`.
+- **The IDS selection.** `ips_mode` is CREATE-TIME INTENT only from v0.13.2:
+  UniFi Network 10.5 accepts the API write and keeps its own value (observed
+  live: `ids` written, `disabled` read back, on create and on every later PUT),
+  so the module `ignore_changes`es the block after creation — otherwise every
+  apply flaps the write, errors "inconsistent result", and silently disables an
+  IPS the operator enabled in the console. **Day-2 IPS mode is console-owned:
+  set it in Settings → Security and treat the input as documentation of
+  intent.** The signature categories and inspected networks were always
+  UI-owned; on a console where IDS has never been enabled there may be neither,
+  in which case detection-only mode inspects nothing — confirm the selection in
+  the console before treating a quiet week as evidence for promoting `ids` to
+  `ips`.
 - **`setting_preference` moving `auto` -> `manual` on a network.** Expected, and
   the one change here you want: every network this module writes is pinned to
   `manual`. Under the provider default `auto` the controller owns the DHCP DNS
   option, `domain_name` and `igmp_snooping`, and resets all three to its own
   defaults on every write — so a converged site is silently unconfigured by the
   next apply, which then fails with `Provider produced inconsistent result after
-  apply` (UniFi Network 10.5, provider 0.55.0). A site adopted before v0.13.1
+  apply` (UniFi Network 10.5, provider 0.55.0). A site adopted before v0.13.2
   sees this once, in place; there is nothing to migrate.
+
+Two more provider/controller behaviours v0.13.2 absorbs, so they no longer
+reach a plan:
+
+- **WLAN `ap_group_ids`** — the controller assigns the default AP group on
+  every WLAN write and reads it back; the module never sets the attribute and
+  now `ignore_changes`es it. Before v0.13.2 every apply planned its removal and
+  ended in an "inconsistent result" error. AP-group membership is
+  console-owned.
+- **Default-network reservations** — the controller rejects a virtual-network
+  override onto the default network
+  (`api.err.VirtualNetworkOverrideUnsupportedForDefaultNetwork`), so a client
+  whose `network` is the `default` key is written as a bare fixed-IP
+  reservation, no override. Clients on any other network still steer.
 
 ## Adopting existing objects
 

@@ -29,6 +29,25 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.13.2
+
+**Nothing to migrate.** No role or variable changed; all three fixes are in the
+`terraform/modules/unifi-network` module, absorbing controller behaviours that
+UniFi Network 10.5 forces (details and the operator-facing consequences:
+that module's README § supervised apply):
+
+- Clients reserved on the `default`-keyed network are written WITHOUT a
+  virtual-network override — the controller rejects the override for the
+  default network, which failed those creates outright before.
+- WLAN `ap_group_ids` is `ignore_changes`ed — the controller assigns the
+  default AP group on every write and read it back, which made every apply
+  flap and error.
+- The site `ips` block is `ignore_changes`ed after creation — the controller
+  keeps its own IPS mode regardless of the API write (and the failed write
+  DISABLED a console-enabled IPS). **Day-2 IPS mode is console-owned from this
+  release**; a consumer whose runbook told operators to manage it through
+  Terraform should update that runbook.
+
 # v0.13.1
 
 **Nothing to migrate.** No role or variable changed; the fix is in the
