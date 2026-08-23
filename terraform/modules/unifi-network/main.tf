@@ -90,6 +90,16 @@ resource "unifi_network" "this" {
   # and store false, so declaring it either churns the plan or lies about a
   # reflector that is actually a UI setting.
 
+  # Not an input, because "auto" is never right for a network this module
+  # writes: every one of them carries an explicit DHCP scope, DNS list and
+  # domain, which IS what manual means. Under the provider default "auto" the
+  # controller treats those fields as its own and resets them to its defaults on
+  # every write — dhcp_server.dns_enabled, domain_name and igmp_snooping come
+  # back stripped, so the configuration is silently undone AND the apply fails
+  # with "Provider produced inconsistent result after apply". Confirmed on
+  # UniFi Network 10.5 with provider 0.55.0.
+  setting_preference = "manual"
+
   dhcp_server = each.value.dhcp == null ? null : {
     enabled     = each.value.dhcp.enabled
     start       = each.value.dhcp.start
