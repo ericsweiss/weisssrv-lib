@@ -393,9 +393,16 @@ variable "wlans" {
     carries `passphrase`, which this provider stores in state; only the
     passphrase keeps that mark inside the module, so plans still show the SSIDs.
 
-    Every WLAN here is WPA-PSK on 2.4 + 5 GHz: `security = "wpapsk"` and
-    `wlan_bands = ["2g","5g"]` are fixed, because including `6g` fails WLAN
-    creation on this provider (upstream #406).
+    Every WLAN here is WPA-PSK: `security = "wpapsk"` is fixed, because the
+    module has no RADIUS inputs.
+
+    `bands` decides who owns the band set. Left unset (the default, null) the
+    attribute is never written, so the CONSOLE owns it and a band enabled in
+    the UI survives every apply. Set to a list it is terraform-owned and
+    re-asserted on every apply, reverting a UI change. `6g` is allowed in that
+    list, but including it fails WLAN creation on provider releases still
+    carrying upstream #406 — so a 6 GHz SSID today is one that leaves `bands`
+    unset and is toggled in the UI.
 
     `wpa3 = true` is WPA2/WPA3 transition mode with PMF optional. `false` is
     plain WPA2 with PMF disabled — what ESP32/Kasa-class gear needs.
@@ -415,6 +422,9 @@ variable "wlans" {
     l2_isolation         = optional(bool, false)
     allow_2ghz_high_perf = optional(bool, false)
     hide                 = optional(bool, false)
+    # No default: an unset `bands` must stay null, which is what leaves the
+    # attribute unwritten and the band set with the console.
+    bands = optional(list(string))
   }))
   default   = {}
   sensitive = true
@@ -423,9 +433,20 @@ variable "wlans" {
   # for a sensitive variable.
   validation {
     condition = alltrue([
-      for key, w in var.wlans : length(w.passphrase) >= 8 && length(w.passphrase) <= 63
+      for key, w in var.wlans : can(regex("^[\\x20-\\x7e]{8,63}$", w.passphrase))
     ])
-    error_message = "wlans[*].passphrase must be 8-63 characters (WPA-PSK). An 1Password field that was renamed resolves to an empty string, and a sensitive value's diff hides it — the apply would silently reset the SSID's key."
+    error_message = "wlans[*].passphrase must be 8-63 printable ASCII characters, which is the WPA-PSK rule (a smart quote or an accented letter pasted from a password manager is not one). An 1Password field that was renamed resolves to an empty string, and a sensitive value's diff hides it — the apply would silently reset the SSID's key."
+  }
+
+  # Same rule as above: the message names the field, never a value.
+  validation {
+    condition = alltrue([
+      for key, w in var.wlans : length(w.bands) > 0 && alltrue([
+        for band in w.bands : contains(["2g", "5g", "6g"], band)
+      ])
+      if w.bands != null
+    ])
+    error_message = "wlans[*].bands, when set, must be a non-empty list drawn from \"2g\", \"5g\" and \"6g\". Omit it to leave the band set to the console — an empty list is not that, it is a WLAN on no band at all."
   }
 }
 

@@ -89,6 +89,8 @@ variables {
   ]
 
   wlans = {
+    # No `bands`: the console-owned half of the band input, alongside `guest`'s
+    # enforced one. Nothing here can assert it (see the run below).
     iot = {
       ssid                 = "example-iot"
       network              = "iot"
@@ -101,6 +103,7 @@ variables {
       network      = "guest"
       passphrase   = "guest-passphrase"
       l2_isolation = true
+      bands        = ["2g", "5g"]
     }
   }
 
@@ -284,9 +287,11 @@ run "a_whole_site_plans_clean" {
     error_message = "wpa3 = false must be plain WPA2 with PMF disabled; wpa3 = true must be transition mode with PMF optional (PMF cannot be disabled under WPA3)."
   }
 
+  # A `bands` list is terraform-owned: it must reach the WLAN verbatim, because
+  # the whole point of setting it is that every apply re-asserts it.
   assert {
     condition     = unifi_wlan.this["guest"].wlan_bands == toset(["2g", "5g"])
-    error_message = "WLANs are fixed to 2.4 + 5 GHz — including 6g fails WLAN creation on this provider (#406)."
+    error_message = "A `bands` list must land on wlan_bands unchanged."
   }
 
   # Guest client isolation is the reason the input exists, and it sits next to a
@@ -1111,6 +1116,90 @@ run "rejects_an_unknown_policy_action" {
   expect_failures = [var.policies]
 }
 
+# The console-owned default. `wlan_bands` is Optional+Computed, so a null
+# `bands` writes nothing and the planned value is UNKNOWN — which is both the
+# property under test and the reason it cannot be asserted here, the same limit
+# as the `laptop` client above. What this proves is that the null is a legal
+# value the plan carries, rather than an omission the module fills in.
+run "accepts_a_wlan_with_no_band_set" {
+  command = plan
+
+  variables {
+    wlans = {
+      iot = {
+        ssid       = "example-iot"
+        network    = "iot"
+        passphrase = "iot-passphrase"
+      }
+    }
+  }
+
+  assert {
+    condition     = length(unifi_wlan.this) == 1
+    error_message = "A WLAN naming no bands must plan — an unset band set is the default, not a gap."
+  }
+}
+
+# 6 GHz is why `bands` is an input rather than a constant, so the module must
+# not be what blocks it: upstream #406 fails the CREATE provider-side, and that
+# is a bargain the caller makes knowingly. Asserting the whole set is also what
+# catches a band list quietly hard-coded back to 2g/5g.
+run "accepts_six_gigahertz_in_an_enforced_band_set" {
+  command = plan
+
+  variables {
+    wlans = {
+      iot = {
+        ssid       = "example-iot"
+        network    = "iot"
+        passphrase = "iot-passphrase"
+        bands      = ["2g", "5g", "6g"]
+      }
+    }
+  }
+
+  assert {
+    condition     = unifi_wlan.this["iot"].wlan_bands == toset(["2g", "5g", "6g"])
+    error_message = "Module validation must not block 6g — the provider (#406) owns that failure — and an enforced band set must reach the WLAN as written."
+  }
+}
+
+# An empty list is not "leave it to the console": it writes a band set naming no
+# band, which is an SSID nothing can associate to.
+run "rejects_an_empty_band_set" {
+  command = plan
+
+  variables {
+    wlans = {
+      iot = {
+        ssid       = "example-iot"
+        network    = "iot"
+        passphrase = "iot-passphrase"
+        bands      = []
+      }
+    }
+  }
+
+  expect_failures = [var.wlans]
+}
+
+run "rejects_an_unknown_band" {
+  command = plan
+
+  variables {
+    wlans = {
+      iot = {
+        ssid       = "example-iot"
+        network    = "iot"
+        passphrase = "iot-passphrase"
+        bands      = ["7g"]
+      }
+    }
+  }
+
+  expect_failures = [var.wlans]
+}
+
 run "rejects_a_short_passphrase" {
   command = plan
 
@@ -1143,6 +1232,46 @@ run "rejects_a_long_passphrase" {
   }
 
   expect_failures = [var.wlans]
+}
+
+# Eleven characters, so the length bound alone accepted it. WPA-PSK is printable
+# ASCII octets: an accented letter or a smart quote carried in from a password
+# manager associates on nothing, and the sensitive diff hides which SSID broke.
+run "rejects_a_non_ascii_passphrase" {
+  command = plan
+
+  variables {
+    wlans = {
+      iot = {
+        ssid       = "example-iot"
+        network    = "iot"
+        passphrase = "pässword123"
+      }
+    }
+  }
+
+  expect_failures = [var.wlans]
+}
+
+# The other side of the charset rule: a space is printable ASCII and legal in a
+# passphrase, so the check must not have narrowed to alphanumerics.
+run "accepts_a_passphrase_with_spaces" {
+  command = plan
+
+  variables {
+    wlans = {
+      iot = {
+        ssid       = "example-iot"
+        network    = "iot"
+        passphrase = "correct horse battery"
+      }
+    }
+  }
+
+  assert {
+    condition     = length(unifi_wlan.this) == 1
+    error_message = "A spaced passphrase is 8-63 printable ASCII and must plan."
+  }
 }
 
 run "rejects_a_wlan_naming_an_unknown_network" {

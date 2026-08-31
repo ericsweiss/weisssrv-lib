@@ -22,6 +22,7 @@ locals {
       l2_isolation         = w.l2_isolation
       allow_2ghz_high_perf = w.allow_2ghz_high_perf
       hide                 = w.hide
+      bands                = w.bands
     }
   })
 
@@ -302,10 +303,13 @@ resource "unifi_wlan" "this" {
   wpa3_transition = each.value.wpa3
   pmf_mode        = each.value.wpa3 ? "optional" : "disabled"
 
-  # 6 GHz is not offered: including "6g" fails WLAN creation on this provider
-  # (upstream #406). Enable the band in the UI, or wait for the fix and add it
-  # here as an input then.
-  wlan_bands = ["2g", "5g"]
+  # Null — the input's default — writes nothing, and the attribute is
+  # Optional+Computed, so the CONSOLE owns the band set: a band enabled in the
+  # UI survives every apply. That is the only way to run 6 GHz on provider
+  # releases still carrying upstream #406, where "6g" in a written set fails
+  # WLAN creation outright. A non-null `bands` is the opposite bargain —
+  # terraform owns the set and re-asserts it, reverting a UI change.
+  wlan_bands = each.value.bands
   # UniFi's "connect high-performance clients to 5 GHz only" — inverted here so
   # the input reads as what it permits.
   no2ghz_oui   = !each.value.allow_2ghz_high_perf
