@@ -15,7 +15,7 @@ The tag below is an example: use the tag your repo pins (docs/VERSIONING.md).
 
 ```hcl
 module "network" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.13.2"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.14.0"
 
   networks = {
     # `subnet` is GATEWAY form: the host part is the gateway address.
@@ -60,6 +60,8 @@ module "network" {
       passphrase           = var.wlan_passphrase_iot
       wpa3                 = false # ESP32-class gear: plain WPA2, PMF off
       allow_2ghz_high_perf = true  # do not steer capable clients off 2.4 GHz
+      # No `bands`: the console owns the band set, which is what lets a 6 GHz
+      # toggle made in the UI survive an apply. Set it to enforce one instead.
     }
   }
 
@@ -107,7 +109,7 @@ validation in the root, so the failure names the missing item.
 | `zones` | map(object) | `{}` | Custom firewall zones keyed by DISPLAY NAME; `networks` lists `networks` keys, each of which may appear in at most one zone, and every member must be a `corporate` network. Membership is a full replacement on every apply. The key may not be a name reserved for a built-in — `Internal`, `External`, `Gateway`, `Hotspot`, `Vpn`, `Dmz`, or any name `builtin_zone_names` declares. |
 | `builtin_zone_names` | map(string) | `{internal="Internal", external="External", gateway="Gateway"}` | Short name → the controller's display name. Only the entries a policy endpoint actually names are read, so an unused one costs nothing; confirm the display names of the ones you use against the live controller. |
 | `policies` | list(object) | `[]` | `name` (unique — it is the resource key), `action` (`ALLOW`), `protocol` (`all`), `source`/`destination` `{zone, ips, networks, port}`, `create_allow_respond` (`true`, honoured for `ALLOW` only), `logging`. A `port` requires a tcp/udp/tcp_udp `protocol`. An endpoint sets at most one of `ips`/`networks` and neither may be empty — omit both for "any host in that zone", and any `networks` it does name must belong to that endpoint's own zone. `port` takes 1-65535, ascending ranges only. `zone` resolves against `zones` **and** `builtin_zone_names`. |
-| `wlans` | map(object) | `{}` | **sensitive.** `{ssid, network, passphrase, wpa3, l2_isolation, allow_2ghz_high_perf, hide}`. `security = "wpapsk"` and `wlan_bands = ["2g","5g"]` are fixed. |
+| `wlans` | map(object) | `{}` | **sensitive.** `{ssid, network, passphrase, wpa3, l2_isolation, allow_2ghz_high_perf, hide, bands}`. `security = "wpapsk"` is fixed. `passphrase` is 8-63 printable ASCII (the WPA-PSK rule). `bands` decides who owns the band set — see below. |
 | `qos_rate_name` | string | `"Default"` | Client QoS rate (old "user group") every WLAN is assigned to; `unifi_wlan.user_group_id` is Required with no default. Read only when `wlans` is non-empty, so a gateway-only site never fails a plan on a rate name it does not use. |
 | `clients` | map(object) | `{}` | `{mac (colon form), name, fixed_ip, network, note}`. `fixed_ip` requires `network` and must lie inside that network's SUBNET — not inside its DHCP pool, and reserving outside the pool is the normal way to avoid colliding with a dynamic lease. |
 | `port_forwards` | map(object) | `{}` | `{protocol, wan_port, ip, port}`; ports are strings, so ranges and lists work — each port 1-65535, each range ascending. Primary WAN, any source. |
@@ -122,6 +124,18 @@ Two input names deliberately do not match the provider attribute they drive:
 - **`site_settings.upnp`** drives `usg.upnp_enabled` *and*
   `usg.upnp_nat_pmp_enabled`: leaving NAT-PMP on while UPnP is off still lets a
   LAN host punch its own hole.
+
+`wlans[*].bands` chooses an OWNER for the band set rather than a value.
+Unset — the default — the module writes nothing: `wlan_bands` is Optional +
+Computed, so the console keeps whatever bands it has and a band enabled in the
+UI survives every apply. Give it a list and terraform owns the set instead,
+re-asserting it on every apply and reverting a UI change.
+
+That is what makes 6 GHz reachable at all. `6g` is a legal element here, but
+including it in a written set fails WLAN **creation** on provider releases still
+carrying #406, so a 6 GHz SSID today is one that leaves `bands` unset and is
+toggled in the console. Once the provider fix ships, `bands = ["2g","5g","6g"]`
+becomes the way to hold it in code.
 
 `site_settings.igmp_snooping_networks` is opt-in, not a toggle: a non-empty list
 writes the `igmp_snooping` block and enables snooping for exactly those
@@ -165,7 +179,7 @@ step in the consuming repo — none of it is drift this module will report.
 | **Policy ORDER** | `unifi_firewall_policy.index` is read-only; the controller appends every new policy to the end of its zone-pair and the Integration API exposes no reorder (upstream #407). The zone-per-network model is what makes that safe: entries are allowances against a default deny, not a first-match list. |
 | **mDNS reflection** | `unifi_network.multicast_dns` is ignored by UniFi OS gateways, which always store `false`. The module leaves it unset rather than planning a lie; enable the reflector per network in the UI. |
 | **Devices, ports, native/tagged VLAN per port** | `unifi_device` cannot create anything (adoption only), and its `port_override` block is unsafe at 0.55.0: zero blocks wipes live overrides (#438), a `op_mode: switch` port strips fields from every port on the device (#430), and unset Optional+Computed attributes fail the apply (#431). Port layout is a documented physical map, not code. |
-| **6 GHz** | Including `6g` in `wlan_bands` fails WLAN creation (#406). |
+| **6 GHz, in code** | Including `6g` in a band set this module WRITES fails WLAN creation (#406). Enable it in the console and leave `wlans[*].bands` unset — the module then writes no band set, so the console's stays (Inputs, above). |
 | **Per-SSID band steering** | `bandsteering_mode` is a device attribute, not a WLAN one (#388). `allow_2ghz_high_perf` is the closest per-SSID control. |
 | **A network's zone from the network side** | `unifi_network` has no `firewall_zone_id` (#417); zone membership is set only from `zones`. |
 | **Built-in zones as resources** | v0.55.0 cannot import one by name, and managing one would fight the controller for membership. They are read through `data.unifi_firewall_zone`. |

@@ -29,6 +29,33 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.14.0
+
+**No role or variable changed.** Both items are in the
+`terraform/modules/unifi-network` module, and both change behaviour for a
+consumer that adopts this release without editing anything.
+
+- **`wlans[*].bands` is new, and its default hands the band set to the
+  console.** The module used to write `wlan_bands = ["2g","5g"]` on every WLAN,
+  so a 6 GHz band enabled in the UI was reverted by the next apply — which made
+  the old README's "enable the band in the UI" advice impossible to follow.
+  Unset (the default), the attribute is now not written at all: the controller
+  owns the band set and a UI toggle sticks. **A consumer that relied on the
+  module re-asserting 2.4 + 5 GHz must now say so explicitly**, `bands =
+  ["2g","5g"]`, or its WLANs stop being held to those two bands. Nothing is
+  destroyed either way — `wlan_bands` is Optional + Computed, so dropping the
+  write leaves the live value alone; the change is in who wins the NEXT
+  divergence. `6g` is accepted in an explicit list, but including it still
+  fails WLAN creation on provider releases carrying upstream #406, so a 6 GHz
+  SSID today is one that leaves `bands` unset.
+
+- **`wlans[*].passphrase` is now validated as 8-63 PRINTABLE ASCII**, which is
+  the actual WPA-PSK rule; the check was length-only before. An existing
+  passphrase carrying a non-ASCII character — a smart quote or an accented
+  letter picked up from a password manager — now fails `terraform plan` loudly
+  instead of applying a key no client can use. The fix is to correct the
+  1Password item, not the module.
+
 # v0.13.2
 
 **Nothing to migrate.** No role or variable changed; all three fixes are in the
