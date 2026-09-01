@@ -21,6 +21,7 @@
         - 11-windows-guest.json
         - 12-hostpci.json
         - 13-windows-int-size.json
+        - 14-cloudinit-net.json
       register: artifacts
 
     - name: Decode artifacts
@@ -38,6 +39,7 @@
         windows: "{{ artifacts.results[10].content | b64decode | from_json }}"
         hostpci: "{{ artifacts.results[11].content | b64decode | from_json }}"
         windows_int: "{{ artifacts.results[12].content | b64decode | from_json }}"
+        cloudinit_net: "{{ artifacts.results[13].content | b64decode | from_json }}"
 
     - name: NAS host defaults to ssd
       ansible.builtin.assert:
@@ -179,3 +181,22 @@
           - windows_int.bootdisk == 1
         fail_msg: "proxmox_vm_disk_size: 250 (int) did not assemble `scsi0 ssd:250`"
         success_msg: "bare-int proxmox_vm_disk_size passes the GiB assert and assembles the boot disk"
+
+    # Cloud-init network reconcile on an existing VM: a drifted ipconfig0/
+    # nameserver converges to inventory with exactly one qm set; a matching one
+    # is a pure no-op. Both arms run the reconcile (skip_create:false, not
+    # skipped) — the no-op arm proves the compare, not just the code path.
+    - name: Cloud-init net reconcile converges drift and no-ops a match
+      ansible.builtin.assert:
+        that:
+          # 14a: old-subnet ipconfig0/nameserver -> exactly one qm set with the
+          #      desired ip/gw + both resolvers, and the task reports changed.
+          - cloudinit_net.drift_applied == 1
+          - cloudinit_net.drift_any_set == 1
+          - cloudinit_net.drift_changed
+          - not cloudinit_net.drift_skipped
+          # 14b: already matching -> the reconcile RAN but issued no qm set and
+          #      reported not-changed (the no-churn idempotency case).
+          - cloudinit_net.nodrift_any_set == 0
+          - not cloudinit_net.nodrift_changed
+          - not cloudinit_net.nodrift_skipped

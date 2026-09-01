@@ -927,3 +927,116 @@
            "remap_refused": {{ remap_refused | ternary('true', 'false') }},
            "remap_any_set": {{ (disk_remap.stdout | from_json).any_scsi1_set }},
            "allow_remap_reset_to_correct": {{ (disk_allow_remap.stdout | from_json).reset_to_correct_path }}}
+
+    # 14. Cloud-init network reconcile on an EXISTING VM. The create-path only
+    # writes ipconfig0/nameserver at first create (proxmox_vm_exists.rc != 0), so
+    # a renumber that moved the guest to a new subnet leaves the cloud-init net
+    # config stale. The reconcile is gated on `not skip_create`, so these cases
+    # override the scenario-wide skip_create:true; the VM already exists (case 5
+    # flipped the stub), so no create-path task fires — the ONLY qm set possible
+    # is this reconcile's. Desired = ip=192.168.0.99/24,gw=192.168.0.1 +
+    # nameserver "192.168.0.150 192.168.0.160" (target_ip/prefix/gateway/dns).
+    # 14a. DRIFT — stub reports an old-subnet ipconfig0/nameserver -> exactly one
+    # `qm set … --ipconfig0 <desired> --nameserver <desired>`, task changed.
+    - name: Stub cloud-init net on an old subnet (drift)
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: vm_ipconfig0_override, content: "ip=192.168.0.42/24,gw=192.168.0.254"}
+        - {name: vm_nameserver_override, content: "192.168.0.1"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Reset qm.log for the cloud-init-net drift case
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/qm.log
+        content: ""
+        mode: "0644"
+
+    - name: Run role against a VM with drifted cloud-init net
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_vm
+      vars:
+        proxmox_storage: ssd
+        proxmox_vm_skip_create: false
+
+    - name: Record whether the drift reconcile ran and mutated
+      ansible.builtin.set_fact:
+        ci_net_drift_changed: "{{ proxmox_vm_cloudinit_net_reconcile.changed }}"
+        ci_net_drift_skipped: "{{ proxmox_vm_cloudinit_net_reconcile.skipped | default(false) }}"
+
+    - name: Count cloud-init-net drift qm calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        applied=$(grep -c '^qm set 999 --ipconfig0 ip=192.168.0.99/24,gw=192.168.0.1 --nameserver 192.168.0.150 192.168.0.160$' /tmp/molecule-stub-state/qm.log || true)
+        anyset=$(grep -c '^qm set 999 --ipconfig0' /tmp/molecule-stub-state/qm.log || true)
+        echo "{\"applied\": ${applied}, \"any_ipconfig0_set\": ${anyset}}"
+      args:
+        executable: /bin/bash
+      register: ci_net_drift
+      changed_when: false
+
+    # 14b. NO-DRIFT — stub reports the desired ipconfig0/nameserver -> the
+    # reconcile RUNS (skip_create:false, not skipped) but issues NO qm set and
+    # reports not-changed. Proves the compare, not just the code path.
+    - name: Stub cloud-init net already matching desired (no drift)
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: vm_ipconfig0_override, content: "ip=192.168.0.99/24,gw=192.168.0.1"}
+        - {name: vm_nameserver_override, content: "192.168.0.150 192.168.0.160"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Reset qm.log for the cloud-init-net no-drift case
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/qm.log
+        content: ""
+        mode: "0644"
+
+    - name: Run role against a VM whose cloud-init net already matches
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_vm
+      vars:
+        proxmox_storage: ssd
+        proxmox_vm_skip_create: false
+
+    - name: Record whether the no-drift reconcile ran and mutated
+      ansible.builtin.set_fact:
+        ci_net_nodrift_changed: "{{ proxmox_vm_cloudinit_net_reconcile.changed }}"
+        ci_net_nodrift_skipped: "{{ proxmox_vm_cloudinit_net_reconcile.skipped | default(false) }}"
+
+    - name: Count cloud-init-net no-drift qm calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        anyset=$(grep -c '^qm set 999 --ipconfig0' /tmp/molecule-stub-state/qm.log || true)
+        echo "{\"any_ipconfig0_set\": ${anyset}}"
+      args:
+        executable: /bin/bash
+      register: ci_net_nodrift
+      changed_when: false
+
+    - name: Remove cloud-init-net override files
+      ansible.builtin.file:
+        path: "/tmp/molecule-stub-state/{{ item }}"
+        state: absent
+      loop:
+        - vm_ipconfig0_override
+        - vm_nameserver_override
+
+    - name: Capture cloud-init-net reconcile result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/14-cloudinit-net.json
+        mode: "0644"
+        content: |
+          {"drift_applied": {{ (ci_net_drift.stdout | from_json).applied }},
+           "drift_any_set": {{ (ci_net_drift.stdout | from_json).any_ipconfig0_set }},
+           "drift_changed": {{ ci_net_drift_changed | to_json }},
+           "drift_skipped": {{ ci_net_drift_skipped | to_json }},
+           "nodrift_any_set": {{ (ci_net_nodrift.stdout | from_json).any_ipconfig0_set }},
+           "nodrift_changed": {{ ci_net_nodrift_changed | to_json }},
+           "nodrift_skipped": {{ ci_net_nodrift_skipped | to_json }}}

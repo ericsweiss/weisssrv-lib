@@ -531,3 +531,96 @@
         content: |
           {"prefix22_calls": {{ (lxc_prefix_lines.stdout | from_json).prefix22_calls }},
            "prefix24_calls": {{ (lxc_prefix_lines.stdout | from_json).prefix24_calls }}}
+
+    # 13 — per-container DNS (nameserver + searchdomain) reconcile on an EXISTING
+    # container. `pct create` writes these only at create; Proxmox re-applies the
+    # stored nameserver to the container's resolv.conf on every start, so a
+    # container whose resolvers drifted after creation kept clobbering the fixed
+    # value on the next reboot. The reconcile converges it. Desired =
+    # nameserver "192.168.0.150 192.168.0.160" (dns_servers) + searchdomain
+    # "example.test" (internal_domain). Unlike the VM, this reconcile has no
+    # skip_create gate — it fires on every existing container with a non-empty
+    # desired nameserver.
+    # 13a. DRIFT — stub reports a stale nameserver -> exactly one
+    # `pct set 199 --nameserver <desired> --searchdomain <desired>`, changed.
+    - name: 13 — flip stub to "container exists", stub drifted nameserver, reset pct.log
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: ct_exists_state, content: "exists\n"}
+        - {name: pct.log, content: ""}
+        - {name: ct_nameserver_override, content: "192.168.0.99"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: 13 — run role against a container with drifted DNS
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_lxc
+      vars:
+        proxmox_lxc_storage: local-ssd
+
+    - name: 13 — record whether the drift reconcile ran and mutated
+      ansible.builtin.set_fact:
+        lxc_dns_drift_changed: "{{ proxmox_lxc_dns_reconcile.changed }}"
+        lxc_dns_drift_skipped: "{{ proxmox_lxc_dns_reconcile.skipped | default(false) }}"
+
+    - name: 13 — count DNS-drift pct calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        applied=$(grep -c '^pct set 199 --nameserver 192.168.0.150 192.168.0.160 --searchdomain example.test$' /tmp/molecule-stub-state/pct.log || true)
+        anyset=$(grep -c '^pct set 199 --nameserver' /tmp/molecule-stub-state/pct.log || true)
+        echo "{\"applied\": ${applied}, \"any_ns_set\": ${anyset}}"
+      args:
+        executable: /bin/bash
+      register: lxc_dns_drift
+      changed_when: false
+
+    # 13b. NO-DRIFT — stub reports the desired nameserver/searchdomain (the
+    # default stub state) -> the reconcile RUNS but issues no pct set and reports
+    # not-changed. Proves the compare, and that a matching container never churns.
+    - name: 13 — remove nameserver override (stub back to desired), reset pct.log
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/pct.log
+        content: ""
+        mode: "0644"
+
+    - name: 13 — clear the drifted-nameserver override
+      ansible.builtin.file:
+        path: /tmp/molecule-stub-state/ct_nameserver_override
+        state: absent
+
+    - name: 13 — run role against a container whose DNS already matches
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_lxc
+      vars:
+        proxmox_lxc_storage: local-ssd
+
+    - name: 13 — record whether the no-drift reconcile ran and mutated
+      ansible.builtin.set_fact:
+        lxc_dns_nodrift_changed: "{{ proxmox_lxc_dns_reconcile.changed }}"
+        lxc_dns_nodrift_skipped: "{{ proxmox_lxc_dns_reconcile.skipped | default(false) }}"
+
+    - name: 13 — count DNS-no-drift pct calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        anyset=$(grep -c '^pct set 199 --nameserver' /tmp/molecule-stub-state/pct.log || true)
+        echo "{\"any_ns_set\": ${anyset}}"
+      args:
+        executable: /bin/bash
+      register: lxc_dns_nodrift
+      changed_when: false
+
+    - name: 13 — capture DNS-reconcile artifact
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/13-dns-reconcile.json
+        mode: "0644"
+        content: |
+          {"drift_applied": {{ (lxc_dns_drift.stdout | from_json).applied }},
+           "drift_any_set": {{ (lxc_dns_drift.stdout | from_json).any_ns_set }},
+           "drift_changed": {{ lxc_dns_drift_changed | to_json }},
+           "drift_skipped": {{ lxc_dns_drift_skipped | to_json }},
+           "nodrift_any_set": {{ (lxc_dns_nodrift.stdout | from_json).any_ns_set }},
+           "nodrift_changed": {{ lxc_dns_nodrift_changed | to_json }},
+           "nodrift_skipped": {{ lxc_dns_nodrift_skipped | to_json }}}

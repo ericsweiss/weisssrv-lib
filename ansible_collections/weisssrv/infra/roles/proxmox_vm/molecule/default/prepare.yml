@@ -110,6 +110,18 @@
             if [ -f /tmp/molecule-stub-state/vm_scsi1_override ]; then
               echo "scsi1: $(cat /tmp/molecule-stub-state/vm_scsi1_override)"
             fi
+            # Cloud-init network reconcile (exercised only in the skip_create:false
+            # cases) parses ipconfig0/nameserver. Default ABSENT (like scsi1): the
+            # reconcile is skip_create-gated, so the existence-guard and other
+            # existing-VM cases inherit skip_create:true and never read these. The
+            # override files supply the values verbatim so converge can drive the
+            # drift arm (stale strings) and the no-drift arm (desired strings).
+            if [ -f /tmp/molecule-stub-state/vm_ipconfig0_override ]; then
+              echo "ipconfig0: $(cat /tmp/molecule-stub-state/vm_ipconfig0_override)"
+            fi
+            if [ -f /tmp/molecule-stub-state/vm_nameserver_override ]; then
+              echo "nameserver: $(cat /tmp/molecule-stub-state/vm_nameserver_override)"
+            fi
           fi
           exit 0
       become: true

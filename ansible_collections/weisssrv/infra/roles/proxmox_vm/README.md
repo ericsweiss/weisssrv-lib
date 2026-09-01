@@ -174,14 +174,19 @@ applied **only at VM creation**:
 | NIC `firewall=1` flag | **Reconciled** on existing VMs (one-time repair of legacy NICs). |
 | `proxmox_vm_memory` | **Reconciled** on existing VMs via `qm set --memory`, which writes the config and takes effect at the guest's **next start** — the task never restarts anything. Draining and restarting the guest stays an operator step. The role **defaults** this to 2048 MiB and the reconcile participates, so a guest that loses its inventory key would be resized down to the default: a shrink fails the task unless `proxmox_vm_memory_shrink_ok: true` names it. |
 | `proxmox_vm_balloon` | **Reconciled** on existing VMs when defined; `qm set --balloon` takes effect live. |
-| Cores, disk size, `proxmox_vm_cpu_type`, cloud-init (user, SSH key, IP), boot disk, `proxmox_vm_hostpci` | **Create-time only.** Changing these in inventory does not reconcile onto an existing VM — recreate the VM (or `qm set …` by hand in a stop/start window for PCI). Persistent zvols are matched idempotently by stable SCSI slot and survive recreation. |
+| Cloud-init network — `ipconfig0` (`proxmox_vm_target_ip`/`proxmox_vm_cloudinit_prefix_len`/`proxmox_vm_cloudinit_gateway`) and `nameserver` (`proxmox_vm_cloudinit_dns`) | **Reconciled** on existing Linux VMs via an idempotent `qm set --ipconfig0 --nameserver` (skipped for Windows guests and under `proxmox_vm_skip_create`). This is metadata-only: it regenerates the cloud-init drive, which cloud-init applies **once per instance**, so a running guest's live network is untouched and no reboot is triggered — the converged value takes effect on the next cloud-init reset/rebuild. Its purpose is to keep the stored config from stranding a guest after an inventory address or resolver change (e.g. a subnet renumber). |
+| Cloud-init user + SSH key, cores, disk size, `proxmox_vm_cpu_type`, boot disk, `proxmox_vm_hostpci` | **Create-time only.** Changing these in inventory does not reconcile onto an existing VM — recreate the VM (or `qm set …` by hand in a stop/start window for PCI). Persistent zvols are matched idempotently by stable SCSI slot and survive recreation. |
 
 ## Notes
 
 - The cloud-init user is `proxmox_vm_cloudinit_user` (defaults to the
   inventory-wide `admin_user`), authorized with `SSH_PUBLIC_KEY`.
 - Networking is static via cloud-init `--ipconfig0`
-  (`proxmox_vm_target_ip`/`proxmox_vm_cloudinit_prefix_len`/`proxmox_vm_cloudinit_gateway`).
+  (`proxmox_vm_target_ip`/`proxmox_vm_cloudinit_prefix_len`/`proxmox_vm_cloudinit_gateway`),
+  with `--nameserver` from `proxmox_vm_cloudinit_dns`. Both are reconciled on
+  existing VMs (see the table above), so an inventory change to the address or
+  resolvers is written back to the guest's stored cloud-init config rather than
+  applying only at first create.
 - Persistent zvols survive VM recreation.
 - The cloud-init SSH public key is staged on the Proxmox host in a private
   `tempfile` (mode 0600, random name) and removed after `qm set`, never a
