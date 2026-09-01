@@ -403,6 +403,48 @@
     # a container that was never created on a skip-create run.
     - proxmox_lxc_exists.rc == 0 or not (proxmox_lxc_skip_create | default(false))
 
+# Reconcile the per-container DNS (nameserver + searchdomain) on EXISTING
+# containers. `pct create` sets these only at creation
+# (proxmox_lxc_exists.rc != 0), and Proxmox REWRITES the container's
+# /etc/resolv.conf from them on every container start — so a container whose
+# resolvers changed after creation kept a stale per-container nameserver that
+# PVE re-applied on the next restart, breaking the container's own name
+# resolution (a resolver LXC's apt, cert fetches) until a deploy repaired the
+# in-guest file. The 2026-08 renumber left exactly this: resolv.conf moved to
+# the new subnet in-guest, but the Proxmox nameserver stayed on the old one and
+# clobbered it on the next reboot. Idempotent: `pct config` (default) reflects a
+# staged-pending value, so once set the compare matches and it does not re-fire.
+# `pct set` stages the change as pending and Proxmox applies it on the next
+# container restart, so a running container is never disrupted. Guarded on a
+# non-empty desired nameserver so a site that leaves resolution to the node DNS
+# never writes an empty --nameserver.
+- name: Reconcile LXC nameserver and searchdomain
+  delegate_to: "{{ proxmox_lxc_reconcile_host }}"
+  # Inventory-derived values are passed through the environment, never rendered
+  # into the shell source: a nameserver/searchdomain carrying a quote, backtick
+  # or $(...) must be inert data on the reconcile host, not executable syntax.
+  environment:
+    CT_ID: "{{ proxmox_lxc_id }}"
+    WANT_NS: "{{ proxmox_lxc_nameserver }}"
+    WANT_SD: "{{ proxmox_lxc_searchdomain }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    cfg=$(pct config "$CT_ID")
+    cur_ns=$(printf '%s\n' "$cfg" | sed -n 's/^nameserver: //p')
+    cur_sd=$(printf '%s\n' "$cfg" | sed -n 's/^searchdomain: //p')
+    if [ "$cur_ns" != "$WANT_NS" ] || [ "$cur_sd" != "$WANT_SD" ]; then
+      pct set "$CT_ID" --nameserver "$WANT_NS" --searchdomain "$WANT_SD"
+      echo CHANGED
+    fi
+  args:
+    executable: /bin/bash
+  register: proxmox_lxc_dns_reconcile
+  changed_when: "'CHANGED' in (proxmox_lxc_dns_reconcile.stdout | default(''))"
+  when:
+    - not ansible_check_mode
+    - proxmox_lxc_exists.rc == 0
+    - proxmox_lxc_nameserver | default('') | length > 0
+
 # Reconcile onboot/startup on EXISTING containers too. Like the VM role, these
 # are metadata-only knobs (applied by Proxmox at the next boot, never disrupting
 # a running container), so converging inventory drift here is safe. startup is

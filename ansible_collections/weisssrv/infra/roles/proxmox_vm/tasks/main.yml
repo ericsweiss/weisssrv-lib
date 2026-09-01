@@ -614,6 +614,52 @@
     # (qm create above). Matches the onboot/startup reconcile's guard below.
     - proxmox_vm_exists.rc == 0
 
+# Reconcile the cloud-init network (ipconfig0 + nameserver) on existing VMs. The
+# create-path `qm set` block above writes these only when the VM is first
+# created (proxmox_vm_exists.rc != 0), so a VM whose inventory address or
+# resolvers changed after creation kept a stale cloud-init config: the 2026-08
+# renumber moved the in-guest network to the new subnet but left ipconfig0/
+# nameserver on the old one, a landmine that surfaces only on a cloud-init reset
+# or rebuild (the running guest is fine). This closes that gap. Idempotent:
+# `qm set` runs only when live `qm config` differs. Metadata-only — it
+# regenerates the cloud-init drive, which cloud-init applies once per instance,
+# so a running guest's network is untouched and no reboot is needed. Windows
+# VMs carry no cloud-init net config and are excluded, and the cloud-init vars
+# must be present (same requirement the create-path assert enforces).
+- name: Reconcile cloud-init network on existing VMs
+  delegate_to: "{{ proxmox_vm_reconcile_host }}"
+  # Inventory-derived values are passed through the environment, never rendered
+  # into the shell source: a nameserver/gateway/IP carrying a quote, backtick or
+  # $(...) must be inert data on the reconcile host, not executable syntax.
+  environment:
+    VM_ID: "{{ proxmox_vm_id }}"
+    TARGET_IP: "{{ proxmox_vm_target_ip }}"
+    PREFIX_LEN: "{{ proxmox_vm_cloudinit_prefix_len }}"
+    GATEWAY: "{{ proxmox_vm_cloudinit_gateway }}"
+    DNS: "{{ proxmox_vm_cloudinit_dns | join(' ') }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    want_ip="ip=${TARGET_IP}/${PREFIX_LEN},gw=${GATEWAY}"
+    want_ns="${DNS}"
+    cfg=$(qm config "$VM_ID")
+    cur_ip=$(printf '%s\n' "$cfg" | sed -n 's/^ipconfig0: //p')
+    cur_ns=$(printf '%s\n' "$cfg" | sed -n 's/^nameserver: //p')
+    if [ "$cur_ip" != "$want_ip" ] || [ "$cur_ns" != "$want_ns" ]; then
+      qm set "$VM_ID" --ipconfig0 "$want_ip" --nameserver "$want_ns"
+      echo CHANGED
+    fi
+  args:
+    executable: /bin/bash
+  register: proxmox_vm_cloudinit_net_reconcile
+  changed_when: "'CHANGED' in (proxmox_vm_cloudinit_net_reconcile.stdout | default(''))"
+  when:
+    - not ansible_check_mode
+    - proxmox_vm_exists.rc == 0
+    - not _proxmox_vm_is_windows
+    - not (proxmox_vm_skip_create | default(false))
+    - proxmox_vm_cloudinit_gateway | default('') | length > 0
+    - proxmox_vm_cloudinit_dns | default([]) | length > 0
+
 - name: Configure VM autostart and boot order
   delegate_to: "{{ proxmox_host }}"
   ansible.builtin.shell: |

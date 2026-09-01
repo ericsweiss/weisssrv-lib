@@ -47,6 +47,7 @@
         - 10-meta-drift.json
         - 11-idmap-gpu-nobind.json
         - 12-netmask.json
+        - 13-dns-reconcile.json
       register: artifacts
 
     - name: Decode artifacts
@@ -63,6 +64,7 @@
         meta_drift: "{{ artifacts.results[9].content | b64decode | from_json }}"
         idmap_gpu_nobind: "{{ artifacts.results[10].content | b64decode | from_json }}"
         netmask: "{{ artifacts.results[11].content | b64decode | from_json }}"
+        dns_reconcile: "{{ artifacts.results[12].content | b64decode | from_json }}"
 
     - name: Compute host defaults to local-ssd
       ansible.builtin.assert:
@@ -173,3 +175,23 @@
           pct create must carry ip=.../22 when proxmox_lxc_netmask_bits is 22
           (got {{ netmask.prefix22_calls }} /22 and
           {{ netmask.prefix24_calls }} /24 create lines).
+
+    # Per-container DNS reconcile on an existing container: a drifted
+    # nameserver/searchdomain converges to inventory with exactly one pct set;
+    # a matching one is a pure no-op. The reconcile runs on every existing
+    # container (no skip_create gate), so the no-op arm is what keeps a matching
+    # container from churning a pct set every deploy.
+    - name: DNS reconcile converges drift and no-ops a match
+      ansible.builtin.assert:
+        that:
+          # 13a: stale nameserver -> exactly one pct set with the desired
+          #      nameserver + searchdomain, and the task reports changed.
+          - dns_reconcile.drift_applied == 1
+          - dns_reconcile.drift_any_set == 1
+          - dns_reconcile.drift_changed
+          - not dns_reconcile.drift_skipped
+          # 13b: already matching -> the reconcile RAN but issued no pct set and
+          #      reported not-changed (the no-churn idempotency case).
+          - dns_reconcile.nodrift_any_set == 0
+          - not dns_reconcile.nodrift_changed
+          - not dns_reconcile.nodrift_skipped
