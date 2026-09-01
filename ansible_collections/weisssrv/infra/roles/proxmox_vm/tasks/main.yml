@@ -628,15 +628,24 @@
 # must be present (same requirement the create-path assert enforces).
 - name: Reconcile cloud-init network on existing VMs
   delegate_to: "{{ proxmox_vm_reconcile_host }}"
+  # Inventory-derived values are passed through the environment, never rendered
+  # into the shell source: a nameserver/gateway/IP carrying a quote, backtick or
+  # $(...) must be inert data on the reconcile host, not executable syntax.
+  environment:
+    VM_ID: "{{ proxmox_vm_id }}"
+    TARGET_IP: "{{ proxmox_vm_target_ip }}"
+    PREFIX_LEN: "{{ proxmox_vm_cloudinit_prefix_len }}"
+    GATEWAY: "{{ proxmox_vm_cloudinit_gateway }}"
+    DNS: "{{ proxmox_vm_cloudinit_dns | join(' ') }}"
   ansible.builtin.shell: |
     set -euo pipefail
-    want_ip="ip={{ proxmox_vm_target_ip }}/{{ proxmox_vm_cloudinit_prefix_len }},gw={{ proxmox_vm_cloudinit_gateway }}"
-    want_ns="{{ proxmox_vm_cloudinit_dns | join(' ') }}"
-    cfg=$(qm config {{ proxmox_vm_id }})
+    want_ip="ip=${TARGET_IP}/${PREFIX_LEN},gw=${GATEWAY}"
+    want_ns="${DNS}"
+    cfg=$(qm config "$VM_ID")
     cur_ip=$(printf '%s\n' "$cfg" | sed -n 's/^ipconfig0: //p')
     cur_ns=$(printf '%s\n' "$cfg" | sed -n 's/^nameserver: //p')
     if [ "$cur_ip" != "$want_ip" ] || [ "$cur_ns" != "$want_ns" ]; then
-      qm set {{ proxmox_vm_id }} --ipconfig0 "$want_ip" --nameserver "$want_ns"
+      qm set "$VM_ID" --ipconfig0 "$want_ip" --nameserver "$want_ns"
       echo CHANGED
     fi
   args:
