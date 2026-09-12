@@ -96,6 +96,22 @@
             else
               echo "startup: order=100"
             fi
+            # nameserver/searchdomain default to the values the scenario's
+            # group_vars produce (dns_servers join + internal_domain), so the DNS
+            # reconcile — which fires on EVERY existing container (nameserver is
+            # non-empty, and unlike the VM it has no skip_create gate) — sees no
+            # drift and stays a no-op, preserving the existence-guard's
+            # zero-mutation invariant. The override files inject a drifted variant.
+            if [ -f "$STATE/ct_nameserver_override" ]; then
+              echo "nameserver: $(cat "$STATE/ct_nameserver_override")"
+            else
+              echo "nameserver: 192.168.0.150 192.168.0.160"
+            fi
+            if [ -f "$STATE/ct_searchdomain_override" ]; then
+              echo "searchdomain: $(cat "$STATE/ct_searchdomain_override")"
+            else
+              echo "searchdomain: example.test"
+            fi
           fi
           exit 0
       become: true

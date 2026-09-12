@@ -29,6 +29,38 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.15.0
+
+**`proxmox_vm` and `proxmox_lxc` now reconcile guest network/DNS config on
+EXISTING guests, not only at creation.** Previously `ipconfig0`/`nameserver`
+(VM) and `nameserver`/`searchdomain` (LXC) were written only on the create path
+(`proxmox_vm_exists.rc != 0` / `pct create`), so a guest whose Proxmox-level net
+config drifted from inventory after creation kept the stale value. Each role now
+compares live `qm config`/`pct config` against inventory on every run and issues
+a single idempotent `qm set`/`pct set` when they differ.
+
+- **What converges.** A guest whose stored net config no longer matches
+  inventory — the common case being a subnet renumber done in-guest while the
+  Proxmox-level `ipconfig0`/`nameserver`/`searchdomain` stayed on the old
+  addresses — is brought back in line on the next deploy.
+- **It is safe / non-disruptive.** The VM reconcile only regenerates the
+  cloud-init drive (`qm set --ipconfig0 --nameserver`), which cloud-init applies
+  once per instance; the running guest's live network is untouched and nothing
+  reboots. The LXC reconcile (`pct set --nameserver --searchdomain`) stages the
+  change as pending, which Proxmox applies on the next container restart; a
+  running container is not disrupted. Neither reconcile restarts a guest.
+- **Action required only if you relied on out-of-band net config.** A consumer
+  that deliberately set an existing guest's Proxmox-level `ipconfig0`/
+  `nameserver`/`searchdomain` outside Ansible must now put the desired value in
+  inventory (`proxmox_vm_target_ip` / `proxmox_vm_cloudinit_prefix_len` /
+  `proxmox_vm_cloudinit_gateway` / `proxmox_vm_cloudinit_dns`; `dns_servers` /
+  `internal_domain` for the LXC), or the next run reverts it to the inventory
+  value. Both reconciles are guarded: the VM one is skipped for Windows guests,
+  under `proxmox_vm_skip_create`, and when the cloud-init gateway/DNS inputs are
+  empty; the LXC one is skipped when `proxmox_lxc_nameserver` is empty (a site
+  that leaves resolution to the node DNS writes nothing). No variables were
+  renamed and no new required inputs were added.
+
 # v0.14.0
 
 **No role or variable changed.** Both items are in the
