@@ -150,3 +150,47 @@
           - "'ip_forward=1' in (dropin_content.content | b64decode)"
         fail_msg: "IP forwarding drop-in has incorrect content"
         success_msg: "IP forwarding drop-in content verified"
+
+    # Subnet-router bridge-masquerade fix: script + drop-in that runs it
+    # (exercised because tailscale_advertise_routes is set). This validates
+    # rendering only; runtime POSTROUTING ordering after a tailscaled restart is
+    # verified live on a real subnet router, not in this container.
+    - name: Stat the bridge-masquerade fix script
+      ansible.builtin.stat:
+        path: /usr/local/sbin/tailscale-bridge-masq-fix
+      register: bridge_masq_script
+
+    - name: Verify the bridge-masquerade fix script is deployed and executable
+      ansible.builtin.assert:
+        that:
+          - bridge_masq_script.stat.exists
+          - bridge_masq_script.stat.mode == '0755'
+        fail_msg: "bridge-masquerade fix script missing or not executable"
+        success_msg: "bridge-masquerade fix script deployed (0755)"
+
+    - name: Read the bridge-masquerade fix script
+      ansible.builtin.slurp:
+        src: /usr/local/sbin/tailscale-bridge-masq-fix
+      register: bridge_masq_script_content
+
+    - name: Verify the script carries the deterministic ordering logic
+      ansible.builtin.assert:
+        that:
+          - "'--physdev-is-bridged' in (bridge_masq_script_content.content | b64decode)"
+          - "'0x40000/0xff0000' in (bridge_masq_script_content.content | b64decode)"
+          - "'-C POSTROUTING -j ts-postrouting' in (bridge_masq_script_content.content | b64decode)"
+          - "'-I POSTROUTING 1' in (bridge_masq_script_content.content | b64decode)"
+        fail_msg: "bridge-masquerade fix script missing the wait/insert-at-top logic"
+        success_msg: "bridge-masquerade fix script logic verified"
+
+    - name: Read the bridge-masquerade fix drop-in
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/tailscaled.service.d/bridge-masquerade-fix.conf
+      register: bridge_masq_dropin_content
+
+    - name: Verify the drop-in ExecStartPost invokes the script
+      ansible.builtin.assert:
+        that:
+          - "'ExecStartPost=-/usr/local/sbin/tailscale-bridge-masq-fix' in (bridge_masq_dropin_content.content | b64decode)"
+        fail_msg: "bridge-masquerade fix drop-in does not invoke the script"
+        success_msg: "bridge-masquerade fix drop-in wired to the script"

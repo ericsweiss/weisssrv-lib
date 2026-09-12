@@ -53,6 +53,36 @@ the live value back to 0: `nic_tuning` may legitimately own `ip_forward` on the
 same host, and fighting it would be worse than a demoted router that keeps
 forwarding until reboot.
 
+## Subnet router on a bridging host (local-guest reachability)
+
+A route-advertising node ALSO gets `/usr/local/sbin/tailscale-bridge-masq-fix`
+plus a `tailscaled.service` `ExecStartPost` drop-in that runs it. Without it, a
+subnet router that is also a hypervisor (Proxmox, bridged guests) can forward
+tailnet traffic to guests on **other** hosts but not to guests hosted on
+**itself**: `net.bridge.bridge-nf-call-iptables=1` makes the packet re-traverse
+`nat POSTROUTING` at the guest's fw-bridge, and Tailscale's mark-based masquerade
+(`0x40000`) fires a **second** time, rewriting the source to the router's own
+tailnet IP so the guest's reply is absorbed by the router. The script installs
+one rule — `-m physdev --physdev-is-bridged -m mark --mark 0x40000/0xff0000 -j
+ACCEPT`, **above** the `-j ts-postrouting` jump — that skips that second
+masquerade for bridged-local delivery so the correct first (LAN) masquerade
+survives. It is NAT-table only (it changes source translation, not the FILTER
+firewall, so it opens no access) and a no-op on a router with no bridged guests.
+
+Staying **above** `ts-postrouting` is why this is a script, not a one-line
+`ExecStartPost`: on restart Tailscale removes and re-inserts its own jump at
+position 1, which pushes a pre-existing ACCEPT below it, and a plain
+insert-if-missing check would then read the mis-ordered rule as present and never
+repair it. The script waits (bounded) for the jump to exist, deletes any stale
+copy, then inserts once at position 1 — deterministic on every restart and cold
+boot. Emptying `tailscale_advertise_routes` removes the script and drop-in; the
+live rule (harmless without marked bridged traffic) clears on reboot.
+
+**Prerequisite:** Tailscale must be in **iptables** netfilter mode, not nftables
+— the `ts-postrouting` chain and the `xt_physdev` match are iptables constructs.
+Under nftables mode the script's wait times out and its rule does not apply (and
+is not needed the same way). The current fleet runs iptables mode.
+
 ## ACL tags
 
 Deploy order matters: apply the tailnet ACL (which defines `tagOwners`, and the
