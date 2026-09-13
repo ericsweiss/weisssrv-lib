@@ -15,7 +15,7 @@ The tag below is an example: use the tag your repo pins (docs/VERSIONING.md).
 
 ```hcl
 module "network" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.15.1"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.16.0"
 
   networks = {
     # `subnet` is GATEWAY form: the host part is the gateway address.
@@ -112,7 +112,7 @@ validation in the root, so the failure names the missing item.
 | `wlans` | map(object) | `{}` | **sensitive.** `{ssid, network, passphrase, wpa3, l2_isolation, allow_2ghz_high_perf, hide, bands}`. `security = "wpapsk"` is fixed. `passphrase` is 8-63 printable ASCII (the WPA-PSK rule). `bands` decides who owns the band set — see below. |
 | `qos_rate_name` | string | `"Default"` | Client QoS rate (old "user group") every WLAN is assigned to; `unifi_wlan.user_group_id` is Required with no default. Read only when `wlans` is non-empty, so a gateway-only site never fails a plan on a rate name it does not use. |
 | `clients` | map(object) | `{}` | `{mac (colon form), name, fixed_ip, network, note}`. `fixed_ip` requires `network` and must lie inside that network's SUBNET — not inside its DHCP pool, and reserving outside the pool is the normal way to avoid colliding with a dynamic lease. |
-| `port_forwards` | map(object) | `{}` | `{protocol, wan_port, ip, port}`; ports are strings, so ranges and lists work — each port 1-65535, each range ascending. Primary WAN, any source. |
+| `port_forwards` | map(object) | `{}` | `{protocol, wan_port, ip, port, logging}`; ports are strings, so ranges and lists work — each port 1-65535, each range ascending. Primary WAN, any source. `logging` (default `false`) toggles the gateway's per-forward WAN hit logging. |
 | `site_settings` | object | hardened baseline | `auto_upgrade=false`, `network_optimization=false`, `upnp=false` (also NAT-PMP), `ips_mode="ids"`, `igmp_snooping_networks=[]` — the empty list leaves the site's IGMP-snooping toggle **unmanaged**, see below. |
 
 Two input names deliberately do not match the provider attribute they drive:

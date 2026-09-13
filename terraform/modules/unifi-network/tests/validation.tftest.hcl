@@ -135,7 +135,7 @@ variables {
   }
 
   port_forwards = {
-    https = { wan_port = "443", ip = "10.0.1.100", port = "443" }
+    https = { wan_port = "443", ip = "10.0.1.100", port = "443", logging = true }
     wg    = { protocol = "udp", wan_port = "51820", ip = "10.0.1.99", port = "51820" }
   }
 
@@ -338,6 +338,11 @@ run "a_whole_site_plans_clean" {
   assert {
     condition     = unifi_port_forward.this["wg"].wan.interface == "wan" && unifi_port_forward.this["wg"].forward.port == "51820"
     error_message = "Port forwards must land on the primary WAN with the declared forward target."
+  }
+
+  assert {
+    condition     = unifi_port_forward.this["https"].logging == true && unifi_port_forward.this["wg"].logging == false
+    error_message = "Port-forward logging must wire per-forward: true where set, default false where omitted."
   }
 
   # The positive half of the counted QoS lookup; the gateway-only run below is

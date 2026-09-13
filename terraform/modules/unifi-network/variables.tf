@@ -554,12 +554,16 @@ variable "port_forwards" {
     address: source restriction belongs in the firewall policies (and in the
     host's own firewall), not in a per-forward allowlist that nothing else can
     see.
+
+    `logging` (default false) toggles the UniFi gateway's per-forward hit
+    logging; enable it where the WAN-side connection log is wanted.
   EOT
   type = map(object({
     protocol = optional(string, "tcp")
     wan_port = string
     ip       = string
     port     = string
+    logging  = optional(bool, false)
   }))
   default = {}
 

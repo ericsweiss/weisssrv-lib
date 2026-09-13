@@ -376,6 +376,9 @@ resource "unifi_port_forward" "this" {
     port = each.value.port
   }
 
+  # WAN-side per-forward hit logging (the "Log" toggle in the UI); default off.
+  logging = each.value.logging
+
   # `enabled` is Deprecated in 0.55.0 with no documented replacement — omitted
   # rather than pinned to a value the provider may stop sending.
 }
