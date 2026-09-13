@@ -29,6 +29,27 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.15.1
+
+**`tailscale` — a subnet router on a bridging host now reaches guests hosted on
+itself.** A route-advertising node that is also a hypervisor (Proxmox, bridged
+guests) could forward tailnet traffic to guests on other hosts but not to guests
+on itself: `net.bridge.bridge-nf-call-iptables=1` made the packet re-traverse
+`nat POSTROUTING` at the guest's fw-bridge, where Tailscale's own `0x40000` mark
+re-masqueraded it to the router's tailnet IP, so the guest's reply returned to
+the router and the originator never saw it. The role now installs a small script
+(`/usr/local/sbin/tailscale-bridge-masq-fix`) plus a `tailscaled` `ExecStartPost`
+drop-in that keeps one NAT `ACCEPT` rule above Tailscale's `ts-postrouting` jump.
+
+- **No action required.** Subnet-router hosts (`tailscale_advertise_routes`
+  non-empty) pick up the script and drop-in on the next deploy; the role's
+  handler restarts `tailscaled` to apply it. It is NAT-table only — no
+  filter/access change — and a no-op on a router with no bridged guests. Emptying
+  `tailscale_advertise_routes` removes both.
+- **Requires Tailscale in iptables (not nftables) netfilter mode** — it relies on
+  the `ts-postrouting` chain and the `xt_physdev` match. No variables were renamed
+  and no new inputs are required.
+
 # v0.15.0
 
 **`proxmox_vm` and `proxmox_lxc` now reconcile guest network/DNS config on

@@ -153,6 +153,84 @@
   when: tailscale_advertise_routes | length == 0
   notify: Reload and restart tailscaled
 
+# A Tailscale subnet router on a Proxmox host cannot deliver forwarded traffic to
+# guests hosted on ITSELF: with net.bridge.bridge-nf-call-iptables=1 the packet
+# re-traverses `nat POSTROUTING` at the guest's fw-bridge, where the still-set
+# Tailscale mark (0x40000) triggers a SECOND masquerade — to the router's own
+# tailnet IP — so the guest replies to the router and the originator never sees
+# it. One `-m physdev --physdev-is-bridged -m mark --mark 0x40000/0xff0000 -j
+# ACCEPT` in nat POSTROUTING, ABOVE Tailscale's ts-postrouting jump, skips that
+# second masquerade so the correct first (LAN) masquerade survives — matching how
+# guests on OTHER hosts already behave. NAT table only: it changes source
+# translation, not the FILTER firewall, so it opens no access, and is a no-op on
+# a router with no bridged guests. Requires Tailscale in iptables (not nftables)
+# netfilter mode: the ts-postrouting chain and the xt_physdev match.
+#
+# Installed via a script rather than an inline ExecStartPost because staying
+# ABOVE ts-postrouting is NOT a plain insert-if-missing: on restart Tailscale
+# removes then re-inserts its own jump at position 1, which pushes a pre-existing
+# ACCEPT below it, and an existence check would then read the (mis-ordered) rule
+# as already present and never repair it. The script instead waits for the jump,
+# drops any stale copy, then inserts once at the top — deterministic on every
+# (re)start and cold boot. Verified live: after `systemctl restart tailscaled`
+# the rule stays above ts-postrouting.
+- name: Install subnet-router bridge-masquerade fix script
+  ansible.builtin.copy:
+    dest: /usr/local/sbin/tailscale-bridge-masq-fix
+    mode: '0755'
+    content: |
+      #!/bin/sh
+      # Managed by the weisssrv.infra.tailscale role (see its README). Keeps the
+      # bridge-local anti-double-masquerade ACCEPT rule above Tailscale's
+      # ts-postrouting jump in nat POSTROUTING, deterministically, on every
+      # tailscaled (re)start. Idempotent.
+      set -u
+      IPT=/usr/sbin/iptables
+      rule='-m physdev --physdev-is-bridged -m mark --mark 0x40000/0xff0000 -j ACCEPT'
+      # Wait (bounded, ~5s) for Tailscale's POSTROUTING jump so the insert below
+      # lands ABOVE it.
+      n=0
+      while [ "$n" -lt 50 ] && ! "$IPT" -t nat -C POSTROUTING -j ts-postrouting 2>/dev/null; do
+          n=$((n + 1))
+          sleep 0.1
+      done
+      # If the jump never appeared — Tailscale in nftables mode, or simply slow
+      # this boot — do NOTHING: inserting now would add a stray rule in an
+      # unsupported mode, or land BELOW a jump Tailscale installs later. The next
+      # tailscaled (re)start runs this again.
+      "$IPT" -t nat -C POSTROUTING -j ts-postrouting 2>/dev/null || exit 0
+      # Reclaim the top slot: drop any stale copies, then insert once at 1.
+      while "$IPT" -t nat -D POSTROUTING $rule 2>/dev/null; do :; done
+      "$IPT" -t nat -I POSTROUTING 1 $rule
+  when: tailscale_advertise_routes | length > 0
+  notify: Reload and restart tailscaled
+
+- name: Persist subnet-router bridge-masquerade fix via tailscaled ExecStartPost
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/tailscaled.service.d/bridge-masquerade-fix.conf
+    mode: '0644'
+    content: |
+      [Service]
+      ExecStartPost=-/usr/local/sbin/tailscale-bridge-masq-fix
+  when: tailscale_advertise_routes | length > 0
+  notify: Reload and restart tailscaled
+
+# Mirror the ip_forward removal: drop the override and its script when this host
+# stops being a subnet router. The live iptables rule is a no-op without marked
+# bridged traffic, so it is not force-deleted; it clears on the next reboot.
+- name: Remove subnet-router bridge-masquerade fix drop-in when subnet routing disabled
+  ansible.builtin.file:
+    path: /etc/systemd/system/tailscaled.service.d/bridge-masquerade-fix.conf
+    state: absent
+  when: tailscale_advertise_routes | length == 0
+  notify: Reload and restart tailscaled
+
+- name: Remove subnet-router bridge-masquerade fix script when subnet routing disabled
+  ansible.builtin.file:
+    path: /usr/local/sbin/tailscale-bridge-masq-fix
+    state: absent
+  when: tailscale_advertise_routes | length == 0
+
 - name: Check Tailscale status
   ansible.builtin.command: tailscale status --json
   register: tailscale_status
