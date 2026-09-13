@@ -191,3 +191,59 @@
   register: nic_tuning_bond_asa_runtime
   changed_when: "'CHANGED' in nic_tuning_bond_asa_runtime.stdout"
   when: nic_tuning_bond_asa_guard | bool
+
+# Fully disable IPv6 on the listed interfaces so no fe80:: link-local exists on
+# them (an IPv4-only segment's untagged link-local is an unfiltered L2 path the
+# VLAN firewall never sees). Boot persistence is a sysctl.d drop-in written with
+# the SLASH separator, because both `sysctl` and ansible.posix.sysctl translate
+# every '.' in a dotted KEY to '/', which would mangle a VLAN name like nic1.10;
+# systemd-sysctl/procps treat '/' as the separator and keep the dot in the iface
+# segment. The live apply writes /proc directly (dot-safe) and removes the
+# link-local immediately, so no reboot is needed.
+- name: Install sysctl.d drop-in to disable IPv6 on selected interfaces
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-nic-tuning-disable-ipv6.conf
+    content: |
+      # Managed by Ansible nic_tuning role (nic_tuning_disable_ipv6).
+      # Keys use '/' as the separator so an interface name containing a dot
+      # (e.g. a VLAN subinterface nic1.10) resolves correctly.
+      {% for iface in nic_tuning_disable_ipv6 %}
+      net/ipv6/conf/{{ iface }}/disable_ipv6 = 1
+      net/ipv6/conf/{{ iface }}/autoconf = 0
+      net/ipv6/conf/{{ iface }}/accept_ra = 0
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0644"
+  when: nic_tuning_disable_ipv6 | length > 0
+
+# Removing an interface from the list stops persisting the disable; like the
+# ip_forward/swappiness knobs it does NOT force IPv6 back on live — the value
+# reverts to the kernel default at the next reboot (or `sysctl -w ...=0`).
+- name: Remove disable-IPv6 sysctl.d drop-in when unset
+  ansible.builtin.file:
+    path: /etc/sysctl.d/99-nic-tuning-disable-ipv6.conf
+    state: absent
+  when: nic_tuning_disable_ipv6 | length == 0
+
+# Live apply, dot-safe: write the proc nodes directly. Compare-then-set so
+# `changed` reflects a real transition; fails loudly (MISSING, rc 3) on a
+# typo'd or absent interface, mirroring the offload read-back philosophy.
+- name: Disable IPv6 on the listed interfaces now (live, no reboot)
+  ansible.builtin.shell: |
+    set -eu
+    base="/proc/sys/net/ipv6/conf/{{ item }}"
+    changed=0
+    for kv in "disable_ipv6 1" "autoconf 0" "accept_ra 0"; do
+      set -- $kv
+      path="${base}/$1"
+      [ -w "$path" ] || { echo "MISSING ${path}"; exit 3; }
+      if [ "$(cat "$path")" != "$2" ]; then echo "$2" > "$path"; changed=1; fi
+    done
+    [ "$changed" -eq 1 ] && echo CHANGED || echo OK
+  args:
+    executable: /bin/bash
+  loop: "{{ nic_tuning_disable_ipv6 }}"
+  register: nic_tuning_ipv6_apply
+  changed_when: "'CHANGED' in nic_tuning_ipv6_apply.stdout"
+  when: nic_tuning_disable_ipv6 | length > 0

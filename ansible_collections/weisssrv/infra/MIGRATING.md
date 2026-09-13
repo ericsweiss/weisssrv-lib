@@ -29,6 +29,16 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.17.0
+
+**`nic_tuning` — new `nic_tuning_disable_ipv6` knob.** A list of interfaces on
+which to fully disable IPv6 (removing the `fe80::` link-local), for an IPv4-only
+segment where an interface's untagged link-local is an unfiltered L2 path the
+VLAN firewall never sees. Writes a slash-separator `/etc/sysctl.d/` drop-in and
+applies live (no reboot); strictly per-interface, never `net.ipv6.conf.all`.
+Additive and backward-compatible: defaults to `[]`, so no consumer action is
+required until a host opts in.
+
 # v0.16.0
 
 **`unifi-network` — port forwards can enable per-forward WAN hit logging.** The

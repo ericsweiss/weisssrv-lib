@@ -41,3 +41,11 @@ nic_tuning_vm_swappiness: null
 # MAC-flap black-hole (README). Set false only if a bond legitimately needs =1,
 # e.g. multicast RX across multiple switches.
 nic_tuning_bond_asa_guard: true
+
+# Fully disable IPv6 on specific interfaces, removing their link-local fe80::
+# address. Use on an IPv4-only segment where an interface's UNTAGGED link-local
+# is an unfiltered L2 path the IPv4 VLAN firewall never sees (README). List of
+# interface names; [] leaves IPv6 untouched. Strictly per-interface — the role
+# never writes net.ipv6.conf.ALL, so sibling interfaces (VLAN subifs, the mgmt
+# bridge, tailscale) keep their IPv6.
+nic_tuning_disable_ipv6: []

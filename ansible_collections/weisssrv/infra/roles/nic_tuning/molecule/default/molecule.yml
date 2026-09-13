@@ -26,6 +26,10 @@ provisioner:
         # instead, in both the passing and failing directions.
         nic_tuning_verify_offloads: false
         nic_tuning_vm_swappiness: 10
+        # Disabling IPv6 on lo in the ephemeral container is harmless (nothing in
+        # converge/verify binds ::1) and exercises the drop-in + live-apply path.
+        nic_tuning_disable_ipv6:
+          - lo
         nic_tuning_overrides:
           - interface: lo
             options:
