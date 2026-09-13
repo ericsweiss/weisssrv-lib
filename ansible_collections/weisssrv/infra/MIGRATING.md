@@ -29,6 +29,14 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.16.0
+
+**`unifi-network` — port forwards can enable per-forward WAN hit logging.** The
+`port_forwards` map object gains an optional `logging` field (default `false`)
+that drives the UniFi gateway's per-forward "Log" toggle. Additive and
+backward-compatible: an existing `port_forwards` entry keeps logging off until it
+opts in, so no consumer action is required.
+
 # v0.15.1
 
 **`tailscale` — a subnet router on a bridging host now reaches guests hosted on
