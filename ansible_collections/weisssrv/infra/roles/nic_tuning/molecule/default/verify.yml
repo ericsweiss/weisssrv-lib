@@ -81,6 +81,46 @@
           - swappiness_active.stdout == '10'
         fail_msg: "kernel vm.swappiness is not 10 — handler didn't apply"
 
+    - name: Stat disable-IPv6 sysctl drop-in
+      ansible.builtin.stat:
+        path: /etc/sysctl.d/99-nic-tuning-disable-ipv6.conf
+      register: disable_ipv6_dropin
+
+    - name: Assert disable-IPv6 drop-in exists with expected perms
+      ansible.builtin.assert:
+        that:
+          - disable_ipv6_dropin.stat.exists
+          - disable_ipv6_dropin.stat.pw_name == 'root'
+          - disable_ipv6_dropin.stat.gr_name == 'root'
+          - disable_ipv6_dropin.stat.mode == '0644'
+        fail_msg: "99-nic-tuning-disable-ipv6.conf missing or has wrong owner/perms"
+
+    - name: Read disable-IPv6 drop-in content
+      ansible.builtin.slurp:
+        src: /etc/sysctl.d/99-nic-tuning-disable-ipv6.conf
+      register: disable_ipv6_content
+
+    - name: Assert disable-IPv6 drop-in uses the slash-separator form for lo
+      ansible.builtin.assert:
+        that:
+          - "'net/ipv6/conf/lo/disable_ipv6 = 1' in (disable_ipv6_content.content | b64decode)"
+          - "'net/ipv6/conf/lo/autoconf = 0' in (disable_ipv6_content.content | b64decode)"
+          - "'net/ipv6/conf/lo/accept_ra = 0' in (disable_ipv6_content.content | b64decode)"
+        fail_msg: "disable-IPv6 drop-in missing slash-form keys for lo"
+
+    - name: Read live disable_ipv6 for lo
+      ansible.builtin.command: cat /proc/sys/net/ipv6/conf/lo/disable_ipv6
+      register: lo_disable_ipv6
+      changed_when: false
+      failed_when: false
+
+    - name: Assert IPv6 is live-disabled on lo
+      ansible.builtin.assert:
+        that:
+          - lo_disable_ipv6.stdout == '1'
+        fail_msg: "IPv6 not live-disabled on lo — the live apply was a silent no-op"
+      when: lo_disable_ipv6.rc == 0
+
     - name: Stat ethtool drop-in for lo
       ansible.builtin.stat:
         path: /etc/network/interfaces.d/99-nic-lo-tuning.cfg

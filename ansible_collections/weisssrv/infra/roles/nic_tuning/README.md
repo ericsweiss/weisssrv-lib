@@ -84,6 +84,21 @@ active-backup bond MAC-flap guard is needed.
   Idempotent and a no-op on non-bonded hosts. Set `false` only if a bond
   legitimately needs `=1` (multi-switch multicast RX).
 
+- `nic_tuning_disable_ipv6` (default `[]`) — list of interfaces to fully disable
+  IPv6 on, removing their `fe80::` link-local. Use where an interface's UNTAGGED
+  link-local is an unfiltered L2 path the IPv4 VLAN firewall never sees (e.g. a
+  NAS uplink whose native VLAN reaches a segment the zone firewall is meant to
+  gate). Writes `/etc/sysctl.d/99-nic-tuning-disable-ipv6.conf` and applies live,
+  so the link-local disappears with no reboot. Two details:
+  - **Slash-separator keys.** The drop-in writes `net/ipv6/conf/<iface>/…`, not
+    `net.ipv6.conf.<iface>.…`, because sysctl maps every `.` in a dotted key to
+    `/` — which would mangle a VLAN name like `nic1.10`. The `/` form keeps the
+    dot in the interface segment.
+  - **Strictly per-interface** — never `net.ipv6.conf.all`, so a sibling VLAN
+    subinterface, the management bridge and tailscale keep their IPv6. Removing
+    an interface from the list drops the drop-in (reverts on next reboot); use
+    `sysctl -w net/ipv6/conf/<iface>/disable_ipv6=0` to revert live.
+
 ## Example inventory wiring
 
 ```yaml
