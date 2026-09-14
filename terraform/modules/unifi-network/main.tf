@@ -326,7 +326,15 @@ resource "unifi_wlan" "this" {
     # write round-trips the group straight back, and the run ends in a
     # "Provider produced inconsistent result after apply" error — a standing
     # flap. AP-group membership is console-owned.
-    ignore_changes = [ap_group_ids]
+    ignore_changes = [
+      ap_group_ids,
+      # minrate_setting_preference is console-owned, like the
+      # minimum_data_rate_*_kbps values noted above. The provider defaults it to
+      # "auto", so without this every apply reverts a manually-raised floor (e.g.
+      # a 6 Mbps 2.4 GHz min-rate set from the console to drop the slow legacy
+      # rates). Terraform must never re-assert "auto" over an operator's setting.
+      minrate_setting_preference,
+    ]
 
     precondition {
       condition     = contains(keys(var.networks), each.value.network)

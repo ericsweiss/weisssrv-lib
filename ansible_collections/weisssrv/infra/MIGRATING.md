@@ -29,6 +29,15 @@ cleanly, it provisions with a role default.
 
 Nothing yet.
 
+# v0.17.1
+
+**`unifi-network` — WLAN `minrate_setting_preference` is now console-owned.**
+Added to the `unifi_wlan` resource's `ignore_changes`, alongside the
+`minimum_data_rate_*_kbps` values it already leaves unmanaged. The provider
+defaults the field to `auto`, so a manually-raised 2.4 GHz min-rate (set from
+the console) was reverted on every apply — it now persists. No consumer input
+change; the WLAN inputs are unchanged.
+
 # v0.17.0
 
 **`nic_tuning` — new `nic_tuning_disable_ipv6` knob.** A list of interfaces on
