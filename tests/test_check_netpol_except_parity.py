@@ -101,6 +101,20 @@ def test_a_narrow_egress_except_list_is_not_held_to_the_canon(tmp_path):
     assert mod.check_paths([path]) == []
 
 
+def test_a_substitution_placeholder_cidr_is_not_evaluated(tmp_path):
+    """A template spells site CIDRs as `${name}`; they are neither bad nor fenced."""
+    doc = _policy(mod.LAN_FENCE)
+    doc["spec"]["egress"].append(
+        {"to": [{"ipBlock": {"cidr": "${cluster_lan_cidr}"}}], "ports": [{"port": 443}]}
+    )
+    doc["spec"]["egress"].append(
+        {"to": [{"ipBlock": {"cidr": "${cluster_metallb_internal_vip}/32"}}]}
+    )
+    path = _write(tmp_path, doc)
+    violations, scanned, errors = mod.scan_paths([path])
+    assert violations == [] and errors == [] and scanned == 1
+
+
 def test_an_unfenced_ingress_default_route_is_allowed(tmp_path):
     """wg-easy's WAN endpoint: ingress from anywhere is the intended shape."""
     doc = {

@@ -144,9 +144,15 @@ def has_egress(spec) -> bool:
 
 
 def _nets(cidrs):
-    """Parse cidrs, returning (parsed, unparseable)."""
+    """Parse cidrs, returning (parsed, unparseable).
+
+    A `${name}` substitution placeholder is neither: the consumer substitutes
+    it before the API sees the manifest, so the gate leaves it unevaluated.
+    """
     parsed, bad = [], []
     for cidr in cidrs:
+        if isinstance(cidr, str) and "${" in cidr:
+            continue
         try:
             parsed.append(ipaddress.ip_network(cidr, strict=False))
         except (ValueError, TypeError):

@@ -1296,6 +1296,9 @@ scripts/check-netpol-except-parity.py [--config FILE] [path ...]
 - Ingress is exempt, whatever it excludes: an unfenced `0.0.0.0/0` ingress
   peer is a deliberate shape (a WAN endpoint). A narrower egress block keeps
   its own except-list too; the canonical lists are the egress /0 contract.
+- A `${name}` substitution placeholder in a CIDR is left unevaluated, neither
+  parsed nor reported: a template spells site ranges that way and the consumer
+  substitutes them before the API sees the manifest.
 - **Exit codes:** 0 clean, 1 on a policy violation, 2 on an operator error — a
   path that does not exist, a scanned manifest that does not parse, a run that
   inspected **zero** NetworkPolicy documents, and a `--config` that is missing,
