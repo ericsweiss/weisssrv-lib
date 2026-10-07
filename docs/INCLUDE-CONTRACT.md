@@ -828,6 +828,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `image` | `python:3.11` |  |
 | `tags` | `["infrastructure"]` | **must be a privileged runner** |
 | `dind_service` | `docker:27.5.1-dind`, digest-pinned | digest-pinned, with an explicit `alias: docker` |
+| `dind_mtu` | `1420` | `dockerd --mtu` for the service; must not exceed the job pod's interface MTU (1420 on flannel over WireGuard or VXLAN) |
 | `docker_cli_version` | `27.5.1` |  |
 | `docker_cli_sha256_amd64` | the sha for `docker_cli_version` | moves with it |
 | `docker_cli_sha256_arm64` | the sha for `docker_cli_version` | moves with it |
@@ -1284,7 +1285,7 @@ byte-identically to what they replaced.
   the value `ci/build/docker-build.yml` carries, and `tests/test_pin_parity.py`
   holds them equal. Not self-applied: this pipeline's image builds include
   `ci/build/docker-build.yml`, which carries the same body. Inputs:
-  `dind_service`, `docker_cli_version`,
+  `dind_service`, `dind_mtu`, `docker_cli_version`,
   `docker_cli_sha256_amd64`, `docker_cli_sha256_arm64`, `buildx_version`,
   `buildx_sha256_amd64`, `buildx_sha256_arm64`, `login_registry`,
   `login_user`, `login_password`, `service_memory_limit`,
