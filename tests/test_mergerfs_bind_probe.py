@@ -86,6 +86,16 @@ def test_a_failing_ss_is_not_an_idle_union(tmp_path):
     assert "ss failed" in proc.stderr
 
 
+def test_a_failing_mount_table_read_is_not_an_empty_bind_list(tmp_path):
+    """findmnt present but unable to list mounts must not read as a clean union."""
+    broken = FINDMNT.replace("*--list*) printf '0:42 /union\\n0:42 /export/media\\n' ;;", "*--list*) exit 1 ;;")
+    env = _bin(tmp_path, findmnt=broken, ss="#!/bin/sh\necho 'State Recv-Q'\n")
+    proc = _run(env)
+    assert proc.returncode == 3
+    assert "NO_NFS_BIND_EXPORTS" not in proc.stdout
+    assert "findmnt failed" in proc.stderr
+
+
 def test_an_absent_findmnt_is_still_refused(tmp_path):
     env = _bin(tmp_path, findmnt=FINDMNT)
     (tmp_path / "bin" / "findmnt").unlink()

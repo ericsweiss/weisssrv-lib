@@ -26,7 +26,14 @@ if [ -z "$devid" ]; then
   exit 0
 fi
 
-all_mounts="$(findmnt --list --noheadings -o MAJ:MIN,TARGET 2>/dev/null || true)"
+# A failed read must not pass as "no binds": that is the fail-open the exit 3
+# above exists to prevent.
+rc=0
+all_mounts="$(findmnt --list --noheadings -o MAJ:MIN,TARGET 2>/dev/null)" || rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo >&2 "$0: findmnt failed (rc=$rc); the union's binds cannot be resolved"
+  exit 3
+fi
 binds="$(printf '%s\n' "$all_mounts" \
   | awk -v d="$devid" -v m="$union" '$1 == d && $2 != m { print $2 }')"
 

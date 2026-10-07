@@ -5,6 +5,7 @@ expression; both reach CI as a red converge or verify instead of a parse error.
 """
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import jinja2
@@ -49,10 +50,14 @@ def _problems(path: Path) -> list[str]:
     problems = []
     for where, text in _expressions(document):
         source = text if "{{" in text else "{{ " + text + " }}"
-        try:
-            _ENV.parse(source)
-        except jinja2.TemplateSyntaxError as error:
-            problems.append(f"{where}: {error.message}: {text[:80]!r}")
+        # A regex escape such as `\.` inside a Jinja string literal is the
+        # collection's idiom; the lexer keeps it and only notes the escape.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="invalid escape sequence")
+            try:
+                _ENV.parse(source)
+            except jinja2.TemplateSyntaxError as error:
+                problems.append(f"{where}: {error.message}: {text[:80]!r}")
     return problems
 
 

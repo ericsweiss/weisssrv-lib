@@ -200,6 +200,10 @@
   vars:
     proxmox_firewall_config_dir: /tmp/pve-firewall-smtp-empty/firewall
     proxmox_firewall_node_dir: /tmp/pve-firewall-smtp-empty/nodes
+    # Its own staging dir: the staging filename is the config label, so sharing
+    # one with the first play would make the two cluster.fw renders overwrite
+    # each other's content every run and neither could report no change.
+    proxmox_firewall_staging_dir: /var/lib/pve-firewall-ansible-smtp-empty
   tasks:
     # The empty relay scope is a fact, not a play var: assert_cluster_scope.yml
     # compares it with hostvars[delegate], which never carries play vars, so a

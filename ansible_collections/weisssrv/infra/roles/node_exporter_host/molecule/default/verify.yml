@@ -419,14 +419,31 @@
         src: /var/lib/node_exporter/smartmon.prom
       register: smartmon_prom_content
 
-    - name: Assert smartmon .prom emits the sentinel and no measurement
+    # The privileged CI container may list the runner's own disks, so the
+    # success value is checked against the counts, not against a fixed 0.
+    - name: Assert smartmon .prom emits the sentinel and an earned success value
+      vars:
+        smartmon_prom_text: "{{ smartmon_prom_content.content | b64decode }}"
+        smartmon_scanned: >-
+          {{ smartmon_prom_text | regex_search('(?m)^smartmon_collector_devices_scanned [0-9]+$')
+             | default('', true) | regex_replace('^.* ', '') }}
+        smartmon_failed: >-
+          {{ smartmon_prom_text | regex_search('(?m)^smartmon_collector_devices_failed [0-9]+$')
+             | default('', true) | regex_replace('^.* ', '') }}
+        smartmon_success: >-
+          {{ smartmon_prom_text | regex_search('(?m)^smartmon_collector_success [01]$')
+             | default('', true) | regex_replace('^.* ', '') }}
       ansible.builtin.assert:
         that:
-          - "'smartmon_collector_last_success_seconds ' in (smartmon_prom_content.content | b64decode)"
-          - "'smartmon_collector_success 0' in (smartmon_prom_content.content | b64decode)"
+          - "'smartmon_collector_last_success_seconds ' in smartmon_prom_text"
+          - smartmon_scanned | length > 0
+          - smartmon_failed | length > 0
+          - smartmon_success | length > 0
+          - (smartmon_success | int) == (1 if (smartmon_scanned | int) > (smartmon_failed | int) else 0)
         fail_msg: >-
-          smartmon.prom missing the collector sentinel, or reports success with
-          no device measured, which reads as healthy.
+          smartmon.prom missing the collector sentinel or its device counts, or
+          reports a success value the counts do not earn
+          (scanned={{ smartmon_scanned }} failed={{ smartmon_failed }} success={{ smartmon_success }}).
 
     # vzdump metrics hookscript — deployment plus the job-end / backup-abort
     # verdict; a cluster-wide vzdump job runs on every node.
@@ -486,6 +503,12 @@
           /etc/default/vzdump-metrics-hook has no rendered managed header, so it
           is written by copy+content, where ansible_managed is undefined from
           ansible-core 2.21 on, instead of from its template.
+
+    - name: Create the alternate textfile directory
+      ansible.builtin.file:
+        path: /tmp/vzdump-textfile
+        state: directory
+        mode: "0755"
 
     - name: Point the hookscript at an alternate textfile directory
       ansible.builtin.copy:
