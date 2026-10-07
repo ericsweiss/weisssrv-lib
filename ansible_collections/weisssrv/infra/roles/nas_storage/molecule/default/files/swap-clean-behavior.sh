@@ -19,28 +19,66 @@ grep -q 'main disabled for behavior test' "$WORK/swap-clean-lib.sh" \
 grep -q "skipping without stopping guests" "$SWAPCLEAN" \
   || fail "the escalation does not refuse an unreachable goal"
 
-# Feasibility pre-check: stopping every candidate must be able to reach need_kb,
-# or the escalation stops production guests nightly for an abort it can predict.
+# Feasibility pre-check: stopping every candidate must reach need_kb, or the
+# escalation stops production guests for an abort it can predict. The estimate
+# counts live readings only: 1 GiB resident + 256 MiB process swap each.
+printf "VmSwap:\t262144 kB\n" > "$WORK/vmswap-status"
 env -i bash -c '
   # shellcheck disable=SC1091
   source "'"$WORK"'/swap-clean-lib.sh" || true
   set +e
+  W="'"$WORK"'"
+  PROC_ROOT="$W/proc"
+  mkdir -p "$PROC_ROOT/4242"
+  cp "$W/vmswap-status" "$PROC_ROOT/4242/status"
   qm() {
     case "$1" in
-      status) echo "status: running" ;;
-      config) echo "memory: 512" ;;
+      status)
+        echo "status: running"
+        if [ "${3:-}" = "--verbose" ]; then
+          echo "maxmem: 17179869184"
+          echo "mem: 1073741824"
+          echo "pid: 4242"
+        fi
+        ;;
+      config) echo "memory: 16384" ;;
     esac
   }
   stop_guests="157:immich:120 153:gitlab:300 bogus"
   compute_attainable_headroom 1000
   [ "$stop_candidates" = 2 ] || exit 81
-  [ "$attainable_kb" = 1049576 ] || exit 82
+  [ "$attainable_kb" = 2622440 ] || exit 82
   qm() { return 1; }
   compute_attainable_headroom 7
   [ "$stop_candidates" = 0 ] || exit 83
   [ "$attainable_kb" = 7 ] || exit 84
   exit 0
 ' || fail "attainable-headroom accounting for the escalation pre-check (exit $?)"
+
+# A running candidate with no live reading promises nothing, so a ballooned or
+# freshly booted guest cannot make an unreachable target look feasible.
+env -i bash -c '
+  # shellcheck disable=SC1091
+  source "'"$WORK"'/swap-clean-lib.sh" || true
+  set +e
+  PROC_ROOT="'"$WORK"'/proc-empty"
+  qm() {
+    case "$1" in
+      status)
+        echo "status: running"
+        if [ "${3:-}" = "--verbose" ]; then echo "maxmem: 17179869184"; fi
+        ;;
+      config) echo "memory: 16384" ;;
+    esac
+  }
+  [ "$(guest_memory_kb 157)" = 0 ] || exit 85
+  [ "$(guest_swap_kb 157)" = 0 ] || exit 86
+  stop_guests="157:immich:120"
+  compute_attainable_headroom 1000
+  [ "$stop_candidates" = 1 ] || exit 87
+  [ "$attainable_kb" = 1000 ] || exit 88
+  exit 0
+' || fail "a candidate with no live reading promised headroom anyway (exit $?)"
 
 # The authoritative cap wins over the pre-run live value: a run killed before
 # its restore leaves the live value AT the shrink target, and adopting that

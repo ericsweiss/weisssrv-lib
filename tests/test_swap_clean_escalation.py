@@ -1,7 +1,7 @@
 """swap-clean must predict an impossible escalation, not stop guests for it.
 
-A goal it cannot reach is refused before the first `qm shutdown`, and a reachable
-one is measured against the swap still in use, not the pre-stop figure.
+The estimate counts what stopping a guest frees now, its resident memory plus
+the swap it holds, and the target is re-read as each guest stops.
 """
 
 from __future__ import annotations
@@ -31,6 +31,15 @@ GATE_LINES = (
     '    if [ "$attainable_kb" -lt "$need_kb" ]; then\n'
 )
 
+# The live resident reading the estimate rests on. Swapping it for the guest's
+# configured memory (maxmem) is the mutation the ballooned case is measured
+# against.
+RESIDENT_PARSE = (
+    '  bytes="$({ qm status "$1" --verbose 2>/dev/null || true; }'
+    " | awk '$1 == \"mem:\" { print $2; exit }')\"\n"
+)
+CONFIGURED_PARSE = RESIDENT_PARSE.replace('mem:', 'maxmem:')
+
 # The two re-reads that keep need_kb current as guests stop. Dropping them is the
 # mutation the reachable case is measured against.
 LOOP_REFRESH = (
@@ -58,6 +67,7 @@ PROM_DIR="$W"
 PROM_FILE="$W/swap_clean.prom"
 arc_path="$W/absent/arc_max"
 FSTAB="$W/fstab"
+PROC_ROOT="$W/proc"
 
 logger() { :; }
 sleep() { :; }
@@ -72,8 +82,16 @@ qm() {
     status)
       vmid="$2"
       echo "status: $(cat "$W/state.$vmid" 2>/dev/null || echo absent)"
-      if [ "${3:-}" = "--verbose" ] && [ -f "$W/maxmem.$vmid" ]; then
-        echo "maxmem: $(( $(cat "$W/maxmem.$vmid") * 1048576 ))"
+      if [ "${3:-}" = "--verbose" ]; then
+        if [ -f "$W/maxmem.$vmid" ]; then
+          echo "maxmem: $(( $(cat "$W/maxmem.$vmid") * 1048576 ))"
+        fi
+        if [ -f "$W/mem.$vmid" ]; then
+          echo "mem: $(( $(cat "$W/mem.$vmid") * 1024 ))"
+        fi
+        if [ -f "$W/pid.$vmid" ]; then
+          echo "pid: $(cat "$W/pid.$vmid")"
+        fi
       fi
       ;;
     config)
@@ -129,14 +147,26 @@ def _library(work: Path, script: str) -> None:
 
 
 def _guest(work: Path, vmid: str, memory_mb: int, rss_kb: int, swap_kb: int) -> None:
-    """One running candidate: configured memory, plus what stopping it releases."""
+    """One running candidate: configured memory, plus what stopping it releases.
+
+    The live readings the estimate uses are the same two figures: `mem:` is the
+    resident memory, and the process `VmSwap` the swap a stop hands back.
+    """
     (work / ("state.%s" % vmid)).write_text("running\n", encoding="utf-8")
     (work / ("config.%s" % vmid)).write_text(
         "name: g%s\nmemory: %d\n" % (vmid, memory_mb), encoding="utf-8"
     )
     (work / ("maxmem.%s" % vmid)).write_text("%d\n" % memory_mb, encoding="utf-8")
+    (work / ("mem.%s" % vmid)).write_text("%d\n" % rss_kb, encoding="utf-8")
     (work / ("rss.%s" % vmid)).write_text("%d\n" % rss_kb, encoding="utf-8")
     (work / ("swap.%s" % vmid)).write_text("%d\n" % swap_kb, encoding="utf-8")
+    (work / ("pid.%s" % vmid)).write_text("%s\n" % vmid, encoding="utf-8")
+    status = work / "proc" / vmid / "status"
+    status.parent.mkdir(parents=True, exist_ok=True)
+    status.write_text(
+        "Name:\tkvm\nVmRSS:\t%d kB\nVmSwap:\t%d kB\n" % (rss_kb, swap_kb),
+        encoding="utf-8",
+    )
 
 
 def _meminfo(work: Path, avail_kb: int, swap_total_kb: int, swap_free_kb: int) -> None:
@@ -159,6 +189,24 @@ def _reachable_host(work: Path) -> None:
     _guest(work, "153", memory_mb=16384, rss_kb=1_000_000, swap_kb=2_000_000)
 
 
+def _resident_host(work: Path) -> None:
+    """One fully resident candidate: its RAM alone covers the target."""
+    _meminfo(work, AVAIL_KB, SWAP_TOTAL_KB, SWAP_FREE_KB)
+    _guest(work, "157", memory_mb=16384, rss_kb=10_000_000, swap_kb=0)
+    _guest(work, "153", memory_mb=16384, rss_kb=1_000_000, swap_kb=0)
+
+
+def _ballooned_host(work: Path) -> None:
+    """Two 16 GB candidates barely resident.
+
+    Their configured memory reaches the target twice over. What stopping them
+    actually frees does not come close.
+    """
+    _meminfo(work, AVAIL_KB, SWAP_TOTAL_KB, SWAP_FREE_KB)
+    _guest(work, "157", memory_mb=16384, rss_kb=500_000, swap_kb=100_000)
+    _guest(work, "153", memory_mb=16384, rss_kb=500_000, swap_kb=100_000)
+
+
 def _run(work: Path, script: str) -> subprocess.CompletedProcess:
     _library(work, script)
     (work / "fstab").write_text("", encoding="utf-8")
@@ -167,6 +215,20 @@ def _run(work: Path, script: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["env", "-i", "bash", str(driver)], capture_output=True, text=True, check=False
     )
+
+
+def _probe(work: Path, body: str) -> str:
+    """The driver with `main` replaced by helper calls, for a direct reading."""
+    probe = work / "probe.sh"
+    probe.write_text(
+        DRIVER.replace("__W__", str(work)).replace("\nmain\n", "\n%s" % body),
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        ["env", "-i", "bash", str(probe)], capture_output=True, text=True, check=False
+    )
+    assert proc.returncode == 0, (proc.stdout, proc.stderr)
+    return proc.stdout
 
 
 def _qm_calls(work: Path) -> list[str]:
@@ -240,22 +302,61 @@ def test_a_stale_need_stops_every_candidate_and_aborts(tmp_path, rendered) -> No
     assert "swap_clean_last_run_success 0" in _prom(tmp_path)
 
 
-def test_configured_memory_falls_back_to_maxmem(tmp_path, rendered) -> None:
-    """An unreadable `qm config` counts the guest's maxmem, an absent guest 0."""
+def test_a_resident_goal_proceeds_without_counting_swap(tmp_path, rendered) -> None:
+    """A fully resident candidate covers the target on its RAM alone."""
+    _resident_host(tmp_path)
+    proc = _run(tmp_path, rendered)
+    assert proc.returncode == 0, proc.stderr
+    calls = _qm_calls(tmp_path)
+    assert calls.count("shutdown") == 1, (calls, proc.stdout)
+    assert "153" not in calls, "the second guest was stopped after the goal was met"
+    assert "swapoff -a" in (tmp_path / "sys.log").read_text(encoding="utf-8")
+    assert "swap_clean_last_run_success 1" in _prom(tmp_path)
+
+
+def test_a_ballooned_candidate_cannot_promise_its_configured_memory(tmp_path, rendered) -> None:
+    """The finding: 32 GB configured, barely resident, so the goal is unreachable."""
+    _ballooned_host(tmp_path)
+    proc = _run(tmp_path, rendered)
+    assert proc.returncode == 0, proc.stderr
+    assert _qm_calls(tmp_path) == [], "a ballooned guest was stopped for an unreachable goal"
+    assert "escalation cannot reach %dKB" % NEED_KB in proc.stdout, proc.stdout
+    assert not (tmp_path / "sys.log").exists(), "swap was cycled on an unreachable run"
+    prom = _prom(tmp_path)
+    assert 'swap_clean_skip_reason_info{reason="escalation unreachable"} 1' in prom, prom
+    assert "swap_clean_guests_stopped_count 0" in prom, prom
+
+
+def test_estimating_from_configured_memory_stops_ballooned_guests(tmp_path, rendered) -> None:
+    """The mutation: counting maxmem makes the same host lose both guests."""
+    _ballooned_host(tmp_path)
+    assert RESIDENT_PARSE in rendered, "the estimate no longer reads a live `mem:`"
+    proc = _run(tmp_path, rendered.replace(RESIDENT_PARSE, CONFIGURED_PARSE))
+    assert proc.returncode == 0, proc.stderr
+    assert _qm_calls(tmp_path).count("shutdown") == 2, proc.stdout
+    assert "ABORT: MemAvailable" in proc.stdout, proc.stdout
+    assert "swap_clean_last_run_success 0" in _prom(tmp_path)
+
+
+def test_the_estimate_reads_the_live_figures(tmp_path, rendered) -> None:
+    """Resident memory from `mem:`, swap from the guest process `VmSwap`."""
+    _library(tmp_path, rendered)
+    _guest(tmp_path, "157", memory_mb=16384, rss_kb=1_500_000, swap_kb=700_000)
+    out = _probe(tmp_path, "guest_memory_kb 157\nguest_swap_kb 157\n")
+    assert out.split() == ["1500000", "700000"], out
+
+
+def test_a_guest_without_a_live_reading_counts_nothing(tmp_path, rendered) -> None:
+    """No `mem:` and no pid means no promised headroom, configured memory or not."""
     _library(tmp_path, rendered)
     (tmp_path / "state.157").write_text("running\n", encoding="utf-8")
     (tmp_path / "maxmem.157").write_text("2048\n", encoding="utf-8")
-    probe = tmp_path / "probe.sh"
-    probe.write_text(
-        DRIVER.replace("__W__", str(tmp_path)).replace(
-            "\nmain\n", "\nguest_memory_kb 157\nguest_memory_kb 999\n"
-        ),
-        encoding="utf-8",
+    (tmp_path / "config.157").write_text("name: g157\nmemory: 2048\n", encoding="utf-8")
+    out = _probe(
+        tmp_path,
+        "guest_memory_kb 157\nguest_swap_kb 157\nguest_memory_kb 999\nguest_swap_kb 999\n",
     )
-    proc = subprocess.run(
-        ["env", "-i", "bash", str(probe)], capture_output=True, text=True, check=False
-    )
-    assert proc.stdout.split() == ["2097152", "0"], (proc.stdout, proc.stderr)
+    assert out.split() == ["0", "0", "0", "0"], out
 
 
 if __name__ == "__main__":

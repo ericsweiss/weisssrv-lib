@@ -42,6 +42,16 @@ LOCAL_HOST = "cert-01.example.test"
 TARGET_GAUGE = 'cert_distribution_target_last_run_success{host="%s"}'
 BUNDLE_DELIM = "CERT-RECEIVE-BUNDLE-BOUNDARY"
 
+# A target file left by an earlier run, naming a host the inventory does not
+# carry any more.
+RETIRED_HOST = "retired.example.test"
+STALE_TARGETS = (
+    "# TYPE cert_distribution_target_last_run_success gauge\n"
+    + TARGET_GAUGE % RETIRED_HOST
+    + " 0\n"
+    + "cert_distribution_last_run_failed_targets 1\n"
+)
+
 
 def _context(**overrides: object) -> dict:
     context = {k: v for k, v in DEFAULTS.items() if isinstance(v, (str, int, bool))}
@@ -57,7 +67,9 @@ def _env() -> jinja2.Environment:
     )
 
 
-def _render(tmp_path: Path, *, local_reload_command: str, local_cert: bool) -> tuple[Path, Path]:
+def _render(
+    tmp_path: Path, *, local_reload_command: str, local_cert: bool, targets: tuple[dict, ...]
+) -> tuple[Path, Path]:
     prom_dir = tmp_path / "textfile"
     cert_dir = tmp_path / "certs"
     cert_dir.mkdir(parents=True)
@@ -68,7 +80,7 @@ def _render(tmp_path: Path, *, local_reload_command: str, local_cert: bool) -> t
         acme_certs_textfile_dir=str(prom_dir),
         acme_certs_local_cert_dir=str(cert_dir),
         acme_certs_ssh_key_path=str(tmp_path / "id_ed25519_certs"),
-        acme_certs_distribution_targets=[TARGET],
+        acme_certs_distribution_targets=list(targets),
         acme_certs_local_reload_command=local_reload_command,
     )
     script = tmp_path / "homelab-cert-reload.sh"
@@ -110,6 +122,7 @@ class Run:
         self.renewal = _gauges(prom_dir / "cert_renewal.prom")
         self.targets = _gauges(prom_dir / "cert_distribution_targets.prom")
         self.renewal_raw = _read(prom_dir / "cert_renewal.prom")
+        self.targets_raw = _read(prom_dir / "cert_distribution_targets.prom")
         self.sent = _read(sent)
 
 
@@ -136,13 +149,22 @@ def _run(
     args: tuple[str, ...] = (),
     env_extra: dict[str, str] | None = None,
     seed_renewal: str | None = None,
+    seed_targets: str | None = None,
+    targets: tuple[dict, ...] = (TARGET,),
 ) -> Run:
     script, prom_dir = _render(
-        tmp_path, local_reload_command=local_reload_command, local_cert=local_cert
+        tmp_path,
+        local_reload_command=local_reload_command,
+        local_cert=local_cert,
+        targets=targets,
     )
-    if seed_renewal is not None:
-        prom_dir.mkdir(parents=True, exist_ok=True)
-        (prom_dir / "cert_renewal.prom").write_text(seed_renewal, encoding="utf-8")
+    for name, seed in (
+        ("cert_renewal.prom", seed_renewal),
+        ("cert_distribution_targets.prom", seed_targets),
+    ):
+        if seed is not None:
+            prom_dir.mkdir(parents=True, exist_ok=True)
+            (prom_dir / name).write_text(seed, encoding="utf-8")
     bin_dir = _stub_bin(tmp_path, ssh_ok=ssh_ok)
     sent = tmp_path / "sent-to-target"
     sent.write_text("", encoding="utf-8")
@@ -179,7 +201,7 @@ def test_a_missing_local_cert_fails_the_renewal_bit(tmp_path) -> None:
     run = _run(tmp_path, local_cert=False)
     assert run.rc == 1, "a hard local error must exit 1, not %d" % run.rc
     assert run.renewal["cert_renewal_last_run_success"] == 0
-    assert run.targets["cert_distribution_last_run_failed_targets"] == 0
+    assert run.targets == {}, "a local error before the loop published a target set"
 
 
 def test_a_failed_local_reload_fails_the_renewal_bit(tmp_path) -> None:
@@ -231,6 +253,29 @@ def test_a_failed_check_leaves_the_renewal_file_untouched(tmp_path) -> None:
     run = _run(tmp_path, ssh_ok=False, args=("--check",), seed_renewal=seed)
     assert run.rc == 2
     assert run.renewal_raw == seed
+
+
+@pytest.mark.parametrize("args", [("--check",), ()], ids=["check", "renewal"])
+def test_a_local_failure_before_the_loop_keeps_the_target_gauges(tmp_path, args) -> None:
+    """A run that never reached the targets says nothing about them, so the
+    previous gauges stand."""
+    run = _run(tmp_path, local_cert=False, args=args, seed_targets=STALE_TARGETS)
+    assert run.rc == 1, run.proc.stderr
+    assert run.targets_raw == STALE_TARGETS
+
+
+@pytest.mark.parametrize("args", [("--check",), ()], ids=["check", "renewal"])
+def test_no_configured_targets_retires_the_stale_gauges(tmp_path, args) -> None:
+    """An empty target list is an answer: the per-target series go, and the
+    run-level count reads zero, so a removed host stops alerting."""
+    run = _run(tmp_path, targets=(), args=args, seed_targets=STALE_TARGETS)
+    assert run.rc == 0, run.proc.stderr
+    assert run.targets == {"cert_distribution_last_run_failed_targets": 0}
+    assert RETIRED_HOST not in run.targets_raw
+    if args:
+        assert run.renewal == {}, "check mode must not write cert_renewal.prom"
+    else:
+        assert run.renewal["cert_renewal_last_run_success"] == 1
 
 
 def test_an_unknown_argument_is_fatal(tmp_path) -> None:

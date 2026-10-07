@@ -175,6 +175,20 @@
           alert.
         success_msg: "a dead target reports on the distribution gauges only"
 
+    - name: Verify an empty target list retires the per-target gauges
+      vars:
+        script: "{{ cert_reload_content.content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - '"_TARGETS_WALKED=1" in script'
+          - '"[[ \"$_TARGETS_WALKED\" -eq 0 && ! -s \"$_TARGET_METRICS_TMP\" ]]" in script'
+          - '"[[ \"$CHECK_ONLY\" -eq 1 && ! -s \"$_TARGET_METRICS_TMP\" ]]" not in script'
+        fail_msg: >-
+          The target metrics flush keeps the previous gauges whenever it recorded
+          nothing, so a target removed from the inventory keeps alerting from a
+          stale series.
+        success_msg: "an empty target list publishes an empty target set"
+
     # A check-mode probe that cannot reach a target must say so: the legacy
     # path's hash reads swallow an ssh failure, and the gauge it writes holds
     # until the next daily run.

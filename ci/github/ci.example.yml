@@ -133,6 +133,9 @@ jobs:
           # CRITICAL: -ignore-missing-schemas exits 0 on a resource it could not
           # schema-validate, so an unreachable catalog degrades the run to core
           # kinds in silence. A summary with no Skipped: field is that signature.
+          case "$ALLOWED_SKIPS" in
+            ''|*[!0-9]*) echo "ERROR: ALLOWED_SKIPS must be a non-negative integer, got '$ALLOWED_SKIPS'"; exit 1 ;;
+          esac
           skipped=$(printf '%s\n' "$summary" | sed -n 's/.*Skipped: \([0-9][0-9]*\).*/\1/p')
           if [ -z "$skipped" ] || [ "$skipped" -gt "$ALLOWED_SKIPS" ]; then
             echo "ERROR: kubeconform validated ${skipped:-?} resource(s) against no schema (ALLOWED_SKIPS=$ALLOWED_SKIPS)"

@@ -83,6 +83,7 @@ write_prom_metrics() {
 _TARGET_METRICS_TMP="$(mktemp)"
 _TARGET_METRICS_FLUSHED=0
 _TARGET_FAIL_COUNT=0
+_TARGETS_WALKED=0
 write_target_metric() {
     local host="$1" success="$2"
     [ "$success" -eq 1 ] || _TARGET_FAIL_COUNT=$(( _TARGET_FAIL_COUNT + 1 ))
@@ -95,9 +96,10 @@ flush_target_metrics() {
     if [[ "$_TARGET_METRICS_FLUSHED" -eq 1 ]]; then
         return
     fi
-    # A check run that recorded no target at all (a local error before the loop)
-    # would otherwise publish an empty file over the last run's gauges.
-    if [[ "$CHECK_ONLY" -eq 1 && ! -s "$_TARGET_METRICS_TMP" ]]; then
+    # A run that died before the target list says nothing about the targets, so
+    # the last run's gauges stand. An empty configured list walks to the end and
+    # publishes the empty set, retiring a removed target's series.
+    if [[ "$_TARGETS_WALKED" -eq 0 && ! -s "$_TARGET_METRICS_TMP" ]]; then
         rm -f "$_TARGET_METRICS_TMP"
         _TARGET_METRICS_FLUSHED=1
         return 0
@@ -401,6 +403,9 @@ else
 fi
 {% endif %}
 
+# Reaching here means every configured target was recorded, so an empty metrics
+# file is a "no targets configured" answer rather than a lost one.
+_TARGETS_WALKED=1
 flush_target_metrics
 
 if [ "$ANY_FAIL" -ne 0 ]; then

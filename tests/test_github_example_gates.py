@@ -145,6 +145,30 @@ class TestFluxLintEmptyRender:
         )
         assert result.returncode == 0, result.stderr
 
+    def test_fails_on_a_non_integer_allowed_skips(self, tmp_path):
+        """`[ -gt ]` on a non-integer errors instead of comparing, and an error
+        inside an `if` condition does not trip `set -e`, so the ceiling has to
+        be validated before the comparison."""
+        result = self._result(
+            tmp_path, "kind: ConfigMap\n", allowed_skips="two",
+            summary="Summary: 2 resources found - Valid: 1, Skipped: 1",
+        )
+        assert result.returncode != 0
+        assert "ALLOWED_SKIPS must be a non-negative integer, got 'two'" in result.stdout
+
+    def test_fails_on_a_negative_allowed_skips(self, tmp_path):
+        result = self._result(
+            tmp_path, "kind: ConfigMap\n", allowed_skips="-1",
+            summary="Summary: 2 resources found - Valid: 1, Skipped: 1",
+        )
+        assert result.returncode != 0
+        assert "ALLOWED_SKIPS must be a non-negative integer, got '-1'" in result.stdout
+
+    def test_passes_a_zero_ceiling_against_zero_skips(self, tmp_path):
+        """The shipped fallback is `0`, which the validation accepts."""
+        result = self._result(tmp_path, "kind: ConfigMap\n", allowed_skips="0")
+        assert result.returncode == 0, result.stderr
+
     def test_fails_when_the_summary_carries_no_skipped_field(self, tmp_path):
         """The unreachable-catalog signature: no field at all, not a zero."""
         result = self._result(

@@ -221,7 +221,12 @@ A run with any failed target exits 2, so the unit is marked failed as well.
   on the last run, so an alert needs no regex over host labels. Written to a
   temp file and renamed, and a failed write logs `daemon.err` under the tag
   `homelab-cert-reload-metrics`. The daily check rewrites this file, so its
-  gauges age by a day at most while the timer is enabled.
+  gauges age by a day at most while the timer is enabled. Every run that reaches
+  the target list rewrites the whole file, so emptying
+  `acme_certs_distribution_targets` publishes an empty set and a removed host's
+  series disappears rather than alerting on its last value. A run that fails
+  before the target list leaves the file alone, because it learned nothing
+  about the targets.
 
 Alert on both: `cert_renewal_last_run_success == 0` is a local failure, and
 `cert_distribution_last_run_failed_targets > 0` is a target that did not take

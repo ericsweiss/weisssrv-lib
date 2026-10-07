@@ -27,25 +27,32 @@ field_kb() { awk -v k="$1:" '$1==k {print $2}' /proc/meminfo; }
 vm_state() { { qm status "$1" 2>/dev/null || true; } | awk '{print $2}'; }
 swap_used_now_kb() { echo $(( $(field_kb SwapTotal) - $(field_kb SwapFree) )); }
 
-# Configured memory of a guest in KB, 0 when unreadable, so the feasibility
-# pre-check under-promises the headroom a stop can attain.
+# Host RAM a running guest releases, in KB: its CURRENT resident use, 0 when
+# unreadable. Configured memory over-promises for a ballooned or lightly
+# resident guest, making an unreachable target look feasible.
 guest_memory_kb() {
-  local mb bytes
-  mb="$({ qm config "$1" 2>/dev/null || true; } | awk '$1 == "memory:" { print $2; exit }')"
-  case "$mb" in
-    ''|*[!0-9]*) ;;
-    *) echo $(( mb * 1024 )); return 0 ;;
-  esac
-  bytes="$({ qm status "$1" --verbose 2>/dev/null || true; } | awk '$1 == "maxmem:" { print $2; exit }')"
+  local bytes
+  bytes="$({ qm status "$1" --verbose 2>/dev/null || true; } | awk '$1 == "mem:" { print $2; exit }')"
   case "$bytes" in
     ''|*[!0-9]*) echo 0 ;;
     *) echo $(( bytes / 1024 )) ;;
   esac
 }
 
-# Sets attainable_kb to the MemAvailable reachable by stopping every RUNNING
-# candidate, and stop_candidates to how many that is. Globals, not an echo: a
-# command substitution would drop the count in its subshell.
+# Swap a running guest's own process holds, in KB: a stop releases it, so the
+# swapoff does not have to pull it back. 0 when unreadable.
+guest_swap_kb() {
+  local pid status
+  pid="$({ qm status "$1" --verbose 2>/dev/null || true; } | awk '$1 == "pid:" { print $2; exit }')"
+  case "$pid" in ''|*[!0-9]*) echo 0; return 0 ;; esac
+  status="${PROC_ROOT:-/proc}/${pid}/status"
+  [ -r "$status" ] || { echo 0; return 0; }
+  awk '$1 == "VmSwap:" { v = $2 } END { print v + 0 }' "$status"
+}
+
+# Sets attainable_kb to the headroom stopping every RUNNING candidate attains,
+# their resident memory plus the swap they release, and stop_candidates to how
+# many that is. Globals, not an echo: a subshell would drop the count.
 attainable_kb=0
 stop_candidates=0
 compute_attainable_headroom() {
@@ -58,7 +65,7 @@ compute_attainable_headroom() {
     vmid="${entry%%:*}"
     [ "$(vm_state "$vmid")" = running ] || continue
     stop_candidates=$(( stop_candidates + 1 ))
-    attainable_kb=$(( attainable_kb + $(guest_memory_kb "$vmid") ))
+    attainable_kb=$(( attainable_kb + $(guest_memory_kb "$vmid") + $(guest_swap_kb "$vmid") ))
   done
 }
 

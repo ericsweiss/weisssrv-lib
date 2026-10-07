@@ -175,7 +175,12 @@ rather than being forced. Metrics land in `swap_clean.prom` on every exit path.
 - The escalation stops nothing unless stopping every running candidate could
   cover the target, recording
   `swap_clean_skip_reason_info{reason="escalation unreachable"}` instead. The
-  target is re-read as each guest stops: a stopped guest releases its swap too.
+  estimate is measured, not configured. Each candidate contributes its current
+  resident memory plus the swap its own process holds. A candidate with no live
+  reading contributes nothing: a ballooned or freshly booted guest frees far
+  less than its configured memory, and counting that would stop production
+  guests for a target the run cannot reach. The target is re-read as each guest
+  stops: a stopped guest releases its swap too.
 - A pre-flight skip emits `swap_clean_last_run_skipped 1` and
   `swap_clean_skip_reason_info{reason="..."}`. The success timestamp still
   advances on it, so alert on `swap_clean_last_run_skipped == 1` sustained
