@@ -917,6 +917,8 @@ each other and asserting the relationship in a comment is what this replaces.
   exactly the volume size is a deliberate shape.
 - Quantities compare numerically, so `1Gi` against `512Mi` is caught. A quantity
   the gate cannot read is reported rather than assumed to be fine.
+- A `medium: Memory` emptyDir is tmpfs, charged to the container's memory
+  limit, so it needs no ephemeral-storage pair and is left out.
 - **Exit codes:** 0 clean, 1 on a violation, **2** on an operator error — an
   empty or unparseable corpus, or one declaring no pod spec at all, which is
   what a render loop that never reached the workload stages produces.
@@ -2242,6 +2244,10 @@ sanitize-junit-expected-failures.py --junit-dir junit --expectations <file> [--s
   declares.** Either the pattern is too broad and names more than the one guard,
   or the guard really does fail that many times and the count is stale. Narrow
   the pattern or raise the count.
+- **`<n>` is a cap, not an equality.** Fewer testcases than declared passes
+  without even a warning, so an over-wide count is invisible — and it then
+  downgrades a genuine second failure of that same guard instead of leaving it
+  red. Declare the number the run records, never a margin.
 - **Count what the run records, not what the scenario reads like.** The junit
   callback writes one testcase per task per host, so a guard that fires on two
   platforms counts twice; a guard driven from several negative cases in one

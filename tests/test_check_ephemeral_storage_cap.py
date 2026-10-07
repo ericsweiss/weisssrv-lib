@@ -74,6 +74,14 @@ def test_mixed_units_are_compared_numerically(monkeypatch):
     assert _run(deployment(size_limit="512Mi", limits="1Gi"), monkeypatch) == 0
 
 
+def test_a_memory_backed_emptydir_needs_no_pair(monkeypatch):
+    """tmpfs is charged to the memory limit, not to ephemeral storage."""
+    doc = deployment(size_limit="512Mi", limits=None).replace(
+        "          emptyDir:\n", "          emptyDir:\n            medium: Memory\n"
+    )
+    assert _run(doc, monkeypatch) == 0
+
+
 def test_a_missing_limit_fails(monkeypatch, capsys):
     assert _run(deployment(limits=None), monkeypatch) == 1
     assert "resources.limits" in capsys.readouterr().err

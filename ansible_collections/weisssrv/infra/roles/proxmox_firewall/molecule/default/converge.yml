@@ -129,15 +129,48 @@
       ansible.builtin.set_fact:
         proxmox_firewall_scenario_delegate_mixed: "{{ _proxmox_firewall_delegate | trim }}"
 
-    - name: Dead group — the documented first-host fallback
+    - name: Assume the dead group resolved a delegate
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.set_fact:
+        proxmox_firewall_scenario_dead_group_failed: false
+
+    # A delegate taken from a group where nothing answered dies UNREACHABLE on
+    # the first pmxcfs write, so the role refuses before it deploys. Tagged so
+    # the idempotence replay does not re-fire the guard the declaration counts.
+    - name: Dead group — a group where nothing answered must fail loudly
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Re-include proxmox_firewall for a group that never answers
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_firewall
+          vars:
+            proxmox_firewall_host_group: fw_probe_dead
+
+        - name: The dead group resolved a delegate anyway
+          ansible.builtin.fail:
+            msg: >-
+              The role resolved a cluster-task delegate with no host answering
+              the probe, so cluster.fw deploys to a node known to be down.
+      rescue:
+        # Pinned to the guard's own name: any other failure here would
+        # otherwise read as the guard firing.
+        - name: Record that the dead group failed
+          ansible.builtin.set_fact:
+            proxmox_firewall_scenario_dead_group_failed: true
+          when: >-
+            ansible_failed_task.name ==
+            'Assert a reachable Proxmox node was found for the cluster-scope tasks'
+
+    - name: Dead group — an explicit delegate pin wins
       ansible.builtin.include_role:
         name: weisssrv.infra.proxmox_firewall
       vars:
         proxmox_firewall_host_group: fw_probe_dead
+        proxmox_firewall_delegate_host: proxmox-firewall-test
 
-    - name: Record the delegate chosen from the dead group
+    - name: Record the pinned delegate
       ansible.builtin.set_fact:
-        proxmox_firewall_scenario_delegate_dead: "{{ _proxmox_firewall_delegate | trim }}"
+        proxmox_firewall_scenario_delegate_pinned: "{{ _proxmox_firewall_delegate | trim }}"
 
     - name: Result directory
       ansible.builtin.file:
@@ -145,13 +178,18 @@
         state: directory
         mode: "0755"
 
+    # Tagged with the case above: the guard result it reads is set only on the
+    # run that drives the guard, and verify reads this artifact after the replay.
     - name: Capture the delegate-selection results
+      tags: [molecule-idempotence-notest]
       ansible.builtin.copy:
         dest: /tmp/molecule-results/fw-delegate.json
         mode: "0644"
         content: |
           {"delegate_mixed": {{ proxmox_firewall_scenario_delegate_mixed | to_json }},
-           "delegate_dead": {{ proxmox_firewall_scenario_delegate_dead | to_json }}}
+           "dead_group_failed":
+            {{ proxmox_firewall_scenario_dead_group_failed | to_json }},
+           "delegate_pinned": {{ proxmox_firewall_scenario_delegate_pinned | to_json }}}
 
 # Fifth play: an empty relay client scope must render sg-smtp-relay with no IN
 # rule. Scoped to the docker platform, which carries the cluster-task delegate,

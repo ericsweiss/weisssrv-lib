@@ -22,8 +22,8 @@ loki.source.journal "system" {
 loki.relabel "journal" {
   forward_to = []
 
-  // loki.source.journal stamps its component id over the labels-block job;
-  // relabel is the only pass that runs after it.
+  // The job label is set here, after loki.source.journal, so the labels-block
+  // value holds whatever the source component writes.
   rule {
     target_label = "job"
     replacement  = "journal"

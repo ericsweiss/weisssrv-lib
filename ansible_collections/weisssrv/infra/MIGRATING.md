@@ -194,6 +194,8 @@ an inventory input.
 | `nas_storage` | `fuser` is installed before the MergerFS idle probe runs; a missing binary exits 3 rather than reading as an idle union. `psmisc` is installed alongside `mergerfs`. | when a MergerFS remount is needed |
 | `proxmox_vm` / `proxmox_lxc` | the guest NIC firewall repair FAILS on a guest whose config has no `net0:`, instead of reporting ok. An adopted guest whose NIC is `net1` must be renumbered or excluded. | always |
 | `nas_storage` | a failed `zfs set readonly=on` during archive lockdown demotes the run to `archive_backup_last_run_success 0` and logs the dataset, instead of being swallowed | on every archive replication |
+| `proxmox_firewall` | a host in `proxmox_firewall_host_group` answers the reachability probe, or `proxmox_firewall_delegate_host` pins one; the cluster-scope writes no longer fall back to the group's first member | always |
+| `proxmox_firewall` | every per-application security group name starts with a letter and runs 2 to 18 characters, `pve-firewall`'s own grammar (a leading digit previously passed the role and failed `pve-firewall compile`) | always |
 
 ## New variables (defaults preserve today's behaviour)
 

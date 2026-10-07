@@ -73,22 +73,23 @@
     _proxmox_firewall_reachable_hosts: >-
       {{ hostvars[ansible_play_batch | first]['_proxmox_firewall_reachable'] | default([]) }}
   ansible.builtin.set_fact:
-    _proxmox_firewall_delegate: "{{ _proxmox_firewall_reachable_hosts[0] if (_proxmox_firewall_reachable_hosts | length > 0) else groups[proxmox_firewall_host_group][0] }}"
+    _proxmox_firewall_delegate: "{{ proxmox_firewall_delegate_host | default((_proxmox_firewall_reachable_hosts | first) | default('')) }}"
   when: (groups[proxmox_firewall_host_group] | default([]) | length) > 0
 
-# Without this the operator sees an opaque UNREACHABLE on an arbitrary node
-# rather than the fact that nothing answered.
-- name: Report the fallback delegate when no Proxmox host answered the probe
-  ansible.builtin.debug:
-    msg: >-
-      No host in {{ proxmox_firewall_host_group }} answered the reachability
-      probe; falling back to {{ _proxmox_firewall_delegate }} for the
-      cluster-scope tasks.
+# CRITICAL: a host that failed the probe must never carry the cluster tasks.
+# Delegating to it dies UNREACHABLE on the first pmxcfs write, which names a
+# node instead of reporting that nothing answered.
+- name: Assert a reachable Proxmox node was found for the cluster-scope tasks
+  ansible.builtin.assert:
+    that:
+      - _proxmox_firewall_delegate | length > 0
+    fail_msg: >-
+      No host in '{{ proxmox_firewall_host_group }}' answered the reachability
+      probe, so cluster.fw has nowhere to be written from. Bring one node back
+      or set proxmox_firewall_delegate_host to name one.
+    quiet: true
   run_once: true
-  when:
-    - (groups[proxmox_firewall_host_group] | default([]) | length) > 0
-    - (hostvars[ansible_play_batch | first]['_proxmox_firewall_reachable']
-       | default([]) | length) == 0
+  when: (groups[proxmox_firewall_host_group] | default([]) | length) > 0
 
 # cluster.fw is rendered from the play's FIRST HOST (run_once + delegate_to move
 # execution, not the templating scope), and guest plays include this role too, so

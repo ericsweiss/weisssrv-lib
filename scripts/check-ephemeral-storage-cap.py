@@ -86,13 +86,19 @@ def pod_specs(doc: dict) -> list[tuple[str, dict]]:
 
 
 def sized_volumes(spec: dict) -> dict[str, object]:
-    """Volume name -> its emptyDir `sizeLimit`, for the volumes that set one."""
+    """Volume name -> its emptyDir `sizeLimit`, for the disk-backed volumes that set one.
+
+    A `medium: Memory` emptyDir is tmpfs, charged to the container's memory limit,
+    so it needs no ephemeral-storage pair.
+    """
     found: dict[str, object] = {}
     for volume in spec.get("volumes") or []:
         if not isinstance(volume, dict):
             continue
         empty_dir = volume.get("emptyDir")
         name = volume.get("name")
+        if isinstance(empty_dir, dict) and empty_dir.get("medium") == "Memory":
+            continue
         if isinstance(empty_dir, dict) and empty_dir.get("sizeLimit") is not None:
             if isinstance(name, str):
                 found[name] = empty_dir["sizeLimit"]

@@ -4,7 +4,9 @@
 # lines plus the `logger` failure guard).
 - name: Verify
   hosts: all
-  gather_facts: false
+  # The negative cases below drive the whole role, whose package task reads
+  # ansible_facts['os_family'].
+  gather_facts: true
   vars:
     # A looped assert reports only "One or more items failed" at task level; the
     # per-item fail_msg lives in .results. Templated lazily, so every rescue

@@ -74,6 +74,7 @@ into the secret store the exporters read.
 | `proxmox_firewall_cluster_rules` | `[]` | Extra raw lines under cluster.fw `[RULES]` |
 | `proxmox_firewall_host_rules` | `[]` | Extra raw lines under host.fw `[RULES]`, rendered **before** the security groups and the egress DROP — first-match-wins, so they outrank every group rule |
 | `proxmox_firewall_host_group` | `proxmox` | Inventory group holding the nodes |
+| `proxmox_firewall_delegate_host` | unset | Pins the node the cluster-wide tasks are delegated to; the default is the first node that answered the reachability probe |
 | `proxmox_firewall_enabled` | `true` | Render and deploy the firewall at all — cluster.fw, host.fw, guest `<vmid>.fw` and the pve-firewall service. The `monitoring@pve` user/token reconcile is governed separately by `proxmox_firewall_skip_pveum` |
 | `proxmox_firewall_egress_filtering` | `false` | Host-originated egress default-deny |
 | `proxmox_firewall_log_level_in` | `nolog` | host.fw inbound drop logging, and the default for guests (`info` for triage) |
@@ -100,7 +101,9 @@ reachability probe).
 `cluster.fw` and the pveum monitoring user and token are cluster-wide. The role
 probes the Proxmox group once and delegates those tasks to the first host that
 answered, so one node being down does not fail the whole deploy. When nothing
-answered it falls back to the group's first member and says so at run time.
+answered the role fails there, naming the group: a delegate that failed the
+probe would die UNREACHABLE on the first write into pmxcfs. Set
+`proxmox_firewall_delegate_host` to pin a node instead.
 Every host derives the delegate from the probe runner's fact, so the `run_once`
 delegation and the per-host `hostvars` reads agree even in guest-only plays.
 

@@ -1181,16 +1181,21 @@
       register: firewall_delegate_artifact
 
     # The probe is what keeps an unreachable Proxmox host from taking the
-    # cluster-scope tasks; the dead-group arm pins the documented fallback.
+    # cluster-scope tasks: a group where nothing answered must fail the run, and
+    # an explicit pin must win over an empty probe result.
     - name: Assert delegate selection skips an unreachable host
       vars:
         delegates: "{{ firewall_delegate_artifact.content | b64decode | from_json }}"
       ansible.builtin.assert:
         that:
           - delegates.delegate_mixed == 'proxmox-firewall-test'
-          - delegates.delegate_dead == 'proxmox-fw-unreachable'
+          - delegates.dead_group_failed
+          - delegates.delegate_pinned == 'proxmox-firewall-test'
         fail_msg: >-
           Delegate selection chose {{ delegates.delegate_mixed }} from a mixed
-          group (expected the reachable host) or departed from the documented
-          groups[...][0] fallback for a group where nothing answered.
-        success_msg: "delegate selection skips an unreachable host"
+          group (expected the reachable host), resolved a delegate for a group
+          where nothing answered instead of failing there, or ignored an
+          explicit proxmox_firewall_delegate_host.
+        success_msg: >-
+          delegate selection skips an unreachable host, fails when nothing
+          answered, and honours an explicit pin

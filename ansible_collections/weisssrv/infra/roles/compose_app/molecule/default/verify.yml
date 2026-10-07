@@ -271,8 +271,10 @@
 
     - name: Assert the http opener carries the trailing comment the awk must tolerate
       ansible.builtin.assert:
+        # The ` #` needs the scalar quoted or YAML takes the rest of the line as
+        # a comment; `[{]` keeps the brace out of Jinja's string-escape path.
         that:
-          - (compose_app_nginx_conf.content | b64decode) is search('http \{  # trailing comment')
+          - "(compose_app_nginx_conf.content | b64decode) is search('http [{]  # trailing comment')"
         fail_msg: >-
           The converge fixture did not patch nginx.conf's http opener, so the
           trailing-comment regression is not being covered.

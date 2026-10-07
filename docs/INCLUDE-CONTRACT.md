@@ -42,11 +42,11 @@ column here.
 | [`ci/lint/terraform-tflint.yml`](#cilintterraform-tflintyml) | | ○ | | ○ |
 | [`ci/lint/docs-link-check.yml`](#cilintdocs-link-checkyml) | ● | ● | ● | ● |
 | [`ci/lint/runbook-anchors.yml`](#cilintrunbook-anchorsyml) | | ○ | | ○ |
-| [`ci/lint/comment-length.yml`](#cilintcomment-lengthyml) | ● | ○ | ○ | ○ |
+| [`ci/lint/comment-length.yml`](#cilintcomment-lengthyml) | ● | ● | ○ | ○ |
 | [`ci/lint/python-lint.yml`](#cilintpython-lintyml) | ● | ● | ● | ● |
 | [`ci/lint/ansible-lint.yml`](#cilintansible-lintyml) | ● | ● | | ● |
 | [`ci/validate/terraform.yml`](#civalidateterraformyml) | ● | ● | | ● |
-| [`ci/validate/terraform-drift-plan.yml`](#civalidateterraform-drift-planyml) | | ○ | | ○ |
+| [`ci/validate/terraform-drift-plan.yml`](#civalidateterraform-drift-planyml) | | ● | | ○ |
 | [`ci/validate/cluster-drift-plan.yml`](#civalidatecluster-drift-planyml) | | ○ | | ○ |
 | [`ci/validate/flux-lint.yml`](#civalidateflux-lintyml) | | ● | ● | ● |
 | [`ci/security/secret-detection.yml`](#cisecuritysecret-detectionyml) | ● | ● | ● | ● |
@@ -58,7 +58,7 @@ column here.
 | [`ci/maintenance/version-bump-bot.yml`](#cimaintenanceversion-bump-botyml) | | | | ● |
 | [`ci/internal/molecule-matrix.gitlab-ci.yml`](#internal-ci-fragments-ciinternal) | ● | | | |
 | [`ci/templates/{dep-cache,install-1password,terraform-http-backend}.yml`](#shared-fragments-citemplates) | | ● | | ● |
-| [`ci/templates/docker-dind.yml`](#shared-fragments-citemplates) | | | ○ | |
+| [`ci/templates/docker-dind.yml`](#shared-fragments-citemplates) | | ● | ○ | |
 | [`ci/deploy/deploy-base.yml`](#deploy-templates-cideploy) | | ● | | ● |
 | [`ci/deploy/kubectl-setup.yml`](#deploy-templates-cideploy) | | ○ | | ● |
 | [`ci/deploy/ansible-deploy.yml`](#deploy-templates-cideploy) | | ○ | | ○ |

@@ -1,11 +1,16 @@
 """House style for every scenario's converge-driven junit declarations.
 
 A negative case driven from converge sits in a `molecule-idempotence-notest`
-block, so the replay never re-fires it, and its ` ::<n>` is hosts x cases.
+block, so the replay never re-fires it and its ` ::<n>` is hosts x cases. A
+guard reached under `run_once: true` records one testcase however many hosts
+the play selects, so its count is the cases alone. A case driven under
+`ignore_errors` is recorded as passed, is never observed, and must not be
+declared at all.
 """
 from __future__ import annotations
 
 from pathlib import Path
+from typing import NamedTuple
 
 import yaml
 from script_loader import load_script
@@ -19,8 +24,16 @@ IDEMPOTENCE_SKIP = "molecule-idempotence-notest"
 # The consuming script owns the line grammar, including the ` ::<n>` count form.
 _SANITIZE = load_script("sanitize-junit-expected-failures.py")
 
+
+class RunOnce(NamedTuple):
+    """A guard reached under `run_once: true`: its count is the cases alone."""
+
+    cases: int
+
+
 # scenario -> guard pattern -> distinct cases driving that guard in one run.
-# Converge and verify cases count the same: once per host per case.
+# Converge and verify cases count the same: once per host per case, unless the
+# guard is wrapped in RunOnce.
 CASES = {
     "adguard_sync/default": {
         "Validate every entry in adguard_sync_replicas carries a URL": 1,
@@ -97,10 +110,13 @@ CASES = {
         "Assert every per-application security group name is usable and unowned": 3,
         "Assert the per-application security group names are unique": 1,
         "Assert the per-host extra security group references are group names": 1,
-        "Assert no cluster-scope firewall input is scoped to the Proxmox group": 1,
-        # The two converge cases, both from platform-scoped plays.
+        # main.yml includes assert_cluster_scope.yml under run_once, and carries
+        # run_once on the delegate assert itself.
+        "Assert no cluster-scope firewall input is scoped to the Proxmox group": RunOnce(1),
+        "Assert a reachable Proxmox node was found for the cluster-scope tasks": RunOnce(1),
+        "Assert a cluster with a relay guest names the sg-smtp-relay client scope": RunOnce(1),
+        # Converge-driven; guest.yml carries no run_once.
         "Assert a relay guest has a client scope for sg-smtp-relay": 1,
-        "Assert a cluster with a relay guest names the sg-smtp-relay client scope": 1,
     },
     "proxmox_ha/default": {
         "Assert a reachable Proxmox node was found for the reconcile": 1,
@@ -253,6 +269,103 @@ def untagged(playbook: Path) -> list[str]:
     ]
 
 
+PLAYBOOKS = ("converge.yml", "verify.yml", "prepare.yml", "side_effect.yml")
+INCLUDE_KEYS = ("include_tasks", "import_tasks",
+                "ansible.builtin.include_tasks", "ansible.builtin.import_tasks")
+ROLE_KEYS = ("include_role", "import_role",
+             "ansible.builtin.include_role", "ansible.builtin.import_role")
+
+
+def walk_tasks(node, inherited: bool = False) -> list[tuple[str | None, bool, dict]]:
+    """(name, run_once, task) for every task, run_once inherited from blocks."""
+    found: list[tuple[str | None, bool, dict]] = []
+    if isinstance(node, list):
+        for item in node:
+            found += walk_tasks(item, inherited)
+        return found
+    if not isinstance(node, dict):
+        return found
+    effective = inherited or bool(node.get("run_once"))
+    if "block" in node:
+        for key in ("block", "rescue", "always"):
+            found += walk_tasks(node.get(key) or [], effective)
+        return found
+    found.append((node.get("name") if isinstance(node.get("name"), str) else None,
+                  effective, node))
+    return found
+
+
+def file_tasks(path: Path) -> list[tuple[str | None, bool, dict]]:
+    """Tasks in a role task file, or in every play of a scenario playbook."""
+    document = yaml.safe_load(path.read_text()) or []
+    if path.name not in PLAYBOOKS:
+        return walk_tasks(document)
+    found: list[tuple[str | None, bool, dict]] = []
+    for play in document:
+        for key in ("pre_tasks", "tasks", "post_tasks"):
+            found += walk_tasks(play.get(key) or [])
+    return found
+
+
+def task_sources(scenario: str) -> list[Path]:
+    """Files whose tasks this scenario can reach: the role's, and its own."""
+    role = ROLES / scenario.split("/")[0]
+    candidates = sorted((role / "tasks").glob("*.yml"))
+    candidates += [scenario_dir(scenario) / name for name in PLAYBOOKS]
+    return [path for path in candidates if path.is_file()]
+
+
+def included_file(task: dict) -> str | None:
+    """The task file an include reaches, by basename."""
+    for key in INCLUDE_KEYS:
+        spec = task.get(key)
+        if isinstance(spec, str):
+            return Path(spec).name
+        if isinstance(spec, dict) and isinstance(spec.get("file"), str):
+            return Path(spec["file"]).name
+    for key in ROLE_KEYS:
+        spec = task.get(key)
+        if isinstance(spec, dict):
+            entry = spec.get("tasks_from")
+            if not isinstance(entry, str):
+                return "main.yml"
+            return entry if entry.endswith(".yml") else f"{entry}.yml"
+    return None
+
+
+def reaching_run_once(scenario: str) -> dict[str, set[bool]]:
+    """Task file -> the run_once values of every include that reaches it."""
+    found: dict[str, set[bool]] = {}
+    for path in task_sources(scenario):
+        for _name, run_once, task in file_tasks(path):
+            target = included_file(task)
+            if target:
+                found.setdefault(target, set()).add(run_once)
+    return found
+
+
+def run_once_for(scenario: str, pattern: str) -> bool | None:
+    """Whether the guard records one testcase per play; None when the task
+    cannot be resolved soundly (no match, several, or an ambiguous include)."""
+    hits = [
+        (path, run_once)
+        for path in task_sources(scenario)
+        for name, run_once, _task in file_tasks(path)
+        if name and pattern in name
+    ]
+    if len(hits) != 1:
+        return None
+    path, run_once = hits[0]
+    if run_once:
+        return True
+    if path.name in PLAYBOOKS:
+        return False
+    reaching = reaching_run_once(scenario).get(path.name)
+    if not reaching or len(reaching) != 1:
+        return None
+    return reaching.pop()
+
+
 def declared(scenario: str) -> dict[str, int]:
     path = scenario_dir(scenario) / "expected-junit-failures.txt"
     expectations = _SANITIZE.load_expectations(path)
@@ -345,13 +458,30 @@ def test_every_scenario_with_a_converge_driven_case_is_described():
     )
 
 
-def wrong_counts(scenario: str, counts: dict[str, int]) -> list[str]:
-    """Declared counts that are not this scenario's hosts x cases."""
+def expected_count(scenario: str, cases: int | RunOnce) -> int:
+    """The testcases one run records for a guard: cases, x hosts unless run_once."""
+    if isinstance(cases, RunOnce):
+        return cases.cases
+    return hosts(scenario) * cases
+
+
+def reason(scenario: str, cases: int | RunOnce) -> str:
+    if isinstance(cases, RunOnce):
+        return f"{cases.cases} case(s), run_once"
+    return f"{hosts(scenario)} host(s) x {cases} case(s)"
+
+
+def wrong_counts(
+    scenario: str,
+    counts: dict[str, int],
+    guards: dict[str, int | RunOnce] | None = None,
+) -> list[str]:
+    """Declared counts that are not what one run records for their guard."""
     return [
         f"{scenario}: {pattern!r} declares {counts.get(pattern)}, "
-        f"expected {hosts(scenario)} host(s) x {cases} case(s)"
-        for pattern, cases in CASES[scenario].items()
-        if counts.get(pattern) != hosts(scenario) * cases
+        f"expected {reason(scenario, cases)}"
+        for pattern, cases in (CASES[scenario] if guards is None else guards).items()
+        if counts.get(pattern) != expected_count(scenario, cases)
     ]
 
 
@@ -387,12 +517,23 @@ def test_a_declaration_carrying_the_replay_factor_is_reported():
         if converge_runs(scenario) == 1:
             continue
         replayed = {
-            pattern: hosts(scenario) * cases * converge_runs(scenario)
+            pattern: expected_count(scenario, cases) * converge_runs(scenario)
             for pattern, cases in guards.items()
         }
         assert wrong_counts(scenario, replayed), scenario
         checked += 1
     assert checked, "no scenario replays converge, so the mutation proves nothing"
+
+
+def test_a_run_once_guard_declared_per_host_is_reported():
+    """Mutation: run_once records one testcase however many hosts the play
+    selects, and the sanitizer reads a declaration as a cap — so a hosts x cases
+    count passes --strict while swallowing a second, genuine failure."""
+    scenario = "k3s/default"
+    assert hosts(scenario) == 2, "the mutation needs a scenario with two hosts"
+    guards: dict[str, int | RunOnce] = {"Assert something once": RunOnce(1)}
+    assert wrong_counts(scenario, {"Assert something once": 2}, guards)
+    assert not wrong_counts(scenario, {"Assert something once": 1}, guards)
 
 
 def test_an_untagged_block_is_reported(tmp_path):

@@ -264,7 +264,8 @@
       vars:
         slab_line: >-
           {{ (node_exporter_host_slab_allowlist.content | b64decode)
-             | regex_search('SLAB_CACHES="([^"]*)"', '\\1') | first | default('') }}
+             | regex_search('SLAB_CACHES="[^"]*"') | default('', true)
+             | regex_replace('^SLAB_CACHES="|"$', '') }}
       ansible.builtin.assert:
         that:
           - "'SLAB_CACHES=\"skbuff_ext_cache dentry\"' in (node_exporter_host_slab_allowlist.content | b64decode)"
