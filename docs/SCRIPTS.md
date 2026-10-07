@@ -1368,6 +1368,12 @@ scripts/check-alertmanager-behaviour.py --config FILE [--repo-root DIR]
   them, so a positive regex narrowed by a second negative matcher on the same
   label is honoured whichever order the two are written in. That second negative
   matcher is also the remediation the target-scope finding asks for.
+- **What a rule covers is the conjunction, not its positive names.** A negated
+  `alertname` subtracts from the positive set, so a rule that excludes an alert
+  never certifies an escalation pair naming it, is not held to that alert's own
+  expr, and is not read as that alert's source scope. A negated regex the gate
+  cannot read leaves the covered set unknown, which certifies nothing either; the
+  unreadable regex is itself reported.
 - **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error (no amtool, no
   extractor, unreadable or invalid config). The extracted config and rules are
   parsed ONCE up front and a body that is empty, scalar or unparseable is the

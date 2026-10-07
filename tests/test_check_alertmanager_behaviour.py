@@ -237,6 +237,20 @@ class TestRepeatedMatchers:
         assert mod._exact_alertnames(parsed) == (["A", "B"], None)
         assert mod._negated_alertnames(parsed) == (["B"], None)
 
+    def test_a_negated_member_subtracts_from_the_covered_set(self):
+        parsed = self._parse('alertname=~"A|B"', 'alertname!="A"')
+        assert mod._covered_alertnames(parsed) == (["B"], None)
+
+    def test_a_negation_outside_the_positive_set_subtracts_nothing(self):
+        parsed = self._parse('alertname=~"A|B"', 'alertname!="C"')
+        assert mod._covered_alertnames(parsed) == (["A", "B"], None)
+
+    def test_an_unreadable_negation_leaves_the_covered_set_unknowable(self):
+        parsed = self._parse('alertname=~"A|B"', 'alertname!~"^Kube.*"')
+        names, unreadable = mod._covered_alertnames(parsed)
+        assert names == []
+        assert "plain alternation" in unreadable
+
     def test_two_positive_alertname_matchers_intersect(self):
         parsed = self._parse('alertname=~"A|B"', 'alertname=~"B|C"')
         assert mod._exact_alertnames(parsed)[0] == ["B"]
@@ -304,6 +318,71 @@ class TestEscalationInhibits:
             ]
         }
         assert mod.check_escalation_inhibits(am, self.RULES, self._config(tmp_path)) == []
+
+    def test_a_negated_source_alertname_does_not_satisfy_the_pair(self, tmp_path):
+        """A rule excluding the critical can never match it, so the pair is open."""
+        am = {
+            "inhibit_rules": [
+                {
+                    "source_matchers": [
+                        'alertname=~"DiskUsageWarningProlonged|OtherCritical"',
+                        'alertname!="DiskUsageWarningProlonged"',
+                    ],
+                    "target_matchers": ['alertname="DiskUsageWarning"'],
+                    "equal": ["instance"],
+                }
+            ]
+        }
+        problems = mod.check_escalation_inhibits(am, self.RULES, self._config(tmp_path))
+        assert problems and "pages twice" in problems[0]
+
+    def test_a_negated_target_alertname_does_not_satisfy_the_pair(self, tmp_path):
+        am = {
+            "inhibit_rules": [
+                {
+                    "source_matchers": ['alertname="DiskUsageWarningProlonged"'],
+                    "target_matchers": [
+                        'alertname=~"DiskUsageWarning|OtherWarning"',
+                        'alertname!="DiskUsageWarning"',
+                    ],
+                    "equal": ["instance"],
+                }
+            ]
+        }
+        problems = mod.check_escalation_inhibits(am, self.RULES, self._config(tmp_path))
+        assert problems and "pages twice" in problems[0]
+
+    def test_a_negation_naming_another_alert_leaves_the_pair_inhibited(self, tmp_path):
+        am = {
+            "inhibit_rules": [
+                {
+                    "source_matchers": [
+                        'alertname=~"DiskUsageWarningProlonged|OtherCritical"',
+                        'alertname!="OtherCritical"',
+                    ],
+                    "target_matchers": ['alertname="DiskUsageWarning"'],
+                    "equal": ["instance"],
+                }
+            ]
+        }
+        assert mod.check_escalation_inhibits(am, self.RULES, self._config(tmp_path)) == []
+
+    def test_an_unreadable_negation_does_not_satisfy_the_pair(self, tmp_path):
+        """The names such a rule spares are unknown, so the pair is unproven."""
+        am = {
+            "inhibit_rules": [
+                {
+                    "source_matchers": [
+                        'alertname="DiskUsageWarningProlonged"',
+                        'alertname!~"^Disk.*"',
+                    ],
+                    "target_matchers": ['alertname="DiskUsageWarning"'],
+                    "equal": ["instance"],
+                }
+            ]
+        }
+        problems = mod.check_escalation_inhibits(am, self.RULES, self._config(tmp_path))
+        assert problems and "pages twice" in problems[0]
 
     def test_a_reversed_inhibit_rule_does_not_satisfy_the_pair(self, tmp_path):
         """Inhibiting the critical with the warning silences the page, not the noise."""
@@ -706,6 +785,11 @@ class TestEqualLabelScope:
         inhibit["inhibit_rules"][0]["target_matchers"] = ['severity="warning"']
         assert mod.check_equal_label_scope(inhibit, INFO_RULES) == []
 
+    def test_an_unreadable_exemption_regex_reports_nothing(self):
+        """The spared set is unknown, so no alert is proven unconditionally muted."""
+        inhibit = _info_inhibit(exempt="^Notifications.*")
+        assert mod.check_equal_label_scope(inhibit, INFO_RULES) == []
+
     def test_a_target_pinned_to_an_exact_alertname_is_a_pair_not_a_scope(self):
         inhibit = _info_inhibit()
         inhibit["inhibit_rules"][0]["target_matchers"] = ['alertname="NotificationsDropping"']
@@ -787,6 +871,17 @@ class TestInhibitTargetScope:
         inhibit = _scope_inhibit('alertname="EndpointDown"')
         assert mod.check_inhibit_target_scope(inhibit, SCOPE_RULES) == []
 
+    def test_a_negated_source_member_leaves_one_covered_alert(self):
+        """The rule covers one source alert, so that selector bounds the target."""
+        inhibit = _scope_inhibit('alertname="EndpointDown"', 'instance=~"https://.*"')
+        inhibit["inhibit_rules"][0]["source_matchers"] = [
+            'alertname=~"AggregateDown|Spare"',
+            'alertname!="Spare"',
+        ]
+        problems = mod.check_inhibit_target_scope(inhibit, SCOPE_RULES)
+        assert len(problems) == 1
+        assert "AggregateDown" in problems[0]
+
     def test_a_source_outside_the_corpus_is_left_alone(self):
         inhibit = _scope_inhibit('alertname="EndpointDown"', 'instance=~"https://.*"')
         inhibit["inhibit_rules"][0]["source_matchers"] = ['alertname="Upstream"']
@@ -867,6 +962,24 @@ class TestMatcherValueParity:
     def test_an_unlisted_label_is_not_checked(self):
         am = self._am('instance=~"nowhere"')
         assert mod.check_matcher_value_parity(am, self.RULES, ("namespace",)) == []
+
+    def test_a_negated_alertname_is_not_held_to_its_expr(self):
+        """A rule excluding the alert cannot drift from a selector it never matches."""
+        am = {
+            "inhibit_rules": [
+                {
+                    "source_matchers": ['alertname="ClusterDown"'],
+                    "target_matchers": [
+                        'alertname=~"ExternalIngressDown|Other"',
+                        'alertname!="ExternalIngressDown"',
+                        'instance=~"a.example"',
+                    ],
+                }
+            ]
+        }
+        assert mod.check_matcher_value_parity(am, self.RULES, ("instance",)) == []
+        am["inhibit_rules"][0]["target_matchers"].remove('alertname!="ExternalIngressDown"')
+        assert mod.check_matcher_value_parity(am, self.RULES, ("instance",))
 
     def test_an_alertname_with_no_rule_is_skipped(self):
         am = {

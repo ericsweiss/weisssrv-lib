@@ -77,9 +77,11 @@ def _checker_step(text: str) -> str:
     return matching[0]
 
 
-def _run_checker(check_command: str, soft_fail: str = "1") -> int:
+def _run_checker(
+    check_command: str, soft_fail: str = "1", template: str | None = None
+) -> int:
     """Exit status of the rendered checker step under the runner's `set -e`."""
-    script = _checker_step(TEMPLATE.read_text())
+    script = _checker_step(template if template is not None else TEMPLATE.read_text())
     script = script.replace("$[[ inputs.check_command ]]", check_command)
     script = script.replace("$[[ inputs.check_soft_fail_exit_codes ]]", soft_fail)
     return subprocess.run(
@@ -126,13 +128,33 @@ def test_multi_line_checker_fails_on_its_first_failing_line() -> None:
     assert _run_checker("exit 2\nexit 0") == 2
 
 
+def test_a_failing_step_fails_the_job_without_an_explicit_exit() -> None:
+    """A plain failing command ends the checker, and its code survives a later
+    step that succeeds."""
+    assert _run_checker("false\ntrue", soft_fail="2") == 1
+    assert _run_checker("( exit 3 )\ntrue") == 3
+
+
+def test_an_and_or_rc_capture_would_mask_a_failing_step() -> None:
+    """Mutation check: on the left of `||` bash suspends errexit inside the
+    subshell, so an early failure reads as an empty run."""
+    original = TEMPLATE.read_text()
+    mutated = original.replace(
+        "      set +e\n      ( set -e; $[[ inputs.check_command ]] )\n"
+        "      rc=$?\n      set -e\n",
+        "      rc=0\n      ( set -e; $[[ inputs.check_command ]] ) || rc=$?\n",
+    )
+    assert mutated != original, "the rc capture moved; update this mutation"
+    assert _run_checker("false\ntrue", soft_fail="2", template=mutated) == 0
+
+
 def test_extra_soft_fail_codes_are_honoured() -> None:
     assert _run_checker("exit 2", soft_fail="1 2") == 0
 
 
 def test_soft_fail_codes_apply_to_the_whole_command() -> None:
-    """A composite checker's LAST step decides rc, so a real error that exits a
-    soft-failed code is swallowed — the input description says so."""
+    """Whichever step sets rc, a listed code reads as "updates found", so a real
+    error exiting one is swallowed — the input description says so."""
     assert _run_checker("true\nexit 1") == 0
     spec, _ = _documents(TEMPLATE.read_text())
     description = spec["spec"]["inputs"]["check_soft_fail_exit_codes"]["description"]

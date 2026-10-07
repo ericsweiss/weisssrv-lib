@@ -123,14 +123,16 @@ spec:
     # the value can collide with YAML flow syntax.
     - |
       $[[ inputs.setup_command ]]
-    # CRITICAL: only the listed exit codes are "updates found". A blanket
-    # `|| true` would let a broken checker leave the tree unmodified, and the MR
-    # manager then reads that as an empty run and closes the standing bot MR.
-    # `set -e` inside the subshell keeps errexit on for a multi-line checker:
-    # on the left of `||` the shell otherwise suspends it.
+    # CRITICAL: only the listed exit codes are "updates found". Capturing rc
+    # without an AND-OR list is what keeps errexit on inside the subshell: on
+    # the left of `||` bash suspends it even for the inner `set -e`, so a
+    # multi-step checker's early failure reads as an empty run and the MR
+    # manager closes the standing bot MR.
     - |
-      rc=0
-      ( set -e; $[[ inputs.check_command ]] ) || rc=$?
+      set +e
+      ( set -e; $[[ inputs.check_command ]] )
+      rc=$?
+      set -e
       case " $[[ inputs.check_soft_fail_exit_codes ]] " in
         *" $rc "*) rc=0 ;;
       esac

@@ -215,6 +215,21 @@ def _negated_alertnames(parsed) -> tuple[list[str], str | None]:
     return names, None
 
 
+def _covered_alertnames(parsed) -> tuple[list[str], str | None]:
+    """Return (alertnames the matcher set can match, why it could not be read).
+
+    Matchers are ANDed, so a negated member subtracts from the positive set, and
+    an unreadable regex on either side leaves the covered set unknowable.
+    """
+    positive, unreadable = _exact_alertnames(parsed)
+    if unreadable:
+        return [], unreadable
+    negated, unreadable = _negated_alertnames(parsed)
+    if unreadable:
+        return [], unreadable
+    return [n for n in positive if n not in negated], None
+
+
 def _not_an_alternation(op: str, val) -> str:
     return (
         f'alertname regex "{val}" ({op}) is not a plain alternation of names, '
@@ -286,7 +301,11 @@ def derive_escalation_pairs(rules_doc: dict, suffixes) -> list[tuple[str, str]]:
 
 
 def _inhibit_index(am_doc: dict) -> list[tuple[int, set[str], set[str], set[str]]]:
-    """Each inhibit rule as (position, source names, target names, equal labels)."""
+    """Each inhibit rule as (position, source names, target names, equal labels).
+
+    The names are what each side can match, so a rule that negates an alertname
+    never certifies a pair naming it.
+    """
     index = []
     for i, rule in enumerate(am_doc.get("inhibit_rules") or []):
         discard: list[str] = []
@@ -294,8 +313,8 @@ def _inhibit_index(am_doc: dict) -> list[tuple[int, set[str], set[str], set[str]
         tgt = _parse_matchers(rule.get("target_matchers"), i, "target", discard)
         index.append((
             i,
-            set(_exact_alertnames(src)[0]),
-            set(_exact_alertnames(tgt)[0]),
+            set(_covered_alertnames(src)[0]),
+            set(_covered_alertnames(tgt)[0]),
             {str(label) for label in rule.get("equal") or []},
         ))
     return index
@@ -379,7 +398,7 @@ def check_matcher_value_parity(am_doc: dict, rules_doc: dict, labels) -> list[st
         discard: list[str] = []
         for side, key in (("source", "source_matchers"), ("target", "target_matchers")):
             parsed = _parse_matchers(rule.get(key), i, side, discard)
-            names = [n for n in _exact_alertnames(parsed)[0] if n in exprs]
+            names = [n for n in _covered_alertnames(parsed)[0] if n in exprs]
             if not names:
                 continue
             for label in labels:
@@ -499,11 +518,6 @@ def aggregates_away(expr: str, label: str) -> bool:
     return bool(groups) and not any(label in _members(g) for g in groups)
 
 
-def _excluded_names(parsed) -> set[str]:
-    """Alertnames a matcher set excludes, from `alertname!~` or `alertname!=`."""
-    return set(_negated_alertnames(parsed)[0])
-
-
 def _matches_labels(rule: dict, parsed) -> bool:
     """Whether a rule's own labels satisfy every non-alertname matcher."""
     labels = rule.get("labels") or {}
@@ -542,7 +556,10 @@ def check_equal_label_scope(am_doc: dict, rules_doc: dict) -> list[str]:
         if not tgt or _exact_alertnames(tgt)[0]:
             # A target pinned to exact alertnames is a deliberate pair, not a scope.
             continue
-        exempt = _excluded_names(tgt)
+        exempt, unreadable = _negated_alertnames(tgt)
+        # An unreadable exemption regex leaves the spared set unknown.
+        if unreadable:
+            continue
         for group in rules_doc.get("groups") or []:
             for alert in group.get("rules") or []:
                 name = alert.get("alert") if isinstance(alert, dict) else None
@@ -584,7 +601,7 @@ def check_inhibit_target_scope(am_doc: dict, rules_doc: dict) -> list[str]:
         discard: list[str] = []
         src = _parse_matchers(rule.get("source_matchers"), index, "source", discard)
         tgt = _parse_matchers(rule.get("target_matchers"), index, "target", discard)
-        names = _exact_alertnames(src)[0]
+        names = _covered_alertnames(src)[0]
         if len(names) != 1 or names[0] not in exprs:
             continue
         excluded = set(_NEGATIVE_SELECTOR_RE.findall(exprs[names[0]]))
