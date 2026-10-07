@@ -6,6 +6,7 @@ soft_fail_exit_codes would report a broken dependency install as a finding.
 from __future__ import annotations
 
 import ast
+import os
 import subprocess
 import sys
 
@@ -66,11 +67,14 @@ def _poisoned_path(tmp_path, *modules):
 
 
 def _run(script, path_entry):
+    # HOME stays, so the interpreter's user site packages (where CI installs
+    # PyYAML) resolve and only the poisoned module is missing.
+    home = {k: v for k, v in os.environ.items() if k in ("HOME", "PYTHONUSERBASE")}
     return subprocess.run(
         [sys.executable, str(SCRIPTS / script)],
         capture_output=True,
         text=True,
-        env={"PYTHONPATH": path_entry, "PATH": "/usr/bin:/bin"},
+        env={**home, "PYTHONPATH": path_entry, "PATH": "/usr/bin:/bin"},
     )
 
 
