@@ -78,12 +78,12 @@
       when:
         - qol_admin_user != 'root'
         - (qol_omz_head.stdout | default('')) != qol_omz_commit
-      # GitHub git fetches intermittently reset from CI runners — retry before
-      # failing.
+      # GitHub resets git fetches from CI runners for a short window; retry
+      # across it before failing.
       register: qol_omz_clone
       until: qol_omz_clone is succeeded
-      retries: 3
-      delay: 5
+      retries: 6
+      delay: 20
 
     - name: Deploy .zshrc configuration
       ansible.builtin.template:
