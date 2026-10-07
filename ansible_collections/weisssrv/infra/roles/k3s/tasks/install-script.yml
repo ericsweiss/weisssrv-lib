@@ -39,6 +39,14 @@
     mode: "0700"
     force: true
     checksum: "{{ k3s_install_script_checksum | default(omit, true) }}"
+    # get_url's 10s default expires mid-handshake against get.k3s.io.
+    timeout: 60
   when:
     - k3s_needs_install | bool
     - not (k3s_skip_install | default(false))
+  # A stalled handshake is retried instead of failing the play. The optional
+  # checksum still gates what runs as root.
+  register: k3s_install_script_download
+  until: k3s_install_script_download is succeeded
+  retries: 3
+  delay: 5

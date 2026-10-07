@@ -173,7 +173,7 @@ Prometheus at all, so dashboards cannot alert on failing drives and ZFS error
 events cannot be attributed to a disk.
 
 - `/usr/local/sbin/smartmon-collector.sh` — oneshot script; probes every
-  `smartctl --scan` device with `-n standby` so it **never wakes a sleeping
+  `smartctl --scan-open` device with `-n standby` so it **never wakes a sleeping
   drive or aborts a long self-test** (the documented reason DEVICESCAN was
   removed from smartd.conf). Writes `smartmon.prom` atomically.
 - `smartmon-collector.service` + `.timer` — oneshot unit fired every 5 min.
@@ -190,13 +190,18 @@ Emitted metrics (in `/var/lib/node_exporter/smartmon.prom`):
 | `smartmon_current_pending_sector_count{device}` | ATA attr 197 raw. |
 | `smartmon_offline_uncorrectable_count{device}` | ATA attr 198 raw. |
 | `smartmon_media_errors_count{device}` | NVMe media/data-integrity errors. |
-| `smartmon_collector_success` | `1` when `smartctl` ran and enumerated at least one device, `0` when nothing was measured. |
+| `smartmon_collector_devices_scanned` | Devices the scan listed this cycle. |
+| `smartmon_collector_devices_failed` | Listed devices whose probe published no metrics. |
+| `smartmon_collector_success` | `1` when the scan exited 0 and at least one listed device published metrics, `0` when nothing was measured. |
 | `smartmon_collector_last_success_seconds` | Sentinel — staleness means the collector itself is broken. |
 
 Companion alerts to wire up: `SMARTDeviceUnhealthy`,
 `SMARTReallocatedSectorsGrowing`, `SMARTPendingSectors`,
 `SMARTOfflineUncorrectable`, `SMARTMediaErrors`, `SMARTCollectorStale`, and an
-arm on `smartmon_collector_success == 0`.
+arm on `smartmon_collector_success == 0`. The two device counts separate the
+two zero cases: `devices_scanned == 0` is a host with no SMART devices, and
+`devices_failed == devices_scanned` with a non-zero scan count is a probe
+failure.
 
 ## Corosync + pmxcfs health collector (Proxmox hosts only)
 

@@ -126,9 +126,18 @@
     owner: root
     group: root
     mode: '0600'
+    # get_url's 10s default expires mid-handshake against github.com.
+    timeout: 60
   when:
     - acme_certs_enabled | bool
     - not acme_certs_installed.stat.exists
+  # github.com's TLS handshake stalls often enough to cost a whole run, so a
+  # stalled attempt is retried instead of failing the play. The pinned checksum
+  # still gates what is installed.
+  register: acme_certs_tarball_download
+  until: acme_certs_tarball_download is succeeded
+  retries: 3
+  delay: 5
 
 - name: Extract acme.sh release tarball
   ansible.builtin.unarchive:

@@ -270,8 +270,31 @@
           ansible.builtin.set_fact:
             apt_signed_repo_empty_components_failed: true
 
-    # Check mode writes nothing, so the read-back assert must not report the
-    # rewrite it was never allowed to make.
+    # Accept path for the components entry point. Untagged, so the idempotence
+    # run proves a second rewrite is a no-op; force: false keeps the seed from
+    # resetting the file the first run rewrote.
+    - name: Seed a deb822 sources file for the real component rewrite
+      ansible.builtin.copy:
+        dest: /tmp/accept-components.sources
+        force: false
+        content: |
+          Types: deb
+          URIs: http://deb.debian.org/debian
+          Suites: trixie
+          Components: main
+        mode: '0644'
+
+    - name: Components accept path — rewrite the stock Components line for real
+      ansible.builtin.include_role:
+        name: weisssrv.infra.apt_signed_repo
+        tasks_from: enable-components.yml
+      vars:
+        apt_signed_repo_sources_path: /tmp/accept-components.sources
+        apt_signed_repo_components: main contrib non-free-firmware
+        apt_signed_repo_update_cache: false
+
+    # Check mode writes nothing, so every guard in the entry point must hold
+    # against the file as it stands instead of reading back an unmade rewrite.
     - name: Components check mode — a host needing the rewrite must not fail
       tags: [molecule-idempotence-notest]
       check_mode: true

@@ -43,20 +43,41 @@
     mode: "0644"
   when: qol_admin_user != 'root'
 
+# CRITICAL: Vundle clones the plugins itself and reports a failed clone only in
+# its own buffer — nvim exits 0 with an empty bundle dir. Without the read-back
+# below, one blip writes the marker and the `creates:` guard then skips the
+# install forever, leaving a host that looks converged with no plugins.
+# Vundle names each directory after the repo, minus any `.git` suffix.
 - name: Install Vundle plugins
-  ansible.builtin.command:
-    cmd: nvim --headless +PluginInstall +qall
+  ansible.builtin.shell:
+    cmd: |
+      set -eu
+      nvim --headless +PluginInstall +qall
+      for plugin in {{ qol_nvim_plugins | default([]) | map('regex_replace', '^.*/', '') | map('regex_replace', '[.]git$', '') | map('quote') | join(' ') }}; do
+        test -d {{ qol_admin_home_resolved | quote }}/.vim/bundle/"$plugin" || {
+          echo "PluginInstall left no .vim/bundle/$plugin — the clone failed" >&2
+          exit 1
+        }
+      done
     # Sentinel keyed to the sha1 of the plugin LIST, not a fixed filename, so
     # editing qol_nvim_plugins re-runs PluginInstall instead of silently no-op'ing.
     # join(',') not '\n' — YAML would turn \n into a real newline here.
     creates: "{{ qol_admin_home_resolved }}/.vim/bundle/.vundle-installed-{{ (qol_nvim_plugins | default([]) | join(',')) | hash('sha1') }}"
+  # A repo Vundle cannot read makes git ask for a username; with no terminal to
+  # ask, the clone must fail rather than wait.
+  environment:
+    GIT_TERMINAL_PROMPT: "0"
   become: true
   become_user: "{{ qol_admin_user }}"
   register: qol_vundle_install
+  # GitHub clones intermittently reset from CI runners — retry before failing.
+  until: qol_vundle_install is succeeded
+  retries: 3
+  delay: 5
   when: qol_admin_user != 'root'
 
-# Written only when PluginInstall actually ran, so the `creates:` guard above
-# skips it until the plugin list changes (new hash → new marker → re-run).
+# Written only once the read-back above found every plugin, so the `creates:`
+# guard skips the install until the plugin list changes (new hash → new marker).
 - name: Mark Vundle plugins as installed (marker keyed to the plugin-list hash)
   ansible.builtin.copy:
     content: >-

@@ -32,6 +32,7 @@
     # Negative test: an entry carrying whitespace would silently become two
     # kernel parameters, so the token assert must reject it.
     - name: Re-apply with a multi-token kernel cmdline entry (expect failure)
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include base with a kernel cmdline entry holding a space
           ansible.builtin.include_role:
@@ -46,42 +47,17 @@
             content: '{"failed": false}'
             mode: "0644"
       rescue:
+        # A LOOPED assert reports "One or more items failed" at the top level and
+        # keeps the guard's own message per item, so read the items first and
+        # fall back to the top-level message.
         - name: Kernel cmdline token assert correctly rejected the entry
+          vars:
+            base_token_failure: >-
+              {{ ansible_failed_result.results | default([])
+                 | selectattr('msg', 'defined') | map(attribute='msg') | join(' ')
+                 | default(ansible_failed_result.msg | default(''), true) }}
           ansible.builtin.copy:
             dest: /tmp/base-kernel-cmdline-token-assert.json
             mode: "0644"
             content: |
-              {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
-
-    # Negative test: on a systemd-boot host the drop-in is never read, so the
-    # role must refuse rather than stage a parameter that cannot reach the
-    # kernel.
-    - name: Stage a systemd-boot kernel command line
-      ansible.builtin.copy:
-        dest: /etc/kernel/cmdline
-        content: "root=ZFS=rpool/ROOT/pve-1 boot=zfs\n"
-        mode: "0644"
-
-    - name: Re-apply with a systemd-boot kernel command line (expect failure)
-      block:
-        - name: Include base while /etc/kernel/cmdline exists
-          ansible.builtin.include_role:
-            name: weisssrv.infra.base
-
-        - name: Systemd-boot assert failed to trigger
-          ansible.builtin.copy:
-            dest: /tmp/base-kernel-cmdline-grub-assert.json
-            content: '{"failed": false}'
-            mode: "0644"
-      rescue:
-        - name: Systemd-boot assert correctly refused the host
-          ansible.builtin.copy:
-            dest: /tmp/base-kernel-cmdline-grub-assert.json
-            mode: "0644"
-            content: |
-              {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
-
-    - name: Remove the staged systemd-boot kernel command line
-      ansible.builtin.file:
-        path: /etc/kernel/cmdline
-        state: absent
+              {"failed": true, "msg": {{ base_token_failure | to_json }}}

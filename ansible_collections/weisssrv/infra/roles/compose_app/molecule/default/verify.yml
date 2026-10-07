@@ -217,17 +217,26 @@
 
     # Host-nginx task flow (Case C) — cert untouched via creates:, site deployed,
     # packaged default vhost removed.
-    - name: Read the pre-seeded cert after the nginx flow
-      ansible.builtin.slurp:
-        src: /etc/nginx/ssl/fullchain.pem
+    - name: Read the pre-seeded cert's subject after the nginx flow
+      ansible.builtin.command: openssl x509 -noout -subject -in /etc/nginx/ssl/fullchain.pem
       register: compose_app_nginx_cert
+      changed_when: false
+
+    - name: Stat the pre-seeded key after the nginx flow
+      ansible.builtin.stat:
+        path: /etc/nginx/ssl/privkey.pem
+      register: compose_app_nginx_key
 
     - name: Assert the openssl placeholder left the pre-seeded cert untouched (creates guard)
       ansible.builtin.assert:
         that:
-          - "'SENTINEL-PRESEEDED-fullchain.pem' in (compose_app_nginx_cert.content | b64decode)"
-        fail_msg: "the openssl self-signed seed clobbered the existing cert — the creates: guard failed"
-        success_msg: "the creates: guard left the pre-seeded cert untouched"
+          - "'sentinel-preseeded.invalid' in compose_app_nginx_cert.stdout"
+          - compose_app_nginx_key.stat.mode == '0600'
+        fail_msg: >-
+          the openssl self-signed seed clobbered the pre-seeded cert (subject
+          "{{ compose_app_nginx_cert.stdout }}") or the key was left at
+          {{ compose_app_nginx_key.stat.mode }} instead of 0600.
+        success_msg: "the creates: guard left the pre-seeded cert untouched and the key is 0600"
 
     - name: Stat the deployed nginx site
       ansible.builtin.stat:
@@ -321,6 +330,8 @@
           would be missed and surface at the next nginx start.
         success_msg: "a sites-enabled set that cannot be staged fails the flow"
 
+    # Also covers the seeded TLS material: nginx loads the cert and key named by
+    # the sites, so an unloadable pair fails here and in candidate validation.
     - name: Assert the merged nginx configuration is valid
       ansible.builtin.command: nginx -t
       changed_when: false

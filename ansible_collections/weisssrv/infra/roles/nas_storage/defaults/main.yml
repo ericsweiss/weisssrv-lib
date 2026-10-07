@@ -4,10 +4,10 @@
 # adopted with hand-rolled units of the same conventional names.
 nas_storage_manage_absent: true
 
-# Substring that identifies a role-written file. The default is the stable prefix
-# of `ansible_managed`, so a hand-written unit is reported and kept.
-nas_storage_managed_marker: >-
-  {{ ansible_managed | regex_replace('\{.*$', '') | trim }}
+# Substring that identifies a role-written file: the literal every template's
+# `# {{ ansible_managed }}` header renders. A hand-written unit is reported and
+# kept. Set it when a site's `ansible_managed` no longer contains this string.
+nas_storage_managed_marker: Ansible managed
 
 # A byte count handed to weisssrv.infra.zfs_arc_cap, which owns the whole
 # implementation. Empty leaves ARC at the ZFS default. Aliased to the

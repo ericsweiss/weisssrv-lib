@@ -29,6 +29,28 @@
       host still on the one-line sources format.
   when: not apt_signed_repo_sources.stat.exists
 
+- name: Read the deb822 sources file before the rewrite
+  ansible.builtin.slurp:
+    src: "{{ apt_signed_repo_sources_path }}"
+  register: apt_signed_repo_sources_content
+
+# `replace` reports changed: false both when the line is already correct and
+# when the regexp matched nothing, so the pre-state is what proves the rewrite
+# lands. Read before the write, so a dry run checks the same thing.
+- name: Assert the sources file carries a Components line to rewrite
+  ansible.builtin.assert:
+    that:
+      - >-
+        (apt_signed_repo_sources_content.content | b64decode)
+        is search('^Components:', multiline=True)
+    fail_msg: >-
+      {{ apt_signed_repo_sources_path }} carries no "Components:" line, so the
+      rewrite would enable nothing. Add the line to the deb822 stanza, or
+      enable the components with apt_repository on a one-line sources file.
+    success_msg: >-
+      {{ apt_signed_repo_sources_path }} carries a Components line to normalise
+      to "{{ apt_signed_repo_components }}"
+
 - name: Enable the requested apt components
   ansible.builtin.replace:
     path: "{{ apt_signed_repo_sources_path }}"
@@ -44,28 +66,3 @@
   when:
     - apt_signed_repo_components_changed.changed
     - apt_signed_repo_update_cache | bool
-
-# The rewrite is skipped under --check, so a read-back here would assert against
-# the un-rewritten file and fail a run that did nothing wrong.
-- name: Read back the rewritten sources file
-  ansible.builtin.slurp:
-    src: "{{ apt_signed_repo_sources_path }}"
-  register: apt_signed_repo_sources_content
-  when: not ansible_check_mode
-
-# `replace` reports changed: false both when the line is already correct and
-# when the regexp matched nothing, so the value is what proves the rewrite.
-- name: Assert the sources file carries the requested components
-  ansible.builtin.assert:
-    that:
-      - >-
-        ('Components: ' ~ apt_signed_repo_components)
-        in (apt_signed_repo_sources_content.content | b64decode)
-    fail_msg: >-
-      {{ apt_signed_repo_sources_path }} does not carry
-      "Components: {{ apt_signed_repo_components }}", so the requested
-      components were never enabled.
-    success_msg: >-
-      {{ apt_signed_repo_sources_path }} carries
-      "Components: {{ apt_signed_repo_components }}"
-  when: not ansible_check_mode

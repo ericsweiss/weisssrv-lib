@@ -30,7 +30,15 @@
         dest: "{{ tailscale_gpg_staging.path }}"
         mode: '0644'
         force: true
+        # get_url's 10s default expires mid-handshake against pkgs.tailscale.com.
+        timeout: 60
       changed_when: false
+      # A stalled handshake is retried instead of failing the play. The
+      # fingerprint check below still gates what apt trusts.
+      register: tailscale_gpg_download
+      until: tailscale_gpg_download is succeeded
+      retries: 3
+      delay: 5
 
     - name: Verify Tailscale GPG key fingerprint (primary key must match exactly)
       ansible.builtin.shell: |

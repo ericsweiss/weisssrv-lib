@@ -47,3 +47,6 @@ provisioner:
         node_exporter_host_slab_caches:
           - skbuff_ext_cache
           - dentry
+        # Pinned at the default so verify.yml, which loads no role defaults,
+        # can assert the rendered files carry the configured directory.
+        node_exporter_host_textfile_dir: /var/lib/node_exporter

@@ -266,5 +266,229 @@ def test_pipeline_with_no_optional_need_can_be_required(world, capsys):
     assert "inspected nothing" in capsys.readouterr().err
 
 
+def test_optional_need_declared_inside_a_local_include_is_inspected(world, capsys):
+    """A stale need inside an included template is the case GitLab hides."""
+    consumer, _lib = world
+    _write(
+        consumer / ".gitlab" / "ci" / "extra.yml",
+        """\
+        child-gate:
+          script:
+            - echo ok
+          needs:
+            - job: ghost-gate
+              optional: true
+        """,
+    )
+    ci = consumer / ".gitlab-ci.yml"
+    ci.write_text(
+        ci.read_text(encoding="utf-8").replace(
+            "include:\n", "include:\n  - local: .gitlab/ci/extra.yml\n"
+        ),
+        encoding="utf-8",
+    )
+    assert _run(world) == 1
+    err = capsys.readouterr().err
+    assert "'ghost-gate' is an optional need" in err
+    assert ".gitlab/ci/extra.yml:child-gate" in err
+
+
+def test_optional_need_inside_a_local_include_resolves(world, capsys):
+    consumer, _lib = world
+    _write(
+        consumer / ".gitlab" / "ci" / "extra.yml",
+        """\
+        child-gate:
+          script:
+            - echo ok
+          needs:
+            - job: python-lint
+              optional: true
+        """,
+    )
+    ci = consumer / ".gitlab-ci.yml"
+    ci.write_text(
+        ci.read_text(encoding="utf-8").replace(
+            "include:\n", "include:\n  - local: .gitlab/ci/extra.yml\n"
+        ),
+        encoding="utf-8",
+    )
+    assert _run(world) == 0
+    assert "Optional needs OK" in capsys.readouterr().out
+
+
+def test_optional_need_inside_a_nested_include_is_inspected(world, capsys):
+    """Nesting is where a rename hides best: the need is two files deep."""
+    consumer, _lib = world
+    _write(
+        consumer / ".gitlab" / "ci" / "extra.yml",
+        """\
+        include:
+          - local: .gitlab/ci/deep.yml
+        """,
+    )
+    _write(
+        consumer / ".gitlab" / "ci" / "deep.yml",
+        """\
+        deep-gate:
+          script:
+            - echo ok
+          needs:
+            - job: ghost-gate
+              optional: true
+        """,
+    )
+    ci = consumer / ".gitlab-ci.yml"
+    ci.write_text(
+        ci.read_text(encoding="utf-8").replace(
+            "include:\n", "include:\n  - local: .gitlab/ci/extra.yml\n"
+        ),
+        encoding="utf-8",
+    )
+    assert _run(world) == 1
+    err = capsys.readouterr().err
+    assert "'ghost-gate' is an optional need" in err
+    assert ".gitlab/ci/deep.yml:deep-gate" in err
+
+
+def test_a_local_include_inside_a_library_file_resolves_in_the_library(world, capsys):
+    """The nested `local:` belongs to the library checkout, not the consumer."""
+    _consumer, lib = world
+    path = lib / "ci" / "lint" / "python-lint.yml"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "---\n", "---\ninclude:\n  - local: ci/lint/shared.yml\n"
+        ),
+        encoding="utf-8",
+    )
+    _write(
+        lib / "ci" / "lint" / "shared.yml",
+        """\
+        shared-gate:
+          script:
+            - echo ok
+          needs:
+            - job: ghost-gate
+              optional: true
+        """,
+    )
+    assert _run(world) == 1
+    err = capsys.readouterr().err
+    assert "'ghost-gate' is an optional need" in err
+    assert "ci/lint/shared.yml:shared-gate" in err
+
+
+def test_an_include_cycle_does_not_recurse_forever(world, capsys):
+    consumer, _lib = world
+    _write(
+        consumer / ".gitlab" / "ci" / "a.yml",
+        """\
+        include:
+          - local: .gitlab/ci/b.yml
+
+        a-gate:
+          script:
+            - echo ok
+        """,
+    )
+    _write(
+        consumer / ".gitlab" / "ci" / "b.yml",
+        """\
+        include:
+          - local: .gitlab/ci/a.yml
+
+        b-gate:
+          script:
+            - echo ok
+          needs:
+            - job: a-gate
+              optional: true
+        """,
+    )
+    ci = consumer / ".gitlab-ci.yml"
+    ci.write_text(
+        ci.read_text(encoding="utf-8").replace(
+            "include:\n", "include:\n  - local: .gitlab/ci/a.yml\n"
+        ),
+        encoding="utf-8",
+    )
+    assert _run(world) == 0
+    assert "Optional needs OK" in capsys.readouterr().out
+
+
+def test_needs_passed_as_an_array_input_are_inspected(world, capsys):
+    """`needs: $[[ inputs.needs ]]` takes the dependency from the include."""
+    consumer, lib = world
+    path = lib / "ci" / "lint" / "python-lint.yml"
+    path.write_text(
+        path.read_text(encoding="utf-8")
+        .replace(
+            "    stage:\n      default: lint\n",
+            "    stage:\n      default: lint\n"
+            "    needs:\n      type: array\n      default: []\n",
+        )
+        .replace("  stage: $[[ inputs.stage ]]\n",
+                 "  stage: $[[ inputs.stage ]]\n  needs: $[[ inputs.needs ]]\n"),
+        encoding="utf-8",
+    )
+    ci = consumer / ".gitlab-ci.yml"
+    ci.write_text(
+        ci.read_text(encoding="utf-8").replace(
+            "    file: ci/lint/python-lint.yml\n",
+            "    file: ci/lint/python-lint.yml\n"
+            "    inputs:\n      needs:\n"
+            "        - job: ghost-gate\n          optional: true\n",
+        ),
+        encoding="utf-8",
+    )
+    assert _run(world) == 1
+    err = capsys.readouterr().err
+    assert "'ghost-gate' is an optional need" in err
+    assert "ci/lint/python-lint.yml:python-lint" in err
+    ci.write_text(
+        ci.read_text(encoding="utf-8").replace("job: ghost-gate", "job: validation-gate"),
+        encoding="utf-8",
+    )
+    assert _run(world) == 0
+
+
+def test_a_nested_include_resolves_its_inputs_against_the_parent(world, capsys):
+    """The library file forwards its own input to the file it includes."""
+    _consumer, lib = world
+    path = lib / "ci" / "lint" / "python-lint.yml"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "---\n",
+            "---\ninclude:\n  - local: ci/lint/shared.yml\n"
+            "    inputs:\n      gate_name: $[[ inputs.job_name ]]-shared\n",
+        ),
+        encoding="utf-8",
+    )
+    _write(
+        lib / "ci" / "lint" / "shared.yml",
+        """\
+        spec:
+          inputs:
+            gate_name:
+              default: shared-gate
+        ---
+        "$[[ inputs.gate_name ]]":
+          script:
+            - echo ok
+        """,
+    )
+    consumer_ci = _consumer / ".gitlab-ci.yml"
+    consumer_ci.write_text(
+        consumer_ci.read_text(encoding="utf-8").replace(
+            "    - job: python-lint\n      optional: true\n",
+            "    - job: python-lint\n      optional: true\n"
+            "    - job: python-lint-shared\n      optional: true\n",
+        ),
+        encoding="utf-8",
+    )
+    assert _run(world) == 0
+    assert "Optional needs OK" in capsys.readouterr().out
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

@@ -11,7 +11,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Dict, Iterator, List, Set, Tuple
 
 _HERE = str(Path(__file__).resolve().parent)
 if _HERE not in sys.path:
@@ -35,6 +35,8 @@ except ImportError:
 
 # `$[[ inputs.job_name ]]`, GitLab's interpolation in an included file's keys.
 _INPUT_REF = re.compile(r"\$\[\[\s*inputs\.([A-Za-z0-9_-]+)\s*(?:\|[^\]]*)?\]\]")
+# The same reference as the whole value, where an array input substitutes a list.
+_WHOLE_INPUT_REF = re.compile(r"\A\s*" + _INPUT_REF.pattern + r"\s*\Z")
 
 # Include keys this gate cannot read: the job set lives outside both checkouts.
 UNREADABLE_INCLUDE_KEYS = ("remote", "component", "template")
@@ -83,7 +85,7 @@ def include_entries(doc: dict) -> List[dict]:
 
 
 def spec_inputs(path: Path) -> Dict[str, object]:
-    """An included file's declared input defaults, keyed by input name."""
+    """A file's declared input defaults, keyed by input name."""
     try:
         docs = [
             d for d in yaml.load_all(path.read_text(encoding="utf-8"), Loader=CILoader)
@@ -101,6 +103,15 @@ def spec_inputs(path: Path) -> Dict[str, object]:
     return {}
 
 
+def input_value(
+    name: str, supplied: Dict[str, object], defaults: Dict[str, object]
+) -> object | None:
+    """What the include passes for `name`, else the file's own default."""
+    if isinstance(supplied, dict) and supplied.get(name) is not None:
+        return supplied[name]
+    return defaults.get(name)
+
+
 def resolve_key(key: str, supplied: dict, defaults: Dict[str, object]) -> str | None:
     """A job key with its `$[[ inputs.* ]]` references resolved, or None.
 
@@ -111,95 +122,178 @@ def resolve_key(key: str, supplied: dict, defaults: Dict[str, object]) -> str | 
 
     def repl(match: "re.Match") -> str:
         nonlocal unresolved
-        name = match.group(1)
-        if isinstance(supplied, dict) and name in supplied:
-            return str(supplied[name])
-        if name in defaults and defaults[name] is not None:
-            return str(defaults[name])
-        unresolved = True
-        return ""
+        value = input_value(match.group(1), supplied, defaults)
+        if value is None:
+            unresolved = True
+            return ""
+        return str(value)
 
     resolved = _INPUT_REF.sub(repl, key)
     return None if unresolved else resolved
 
 
-def created_jobs(
-    doc: dict, path: Path, repo_root: Path, lib_root: Path | None
-) -> Tuple[Set[str], List[str]]:
-    """Job names this file and its resolvable includes create, plus what could
-    not be read."""
-    created = {
-        name for name in jobs(doc)
-        # A key still carrying an unresolved interpolation is not a job name.
-        if "$[[" not in name
-    }
-    unreadable: List[str] = []
+def whole_input(
+    text: str, supplied: Dict[str, object], defaults: Dict[str, object]
+) -> object:
+    """The value an `$[[ inputs.x ]]` standing alone substitutes, else the text.
 
-    for entry in include_entries(doc):
-        supplied = entry.get("inputs") if isinstance(entry.get("inputs"), dict) else {}
-        if any(key in entry for key in UNREADABLE_INCLUDE_KEYS):
+    `needs: $[[ inputs.needs ]]` is how a template takes its dependencies from
+    the include, and GitLab substitutes the whole array there.
+    """
+    match = _WHOLE_INPUT_REF.match(text)
+    return input_value(match.group(1), supplied, defaults) if match else text
+
+
+def optional_need_targets(
+    body: dict, doc: dict, supplied: Dict[str, object], defaults: Dict[str, object]
+) -> List[str]:
+    """The job names one job declares as optional needs, as written."""
+    needs = body.get("needs")
+    if isinstance(needs, Reference):
+        needs = needs.resolve(doc, [])
+    if isinstance(needs, str):
+        needs = whole_input(needs, supplied, defaults)
+    if isinstance(needs, dict):
+        needs = [needs]
+    targets: List[str] = []
+    for need in needs if isinstance(needs, list) else []:
+        if isinstance(need, Reference):
+            need = need.resolve(doc, None)
+        if not isinstance(need, dict) or not need.get("optional"):
+            continue
+        target = need.get("job")
+        if isinstance(target, str) and target:
+            targets.append(target)
+    return targets
+
+
+def child_inputs(
+    entry: dict, supplied: Dict[str, object], defaults: Dict[str, object]
+) -> Dict[str, object]:
+    """An include's `inputs:`, its own `$[[ inputs.* ]]` references resolved.
+
+    An unresolvable value lands as None, so the included file falls back to its
+    own default and reports the gap if it has none.
+    """
+    passed = entry.get("inputs")
+    if not isinstance(passed, dict):
+        return {}
+    return {
+        name: resolve_key(value, supplied, defaults) if isinstance(value, str) else value
+        for name, value in passed.items()
+    }
+
+
+def include_targets(
+    entry: dict,
+    label: str,
+    base: Path,
+    lib_root: Path | None,
+    supplied: Dict[str, object],
+    defaults: Dict[str, object],
+    unreadable: List[str],
+) -> Iterator[Tuple[Path, str, Dict[str, object]]]:
+    """Each file an include names, as `(checkout, path, inputs)`.
+
+    A `local:` resolves in the including file's own checkout, a `project:` in
+    the library one.
+    """
+    if any(key in entry for key in UNREADABLE_INCLUDE_KEYS):
+        unreadable.append(f"{label}: include {entry!r} is not a file in either checkout")
+        return
+    passed = child_inputs(entry, supplied, defaults)
+    if "local" in entry:
+        child_base, files = base, entry["local"]
+    elif "project" in entry and "file" in entry:
+        if lib_root is None:
             unreadable.append(
-                f"{path.name}: include {entry!r} is not a file in either checkout"
+                f"{label}: include of {entry.get('project')} needs a "
+                "library checkout (--lib-path or $WEISSSRV_LIB_PATH)"
+            )
+            return
+        child_base, files = lib_root, entry["file"]
+    else:
+        unreadable.append(f"{label}: include {entry!r} has no readable file")
+        return
+    for relpath in files if isinstance(files, list) else [files]:
+        resolved = resolve_key(str(relpath), supplied, defaults)
+        if resolved is None:
+            unreadable.append(
+                f"{label}: include path {relpath!r} needs an input the include "
+                "neither passes nor defaults"
             )
             continue
-        if "local" in entry:
-            base, files = repo_root, entry["local"]
-        elif "project" in entry and "file" in entry:
-            if lib_root is None:
+        yield child_base, resolved.lstrip("/"), passed
+
+
+def collect(
+    doc: dict,
+    path: Path,
+    label: str,
+    base: Path,
+    supplied: Dict[str, object],
+    lib_root: Path | None,
+    ancestry: Tuple[Path, ...],
+    created: Set[str],
+    needs: Dict[str, Set[str]],
+    unreadable: List[str],
+) -> None:
+    """Record this file's job names and optional needs, then its includes.
+
+    `ancestry` holds the files already open on this branch, so an include cycle
+    stops instead of recursing forever.
+    """
+    defaults = spec_inputs(path)
+    for key, body in jobs(doc).items():
+        name = resolve_key(key, supplied, defaults)
+        if name is None:
+            unreadable.append(
+                f"{label}: job key {key!r} needs an input the include "
+                "neither passes nor defaults"
+            )
+            continue
+        created.add(name)
+        for target in optional_need_targets(body, doc, supplied, defaults):
+            resolved = resolve_key(target, supplied, defaults)
+            if resolved is None:
                 unreadable.append(
-                    f"{path.name}: include of {entry.get('project')} needs a "
-                    "library checkout (--lib-path or $WEISSSRV_LIB_PATH)"
+                    f"{label}: optional need {target!r} of job {name!r} needs an "
+                    "input the include neither passes nor defaults"
                 )
                 continue
-            base, files = lib_root, entry["file"]
-        else:
-            unreadable.append(f"{path.name}: include {entry!r} has no readable file")
-            continue
-        for relpath in files if isinstance(files, list) else [files]:
-            included = base / str(relpath).lstrip("/")
+            needs.setdefault(resolved, set()).add(f"{label}:{name}")
+
+    for entry in include_entries(doc):
+        for child_base, relpath, passed in include_targets(
+            entry, label, base, lib_root, supplied, defaults, unreadable
+        ):
+            included = child_base / relpath
+            if included.resolve() in ancestry:
+                continue
             if not included.is_file():
                 unreadable.append(
-                    f"{path.name}: included file {relpath} is not in {base}"
+                    f"{label}: included file {relpath} is not in {child_base}"
                 )
                 continue
             try:
-                included_doc = parse_ci(
+                child_doc = parse_ci(
                     included.read_text(encoding="utf-8"), loader=CILoader
                 )
             except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
-                unreadable.append(f"{path.name}: {relpath} is not parseable: {exc}")
+                unreadable.append(f"{label}: {relpath} is not parseable: {exc}")
                 continue
-            defaults = spec_inputs(included)
-            for key in jobs(included_doc):
-                resolved = resolve_key(key, supplied, defaults)
-                if resolved is None:
-                    unreadable.append(
-                        f"{relpath}: job key {key!r} needs an input the include "
-                        "neither passes nor defaults"
-                    )
-                else:
-                    created.add(resolved)
-    return created, unreadable
-
-
-def optional_needs(doc: dict) -> Dict[str, Set[str]]:
-    """`{job name: the jobs declaring it as an optional need}`."""
-    found: Dict[str, Set[str]] = {}
-    for job_name, body in jobs(doc).items():
-        needs = body.get("needs")
-        if isinstance(needs, Reference):
-            needs = needs.resolve(doc, [])
-        if isinstance(needs, dict):
-            needs = [needs]
-        for need in needs if isinstance(needs, list) else []:
-            if isinstance(need, Reference):
-                need = need.resolve(doc, None)
-            if not isinstance(need, dict) or not need.get("optional"):
-                continue
-            target = need.get("job")
-            if isinstance(target, str) and target:
-                found.setdefault(target, set()).add(job_name)
-    return found
+            collect(
+                child_doc,
+                included,
+                relpath,
+                child_base,
+                passed,
+                lib_root,
+                ancestry + (included.resolve(),),
+                created,
+                needs,
+                unreadable,
+            )
 
 
 def check(
@@ -219,14 +313,18 @@ def check(
             raise OperatorError(
                 f"--ci-file names {relpath}, which does not exist in {repo_root}"
             )
-        doc = _load(path)
-        file_created, file_unreadable = created_jobs(doc, path, repo_root, lib_root)
-        created |= file_created
-        unreadable += file_unreadable
-        for target, declarers in optional_needs(doc).items():
-            needs.setdefault(target, set()).update(
-                f"{relpath}:{d}" for d in declarers
-            )
+        collect(
+            _load(path),
+            path,
+            relpath,
+            repo_root,
+            {},
+            lib_root,
+            (path.resolve(),),
+            created,
+            needs,
+            unreadable,
+        )
 
     if not created:
         raise OperatorError(
@@ -248,7 +346,7 @@ def check(
     if problems and unreadable:
         problems.append(
             "the job set is incomplete because these includes could not be "
-            "read: " + "; ".join(sorted(unreadable))
+            "read: " + "; ".join(sorted(set(unreadable)))
             + " — pass --extra-job JOB=REASON for a job they create"
         )
     for name in sorted(extra_jobs):

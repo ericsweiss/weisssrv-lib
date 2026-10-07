@@ -49,9 +49,17 @@
     mode: "0600"
     # Always fetch fresh, recovering from a stale file left by a failed verify.
     force: true
+    # get_url's 10s default expires mid-handshake against a vendor key server.
+    timeout: 60
   when:
     - apt_signed_repo_when
     - not (apt_signed_repo_keyring.stat.exists | default(false))
+  # A stalled handshake is retried instead of failing the play. The fingerprint
+  # check below still gates what apt trusts.
+  register: apt_signed_repo_key_download
+  until: apt_signed_repo_key_download is succeeded
+  retries: 3
+  delay: 5
 
 - name: Verify downloaded signing key fingerprint (primary key must match exactly)
   ansible.builtin.shell: |

@@ -14,10 +14,12 @@
     - name: Gather facts
       ansible.builtin.setup:
 
+    # sfdisk ships in fdisk, not util-linux, on Debian 13.
     - name: Install required packages
       ansible.builtin.apt:
         name:
           - e2fsprogs
+          - fdisk
           - util-linux
         state: present
         update_cache: true
@@ -104,7 +106,35 @@
     - name: Write a partition table with no filesystem on the guard disk
       ansible.builtin.shell: |
         set -euo pipefail
-        printf 'label: gpt\n' | sfdisk --no-reread --no-tell-kernel /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi9
+        dev=/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi9
+        if [ -n "$(lsblk -dno PTTYPE "$dev")" ]; then
+          printf 'already-labelled'
+          exit 0
+        fi
+        printf 'label: gpt\n' | sfdisk --no-reread --no-tell-kernel "$dev" >/dev/null
+        # lsblk reads PTTYPE from the udev db, so the new label has to be
+        # processed before the role probes the disk.
+        udevadm trigger --settle --action=change "$dev"
+        printf 'labelled'
       args:
         executable: /bin/bash
-      changed_when: true
+      register: zvol_mount_pt_guard_label
+      changed_when: zvol_mount_pt_guard_label.stdout | trim == 'labelled'
+
+    - name: Read the staged guard disk
+      ansible.builtin.command: lsblk -dno FSTYPE,PTTYPE /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi9
+      register: zvol_mount_pt_guard_probe
+      changed_when: false
+
+    # The converge negative case is only negative while this holds, so stage
+    # failures fail here instead of reading as a regressed guard.
+    - name: Assert the guard disk carries a partition table and no filesystem
+      ansible.builtin.assert:
+        that:
+          - zvol_mount_pt_guard_probe.stdout | trim == 'gpt'
+        fail_msg: >-
+          The guard disk reads FSTYPE/PTTYPE
+          '{{ zvol_mount_pt_guard_probe.stdout | trim }}' instead of an empty
+          FSTYPE with a gpt PTTYPE, so the role would not meet a
+          blank-but-partitioned disk.
+        quiet: true

@@ -199,6 +199,7 @@
 
     # 3. Pool-validation failure path
     - name: Pool-validation failure (expect failure)
+      tags: [molecule-idempotence-notest]
       block:
         - name: Run with nonexistent storage
           ansible.builtin.include_role:
@@ -220,6 +221,7 @@
 
     # 4. Resource-pool list rejection
     - name: Resource-pool list rejection (expect failure)
+      tags: [molecule-idempotence-notest]
       block:
         - name: Run with non-standard resource pool
           ansible.builtin.include_role:
@@ -395,30 +397,42 @@
         content: ""
         mode: "0644"
 
-    - name: Run the NIC firewall repair against a guest with no net0
-      ansible.builtin.include_role:
-        name: weisssrv.infra.proxmox_vm
-        tasks_from: guest-nic-firewall
-      vars:
-        _pmx_cli: qm
-        _pmx_id: 999
-        _pmx_delegate: "{{ inventory_hostname }}"
-      register: proxmox_vm_no_net0_repair
-      ignore_errors: true
+    # A rescue, not `ignore_errors`: that keyword on a dynamic include_role
+    # never reaches the role's own tasks, so the repair's failure escapes it.
+    - name: No-net0 repair (expect failure)
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Run the NIC firewall repair against a guest with no net0
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_vm
+            tasks_from: guest-nic-firewall
+          vars:
+            _pmx_cli: qm
+            _pmx_id: 999
+            _pmx_delegate: "{{ inventory_hostname }}"
 
-    - name: Remove the no-net0 stub
-      ansible.builtin.file:
-        path: /tmp/molecule-stub-state/vm_net0_absent
-        state: absent
-
-    - name: Capture the no-net0 result
-      ansible.builtin.copy:
-        dest: /tmp/molecule-results/07a-no-net0.json
-        mode: "0644"
-        content: |
-          {"failed": {{ proxmox_vm_no_net0_repair.failed | default(false) | to_json }},
-           "stdout": {{ proxmox_vm_guest_nic_firewall_result.stdout | default('') | to_json }},
-           "rc": {{ proxmox_vm_guest_nic_firewall_result.rc | default(0) | to_json }}}
+        - name: Should not reach here
+          ansible.builtin.copy:
+            dest: /tmp/molecule-results/07a-no-net0.json
+            mode: "0644"
+            content: |
+              {"failed": false,
+               "stdout": {{ proxmox_vm_guest_nic_firewall_result.stdout | default('') | to_json }},
+               "rc": {{ proxmox_vm_guest_nic_firewall_result.rc | default(0) | to_json }}}
+      rescue:
+        - name: Capture the no-net0 result
+          ansible.builtin.copy:
+            dest: /tmp/molecule-results/07a-no-net0.json
+            mode: "0644"
+            content: |
+              {"failed": true,
+               "stdout": {{ proxmox_vm_guest_nic_firewall_result.stdout | default('') | to_json }},
+               "rc": {{ proxmox_vm_guest_nic_firewall_result.rc | default(0) | to_json }}}
+      always:
+        - name: Remove the no-net0 stub
+          ansible.builtin.file:
+            path: /tmp/molecule-stub-state/vm_net0_absent
+            state: absent
 
     # 7b. Agent flag drift — existing VM whose `qm config` reports agent
     # enabled=0 must get exactly one `qm set 999 --agent 1` reconcile call.
@@ -502,6 +516,7 @@
         mode: "0644"
 
     - name: Run role against a VM with MORE memory than desired
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include the role with an unnamed shrink pending
           ansible.builtin.include_role:
@@ -795,6 +810,7 @@
         mode: "0644"
 
     - name: Run role — remap without allow_remap must be refused
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include proxmox_vm (expected to fail on the remap guard)
           ansible.builtin.include_role:
@@ -869,6 +885,7 @@
     # it must REJECT duplicate slots and missing slots. Both run the role
     # expecting the assert to fail (caught via rescue).
     - name: Run role — duplicate scsi_slot must be rejected
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include proxmox_vm with duplicate scsi_slots (expected to fail)
           ansible.builtin.include_role:
@@ -887,6 +904,7 @@
             slot_dup_rejected: true
 
     - name: Run role — missing scsi_slot must be rejected
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include proxmox_vm with a missing scsi_slot (expected to fail)
           ansible.builtin.include_role:
@@ -904,6 +922,7 @@
             slot_missing_rejected: true
 
     - name: Run role — scsi_slot 0 (boot-disk slot) must be rejected
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include proxmox_vm with scsi_slot 0 (expected to fail)
           ansible.builtin.include_role:
@@ -1146,6 +1165,7 @@
     # The backend seam: an unimplemented backend must be a named error, not a
     # file-not-found out of the dynamic include.
     - name: Drive the additional-disk backend guard with a backend that has no file
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include the role with an unimplemented disk backend
           ansible.builtin.include_role:
@@ -1180,6 +1200,7 @@
     # The cluster probe's negative arm: no host answers, so the entry point must
     # fail by name rather than hand the caller an empty answer.
     - name: Drive the cluster-resource probe with every delegate unreachable
+      tags: [molecule-idempotence-notest]
       block:
         - name: Probe a Proxmox host that does not exist
           ansible.builtin.include_role:

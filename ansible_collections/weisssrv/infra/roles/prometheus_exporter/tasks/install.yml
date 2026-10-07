@@ -59,6 +59,8 @@
     # Empty checksum omits the param entirely; both wrappers pin a sha256 in
     # all.yml, so this is just the generic fallback for a checksumless caller.
     checksum: "{{ prometheus_exporter_checksum | default(omit, true) }}"
+    # get_url's 10s default expires mid-handshake against a release mirror.
+    timeout: 60
   when: prometheus_exporter_needs_install
   # Release artifacts are fetched from GitHub, whose TLS handshakes/connections
   # intermittently reset from CI runners — retry before failing the play.

@@ -70,7 +70,15 @@
     owner: root
     group: root
     mode: "0600"
+    # get_url's 10s default expires mid-handshake against a loaded mirror.
+    timeout: 60
   when: not (k3s_skip_gpu_install | default(false))
+  # A stalled handshake is retried instead of failing the play. The pinned
+  # checksum still gates what dpkg installs.
+  register: k3s_gpu_keyring_download
+  until: k3s_gpu_keyring_download is succeeded
+  retries: 3
+  delay: 5
 
 - name: Install the verified cuda-keyring package (repo + debian13 signing key)
   ansible.builtin.apt:

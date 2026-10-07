@@ -108,3 +108,31 @@
           enable-components FAILED in check mode on a host whose Components line
           still needs the rewrite — `--check` would be red on every such host.
         success_msg: "check mode is clean on a sources file awaiting the rewrite"
+
+    - name: Read the sources files the accept and check-mode rewrites targeted
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      register: apt_signed_repo_component_files
+      loop:
+        - /tmp/accept-components.sources
+        - /tmp/stock-components.sources
+
+    # The check-mode file proves the dry run is a dry run: the entry point ran
+    # its guards against it and wrote nothing.
+    - name: The real rewrite landed and the check-mode rewrite wrote nothing
+      vars:
+        accepted: >-
+          {{ apt_signed_repo_component_files.results[0].content | b64decode }}
+        dry_run: >-
+          {{ apt_signed_repo_component_files.results[1].content | b64decode }}
+      ansible.builtin.assert:
+        that:
+          - "'Components: main contrib non-free-firmware' in accepted"
+          - "'Components: main contrib non-free' not in dry_run"
+          - "dry_run is search('^Components: main$', multiline=True)"
+        fail_msg: >-
+          Either the real component rewrite never landed on
+          /tmp/accept-components.sources, or the check-mode run rewrote
+          /tmp/stock-components.sources — check mode is writing.
+        success_msg: >-
+          the component rewrite lands for real and writes nothing in check mode

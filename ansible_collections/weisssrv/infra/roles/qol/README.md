@@ -53,7 +53,9 @@ where `~` is `qol_admin_home`, or the user's passwd home when that is empty.
   the pinned commit is fetchable.
 - `+PluginInstall` is guarded by a marker keyed to the **sha1 of the plugin
   list**, so editing `qol_nvim_plugins` re-runs it while a converged host
-  does not.
+  does not. Vundle exits 0 on a failed clone, so the role reads back a bundle
+  directory per plugin and fails (after three tries) rather than write the
+  marker — a marker therefore means the plugins are really on disk.
 - The login shell is set unconditionally; the `user` module reports changed only
   on a real change.
 

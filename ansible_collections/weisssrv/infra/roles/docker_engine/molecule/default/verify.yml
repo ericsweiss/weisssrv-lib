@@ -37,3 +37,22 @@
           The converge left no marker, so the required-pin assert did not fail
           the play on an empty docker_engine_ce_version.
         success_msg: "an empty version pin fails the required-pin assert"
+
+    # The handler gate is only covered while this container has no docker unit:
+    # a Restart docker that slipped past the gate has to fail the converge.
+    - name: Stat the docker service units
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: docker_engine_unit_files
+      loop:
+        - /usr/lib/systemd/system/docker.service
+        - /etc/systemd/system/docker.service
+
+    - name: Assert the render-only scenario has no docker service to restart
+      ansible.builtin.assert:
+        that:
+          - docker_engine_unit_files.results | selectattr('stat.exists') | list | length == 0
+        fail_msg: >-
+          A docker.service unit exists in the test image, so a Restart docker
+          that escaped the skip_install gate would no longer fail the converge.
+        success_msg: "no docker.service unit, so the restart handler gate is covered"

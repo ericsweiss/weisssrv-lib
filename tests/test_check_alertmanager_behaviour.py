@@ -259,6 +259,45 @@ class TestEscalationInhibits:
         problems = mod.check_escalation_inhibits(am, self.RULES, config)
         assert problems and "equal:['instance']" in problems[0]
 
+    def test_equal_labels_split_across_two_rules_is_reported(self, tmp_path):
+        """Two rules each missing a different label each silence unrelated instances."""
+        am = {
+            "inhibit_rules": [
+                {
+                    "source_matchers": ['alertname="DiskUsageWarningProlonged"'],
+                    "target_matchers": ['alertname="DiskUsageWarning"'],
+                    "equal": ["instance"],
+                },
+                {
+                    "source_matchers": ['alertname="DiskUsageWarningProlonged"'],
+                    "target_matchers": ['alertname="DiskUsageWarning"'],
+                    "equal": ["device"],
+                },
+            ]
+        }
+        config = self._config(tmp_path, escalation_equal=["instance", "device"])
+        problems = mod.check_escalation_inhibits(am, self.RULES, config)
+        assert problems and "equal:['device']" in problems[0]
+        assert "Rule 0 comes closest with equal:['instance']" in problems[0]
+
+    def test_one_rule_carrying_every_equal_label_is_clean(self, tmp_path):
+        am = {
+            "inhibit_rules": [
+                {
+                    "source_matchers": ['alertname="DiskUsageWarningProlonged"'],
+                    "target_matchers": ['alertname="DiskUsageWarning"'],
+                    "equal": ["device"],
+                },
+                {
+                    "source_matchers": ['alertname="DiskUsageWarningProlonged"'],
+                    "target_matchers": ['alertname="DiskUsageWarning"'],
+                    "equal": ["instance", "device"],
+                },
+            ]
+        }
+        config = self._config(tmp_path, escalation_equal=["instance", "device"])
+        assert mod.check_escalation_inhibits(am, self.RULES, config) == []
+
     def test_a_declared_exception_is_skipped(self, tmp_path):
         config = self._config(
             tmp_path,

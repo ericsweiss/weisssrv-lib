@@ -123,12 +123,21 @@
     dest: "{{ proxmox_vm_cloud_image_dir }}/{{ proxmox_vm_cloud_image_name }}"
     mode: "0644"
     checksum: "{{ proxmox_vm_cloud_image_checksum }}"
+    # Bounds one connection attempt, not the transfer: get_url's 10s default
+    # expires mid-handshake against an image mirror.
+    timeout: 60
   when:
     - not ansible_check_mode
     - proxmox_vm_exists.rc != 0
     - not _proxmox_vm_is_windows
     - not (proxmox_vm_skip_create | default(false))
     - not (proxmox_vm_cloud_image.stat.exists | default(false))
+  # A stalled handshake is retried instead of failing the play. The pinned
+  # checksum still gates what the VM boots.
+  register: proxmox_vm_cloud_image_download
+  until: proxmox_vm_cloud_image_download is succeeded
+  retries: 3
+  delay: 5
 
 - name: Create VM
   delegate_to: "{{ proxmox_host }}"
@@ -222,11 +231,20 @@
     dest: "{{ proxmox_vm_iso_storage_path }}/{{ proxmox_vm_virtio_iso }}"
     mode: "0644"
     checksum: "{{ proxmox_vm_virtio_win_checksum }}"
+    # Bounds one connection attempt, not the transfer: get_url's 10s default
+    # expires mid-handshake against an image mirror.
+    timeout: 60
   when:
     - not ansible_check_mode
     - proxmox_vm_exists.rc != 0
     - _proxmox_vm_is_windows
     - not (proxmox_vm_skip_create | default(false))
+  # A stalled handshake is retried instead of failing the play. The pinned
+  # checksum still gates what the installer sees.
+  register: proxmox_vm_virtio_download
+  until: proxmox_vm_virtio_download is succeeded
+  retries: 3
+  delay: 5
 
 - name: Create Windows VM
   delegate_to: "{{ proxmox_host }}"

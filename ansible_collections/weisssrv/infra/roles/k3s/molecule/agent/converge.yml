@@ -23,6 +23,7 @@
     # k3s_agent_token the role MUST fail loudly rather than render a config
     # that joins with an empty credential.
     - name: Re-run k3s with an empty agent token (expect failure)
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include k3s with an empty agent token
           ansible.builtin.include_role:

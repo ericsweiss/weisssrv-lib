@@ -263,14 +263,15 @@ def derive_escalation_pairs(rules_doc: dict, suffixes) -> list[tuple[str, str]]:
     return pairs
 
 
-def _inhibit_index(am_doc: dict) -> list[tuple[set[str], set[str], set[str]]]:
-    """Each inhibit rule as (source alertnames, target alertnames, equal labels)."""
+def _inhibit_index(am_doc: dict) -> list[tuple[int, set[str], set[str], set[str]]]:
+    """Each inhibit rule as (position, source names, target names, equal labels)."""
     index = []
     for i, rule in enumerate(am_doc.get("inhibit_rules") or []):
         discard: list[str] = []
         src = _parse_matchers(rule.get("source_matchers"), i, "source", discard)
         tgt = _parse_matchers(rule.get("target_matchers"), i, "target", discard)
         index.append((
+            i,
             set(_exact_alertnames(src)[0]),
             set(_exact_alertnames(tgt)[0]),
             {str(label) for label in rule.get("equal") or []},
@@ -297,7 +298,7 @@ def check_escalation_inhibits(am_doc: dict, rules_doc: dict, config: Config) -> 
         if (critical, warning) in exceptions:
             continue
         matching = [
-            entry for entry in index if critical in entry[0] and warning in entry[1]
+            entry for entry in index if critical in entry[1] and warning in entry[2]
         ]
         if not matching:
             problems.append(
@@ -307,13 +308,20 @@ def check_escalation_inhibits(am_doc: dict, rules_doc: dict, config: Config) -> 
                 f"or declare the pair under escalation_exceptions."
             )
             continue
-        missing = sorted(set(want_equal) - set().union(*(e[2] for e in matching)))
-        if missing:
-            problems.append(
-                f"escalation pair {critical} -> {warning} is inhibited without "
-                f"equal:{missing}, so one instance's critical silences every "
-                f"other instance's warning"
-            )
+        # One rule must carry EVERY required label. Two rules each missing a
+        # different one both silence unrelated instances, so their equal sets
+        # never combine.
+        want = set(want_equal)
+        if any(want <= entry[3] for entry in matching):
+            continue
+        best = min(matching, key=lambda entry: (len(want - entry[3]), entry[0]))
+        missing = sorted(want - best[3])
+        problems.append(
+            f"escalation pair {critical} -> {warning} is inhibited without "
+            f"equal:{missing}, so one instance's critical silences every "
+            f"other instance's warning. Rule {best[0]} comes closest with "
+            f"equal:{sorted(best[3])}; every label must sit on that one rule."
+        )
     return problems
 
 

@@ -1349,11 +1349,13 @@ scripts/check-alertmanager-behaviour.py --config FILE [--repo-root DIR]
   `severity=critical` alert in the same corpus is a pair, and a pair with no
   inhibit rule pointing from the critical to the warning pages twice for as long
   as the failure lasts. `escalation_equal` lists label keys that rule must share,
-  so one instance's critical does not silence another instance's warning.
-  `escalation_pairs` declares a pair whose names share no stem, and
-  `escalation_exceptions` declares one that delivers both severities on purpose.
-  Each entry is a `critical` + `warning` mapping, with an optional per-pair
-  `equal` list.
+  so one instance's critical does not silence another instance's warning. One
+  matching rule has to carry every key on its own: two rules each missing a
+  different key do not add up, and the finding names the closest rule and the
+  keys it lacks. `escalation_pairs` declares a pair whose names share no stem,
+  and `escalation_exceptions` declares one that delivers both severities on
+  purpose. Each entry is a `critical` + `warning` mapping, with an optional
+  per-pair `equal` list.
 - **Every member of a regex alternation is checked**, not just "at least one
   survives", and a regex that is not a plain alternation is REPORTED rather than
   skipped — an empty name set would otherwise pass silently.
@@ -2230,6 +2232,22 @@ sanitize-junit-expected-failures.py --junit-dir junit --expectations <file> [--s
   same guard: it holds every declared line to a matching task name in the role
   or the declaring scenario, on every run rather than only in a selected
   scenario.
+- **A line may end in ` ::<n>` to declare how many testcases it matches**; a
+  plain line declares one. `<n>` must be a positive integer, or the suffix is
+  read as part of the pattern and nothing matches it.
+- **`--strict` also fails when a pattern matched more testcases than it
+  declares.** Either the pattern is too broad and names more than the one guard,
+  or the guard really does fail that many times and the count is stale. Narrow
+  the pattern or raise the count.
+- **Count what the run records, not what the scenario reads like.** The junit
+  callback writes one testcase per task per host, so a guard that fires on two
+  platforms counts twice; a guard driven from several negative cases in one
+  playbook counts once per case; and a scenario whose `test_sequence` includes
+  `idempotence` replays converge, so a converge-driven guard counts twice unless
+  its task or an enclosing block carries the `molecule-idempotence-notest` tag.
+- **A case driven under `ignore_errors: true` is recorded as passed**, so it is
+  never observed and must not be declared. Drive a negative case with
+  `block`/`rescue` instead.
 
 ---
 
@@ -2423,11 +2441,19 @@ scripts/check-ci-include-job-names.py --lib-path ../weisssrv-lib
 
 - `--ci-file` (repeatable, default `.gitlab-ci.yml`), `--repo-root`,
   `--lib-path` (default `$WEISSSRV_LIB_PATH`).
-- Job names come from each file's own keys, from its `local:` includes, and from
-  each `project:` include's file read out of the library checkout. A job key
-  spelled `$[[ inputs.job_name ]]` resolves against the include's own `inputs:`
-  first, then the included file's `spec.inputs` default. A `.hidden` key creates
-  no job, so a need on one is a finding.
+- Job names and optional needs both come from each file's own keys and from
+  every file it includes, nested includes included. A `local:` include resolves
+  in the checkout its including file came from; a `project:` include resolves in
+  the library checkout. A file already open on the same branch is not reopened,
+  so an include cycle ends instead of looping.
+- Every finding names the file and the job that declare the need, so a stale
+  dependency inside a library template reads as that template's, not the
+  pipeline's.
+- `$[[ inputs.* ]]` resolves against the include's own `inputs:` first, then the
+  included file's `spec.inputs` default. It resolves in a job key, in a need's
+  `job:`, in an include's path and in the values an include passes on. A
+  `needs:` that is one `$[[ inputs.needs ]]` takes the whole array from the
+  include. A `.hidden` key creates no job, so a need on one is a finding.
 - `--extra-job JOB=REASON` declares a job created by a source this gate cannot
   read (a `remote:`, `component:` or `template:` include). A reason is
   mandatory, and an entry no need references is a finding.

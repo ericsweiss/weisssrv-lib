@@ -18,17 +18,19 @@ sanitize() {
     printf '%s' "$1" | tr -d '\\"' | tr -s ' '
 }
 
-# 0 says nothing was measured. Without it a host whose devices all disappeared
-# emits a fresh sentinel and no per-device series, which reads as healthy.
-success=1
+# A fresh sentinel with no per-device series reads as healthy, so success is
+# earned: the scan must succeed and at least one device must publish metrics.
+# The counts separate "no disks" from "every probe failed".
+scan_ok=1
+devices_scanned=0
+devices_failed=0
 SCAN="$TMP.scan"
 : > "$SCAN"
 if command -v smartctl >/dev/null 2>&1; then
-    smartctl --scan-open 2>/dev/null > "$SCAN" || true
+    smartctl --scan-open 2>/dev/null > "$SCAN" || scan_ok=0
 else
-    success=0
+    scan_ok=0
 fi
-grep -q '^/dev/' "$SCAN" || success=0
 
 {
     printf '# HELP smartmon_device_info Static SMART device identity (value is always 1).\n'
@@ -53,6 +55,7 @@ grep -q '^/dev/' "$SCAN" || success=0
     # `-n standby` no-wake guarantee. Read from the file, not a pipe.
     while read -r dev _dash dtype _rest; do
         case "$dev" in /dev/*) ;; *) continue ;; esac
+        devices_scanned=$((devices_scanned + 1))
         [ -n "$dtype" ] || dtype=auto
 
         # `set +e` per device: an unreadable/vanished device must not
@@ -67,10 +70,13 @@ grep -q '^/dev/' "$SCAN" || success=0
             printf 'smartmon_device_active{device="%s"} 0\n' "$dev"
             continue
         fi
-        # No SMART support / open failure: skip entirely (loop or USB
-        # bridge devices in odd environments). Dialect-tolerant so genuine
+        # No SMART support / open failure: count it failed and skip (loop or
+        # USB bridge devices in odd environments). Dialect-tolerant so genuine
         # SAS/SCSI drives (which print "Product:") aren't skipped either.
-        printf '%s\n' "$out" | grep -Eqi 'serial number|model|product' || continue
+        if ! printf '%s\n' "$out" | grep -Eqi 'serial number|model|product'; then
+            devices_failed=$((devices_failed + 1))
+            continue
+        fi
 
         model=$(printf '%s\n' "$out" \
             | sed -n -e 's/^Device Model: *//p' -e 's/^Model Number: *//p' -e 's/^Product: *//p' \
@@ -133,7 +139,18 @@ grep -q '^/dev/' "$SCAN" || success=0
         fi
     done < "$SCAN"
 
-    printf '# HELP smartmon_collector_success 1 when smartctl was runnable and enumerated at least one device.\n'
+    printf '# HELP smartmon_collector_devices_scanned Devices the scan listed.\n'
+    printf '# TYPE smartmon_collector_devices_scanned gauge\n'
+    printf 'smartmon_collector_devices_scanned %d\n' "$devices_scanned"
+    printf '# HELP smartmon_collector_devices_failed Listed devices whose SMART probe published no metrics.\n'
+    printf '# TYPE smartmon_collector_devices_failed gauge\n'
+    printf 'smartmon_collector_devices_failed %d\n' "$devices_failed"
+    if [ "$scan_ok" -eq 1 ] && [ "$devices_scanned" -gt "$devices_failed" ]; then
+        success=1
+    else
+        success=0
+    fi
+    printf '# HELP smartmon_collector_success 1 when the scan succeeded and at least one device published metrics.\n'
     printf '# TYPE smartmon_collector_success gauge\n'
     printf 'smartmon_collector_success %d\n' "$success"
     printf '# HELP smartmon_collector_last_success_seconds Unix time the SMART textfile collector last completed. Staleness means the collector itself is broken — treat as a meta-failure.\n'

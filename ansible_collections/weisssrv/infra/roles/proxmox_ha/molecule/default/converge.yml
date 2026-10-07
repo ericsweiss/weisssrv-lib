@@ -1016,6 +1016,7 @@
         label: "{{ item.name }}"
 
     - name: T — run role with an unsupported rule type
+      tags: [molecule-idempotence-notest]
       block:
         - name: T — include proxmox_ha (expected to fail)
           ansible.builtin.include_role:
@@ -1110,6 +1111,7 @@
         label: "{{ item.name }}"
 
     - name: V — run replication tasks against a failing read
+      tags: [molecule-idempotence-notest]
       block:
         - name: V — include replication (expected to fail)
           ansible.builtin.include_role:
@@ -1232,15 +1234,47 @@
       ansible.builtin.set_fact:
         delegate_mixed: "{{ _proxmox_ha_delegate | trim }}"
 
+    - name: W2 — assume the non-member host did not fail
+      ansible.builtin.set_fact:
+        nonmember_failed: false
+
+    # The host group is the role's own membership guard, so the dead group (which
+    # this host is NOT in) drives it rather than the delegate seam below.
+    - name: W2 — a host outside the HA group must fail loudly
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: W2 — run the whole role from outside the host group
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_ha
+          vars:
+            proxmox_ha_host_group: ha_probe_dead
+
+        - name: W2 — the non-member host did NOT fail
+          ansible.builtin.fail:
+            msg: >-
+              The role reconciled cluster-wide HA state from a host outside its
+              own group, so a non-Proxmox host would write /etc/pve.
+      rescue:
+        - name: W2 — record that the non-member host failed
+          ansible.builtin.set_fact:
+            nonmember_failed: true
+          when: >-
+            ansible_failed_task.name ==
+            "Ensure we're running on a Proxmox VE cluster"
+
     - name: X — assume the empty probe result did not fail
       ansible.builtin.set_fact:
         dead_group_failed: false
 
+    # tasks_from: delegate drives the seam on its own: the membership guard above
+    # fires first in a full include, so it would mask this assert.
     - name: X — no reachable host must fail loudly
+      tags: [molecule-idempotence-notest]
       block:
-        - name: X — run the role against a group that never answers
+        - name: X — resolve a delegate from a group that never answers
           ansible.builtin.include_role:
             name: weisssrv.infra.proxmox_ha
+            tasks_from: delegate
           vars:
             proxmox_ha_host_group: ha_probe_dead
 
@@ -1260,6 +1294,7 @@
     - name: Y — an explicit delegate pin wins over an empty probe result
       ansible.builtin.include_role:
         name: weisssrv.infra.proxmox_ha
+        tasks_from: delegate
       vars:
         proxmox_ha_host_group: ha_probe_dead
         proxmox_ha_delegate_host: proxmox-ha-test
@@ -1274,5 +1309,6 @@
         mode: "0644"
         content: |
           {"delegate_mixed": {{ delegate_mixed | to_json }},
+           "nonmember_failed": {{ nonmember_failed | default(false) | ternary('true', 'false') }},
            "dead_group_failed": {{ dead_group_failed | default(false) | ternary('true', 'false') }},
            "delegate_pinned": {{ delegate_pinned | to_json }}}

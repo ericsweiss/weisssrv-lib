@@ -322,6 +322,13 @@ ANSIBLE_COLLECTIONS_PATH=$PWD:~/.ansible/collections \
   ansible-lint ansible_collections/weisssrv/infra/roles/*
 ```
 
+That path order is for `ansible-lint` only, which installs nothing. A molecule
+run (even `molecule syntax`) executes its dependency step first, and
+`ansible-galaxy collection install` writes into the FIRST collections path by
+removing the collection already there, so with the repo root first it deletes
+the live `ansible_collections/weisssrv/infra` source. For a local molecule run
+put a scratch directory first: `ANSIBLE_COLLECTIONS_PATH=/tmp/collections:$PWD`.
+
 The repo-root `.ansible-lint` pins `profile: production` with **no**
 `skip_list` — a role variable's name is consumer-visible API here, so
 `var-naming[no-role-prefix]` stays on. `.ansible-lint-ignore` exempts that one

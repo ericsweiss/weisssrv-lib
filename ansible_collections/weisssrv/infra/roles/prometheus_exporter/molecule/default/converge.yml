@@ -190,6 +190,7 @@
     # case 5 — the entry assert. A caller that mistypes one var name gets the
     # empty sentinel, so the guard has to fail here or it guards nothing.
     - name: Run shared pipeline with a missing required parameter
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include the role without a service name
           ansible.builtin.include_role:
@@ -237,6 +238,7 @@
     # case 7 — the service-half port assert. The health probe is the only
     # consumer of the port, so the guard lives there and has to fail here.
     - name: Run the service half with no port
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include the service half without a port
           ansible.builtin.include_role:

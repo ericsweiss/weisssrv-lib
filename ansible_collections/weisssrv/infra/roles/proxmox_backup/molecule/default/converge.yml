@@ -355,6 +355,7 @@
         label: "{{ item.name }}"
 
     - name: E — run role expecting the fixed-property assert to fail
+      tags: [molecule-idempotence-notest]
       block:
         - name: E — include proxmox_backup (expected to fail)
           ansible.builtin.include_role:
@@ -395,10 +396,14 @@
       loop_control:
         label: "{{ item.name }}"
 
-    - name: F — remove any previously deployed hookscript
+    # Both paths go, so case F proves THIS include wrote them.
+    - name: F — remove any previously deployed hookscript files
       ansible.builtin.file:
-        path: /usr/local/bin/vzdump-metrics-hook.sh
+        path: "{{ item }}"
         state: absent
+      loop:
+        - /usr/local/bin/vzdump-metrics-hook.sh
+        - /etc/default/vzdump-metrics-hook
 
     - name: F — run role with a job that sets script
       ansible.builtin.include_role:
@@ -411,6 +416,19 @@
       ansible.builtin.stat:
         path: /usr/local/bin/vzdump-metrics-hook.sh
       register: case_f_hook
+
+    # The hook sources TEXTFILE_DIR from this file, so the include has to land
+    # both halves of node_exporter_host's vzdump_hook entry point.
+    - name: F — check the hookscript defaults file
+      ansible.builtin.shell: |
+        set -o pipefail
+        cfg=/etc/default/vzdump-metrics-hook
+        has_dir=$(grep -cE '^TEXTFILE_DIR=.+$' "$cfg" 2>/dev/null || true)
+        echo "{\"has_dir\": ${has_dir:-0}}"
+      args:
+        executable: /bin/bash
+      register: case_f_cfg
+      changed_when: false
 
     - name: F — count pvesh mutations
       ansible.builtin.shell: |
@@ -514,6 +532,7 @@
         label: "{{ item.name }}"
 
     - name: G3 — run role expecting the pool-drift assert to fail
+      tags: [molecule-idempotence-notest]
       block:
         - name: G3 — include proxmox_backup (expected to fail)
           ansible.builtin.include_role:
@@ -597,6 +616,7 @@
            "e_failed": {{ fixed_drift_failed | ternary('true', 'false') }},
            "e_total": {{ (case_e.stdout | from_json).total }},
            "f_hook": {{ case_f_hook.stat.exists | ternary('true', 'false') }},
+           "f_hook_cfg": {{ (case_f_cfg.stdout | from_json).has_dir }},
            "f_job_create": {{ (case_f.stdout | from_json).job_create }},
            "f_total": {{ (case_f.stdout | from_json).total }},
            "g_storage_create": {{ (case_g.stdout | from_json).storage_create }},

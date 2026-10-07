@@ -3,13 +3,6 @@
   hosts: all
   become: true
   gather_facts: true
-  # Mirrors the role's own handler: the de-provisioning tasks included at the end
-  # of this play notify it, and include_tasks (unlike include_role) does not
-  # bring the role's handlers into the play.
-  handlers:
-    - name: Reload systemd
-      ansible.builtin.systemd:
-        daemon_reload: true
   tasks:
     - name: Check if NFS server is installed
       ansible.builtin.package:
@@ -1650,9 +1643,23 @@
           {{ nas_zfs_arc_conf.content | b64decode }}
         success_msg: "nas_storage_zfs_arc_max_bytes reaches zfs_arc_cap's modprobe.d render"
 
+# The de-provisioning tasks are included directly, so the role's defaults are
+# loaded here for the managed marker they carry, and its handler is mirrored:
+# include_tasks (unlike include_role) brings neither into a play.
+- name: Verify the de-provisioning path
+  hosts: all
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../../defaults/main.yml
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+  tasks:
     # De-provisioning path (nas_storage_archive_backup_enabled: false), which no
     # other scenario runs because molecule.yml opts in. It runs last: it removes
-    # the units every assertion above inspects.
+    # the units the play above inspects.
     - name: Check the archive-backup service is static (no [Install] section)  # noqa command-instead-of-module
       # A static unit has nothing to disable; the enabled-unit case below covers
       # the other half.
@@ -1660,6 +1667,30 @@
       register: archive_backup_service_enabled
       changed_when: false
       failed_when: archive_backup_service_enabled.stdout | trim != 'static'
+
+    # The ownership test is a plain substring match, so the marker has to be a
+    # literal the deployed headers really carry - this role's own templates and
+    # the units a delegate role renders for it.
+    - name: Read the headers of a role-rendered and a delegate-rendered unit
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      register: nas_managed_headers
+      loop:
+        - /etc/systemd/system/archive-backup.service
+        - /etc/systemd/system/backup-artifact-mtime-collector.service
+
+    - name: Verify every deployed unit carries the managed marker
+      ansible.builtin.assert:
+        that:
+          - nas_storage_managed_marker in (item.content | b64decode)
+        fail_msg: >-
+          {{ item.item }} carries no '{{ nas_storage_managed_marker }}' header,
+          so the opt-out reads this role's own file as hand-written and leaves
+          its timer armed.
+        success_msg: "{{ item.item }} carries the managed marker"
+      loop: "{{ nas_managed_headers.results }}"
+      loop_control:
+        label: "{{ item.item }}"
 
     # include_tasks, not include_role: include_role would also execute the
     # role's meta dependency (weisssrv.infra.base) inside verify. The relative
@@ -1724,7 +1755,7 @@
         dest: /etc/systemd/system/nas-deprovision-probe.service
         mode: "0644"
         content: |
-          # {{ ansible_managed }}
+          # {{ nas_storage_managed_marker }}
           [Unit]
           Description=nas_storage de-provisioning probe
           [Service]
@@ -1863,7 +1894,7 @@
         dest: /etc/systemd/system/nas-deprovision-optout.service
         mode: "0644"
         content: |
-          # {{ ansible_managed }}
+          # {{ nas_storage_managed_marker }}
           [Unit]
           Description=nas_storage manage_absent probe
           [Service]
@@ -1902,7 +1933,7 @@
         dest: /etc/systemd/system/nas-deprovision-marker.service
         mode: "0644"
         content: |
-          # {{ ansible_managed }}
+          # {{ nas_storage_managed_marker }}
           [Unit]
           Description=nas_storage empty-marker probe
           [Service]
@@ -2005,7 +2036,7 @@
       ansible.builtin.copy:
         dest: /etc/systemd/system/archive-backup.service
         content: |
-          # {{ ansible_managed }}
+          # {{ nas_storage_managed_marker }}
           [Unit]
           Description=Partially removed archive backup
           [Service]
@@ -2124,6 +2155,7 @@
         mode: "0755"
         content: |
           #!/bin/bash
+          # {{ nas_storage_managed_marker }}
           exit 0
 
     - name: Run the de-provisioning path with the unit file already absent

@@ -101,9 +101,25 @@ should be a new template plus an include, not an inline job.
   `MIGRATING.md` in the same MR.
 - A role directory with a molecule scenario and no entry in the CI matrix fails
   the pipeline by design. Adding a role means adding its matrix row.
+- A download is a `get_url`, or a `uri` that writes a `dest`. Every one carries
+  the bounded-retry shape (`register`, `until: ... is succeeded`, `retries: 3`,
+  `delay: 5`, `timeout: 60`) with its checksum pin; `tests/test_role_download_retry.py`
+  walks every role for it.
+- A negative case driven from converge.yml sits in a block tagged
+  `molecule-idempotence-notest`, so the idempotence replay never re-fires it,
+  and its guard is declared in the scenario's `expected-junit-failures.txt`
+  with a ` ::<n>` count of hosts x cases; a rescued failure with no declaration
+  passes `--strict` silently.
 - Do not run molecule locally as a gate — CI is the arbiter. `ansible-lint`
   (production profile, repo root on `ANSIBLE_COLLECTIONS_PATH`) and `yamllint`
   are the local checks that mean something.
+- CRITICAL: never run `molecule` (any subcommand, `syntax` included) or
+  `ansible-galaxy collection install` with this repo's root FIRST on
+  `ANSIBLE_COLLECTIONS_PATH`. Molecule's dependency step installs into the
+  first path, and galaxy removes the existing `ansible_collections/weisssrv/infra`
+  there — the live source tree — before it copies anything. Put a scratch
+  directory first (`ANSIBLE_COLLECTIONS_PATH=/tmp/collections:$PWD`) or use
+  `ansible-playbook --syntax-check` for a parse proof.
 - A metric name a role emits is API too: alerts, promtool tests and dashboards
   bind to the literal string and none of them live in this repo.
 

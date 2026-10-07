@@ -151,8 +151,11 @@ against a mocked `docker`) are rendered and asserted without a container
 runtime.
 
 Two negative cases re-run the role and must fail: a real-IP trust list that
-resolves empty, and a postgres-exporter image left unpinned.
-`expected-junit-failures.txt` declares both.
+resolves empty, and a postgres-exporter image left unpinned. Both guards run
+ahead of every mutating task, so the rescued re-runs leave the converged host
+untouched. `expected-junit-failures.txt` declares one junit failure each, which
+the `molecule-idempotence-notest` tag on the two blocks keeps true across the
+idempotence re-run of converge.
 
 ## Related
 

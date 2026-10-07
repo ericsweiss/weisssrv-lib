@@ -241,7 +241,7 @@ emitted verbatim and in order (pve-firewall is first-match-wins within a group).
 Reference a group from a guest through its `guest_security_groups` list.
 
 Names are checked at role entry. Each one must match pve-firewall's own group
-grammar: a leading letter or digit, then letters, digits, `_` or `-`, 2 to 18
+grammar: a leading letter, then letters, digits, `_` or `-`, 2 to 18
 characters. The twelve names above are reserved, and two entries may not share a
 name. A repeat renders a second `[group <name>]` section in cluster.fw, where
 pve-firewall keeps one rule set of the two and reports nothing — so either the

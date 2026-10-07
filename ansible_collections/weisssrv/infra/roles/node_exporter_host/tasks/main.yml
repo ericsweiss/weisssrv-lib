@@ -235,13 +235,12 @@
       when: node_exporter_host_slabinfo_collector | bool
 
     # The allowlist travels in a defaults file, not the ExecStart line: the
-    # shared collector unit passes the textfile dir and nothing else.
+    # shared collector unit passes the textfile dir and nothing else. A
+    # template, since ansible_managed resolves only inside that module.
     - name: Configure the slabinfo collector cache allowlist
-      ansible.builtin.copy:
+      ansible.builtin.template:
+        src: slabinfo-collector.defaults.j2
         dest: /etc/default/slabinfo-collector
-        content: |
-          # {{ ansible_managed }}
-          SLAB_CACHES="{{ node_exporter_host_slab_caches | join(' ') }}"
         owner: root
         group: root
         mode: "0644"

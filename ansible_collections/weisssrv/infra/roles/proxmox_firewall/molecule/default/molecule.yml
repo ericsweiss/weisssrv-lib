@@ -49,7 +49,7 @@ provisioner:
         # Stands in for a site's per-application groups (the role default is
         # empty). Exercises verbatim rule/comment emission and a `rules` value
         # supplied as an expression, which must evaluate to a LIST.
-        molecule_authless_api_clients:
+        molecule_noauth_api_clients:
           - 192.168.0.157
         proxmox_firewall_security_groups:
           - name: sg-example-web
@@ -62,12 +62,12 @@ provisioner:
               - "# inbound submission from the cluster"
               - "IN ACCEPT -source +dc/core-cluster -p tcp -dport 587 -log nolog"
               - "OUT ACCEPT -p tcp -dport 587 -log nolog"
-          - name: sg-example-authless
-            # CRITICAL: escape a literal dollar as `$$` anywhere in this file.
-            # Molecule runs it through string.Template before the YAML parse, so
-            # a bare `$` is an invalid placeholder that aborts the scenario.
+          - name: sg-example-noauth
+            # CRITICAL: molecule interpolates this file with string.Template
+            # before the YAML parse, so every literal dollar sign is doubled
+            # ($$) throughout the file, comments included.
             rules: >-
-              {{ molecule_authless_api_clients
+              {{ molecule_noauth_api_clients
                  | map('regex_replace', '^', 'IN ACCEPT -source ')
                  | map('regex_replace', '$$', ' -p tcp -dport 3003 -log nolog')
                  | list }}

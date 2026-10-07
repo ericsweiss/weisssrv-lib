@@ -384,6 +384,55 @@
         msg: "{{ sshd_jail_status.stdout_lines | default(['sshd jail status not available']) }}"
       when: sshd_jail_status.rc == 0
 
+    # Negative test: on a systemd-boot host the drop-in is never read, so the
+    # role must refuse. Driven here, not from converge: staging and removing
+    # /etc/kernel/cmdline is a change on every run, which reds idempotence.
+    - name: Stage a systemd-boot kernel command line
+      ansible.builtin.copy:
+        dest: /etc/kernel/cmdline
+        content: "root=ZFS=rpool/ROOT/pve-1 boot=zfs\n"
+        mode: "0644"
+
+    - name: Re-apply with a systemd-boot kernel command line (expect failure)
+      block:
+        - name: Include base while /etc/kernel/cmdline exists
+          ansible.builtin.include_role:
+            name: weisssrv.infra.base
+
+        - name: Systemd-boot assert failed to trigger
+          ansible.builtin.copy:
+            dest: /tmp/base-kernel-cmdline-grub-assert.json
+            content: '{"failed": false}'
+            mode: "0644"
+      rescue:
+        - name: Systemd-boot assert correctly refused the host
+          ansible.builtin.copy:
+            dest: /tmp/base-kernel-cmdline-grub-assert.json
+            mode: "0644"
+            content: |
+              {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
+      always:
+        - name: Remove the staged systemd-boot kernel command line
+          ansible.builtin.file:
+            path: /etc/kernel/cmdline
+            state: absent
+
+    - name: Stat the staged systemd-boot kernel command line after cleanup
+      ansible.builtin.stat:
+        path: /etc/kernel/cmdline
+      register: base_staged_cmdline
+
+    # Residue would refuse every later run on this host, the role's own
+    # positive path included.
+    - name: Assert the negative case left no systemd-boot cmdline behind
+      ansible.builtin.assert:
+        that:
+          - not base_staged_cmdline.stat.exists
+        fail_msg: >-
+          /etc/kernel/cmdline survived the systemd-boot negative case, so the
+          role would refuse a host it is meant to configure.
+        quiet: true
+
 # Accept/reject matrix for the lockout guard tasks/ssh.yml asserts, which
 # converge exercises in only one combination. The verdict comes from the role's
 # own base_ssh_login_path_survives, loaded from defaults rather than restated.
@@ -455,11 +504,23 @@
         - /tmp/base-kernel-cmdline-grub-assert.json
 
     - name: Assert both kernel cmdline guards rejected their input
+      vars:
+        # Keyed by marker path, so the message checks do not ride on the slurp
+        # loop's order. Each rescue recorded its own guard's msg.
+        base_cmdline_verdicts: >-
+          {{ dict(base_kernel_cmdline_asserts.results | map(attribute='item')
+             | zip(base_kernel_cmdline_asserts.results | map(attribute='content')
+                   | map('b64decode') | map('from_json'))) }}
       ansible.builtin.assert:
         that:
-          - base_kernel_cmdline_asserts.results
-            | map(attribute='content') | map('b64decode') | map('from_json')
+          - base_cmdline_verdicts.values()
             | map(attribute='failed') | reject | list | length == 0
+          # The guard's own message, not merely a failure: a run that broke for
+          # any other reason would otherwise read as a rejection.
+          - (base_cmdline_verdicts['/tmp/base-kernel-cmdline-token-assert.json'].msg
+             | default('')) is search('is not a single bare token')
+          - (base_cmdline_verdicts['/tmp/base-kernel-cmdline-grub-assert.json'].msg
+             | default('')) is search('/etc/kernel/cmdline')
         fail_msg: >-
           The role accepted a multi-token base_kernel_cmdline_args entry, or
           staged the drop-in on a host carrying /etc/kernel/cmdline, so a

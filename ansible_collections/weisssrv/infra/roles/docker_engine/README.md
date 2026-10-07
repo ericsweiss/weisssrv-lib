@@ -58,10 +58,14 @@ caller does not need to carry one.
 
 ## Molecule
 
-`molecule/default` runs render-only (`docker_engine_skip_install: true`): it
-asserts the journald `daemon.json`, then includes the role again with one
-version pin empty and asserts the required-pin assert fails the play. The apt
-install and the `dpkg` hold need a real repo, so they are not covered.
+`molecule/default` runs render-only (`docker_engine_skip_install: true`, set as
+a group var so the `Restart docker` handler still reads it when the play flushes
+handlers): it asserts the journald `daemon.json`, then — from a second play, so
+that handler is already flushed — includes the role with one version pin empty
+and asserts the required-pin assert fails the play. That block carries
+`molecule-idempotence-notest`, so the replay does not re-fire it and
+`expected-junit-failures.txt` declares the one junit failure. The apt install
+and the `dpkg` hold need a real repo, so they are not covered.
 
 ## Key rotation
 

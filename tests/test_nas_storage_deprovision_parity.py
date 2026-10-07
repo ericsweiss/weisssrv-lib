@@ -121,6 +121,71 @@ def test_no_deprovisioned_path_is_orphaned():
     )
 
 
+# The opt-out classifies a file by a plain substring of its header, so the
+# marker is a literal: `ansible_managed` is undefined outside the template
+# module on ansible-core >= 2.19, where a Jinja default renders empty.
+ANSIBLE_MANAGED_DEFAULT = "Ansible managed"
+_SRC = re.compile(r"^\s*src:\s*(\S+\.j2)\s*$", re.M)
+# Files a delegate role renders for this one: the collector units and the
+# shared metrics library. The opt-out classifies them by the same marker.
+DELEGATE_TEMPLATES = (
+    "textfile_collector/templates/collector.service.j2",
+    "textfile_collector/templates/collector.timer.j2",
+    "compose_app/templates/write_prom_metrics.sh.j2",
+)
+
+
+def managed_marker() -> str:
+    defaults = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text(encoding="utf-8"))
+    return defaults["nas_storage_managed_marker"]
+
+
+def component_templates() -> set:
+    found = set()
+    for name in DEPLOY_FILES:
+        found |= set(_SRC.findall((TASKS / name).read_text(encoding="utf-8")))
+    return found
+
+
+def test_the_managed_marker_is_a_plain_literal():
+    marker = managed_marker()
+    assert marker.strip(), "an empty marker classifies every declared path as role-written"
+    assert "{{" not in marker, (
+        "the marker is evaluated outside the template module, where "
+        "ansible_managed is undefined on ansible-core >= 2.19: a Jinja "
+        "expression renders empty and fails the de-provisioning assert"
+    )
+
+
+def test_the_managed_marker_is_a_substring_of_the_rendered_header():
+    marker = managed_marker()
+    assert marker in ANSIBLE_MANAGED_DEFAULT, (
+        "%r is not part of the header `# {{ ansible_managed }}` renders (%r), "
+        "so the role would read its own files as hand-written"
+        % (marker, ANSIBLE_MANAGED_DEFAULT)
+    )
+
+
+def test_the_template_scan_finds_templates_to_check():
+    """A regex that matched nothing would make the header check vacuous."""
+    assert len(component_templates()) >= 10
+
+
+def test_every_component_file_is_rendered_with_the_managed_header():
+    missing = []
+    paths = [ROLE / "templates" / name for name in sorted(component_templates())]
+    paths += [ROLE.parent / name for name in DELEGATE_TEMPLATES]
+    for path in paths:
+        head = path.read_text(encoding="utf-8").split("\n")[:3]
+        if not any("{{ ansible_managed }}" in line for line in head):
+            missing.append(str(path.relative_to(REPO)))
+    assert missing == [], (
+        "these render a file the opt-out classifies but carry no "
+        "`{{ ansible_managed }}` header, so it reads as hand-written and its "
+        "timer stays armed: " + ", ".join(missing)
+    )
+
+
 def _unit_template(unit: str) -> Path:
     return ROLE / "templates" / ("%s.j2" % unit)
 

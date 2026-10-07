@@ -1,4 +1,5 @@
-# Negative-path guards this scenario DELIBERATELY drives to failure; the junit
-# callback records the raw failure, and CI's sanitize-junit step downgrades
-# EXACTLY these names. Job status is the arbiter.
+# Negative cases this scenario drives on purpose; job status is the arbiter.
+# CI's sanitize-junit step downgrades EXACTLY these names, and ` ::<n>` is
+# hosts x cases.
 Assert the AdGuard rewrite list read succeeded
+Assert the staged-archive cache is a root-owned trust boundary

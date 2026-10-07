@@ -154,27 +154,38 @@
            "delegate_dead": {{ proxmox_firewall_scenario_delegate_dead | to_json }}}
 
 # Fifth play: an empty relay client scope must render sg-smtp-relay with no IN
-# rule. Renders to a scratch path, and clears the cluster run-once fact so
-# cluster.fw is written again.
+# rule. Scoped to the docker platform, which carries the cluster-task delegate,
+# so the render and the capture land on the filesystem verify reads.
 - name: Converge — empty smtp-relay client scope
-  hosts: proxmox
+  hosts: proxmox-firewall-test
   become: true
   vars:
     proxmox_firewall_config_dir: /tmp/pve-firewall-smtp-empty/firewall
     proxmox_firewall_node_dir: /tmp/pve-firewall-smtp-empty/nodes
-    proxmox_firewall_smtp_relay_sources: []
   tasks:
-    - name: Clear the cluster-scope run-once fact
+    # The empty relay scope is a fact, not a play var: assert_cluster_scope.yml
+    # compares it with hostvars[delegate], which never carries play vars, so a
+    # play var fails that guard instead of the relay guard below.
+    - name: Clear the cluster run-once fact and empty the relay client scope
       ansible.builtin.set_fact:
         _proxmox_firewall_cluster_done: false
+        proxmox_firewall_smtp_relay_sources: []
+
+    - name: Result directory
+      ansible.builtin.file:
+        path: /tmp/molecule-results
+        state: directory
+        mode: "0755"
 
     - name: Re-include proxmox_firewall with no relay client scope
       ansible.builtin.include_role:
         name: weisssrv.infra.proxmox_firewall
 
     # A guest naming sg-smtp-relay with no client scope would get a group with
-    # no IN rule at all, so the relay's :25 and :587 stay closed.
+    # no IN rule at all, so the relay's :25 and :587 stay closed. Tagged so the
+    # idempotence replay does not re-fire the guard the declaration counts.
     - name: Drive the relay-scope guard with a guest that names the group
+      tags: [molecule-idempotence-notest]
       block:
         - name: Run the guest tasks for a relay guest with no client scope
           ansible.builtin.include_role:
@@ -192,7 +203,10 @@
           ansible.builtin.set_fact:
             proxmox_firewall_scenario_relay_guard: true
 
+    # Tagged with the case above: the fact it reads is set only on the run that
+    # drives the guard, and verify reads this artifact after the replay.
     - name: Capture the relay-scope guard result
+      tags: [molecule-idempotence-notest]
       ansible.builtin.copy:
         dest: /tmp/molecule-results/fw-relay-scope.json
         mode: "0644"
@@ -203,14 +217,14 @@
 # must fail at cluster scope, before cluster.fw publishes the empty group.
 # Renders to a scratch path whose cluster.fw verify asserts was never written.
 - name: Converge — relay guest with no client scope fails before cluster.fw
-  hosts: proxmox
+  hosts: proxmox-firewall-test
   become: true
   vars:
     proxmox_firewall_config_dir: /tmp/pve-firewall-smtp-guard/firewall
     proxmox_firewall_node_dir: /tmp/pve-firewall-smtp-guard/nodes
-    proxmox_firewall_smtp_relay_sources: []
   pre_tasks:
-    # Last play in the run, so the added guest reaches no other play's inventory.
+    # No later play matches fw_relay_guests, so the added guest drives this
+    # play's guard alone.
     - name: Register an inventory guest that names sg-smtp-relay
       ansible.builtin.add_host:
         name: proxmox-fw-relay-guest
@@ -221,11 +235,24 @@
       changed_when: false
 
   tasks:
-    - name: Clear the cluster-scope run-once fact
+    # The empty relay scope is a fact, not a play var: a play var is invisible
+    # in hostvars[delegate], so it fails the cluster-scope guard rather than
+    # the relay guard this play drives.
+    - name: Clear the cluster run-once fact and empty the relay client scope
       ansible.builtin.set_fact:
         _proxmox_firewall_cluster_done: false
+        proxmox_firewall_smtp_relay_sources: []
 
+    - name: Result directory
+      ansible.builtin.file:
+        path: /tmp/molecule-results
+        state: directory
+        mode: "0755"
+
+    # Tagged, with the capture below: the guard is run_once, so the idempotence
+    # replay would record a second firing the declaration does not allow.
     - name: Drive the cluster-scope relay guard
+      tags: [molecule-idempotence-notest]
       block:
         - name: Re-include proxmox_firewall with a relay guest and no client scope
           ansible.builtin.include_role:
@@ -240,6 +267,7 @@
             proxmox_firewall_scenario_relay_cluster_guard: true
 
     - name: Capture the cluster-scope relay guard result
+      tags: [molecule-idempotence-notest]
       ansible.builtin.copy:
         dest: /tmp/molecule-results/fw-relay-cluster-scope.json
         mode: "0644"

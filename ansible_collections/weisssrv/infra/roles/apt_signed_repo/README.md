@@ -75,10 +75,13 @@ would regress that behavior.
 ```
 
 The entry point fails when `apt_signed_repo_components` is empty, when the
-sources file does not exist, and when the file does not carry the requested
-components after the rewrite. Each of those would otherwise surface much later
-as an opaque "Unable to locate package" in the calling role. It refreshes the
-apt cache itself on a real rewrite, unless `apt_signed_repo_update_cache` is
+sources file does not exist, and when the file carries no `Components:` line for
+the rewrite to land on. Each of those would otherwise surface much later as an
+opaque "Unable to locate package" in the calling role. That last check reads the
+file *before* the rewrite, so a dry run asserts the same precondition instead of
+reading back a write it was never allowed to make — `--check`, and equally a
+caller that wraps the include in its own `check_mode: true` block. It refreshes
+the apt cache itself on a real rewrite, unless `apt_signed_repo_update_cache` is
 false. A host still on the one-line sources format needs `apt_repository`
 instead.
 

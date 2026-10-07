@@ -149,8 +149,8 @@
       proxmox_firewall_security_groups entry
       `{{ item.name | default(item) }}` is unusable: every entry is a mapping
       with a string `name` matching pve-firewall's security-group grammar — a
-      leading letter or digit, then letters, digits, `_` or `-`, 2 to 18
-      characters — and the name must not be one this role already renders
+      leading letter, then letters, digits, `_` or `-`, 2 to 18 characters —
+      and the name must not be one this role already renders
       ({{ _proxmox_firewall_builtin_groups | join(', ') }}). A duplicate name
       renders two `[group <name>]` sections and pve-firewall keeps one of them,
       so either the site's app rules or the built-in allows disappear with
@@ -186,8 +186,8 @@
     fail_msg: >-
       proxmox_firewall_host_extra_groups entry `{{ item }}` is not a security
       group NAME — host.fw renders each entry as `GROUP <name>`, and
-      pve-firewall's grammar is a leading letter or digit, then letters, digits,
-      `_` or `-`, 2 to 18 characters. The group itself must exist in cluster.fw,
+      pve-firewall's grammar is a leading letter, then letters, digits, `_` or
+      `-`, 2 to 18 characters. The group itself must exist in cluster.fw,
       either built in or declared in proxmox_firewall_security_groups.
     quiet: true
   loop: "{{ proxmox_firewall_host_extra_groups | default([]) }}"

@@ -1,5 +1,5 @@
-# Negative-path guards this scenario DELIBERATELY drives to failure; the junit
-# callback records the raw failure, and CI's sanitize-junit step downgrades
-# EXACTLY these names. Job status is the arbiter.
-Validate the installed configuration
-Re-raise the failure with the rollback outcome
+# Negative cases this scenario drives on purpose; job status is the arbiter.
+# CI's sanitize-junit step downgrades EXACTLY these names, and ` ::<n>` is
+# hosts x cases.
+Validate the installed configuration ::2
+Re-raise the failure with the rollback outcome ::2

@@ -100,6 +100,7 @@
     # it would attribute every request to the fronting proxy instead of the
     # client, silently.
     - name: Re-run gitlab with an empty real-IP trust list (expect failure)
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include gitlab with no trusted proxy addresses
           ansible.builtin.include_role:
@@ -120,14 +121,14 @@
             mode: "0644"
             content: |
               {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
-          # Test-result marker, not convergence: it re-runs on every converge,
-          # so it must not count toward the idempotence check.
+          # Test-result marker, not convergence.
           changed_when: false
 
     # gitlab_nginx_trust_no_proxy must get an empty trust list past the real-IP
     # assert. An empty SMTP user then stops the run at the next validation, so
     # the arm never re-renders gitlab.rb and the marker names which assert fired.
     - name: Re-run gitlab with the no-proxy escape hatch (expect a later failure)
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include gitlab with the trust-list assert waived
           ansible.builtin.include_role:

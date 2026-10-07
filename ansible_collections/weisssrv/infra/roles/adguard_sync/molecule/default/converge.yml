@@ -38,6 +38,7 @@
 
     # A replicas entry without a url must fail before anything mutates.
     - name: Re-run adguard_sync with a url-less replicas entry (expect failure)
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include adguard_sync with a url-less replicas entry
           ansible.builtin.include_role:

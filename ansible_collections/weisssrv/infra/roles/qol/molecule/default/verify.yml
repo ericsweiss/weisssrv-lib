@@ -216,3 +216,65 @@
           .oh-my-zsh is at {{ qol_omz_checked_out.stdout | trim }}, not
           qol_omz_commit ({{ qol_omz_commit }}) — the pin is not being applied.
         success_msg: "Oh My Zsh is checked out at qol_omz_commit"
+
+# Last play on purpose: it stubs nvim and rewrites init.vim, and molecule runs
+# verify after converge and idempotence.
+- name: Verify a failed PluginInstall writes no marker
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    qol_missing_plugins:
+      - weisssrv-test/not-installed
+  tasks:
+    # Exiting 0 having cloned nothing is Vundle's real failure mode; the stub
+    # reproduces it without reaching github.com.
+    - name: Stub nvim so PluginInstall installs nothing
+      ansible.builtin.copy:
+        content: |
+          #!/bin/sh
+          exit 0
+        dest: /usr/local/bin/nvim
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Drive the neovim tasks at a plugin nothing installs
+      block:
+        - name: Re-run the neovim tasks against the stub
+          ansible.builtin.include_role:
+            name: weisssrv.infra.qol
+            tasks_from: neovim
+          vars:
+            qol_admin_home_resolved: /home/testuser
+            qol_nvim_plugins: "{{ qol_missing_plugins }}"
+
+        - name: Record that the empty install was accepted
+          ansible.builtin.set_fact:
+            qol_empty_install_failed: false
+      rescue:
+        - name: Record that the empty install failed the play
+          ansible.builtin.set_fact:
+            qol_empty_install_failed: true
+
+    - name: Remove the nvim stub
+      ansible.builtin.file:
+        path: /usr/local/bin/nvim
+        state: absent
+
+    - name: Stat the marker named for the uninstalled plugin list
+      ansible.builtin.stat:
+        path: >-
+          /home/testuser/.vim/bundle/.vundle-installed-{{
+          (qol_missing_plugins | join(',')) | hash('sha1') }}
+      register: qol_empty_marker
+
+    - name: Assert an empty PluginInstall fails and leaves no marker
+      ansible.builtin.assert:
+        that:
+          - qol_empty_install_failed | bool
+          - not qol_empty_marker.stat.exists
+        fail_msg: >-
+          PluginInstall installed nothing yet the play stayed green (or the
+          marker was written) — the next run would skip the install forever.
+        success_msg: "An empty PluginInstall fails the play and writes no marker"

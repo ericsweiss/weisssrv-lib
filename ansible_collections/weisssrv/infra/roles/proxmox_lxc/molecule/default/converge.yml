@@ -62,6 +62,7 @@
 
     # 3. Pool-validation failure
     - name: Pool-validation failure (expect failure)
+      tags: [molecule-idempotence-notest]
       block:
         - name: Run with nonexistent storage
           ansible.builtin.include_role:
@@ -83,6 +84,7 @@
 
     # 4. Resource-pool list rejection
     - name: Resource-pool list rejection (expect failure)
+      tags: [molecule-idempotence-notest]
       block:
         - name: Run with non-standard resource pool
           ansible.builtin.include_role:
@@ -617,6 +619,7 @@
         mode: "0644"
 
     - name: 14 — absent container with no gateway (expect failure)
+      tags: [molecule-idempotence-notest]
       block:
         - name: 14 — run role with an empty gateway
           ansible.builtin.include_role:
@@ -633,6 +636,7 @@
             lxc_missing_gateway_failed: true
 
     - name: 14 — absent container with a non-GiB disk size (expect failure)
+      tags: [molecule-idempotence-notest]
       block:
         - name: 14 — run role with a megabyte disk size
           ansible.builtin.include_role:
@@ -655,6 +659,7 @@
         mode: "0644"
 
     - name: 14 — existing container with no gateway (must NOT fail)
+      tags: [molecule-idempotence-notest]
       block:
         - name: 14 — reconcile an existing container with an empty gateway
           ansible.builtin.include_role:

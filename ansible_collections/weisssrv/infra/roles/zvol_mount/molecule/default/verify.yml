@@ -69,3 +69,21 @@
           - "'ext4' in (fstab_content.content | b64decode)"
         fail_msg: "fstab is missing UUID-based mount entry for /mnt/test-data"
         success_msg: "fstab contains correct UUID-based entry for /mnt/test-data"
+
+    - name: Read the partition-table guard disk
+      ansible.builtin.command: lsblk -dno FSTYPE,PTTYPE /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi9
+      register: pt_guard_probe
+      changed_when: false
+
+    # Converge only proves the role errored; this proves it errored before
+    # touching the disk.
+    - name: Verify the guard disk is unformatted and still only partitioned
+      ansible.builtin.assert:
+        that:
+          - pt_guard_probe.stdout | trim == 'gpt'
+          - "'/mnt/pt-guard' not in (fstab_content.content | b64decode)"
+        fail_msg: >-
+          The blank-but-partitioned disk reads
+          '{{ pt_guard_probe.stdout | trim }}' and fstab mentions
+          /mnt/pt-guard: the role formatted or mounted a disk it must refuse.
+        success_msg: "Partition-table guard left the disk untouched"

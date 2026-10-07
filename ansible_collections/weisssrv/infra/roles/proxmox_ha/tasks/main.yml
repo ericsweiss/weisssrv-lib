@@ -49,44 +49,14 @@
 # ONE reconcile for the whole cluster, delegated to a node proved reachable.
 # Concurrent writes surface as pmxcfs lock failures. run_once + delegate_to is
 # the seam, not a done-fact: a per-guest play would skip all but the first.
-- name: Reset the reachability probe results for this play
-  ansible.builtin.set_fact:
-    _proxmox_ha_reachable: []
-  run_once: true
-  tags: [proxmox_ha]
-
-- name: Probe Proxmox hosts for reachability (delegate selection)
-  ansible.builtin.include_tasks: probe-delegate.yml
-  loop: "{{ groups[proxmox_ha_host_group] | default([]) }}"
-  loop_control:
-    loop_var: _proxmox_ha_probe_host
-    label: "{{ _proxmox_ha_probe_host }}"
-  run_once: true
-  tags: [proxmox_ha]
-
-- name: Resolve the reconcile delegate
-  vars:
-    # run_once fires once per serial batch, so the probe results live on the
-    # first host of the CURRENT batch — read them from there so every host
-    # derives the same delegate, serial play or not.
-    _proxmox_ha_reachable_hosts: >-
-      {{ hostvars[ansible_play_batch | first]['_proxmox_ha_reachable'] | default([]) }}
-  ansible.builtin.set_fact:
-    _proxmox_ha_delegate: >-
-      {{ proxmox_ha_delegate_host
-         | default((_proxmox_ha_reachable_hosts | first) | default('')) }}
-  tags: [proxmox_ha]
-
-- name: Assert a reachable Proxmox node was found for the reconcile
-  ansible.builtin.assert:
-    that:
-      - _proxmox_ha_delegate | length > 0
-    fail_msg: >-
-      No host in '{{ proxmox_ha_host_group }}' answered the reachability probe,
-      so the cluster-wide HA reconcile has nowhere to run. Bring one node back or
-      set proxmox_ha_delegate_host to name one.
-  run_once: true
-  tags: [proxmox_ha]
+# Every reconcile below delegates to the result, so each of their tags selects
+# this too — `apply` is what carries them onto the included tasks.
+- name: Resolve a reachable node for the cluster-wide reconcile
+  ansible.builtin.include_tasks:
+    file: delegate.yml
+    apply:
+      tags: [proxmox_ha, proxmox_ha_datacenter, proxmox_ha_rules, proxmox_ha_resources]
+  tags: [proxmox_ha, proxmox_ha_datacenter, proxmox_ha_rules, proxmox_ha_resources]
 
 - name: Pin cluster-wide migration options
   ansible.builtin.include_tasks:

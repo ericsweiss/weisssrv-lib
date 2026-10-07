@@ -23,7 +23,9 @@ reconciles are cluster-wide: the role probes the host group for a reachable node
 and runs them `run_once`, delegated to it. A caller is therefore a plain
 `hosts: <proxmox group>` play — no `serial: 1`, no "already applied" bookkeeping.
 Set `proxmox_ha_delegate_host` to pin a node instead; when no node answers the
-probe, the role fails rather than skipping the reconcile.
+probe, the role fails rather than skipping the reconcile. Delegate resolution is
+its own entry point (`tasks_from: delegate`, result `_proxmox_ha_delegate`),
+ahead of which `main.yml` asserts this host's `proxmox_ha_host_group` membership.
 
 Replication is **not** included there — run it in a separate play against the
 source nodes with `tasks_from: replication`, or it executes once per host in the
@@ -137,4 +139,6 @@ pvesr status               # replication job health
 `ha-manager`, `pvesr`, `qm` and `pct` are stubbed and every mutation is logged,
 so each case asserts the exact commands issued: add, update, removal
 (`enabled: false`), the permuted-target no-op, the unsupported-rule-type
-failure, and orphan reporting with zero mutations.
+failure, and orphan reporting with zero mutations. Delegate selection is driven
+in its own play: a mixed probe group, a non-member host, and — through
+`tasks_from: delegate` — a group where nothing answers.

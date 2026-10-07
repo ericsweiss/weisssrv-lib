@@ -1,13 +1,14 @@
 """Both arms of the kube-vip auth branch render.
 
 The default authenticates with the pod's ServiceAccount token; the escape hatch
-mounts the host kubeconfig, which molecule never renders.
+mounts the host kubeconfig.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 import jinja2
+import jinja2.meta
 import pytest
 import yaml
 from _helpers import ansible_env
@@ -16,6 +17,9 @@ REPO = Path(__file__).resolve().parent.parent
 ROLE = REPO / "ansible_collections" / "weisssrv" / "infra" / "roles" / "k3s"
 TEMPLATE = ROLE / "templates" / "kube-vip-manifest.yaml.j2"
 HOST_KUBECONFIG = "/etc/rancher/k3s/k3s.yaml"
+
+# Pins the role asserts instead of defaulting (tasks/server.yml).
+ASSERTED_PINS = {"k3s_kube_vip_version", "k3s_api_vip"}
 
 CONTEXT = {
     "ansible_managed": "managed",
@@ -108,3 +112,16 @@ def test_the_cluster_role_covers_every_api_kube_vip_uses():
 def test_the_role_default_is_the_in_cluster_arm():
     defaults = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text())
     assert defaults["k3s_kube_vip_host_kubeconfig"] is False
+
+
+def test_every_variable_has_a_role_default_or_an_asserted_pin():
+    """A variable with neither is undefined wherever the template renders.
+
+    The molecule scenario renders this template from its converge play, whose
+    only source for a variable the inventory does not set is defaults/main.yml.
+    """
+    referenced = jinja2.meta.find_undeclared_variables(
+        ansible_env().parse(TEMPLATE.read_text(encoding="utf-8")))
+    defaults = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text())
+    unresolved = referenced - set(defaults) - ASSERTED_PINS - {"ansible_managed"}
+    assert not unresolved, f"no role default and not asserted: {sorted(unresolved)}"

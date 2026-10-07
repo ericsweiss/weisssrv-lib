@@ -146,6 +146,14 @@
             dest: "/var/tmp/{{ restic_offsite_rclone_deb_name }}"
             checksum: "sha256:{{ restic_offsite_rclone_deb_sha256 }}"
             mode: "0644"
+            # get_url's 10s default expires mid-handshake against the mirror.
+            timeout: 60
+          # A stalled handshake is retried instead of failing the play. The
+          # pinned checksum still gates what dpkg installs.
+          register: restic_offsite_rclone_download
+          until: restic_offsite_rclone_download is succeeded
+          retries: 3
+          delay: 5
 
         - name: Install the downloaded rclone deb
           ansible.builtin.apt:

@@ -12,6 +12,16 @@
     - name: Disable apt background services
       ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/prepare-apt-disable.yml
 
+    # Backs the sentinel pair below; nginx is not installed under skip_install,
+    # so nothing else pulls openssl in.
+    - name: Install openssl
+      ansible.builtin.apt:
+        name: openssl
+        state: present
+        update_cache: true
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+
     # nginx is not installed under skip_install, so its sites-*/ssl dirs are
     # created here, with a sentinel cert and key the placeholder task's
     # `creates:` guard leaves alone and a default vhost verify expects removed.
@@ -31,11 +41,20 @@
         content: "# packaged default vhost\n"
         mode: "0644"
 
-    - name: Seed sentinel cert + key so the creates guard leaves them untouched
-      ansible.builtin.copy:
-        dest: "{{ item }}"
-        content: "SENTINEL-PRESEEDED-{{ item | basename }}\n"
+    # A LOADABLE pair, not a text marker: the validated converge cases run
+    # `nginx -t` over the merged sites-enabled set, which holds the site that
+    # references these paths. The sentinel CN is what proves the guard held.
+    - name: Seed a sentinel cert + key so the creates guard leaves them untouched
+      ansible.builtin.command:
+        cmd: >-
+          openssl req -x509 -newkey rsa:2048 -nodes
+          -keyout /etc/nginx/ssl/privkey.pem
+          -out /etc/nginx/ssl/fullchain.pem
+          -days 3650 -subj /CN=sentinel-preseeded.invalid
+        creates: /etc/nginx/ssl/fullchain.pem
+
+    # Deliberately loose: the flow's own key-tightening step must take it to 0600.
+    - name: Loosen the sentinel key mode
+      ansible.builtin.file:
+        path: /etc/nginx/ssl/privkey.pem
         mode: "0644"
-      loop:
-        - /etc/nginx/ssl/fullchain.pem
-        - /etc/nginx/ssl/privkey.pem

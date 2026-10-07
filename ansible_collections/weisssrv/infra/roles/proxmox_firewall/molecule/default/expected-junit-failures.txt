@@ -1,0 +1,15 @@
+# Negative cases this scenario drives on purpose; job status is the arbiter.
+# CI's sanitize-junit step downgrades EXACTLY these names, and ` ::<n>` is
+# hosts x cases.
+Assert the sg-dns admin-port entries carry a port and a list of sources ::2
+Assert the sg-metrics scrape-port entries carry a port and a list of sources ::2
+Assert the client-scope source lists are non-empty lists of set names ::7
+Assert the smtp-relay client scope is a list of set names
+Assert the extra egress ports carry a port and a protocol ::2
+Assert every IPSet special entry carries an address
+Assert every per-application security group name is usable and unowned ::3
+Assert the per-application security group names are unique
+Assert the per-host extra security group references are group names
+Assert no cluster-scope firewall input is scoped to the Proxmox group
+Assert a relay guest has a client scope for sg-smtp-relay
+Assert a cluster with a relay guest names the sg-smtp-relay client scope

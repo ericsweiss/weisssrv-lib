@@ -329,7 +329,7 @@ change deferred to a future release.
 | Variable | Default | Purpose |
 |---|---|---|
 | `nas_storage_manage_absent` | `true` | Lets a disabled component's units, scripts and `.prom` be converged away. Set `false` to leave every existing file alone. |
-| `nas_storage_managed_marker` | first line of `ansible_managed` | Substring identifying a role-written file. A file without it is reported and kept, never stopped or removed. Must be non-empty; the de-provisioning path asserts it. |
+| `nas_storage_managed_marker` | `Ansible managed` | Substring identifying a role-written file — the literal every template's `# {{ ansible_managed }}` header renders. A file without it is reported and kept, never stopped or removed. Must be non-empty; the de-provisioning path asserts it. Set it when a site's `ansible_managed` no longer contains this string. |
 | `nas_storage_zfs_pools` | *(undefined)* | Pools + datasets + properties to enforce. Undefined skips all ZFS tasks. |
 | `nas_storage_zfs_scrub_enabled` | `true` | Enable the per-pool scrub timers. |
 | `nas_storage_zfs_scrub_schedule` | `monthly` | Scrub timer instance (`zfs-scrub-<schedule>@<pool>.timer`). |

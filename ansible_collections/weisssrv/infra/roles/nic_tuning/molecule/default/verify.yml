@@ -5,6 +5,15 @@
 - name: Verify
   hosts: all
   gather_facts: false
+  vars:
+    # A looped assert reports only "One or more items failed" at task level; the
+    # per-item fail_msg lives in .results. Templated lazily, so every rescue
+    # below reads its own failure.
+    nic_tuning_failed_item_msgs: >-
+      {{ ([ansible_failed_result.msg | default('')]
+          + (ansible_failed_result.results | default([])
+             | selectattr('msg', 'defined') | map(attribute='msg') | list))
+         | join(' ') }}
   tasks:
     - name: Stat sysctl drop-in
       ansible.builtin.stat:
@@ -322,7 +331,7 @@
         - name: Offload assert | record that the drifted read-back failed
           ansible.builtin.set_fact:
             nic_tuning_drift_rejected: >-
-              {{ 'nic0' in (ansible_failed_result.msg | default('')) }}
+              {{ 'nic0 gro is NOT off' in nic_tuning_failed_item_msgs }}
           when: >-
             ansible_failed_task.name ==
             'Assert every requested NIC offload override is live'
@@ -333,9 +342,9 @@
           - nic_tuning_drift_rejected | default(false) | bool
         fail_msg: >-
           assert-offloads.yml passed with generic-receive-offload still on for
-          nic0, or failed without naming that interface — the offload
-          verification cannot detect a failed apply.
-        success_msg: "a requested feature that is not live fails, naming the interface"
+          nic0, or failed without naming the interface and the feature — the
+          offload verification cannot detect a failed apply.
+        success_msg: "a requested feature that is not live fails, naming interface and feature"
 
     - name: Offload assert | an unreadable interface must fail
       block:
@@ -363,7 +372,8 @@
         - name: Offload assert | record that the ethtool error failed
           ansible.builtin.set_fact:
             nic_tuning_ethtool_error_rejected: >-
-              {{ 'nic9' in (ansible_failed_result.msg | default('')) }}
+              {{ 'nic9 gro is NOT off' in nic_tuning_failed_item_msgs
+                 and 'ethtool exit 71' in nic_tuning_failed_item_msgs }}
           when: >-
             ansible_failed_task.name ==
             'Assert every requested NIC offload override is live'
@@ -374,8 +384,9 @@
           - nic_tuning_ethtool_error_rejected | default(false) | bool
         fail_msg: >-
           assert-offloads.yml passed while ethtool could not read nic9, or
-          failed without naming it — a renamed NIC would be a silent no-op.
-        success_msg: "an interface ethtool cannot read fails, naming the interface"
+          failed without naming it and the ethtool exit — a renamed NIC would
+          be a silent no-op.
+        success_msg: "an interface ethtool cannot read fails, naming it and the ethtool exit"
 
     # bond-primary: the persistent half writes into the seeded bond0 stanza and
     # never at EOF, and refuses a file with no active-backup stanza to anchor on.

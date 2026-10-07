@@ -7,8 +7,10 @@
 
   post_tasks:
     # Negative path: a disk with a partition table and no filesystem must be
-    # refused, not reformatted.
+    # refused, not reformatted. Tagged so the idempotence replay does not
+    # re-fire the guard and record a second junit failure for it.
     - name: Run the role against a blank-but-partitioned disk
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include the role for the partition-table guard
           ansible.builtin.include_role:
@@ -28,7 +30,10 @@
           ansible.builtin.set_fact:
             zvol_mount_pt_guard_refused: true
 
+    # Same tag: the replay skips the block above, so the marker fact it sets
+    # would be undefined here.
     - name: Assert the partition-table guard refused the disk
+      tags: [molecule-idempotence-notest]
       ansible.builtin.assert:
         that:
           - zvol_mount_pt_guard_refused

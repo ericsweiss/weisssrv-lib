@@ -81,6 +81,8 @@ provisioner:
 verifier:
   name: ansible
 scenario:
+  # The negative case in converge.yml carries molecule-idempotence-notest, so
+  # the idempotence replay skips it and it records one junit failure per host.
   test_sequence:
     - dependency
     - cleanup

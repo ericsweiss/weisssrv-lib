@@ -273,6 +273,19 @@
           - slab_line.split() | unique | length == slab_line.split() | length
         fail_msg: "slabinfo allowlist does not name node_exporter_host_slab_caches, or repeats one"
 
+    - name: Assert the slabinfo allowlist carries a rendered managed header
+      vars:
+        slab_allowlist_header: >-
+          {{ (node_exporter_host_slab_allowlist.content | b64decode).splitlines()
+             | first | default('') }}
+      ansible.builtin.assert:
+        that:
+          - slab_allowlist_header is match('# [^ ]')
+        fail_msg: >-
+          /etc/default/slabinfo-collector has no rendered managed header, so it
+          is written by copy+content, where ansible_managed is undefined from
+          ansible-core 2.21 on, instead of from its template.
+
     - name: Read the empty-cache-list assert marker from converge
       ansible.builtin.slurp:
         src: /tmp/node-exporter-slab-caches-assert.json
@@ -459,6 +472,19 @@
           node_exporter_host_textfile_dir, so a relocated textfile directory
           leaves vzdump_backup.prom where node_exporter does not scrape it.
 
+    - name: Assert the hookscript defaults file carries a rendered managed header
+      vars:
+        vzdump_defaults_header: >-
+          {{ (vzdump_hook_defaults.content | b64decode).splitlines()
+             | first | default('') }}
+      ansible.builtin.assert:
+        that:
+          - vzdump_defaults_header is match('# [^ ]')
+        fail_msg: >-
+          /etc/default/vzdump-metrics-hook has no rendered managed header, so it
+          is written by copy+content, where ansible_managed is undefined from
+          ansible-core 2.21 on, instead of from its template.
+
     - name: Point the hookscript at an alternate textfile directory
       ansible.builtin.copy:
         dest: /etc/default/vzdump-metrics-hook
@@ -484,13 +510,12 @@
         fail_msg: "the hookscript ignored TEXTFILE_DIR from its defaults file"
         success_msg: "the vzdump hookscript honours node_exporter_host_textfile_dir"
 
+    # Restored through the role's own entry point: the defaults file is a
+    # template, which verify cannot re-render itself.
     - name: Restore the rendered hookscript defaults file
-      ansible.builtin.copy:
-        dest: /etc/default/vzdump-metrics-hook
-        content: |
-          # {{ ansible_managed }}
-          TEXTFILE_DIR="{{ node_exporter_host_textfile_dir }}"
-        mode: "0644"
+      ansible.builtin.include_role:
+        name: weisssrv.infra.node_exporter_host
+        tasks_from: vzdump_hook
 
     - name: Invoke hookscript backup-abort then job-end (guest failed)
       ansible.builtin.command: "/usr/local/bin/vzdump-metrics-hook.sh {{ item }}"

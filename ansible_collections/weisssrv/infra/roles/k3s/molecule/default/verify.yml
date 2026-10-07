@@ -255,23 +255,8 @@
       when: k3s_is_first_server
 
     # k3s_kube_vip_host_kubeconfig is the documented rollback, so its branch is
-    # rendered and parsed here: an indentation slip in it would only surface
-    # during an API-VIP incident.
-    - name: Locate the kube-vip manifest template
-      ansible.builtin.set_fact:
-        k3s_kube_vip_template: >-
-          {{ (playbook_dir ~ '/../../templates/kube-vip-manifest.yaml.j2') | realpath }}
-      when: k3s_is_first_server
-
-    - name: Render the kube-vip rollback manifest
-      ansible.builtin.template:
-        src: "{{ k3s_kube_vip_template }}"
-        dest: /tmp/kube-vip-host-kubeconfig.yaml
-        mode: '0644'
-      vars:
-        k3s_kube_vip_host_kubeconfig: true
-      when: k3s_is_first_server
-
+    # parsed here: an indentation slip in it would only surface during an
+    # API-VIP incident. converge.yml renders it, in the role's variable scope.
     - name: Read the rollback render
       ansible.builtin.slurp:
         src: /tmp/kube-vip-host-kubeconfig.yaml

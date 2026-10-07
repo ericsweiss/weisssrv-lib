@@ -416,6 +416,25 @@
           ansible.builtin.set_fact:
             firewall_long_group_name_rejected: true
 
+    # pve-firewall's grammar opens on a letter, so a leading digit is refused
+    # once the file is written, with nothing before that to show it.
+    - name: Drive the group-name guard — a name opening on a digit
+      block:
+        - name: Include the schema guard with a leading-digit group name
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            proxmox_firewall_dns_admin_ports: []
+            proxmox_firewall_metrics_scrape_ports: []
+            proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
+            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, admin_lan]
+            proxmox_firewall_security_groups:
+              - name: 9sg-example
+                rules: ["IN ACCEPT -p tcp -dport 9999 -log nolog"]
+      rescue:
+        - name: Record that the leading-digit group name was rejected
+          ansible.builtin.set_fact:
+            firewall_digit_group_name_rejected: true
+
     - name: Drive the group-name guard — two groups sharing one name
       block:
         - name: Include the schema guard with a duplicated group name
@@ -458,14 +477,16 @@
         that:
           - firewall_colliding_group_name_rejected | default(false)
           - firewall_long_group_name_rejected | default(false)
+          - firewall_digit_group_name_rejected | default(false)
           - firewall_duplicate_group_name_rejected | default(false)
           - firewall_mapping_extra_group_rejected | default(false)
         fail_msg: >-
           The group-name guard accepted a name the template renders itself, a
-          duplicate, a name outside pve-firewall's 18-character grammar, or an
-          extra-group entry that is not a name. The first two render two
-          `[group <name>]` sections and pve-firewall keeps one rule set of the
-          two, silently closing either the site's app ports or a built-in allow.
+          duplicate, a name outside pve-firewall's grammar (too long, or opening
+          on a digit), or an extra-group entry that is not a name. The first two
+          render two `[group <name>]` sections and pve-firewall keeps one rule
+          set of the two, silently closing either the site's app ports or a
+          built-in allow.
         success_msg: >-
           group-name guards fail closed on a reserved name, a duplicate, an
           ungrammatical name and a non-name extra-group entry
@@ -507,13 +528,13 @@
     - name: Cluster.fw renders the supplied per-application groups verbatim
       vars:
         sg_web: "{{ cluster_fw_sections.get('group sg-example-web', '') }}"
-        sg_authless: "{{ cluster_fw_sections.get('group sg-example-authless', '') }}"
+        sg_noauth: "{{ cluster_fw_sections.get('group sg-example-noauth', '') }}"
       ansible.builtin.assert:
         that:
           - "'# ingress -> app TLS' in sg_web"
           - "'IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 443 -log nolog' in sg_web"
           - "'IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog' in sg_web"
-          - "'IN ACCEPT -source 192.168.0.157 -p tcp -dport 3003 -log nolog' in sg_authless"
+          - "'IN ACCEPT -source 192.168.0.157 -p tcp -dport 3003 -log nolog' in sg_noauth"
         fail_msg: >-
           proxmox_firewall_security_groups did not render its groups verbatim,
           or a `rules` expression did not evaluate to a list of rule lines.
@@ -548,7 +569,7 @@
       ansible.builtin.assert:
         that:
           - "'[group sg-example-web]' not in default_text"
-          - "'[group sg-example-authless]' not in default_text"
+          - "'[group sg-example-noauth]' not in default_text"
           # Role-owned groups are unaffected by the site list.
           - "'[group sg-dns]' in default_text"
           - "'[group sg-host-admin]' in default_text"

@@ -53,6 +53,7 @@
       ansible.builtin.assert:
         that:
           - no_net0.failed
+          - no_net0.rc != 0
           - "'NONET0' in no_net0.stdout"
         fail_msg: >-
           The NIC firewall repair reported ok for a guest whose config has no

@@ -99,6 +99,7 @@
     # Case E: a broken candidate under the SAME site name must fail the play and
     # leave the installed good site untouched — the property the role promises.
     - name: Reject a broken site candidate (expect failure)
+      tags: [molecule-idempotence-notest]
       block:
         - name: Run the host-nginx flow with a broken site template
           ansible.builtin.include_role:
@@ -122,8 +123,7 @@
             mode: "0644"
             content: |
               {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
-          # Test-result marker, not convergence: the negative case re-runs on
-          # every converge, so it must not count toward the idempotence check.
+          # Test-result marker, not convergence.
           changed_when: false
 
     # A dangling symlink makes `cp -aL` skip that site, so the candidate would
@@ -137,6 +137,7 @@
       changed_when: false
 
     - name: Reject a partial sites-enabled merge (expect failure)
+      tags: [molecule-idempotence-notest]
       block:
         - name: Run the host-nginx flow over an unreadable existing site
           ansible.builtin.include_role:

@@ -24,9 +24,10 @@
 
   post_tasks:
     # Negative test for the Loki credentials assert: an https push URL with no
-    # creds must fail fast. The assert runs before anything mutates, so the
-    # rescued failure leaves the converged state untouched.
+    # creds must fail fast, before anything mutates. Skipped on the idempotence
+    # re-run so the guard fires once, as expected-junit-failures.txt declares.
     - name: Re-run alloy_host with https URL and empty creds (expect failure)
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include alloy_host with https URL and no credentials
           ansible.builtin.include_role:

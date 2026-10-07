@@ -294,3 +294,13 @@
         success_msg: >-
           the probe skips unreachable hosts, fails loudly when none answer, and
           an explicit proxmox_ha_delegate_host wins
+
+    - name: Assert a host outside the HA group is refused by name
+      ansible.builtin.assert:
+        that:
+          - ha_delegate.nonmember_failed
+        fail_msg: >-
+          proxmox_ha_host_group is not a guard: the role reconciled cluster-wide
+          HA state from a host the group does not contain.
+        success_msg: >-
+          a host outside proxmox_ha_host_group fails the membership assert

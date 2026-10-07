@@ -185,24 +185,88 @@
           directory was left behind after the install.
         success_msg: "AdGuard Home staged in a root-owned directory and cleaned up"
 
-    # Negative arm from converge: the refusal direction of the staged-archive
-    # trust boundary, proved through real Ansible rather than a stand-in.
-    - name: Read the untrusted-cache result
-      ansible.builtin.slurp:
-        src: /tmp/adguard-untrusted-cache-result.json
-      register: adguard_home_untrusted_result
+    # The refusal direction of the staged-archive trust boundary, proved
+    # through real Ansible rather than a stand-in. It runs from verify because
+    # staging a decoy cache and tearing it down again cannot be idempotent.
+    - name: Load the role's arch map under a name of its own
+      ansible.builtin.include_vars:
+        file: ../../vars/main.yml
+        name: adguard_home_role_vars
+
+    - name: Stage a group-writable archive cache
+      ansible.builtin.file:
+        path: /tmp/adguard-untrusted-cache
+        state: directory
+        owner: root
+        group: root
+        mode: "0775"
+
+    - name: Put a decoy archive in it for the pin below
+      vars:
+        adguard_home_untrusted_arch: >-
+          {{ adguard_home_role_vars._adguard_home_arch_map[ansible_architecture] }}
+      ansible.builtin.copy:
+        dest: "/tmp/adguard-untrusted-cache/AdGuardHome_linux_{{ adguard_home_untrusted_arch | trim }}-v99.99.99.tar.gz"
+        content: "decoy\n"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Refuse to install from an untrusted staging path
+      block:
+        # A staging path of its own, so the install-hygiene assert above holds
+        # whatever this arm leaves behind.
+        - name: Re-run the role against the untrusted cache
+          ansible.builtin.include_role:
+            name: weisssrv.infra.adguard_home
+          vars:
+            adguard_home_archive_cache_dir: /tmp/adguard-untrusted-cache
+            adguard_home_stage_dir: /root/adguard-untrusted-stage
+            adguard_home_version: "99.99.99"
+            adguard_home_skip_api_config: true
+            adguard_home_skip_resolv_conf_update: true
+
+        - name: The untrusted cache was not refused
+          ansible.builtin.fail:
+            msg: "the role accepted a group-writable staging directory"
+      rescue:
+        - name: Record which failure the untrusted cache produced
+          ansible.builtin.set_fact:
+            adguard_home_untrusted_msg: "{{ ansible_failed_result.msg | default('') }}"
+      always:
+        - name: Clean up after the refused run
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /root/adguard-untrusted-stage
+            - /tmp/adguard-untrusted-cache
 
     - name: Assert a group-writable staging path is refused by name
-      vars:
-        adguard_home_untrusted_msg: >-
-          {{ (adguard_home_untrusted_result.content | b64decode | from_json).msg }}
       ansible.builtin.assert:
         that:
-          - "'is not a trusted staging path' in adguard_home_untrusted_msg"
+          - "'is not a trusted staging path' in (adguard_home_untrusted_msg | default(''))"
         fail_msg: >-
           The role failed on a group-writable staged-archive cache for some
-          other reason than the trust assert: {{ adguard_home_untrusted_msg }}
+          other reason than the trust assert:
+          {{ adguard_home_untrusted_msg | default('the role did not refuse it at all') }}
         success_msg: "A group-writable staged-archive cache is refused by the trust assert"
+
+    # The refusal lands before anything is unpacked, so the live install is
+    # still the pinned version once the arm has run.
+    - name: Read the installed version after the refused run
+      ansible.builtin.command: /opt/AdGuardHome/AdGuardHome --version
+      register: adguard_home_version_after
+      changed_when: false
+
+    - name: Assert the refused run installed nothing
+      ansible.builtin.assert:
+        that:
+          - adguard_home_version_after.stdout is search('v' ~ adguard_home_version)
+        fail_msg: >-
+          The refused staging path still replaced the binary:
+          {{ adguard_home_version_after.stdout }}
+        success_msg: "the refused run left the pinned AdGuard Home binary in place"
 
     # The API base is derived from the bind, so hardening the bind does not
     # point the role's own reconcile at a loopback nothing listens on.

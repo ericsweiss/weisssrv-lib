@@ -691,43 +691,77 @@
       changed_when: false
       failed_when: false
 
+    # The stub lands outside /tmp: that is a Docker tmpfs mounted noexec, where
+    # PATH lookup skips the stub and falls through to the real iptables, so the
+    # negative case below would silently test nothing.
     - name: Create a directory for the iptables stub
       ansible.builtin.file:
-        path: /tmp/gitlab-iptables-stub
+        path: /usr/local/lib/gitlab-iptables-stub
         state: directory
         mode: "0755"
 
     - name: Install an iptables that cannot run
       ansible.builtin.copy:
-        dest: /tmp/gitlab-iptables-stub/iptables
+        dest: /usr/local/lib/gitlab-iptables-stub/iptables
         content: |
           #!/bin/sh
           echo "iptables v1.8.10 (nf_tables): can't initialize iptables table nat" >&2
           exit 3
         mode: "0755"
 
-    - name: Count SSH redirect rules with an iptables that cannot run
-      ansible.builtin.shell: |
-        set -uo pipefail
-        out=$(iptables -w 5 -t nat -S PREROUTING 2>&1) || {
-          case "$out" in
-            *"No chain/target/match by that name"*) echo 0; exit 0 ;;
-            *) printf '%s\n' "$out" >&2; exit 1 ;;
-          esac
-        }
-        printf '%s\n' "$out" | grep -c -- '--dport {{ gitlab_ssh_port }} .* REDIRECT --to-ports 22' || true
-      args:
-        executable: /bin/bash
-      environment:
-        PATH: "/tmp/gitlab-iptables-stub:{{ ansible_env.PATH }}"
-      register: gitlab_nat_broken_iptables
+    - name: Probe the iptables stub where it is installed
+      ansible.builtin.command: /usr/local/lib/gitlab-iptables-stub/iptables -w 5 -t nat -S PREROUTING
+      register: gitlab_nat_stub_probe
       changed_when: false
       failed_when: false
 
-    - name: Remove the iptables stub
-      ansible.builtin.file:
-        path: /tmp/gitlab-iptables-stub
-        state: absent
+    - name: Assert the iptables stub runs from its install path
+      ansible.builtin.assert:
+        that:
+          - gitlab_nat_stub_probe.rc == 3
+          - "'initialize iptables table' in gitlab_nat_stub_probe.stderr"
+        fail_msg: >-
+          The stub did not run from /usr/local/lib/gitlab-iptables-stub
+          (rc={{ gitlab_nat_stub_probe.rc }}): on a noexec mount PATH lookup
+          skips it and the case below would exercise the real iptables.
+        success_msg: "The iptables stub runs from its install path"
+
+    # The role's own counter must fail loudly here: reading a broken iptables as
+    # "no managed rule" skips the drift cleanup and appends a second REDIRECT.
+    - name: Run the role's redirect pass with an iptables that cannot run
+      environment:
+        PATH: "/usr/local/lib/gitlab-iptables-stub:{{ ansible_env.PATH }}"
+      block:
+        - name: Include the role's SSH redirect tasks
+          ansible.builtin.include_role:
+            name: weisssrv.infra.gitlab
+            tasks_from: ssh-redirect.yml
+          vars:
+            gitlab_ssh_redirect:
+              chain: PREROUTING
+
+        - name: Record that the broken iptables went unnoticed
+          ansible.builtin.set_fact:
+            gitlab_nat_broken_rescued: false
+      rescue:
+        - name: Record that the broken iptables stopped the redirect pass
+          ansible.builtin.set_fact:
+            gitlab_nat_broken_rescued: true
+      always:
+        - name: Remove the iptables stub
+          ansible.builtin.file:
+            path: /usr/local/lib/gitlab-iptables-stub
+            state: absent
+
+    - name: Count PREROUTING SSH redirect rules after the broken-iptables pass
+      ansible.builtin.shell: |
+        set -o pipefail
+        iptables -t nat -S PREROUTING | grep -c -- '--dport {{ gitlab_ssh_port }} .* REDIRECT --to-ports 22'
+      args:
+        executable: /bin/bash
+      register: gitlab_nat_after_broken
+      changed_when: false
+      failed_when: false
 
     # A missing chain is a real count of zero; an iptables that could not run is
     # not, or the drift cleanup is skipped and a duplicate rule is appended.
@@ -736,15 +770,19 @@
         that:
           - gitlab_nat_missing_chain_count.rc == 0
           - gitlab_nat_missing_chain_count.stdout == '0'
-          - gitlab_nat_broken_iptables.rc != 0
-          - "'initialize iptables table' in gitlab_nat_broken_iptables.stderr"
+          - gitlab_nat_broken_rescued | default(false) | bool
+          - gitlab_ssh_redirect_count.rc | default(0) != 0
+          - "'initialize iptables table' in (gitlab_ssh_redirect_count.stderr | default(''))"
+          - gitlab_nat_after_broken.stdout == '1'
         fail_msg: >-
           The rule counter conflated a missing chain with an iptables failure:
           missing chain rc={{ gitlab_nat_missing_chain_count.rc }}
-          stdout={{ gitlab_nat_missing_chain_count.stdout | to_json }}, broken
-          iptables rc={{ gitlab_nat_broken_iptables.rc }}
-          stderr={{ gitlab_nat_broken_iptables.stderr | to_json }}.
-        success_msg: "A missing chain counts zero; a broken iptables fails the task"
+          stdout={{ gitlab_nat_missing_chain_count.stdout | to_json }}; the broken
+          iptables stopped the pass={{ gitlab_nat_broken_rescued | default('unset') }}
+          with counter rc={{ gitlab_ssh_redirect_count.rc | default('unset') }}
+          stderr={{ gitlab_ssh_redirect_count.stderr | default('') | to_json }},
+          PREROUTING managed rules after={{ gitlab_nat_after_broken.stdout | to_json }}.
+        success_msg: "A missing chain counts zero; a broken iptables fails the role's pass"
 
     # The rules are re-applied at boot by the role's own unit, so the live
     # ruleset is never saved (which would freeze fail2ban's bans).

@@ -62,14 +62,18 @@
         fail_msg: "Expected storage_set=1/total=1 for content drift, got {{ bk.d_storage_set }}/{{ bk.d_total }}"
 
     # (f) The hookscript must land BEFORE the job: pvesh rejects a missing
-    #     --script path.
+    #     --script path. Its defaults file carries TEXTFILE_DIR, so both halves
+    #     of the cross-role include have to land.
     - name: F — job with script deploys the hookscript and creates the job
       ansible.builtin.assert:
         that:
           - bk.f_hook
+          - bk.f_hook_cfg == 1
           - bk.f_job_create == 1
           - bk.f_total == 1
-        fail_msg: "Expected hook=true/job_create=1/total=1, got {{ bk.f_hook }}/{{ bk.f_job_create }}/{{ bk.f_total }}"
+        fail_msg: >-
+          Expected hook=true/hook_cfg=1/job_create=1/total=1, got
+          {{ bk.f_hook }}/{{ bk.f_hook_cfg }}/{{ bk.f_job_create }}/{{ bk.f_total }}
 
     - name: G — absent zfspool entry is created with pool/nodes/mountpoint/sparse
       ansible.builtin.assert:
