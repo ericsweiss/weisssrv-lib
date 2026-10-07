@@ -1,26 +1,11 @@
-"""Tests for scripts/check-kubectl-version-pin.py (the kubectl/k3s skew gate).
-
-Exercises the version extraction, the +/-1 minor skew classification, the CLI
-path resolution against throwaway files, the $CI_FILE default-retarget seam, and
-the argparse surface: the two positional paths are optional (defaults apply), a
-bad argument is rejected rather than treated as a filename, and an unreadable
-input exits 2 with a one-line error instead of a traceback.
-"""
+"""scripts/check-kubectl-version-pin.py flags kubectl/k3s minor-version skew."""
 from __future__ import annotations
-
-import importlib.util
-from pathlib import Path
 
 import pytest
 
-REPO = Path(__file__).resolve().parent.parent
-_SCRIPT = REPO / "scripts" / "check-kubectl-version-pin.py"
+from script_loader import REPO, load_script
 
-# Import the hyphenated-name module the same way test_check_doc_links.py does.
-_spec = importlib.util.spec_from_file_location("check_kubectl_version_pin", _SCRIPT)
-assert _spec and _spec.loader
-ckp = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(ckp)
+ckp = load_script("check-kubectl-version-pin.py")
 
 
 def _reimport():
@@ -29,10 +14,7 @@ def _reimport():
     CI_YAML is a module-level constant, so the env var is read once at import —
     which is what a CLI invocation does anyway.
     """
-    spec = importlib.util.spec_from_file_location("check_kubectl_version_pin_env", _SCRIPT)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return load_script("check-kubectl-version-pin.py")
 
 
 def _ci(major: int, minor: int) -> str:
@@ -67,15 +49,24 @@ class TestCheck:
         assert code == 1
         assert "outside Kubernetes' supported" in msg
 
-    def test_missing_kubectl_pin_fails(self):
-        code, msg = ckp.check("no pin here\n", _cm(1, 33))
-        assert code == 1
-        assert "kubectl pin" in msg
+    def test_missing_kubectl_pin_is_an_operator_error(self, tmp_path):
+        """No pin in the file given is a wrong path, not skew: exit 2, path named."""
+        ci = tmp_path / "workflow.yml"
+        code, msg = ckp.check("no pin here\n", _cm(1, 33), ci, tmp_path / "cm.yaml")
+        assert code == 2
+        assert str(ci) in msg
 
-    def test_missing_k3s_version_fails(self):
-        code, msg = ckp.check(_ci(1, 33), "data:\n  other: 1\n")
+    def test_missing_k3s_version_is_an_operator_error(self, tmp_path):
+        cm = tmp_path / "cm.yaml"
+        code, msg = ckp.check(_ci(1, 33), "data:\n  other: 1\n", tmp_path / "ci.yml", cm)
+        assert code == 2
+        assert str(cm) in msg
+
+    def test_skew_message_names_the_ci_file_it_read(self, tmp_path):
+        ci = tmp_path / "workflow.yml"
+        code, msg = ckp.check(_ci(1, 31), _cm(1, 33), ci, tmp_path / "cm.yaml")
         assert code == 1
-        assert "k3s_version" in msg
+        assert str(ci) in msg
 
 
 class TestCli:
@@ -93,6 +84,14 @@ class TestCli:
         cm = tmp_path / "cm.yaml"
         cm.write_text(_cm(1, 33))
         assert ckp.main(["prog", str(ci), str(cm)]) == 1
+
+    def test_main_names_the_paths_it_was_given(self, tmp_path, capsys):
+        ci = tmp_path / "workflow.yml"
+        ci.write_text("nothing to see\n")
+        cm = tmp_path / "cm.yaml"
+        cm.write_text(_cm(1, 33))
+        assert ckp.main(["prog", str(ci), str(cm)]) == 2
+        assert str(ci) in capsys.readouterr().out
 
     def test_defaults_apply_when_paths_omitted(self, tmp_path, capsys, monkeypatch):
         """Both positionals are optional — with none given the module defaults
@@ -151,14 +150,13 @@ class TestCliErrors:
         assert "ERROR: could not read input file:" in capsys.readouterr().err
 
     def test_unknown_flag_is_rejected(self):
-        """Previously any argv[1] was treated as a filename; argparse now
-        rejects a flag-shaped argument (SystemExit 2 from the parser)."""
+        """A flag-shaped argv[1] is rejected by argparse, not read as a filename."""
         with pytest.raises(SystemExit) as exc:
             ckp.main(["prog", "--bogus"])
         assert exc.value.code == 2
 
     def test_extra_positional_is_rejected(self):
-        """A third path was silently ignored before argparse."""
+        """A third positional is rejected."""
         with pytest.raises(SystemExit) as exc:
             ckp.main(["prog", "a.yml", "b.yaml", "c.yaml"])
         assert exc.value.code == 2
@@ -211,3 +209,49 @@ class TestCiFileEnv:
         code, msg = ckp.check(workflow, _cm(1, 33))
         assert code == 0
         assert "within the supported" in msg
+
+
+def _ci_include_input(major: int, minor: int) -> str:
+    """A consumer that includes ci/deploy/kubectl-setup.yml carries no URL."""
+    return (
+        "include:\n"
+        "  - project: eric/weisssrv-lib\n"
+        "    file: ci/deploy/kubectl-setup.yml\n"
+        "    inputs:\n"
+        f'      kubectl_version: "v{major}.{minor}.2"\n'
+    )
+
+
+class TestIncludeInputForm:
+    def test_the_include_input_pin_is_found(self):
+        code, msg = ckp.check(_ci_include_input(1, 35), _cm(1, 35))
+        assert code == 0
+        assert "within the supported" in msg
+
+    def test_a_two_minor_skew_in_the_include_form_still_fails(self):
+        """Without this the new branch could pass vacuously."""
+        code, msg = ckp.check(_ci_include_input(1, 37), _cm(1, 35))
+        assert code == 1
+        assert "outside Kubernetes' supported" in msg
+
+    def test_both_forms_are_evaluated_when_both_are_present(self):
+        """A second pin in another job must not ride in behind the first."""
+        both = _ci(1, 35) + _ci_include_input(1, 37)
+        code, msg = ckp.check(both, _cm(1, 35))
+        assert code == 1
+        assert "v1.37" in msg
+
+    def test_two_in_skew_pins_both_pass(self):
+        code, msg = ckp.check(_ci(1, 35) + _ci_include_input(1, 34), _cm(1, 35))
+        assert code == 0
+        assert "v1.34.x" in msg and "v1.35.x" in msg
+
+    def test_a_second_download_pin_is_checked_too(self):
+        code, msg = ckp.check(_ci(1, 35) + _ci(1, 30), _cm(1, 35))
+        assert code == 1
+        assert "v1.30" in msg
+
+    def test_neither_form_is_an_operator_error(self):
+        code, msg = ckp.check("jobs: {}\n", _cm(1, 35))
+        assert code == 2
+        assert "kubectl_version: input" in msg

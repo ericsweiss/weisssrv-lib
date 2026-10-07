@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # {{ ansible_managed }}
-# node_exporter textfile metrics for the adguardhome-sync oneshot timer.
-# Invoked as an ExecStopPost (prefixed '+' in the unit, so it runs as root
-# OUTSIDE the unit's DynamicUser + ProtectSystem sandbox and can write the
-# textfile dir). $1 is systemd's $SERVICE_RESULT ("success" on a clean run).
-# The tool's own metrics API is disabled, so this is the only failure signal.
+# node_exporter textfile metrics for the adguardhome-sync timer, its only
+# failure signal. ExecStopPost prefixed '+'; $1 is systemd's $SERVICE_RESULT.
 set -u
 
 PROM_DIR="{{ adguard_sync_textfile_dir }}"
 PROM_FILE="${PROM_DIR}/adguardhome_sync.prom"
 
-# node_exporter_host owns the textfile dir; if the host hasn't deployed it yet,
-# emit nothing rather than failing the unit.
-[ -d "$PROM_DIR" ] || exit 0
+# Missing textfile dir: say so rather than dropping the only failure signal.
+[ -d "$PROM_DIR" ] || {
+  logger -t adguardhome-sync-metrics -p daemon.err \
+    "textfile dir ${PROM_DIR} absent; adguardhome_sync_last_run_success not published" || true
+  exit 0
+}
 
 if [ "${1:-}" = "success" ]; then
   success=1
@@ -38,5 +38,12 @@ tmp="${PROM_FILE}.$$"
     echo "# TYPE adguardhome_sync_last_success_timestamp_seconds gauge"
     echo "adguardhome_sync_last_success_timestamp_seconds ${sval}"
   fi
-} > "$tmp" 2>/dev/null || { rm -f "$tmp"; exit 0; }
-mv "$tmp" "$PROM_FILE" 2>/dev/null || rm -f "$tmp"
+} > "$tmp" 2>/dev/null || {
+  logger -t adguardhome-sync-metrics -p daemon.err "could not write ${PROM_FILE}"
+  rm -f "$tmp"
+  exit 0
+}
+mv "$tmp" "$PROM_FILE" 2>/dev/null || {
+  logger -t adguardhome-sync-metrics -p daemon.err "could not rename ${tmp} -> ${PROM_FILE}"
+  rm -f "$tmp"
+}

@@ -1,41 +1,35 @@
-"""Render-smoke for the ci/ templates: substitute each spec input's DEFAULT the
-way GitLab does (textual interpolation), then assert the result still parses —
-as YAML, and as shell for every script line.
+"""Render-smoke for the ci/ templates.
 
-This is the gate ci-templates-parse cannot be: a template whose rendered pip
-line read `black<26.5.0` was valid YAML and valid bash syntax, yet ran a
-redirect from a file named 26.5.0. Hence the third check: an input default
-carrying shell metacharacters must reach the shell through a job `variables:`
-entry (expansion results are never re-scanned for operators), not by raw
-interpolation into a script line.
+Substitutes each spec input the way GitLab does and asserts the result still
+parses as YAML and as shell, and that metachar defaults are variable-routed.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
+from script_loader import SCRIPTS, load_path
+
+# The templates carry `!reference`, which yaml.safe_load cannot read.
+ci_yaml = load_path(SCRIPTS / "ci_yaml.py")
 
 
-class _GitLabLoader(yaml.SafeLoader):
-    """SafeLoader that understands GitLab's `!reference [job, key]` tag."""
-
-
-_GitLabLoader.add_constructor(
-    "!reference", lambda loader, node: loader.construct_sequence(node)
-)
-
-
-def _load(text: str) -> object:
-    return yaml.load(text, Loader=_GitLabLoader)
+def _load(text: str) -> dict:
+    return ci_yaml.parse_ci(text)
 
 
 _LIB_ROOT = Path(__file__).resolve().parents[1]
-_TEMPLATES = sorted((_LIB_ROOT / "ci").rglob("*.yml"))
+# Both spellings: a template added as `.yaml` would otherwise slip out of every
+# gate below silently.
+_YAML_SUFFIXES = ("yml", "yaml")
+_TEMPLATES = sorted(
+    {p for suffix in _YAML_SUFFIXES for p in (_LIB_ROOT / "ci").rglob(f"*.{suffix}")}
+)
 _INPUT_RE = re.compile(r"\$\[\[\s*inputs\.([a-zA-Z0-9_]+)\s*\]\]")
 # Redirection/list operators, plus the two command-substitution forms: a default
 # carrying `$(id)` or a backtick run parses clean under `bash -n` and reads as
@@ -55,10 +49,9 @@ def _split_docs(text: str) -> tuple[dict | None, str]:
     return None, text
 
 
-# A REQUIRED input (no `default:`) has no library-side value to render, and
-# substituting "" produces a shape no consumer can ever produce: an empty job
-# name, an array key rendered as a bare scalar. Stand-ins by declared type, so a
-# mandatory-input template is smoke-rendered the way it is actually used.
+# A required input has no library-side value to render, and substituting "" is
+# a shape no consumer can produce. These stand-ins by declared type render a
+# mandatory-input template the way it is actually used.
 _PLACEHOLDER_BY_TYPE = {
     "array": ["placeholder"],
     "boolean": True,
@@ -86,17 +79,28 @@ def _render(body: str, spec: dict) -> str:
     return _INPUT_RE.sub(sub, body)
 
 
-def _script_lines(rendered: dict) -> list[str]:
+@functools.lru_cache(maxsize=1)
+def _fragment_jobs() -> dict:
+    """The rendered ci/templates and ci/deploy fragments, so `!reference`
+    targets resolve. An unresolved reference would hand `bash -n` the key path
+    as a line, which parses clean and checks nothing.
+    """
+    merged: dict = {}
+    for directory in ("templates", "deploy"):
+        for path in sorted((_LIB_ROOT / "ci" / directory).rglob("*.yml")):
+            spec, body = _split_docs(path.read_text(encoding="utf-8"))
+            merged.update(_load(_render(body, spec) if spec else body))
+    return merged
+
+
+def _script_lines(rendered: dict, unresolved: list | None = None) -> list[str]:
+    doc = {**_fragment_jobs(), **rendered}
     lines: list[str] = []
     for job in rendered.values():
         if not isinstance(job, dict):
             continue
         for key in ("before_script", "script", "after_script"):
-            part = job.get(key)
-            if isinstance(part, list):
-                lines.extend(str(x) for x in part)
-            elif isinstance(part, str):
-                lines.append(part)
+            lines.extend(ci_yaml.script_lines(job, doc, key, unresolved=unresolved))
     return lines
 
 
@@ -109,7 +113,12 @@ def test_template_renders(path: Path) -> None:
     rendered = _load(rendered_text)
     assert isinstance(rendered, dict)
 
-    script = "\n".join(_script_lines(rendered))
+    unresolved: list = []
+    script = "\n".join(_script_lines(rendered, unresolved))
+    assert unresolved == [], (
+        f"`!reference` targets no ci/ file defines: {unresolved} — the referenced "
+        "script never reaches the shell check"
+    )
     if script:
         proc = subprocess.run(
             ["bash", "-n"], input=script, capture_output=True, text=True
@@ -118,14 +127,12 @@ def test_template_renders(path: Path) -> None:
 
 
 def test_deploy_templates_never_default_needs() -> None:
-    """A deploy job's gate must be stated by the consumer, never defaulted.
-
-    The only value the library could pick is `[]`, and in GitLab `needs: []`
-    means "start at pipeline creation, ignore stage order" — an ungated
-    `ansible-playbook` against live infrastructure. So `needs` stays required.
-    """
+    """A deploy job's gate must be stated by the consumer, never defaulted."""
     checked = 0
-    for path in sorted((_LIB_ROOT / "ci" / "deploy").glob("*.yml")):
+    deploy = _LIB_ROOT / "ci" / "deploy"
+    for path in sorted(
+        {p for suffix in _YAML_SUFFIXES for p in deploy.glob(f"*.{suffix}")}
+    ):
         spec, _body = _split_docs(path.read_text(encoding="utf-8"))
         if spec is None:
             continue
@@ -208,16 +215,7 @@ def _array_sites(path: Path) -> list[tuple[tuple, str, object]]:
 
 @pytest.mark.parametrize("path", _TEMPLATES, ids=lambda p: str(p.relative_to(_LIB_ROOT)))
 def test_array_inputs_render_as_sequences(path: Path) -> None:
-    """An input typed `array` must reach YAML as a sequence at EVERY site.
-
-    A required array with no placeholder renders as a bare scalar (YAML null) —
-    which parses fine and hides that the real job would carry a list. A null is
-    the shape being guarded, so there is no `is not None` escape hatch here.
-
-    The sites are DERIVED from the spec rather than named by hand, so the ones
-    that are not job-level keys are covered too: `changes:` inside a `rules:`
-    entry, and `key_files` under `cache: key:`.
-    """
+    """An input typed `array` must reach YAML as a sequence at every site."""
     for site, name, value in _array_sites(path):
         where = ".".join(str(step) for step in site)
         assert isinstance(value, list), (
@@ -241,7 +239,7 @@ def test_the_array_site_walker_finds_sites_to_check() -> None:
 @pytest.mark.parametrize(
     "default",
     [
-        "black<26.5.0",           # the redirect that started this
+        "black<26.5.0",
         "out > /tmp/x",
         "a | b",
         "a; b",
@@ -261,10 +259,9 @@ def test_shell_meta_does_not_flag_inert_defaults(default: str) -> None:
     assert not _SHELL_META.search(default)
 
 
-# A dependency list is a consumer-supplied VALUE, so what matters is what it can
-# contain, not what this repo happens to default it to. Every ecosystem here has
-# a ceiling syntax carrying `<` (`black<26.5.0`, `pkg<1.2`), so these inputs are
-# routed through `variables:` whatever their default looks like.
+# A dependency list is a consumer-supplied value that can carry a version
+# ceiling such as `pkg<1.2`, so these inputs route through `variables:`
+# whatever their default looks like.
 _DEPENDENCY_LIST_RE = re.compile(r"(packages|_extra)$")
 
 
@@ -292,12 +289,8 @@ def test_the_dependency_list_pattern_matches_the_inputs_it_names() -> None:
 
 @pytest.mark.parametrize("path", _TEMPLATES, ids=lambda p: str(p.relative_to(_LIB_ROOT)))
 def test_dependency_list_inputs_are_variable_routed(path: Path) -> None:
-    """A benign DEFAULT is not a reason to interpolate a package list.
-
-    test_metachar_defaults_are_variable_routed only inspects inputs whose
-    default already carries an operator, so `apt_packages: "git"` looked safe
-    while accepting `pkg<1.2` from a consumer and handing the shell a live `<`.
-    """
+    """A dependency list is routed through `variables:` whatever its default
+    looks like: a consumer may pass `pkg<1.2`."""
     spec, body = _split_docs(path.read_text(encoding="utf-8"))
     if spec is None:
         return
@@ -316,10 +309,7 @@ def test_dependency_list_inputs_are_variable_routed(path: Path) -> None:
 
 @pytest.mark.parametrize("path", _TEMPLATES, ids=lambda p: str(p.relative_to(_LIB_ROOT)))
 def test_metachar_defaults_are_variable_routed(path: Path) -> None:
-    """An input default containing shell operators must not be interpolated
-    into a script line — the rendered text would carry a live `<`/`>`/`|`
-    the shell parses BEFORE any expansion. Routing through `variables:` is
-    the safe form; assert every such input uses it."""
+    """An input default containing shell operators routes through `variables:`."""
     spec, body = _split_docs(path.read_text(encoding="utf-8"))
     if spec is None:
         return
@@ -328,7 +318,8 @@ def test_metachar_defaults_are_variable_routed(path: Path) -> None:
     risky = {
         name
         for name, meta in spec["spec"]["inputs"].items()
-        if isinstance(meta.get("default"), str) and _SHELL_META.search(meta["default"])
+        if isinstance((meta or {}).get("default"), str)
+        and _SHELL_META.search(meta["default"])
     }
     if not risky:
         return
@@ -339,3 +330,12 @@ def test_metachar_defaults_are_variable_routed(path: Path) -> None:
             f"input '{name}' (default contains a shell operator) is interpolated "
             f"into a script line in {path.name}; route it through variables:"
         )
+
+
+def test_the_kubeconfig_is_checked_structurally_after_the_decode() -> None:
+    """An empty-secret guard does not catch a field holding base64 of junk."""
+    path = _LIB_ROOT / "ci" / "deploy" / "kubectl-setup.yml"
+    spec, body = _split_docs(path.read_text(encoding="utf-8"))
+    script = "\n".join(_script_lines(_load(_render(body, spec) if spec else body)))
+    assert "base64 -d > ~/.kube/config" in script
+    assert "grep -q '^[[:space:]]*server:' ~/.kube/config" in script

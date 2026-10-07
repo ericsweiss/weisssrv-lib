@@ -24,25 +24,16 @@
           {{ docker_engine_daemon }}.
         success_msg: "daemon.json renders the journald log driver + live-restore"
 
-    # The converge seeded the pre-standardization repo line + keyring; the
-    # role's legacy cleanup must have removed both.
-    - name: Read docker.list after the legacy cleanup
-      ansible.builtin.slurp:
-        src: /etc/apt/sources.list.d/docker.list
-      register: docker_engine_repo_list
-
-    - name: Stat the legacy Docker keyring path
+    - name: Stat the required-pin assert marker
       ansible.builtin.stat:
-        path: /usr/share/keyrings/docker.gpg
-      register: docker_engine_legacy_keyring
+        path: /var/tmp/molecule-docker-pin-assert
+      register: docker_engine_pin_assert_marker
 
-    - name: Assert the seeded legacy repo line + keyring were removed
+    - name: Assert the required-pin assert rejected the empty version pin
       ansible.builtin.assert:
         that:
-          - "'/usr/share/keyrings/docker.gpg' not in (docker_engine_repo_list.content | b64decode)"
-          - not docker_engine_legacy_keyring.stat.exists
+          - docker_engine_pin_assert_marker.stat.exists
         fail_msg: >-
-          The pre-standardization Docker repo line or keyring survived the
-          role's legacy cleanup; a host carrying both repo lines fails every
-          apt operation ("Conflicting values set for option Signed-By").
-        success_msg: "legacy Docker repo line + keyring are cleaned up"
+          The converge left no marker, so the required-pin assert did not fail
+          the play on an empty docker_engine_ce_version.
+        success_msg: "an empty version pin fails the required-pin assert"

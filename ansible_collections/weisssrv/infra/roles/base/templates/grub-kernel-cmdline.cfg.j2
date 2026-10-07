@@ -1,0 +1,4 @@
+{# Byte-stable: a reword rebuilds boot artifacts on every consumer. #}
+# {{ ansible_managed }}
+# Read by update-grub. Appends base_kernel_cmdline_args to the boot cmdline.
+GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT {{ base_kernel_cmdline_args | join(' ') }}"

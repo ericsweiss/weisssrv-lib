@@ -21,18 +21,17 @@ provisioner:
   inventory:
     group_vars:
       all:
-        # tailscale_version is deliberately NOT set: the scenario must exercise
-        # the shipped default, and pkgs.tailscale.com prunes older builds.
+        # tailscale_version is unset, so the scenario installs the shipped
+        # default and a default upstream stops publishing fails here rather than
+        # on a consumer's host. Sites pin their own version.
         tailscale_enabled: true
         tailscale_accept_routes: false
         tailscale_accept_dns: false
         tailscale_advertise_routes:
           - 192.168.0.0/24
-        # Exercise the tag-advertisement code path (rendered into the
-        # `tailscale set --advertise-tags` reconcile task; it is not passed to the
-        # initial `tailscale up`). tailscale up/set are skipped in molecule (no
-        # auth key, BackendState never Running), so this validates the role
-        # converges cleanly with a tag configured, not live tag adoption.
+        # Exercise the tag-advertisement path (rendered into the `tailscale set
+        # --advertise-tags` reconcile task). tailscale up/set are skipped in
+        # molecule, so this checks a clean converge, not live tag adoption.
         tailscale_advertise_tags:
           - tag:subnet-router
         tailscale_additional_flags: []

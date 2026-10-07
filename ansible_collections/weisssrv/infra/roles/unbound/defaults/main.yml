@@ -1,13 +1,16 @@
 ---
 unbound_port: 5335
 
+# Skip the pre-write unbound-checkconf validation. Only for hosts where the
+# binary is unavailable; a bad drop-in then reaches disk and the restart fails.
+unbound_skip_validate: false
+
 # Filename of the role-managed drop-in under /etc/unbound/unbound.conf.d/.
 unbound_dropin_name: managed.conf
 
-# Drop-in names a site used to own, removed on every run (never the current
-# unbound_dropin_name). unbound merges the drop-in dir with a SORTED glob, so a
-# leftover that sorts after the managed file wins every duplicated scalar — name
-# the file the site is migrating away from here. Site data, so empty by default.
+# Drop-in names removed on every run (never the current unbound_dropin_name).
+# unbound merges the drop-in dir with a SORTED glob, so a leftover sorting after
+# the managed file wins every duplicated scalar. Site data, empty by default.
 unbound_legacy_dropins: []
 
 # Listen addresses. unbound_interface is the readiness-probe target and the sole

@@ -1,12 +1,7 @@
 ---
-# Nextcloud (docker compose) on a dedicated Debian guest.
-#
-# Required inputs (empty here — tasks/main.yml asserts each where it is used):
-#   nextcloud_version / _postgres_version / _redis_version / _exporter_version
-#   nextcloud_external_host and/or nextcloud_internal_host
-#   the secrets below (env lookups by default; supply from the site's store)
-# Every optional block (OIDC SSO, outgoing SMTP, the NFS-backed backup landing)
-# is off/empty by default and asserts its own inputs when switched on.
+# Nextcloud (docker compose) on a dedicated Debian guest. Required inputs are
+# empty here and asserted in tasks/main.yml where they are used; every optional
+# block is off by default. See the README variables table.
 
 # Image pins. No default: a stale pin here would silently move a live stack.
 nextcloud_version: ""
@@ -48,10 +43,9 @@ nextcloud_db_password: "{{ lookup('ansible.builtin.env', 'NEXTCLOUD_POSTGRES_PAS
 nextcloud_admin_user: admin
 nextcloud_admin_password: "{{ lookup('ansible.builtin.env', 'NEXTCLOUD_ADMIN_PASSWORD', default='') }}"
 
-# User-facing hostnames. The defaults derive the conventional `cloud.<domain>`
-# names from nextcloud_external_domain / _internal_domain (which alias the
-# inventory-wide external_domain / internal_domain); set either host directly
-# when the name differs. At least one must resolve non-empty.
+# User-facing hostnames, derived as `cloud.<domain>` from the domain aliases
+# below. Set either host directly when the name differs. At least one must
+# resolve non-empty.
 nextcloud_external_domain: "{{ external_domain | default('') }}"
 nextcloud_internal_domain: "{{ internal_domain | default('') }}"
 nextcloud_external_host: "{{ ('cloud.' ~ nextcloud_external_domain) if nextcloud_external_domain else '' }}"
@@ -94,12 +88,9 @@ nextcloud_exporter_port: 9205
 nextcloud_exporter_bind_address: "0.0.0.0"
 nextcloud_serverinfo_token: "{{ lookup('ansible.builtin.env', 'NEXTCLOUD_SERVERINFO_TOKEN', default='') }}"
 
-# Opt-in postgres_exporter sidecar: database-level metrics, which the
-# application-level nextcloud-exporter above does not carry. Off by default, so
-# nothing is added to the stack unless a site asks for it. It reuses the stack's
-# own DB credentials from .env, so it introduces no new secret. Enabling it
-# requires a pinned image — set the version, or override
-# nextcloud_postgres_exporter_image for a different registry or build.
+# Opt-in postgres_exporter sidecar for database-level metrics, reusing the
+# stack's own DB credentials from .env. Enabling it needs a pinned version, or
+# an override of nextcloud_postgres_exporter_image.
 nextcloud_postgres_exporter_enabled: false
 nextcloud_postgres_exporter_version: ""
 nextcloud_postgres_exporter_image: "quay.io/prometheuscommunity/postgres-exporter:{{ nextcloud_postgres_exporter_version }}"
@@ -117,6 +108,10 @@ nextcloud_nginx_cert_dir: /etc/ssl/nextcloud
 nextcloud_nginx_ssl_certificate: "{{ nextcloud_nginx_cert_dir }}/fullchain.pem"
 nextcloud_nginx_ssl_certificate_key: "{{ nextcloud_nginx_cert_dir }}/privkey.pem"
 nextcloud_nginx_server_names: "{{ [nextcloud_external_host, nextcloud_internal_host] | select | join(' ') }}"
+# HSTS from the terminating proxy. Turn it off where TLS terminates further
+# upstream and that hop already sets the header.
+nextcloud_nginx_hsts_enabled: true
+nextcloud_nginx_hsts_value: "max-age=31536000; includeSubDomains"
 
 # OIDC SSO via the user_oidc app. Enabling it requires the discovery URI and the
 # client credentials; SSO-only hides the local login form (?direct=1 bypasses it
@@ -136,18 +131,17 @@ nextcloud_oidc_group_provisioning: 1
 nextcloud_oidc_unique_uid: 0
 nextcloud_oidc_sso_only: true
 # Nextcloud's SSRF guard blocks server-side fetches to private addresses, which
-# breaks OIDC discovery whenever the provider resolves to one (split-horizon
-# DNS). Widens every server-side fetch surface — see the README.
-nextcloud_oidc_allow_local_remote_servers: true
+# breaks OIDC discovery whenever the provider resolves to one. Widening it is
+# global, so split-horizon deployments opt in here — see the README.
+nextcloud_oidc_allow_local_remote_servers: false
 
 # Outgoing mail. An empty relay host skips the whole occ mail pass.
 nextcloud_smtp_host: ""
 nextcloud_smtp_enabled: "{{ nextcloud_smtp_host | length > 0 }}"
 nextcloud_smtp_port: "25"
-# SASL credentials for an authenticated submission relay (587). Both set
-# enables mail_smtpauth; both empty (the default) keeps the legacy
-# network-trusted posture. Set nextcloud_smtp_secure to "tls" for STARTTLS
-# on 587 — the usual null-client pairing.
+# SASL credentials for an authenticated submission relay on 587. Both set
+# enables mail_smtpauth; both empty keeps the network-trusted posture. Pair
+# with nextcloud_smtp_secure "tls" for STARTTLS.
 nextcloud_smtp_user: ""
 nextcloud_smtp_password: ""
 # Empty = no encryption (a LAN relay on 25); "tls" or "ssl" otherwise.
@@ -164,10 +158,9 @@ nextcloud_backup_oncalendar: "*-*-* 02:30:00"
 nextcloud_backup_lib_path: /usr/local/lib/nextcloud-backup-lib.sh
 nextcloud_backup_metrics_dir: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
 
-# NFS-backed backup landing: relocates the dump onto a fileserver export so it
-# rides an offsite file walk. Both the systemd unit and the wrapper fail closed
-# on an unmounted export. Mount by hostname when the export requires TLS — a
-# wildcard cert has no IP SAN.
+# NFS-backed backup landing: relocates the dump onto a fileserver export. Unit
+# and wrapper both fail closed on an unmounted export. Mount by hostname when
+# the export requires TLS, since a wildcard cert has no IP SAN.
 nextcloud_backup_nfs_enabled: false
 nextcloud_backup_nfs_server: ""
 nextcloud_backup_nfs_export: ""

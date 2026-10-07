@@ -27,44 +27,38 @@ provisioner:
         nas_storage_exports:
           - path: /tank/media/unified
             clients:
-              - spec: 192.168.0.0/24
+              - spec: 192.0.2.0/24
                 options: ro,sync,no_subtree_check
           - path: /tank/appdata/tls
             xprtsec: tls
             clients:
-              - spec: 192.168.0.200/29
+              - spec: 192.0.2.200/29
                 options: rw,sync,no_subtree_check,fsid=91
-              - spec: 192.168.0.220/29
+              - spec: 192.0.2.220/29
                 options: rw,sync,no_subtree_check,fsid=91
           - path: /tank/media/mixed
             clients:
-              - spec: 192.168.0.200/29
+              - spec: 192.0.2.200/29
                 options: rw,sync,no_subtree_check,fsid=92
                 xprtsec: tls
-              - spec: 192.168.0.154/32
+              - spec: 192.0.2.154/32
                 options: ro,sync,no_subtree_check,fsid=92
-          # bind_source exports: one on an encrypted dataset, one plaintext, so
-          # the fstab _zfs_anchor split (zfs-mount-encrypted.service vs
-          # zfs-mount.service) and the nfs-server drop-in scoping are asserted
-          # in verify.yml. The dirs are plain container paths — the mounted-
-          # dataset guard is bypassed by nas_storage_skip_zfs_operations.
+          # bind_source exports: one on an encrypted dataset, one plaintext,
+          # so verify.yml can assert the fstab _zfs_anchor split and the
+          # nfs-server drop-in scoping.
           - path: /export/appdata
             bind_source: /mnt/ssd/appdata
             clients:
-              - spec: 192.168.0.200/29
+              - spec: 192.0.2.200/29
                 options: rw,sync,no_subtree_check,fsid=93
           - path: /export/share
             bind_source: /mnt/tank/share
             clients:
-              - spec: 192.168.0.200/29
+              - spec: 192.0.2.200/29
                 options: rw,sync,no_subtree_check,fsid=94
-          # backups-apps: PER-APP exports, each bind_source a SUBDIR of an
-          # (encrypted) dataset — bind_source_check points the mounted-dataset
-          # guard at the parent and the fstab anchor uses the late
-          # zfs-mount-encrypted.service. Exercises the isolation split: a k3s
-          # require-TLS export, a VM require-TLS export (gitlab, now on the wire),
-          # and the HAOS plaintext export — each scoped to a single writer. The
-          # subdirs are created + owned as bind sources (no dedicated subdir task).
+          # Per-app exports, each bind_source a subdir of an encrypted dataset,
+          # with bind_source_check pointing the mounted-dataset guard at the
+          # parent. Covers TLS and plaintext exports scoped to one writer each.
           - path: /export/backups-apps/authentik
             bind_source: /mnt/tank/backups/apps/authentik
             bind_source_check: /mnt/tank/backups
@@ -73,7 +67,7 @@ provisioner:
             mode: "02775"
             xprtsec: tls
             clients:
-              - spec: 192.168.0.200/29
+              - spec: 192.0.2.200/29
                 options: rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=96
           - path: /export/backups-apps/gitlab
             bind_source: /mnt/tank/backups/apps/gitlab
@@ -83,7 +77,7 @@ provisioner:
             mode: "02775"
             xprtsec: tls
             clients:
-              - spec: 192.168.0.153/32
+              - spec: 192.0.2.153/32
                 options: rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=97
           - path: /export/backups-apps/home-assistant
             bind_source: /mnt/tank/backups/apps/home-assistant
@@ -92,23 +86,22 @@ provisioner:
             group: 2000
             mode: "02775"
             clients:
-              - spec: 192.168.0.154/32
+              - spec: 192.0.2.154/32
                 options: rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=98
           # Explicit `zfs:` classification, both directions. Both bind sources
-          # sit OUTSIDE nas_storage_zfs_mount_roots, so the derived pattern says
-          # "not ZFS" for each — the key is what decides, and verify asserts the
-          # rendered fstab opts differ accordingly.
+          # sit outside nas_storage_zfs_mount_roots, so the key is what decides
+          # and verify asserts the rendered fstab opts differ accordingly.
           - path: /export/declared-plain
             bind_source: /srv/plainbind
             zfs: false
             clients:
-              - spec: 192.168.0.200/29
+              - spec: 192.0.2.200/29
                 options: rw,sync,no_subtree_check,fsid=99
           - path: /export/declared-zfs
             bind_source: /srv/pool2/data
             zfs: true
             clients:
-              - spec: 192.168.0.200/29
+              - spec: 192.0.2.200/29
                 options: rw,sync,no_subtree_check,fsid=100
         nas_storage_encrypted_bind_sources:
           - /mnt/ssd/appdata
@@ -154,6 +147,14 @@ provisioner:
           - ssd/appdata
           - ssd/databases
           - ssd/k3s-etcd
+        # The library defaults carry no restic-offsite.service: it ships from the
+        # independently opt-in restic_offsite role. Both seams are driven here.
+        nas_storage_archive_backup_on_success_units:
+          - restic-offsite.service
+        nas_storage_swap_clean_conflicting_units:
+          - restic-offsite.service
+          - archive-backup.service
+          - media-mover.service
         nas_storage_media_mover_enabled: true
         nas_storage_media_mover_src: /mnt/nvme/media/library
         nas_storage_media_mover_dst: /mnt/tank/media/library
@@ -168,16 +169,14 @@ provisioner:
             path: /tank/media/unified
             read_only: true
             guest_ok: false
-        # ARC cap pass-through to weisssrv.infra.zfs_arc_cap. verify.yml drives
-        # tasks/zfs_arc.yml (zfs.yml as a whole is skipped below) and asserts
-        # this byte count reaches the rendered modprobe.d file. skip_initramfs
-        # suppresses the rebuild handler — the container has no /boot kernel.
+        # ARC cap pass-through to weisssrv.infra.zfs_arc_cap; verify.yml
+        # asserts this byte count reaches the rendered modprobe.d file.
+        # skip_initramfs suppresses the rebuild handler.
         nas_storage_zfs_arc_max_bytes: "8589934592"
         nas_storage_zfs_arc_skip_initramfs: true
-        # Exercise the delegation kill-switch: verify.yml asserts the sysctl.d
-        # drop-in lands with fs.leases-enable=0. Live apply stays OFF —
-        # fs.leases-enable is not container-namespaced, so a privileged
-        # container would set it on the CI host's kernel.
+        # Delegation kill-switch: verify.yml asserts the sysctl.d drop-in lands
+        # with fs.leases-enable=0. Live apply stays off, since the knob is not
+        # container-namespaced and would reach the CI host's kernel.
         nas_storage_nfs_disable_delegations: true
         nas_storage_nfs_apply_delegation_sysctl_live: false
         nas_storage_skip_zfs_operations: true

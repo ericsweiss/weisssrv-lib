@@ -1,11 +1,9 @@
 # {{ ansible_managed }}
 [Unit]
 Description=Weekly rotating deep verify of the offsite restic repository
-# restic check needs the repo env only (no local snapshot mounts), but network
-# must be up; ordered after the mount passes anyway so a boot-time catch-up
-# never races the pools. The control script's shared flock makes it impossible
-# to interleave with a mid-run nightly backup: it fails fast and the timer
-# retries next week.
+# Ordered after the mount passes so a boot-time catch-up never races the pools.
+# The control script's shared flock keeps it out of a mid-run nightly backup: it
+# skips and the timer retries next week.
 After=zfs-mount.service zfs-mount-encrypted.service network-online.target
 Wants=network-online.target
 
@@ -13,9 +11,10 @@ Wants=network-online.target
 Type=oneshot
 EnvironmentFile={{ restic_offsite_config_dir }}/env
 # --auto-subset: read-verify the next pack group (cursor persisted in the verify
-# metrics file), so the full repo is re-read against bit-rot at bounded egress
-# and a failed week is retried rather than skipped.
+# metrics file), so the full repo is re-read at bounded egress.
 ExecStart=/usr/local/sbin/restic-offsitectl verify --auto-subset
+TimeoutStartSec={{ restic_offsite_verify_timeout_start_sec }}
+TimeoutStopSec={{ restic_offsite_timeout_stop_sec }}
 Nice={{ restic_offsite_nice }}
 IOSchedulingClass={{ restic_offsite_io_class }}
 IOSchedulingPriority={{ restic_offsite_io_priority }}

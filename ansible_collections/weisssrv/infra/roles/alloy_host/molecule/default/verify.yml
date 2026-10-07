@@ -73,23 +73,23 @@
         alloy_rule_sources: "{{ (config_content.content | b64decode) | regex_findall('(?m)^\\s*source_labels\\s*=\\s*\\[\"([^\"]+)\"\\]') }}"
         alloy_rule_targets: "{{ (config_content.content | b64decode) | regex_findall('(?m)^\\s*target_label\\s*=\\s*\"([^\"]+)\"') }}"
 
-    - name: Assert `unit` is the only journal stream label
+    - name: Assert `job` and `unit` are the only journal stream labels
       ansible.builtin.assert:
         that:
           - alloy_rule_sources == ['__journal__systemd_unit']
-          - alloy_rule_targets == ['unit']
+          - alloy_rule_targets == ['job', 'unit']
+          - "'replacement  = \"journal\"' in (config_content.content | b64decode)"
         fail_msg: >-
           The journal relabel rules render
           {{ alloy_rule_sources }} -> {{ alloy_rule_targets }}, not
-          ['__journal__systemd_unit'] -> ['unit']. Every rule here is a Loki
-          STREAM label; adding one multiplies open chunks against
+          ['__journal__systemd_unit'] -> ['job', 'unit']. Every rule here is a
+          Loki STREAM label; adding one multiplies open chunks against
           max_global_streams_per_user.
-        success_msg: "`unit` is the only journal stream label"
+        success_msg: "`job` and `unit` are the only journal stream labels"
 
-    # The rules must be applied exactly once — inside the source, where
-    # __journal_* still exists. Forwarding the source into loki.relabel while
-    # ALSO passing that component's rules re-runs them after the metadata is
-    # gone, blanking (deleting) the labels on every stream.
+    # The rules must be applied exactly once, inside the source where
+    # __journal_* still exists. Re-running them once that metadata is gone
+    # blanks the labels on every stream.
     - name: Assert journal relabel rules are applied once
       ansible.builtin.assert:
         that:

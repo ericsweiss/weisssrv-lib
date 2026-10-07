@@ -1,21 +1,19 @@
 """Tests for scripts/check-secretstore-scope.py."""
 from __future__ import annotations
 
-import importlib.util
 import io
-from pathlib import Path
 
-SPEC = importlib.util.spec_from_file_location(
-    "check_secretstore_scope",
-    Path(__file__).resolve().parent.parent / "scripts" / "check-secretstore-scope.py",
-)
-mod = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(mod)
+from script_loader import load_script
+
+mod = load_script("check-secretstore-scope.py")
 
 
 def _run(stdin_text: str, monkeypatch, argv: list[str] | None = None) -> int:
     monkeypatch.setattr("sys.stdin", io.StringIO(stdin_text))
-    return mod.main(argv or [])
+    try:
+        return mod.main(argv or [])
+    except SystemExit as exc:  # the shared corpus loader exits 2 directly
+        return int(exc.code)
 
 
 def _store(conditions: str = "") -> str:
@@ -50,7 +48,7 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: apps
-  labels: {esweiss.com/vault: "true"}
+  labels: {example.test/vault: "true"}
 ---
 apiVersion: v1
 kind: Namespace
@@ -74,7 +72,7 @@ def test_consumer_outside_the_conditions_fails(monkeypatch):
 def test_namespace_selector_condition_is_honored(monkeypatch):
     selector_store = _store("""  conditions:
     - namespaceSelector:
-        matchLabels: {esweiss.com/vault: "true"}
+        matchLabels: {example.test/vault: "true"}
 """)
     assert _run(selector_store + NAMESPACES + EXTERNAL_SECRET, monkeypatch) == 0
     stray = EXTERNAL_SECRET.replace("namespace: apps", "namespace: other")
@@ -96,7 +94,7 @@ kind: ClusterExternalSecret
 metadata: {name: cloudflare-api-token}
 spec:
   namespaceSelectors:
-    - matchLabels: {esweiss.com/vault: "true"}
+    - matchLabels: {example.test/vault: "true"}
   externalSecretSpec:
     secretStoreRef: {kind: ClusterSecretStore, name: onepassword-homelab}
 """
@@ -105,7 +103,7 @@ spec:
     # Label `other` too and it becomes a consumer the conditions do not admit.
     labelled = NAMESPACES.replace(
         "metadata: {name: other}",
-        'metadata: {name: other, labels: {esweiss.com/vault: "true"}}',
+        'metadata: {name: other, labels: {example.test/vault: "true"}}',
     )
     assert _run(SCOPED + labelled + ces, monkeypatch) == 1
 
@@ -127,7 +125,7 @@ def test_matchexpressions_selector(monkeypatch):
     selector_store = _store("""  conditions:
     - namespaceSelector:
         matchExpressions:
-          - {key: esweiss.com/vault, operator: Exists}
+          - {key: example.test/vault, operator: Exists}
 """)
     assert _run(selector_store + NAMESPACES + EXTERNAL_SECRET, monkeypatch) == 0
 
@@ -172,15 +170,12 @@ metadata: {name: app, namespace: apps}
 
 def test_unparseable_corpus_is_an_operator_error(monkeypatch, capsys):
     assert _run("a: [1\n", monkeypatch) == 2
-    assert "Failed to parse YAML input" in capsys.readouterr().err
+    assert "failed to parse YAML input" in capsys.readouterr().err
 
 
 def test_cluster_external_secret_literal_namespaces_are_consumers(monkeypatch):
-    """ESO unions `spec.namespaces` with the selectors.
-
-    A CES written with the literal list alone matched no selector, so it used to
-    contribute zero consumers and its fan-out went unchecked entirely.
-    """
+    """ESO unions `spec.namespaces` with the selectors, so a literal list is a
+    consumer too."""
     ces = """
 ---
 apiVersion: external-secrets.io/v1
@@ -216,3 +211,108 @@ spec:
     - namespaces: [apps, other]
 """)
     assert _run(both + NAMESPACES + ces, monkeypatch) == 0
+
+
+# --- a condition that admits everything is not a scope ------------------------
+
+
+def test_an_empty_namespace_selector_condition_is_not_a_scope(monkeypatch, capsys):
+    """`namespaceSelector: {}` has no terms, so it matches every namespace —
+    exactly as wide as declaring no conditions at all."""
+    catch_all = _store("""  conditions:
+    - namespaceSelector: {}
+""")
+    assert _run(catch_all + NAMESPACES + EXTERNAL_SECRET, monkeypatch) == 1
+    assert "admits every namespace" in capsys.readouterr().err
+
+
+def test_an_empty_matchlabels_condition_is_not_a_scope(monkeypatch):
+    catch_all = _store("""  conditions:
+    - namespaceSelector: {matchLabels: {}}
+""")
+    assert _run(catch_all + NAMESPACES + EXTERNAL_SECRET, monkeypatch) == 1
+
+
+def test_a_catch_all_namespace_regex_is_not_a_scope(monkeypatch, capsys):
+    """`.*` matches every namespace; so does an unanchored `.+` or an empty
+    pattern, because the matcher uses re.search."""
+    for pattern in ('".*"', '".+"', '"^.*$"', '""'):
+        catch_all = _store(f"""  conditions:
+    - namespaceRegexes: [{pattern}]
+""")
+        assert _run(catch_all + EXTERNAL_SECRET, monkeypatch) == 1, pattern
+        capsys.readouterr()
+
+
+def test_an_anchored_namespace_regex_is_still_a_scope(monkeypatch):
+    """The positive case the catch-all probe must not swallow."""
+    scoped = _store("""  conditions:
+    - namespaceRegexes: ["^apps$"]
+""")
+    assert _run(scoped + EXTERNAL_SECRET, monkeypatch) == 0
+
+
+def test_an_unparseable_namespace_regex_is_an_operator_error(monkeypatch, capsys):
+    """A pattern the API would reject is a defect the gate must name, not swallow."""
+    broken = _store("""  conditions:
+    - namespaceRegexes: ["^app("]
+""")
+    assert _run(broken + EXTERNAL_SECRET, monkeypatch) == 2
+    assert "does not compile" in capsys.readouterr().err
+
+
+def test_an_unparseable_catch_all_regex_is_not_silently_scoped(monkeypatch, capsys):
+    """The fail-open direction: a broken pattern must never read as scoped."""
+    broken = _store("""  conditions:
+    - namespaceRegexes: ["(.*"]
+""")
+    assert _run(broken + EXTERNAL_SECRET, monkeypatch) == 2
+    assert "does not compile" in capsys.readouterr().err
+
+
+# --- the selector matcher fails CLOSED on a shape the apiserver rejects -------
+
+
+def test_an_unknown_match_expression_operator_never_admits(monkeypatch):
+    """A misspelled operator matched no arm and fell through to "admits"."""
+    for operator in ("in", "Equals", ""):
+        bad = _store(f"""  conditions:
+    - namespaceSelector:
+        matchExpressions:
+          - {{key: example.test/vault, operator: "{operator}", values: ["true"]}}
+""")
+        assert _run(bad + NAMESPACES + EXTERNAL_SECRET, monkeypatch) == 1, operator
+
+
+def test_a_string_values_match_expression_never_admits(monkeypatch):
+    """`values: "true"` would make the membership test a substring test."""
+    bad = _store("""  conditions:
+    - namespaceSelector:
+        matchExpressions:
+          - {key: example.test/vault, operator: In, values: "true"}
+""")
+    assert _run(bad + NAMESPACES + EXTERNAL_SECRET, monkeypatch) == 1
+
+
+def test_an_unknown_match_expression_key_never_admits(monkeypatch):
+    bad = _store("""  conditions:
+    - namespaceSelector:
+        matchExpressions:
+          - {key: example.test/vault, operator: Exists, valuse: []}
+""")
+    assert _run(bad + NAMESPACES + EXTERNAL_SECRET, monkeypatch) == 1
+
+
+def test_a_valid_match_expression_still_admits(monkeypatch):
+    ok = _store("""  conditions:
+    - namespaceSelector:
+        matchExpressions:
+          - {key: example.test/vault, operator: In, values: ["true"]}
+""")
+    assert _run(ok + NAMESPACES + EXTERNAL_SECRET, monkeypatch) == 0
+
+
+def test_an_unused_external_store_is_reported_not_fatal(monkeypatch, capsys):
+    argv = ["--external-store", "gone-elsewhere"]
+    assert _run(SCOPED + EXTERNAL_SECRET, monkeypatch, argv) == 0
+    assert "not referenced by this corpus: gone-elsewhere" in capsys.readouterr().out

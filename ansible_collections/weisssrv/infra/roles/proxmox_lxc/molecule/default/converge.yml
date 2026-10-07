@@ -9,12 +9,9 @@
     proxmox_host: "{{ inventory_hostname }}"
     proxmox_role: compute
     proxmox_lxc_id: 199
-    # NOTE: do not override ansible_host here — molecule's docker connection
-    # plugin reads ansible_host as the container name/ID. Overriding it to
-    # an IP makes `docker exec` fail with "No such container: 192.168.0.199".
-    # The role consumes the IP via proxmox_lxc_target_ip (defaults to
-    # ansible_host in prod inventory; pinned to a stub IP here so the pct
-    # create --net0 render still sees a realistic value).
+    # Do not override ansible_host: molecule's docker connection plugin reads
+    # it as the container name. The role takes the IP from
+    # proxmox_lxc_target_ip, pinned to a stub value here.
     proxmox_lxc_target_ip: "192.168.0.199"
   pre_tasks:
     - name: Pre-create Ansible remote_tmp (raw bypasses tmpdir setup)
@@ -34,12 +31,9 @@
         mode: "0755"
 
   tasks:
-    # 1. Compute host with no override → expect "local-ssd"
-    # NOTE: no `vars:` block — leaving proxmox_lxc_storage undefined lets the
-    # role's `default(proxmox_storage_defaults[_proxmox_lxc_host_role])` lookup
-    # resolve to 'local-ssd' for the compute role. Setting `proxmox_lxc_storage:
-    # null` would render as literal "None" because Jinja's default() only
-    # substitutes for undefined, not explicit null.
+    # 1. Compute host with no override resolves to "local-ssd". No `vars:`
+    # block, so proxmox_lxc_storage stays undefined and the role's default()
+    # lookup applies; an explicit null would render as literal "None".
     - name: Compute-default run
       ansible.builtin.include_role:
         name: weisssrv.infra.proxmox_lxc
@@ -128,10 +122,9 @@
       vars:
         proxmox_lxc_storage: local-ssd
 
-    # HA-aware reconcile: the existence check returns the container's CURRENT
-    # node (the stub places it on this molecule host), so reconcile tasks must
-    # delegate there rather than the inventory proxmox_host. A regression that
-    # assumed proxmox_host would break deploys for any HA-migrated container.
+    # HA-aware reconcile: the existence check returns the container's current
+    # node, so reconcile tasks delegate there rather than to the inventory
+    # proxmox_host, which would break any HA-migrated container.
     - name: Assert reconcile host resolved to the container's actual node
       ansible.builtin.assert:
         that:
@@ -162,11 +155,9 @@
           {"pct_create_calls": {{ (pct_exist_lines.stdout | from_json).pct_create_calls }},
            "pct_set_calls": {{ (pct_exist_lines.stdout | from_json).pct_set_calls }}}
 
-    # 6/7/8 — create-path rendering contracts: GPU idmap GID arithmetic
-    # (both GID orderings), the standard idmap, and the bind-mount pct set.
-    # The idmap tasks rewrite /etc/pve/lxc/<id>.conf directly, so each case
-    # seeds a conf with Proxmox-default idmap lines and asserts the exact
-    # rewritten content.
+    # 6/7/8 — create-path rendering contracts: GPU idmap GID arithmetic in both
+    # orderings, the standard idmap, and the bind-mount pct set. Each case seeds
+    # a conf with Proxmox-default idmap lines and asserts the rewritten content.
     - name: 6 — reset stub state (container absent) and pct.log
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -444,10 +435,9 @@
           {"startup_set": {{ (lxc_meta_drift.stdout | from_json).startup_set }},
            "any_onboot_set": {{ (lxc_meta_drift.stdout | from_json).any_onboot_set }}}
 
-    # 11 — GPU passthrough WITHOUT bind mounts (the immich-ml shape): the
-    # GPU idmap must render byte-identical to case 6 — the video/render GID
-    # passthrough is the only thing that lets a mount-less unprivileged GPU
-    # guest open /dev/dri — while zero bind-mount pct sets fire.
+    # 11 — GPU passthrough without bind mounts: the GPU idmap renders
+    # byte-identical to case 6, since the video/render GID passthrough is what
+    # lets a mount-less unprivileged guest open /dev/dri, and no pct set fires.
     - name: 11 — reset stub state (container absent), pct.log, and conf
       ansible.builtin.copy:
         dest: "{{ item.dest }}"
@@ -532,17 +522,9 @@
           {"prefix22_calls": {{ (lxc_prefix_lines.stdout | from_json).prefix22_calls }},
            "prefix24_calls": {{ (lxc_prefix_lines.stdout | from_json).prefix24_calls }}}
 
-    # 13 — per-container DNS (nameserver + searchdomain) reconcile on an EXISTING
-    # container. `pct create` writes these only at create; Proxmox re-applies the
-    # stored nameserver to the container's resolv.conf on every start, so a
-    # container whose resolvers drifted after creation kept clobbering the fixed
-    # value on the next reboot. The reconcile converges it. Desired =
-    # nameserver "192.168.0.150 192.168.0.160" (dns_servers) + searchdomain
-    # "example.test" (internal_domain). Unlike the VM, this reconcile has no
-    # skip_create gate — it fires on every existing container with a non-empty
-    # desired nameserver.
-    # 13a. DRIFT — stub reports a stale nameserver -> exactly one
-    # `pct set 199 --nameserver <desired> --searchdomain <desired>`, changed.
+    # 13 — per-container DNS reconcile on an existing container, with no
+    # skip_create gate. 13a: a stale nameserver in the stub yields exactly one
+    # `pct set 199 --nameserver <desired> --searchdomain <desired>`.
     - name: 13 — flip stub to "container exists", stub drifted nameserver, reset pct.log
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -624,3 +606,75 @@
            "nodrift_any_set": {{ (lxc_dns_nodrift.stdout | from_json).any_ns_set }},
            "nodrift_changed": {{ lxc_dns_nodrift_changed | to_json }},
            "nodrift_skipped": {{ lxc_dns_nodrift_skipped | to_json }}}
+
+    # 14. Create-input assert, gated on the container being absent rather than
+    # on skip_create: `pct create` runs under skip_create too, and a run that
+    # only reconciles an existing container must not demand those values.
+    - name: 14 — stub the container as absent
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/ct_exists_state
+        content: "missing\n"
+        mode: "0644"
+
+    - name: 14 — absent container with no gateway (expect failure)
+      block:
+        - name: 14 — run role with an empty gateway
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_lxc
+          vars:
+            proxmox_lxc_storage: local-ssd
+            proxmox_lxc_gateway: ""
+        - name: 14 — missing gateway did not fail
+          ansible.builtin.set_fact:
+            lxc_missing_gateway_failed: false
+      rescue:
+        - name: 14 — missing gateway failed as expected
+          ansible.builtin.set_fact:
+            lxc_missing_gateway_failed: true
+
+    - name: 14 — absent container with a non-GiB disk size (expect failure)
+      block:
+        - name: 14 — run role with a megabyte disk size
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_lxc
+          vars:
+            proxmox_lxc_storage: local-ssd
+            proxmox_lxc_disk_size: 512M
+        - name: 14 — non-GiB disk size did not fail
+          ansible.builtin.set_fact:
+            lxc_bad_disk_size_failed: false
+      rescue:
+        - name: 14 — non-GiB disk size failed as expected
+          ansible.builtin.set_fact:
+            lxc_bad_disk_size_failed: true
+
+    - name: 14 — stub the container as existing again
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/ct_exists_state
+        content: "exists\n"
+        mode: "0644"
+
+    - name: 14 — existing container with no gateway (must NOT fail)
+      block:
+        - name: 14 — reconcile an existing container with an empty gateway
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_lxc
+          vars:
+            proxmox_lxc_storage: local-ssd
+            proxmox_lxc_gateway: ""
+        - name: 14 — reconcile-only run succeeded
+          ansible.builtin.set_fact:
+            lxc_reconcile_without_gateway_ok: true
+      rescue:
+        - name: 14 — reconcile-only run failed
+          ansible.builtin.set_fact:
+            lxc_reconcile_without_gateway_ok: false
+
+    - name: 14 — capture create-input artifact
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/14-create-inputs.json
+        mode: "0644"
+        content: |
+          {"missing_gateway_failed": {{ lxc_missing_gateway_failed | to_json }},
+           "bad_disk_size_failed": {{ lxc_bad_disk_size_failed | to_json }},
+           "reconcile_without_gateway_ok": {{ lxc_reconcile_without_gateway_ok | to_json }}}

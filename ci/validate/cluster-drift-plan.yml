@@ -1,0 +1,68 @@
+spec:
+  inputs:
+    job_name:
+      default: cluster-drift-plan
+      description: >-
+        Job name. Include this template once per detector group, each with its
+        own job_name — two includes sharing a name collide.
+    stage:
+      default: validate
+    base:
+      default: ".cluster-verify-base"
+      description: >-
+        Hidden job supplying kubectl and the kubeconfig
+        (ci/deploy/cluster-verify-base.yml). Match its `fragment_name`.
+    gates:
+      description: >-
+        REQUIRED. Shell run once per detector, each line
+        `drift_gate '<one shell pipeline>'`. A gate exits 0 clean, 1 drift,
+        2 uninspectable input (expired kubeconfig, revoked token, renamed CRD);
+        the highest code across the gates becomes the job's. A gate run outside
+        `drift_gate` loses its exit code, so every line goes through the helper,
+        which runs it in a subshell — a gate's own `exit` ends that gate only.
+        Have each gate capture its own input and exit 2 when the capture fails:
+        under `pipefail` a failed `kubectl` feeding a clean parser reads as rc 1.
+    secrets_guard:
+      default: "$OP_SERVICE_ACCOUNT_TOKEN"
+      description: >-
+        Expression that must be truthy for the job to be created; without the
+        vault token the kubeconfig cannot be read. Interpolated INSIDE a
+        single-quoted `rules:if`, so it must contain no single quote.
+---
+# Read-only drift detector over the LIVE cluster: runs the consumer's policy
+# gates through kubectl and reports, never reconciles. Requires
+# ci/deploy/cluster-verify-base.yml included. Usage: docs/INCLUDE-CONTRACT.md.
+"$[[ inputs.job_name ]]":
+  extends: $[[ inputs.base ]]
+  needs: []
+  stage: $[[ inputs.stage ]]
+  script:
+    - |
+      # No errexit: every gate runs, so one drift finding does not hide the
+      # next. `-u` catches an unset variable in a consumer gate line.
+      set -uo pipefail
+      RC=0
+      # CRITICAL: the HIGHEST code wins, so rc 2 (uninspectable input) can never
+      # be reported as rc 1, which allow_failure below renders as allowed drift.
+      # The subshell is part of that: a gate reports with `exit`, which in the
+      # calling shell would end the job at the first detector.
+      drift_gate() { # <shell pipeline>
+        ( eval "$1" )
+        gate_rc=$?
+        [ "$gate_rc" -gt "$RC" ] && RC=$gate_rc
+        echo "--- rc=$gate_rc: $1"
+        return 0
+      }
+      $[[ inputs.gates ]]
+      [ "$RC" -ne 0 ] || echo "No drift: every gate reported clean."
+      exit "$RC"
+  # Drift (exit 1) is the advisory yellow. A detector that could not inspect the
+  # cluster exits 2 and stays red: a blanket `allow_failure: true` would mask
+  # real drift behind a permanently-broken detector.
+  allow_failure:
+    exit_codes: [1]
+  # CRITICAL: schedule only. The job reads a cluster-admin kubeconfig from the
+  # vault, so it must never run on unmerged branch code, and its subject is the
+  # live cluster rather than the commit — a console edit changes nothing in-repo.
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $[[ inputs.secrets_guard ]]'

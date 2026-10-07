@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Molecule behavioral check for the ZFS-free metric helpers in the rendered
-# archive-backupctl and media-mover.sh: the structural pins in
-# archive-contract-assert.sh prove the code EXISTS; this executes it. Runs on
-# the target via ansible.builtin.script after converge deploys both scripts.
+# archive-backupctl and media-mover.sh: archive-contract-assert.sh pins their
+# structure, this executes them. Runs on the target after converge.
 set -euo pipefail
 
 ARCHIVE="${1:-/usr/local/sbin/archive-backupctl}"
@@ -120,10 +119,9 @@ env -i bash -c '
   grep -qx "media_mover_last_success_timestamp_seconds 1650000000" "$PROM_FILE"
 ' || fail "media-mover failure run did not preserve the last-success timestamp"
 
-# swap-clean: write_prom_metrics arms + cleanup restart-failure demotion
-# swap-clean.sh runs its logic in main() and ends with `main "$@"`, so neutralize
-# the entrypoint (as the sibling archive/restic behavior tests do) and source the
-# rest to get the functions + globals WITHOUT running any swapoff/swapon.
+# swap-clean: write_prom_metrics arms + cleanup restart-failure demotion.
+# swap-clean.sh ends with `main "$@"`, so neutralize the entrypoint and source
+# the rest for its functions WITHOUT running any swapoff/swapon.
 sed 's/^main "\$@"$/# main disabled for behavior test/' "$SWAPCLEAN" > "$WORK/swap-clean-lib.sh"
 grep -q 'main disabled for behavior test' "$WORK/swap-clean-lib.sh" \
   || fail "could not disable swap-clean entrypoint"
@@ -174,5 +172,38 @@ env -i bash -c '
   awk "/^swap_clean_guest_restart_failures /{print \$2}" "$PROM_FILE" | grep -qx "1" || exit 29
   grep -qx "swap_clean_guests_stopped_count 1" "$PROM_FILE" || exit 30
 ' || fail "swap-clean cleanup did not demote run + emit restart-failures on a failed restart"
+
+# archive-backupctl: a failed readonly=on must be reported, not swallowed. The
+# replica would otherwise stay writable while the run records success.
+env -i bash -c '
+  # shellcheck disable=SC1091
+  source "'"$WORK"'/archive-lib.sh" || true
+  set +e
+  zfs() {
+    case "$*" in
+      "set readonly=on tank/backup") return 1 ;;
+      "list -H -o name -r tank/backup") echo "tank/backup" ;;
+    esac
+    return 0
+  }
+  lock_backup_tree tank/backup > "'"$WORK"'/lockdown.log" 2>&1
+  [ "$_LOCKDOWN_FAILED" = "1" ] || exit 31
+  grep -q "Lockdown: FAILED readonly=on on tank/backup" "'"$WORK"'/lockdown.log" || exit 32
+' || fail "a failed readonly=on was swallowed, so a writable replica reads as locked"
+
+# The same call with a working zfs must leave the flag clear.
+env -i bash -c '
+  # shellcheck disable=SC1091
+  source "'"$WORK"'/archive-lib.sh" || true
+  set +e
+  zfs() {
+    case "$*" in
+      "list -H -o name -r tank/backup") echo "tank/backup" ;;
+    esac
+    return 0
+  }
+  lock_backup_tree tank/backup >/dev/null 2>&1
+  [ "$_LOCKDOWN_FAILED" = "0" ] || exit 33
+' || fail "a successful lockdown was reported as failed"
 
 echo "archive/media-mover/swap-clean metric behavior OK"

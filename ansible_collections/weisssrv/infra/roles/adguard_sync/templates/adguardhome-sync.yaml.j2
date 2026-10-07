@@ -1,9 +1,8 @@
 # {{ ansible_managed }}
 
-{# to_json emits a safe double-quoted JSON string (valid YAML), so a rotated
-   password/username/url containing YAML-significant characters (leading
-   {/[/#/&/*/!, a ": " sequence, a trailing colon) can't mis-parse or truncate
-   the credential. No wrapping quotes here — to_json supplies its own. #}
+{# to_json emits a safe double-quoted JSON string (valid YAML), so a credential
+   holding YAML-significant characters cannot mis-parse or truncate. No wrapping
+   quotes here — to_json supplies its own. #}
 origin:
   url: {{ adguard_sync_origin | to_json }}
   username: {{ adguard_sync_admin_user | to_json }}

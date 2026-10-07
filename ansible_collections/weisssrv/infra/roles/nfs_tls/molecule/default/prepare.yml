@@ -1,11 +1,7 @@
 ---
-# Two preconditions the role expects from the host:
-#   1. /etc/ssl/private/{fullchain,privkey}.pem exist (acme_certs distributes
-#      them in production). On the client-only host they also simulate a stale
-#      pre-least-privilege rollout that the cleanup task must remove.
-#   2. tlshd.service must accept `state: started`, so ktls-utils is
-#      pre-installed with a /bin/true ExecStart override — the container lacks
-#      the AF_TLSH netlink subsystem the real binary needs.
+# Stages the two preconditions the role expects: the certificate pair under
+# /etc/ssl/private, and a tlshd.service that accepts `state: started` through a
+# /bin/true ExecStart override, since the container has no AF_TLSH netlink.
 - name: Prepare
   hosts: all
   gather_facts: false
@@ -51,14 +47,6 @@
         group: root
         mode: "0600"
 
-    # Pre-install ktls-utils so the unit file exists for the drop-in below to
-    # override (and the role's own apt step becomes a fast no-op).
-    - name: Pre-install ktls-utils
-      ansible.builtin.apt:
-        name: ktls-utils
-        state: present
-        update_cache: true
-
     # Replace tlshd's ExecStart with /bin/true: without it the role's final
     # `systemd: state: started` fails in a container, because the kernel-TLS
     # handshake netlink family the real binary needs isn't compiled in.
@@ -88,13 +76,17 @@
       ansible.builtin.systemd:
         daemon_reload: true
 
-    # Opted-out host precondition: simulate a host that WAS running NFS-TLS
-    # before nfs_tls_enabled flipped false. Stage the enabled unit + a stale
-    # /etc/tlshd.conf so the role's de-list reconcile has something to undo.
-    # Gated on the opted-out host only (nfs_tls_enabled: false in host_vars).
+    # Opted-out host precondition: an enabled unit and a stale /etc/tlshd.conf,
+    # so the role's de-list reconcile has something to undo.
     - name: Stage opted-out precondition (enabled tlshd + stale config)
       when: not (nfs_tls_enabled | default(true))
       block:
+        - name: Install ktls-utils on the opted-out host
+          ansible.builtin.apt:
+            name: ktls-utils
+            state: present
+            update_cache: true
+
         - name: Enable and start tlshd on the opted-out host
           ansible.builtin.systemd:
             name: tlshd.service

@@ -30,16 +30,15 @@
     - name: Verify override pins port 9101 and textfile collector
       ansible.builtin.assert:
         that:
-          - "':9101' in (override_content.content | b64decode)"
+          - "'--web.listen-address=:9101' in (override_content.content | b64decode)"
           - "'--collector.textfile' in (override_content.content | b64decode)"
           - "'--collector.textfile.directory=/var/lib/node_exporter' in (override_content.content | b64decode)"
         fail_msg: "systemd override is missing required listen-address or textfile flags"
         success_msg: "systemd override pins port 9101 and textfile collector"
 
-    # The systemd collector is default-OFF upstream: without these flags
-    # node_systemd_* is emitted by nothing and any "unit X failed" alert is dead
-    # on arrival. enable-restarts-metrics is the separate flag that produces
-    # node_systemd_service_restart_total (the crash-loop series).
+    # The systemd collector is default-off upstream, so without these flags
+    # nothing emits node_systemd_*. enable-restarts-metrics is the separate
+    # flag behind node_systemd_service_restart_total.
     - name: Verify the override enables the systemd collector with unit filters
       ansible.builtin.assert:
         that:
@@ -49,6 +48,15 @@
           - "'--collector.systemd.enable-restarts-metrics' in (override_content.content | b64decode)"
         fail_msg: "systemd override does not enable the systemd collector — node_systemd_* has no emitter"
         success_msg: "systemd override enables the filtered systemd collector"
+
+    # Default OFF: --collector.processes walks all of /proc on every scrape, so
+    # node_processes_* is opt-in per host.
+    - name: Verify the processes collector stays off by default
+      ansible.builtin.assert:
+        that:
+          - "'--collector.processes' not in (override_content.content | b64decode)"
+        fail_msg: "processes collector is on without node_exporter_host_processes_collector"
+        success_msg: "processes collector is off by default"
 
     - name: Scrape /metrics for the systemd collector series
       ansible.builtin.uri:
@@ -126,10 +134,8 @@
           - corosync_timer.stat.mode == "0644"
         fail_msg: "corosync-health-collector.timer missing or has wrong perms"
 
-    # The role's enable+start step runs for real here (converge.yml's first pass
-    # is what proves the timer list follows node_exporter_host_zpool_collector
-    # instead of naming a unit that was never rendered), so all three timers
-    # must be enabled.
+    # The role's enable and start step runs for real here, so every collector
+    # timer must come back enabled.
     - name: Check the collector timers are enabled  # noqa command-instead-of-module
       ansible.builtin.command: "systemctl is-enabled {{ item }}"
       register: node_exporter_host_timer_enabled
@@ -139,11 +145,10 @@
         - corosync-health-collector.timer
         - zpool-status-collector.timer
         - smartmon-collector.timer
+        - slabinfo-collector.timer
 
-    # End-to-end smoke: run the script directly rather than waiting out the
-    # timer. corosync is absent in CI, but the script's `set +e` guard handles
-    # that and still emits a well-formed .prom file with cpu=0 + last_success
-    # sentinel.
+    # End-to-end smoke: run the script directly rather than wait out the timer.
+    # corosync is absent in CI, and the script still emits a well-formed .prom.
     - name: Invoke corosync collector once to produce textfile metric
       ansible.builtin.command: /usr/local/sbin/corosync-health-collector.sh
       changed_when: false
@@ -174,7 +179,7 @@
         fail_msg: "corosync_health.prom missing one or more metrics"
 
     # zpool collector — no zpool binary in CI, so the run exercises the
-    # no-ZFS path: only the last_success sentinel is emitted.
+    # no-ZFS path: success 0 plus the last_success sentinel.
 
     - name: Verify zpool collector script is present and executable
       ansible.builtin.stat:
@@ -223,14 +228,134 @@
         src: /var/lib/node_exporter/zfs_pool_status.prom
       register: zpool_prom_content
 
-    - name: Assert zpool .prom emits the sentinel (no-ZFS host path)
+    - name: Assert zpool .prom emits the sentinel and no measurement (no-ZFS host path)
       ansible.builtin.assert:
         that:
           - "'zfs_pool_status_collector_last_success_seconds ' in (zpool_prom_content.content | b64decode)"
-        fail_msg: "zfs_pool_status.prom missing the collector sentinel"
+          - "'zfs_pool_status_collector_success 0' in (zpool_prom_content.content | b64decode)"
+        fail_msg: >-
+          zfs_pool_status.prom missing the collector sentinel, or reports success
+          with no pool measured, which reads as healthy.
+
+    # slabinfo collector — /proc/slabinfo is unreadable in an unprivileged
+    # container, which is the degraded path: success 0 plus the sentinel.
+
+    - name: Verify slabinfo collector script and allowlist are present
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: node_exporter_host_slabinfo_files
+      loop:
+        - /usr/local/sbin/slabinfo-collector.sh
+        - /etc/default/slabinfo-collector
+        - /etc/systemd/system/slabinfo-collector.service
+        - /etc/systemd/system/slabinfo-collector.timer
+
+    - name: Assert every slabinfo collector artifact was deployed
+      ansible.builtin.assert:
+        that: node_exporter_host_slabinfo_files.results | map(attribute='stat.exists') | reject | length == 0
+        fail_msg: "slabinfo collector script, allowlist or units missing"
+
+    - name: Read the slabinfo collector allowlist
+      ansible.builtin.slurp:
+        src: /etc/default/slabinfo-collector
+      register: node_exporter_host_slab_allowlist
+
+    - name: Assert the allowlist carries the configured caches, each once
+      vars:
+        slab_line: >-
+          {{ (node_exporter_host_slab_allowlist.content | b64decode)
+             | regex_search('SLAB_CACHES="([^"]*)"', '\\1') | first | default('') }}
+      ansible.builtin.assert:
+        that:
+          - "'SLAB_CACHES=\"skbuff_ext_cache dentry\"' in (node_exporter_host_slab_allowlist.content | b64decode)"
+          # A repeated cache writes duplicate series into one .prom, which the
+          # Prometheus registry rejects for the whole textfile set.
+          - slab_line.split() | unique | length == slab_line.split() | length
+        fail_msg: "slabinfo allowlist does not name node_exporter_host_slab_caches, or repeats one"
+
+    - name: Read the empty-cache-list assert marker from converge
+      ansible.builtin.slurp:
+        src: /tmp/node-exporter-slab-caches-assert.json
+      register: slab_caches_assert_raw
+
+    - name: Assert the empty slab cache allowlist was rejected
+      ansible.builtin.assert:
+        that:
+          - (slab_caches_assert_raw.content | b64decode | from_json).failed
+        fail_msg: >-
+          The role accepted an empty node_exporter_host_slab_caches with the
+          slabinfo collector enabled, so it would publish only its success
+          sentinel and no per-cache series.
+        success_msg: "Empty slab cache allowlist correctly rejected"
+
+    - name: Invoke slabinfo collector once to produce textfile metric
+      ansible.builtin.command: /usr/local/sbin/slabinfo-collector.sh
+      changed_when: false
+
+    - name: Read slabinfo .prom file
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/node_slabinfo.prom
+      register: node_exporter_host_slab_prom
+
+    # The success gauge is what distinguishes "no readable /proc/slabinfo" from
+    # "collector never ran" — without it both look like absent series. It is
+    # emitted on every run; the sentinel only on a successful one.
+    - name: Assert slabinfo .prom emits the collector success gauge
+      ansible.builtin.assert:
+        that:
+          - "'node_slabinfo_collector_success ' in (node_exporter_host_slab_prom.content | b64decode)"
+        fail_msg: "node_slabinfo.prom missing the collector success gauge"
+
+    - name: Assert the sentinel is published exactly when the run succeeded
+      ansible.builtin.assert:
+        that:
+          - ("'node_slabinfo_collector_last_success_seconds ' in
+              (node_exporter_host_slab_prom.content | b64decode))
+             == ('node_slabinfo_collector_success 1' in
+              (node_exporter_host_slab_prom.content | b64decode))"
+        fail_msg: >-
+          node_slabinfo_collector_last_success_seconds records the last ATTEMPT
+          rather than the last success, or is missing from a successful run.
+
+    - name: Stage a slabinfo fixture holding one known cache
+      ansible.builtin.copy:
+        dest: /tmp/slabinfo-fixture
+        mode: "0644"
+        content: |
+          slabinfo - version: 2.1
+          demo_cache 10 20 32 4 1 : tunables 0 0 0 : slabdata 1 2 0
+
+    - name: Run the collector against the fixture with a bogus cache name
+      ansible.builtin.command: >-
+        /usr/local/sbin/slabinfo-collector.sh /tmp/slabinfo-probe
+        demo_cache nosuchcache
+      environment:
+        SLABINFO: /tmp/slabinfo-fixture
+      changed_when: false
+
+    - name: Read the fixture-run .prom file
+      ansible.builtin.slurp:
+        src: /tmp/slabinfo-probe/node_slabinfo.prom
+      register: node_exporter_host_slab_probe_prom
+
+    # A cache the kernel renamed or merged away emits no series at all, which
+    # reads exactly like a leak that stopped.
+    - name: Assert an absent cache publishes a presence zero rather than nothing
+      ansible.builtin.assert:
+        that:
+          - "'node_slab_cache_present{cache=\"demo_cache\"} 1'
+             in (node_exporter_host_slab_probe_prom.content | b64decode)"
+          - "'node_slab_cache_present{cache=\"nosuchcache\"} 0'
+             in (node_exporter_host_slab_probe_prom.content | b64decode)"
+          - "'node_slab_objects{cache=\"demo_cache\"} 10'
+             in (node_exporter_host_slab_probe_prom.content | b64decode)"
+        fail_msg: >-
+          The slabinfo collector emitted no signal for a cache name that does
+          not exist, so a typo is indistinguishable from a leak that stopped.
+        success_msg: "an absent slab cache publishes node_slab_cache_present 0"
 
     # smartmon collector — no SMART-capable devices in CI, so the run
-    # exercises the degraded path: only the last_success sentinel is required.
+    # exercises the degraded path: success 0 plus the last_success sentinel.
 
     - name: Verify smartmon collector script is present and executable
       ansible.builtin.stat:
@@ -279,11 +404,14 @@
         src: /var/lib/node_exporter/smartmon.prom
       register: smartmon_prom_content
 
-    - name: Assert smartmon .prom emits the sentinel
+    - name: Assert smartmon .prom emits the sentinel and no measurement
       ansible.builtin.assert:
         that:
           - "'smartmon_collector_last_success_seconds ' in (smartmon_prom_content.content | b64decode)"
-        fail_msg: "smartmon.prom missing the collector sentinel"
+          - "'smartmon_collector_success 0' in (smartmon_prom_content.content | b64decode)"
+        fail_msg: >-
+          smartmon.prom missing the collector sentinel, or reports success with
+          no device measured, which reads as healthy.
 
     # vzdump metrics hookscript — deployment plus the job-end / backup-abort
     # verdict; a cluster-wide vzdump job runs on every node.
@@ -316,6 +444,54 @@
           - "'vzdump_backup_last_run_success 1' in (vzdump_prom_clean.content | b64decode)"
         fail_msg: "clean job-end did not report vzdump_backup_last_run_success 1"
 
+    - name: Read the vzdump hookscript defaults file
+      ansible.builtin.slurp:
+        src: /etc/default/vzdump-metrics-hook
+      register: vzdump_hook_defaults
+
+    - name: Assert the hookscript takes its output directory from the role
+      ansible.builtin.assert:
+        that:
+          - "'TEXTFILE_DIR=\"' ~ node_exporter_host_textfile_dir ~ '\"'
+             in (vzdump_hook_defaults.content | b64decode)"
+        fail_msg: >-
+          /etc/default/vzdump-metrics-hook does not carry
+          node_exporter_host_textfile_dir, so a relocated textfile directory
+          leaves vzdump_backup.prom where node_exporter does not scrape it.
+
+    - name: Point the hookscript at an alternate textfile directory
+      ansible.builtin.copy:
+        dest: /etc/default/vzdump-metrics-hook
+        content: |
+          TEXTFILE_DIR="/tmp/vzdump-textfile"
+        mode: "0644"
+
+    - name: Invoke hookscript job-end against the alternate directory
+      ansible.builtin.command: /usr/local/bin/vzdump-metrics-hook.sh job-end
+      changed_when: false
+      environment:
+        VZDUMP_JOBID: molecule-alt-dir
+
+    - name: Stat the .prom in the alternate directory
+      ansible.builtin.stat:
+        path: /tmp/vzdump-textfile/vzdump_backup.prom
+      register: vzdump_prom_alt
+
+    - name: Assert the defaults file actually retargets the output
+      ansible.builtin.assert:
+        that:
+          - vzdump_prom_alt.stat.exists
+        fail_msg: "the hookscript ignored TEXTFILE_DIR from its defaults file"
+        success_msg: "the vzdump hookscript honours node_exporter_host_textfile_dir"
+
+    - name: Restore the rendered hookscript defaults file
+      ansible.builtin.copy:
+        dest: /etc/default/vzdump-metrics-hook
+        content: |
+          # {{ ansible_managed }}
+          TEXTFILE_DIR="{{ node_exporter_host_textfile_dir }}"
+        mode: "0644"
+
     - name: Invoke hookscript backup-abort then job-end (guest failed)
       ansible.builtin.command: "/usr/local/bin/vzdump-metrics-hook.sh {{ item }}"
       changed_when: false
@@ -335,6 +511,54 @@
         that:
           - "'vzdump_backup_last_run_success 0' in (vzdump_prom_fail.content | b64decode)"
         fail_msg: "backup-abort did not downgrade job-end to vzdump_backup_last_run_success 0"
+
+    - name: Invoke hookscript backup-start twice then job-end (two guests)
+      ansible.builtin.command: "/usr/local/bin/vzdump-metrics-hook.sh {{ item }}"
+      changed_when: false
+      environment:
+        VZDUMP_JOBID: molecule-guests
+      loop:
+        - backup-start
+        - backup-start
+        - job-end
+
+    - name: Read vzdump_backup.prom after the two-guest run
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/vzdump_backup.prom
+      register: vzdump_prom_guests
+
+    # A host whose guests are all excluded from the job still runs the hook, so
+    # a staleness alert gates on this count rather than on the timestamp alone.
+    - name: Assert the run counts the guests it started
+      ansible.builtin.assert:
+        that:
+          - "'vzdump_backup_guests 2' in (vzdump_prom_guests.content | b64decode)"
+        fail_msg: "two backup-start phases did not produce vzdump_backup_guests 2"
+
+    - name: Drop vzdump_backup.prom to test the no-history path
+      ansible.builtin.file:
+        path: /var/lib/node_exporter/vzdump_backup.prom
+        state: absent
+
+    - name: Invoke hookscript job-abort with no recorded history
+      ansible.builtin.command: /usr/local/bin/vzdump-metrics-hook.sh job-abort
+      changed_when: false
+      environment:
+        VZDUMP_JOBID: molecule-nohistory
+
+    - name: Read vzdump_backup.prom after the historyless abort
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/vzdump_backup.prom
+      register: vzdump_prom_nohistory
+
+    # A 0 here would read as "last success in 1970" to every staleness rule; the
+    # absent series is what the rule's absence arm is written for.
+    - name: Assert a failure with no history emits no success timestamp
+      ansible.builtin.assert:
+        that:
+          - "'vzdump_backup_last_run_success 0' in (vzdump_prom_nohistory.content | b64decode)"
+          - "'vzdump_backup_last_success_timestamp_seconds' not in (vzdump_prom_nohistory.content | b64decode)"
+        fail_msg: "a historyless failure published a success timestamp"
 
     # liveness gate — guards a zombie exporter systemd still reports active, so
     # the probe must be able to FAIL as well as pass; both directions run here.

@@ -5,3 +5,5 @@ Validate resource pool is in standard list
 Fail if required storage pool does not exist
 Attach additional disks to VM
 Assert every additional disk pins a unique, explicit scsi_slot
+Assert the additional-disk backend is implemented
+Fail when no Proxmox host answered the cluster-resource query

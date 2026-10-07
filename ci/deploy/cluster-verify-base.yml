@@ -1,0 +1,44 @@
+spec:
+  inputs:
+    fragment_name:
+      default: ".cluster-verify-base"
+      description: Name of the generated hidden job.
+    tags:
+      type: array
+      default: ["infrastructure"]
+      description: >-
+        Runner tag(s). The fragment apt-installs and writes `/usr/local/bin`,
+        so it needs a root-capable runner; it needs no LAN or SSH reach to the
+        hosts, only the Kubernetes API the kubeconfig names.
+    image:
+      default: "python:3.13-slim"
+      description: >-
+        Job image. Debian-based, because the 1Password install is apt-based. A
+        digest-bearing name pins the supply chain, which is worth doing on a job
+        holding a cluster-admin kubeconfig.
+---
+# kubectl-only base for in-cluster verification: op CLI, the kubectl-setup
+# fragment, an API probe. No ansible, SSH key or hosts.env. Needs
+# install-1password.yml and kubectl-setup.yml at their default fragment names.
+"$[[ inputs.fragment_name ]]":
+  # `extends` and the `!reference` below are BOTH needed: a before_script
+  # defined here REPLACES the extended one, so the reference is what runs the op
+  # install, while the extends keeps any other key that fragment grows.
+  extends: .install-1password
+  image: "$[[ inputs.image ]]"
+  tags: $[[ inputs.tags ]]
+  # Verification reads live cluster state and reports on a deploy that already
+  # happened: never cancel it because a new pipeline started.
+  interruptible: false
+  # Runner-pod casualties are environmental and every check here is read-only,
+  # so retry rather than leave a deploy unverified.
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+  before_script:
+    - !reference [.install-1password, before_script]
+    - !reference [.kubectl-setup, before_script]
+    # Not `kubectl cluster-info`: that needs list permission on kube-system
+    # services a least-privilege runner ServiceAccount does not have.
+    - kubectl version --output=yaml --request-timeout=5s

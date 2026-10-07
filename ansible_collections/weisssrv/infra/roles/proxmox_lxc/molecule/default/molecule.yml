@@ -40,10 +40,8 @@ provisioner:
       remote_tmp: /tmp/ansible-tmp
 scenario:
   # No `idempotence` step: converge drives negative-path cases to failure via
-  # block/rescue and rewrites the pct/pvesh stub state (and /etc/pve/lxc/199.conf)
-  # between cases, so a second converge would not replay the same inputs.
-  # Per-task idempotence is asserted directly instead (verify.yml counts the pct
-  # calls each reconcile makes).
+  # block/rescue and rewrites the stub state between cases, so a second converge
+  # replays different inputs. verify.yml asserts per-task idempotence instead.
   test_sequence:
     - dependency
     - cleanup

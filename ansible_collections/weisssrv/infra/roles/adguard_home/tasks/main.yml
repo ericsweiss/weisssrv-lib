@@ -91,10 +91,9 @@
     path: "{{ adguard_home_install_path }}/AdGuardHome"
   register: adguard_home_binary
 
-# Version-aware install: detect the running binary's version so bumps to
-# adguard_home_version actually upgrade a host already running an older build.
-# AdGuardHome --version prints "AdGuard Home, version vX.Y.Z"; pull the bare
-# semver to compare against the pin.
+# Detect the running binary's version so a bump to adguard_home_version
+# upgrades a host on an older build. --version prints "AdGuard Home, version
+# vX.Y.Z"; the bare semver is compared against the pin.
 - name: Check installed AdGuard Home version
   ansible.builtin.command: "{{ adguard_home_install_path }}/AdGuardHome --version"
   register: adguard_home_version_check
@@ -113,18 +112,34 @@
          or (adguard_home_version_check.stdout | default('')
              | regex_search('[0-9]+\.[0-9]+\.[0-9]+') | default('')) != adguard_home_version }}
 
+- name: Assert this architecture has an AdGuard Home build
+  ansible.builtin.assert:
+    that:
+      - ansible_architecture in _adguard_home_arch_map
+    fail_msg: >-
+      ansible_architecture {{ ansible_architecture }} has no AdGuard Home build
+      mapping; extend _adguard_home_arch_map in the role's vars/main.yml.
+    quiet: true
+
 - name: Set AdGuard Home architecture
   ansible.builtin.set_fact:
-    adguard_home_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
+    adguard_home_arch: "{{ _adguard_home_arch_map[ansible_architecture] }}"
 
 - name: Download and install AdGuard Home
   when: adguard_home_needs_install
   block:
-    # Feeds the trust assert below. `stat` defaults to follow: false and must
-    # STAY there — following would report the target's ownership while the
-    # symlink itself (lrwxrwxrwx, and replaceable by whoever owns the link) is
-    # the thing an attacker repoints. Unfollowed, a symlinked cache directory
-    # stats as woth -> the assert denies, which is the intended answer.
+    - name: Create the AdGuard Home staging directory
+      ansible.builtin.file:
+        path: "{{ adguard_home_stage_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    # CRITICAL: feeds the trust assert below, and `stat` must stay at its
+    # default follow: false. Following reports the target's ownership, while
+    # the replaceable symlink itself is what an attacker repoints. Unfollowed,
+    # a symlinked cache directory stats as woth and the assert denies it.
     - name: Look for the staged-archive cache directory
       ansible.builtin.stat:
         path: "{{ adguard_home_archive_cache_dir }}"
@@ -140,10 +155,9 @@
       register: adguard_home_staged_archive
       when: adguard_home_archive_cache_dir | length > 0
 
-    # A staged archive bypasses get_url's checksum, so verify it here or the
-    # cache directory becomes an unauthenticated path to root on the resolver.
-    # Preference: the explicit pin, else the upstream checksums.txt staged
-    # alongside it. Neither -> fail; do not install unverified bytes.
+    # A staged archive bypasses get_url's checksum, so it is verified here
+    # against the explicit pin, else a checksums.txt staged alongside it.
+    # Neither present fails the run; see the README, security notes.
     - name: Look for a staged checksums.txt
       ansible.builtin.stat:
         path: "{{ adguard_home_archive_cache_dir }}/checksums.txt"
@@ -152,14 +166,11 @@
         - adguard_home_staged_archive.stat.exists | default(false)
         - adguard_home_archive_sha256 | length == 0
 
-    # A digest only proves the bytes match SOMETHING an attacker also controls:
-    # whoever can replace the archive in this directory can replace the
-    # checksums.txt beside it, and can point a symlink at whatever the pin was
-    # computed over. The comparison below is therefore only as trustworthy as
-    # the directory itself, so establish the trust boundary FIRST — the cache
-    # directory and every staged file must be root-owned and closed to group and
-    # other writers. Ordered ahead of the slurp so an untrusted checksums.txt is
-    # never even read.
+    # CRITICAL: a digest is only as trustworthy as the directory holding it,
+    # since whoever can swap the archive can swap the checksums.txt beside it.
+    # The cache directory and every staged file must be root-owned and closed
+    # to group and other writers. This runs before the slurp so an untrusted
+    # checksums.txt is never read. See the README, security notes.
     - name: Assert the staged-archive cache is a root-owned trust boundary
       ansible.builtin.assert:
         that:
@@ -225,7 +236,8 @@
         adguard_home_archive_path: >-
           {{ adguard_home_staged_archive.stat.path
              if adguard_home_staged_archive.stat.exists | default(false)
-             else '/tmp/AdGuardHome_linux_' ~ adguard_home_arch ~ '.tar.gz' }}
+             else adguard_home_stage_dir ~ '/AdGuardHome_linux_'
+                  ~ adguard_home_arch ~ '.tar.gz' }}
 
     # github.com's TLS handshake stalls often enough to cost a whole CI run:
     # bound each attempt and retry rather than failing the play on one stall.
@@ -233,7 +245,7 @@
       ansible.builtin.get_url:
         url: "https://github.com/AdguardTeam/AdGuardHome/releases/download/v{{ adguard_home_version }}/AdGuardHome_linux_{{ adguard_home_arch }}.tar.gz"
         # Use upstream filename so get_url's checksum lookup matches an entry in checksums.txt
-        dest: "/tmp/AdGuardHome_linux_{{ adguard_home_arch }}.tar.gz"
+        dest: "{{ adguard_home_stage_dir }}/AdGuardHome_linux_{{ adguard_home_arch }}.tar.gz"
         mode: "0644"
         checksum: "sha256:https://github.com/AdguardTeam/AdGuardHome/releases/download/v{{ adguard_home_version }}/checksums.txt"
         timeout: 60
@@ -246,14 +258,12 @@
     - name: Extract AdGuard Home
       ansible.builtin.unarchive:
         src: "{{ adguard_home_archive_path }}"
-        dest: /tmp
+        dest: "{{ adguard_home_stage_dir }}"
         remote_src: true
 
-    # On an upgrade the service is already running; stop it before swapping the
-    # binary on disk so the replacement is clean (avoids text-file-busy and a
-    # stale process serving the old build). The "Ensure AdGuard Home is enabled
-    # and running" task below brings it back up on the new binary. Skipped on a
-    # fresh install where the unit does not exist yet.
+    # Stop the running service before swapping the binary to avoid
+    # text-file-busy and a stale process on the old build. The enable-and-run
+    # task below brings it back up. Skipped when the unit does not exist yet.
     - name: Stop AdGuard Home for binary upgrade
       ansible.builtin.service:
         name: AdGuardHome
@@ -263,20 +273,17 @@
 
     - name: Install AdGuard Home binary
       ansible.builtin.copy:
-        src: /tmp/AdGuardHome/AdGuardHome
+        src: "{{ adguard_home_stage_dir }}/AdGuardHome/AdGuardHome"
         dest: "{{ adguard_home_install_path }}/AdGuardHome"
         owner: root
         group: root
         mode: "0755"
         remote_src: true
 
-    - name: Cleanup download
+    - name: Remove the AdGuard Home staging directory
       ansible.builtin.file:
-        path: "{{ item }}"
+        path: "{{ adguard_home_stage_dir }}"
         state: absent
-      loop:
-        - "/tmp/AdGuardHome_linux_{{ adguard_home_arch }}.tar.gz"
-        - /tmp/AdGuardHome
 
 - name: Deploy AdGuard Home systemd service
   ansible.builtin.template:
@@ -293,13 +300,17 @@
 - name: Flush handlers before starting service
   ansible.builtin.meta: flush_handlers
 
+- name: Check for the AdGuard Home signature file
+  ansible.builtin.stat:
+    path: "{{ adguard_home_install_path }}/AdGuardHome.sig"
+  register: adguard_home_sig
+
 # AdGuardHome.sig can ship non-world-readable; the adguard user must read it.
-# failed_when: false — it may legitimately be absent.
 - name: Ensure AdGuardHome.sig is readable by the adguard user
   ansible.builtin.file:
     path: "{{ adguard_home_install_path }}/AdGuardHome.sig"
     mode: "0644"
-  failed_when: false
+  when: adguard_home_sig.stat.exists
 
 - name: Ensure AdGuard Home is enabled and running
   ansible.builtin.systemd:
@@ -370,6 +381,20 @@
     path: "{{ adguard_home_install_path }}/AdGuardHome.yaml"
   register: adguard_home_config
 
+# Without the config there is nothing to reconcile, and every task below would
+# skip silently instead of reporting the failed setup POST.
+- name: Assert the initial setup wrote the AdGuard Home config
+  ansible.builtin.assert:
+    that:
+      - adguard_home_config.stat.exists
+    fail_msg: >-
+      {{ adguard_home_install_path }}/AdGuardHome.yaml is missing: the initial
+      setup POST did not write it.
+    quiet: true
+  when:
+    - not ansible_check_mode
+    - not (adguard_home_skip_api_config | default(false))
+
 - name: Install the admin-password reconciliation helper
   ansible.builtin.copy:
     src: adguard-admin-hash.py
@@ -379,11 +404,9 @@
     mode: "0755"
   when: not (adguard_home_skip_api_config | default(false))
 
-# The password reaches the helper on stdin, never in argv or `environment:`
-# (Ansible prefixes environment assignments onto the remote command string, so
-# they sit in /proc/<pid>/cmdline for the length of the run). The helper
-# re-hashes only when the stored hash fails verification, so a converged host
-# reports ok and nothing restarts.
+# The password reaches the helper on stdin, never in argv or `environment:`,
+# which Ansible prefixes onto the remote command string. The helper re-hashes
+# only when the stored hash fails verification, so a converged host is ok.
 - name: Reconcile the admin password in the AdGuard Home config
   ansible.builtin.command:
     argv:
@@ -488,15 +511,6 @@
     - not ansible_check_mode
     - not (adguard_home_skip_resolv_conf_update | default(false))
 
-- name: Display DNS verification result
-  ansible.builtin.debug:
-    msg: >-
-      DNS verification successful - resolved {{ adguard_home_dns_probe_name }}
-      to: {{ adguard_home_dns_test.stdout | default('N/A') }}
-  when:
-    - not ansible_check_mode
-    - not (adguard_home_skip_resolv_conf_update | default(false))
-
 # Resolution path once this lands: resolv.conf -> AdGuard (53) -> the upstream
 # resolver. resolv_conf owns the chattr -i/+i wrap and the stuck-flag check.
 # Skipped in containers, where /etc/resolv.conf is an unreplaceable bind mount.
@@ -509,29 +523,6 @@
     # for itself, so point the host at its own listener.
     host_dns_servers:
       - "127.0.0.1"
-  when:
-    - not ansible_check_mode
-    - not (adguard_home_skip_resolv_conf_update | default(false))
-
-- name: Display resolv.conf update status
-  ansible.builtin.debug:
-    msg: "resolv.conf updated to use localhost (127.0.0.1): {{ resolv_conf_result.changed | default(false) }}"
-  when:
-    - not ansible_check_mode
-    - not (adguard_home_skip_resolv_conf_update | default(false))
-
-- name: Verify resolv.conf content
-  ansible.builtin.command:
-    cmd: cat /etc/resolv.conf
-  register: adguard_home_resolv_conf_content
-  changed_when: false
-  when:
-    - not ansible_check_mode
-    - not (adguard_home_skip_resolv_conf_update | default(false))
-
-- name: Display final resolv.conf
-  ansible.builtin.debug:
-    msg: "Final /etc/resolv.conf:\n{{ adguard_home_resolv_conf_content.stdout }}"
   when:
     - not ansible_check_mode
     - not (adguard_home_skip_resolv_conf_update | default(false))

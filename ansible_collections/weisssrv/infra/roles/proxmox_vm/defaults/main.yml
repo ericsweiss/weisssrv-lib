@@ -1,21 +1,16 @@
 ---
-# Skips the cloud-image download, the Windows media checks, the cloud-init
-# `qm set`, the create-time autostart `qm set`, and the final SSH-reachability
-# wait_for — the tasks that need real network or a real guest. It does NOT skip
-# `qm create` itself; molecule runs the create path against stub qm/pvesh shims.
+# Skips the tasks needing real network or a real guest: image download, Windows
+# media checks, cloud-init and autostart `qm set`, SSH wait. `qm create` still
+# runs, against stub qm/pvesh shims under molecule.
 proxmox_vm_skip_create: false
 
-# Host the post-create SSH-reachability wait_for is delegated to. Defaults to
-# localhost (the controller), which works from a LAN-attached runner. Set to
-# the Proxmox host (which always shares the VM's bridge) when running from an
-# off-LAN controller where the VM's address is unroutable.
+# Host the post-create SSH-reachability wait_for is delegated to. Set it to the
+# Proxmox host when the controller is off-LAN and the VM address is unroutable.
 proxmox_vm_ssh_wait_delegate: localhost
 
-# IP address handed to the role's cloud-init + SSH-wait logic. Defaults to
-# ansible_host because production inventory routes traffic to each VM via
-# that field. Molecule scenarios override this so they can keep ansible_host
-# pointing at the docker container (= connection target) while still feeding
-# a realistic per-VM IP into the role's cloud-init render.
+# IP handed to the role's cloud-init and SSH-wait logic. Molecule overrides it
+# so ansible_host can stay pointed at the container while the render still sees
+# a realistic per-VM address.
 proxmox_vm_target_ip: "{{ ansible_host }}"
 
 proxmox_vm_cores: 2
@@ -36,21 +31,22 @@ proxmox_vm_agent_enabled: true
 # README for the apply gap on existing guests and the pinning it implies.
 proxmox_vm_hostpci: []
 
-# Persistent ZFS zvols created on proxmox_host and attached to the guest. Each
-# entry pins an explicit, unique scsi_slot (>= 1); the role asserts that.
-# Aliases the conventional inventory-wide `vm_additional_disks`, which
-# weisssrv.infra.k3s reads through the same name for its zvol_mount pass —
-# one host_vars block therefore feeds both creation and mounting.
+# Persistent ZFS zvols created on proxmox_host and attached to the guest; each
+# entry pins a unique scsi_slot (>= 1). Aliases the inventory-wide
+# `vm_additional_disks`, which the k3s role reads for its zvol_mount pass.
 proxmox_vm_additional_disks: "{{ vm_additional_disks | default([]) }}"
+# Backend the additional disks are created on. ZFS is the only one implemented:
+# another means adding tasks/disks-<backend>.yml with the same create/attach
+# contract, since `zvol` and the /dev/zvol path are ZFS-specific.
+proxmox_vm_additional_disk_backend: zfs
 
 # Conservative live-migration baseline (SSE3/SSSE3/SSE4.1, no SSE4.2/AVX) so a
 # guest can migrate across heterogeneous hosts. Override to `host` for any guest
 # pinned to one node — that exposes the full host CPU (AVX/AVX2).
 proxmox_vm_cpu_type: Penryn
 
-# Memory-ballooning floor, applied at create AND reconciled live on an existing
-# guest. Leave undefined for guests that must keep their full --memory (a
-# kubelet accounts for the whole node RAM).
+# Memory-ballooning floor, applied at create and reconciled live. Leave undefined
+# for guests that must keep their full --memory, such as a kubelet node.
 # proxmox_vm_balloon: 2048
 
 # `latest/` moves: pin URL and checksum to a point release, or hosts provisioned

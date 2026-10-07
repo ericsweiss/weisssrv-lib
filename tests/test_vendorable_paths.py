@@ -1,10 +1,5 @@
-"""The offer list (scripts/vendorable-paths.yml) stays honest.
-
-The library's half of the vendored-copy contract: consumers own their
-manifests, so the only library-side claims left to gate are that every offered
-path exists in the tree (an offer for a deleted file strands every manifest
-naming it) and that the list stays sorted and duplicate-free (the engine
-treats it as a set; a duplicate is always an editing accident).
+"""Every path in scripts/vendorable-paths.yml exists, and the list stays sorted
+and duplicate-free.
 """
 from __future__ import annotations
 
@@ -38,7 +33,6 @@ def test_every_offered_path_is_canonical():
     """The engine holds manifest entries to canonical repo-relative spelling;
     the offer must obey its own rule or a legitimate manifest could never
     reference an offered path."""
-    from pathlib import Path
     bad = [
         p for p in _offered()
         if not p.strip()

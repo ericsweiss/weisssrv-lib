@@ -3,6 +3,12 @@ spec:
     fragment_name:
       default: ".deploy-base"
       description: Name of the generated hidden job.
+    image:
+      default: "python:3.13-slim"
+      description: >-
+        Job image. Debian-based with pip, because the fragment apt-installs and
+        pip-installs ansible. The published `ansible-deploy` image ships those
+        pre-baked; a digest-bearing name pins the supply chain.
     tags:
       type: array
       default: ["infrastructure"]
@@ -10,12 +16,24 @@ spec:
         Runner tag(s). A deploy needs the privileged runner: an untagged job
         lands on the shared non-root runner, where the apt install and the SSH
         reach to the hosts both fail.
+    secrets_source:
+      default: "1password"
+      options: ["1password", "env"]
+      description: >-
+        How the deploy SSH key is resolved. `1password` reads it with `op read`
+        from `op_vault`. `env` takes it from `$SSH_PRIVATE_KEY`, a masked CI
+        variable, for a consumer on another backend; that consumer also passes
+        its own `LOKI_PUSH_USER`/`LOKI_PUSH_PASSWORD` on its jobs, because the
+        `op://` values below are only resolved by `op run`.
     op_vault:
       description: >-
         1Password vault holding the deploy items. REQUIRED — a vault name is
-        site data, so this template ships no default.
+        site data, so this template ships no default. Required in both modes:
+        in `env` mode it still names the vault the `op://` LOKI_PUSH_*
+        references resolve against, and a consumer overriding those on its jobs
+        can pass any placeholder.
     ansible_version:
-      default: "11.6.0"
+      default: "14.4.0"
       description: ansible pip pin installed into the job.
     apt_packages:
       default: "git"
@@ -46,36 +64,21 @@ spec:
         run` resolves every op:// reference in the environment, so this item
         must exist in `op_vault`.
 ---
-# Shared Ansible-deploy base fragment. Defines a hidden job (default
-# `.deploy-base`) that a consumer's deploy jobs `extends:`. It brings up
-# everything a deploy needs and nothing job-specific: the op CLI + dependency
-# cache, ansible at a pinned version, a secured ansible.cfg copy, the SSH key
-# read from 1Password, a TOFU keyscan of the inventory's hosts, and the
-# collection install.
-#
-# ROOT RUNNER ONLY — it extends `.install-1password`, which apt-installs.
-#
-# The consumer supplies the per-job half by extending the fragment:
-#
-#   deploy-ansible-dns:
-#     extends: .deploy-base
-#     variables: { ADGUARD_ADMIN_PASSWORD: "op://<vault>/AdGuard Home/password" }
-#     script: [...]
-#
-# and adds steps with `- !reference [.deploy-base, before_script]` followed by
-# its own (see ci/deploy/kubectl-setup.yml for the kubectl layer).
+# Shared Ansible-deploy base fragment: op CLI + dep cache, pinned ansible, a
+# secured ansible.cfg, the SSH key, a TOFU keyscan, the collection install.
+# ROOT RUNNER ONLY. Usage: docs/INCLUDE-CONTRACT.md.
 "$[[ inputs.fragment_name ]]":
   # Both fragments ship in ci/templates/ and must be included by the consumer.
-  # `extends` alone would not run the op install: this fragment defines its own
-  # before_script, which REPLACES the extended one, hence the !reference below.
+  # This fragment's own before_script REPLACES the extended one, hence the
+  # !reference below.
   extends: [.install-1password, .dep-cache]
+  image: "$[[ inputs.image ]]"
   tags: $[[ inputs.tags ]]
   # Deploys touch live infrastructure: never cancel one because a new pipeline
   # started.
   interruptible: false
-  # Runner-pod casualties (scheduling timeout, NoExecute eviction) are
-  # environmental and the playbooks are idempotent, so retry rather than fail
-  # the whole needs chain.
+  # Runner-pod casualties are environmental and the playbooks are idempotent,
+  # so retry rather than fail the whole needs chain.
   retry:
     max: 2
     when:
@@ -84,12 +87,8 @@ spec:
     LOKI_PUSH_USER: "op://$[[ inputs.op_vault ]]/$[[ inputs.loki_item ]]/username"
     LOKI_PUSH_PASSWORD: "op://$[[ inputs.op_vault ]]/$[[ inputs.loki_item ]]/password"
     # The package list reaches the shell as a VARIABLE, never as interpolated
-    # text: $[[ inputs.* ]] is textual substitution into the YAML scalar, so a
-    # version-ceiling pin (`ansible<12`) would render a literal `<` that the
-    # shell parses as an input redirection before any expansion happens. The
-    # result of a parameter expansion is word-split but never re-scanned for
-    # redirection operators, so this form is safe. Same rule as
-    # ci/test/python-tests.yml's APT_PACKAGES.
+    # text: a ceiling pin like `ansible<12` would otherwise render a literal `<`
+    # the shell parses as a redirection. Same rule as python-tests.yml.
     APT_PACKAGES: "$[[ inputs.apt_packages ]]"
   before_script:
     - !reference [.install-1password, before_script]
@@ -100,24 +99,105 @@ spec:
       fi
     - pip install --quiet "ansible==$[[ inputs.ansible_version ]]"
     - |
+      set -eo pipefail
       # A world-writable checkout makes Ansible ignore ansible.cfg outright, so
       # run from a 0600 copy on a private path.
       export ANSIBLE_CONFIG="$(mktemp /tmp/ansible-XXXXXXXXXX.cfg)"
       install -m 600 "$[[ inputs.ansible_dir ]]/ansible.cfg" "$ANSIBLE_CONFIG"
+      [ -s "$ANSIBLE_CONFIG" ] || { echo "ERROR: could not copy $[[ inputs.ansible_dir ]]/ansible.cfg to $ANSIBLE_CONFIG" >&2; exit 1; }
       trap "rm -f '$ANSIBLE_CONFIG'" EXIT
     - |
+      set -eo pipefail
       mkdir -p ~/.ssh
       chmod 700 ~/.ssh
       # umask in a subshell: the key file is never created 0644, so there is no
       # chmod race window.
-      (umask 077; op read "op://$[[ inputs.op_vault ]]/$[[ inputs.ssh_key_item ]]/$[[ inputs.ssh_key_field ]]" > ~/.ssh/id_ed25519)
+      if [ "$[[ inputs.secrets_source ]]" = "1password" ]; then
+        (umask 077; op read "op://$[[ inputs.op_vault ]]/$[[ inputs.ssh_key_item ]]/$[[ inputs.ssh_key_field ]]" > ~/.ssh/id_ed25519)
+      else
+        (umask 077; printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519)
+      fi
+      # Each guard names its own cause: an empty key or an empty keyscan
+      # otherwise surfaces much later as an opaque host-key/auth failure.
+      [ -s ~/.ssh/id_ed25519 ] || { echo "ERROR: the deploy SSH key resolved empty (secrets_source=$[[ inputs.secrets_source ]])" >&2; exit 1; }
       # TOFU keyscan — ephemeral runners inherit no known_hosts, so fetch fresh
-      # per job rather than baking host keys into the image. Strict pinning
-      # belongs on the operator path (ansible.cfg + per-host host_key vars).
+      # per job. Strict pinning belongs on the operator path (ansible.cfg +
+      # per-host host_key vars).
       . "$[[ inputs.hosts_env ]]"
-      # shellcheck disable=SC2086  # word-split ALL_SSH_IPS into one keyscan
-      ssh-keyscan -H $ALL_SSH_IPS >> ~/.ssh/known_hosts 2>/dev/null || true
-    # Retried: a consumer fleet deploy may include the forge's own restart
-    # (GitLab reconfigure), and a sibling job cloning the collection through
-    # it mid-window gets a 5xx.
+      [ -n "$ALL_SSH_IPS" ] || { echo "ERROR: $[[ inputs.hosts_env ]] exported no ALL_SSH_IPS" >&2; exit 1; }
+      # ssh-keyscan exits 1 when it collects nothing, so the scan is tolerated
+      # and tested on OUTPUT: -H hashes the entries, so a host the scan missed
+      # is unreadable afterwards and surfaces as an unattributed auth failure.
+      MISSED=""
+      # shellcheck disable=SC2086  # ALL_SSH_IPS is a space-joined address list
+      for ip in $ALL_SSH_IPS; do
+        out=$(ssh-keyscan -H "$ip" 2>/dev/null || true)
+        if [ -n "$out" ]; then
+          printf '%s\n' "$out" >> ~/.ssh/known_hosts
+        else
+          MISSED="$MISSED $ip"
+        fi
+      done
+      [ -z "$MISSED" ] || echo "WARNING: no host key collected from:$MISSED — these hosts are TOFU-accepted unpinned this run" >&2
+      [ -s ~/.ssh/known_hosts ] || { echo "ERROR: ssh-keyscan collected no host keys from: $ALL_SSH_IPS" >&2; exit 1; }
+    # Retried: a fleet deploy may restart the forge itself, and a sibling job
+    # cloning the collection through it mid-window gets a 5xx.
     - for i in 1 2 3; do ansible-galaxy collection install -r "$[[ inputs.ansible_dir ]]/requirements.yml" && break; [ "$i" = 3 ] && exit 1; echo "galaxy install failed (attempt $i) — retrying in 20s"; sleep 20; done
+    # galaxy skips an already-installed collection, so a cache that failed to
+    # bust its key would deploy the previous release's roles: the install is
+    # verified against every exact pin in requirements.yml.
+    - |
+      set -eo pipefail
+      python3 - "$[[ inputs.ansible_dir ]]/requirements.yml" <<'PY'
+      import json
+      import re
+      import subprocess
+      import sys
+
+      import yaml
+
+      EXACT = re.compile(r"^v?\d+\.\d+(\.\d+)?([.\-+]\S+)?$")
+      FQCN = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
+      FROM_PATH = re.compile(r"ansible_collections/([a-z0-9_]+)/([a-z0-9_]+)")
+
+      with open(sys.argv[1]) as handle:
+          pins = (yaml.safe_load(handle) or {}).get("collections") or []
+
+      listed = subprocess.run(
+          ["ansible-galaxy", "collection", "list", "--format", "json"],
+          capture_output=True, text=True, check=True,
+      )
+      installed = {}
+      for tree in json.loads(listed.stdout).values():
+          for fqcn, meta in tree.items():
+              installed.setdefault(fqcn, meta.get("version"))
+
+      stale = []
+      for entry in pins:
+          if isinstance(entry, str):
+              name, pin = entry, ""
+          else:
+              name, pin = str(entry.get("name", "")), str(entry.get("version", ""))
+          pin = pin.removeprefix("==").strip()
+          match = FROM_PATH.search(name)
+          fqcn = f"{match.group(1)}.{match.group(2)}" if match else name
+          if not FQCN.match(fqcn) or not EXACT.match(pin):
+              print(f"NOTE: {name or '?'} pins '{pin}' — not an exact version, not verified")
+              continue
+          have = installed.get(fqcn)
+          if have == "*":
+              print(f"NOTE: {fqcn} reports no version — not verified")
+              continue
+          if have is None or have.lstrip("v") != pin.lstrip("v"):
+              stale.append(f"{fqcn}: requirements.yml pins {pin}, installed {have or '(absent)'}")
+
+      for line in stale:
+          print(f"ERROR: {line}", file=sys.stderr)
+      if stale:
+          print(
+              "ERROR: the restored collection cache does not match the pins — check that"
+              " every .dep-cache key_files path exists in this repo",
+              file=sys.stderr,
+          )
+          sys.exit(1)
+      PY

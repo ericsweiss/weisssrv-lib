@@ -4,37 +4,29 @@
 # zfs-load-key.sh <pool> [<item-locator> [field]]
 #
 {% if zfs_encryption_key_command %}
-# Fetches a ZFS pool encryption passphrase from the operator's key command
-# (zfs_encryption_key_command) and loads it via `zfs load-key`. Invoked by
-# zfs-load-key@<pool>.service. Mounting is left to zfs-mount-encrypted.service
-# (role README, "Boot ordering").
-#
+# Loads a ZFS pool passphrase from zfs_encryption_key_command via
+# `zfs load-key`. Mounting is zfs-mount-encrypted.service's job; boot
+# ordering is in the role README.
 {% else %}
-# Fetches a ZFS pool encryption passphrase from 1Password Connect and loads it
-# via `zfs load-key`. Invoked by zfs-load-key@<pool>.service. Mounting is left
-# to zfs-mount-encrypted.service (role README, "Boot ordering").
-#
-# The bearer token at {{ zfs_encryption_token_path }} (0400 root) goes to curl on
-# stdin (`-H @-`), never on argv, so it never appears in /proc/<pid>/cmdline.
-#
+# Loads a ZFS pool passphrase from 1Password Connect via `zfs load-key`. The
+# bearer token at {{ zfs_encryption_token_path }} reaches curl on stdin (`-H @-`),
+# never argv. Mounting and boot ordering: role README.
 {% endif %}
-# The exit codes below are a contract: zfs-load-key@.service lists 1/3/4/7 in
-# RestartPreventExitStatus, so renumbering here changes retry behaviour.
 #
-# Exit codes:
-#   0 — key loaded (or already loaded); zfs-mount-encrypted.service handles mounting
+# CRITICAL: zfs-load-key@.service lists 1/3/4/7 in RestartPreventExitStatus,
+# so renumbering these exit codes changes retry behaviour.
+#   0 — key loaded, or already loaded
 #   1 — config / arg / token error
 {% if zfs_encryption_key_command %}
-#   2 — key command exited non-zero (treated as transient; the unit retries)
+#   2 — key command exited non-zero (transient; the unit retries)
 #   3 — key command printed nothing (config error; the unit stops)
 {% else %}
 #   2 — Connect unreachable beyond fetch_timeout
-#   3 — vault/item/field not found
+#   3 — vault, item or field not found
 {% endif %}
-#   4 — `zfs load-key` failed (wrong passphrase, kernel error, etc.)
-#   5 — pool not imported after waiting fetch_timeout, does not exist, or its
-#       encryption roots could not be enumerated (transient ioctl error — not
-#       in RestartPreventExitStatus, so the unit retries)
+#   4 — `zfs load-key` failed
+#   5 — pool not imported in time, absent, or its roots could not be
+#       enumerated (retryable; not in RestartPreventExitStatus)
 {% if not zfs_encryption_key_command %}
 #   7 — Connect returned 401/403 (auth failure; no point retrying)
 {% endif %}
@@ -49,10 +41,8 @@ FIELD="${ZFS_ENCRYPTION_FIELD:-${3:-passphrase}}"
 
 {% if not zfs_encryption_key_command %}
 CONNECT_URL="{{ zfs_encryption_connect_url }}"
-# `VAULT_REF` is either a vault NAME (e.g. "Homelab") that we resolve to a
-# UUID at runtime, or a literal 26-char UUID we use directly. The Connect
-# REST API requires UUID in /v1/vaults/<X>/items paths — the `op` CLI does
-# client-side name→UUID resolution; we replicate that here.
+# VAULT_REF is a vault name resolved to a UUID at runtime, or a literal 26-char
+# UUID used directly: Connect REST paths take a UUID in the {vaultUUID} slot.
 VAULT_REF="{{ zfs_encryption_connect_vault }}"
 TOKEN_FILE="{{ zfs_encryption_token_path }}"
 {% endif %}
@@ -73,10 +63,9 @@ trap cleanup_tmp EXIT INT TERM
 TOKEN=$(< "$TOKEN_FILE")
 AUTH_HEADER="Authorization: Bearer $TOKEN"
 
-# connect_get <relative-path> <out-file>: GET against Connect with the
-# bearer token piped on stdin (never argv, so it doesn't appear in
-# /proc/<pid>/cmdline during the curl invocation). Writes the body to
-# $2, prints the HTTP code on stdout. Network failures yield code 000.
+# connect_get <relative-path> <out-file>: GET against Connect with the bearer
+# token on stdin, never argv. Writes the body to $2 and prints the HTTP code
+# on stdout; a transport failure yields 000.
 connect_get() {
     local path="$1" out="$2" code
     # curl's -w already prints '000' on a transport failure; capture its rc
@@ -92,11 +81,9 @@ connect_get() {
 }
 {% endif %}
 
-# zfs-import.target normally imports the pool before this unit runs, but a late
-# import must be WAITED for, not fast-failed: an instant exit 5 cycles at
-# ~RestartSec and burns StartLimitBurst in ~30 min, parking the unit failed
-# before the import ever lands. Waiting keeps every ExecStart on the slow path
-# the unit's retry budget assumes.
+# Wait for a late zfs-import.target rather than fast-failing: an instant exit 5
+# burns StartLimitBurst in ~30 min and parks the unit failed before the import
+# lands.
 deadline=$(( $(date +%s) + FETCH_TIMEOUT ))
 until zpool list -H -o name "$POOL" >/dev/null 2>&1; do
     if [[ $(date +%s) -ge $deadline ]]; then
@@ -118,10 +105,9 @@ if [[ "$key_status" == "available" ]]; then
 fi
 
 {% if zfs_encryption_key_command %}
-# Operator-supplied key command (zfs_encryption_key_command). It prints the
-# passphrase on stdout; item/field are passed through as opaque locators for
-# whatever backend it talks to. Retry/timeout are the command's own business —
-# a non-zero exit is reported as transient (rc 2) so the unit keeps retrying.
+# Operator key command: it prints the passphrase on stdout, with item and field
+# passed through as opaque locators. Retry and timeout are its own business; a
+# non-zero exit is reported transient (rc 2) so the unit keeps retrying.
 export ZFS_ENCRYPTION_POOL="$POOL"
 export ZFS_ENCRYPTION_ITEM="$ITEM_TITLE"
 export ZFS_ENCRYPTION_FIELD="$FIELD"
@@ -136,10 +122,8 @@ if [[ -z "$PASSPHRASE" ]]; then
     exit 3
 fi
 {% else %}
-# Resolve VAULT_REF to a UUID. 1Password Connect REST paths require UUID
-# in the {vaultUUID} slot — only the GET /v1/vaults?filter=name eq
-# endpoint accepts a name. If VAULT_REF is already a 26-char lowercase
-# alphanumeric (the 1P UUID shape), skip the lookup; otherwise resolve.
+# Resolve VAULT_REF to a UUID unless it already has the 26-char 1P UUID shape:
+# only GET /v1/vaults?filter=name eq accepts a name.
 if [[ "$VAULT_REF" =~ ^[a-z0-9]{26}$ ]]; then
     VAULT="$VAULT_REF"
 else
@@ -282,13 +266,11 @@ if [[ -z "$PASSPHRASE" ]]; then
 fi
 {% endif %}
 
-# One encryption root at a time: `zfs load-key -r` reads the passphrase from
-# stdin ONCE, so with more than one root it satisfies the first and fails the
-# rest with "encryption failure".
-#
-# Check `zfs get`'s exit status explicitly instead of inferring from awk's
-# (empty) output — awk exits 0 on empty input, so a /dev/zfs ioctl race would
-# otherwise look like "no encrypted datasets" and exit 0 on a locked pool.
+# CRITICAL: one encryption root at a time. `zfs load-key -r` reads the
+# passphrase from stdin once, satisfying the first root and failing the rest.
+# Check `zfs get`'s exit status explicitly rather than inferring it from awk's
+# empty output: awk exits 0 on empty input, so an ioctl race would look like
+# "no encrypted datasets" and exit 0 on a locked pool.
 if ! roots_raw="$(zfs get -H -t filesystem,volume -o name,value -r encryptionroot "$POOL")"; then
     log "zfs get encryptionroot failed for $POOL — refusing to report success with the pool possibly locked"
     exit 5

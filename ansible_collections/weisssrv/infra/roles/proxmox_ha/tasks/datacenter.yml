@@ -9,9 +9,8 @@
   check_mode: false
 
 # PVE returns `migration` as a parsed hash, but a property string is also a
-# legal shape, so accept both. An ABSENT key means the cluster is inheriting
-# PVE's built-in default rather than declaring one, which is the case this
-# reconcile exists to close.
+# legal shape, so accept both. An absent key means the cluster inherits PVE's
+# built-in default, which is the case this reconcile closes.
 - name: Pin the cluster migration channel
   vars:
     _migration_raw: "{{ (proxmox_ha_datacenter_raw.stdout | from_json).migration | default({}) }}"

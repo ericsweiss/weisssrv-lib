@@ -17,3 +17,44 @@
 
   roles:
     - role: weisssrv.infra.adguard_sync
+
+  post_tasks:
+    # The scenario converges the single-replica branch, so render the
+    # adguard_sync_replicas branch to a scratch path: a role re-run would
+    # rewrite /etc/adguardhome-sync.yaml and break idempotence.
+    - name: Render the multi-replica branch to a scratch path
+      ansible.builtin.copy:
+        content: >-
+          {{ lookup('ansible.builtin.template',
+                    playbook_dir ~ '/../../templates/adguardhome-sync.yaml.j2') }}
+        dest: /tmp/adguard-sync-replicas-render.yaml
+        mode: "0600"
+      vars:
+        adguard_sync_replicas:
+          - url: http://192.0.2.20:3000
+            username: replica-one-user
+            password: replica-one-password
+          - url: http://192.0.2.21:3000
+
+    # A replicas entry without a url must fail before anything mutates.
+    - name: Re-run adguard_sync with a url-less replicas entry (expect failure)
+      block:
+        - name: Include adguard_sync with a url-less replicas entry
+          ansible.builtin.include_role:
+            name: weisssrv.infra.adguard_sync
+          vars:
+            adguard_sync_replicas:
+              - username: replica-one-user
+
+        - name: Replicas url assert failed to trigger
+          ansible.builtin.copy:
+            dest: /tmp/adguard-sync-replicas-assert.json
+            content: '{"failed": false}'
+            mode: "0644"
+      rescue:
+        - name: Replicas url assert correctly rejected the entry
+          ansible.builtin.copy:
+            dest: /tmp/adguard-sync-replicas-assert.json
+            mode: "0644"
+            content: |
+              {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}

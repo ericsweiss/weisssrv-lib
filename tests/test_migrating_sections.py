@@ -1,18 +1,11 @@
-"""MIGRATING.md's release sections stay bound to the declared version.
-
-Carved out of the retired test_docs_registry.py (the consumer registry it
-gated moved into the consumers with the vendored-manifest inversion); this
-half gates library-owned state and stays.
-"""
+"""MIGRATING.md's release sections stay bound to the declared version."""
 from __future__ import annotations
 
 import re
-import shutil
-import subprocess
 from pathlib import Path
 
-import pytest
 import yaml
+from _helpers import release_tags, require_git_checkout, require_tags
 
 REPO = Path(__file__).resolve().parent.parent
 MIGRATING = REPO / "ansible_collections" / "weisssrv" / "infra" / "MIGRATING.md"
@@ -20,13 +13,8 @@ GALAXY = REPO / "ansible_collections" / "weisssrv" / "infra" / "galaxy.yml"
 
 
 class TestMigratingSections:
-    """The newest titled MIGRATING section is the version being shipped.
-
-    The retitle is a manual release-checklist bullet, and four consecutive
-    releases went out without it. galaxy.yml is bumped in the same MR
-    (test_ansible_collection.py::TestReleaseLineage), so binding the two makes
-    the omission fail at review time instead of on the consumer's next adoption.
-    """
+    """The newest titled MIGRATING section names the version galaxy.yml
+    declares."""
 
     @staticmethod
     def _titled_versions() -> list[str]:
@@ -55,12 +43,9 @@ class TestMigratingSections:
         )
 
     def test_every_released_tag_has_a_section(self):
-        if shutil.which("git") is None or not (REPO / ".git").exists():
-            pytest.skip("not a git checkout")
-        tags = subprocess.run(
-            ["git", "-C", str(REPO), "tag", "--list", "v*"],
-            check=True, capture_output=True, text=True,
-        ).stdout.split()
+        require_git_checkout(REPO)
+        tags = release_tags(REPO)
+        require_tags(tags, "MIGRATING-section")
         floor = _collection_floor_tag()
         titled = set(self._titled_versions())
         missing = sorted(
@@ -76,4 +61,5 @@ class TestMigratingSections:
 def _collection_floor_tag() -> tuple[int, int, int]:
     """Oldest release the migration record covers: the oldest titled section."""
     versions = re.findall(r"(?m)^# v(\d+\.\d+\.\d+)\s*$", MIGRATING.read_text())
+    assert versions, "MIGRATING.md carries no titled release section"
     return min(tuple(int(p) for p in v.split(".")) for v in versions)

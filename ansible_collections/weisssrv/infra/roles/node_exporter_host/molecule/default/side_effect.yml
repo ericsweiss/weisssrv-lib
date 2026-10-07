@@ -1,11 +1,7 @@
 ---
-# The collector state toggles, run AFTER the idempotence check because a toggle
-# inside converge is non-idempotent by construction. Off-state is the
-# Ceph/LVM-thin (zpool) and unclustered (corosync) configuration the README
-# advertises: the enable+start list must not name the timer, and a previously
-# deployed collector must be reconciled away, not merely left unmanaged. The
-# systemd collector has no artifacts to reconcile — only the rendered
-# ExecStart flags — so it is asserted on the override.conf render.
+# Collector state toggles, run after the idempotence check because a toggle
+# inside converge is non-idempotent. Off-state asserts the enable+start list
+# omits the timer and a deployed collector is reconciled away, not left behind.
 - name: Side effect — each collector seam off, then back on
   hosts: all
   become: true
@@ -33,6 +29,14 @@
           Switching node_exporter_host_zpool_collector off left collector
           artifacts behind: a host migrated off ZFS would keep running the
           timer and serving stale zpool metrics.
+
+    # The files going is half of it: systemd keeps a removed unit loaded and
+    # firing until a daemon-reload, so the reconcile must unload it too.
+    - name: Check systemd no longer has the zpool collector timer loaded  # noqa command-instead-of-module
+      ansible.builtin.command: systemctl list-units --all --no-legend --type=timer zpool-status-collector.timer
+      register: node_exporter_host_zpool_timer_loaded
+      changed_when: false
+      failed_when: "'zpool-status-collector.timer' in node_exporter_host_zpool_timer_loaded.stdout"
 
     - name: Apply the role with the zpool collector back on
       ansible.builtin.include_role:
@@ -64,11 +68,49 @@
           artifacts behind: an unclustered host would keep publishing the
           mtime-0 series PmxcfsStale fires on.
 
+    # The files going is half of it: systemd keeps a removed unit loaded and
+    # firing until a daemon-reload, so the reconcile must unload it too.
+    - name: Check systemd no longer has the corosync collector timer loaded  # noqa command-instead-of-module
+      ansible.builtin.command: systemctl list-units --all --no-legend --type=timer corosync-health-collector.timer
+      register: node_exporter_host_corosync_timer_loaded
+      changed_when: false
+      failed_when: "'corosync-health-collector.timer' in node_exporter_host_corosync_timer_loaded.stdout"
+
     - name: Apply the role with the corosync collector back on
       ansible.builtin.include_role:
         name: weisssrv.infra.node_exporter_host
       vars:
         node_exporter_host_corosync_collector: true
+
+    - name: Apply the role with the slabinfo collector switched off
+      ansible.builtin.include_role:
+        name: weisssrv.infra.node_exporter_host
+      vars:
+        node_exporter_host_slabinfo_collector: false
+
+    - name: Stat the artifacts the slabinfo off-state must remove
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/systemd/system/slabinfo-collector.timer
+        - /etc/systemd/system/slabinfo-collector.service
+        - /usr/local/sbin/slabinfo-collector.sh
+        - /etc/default/slabinfo-collector
+        - /var/lib/node_exporter/node_slabinfo.prom
+      register: node_exporter_host_slabinfo_leftovers
+
+    - name: Assert the slabinfo collector was reconciled away
+      ansible.builtin.assert:
+        that: node_exporter_host_slabinfo_leftovers.results | map(attribute='stat.exists') | select | length == 0
+        fail_msg: >-
+          Switching node_exporter_host_slabinfo_collector off left collector
+          artifacts behind, so the host keeps publishing per-cache slab series.
+
+    - name: Apply the role with the slabinfo collector back on
+      ansible.builtin.include_role:
+        name: weisssrv.infra.node_exporter_host
+      vars:
+        node_exporter_host_slabinfo_collector: true
 
     - name: Apply the role with the systemd collector switched off
       ansible.builtin.include_role:
@@ -95,3 +137,82 @@
         name: weisssrv.infra.node_exporter_host
       vars:
         node_exporter_host_systemd_collector: true
+
+    - name: Apply the role with the processes collector switched on
+      ansible.builtin.include_role:
+        name: weisssrv.infra.node_exporter_host
+      vars:
+        node_exporter_host_processes_collector: true
+
+    - name: Read the ExecStart override rendered with the processes collector on
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/prometheus-node-exporter.service.d/override.conf
+      register: node_exporter_host_override_processes
+
+    - name: Assert the on-state renders the processes flag
+      ansible.builtin.assert:
+        that:
+          - "'--collector.processes' in (node_exporter_host_override_processes.content | b64decode)"
+          - "'--collector.textfile' in (node_exporter_host_override_processes.content | b64decode)"
+        fail_msg: >-
+          node_exporter_host_processes_collector: true rendered no
+          --collector.processes flag, so the variable is inert.
+
+    - name: Apply the role with the processes collector back off
+      ansible.builtin.include_role:
+        name: weisssrv.infra.node_exporter_host
+      vars:
+        node_exporter_host_processes_collector: false
+
+    # The liveness probe and the healthcheck timer must follow the bind
+    # address: probing loopback would restart a healthy exporter every run.
+    - name: Apply the role with a scrape-facing bind address
+      ansible.builtin.include_role:
+        name: weisssrv.infra.node_exporter_host
+      vars:
+        node_exporter_host_bind_address: 127.0.0.1
+
+    - name: Read the override and healthcheck unit rendered with a bind address
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - /etc/systemd/system/prometheus-node-exporter.service.d/override.conf
+        - /etc/systemd/system/node-exporter-healthcheck.service
+      register: node_exporter_host_bound
+
+    - name: Probe the exporter with the bind address exported
+      ansible.builtin.command:
+        cmd: /usr/local/sbin/node-exporter-healthcheck.sh --probe-only 9101
+      environment:
+        NODE_EXPORTER_PROBE_HOST: 127.0.0.1
+      register: node_exporter_host_bound_probe
+      changed_when: false
+
+    - name: Assert the listen address and the probe both follow the bind address
+      ansible.builtin.assert:
+        that:
+          - "'--web.listen-address=127.0.0.1:9101' in (node_exporter_host_bound.results[0].content | b64decode)"
+          - "'NODE_EXPORTER_PROBE_HOST=127.0.0.1' in (node_exporter_host_bound.results[1].content | b64decode)"
+          - node_exporter_host_bound_probe.rc == 0
+        fail_msg: >-
+          node_exporter_host_bind_address is not threaded through the listen
+          address or the healthcheck probe, so the timer restarts a healthy
+          exporter every interval.
+
+    - name: Apply the role with the bind address back at its default
+      ansible.builtin.include_role:
+        name: weisssrv.infra.node_exporter_host
+      vars:
+        node_exporter_host_bind_address: ""
+
+    - name: Re-read the override after the default bind address
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/prometheus-node-exporter.service.d/override.conf
+      register: node_exporter_host_override_unbound
+
+    - name: Assert the default bind address listens on every interface
+      ansible.builtin.assert:
+        that:
+          - "'--web.listen-address=:9101' in (node_exporter_host_override_unbound.content | b64decode)"
+        fail_msg: >-
+          The empty default no longer renders `--web.listen-address=:9101`.

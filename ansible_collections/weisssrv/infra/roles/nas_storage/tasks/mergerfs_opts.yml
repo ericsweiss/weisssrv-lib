@@ -1,20 +1,7 @@
 ---
-# Derivation step for the fstab option string of every union, keyed by union
-# name. Split out of mergerfs.yml for the same reason as
-# mergerfs_needs_remount.yml — the mount around it needs FUSE and a real
-# fileserver, this part is pure derivation and is driven from fabricated
-# inventory in test.
-#
-# Boot ordering: ZFS branch dirs have no .mount units — zfs-mount-generator is
-# not enabled here (see the nfs.yml bind-mount comment) — so requires-mounts-for
-# alone orders against nothing and the mergerfs mount can race the ZFS mounts
-# and capture empty branch stubs. A union with any branch under
-# nas_storage_zfs_mount_roots therefore anchors on the bulk zfs-mount.service
-# like the ZFS-backed export binds do (nofail keeps a missing branch from
-# blocking boot); requires-mounts-for is kept as documentation of the branch set.
-#
-# The zfs-mount anchor is derived from the BRANCH SET, not from
-# `systemd_requires` — only the requires-mounts-for fan-out lives inside that key.
+# Derives the fstab option string of every union, keyed by union name. Split
+# out of mergerfs.yml so it is testable without FUSE. Boot anchoring and the
+# ZFS classification rules are in the README.
 
 - name: Reset the derived MergerFS fstab options
   ansible.builtin.set_fact:

@@ -1,17 +1,7 @@
 """The release literal is held equal across every runnable pin snippet.
 
-README.md's **Current release** line is the authority for the tag. Most pin
-examples in the docs are written as `<CURRENT_TAG>` so a bump touches nothing,
-but a handful must stay copy-paste runnable and therefore carry the literal:
-cli/README.md's pipx specs, docker/README.md's `ref:`, and the `?ref=` in each
-Terraform module README. Those are swept by hand at release time, so they are
-gated here against cli/pyproject.toml's version — the one machine-readable
-copy.
-
-Scope is deliberately narrow: only these files, and only pin-example literals.
-Historical prose elsewhere legitimately names older tags (the migration notes
-in docs/INCLUDE-CONTRACT.md and MIGRATING.md), and asserting over those would
-make the gate a nuisance rather than a guard.
+README.md's **Current release** line is the authority; cli/pyproject.toml is the
+machine-readable copy compared against. Scope is pin-example literals, not prose.
 """
 from __future__ import annotations
 

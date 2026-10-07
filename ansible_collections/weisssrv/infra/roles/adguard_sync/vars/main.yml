@@ -1,0 +1,12 @@
+---
+# Internal, not consumer API: ansible_architecture -> the arch token in the
+# upstream release artifact name. Unmapped architectures fail closed rather than
+# installing an amd64 binary that will not run.
+_adguard_sync_arch_map:
+  x86_64: amd64
+  aarch64: arm64
+  armv7l: armv7
+  armv6l: armv6
+  i386: "386"
+  i686: "386"
+  riscv64: riscv64

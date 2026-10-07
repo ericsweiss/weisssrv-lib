@@ -1,9 +1,9 @@
 # ansible-deploy image
 
-The job image an Ansible deploy runs in. Every deploy job built its toolchain
-from scratch on each run — the op CLI's apt repo, `pip install ansible`, the git
-install — which measured at over half the wall time of a 115s weisssrv deploy
-job. This image bakes that half.
+The job image an Ansible deploy runs in. Without it a deploy job reinstalls its
+toolchain on every run — the op CLI's apt repo, `pip install ansible`, the git
+install — roughly half the wall time of a short deploy. This image bakes that
+half.
 
 ## What it bakes
 
@@ -36,9 +36,12 @@ for the `op` download), but the **published tag is amd64-only**:
 `infrastructure` runner, with no `buildx --platform` and no manifest list. So an
 arm64 runner pulling the published tag gets a no-matching-manifest failure, and
 the Dockerfile's arm64 `op` sha256 is never verified by CI — it is kept for a
-future multi-arch build. amd64 is the family's working assumption elsewhere too
-([`ci/templates/install-1password.yml`](../../ci/templates/install-1password.yml)
-hard-codes `arch=amd64` in its apt source).
+future multi-arch build.
+
+The library's other 1Password install path is arch-portable too:
+[`ci/templates/install-1password.yml`](../../ci/templates/install-1password.yml)
+derives `arch="$(dpkg --print-architecture)"` and uses it for both the apt
+`arch=` field and the repo path. The amd64 coupling is the published tag alone.
 
 ## Adopting it
 

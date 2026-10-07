@@ -3,6 +3,26 @@
 # version-check command decides whether anything happens; when the pinned
 # version is already installed every task below is skipped (idempotent).
 
+# Every required parameter defaults to an empty sentinel, so a caller typo
+# otherwise surfaces as an empty URL or an empty unit name several tasks later.
+# The failed condition in the output names the parameter.
+- name: Assert the caller supplied every required prometheus_exporter parameter
+  ansible.builtin.assert:
+    that:
+      - prometheus_exporter_name | length > 0
+      - prometheus_exporter_version | length > 0
+      - prometheus_exporter_download_url | length > 0
+      - prometheus_exporter_version_check_cmd | length > 0
+      - prometheus_exporter_service_name | length > 0
+      - prometheus_exporter_binary_path | length > 0
+      - prometheus_exporter_artifact_type in ['tarball', 'deb']
+      - prometheus_exporter_artifact_type != 'tarball'
+        or prometheus_exporter_archive_member | length > 0
+    fail_msg: >-
+      prometheus_exporter was included without one of its required parameters
+      (the failed condition above names it). The defaults are empty sentinels
+      for ansible-lint, not usable values.
+
 - name: Check installed version of {{ prometheus_exporter_name }}
   # The caller supplies the probe (zfs_exporter reads --version off stderr;
   # unbound_exporter queries dpkg). Read-only, so it must run under --check
@@ -83,10 +103,9 @@
   loop: "{{ _prometheus_exporter_cleanup_paths }}"
   vars:
     _prometheus_exporter_archive: "{{ prometheus_exporter_tmp_dir }}/{{ prometheus_exporter_download_url | basename }}"
-    # The download is always removed. Tarballs additionally extract the
-    # member's top path component — a directory for archives that nest the
-    # binary (zfs_exporter-<ver>.linux-amd64/...) or the binary itself for a
-    # top-level member (adguardhome-sync) — which must go too.
+    # The download is always removed. A tarball also leaves the member's top
+    # path component behind, a nested directory or a top-level binary, so that
+    # goes too.
     _prometheus_exporter_cleanup_paths: >-
       {{ [_prometheus_exporter_archive]
          + ([prometheus_exporter_tmp_dir ~ '/' ~ (prometheus_exporter_archive_member.split('/')[0])]

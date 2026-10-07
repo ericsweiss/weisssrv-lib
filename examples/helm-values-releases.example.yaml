@@ -1,10 +1,7 @@
 ---
 # Release list for scripts/validate-helm-values.py (`--releases`, default
 # <repo-root>/helm-values-releases.yaml). Only value-heavy releases are worth
-# rendering: each `helm template` is a network round-trip.
-#
-# A plain list is accepted too; the `releases:` key exists so the file can grow
-# other top-level settings later.
+# rendering. A plain list is accepted too.
 releases:
   - name: traefik
     manifest: kubernetes/infrastructure/controllers/traefik/release.yaml

@@ -1,9 +1,21 @@
 ---
-# Mounts the NFS export (by hostname, xprtsec=tls) and installs a systemd timer
-# that copies the newest local k3s snapshot there, emitting an
-# etcd_snapshot_last_copy_timestamp_seconds textfile metric. Server nodes only;
-# the caller gates this on k3s_etcd_snapshot_offnode_enabled (off by default —
-# defaults/main.yml lists the companion changes it needs).
+# Mounts the NFS export (by hostname, xprtsec=tls) and installs a timer copying
+# the newest local k3s snapshot there, with a last-copy textfile metric. Server
+# nodes only; defaults/main.yml lists the companion changes this needs.
+
+# k3s_etcd_snapshot_nfs_server defaults to empty, and ansible.posix.mount writes
+# the fstab line before it tries to mount, so an empty server leaves
+# ":/k3s-etcd" in /etc/fstab behind an opaque resolution error.
+- name: Assert the off-node snapshot NFS target is configured
+  ansible.builtin.assert:
+    that:
+      - k3s_etcd_snapshot_nfs_server | length > 0
+      - k3s_etcd_snapshot_nfs_export | length > 0
+    fail_msg: >-
+      k3s_etcd_snapshot_offnode_enabled is on but k3s_etcd_snapshot_nfs_server
+      or k3s_etcd_snapshot_nfs_export is empty. The server must be the export
+      host's HOSTNAME, not an IP: xprtsec=tls verifies a cert with no IP SAN.
+    quiet: true
 
 - name: Create the off-node etcd snapshot mount point
   ansible.builtin.file:
@@ -13,10 +25,8 @@
     group: root
     mode: "0700"
 
-# The xprtsec=tls mount needs the kernel TLS handshake daemon (tlshd, from the
-# nfs_tls role) active on this server; without it the mount hangs with an opaque
-# timeout. Fail loud with an actionable message instead. The caller's nfs_tls
-# play runs group-wide before the k3s server play, so tlshd is already up.
+# The xprtsec=tls mount needs tlshd (nfs_tls role) active on this server;
+# without it the mount hangs with an opaque timeout. Fail loud instead.
 - name: Assert tlshd is active for the off-node TLS NFS mount  # noqa: command-instead-of-module
   ansible.builtin.command: systemctl is-active tlshd.service
   register: k3s_offnode_tlshd

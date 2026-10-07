@@ -21,7 +21,7 @@
 
   tasks:
     # public: the side renders below read role defaults (cert paths, TLS floor,
-    # backup knobs) that the scenario's group_vars deliberately does not repeat.
+    # backup knobs) that the scenario's group_vars does not repeat.
     - name: Run the gitlab role
       ansible.builtin.include_role:
         name: weisssrv.infra.gitlab
@@ -29,9 +29,8 @@
 
   post_tasks:
     # The converged file covers the plain-HTTP branch; this side render covers
-    # the TLS half without flip-flopping /etc/gitlab/gitlab.rb (which would
-    # break the idempotence run). The role template lives outside the scenario
-    # dir, so the relative src is deliberate.
+    # the TLS half without flip-flopping /etc/gitlab/gitlab.rb, which would break
+    # the idempotence run. The role template lives outside the scenario dir.
     - name: Render gitlab.rb with nginx TLS enabled (branch coverage)  # noqa: no-relative-paths
       ansible.builtin.template:
         src: "{{ playbook_dir }}/../../templates/gitlab.rb.j2"
@@ -51,6 +50,17 @@
       vars:
         gitlab_postgres_exporter_enabled: true
         gitlab_postgres_exporter_listen_address: "0.0.0.0:9187"
+
+    # The bundled monitoring stack. The converged file covers the default
+    # (both empty -> no lines, Omnibus defaults stand).
+    - name: Render gitlab.rb with the bundled monitoring stack disabled  # noqa: no-relative-paths
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/gitlab.rb.j2"
+        dest: /tmp/gitlab.rb.bundled
+        mode: "0600"
+      vars:
+        gitlab_bundled_prometheus_enabled: false
+        gitlab_bundled_alertmanager_enabled: false
 
     # Whitespace-stripping contract: an overridden gitlab_backup_skip containing
     # spaces must render to a single comma-separated SKIP value.
@@ -85,3 +95,58 @@
       vars:
         gitlab_backup_nfs_enabled: true
         gitlab_backup_path: /mnt/backups-offsite
+
+    # Negative test: an empty real-IP trust list must fail the role. Accepting
+    # it would attribute every request to the fronting proxy instead of the
+    # client, silently.
+    - name: Re-run gitlab with an empty real-IP trust list (expect failure)
+      block:
+        - name: Include gitlab with no trusted proxy addresses
+          ansible.builtin.include_role:
+            name: weisssrv.infra.gitlab
+          vars:
+            gitlab_skip_install: true
+            gitlab_nginx_trust_no_proxy: false
+            gitlab_nginx_real_ip_trusted_addresses: []
+        - name: Real-IP assert failed to trigger
+          ansible.builtin.copy:
+            dest: /tmp/gitlab-realip-assert.json
+            content: '{"failed": false}'
+            mode: "0644"
+      rescue:
+        - name: Real-IP assert correctly rejected an empty trust list
+          ansible.builtin.copy:
+            dest: /tmp/gitlab-realip-assert.json
+            mode: "0644"
+            content: |
+              {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
+          # Test-result marker, not convergence: it re-runs on every converge,
+          # so it must not count toward the idempotence check.
+          changed_when: false
+
+    # gitlab_nginx_trust_no_proxy must get an empty trust list past the real-IP
+    # assert. An empty SMTP user then stops the run at the next validation, so
+    # the arm never re-renders gitlab.rb and the marker names which assert fired.
+    - name: Re-run gitlab with the no-proxy escape hatch (expect a later failure)
+      block:
+        - name: Include gitlab with the trust-list assert waived
+          ansible.builtin.include_role:
+            name: weisssrv.infra.gitlab
+          vars:
+            gitlab_skip_install: true
+            gitlab_nginx_trust_no_proxy: true
+            gitlab_nginx_real_ip_trusted_addresses: []
+            gitlab_smtp_user: ""
+        - name: The sentinel validation did not fire
+          ansible.builtin.copy:
+            dest: /tmp/gitlab-realip-nofail.json
+            content: '{"stopped_at": "none"}'
+            mode: "0644"
+      rescue:
+        - name: Record which validation stopped the escape-hatch run
+          ansible.builtin.copy:
+            dest: /tmp/gitlab-realip-nofail.json
+            mode: "0644"
+            content: |
+              {"stopped_at": {{ ansible_failed_result.msg | to_json }}}
+          changed_when: false

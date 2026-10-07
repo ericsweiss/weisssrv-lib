@@ -1,8 +1,6 @@
-# `terraform validate` evaluates no caller values, so nothing else exercises the
-# variable validations, the cross-map preconditions or the derived attributes
-# (matching_target, dns_enabled, the no2ghz_oui inversion). Every run is
-# `command = plan`: a plan creates no state, so the file needs no teardown —
-# which the module's `prevent_destroy` resources would refuse anyway.
+# `terraform validate` evaluates no caller values, so this file is the only
+# thing that exercises the validations, preconditions and derived attributes.
+# Every run is `command = plan`, so there is no state and no teardown.
 mock_provider "unifi" {}
 
 variables {
@@ -68,8 +66,7 @@ variables {
       source      = { zone = "internal" }
       destination = { zone = "iot", networks = ["iot"] }
     },
-    # Source-side match lists: both derivations live in the same expression as
-    # the destination's, and a matching_target disagreeing with the populated
+    # Source-side match lists: a matching_target disagreeing with the populated
     # list is an apply-time 400 the plan cannot show.
     {
       name        = "iot-camera-to-nvr"
@@ -120,12 +117,8 @@ variables {
       mac  = "00:17:88:7E:C7:A3"
       name = "laptop"
     }
-    # Default-network reservation: plans the no-override branch — the
-    # controller rejects a virtual-network override onto the default network
-    # (api.err.VirtualNetworkOverrideUnsupportedForDefaultNetwork), so the
-    # module must emit a bare fixed-IP reservation for it. Like `laptop`,
-    # network_id is Optional+Computed and the planned null cannot be asserted;
-    # the entry exists to exercise the branch.
+    # Plans the no-override branch for a default-network reservation. Like
+    # `laptop`, the null network_id is unknown at plan and cannot be asserted.
     switch = {
       mac      = "00:17:88:7E:C7:A4"
       name     = "switch"
@@ -157,9 +150,8 @@ run "a_whole_site_plans_clean" {
     error_message = "Custom zones are keyed by their display name; built-ins are data sources, never resources."
   }
 
-  # `network_ids` is the ONLY way v0.55.0 puts a network into a custom zone, so
-  # an empty list is a whole VLAN segmentation that plans and applies as a
-  # no-op.
+  # `network_ids` is the only way v0.55.0 puts a network into a custom zone, so
+  # an empty list is a segmentation that plans and applies as a no-op.
   assert {
     condition = (
       length(unifi_firewall_zone.this["iot"].network_ids) == 1
@@ -199,10 +191,8 @@ run "a_whole_site_plans_clean" {
     error_message = "internet_access, domain_name and the per-network igmp_snooping toggle must reach the network they were declared on."
   }
 
-  # The three attributes above are exactly what the controller resets when a
-  # network is written with the provider default `setting_preference = "auto"`,
-  # and it resets them on EVERY write — a silent unconfiguration that the plan
-  # shows as clean and the apply reports only as an inconsistent result.
+  # The three attributes above are what the controller resets on every write
+  # under the provider default `setting_preference = "auto"`.
   assert {
     condition = alltrue([
       for network in unifi_network.this : network.setting_preference == "manual"
@@ -210,9 +200,8 @@ run "a_whole_site_plans_clean" {
     error_message = "Every network must write setting_preference = \"manual\" — under \"auto\" the controller owns dhcp dns_enabled, domain_name and igmp_snooping and strips them back to its defaults."
   }
 
-  # A DHCP DNS list is the only thing that turns the option on — an entry
-  # without one must leave clients on the gateway's resolver, not send an empty
-  # list the provider can never converge (#429).
+  # A DHCP DNS list is the only thing that turns the option on; an empty list
+  # is sent as null, which the provider can converge (upstream #429).
   assert {
     condition     = unifi_network.this["iot"].dhcp_server.dns_enabled
     error_message = "A non-empty dhcp.dns_servers must set dhcp_server.dns_enabled."
@@ -305,9 +294,8 @@ run "a_whole_site_plans_clean" {
     error_message = "l2_isolation must land on the WLAN that declared it (guest client isolation), and `hide` must not be wired to it."
   }
 
-  # No assertion on the `laptop` entry's fixed_ip/network_id: both attributes are
-  # Optional+Computed, so an unset one is unknown at plan. It is in the fixture
-  # to plan the null branch of the network_id lookup at all.
+  # No assertion on `laptop`: both attributes are Optional+Computed, so an unset
+  # one is unknown at plan. It is in the fixture to plan the null branch.
   assert {
     condition = (
       unifi_client.this["hue"].fixed_ip == "10.0.30.3"
@@ -346,8 +334,7 @@ run "a_whole_site_plans_clean" {
   }
 
   # The positive half of the counted QoS lookup; the gateway-only run below is
-  # the zero half. `user_group_id` is Required on every WLAN, so a site WITH
-  # WLANs must still read the rate.
+  # the zero half.
   assert {
     condition     = length(data.unifi_client_qos_rate.default) == 1
     error_message = "A site with WLANs must read the client QoS rate — `unifi_wlan.user_group_id` is Required with no default."
@@ -420,9 +407,8 @@ run "rejects_a_vlan_of_zero" {
   expect_failures = [var.networks]
 }
 
-# The vlan-uniqueness check skips nulls, so a forgotten `vlan` on a second
-# network is caught only here — and it applies cleanly, landing the network
-# untagged next to the management one.
+# The vlan-uniqueness check skips nulls, so only this rule catches a forgotten
+# `vlan`.
 run "rejects_a_second_untagged_network" {
   command = plan
 
@@ -436,9 +422,8 @@ run "rejects_a_second_untagged_network" {
   expect_failures = [var.networks]
 }
 
-# The lone-untagged case the count rule could never see: one entry, no `vlan`,
-# and not the reserved key — a forgotten tag that lands the network on the
-# management wire while everything keyed to it reads as its own segment.
+# The lone-untagged case a count rule could never see: one entry, no `vlan`,
+# and not the reserved key.
 run "rejects_a_lone_untagged_network_under_another_key" {
   command = plan
 
@@ -477,8 +462,36 @@ run "rejects_duplicate_network_names" {
   expect_failures = [var.networks]
 }
 
-# vlan-only is the provider's third purpose and the one shape this module cannot
-# express: `subnet` is required here and validated in gateway form.
+# Two VLANs on one range: the vlan and name rules both pass, and the controller
+# rejects the second network partway through the apply.
+run "rejects_duplicate_network_subnets" {
+  command = plan
+
+  variables {
+    networks = {
+      iot     = { name = "IoT", vlan = 30, subnet = "10.0.30.1/24" }
+      iot_dup = { name = "IoT spare", vlan = 31, subnet = "10.0.30.2/24" }
+    }
+  }
+
+  expect_failures = [var.networks]
+}
+
+# A partial overlap: neither subnet duplicates the other, and the wider one
+# swallows the narrower.
+run "rejects_overlapping_network_subnets" {
+  command = plan
+
+  variables {
+    networks = {
+      lan = { name = "LAN", vlan = 10, subnet = "10.0.0.1/16" }
+      iot = { name = "IoT", vlan = 30, subnet = "10.0.30.1/24" }
+    }
+  }
+
+  expect_failures = [var.networks]
+}
+
 run "rejects_the_vlan_only_purpose" {
   command = plan
 
@@ -516,9 +529,8 @@ run "rejects_a_malformed_dhcp_address" {
   expect_failures = [var.networks]
 }
 
-# Four dotted decimal octets, and not an address: the shape regex passes it, so
-# only the `cidrhost` half rejects it — before a supervised apply gets a
-# controller error partway through.
+# Four dotted decimal octets and not an address: only the `cidrhost` half
+# rejects it.
 run "rejects_an_out_of_range_dhcp_octet" {
   command = plan
 
@@ -537,6 +549,81 @@ run "rejects_an_out_of_range_dhcp_octet" {
   }
 
   expect_failures = [var.networks]
+}
+
+# A descending pool passes every shape and range check and serves no leases.
+run "rejects_a_descending_dhcp_pool" {
+  command = plan
+
+  variables {
+    networks = {
+      iot = {
+        name   = "IoT"
+        vlan   = 30
+        subnet = "10.0.30.1/24"
+        dhcp = {
+          start = "10.0.30.249"
+          stop  = "10.0.30.50"
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.networks]
+}
+
+run "rejects_a_malformed_leasetime" {
+  command = plan
+
+  variables {
+    networks = {
+      iot = {
+        name   = "IoT"
+        vlan   = 30
+        subnet = "10.0.30.1/24"
+        dhcp = {
+          start     = "10.0.30.50"
+          stop      = "10.0.30.249"
+          leasetime = "24 hours"
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.networks]
+}
+
+# The shorthand forms the provider documents must survive the shape check.
+run "accepts_shorthand_leasetimes" {
+  command = plan
+
+  variables {
+    networks = {
+      iot = {
+        name   = "IoT"
+        vlan   = 30
+        subnet = "10.0.30.1/24"
+        dhcp   = { start = "10.0.30.50", stop = "10.0.30.249", leasetime = "24h" }
+      }
+      guest = {
+        name   = "Guest"
+        vlan   = 40
+        subnet = "10.0.40.1/24"
+        dhcp   = { start = "10.0.40.50", stop = "10.0.40.249", leasetime = "86400s" }
+      }
+    }
+    zones         = {}
+    policies      = []
+    wlans         = {}
+    clients       = {}
+    port_forwards = {}
+    site_settings = {}
+  }
+
+  assert {
+    condition     = unifi_network.this["iot"].dhcp_server.leasetime == "24h"
+    error_message = "A shorthand Go duration must reach the controller unchanged."
+  }
 }
 
 run "rejects_an_unknown_network_purpose" {
@@ -621,11 +708,8 @@ run "rejects_a_zone_colliding_with_a_builtin_display_name" {
   expect_failures = [unifi_firewall_zone.this]
 }
 
-# Two zones each send their whole membership list, so a network in both never
-# converges — the loser reports drift on every plan afterwards.
-# `Hotspot` is a controller built-in that the DEFAULT builtin_zone_names does
-# not declare, so only the reserved-names list catches it — a custom zone by
-# that name collides with a built-in nothing in this configuration can see.
+# `Hotspot` is a controller built-in the DEFAULT builtin_zone_names does not
+# declare, so only the reserved-names list catches it.
 run "rejects_a_zone_named_for_an_undeclared_builtin" {
   command = plan
 
@@ -655,9 +739,8 @@ run "rejects_a_zone_colliding_with_an_overridden_builtin_name" {
   expect_failures = [unifi_firewall_zone.this]
 }
 
-# `guest` purpose sticks only inside the controller's own Hotspot zone, which
-# this module cannot manage. In a custom zone the controller rewrites it and the
-# apply dies partway through, after the gateway has already changed.
+# `guest` purpose sticks only inside the controller's own Hotspot zone; in a
+# custom zone the controller rewrites it and the apply fails partway through.
 run "rejects_a_guest_purpose_network_in_a_custom_zone" {
   command = plan
 
@@ -671,8 +754,7 @@ run "rejects_a_guest_purpose_network_in_a_custom_zone" {
     wlans    = {}
     clients  = {}
     # The file-level fixture snoops `iot`, which this run's `networks` override
-    # removes — left set, the zone assertion would be masked by an unrelated
-    # settings precondition.
+    # removes; left set, an unrelated precondition masks the zone assertion.
     site_settings = {}
   }
 
@@ -725,8 +807,7 @@ run "rejects_a_policy_naming_an_unknown_network" {
 }
 
 # A network belongs to exactly one zone, so an endpoint naming zone "iot" and
-# network "guest" contradicts itself — the controller stores a rule matching
-# nothing, or rejects it outright.
+# network "guest" contradicts itself.
 run "rejects_a_policy_network_outside_its_zone" {
   command = plan
 
@@ -743,9 +824,8 @@ run "rejects_a_policy_network_outside_its_zone" {
   expect_failures = [unifi_firewall_policy.this]
 }
 
-# The built-in half of the same rule, which cannot be checked positively (the
-# zone's membership is a data read): a network this module has placed in a
-# custom zone is no longer reachable through `internal`.
+# The built-in half of the same rule, which runs in reverse: a network held by
+# a custom zone is not reachable through `internal`.
 run "rejects_a_builtin_endpoint_naming_a_custom_zone_network" {
   command = plan
 
@@ -762,9 +842,8 @@ run "rejects_a_builtin_endpoint_naming_a_custom_zone_network" {
   expect_failures = [unifi_firewall_policy.this]
 }
 
-# The other direction of both: a custom endpoint naming its OWN network, and a
-# built-in endpoint naming a network that no custom zone claims (the management
-# network stays in Internal), must both plan.
+# The other direction of both rules: each endpoint names a network its own zone
+# holds, so both must plan.
 run "accepts_zone_consistent_network_endpoints" {
   command = plan
 
@@ -844,10 +923,8 @@ run "rejects_create_allow_respond_on_icmpv6" {
   expect_failures = [var.policies]
 }
 
-# The other direction of the same rule: the validation is scoped to ALLOW
-# because main.tf derives the attribute, so an icmp deny left at the default
-# `true` is accepted and still writes false. An explicit false on an icmp ALLOW
-# is the shape a real ICMP pair uses.
+# The validation is scoped to ALLOW because main.tf derives the attribute, so
+# an icmp deny left at the default `true` is accepted and still writes false.
 run "accepts_icmp_denies_at_the_default_and_an_explicit_icmp_allow" {
   command = plan
 
@@ -1067,10 +1144,8 @@ run "rejects_an_endpoint_matching_both_ips_and_networks" {
   expect_failures = [var.policies]
 }
 
-# matching_target derives from which list is NON-NULL, not from what is in it:
-# an empty one derives IP/NETWORK with nothing to match, and the controller
-# stores a rule that matches no host. Omitting the key is how "any" is written,
-# so an empty list is never what the author meant.
+# matching_target derives from which list is non-null, not from what is in it,
+# so an empty one stores a rule that matches no host.
 run "rejects_an_empty_policy_ips_list" {
   command = plan
 
@@ -1121,11 +1196,8 @@ run "rejects_an_unknown_policy_action" {
   expect_failures = [var.policies]
 }
 
-# The console-owned default. `wlan_bands` is Optional+Computed, so a null
-# `bands` writes nothing and the planned value is UNKNOWN — which is both the
-# property under test and the reason it cannot be asserted here, the same limit
-# as the `laptop` client above. What this proves is that the null is a legal
-# value the plan carries, rather than an omission the module fills in.
+# `wlan_bands` is Optional+Computed: a null `bands` plans as unknown, so this
+# only proves the null is legal.
 run "accepts_a_wlan_with_no_band_set" {
   command = plan
 
@@ -1145,10 +1217,8 @@ run "accepts_a_wlan_with_no_band_set" {
   }
 }
 
-# 6 GHz is why `bands` is an input rather than a constant, so the module must
-# not be what blocks it: upstream #406 fails the CREATE provider-side, and that
-# is a bargain the caller makes knowingly. Asserting the whole set is also what
-# catches a band list quietly hard-coded back to 2g/5g.
+# 6g is allowed in an enforced set; upstream #406 fails it provider-side, which
+# is the caller's bargain.
 run "accepts_six_gigahertz_in_an_enforced_band_set" {
   command = plan
 
@@ -1165,7 +1235,7 @@ run "accepts_six_gigahertz_in_an_enforced_band_set" {
 
   assert {
     condition     = unifi_wlan.this["iot"].wlan_bands == toset(["2g", "5g", "6g"])
-    error_message = "Module validation must not block 6g — the provider (#406) owns that failure — and an enforced band set must reach the WLAN as written."
+    error_message = "Module validation must not block 6g — the upstream provider (#406) owns that failure — and an enforced band set must reach the WLAN as written."
   }
 }
 
@@ -1221,8 +1291,23 @@ run "rejects_a_short_passphrase" {
   expect_failures = [var.wlans]
 }
 
-# The upper bound is a separate comparison: 64 characters is one past WPA-PSK's
-# limit and the kind of value a generated passphrase lands on.
+# `passphrase` is Optional in the type so a later non-PSK `security` input is
+# additive; the validation must still require it.
+run "rejects_a_wlan_with_no_passphrase" {
+  command = plan
+
+  variables {
+    wlans = {
+      iot = {
+        ssid    = "example-iot"
+        network = "iot"
+      }
+    }
+  }
+
+  expect_failures = [var.wlans]
+}
+
 run "rejects_a_long_passphrase" {
   command = plan
 
@@ -1239,9 +1324,8 @@ run "rejects_a_long_passphrase" {
   expect_failures = [var.wlans]
 }
 
-# Eleven characters, so the length bound alone accepted it. WPA-PSK is printable
-# ASCII octets: an accented letter or a smart quote carried in from a password
-# manager associates on nothing, and the sensitive diff hides which SSID broke.
+# Eleven characters, so the length bound alone accepted it: WPA-PSK is
+# printable ASCII octets, and the sensitive diff hides which SSID broke.
 run "rejects_a_non_ascii_passphrase" {
   command = plan
 
@@ -1391,6 +1475,33 @@ run "rejects_an_unknown_port_forward_protocol" {
   expect_failures = [var.port_forwards]
 }
 
+run "rejects_an_unknown_port_forward_wan_interface" {
+  command = plan
+
+  variables {
+    port_forwards = {
+      wg = { protocol = "udp", wan_interface = "wan3", wan_port = "51820", ip = "10.0.1.99", port = "51820" }
+    }
+  }
+
+  expect_failures = [var.port_forwards]
+}
+
+run "accepts_a_secondary_wan_port_forward" {
+  command = plan
+
+  variables {
+    port_forwards = {
+      wg = { protocol = "udp", wan_interface = "wan2", wan_port = "51820", ip = "10.0.1.99", port = "51820" }
+    }
+  }
+
+  assert {
+    condition     = unifi_port_forward.this["wg"].wan.interface == "wan2"
+    error_message = "port_forwards[*].wan_interface must reach the forward's `wan` block."
+  }
+}
+
 run "rejects_a_non_numeric_port_forward_port" {
   command = plan
 
@@ -1487,11 +1598,9 @@ run "rejects_igmp_snooping_on_an_unknown_network" {
   expect_failures = [unifi_setting.site]
 }
 
-# A gateway-only site: no APs, no reservations, no forwards. `wlans` is
-# sensitive and its default `{}` is the one value that runs `nonsensitive()`
-# over an unmarked result, which hard-errors if the shape ever changes; the
-# empty igmp list must write no settings block at all rather than an
-# `enabled = false` that turns off snooping the console already had.
+# Gateway-only: `wlans` defaults to `{}`, the one value that runs
+# `nonsensitive()` over an unmarked result, and the empty igmp list must write
+# no settings block at all.
 run "a_gateway_only_site_plans_clean" {
   command = plan
 
@@ -1507,9 +1616,8 @@ run "a_gateway_only_site_plans_clean" {
     error_message = "Empty wlans/clients/port_forwards must plan no resources — and `wlans = {}` must survive the nonsensitive() unwrap."
   }
 
-  # The QoS rate is looked up BY NAME, and the stock name is controller- and
-  # locale-dependent: reading it unconditionally fails the whole plan on a site
-  # that has no SSID to assign it to.
+  # The QoS rate is looked up by name, so an unconditional read fails the whole
+  # plan on a site with no SSID to assign it to.
   assert {
     condition     = length(data.unifi_client_qos_rate.default) == 0
     error_message = "A site with no WLANs must skip the client QoS rate lookup entirely — a gateway-only site must not fail its plan on a localized rate name it never uses."
@@ -1558,4 +1666,157 @@ run "rejects_a_duplicate_fixed_ip_in_one_network" {
   }
 
   expect_failures = [var.clients]
+}
+
+run "rejects_a_dhcp_pool_outside_the_subnet" {
+  command = plan
+
+  variables {
+    networks = {
+      iot = {
+        name   = "IoT"
+        vlan   = 30
+        subnet = "10.0.30.1/24"
+        dhcp   = { start = "10.0.31.50", stop = "10.0.31.249" }
+      }
+    }
+  }
+
+  expect_failures = [var.networks]
+}
+
+# A /25 LAN whose pool was written for a /24: the bounds parse, sit in order,
+# and address another segment.
+run "rejects_a_dhcp_stop_outside_a_narrow_subnet" {
+  command = plan
+
+  variables {
+    networks = {
+      iot = {
+        name   = "IoT"
+        vlan   = 30
+        subnet = "10.0.30.1/25"
+        dhcp   = { start = "10.0.30.50", stop = "10.0.30.200" }
+      }
+    }
+  }
+
+  expect_failures = [var.networks]
+}
+
+run "rejects_a_dhcp_pool_covering_the_gateway" {
+  command = plan
+
+  variables {
+    networks = {
+      iot = {
+        name   = "IoT"
+        vlan   = 30
+        subnet = "10.0.30.1/24"
+        dhcp   = { start = "10.0.30.1", stop = "10.0.30.249" }
+      }
+    }
+  }
+
+  expect_failures = [var.networks]
+}
+
+run "rejects_a_malformed_reserved_cidr" {
+  command = plan
+
+  variables {
+    reserved_cidrs = ["10.42.0.0"]
+  }
+
+  expect_failures = [var.reserved_cidrs]
+}
+
+# The reserved entry is wider than the network, so the overlap test has to mask
+# both to the shorter prefix.
+run "rejects_a_network_inside_a_reserved_cidr" {
+  command = plan
+
+  variables {
+    reserved_cidrs = ["10.0.0.0/16"]
+  }
+
+  expect_failures = [unifi_network.this]
+}
+
+run "rejects_a_network_on_a_reserved_cidr" {
+  command = plan
+
+  variables {
+    reserved_cidrs = ["10.0.30.0/24"]
+  }
+
+  expect_failures = [unifi_network.this]
+}
+
+run "accepts_reserved_cidrs_beside_every_network" {
+  command = plan
+
+  variables {
+    reserved_cidrs = ["10.42.0.0/16", "10.43.0.0/16"]
+  }
+
+  assert {
+    condition     = unifi_network.this["iot"].subnet == "10.0.30.1/24"
+    error_message = "Reserved ranges that overlap nothing must leave the networks alone."
+  }
+}
+
+run "rejects_a_fixed_ip_outside_its_network_subnet" {
+  command = plan
+
+  variables {
+    clients = {
+      hue = {
+        mac      = "00:17:88:7E:C7:A2"
+        name     = "hue-bridge"
+        fixed_ip = "10.0.40.3"
+        network  = "iot"
+      }
+    }
+  }
+
+  expect_failures = [unifi_client.this]
+}
+
+run "rejects_a_fixed_ip_inside_the_dhcp_pool" {
+  command = plan
+
+  variables {
+    clients = {
+      hue = {
+        mac      = "00:17:88:7E:C7:A2"
+        name     = "hue-bridge"
+        fixed_ip = "10.0.30.60"
+        network  = "iot"
+      }
+    }
+  }
+
+  expect_failures = [unifi_client.this]
+}
+
+# A reservation on a network with no `dhcp` block has no pool to collide with.
+run "accepts_a_fixed_ip_on_a_network_without_dhcp" {
+  command = plan
+
+  variables {
+    clients = {
+      probe = {
+        mac      = "00:17:88:7E:C7:A5"
+        name     = "probe"
+        fixed_ip = "10.0.50.10"
+        network  = "transit"
+      }
+    }
+  }
+
+  assert {
+    condition     = unifi_client.this["probe"].fixed_ip == "10.0.50.10"
+    error_message = "A network serving no DHCP has no pool, so any in-subnet reservation is fine."
+  }
 }

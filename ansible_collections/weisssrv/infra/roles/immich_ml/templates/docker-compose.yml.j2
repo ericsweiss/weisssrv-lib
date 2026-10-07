@@ -1,10 +1,8 @@
 {# Byte-stable: any change here notifies "Restart compose stack", which is a
    full stack down+up. Do not churn this file for cosmetics. #}
 # {{ ansible_managed }}
-# Immich machine-learning (OpenVINO) — mirrors the hwaccel.ml.yml openvino
-# stanza of the pinned Immich release ({{ immich_ml_version }}). Managed by the
-# immich_ml Ansible role — do not edit on the host (changes are reverted on
-# the next deploy).
+# Immich machine-learning (OpenVINO), mirroring the hwaccel.ml.yml openvino
+# stanza of Immich {{ immich_ml_version }}. Host edits are reverted on deploy.
 name: immich-ml
 
 services:
@@ -24,16 +22,16 @@ services:
       - "{{ immich_ml_render_gid }}"
     environment:
       TZ: {{ immich_ml_timezone }}
-      # Uncomment to cap the OCR batch size (README § VRAM).
-      # MACHINE_LEARNING_MAX_BATCH_SIZE__OCR: "3"
+{% for key, value in immich_ml_extra_env.items() %}
+      {{ key }}: "{{ value }}"
+{% endfor %}
     volumes:
       # Model cache (multi-GB, downloaded on first run). Named volume in the
       # LXC rootfs: re-downloadable cache, not state — no backup enrollment.
       - model-cache:/cache
     ports:
-      # AUTHLESS endpoint — published on the LAN. Scope reachability at the
-      # site firewall; that is the security boundary.
-      - "{{ immich_ml_listen_port }}:3003"
+      # AUTHLESS endpoint; the site firewall is the security boundary.
+      - "{{ immich_ml_bind }}:{{ immich_ml_listen_port }}:3003"
     restart: always
 
 volumes:

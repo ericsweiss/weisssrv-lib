@@ -3,7 +3,7 @@
 Configures Proxmox VE High Availability for VMs and containers: HA rules
 (node affinity), HA resources, and ZFS storage replication jobs.
 
-## What This Role Manages
+## What it manages
 
 - **HA rules** (Proxmox 9+): node-affinity rules restricting which nodes may
   run a given guest. Only `type: node-affinity` is supported — the role
@@ -16,14 +16,18 @@ Configures Proxmox VE High Availability for VMs and containers: HA rules
 - **Cluster migration channel** (`datacenter.cfg`): pins `migration: type=` so
   the safe default is declared rather than inherited. `insecure` sends guest RAM
   in cleartext over TCP 60000-60050, and PVE only ever reads the live value, so
-  a one-off experiment stays in effect until something puts it back. `/etc/pve`
-  is clustered, so this reconcile is `run_once` — a play targeting the whole
-  group would otherwise have every host write the same key concurrently and hit
-  pmxcfs lock contention.
+  a one-off experiment stays in effect until something puts it back.
 
-`tasks/main.yml` runs the rules + resources reconciliation. Replication is
-**not** included there — run it in a separate play against the source nodes
-with `tasks_from: replication`, or it executes once per host in the group.
+The quorum gate runs per host, and the rules, resources and migration-channel
+reconciles are cluster-wide: the role probes the host group for a reachable node
+and runs them `run_once`, delegated to it. A caller is therefore a plain
+`hosts: <proxmox group>` play — no `serial: 1`, no "already applied" bookkeeping.
+Set `proxmox_ha_delegate_host` to pin a node instead; when no node answers the
+probe, the role fails rather than skipping the reconcile.
+
+Replication is **not** included there — run it in a separate play against the
+source nodes with `tasks_from: replication`, or it executes once per host in the
+group.
 
 ## Variables
 
@@ -33,6 +37,7 @@ with `tasks_from: replication`, or it executes once per host in the group.
 | `proxmox_ha_resources` | `[]` | Guests HA manages (schema below) |
 | `proxmox_ha_replication_jobs` | `[]` | `pvesr` replication jobs (schema below) |
 | `proxmox_ha_host_group` | `proxmox` | Inventory group whose membership is asserted before touching HA state |
+| `proxmox_ha_delegate_host` | unset | Pins the node the cluster-wide reconcile is delegated to; default is the first node that answered the reachability probe |
 | `proxmox_ha_migration_type` | `secure` | `datacenter.cfg` migration channel; empty leaves `datacenter.cfg` unmanaged |
 | `proxmox_ha_migration_network` | `""` | Dedicated migration network (CIDR); empty preserves the live value |
 
@@ -93,25 +98,28 @@ proxmox_ha_replication_jobs:
   HA resources alike. An incomplete config would otherwise destroy state that is
   simply not codified yet, and a stale node-affinity rule silently constrains
   placement of a resource the role believes it fully controls, so it is at least
-  named in the run output.
-- **Source drift is reported, not corrected**: a guest that migrated away
-  needs either the inventory updated or the guest migrated back.
+  named in the run output. Clean one up by hand with
+  `pvesr delete <job_id>` once you have confirmed nothing needs it.
+- **Source drift is reported, not corrected**: a guest that migrated away needs
+  either the inventory updated or the guest migrated back. The run names the
+  jobs; the repair is to point that job's `source_node` at the node the guest
+  now runs on, or migrate the guest back, then re-run the role. Replication jobs
+  can only be created on the node the guest resides on.
+- **PVE9 rule normalization.** `ha-manager rules list --output-format=json`
+  returns `nodes` and `resources` as hashes, not comma strings. Both sides are
+  normalized to a sorted canonical string before comparison, or the rule is
+  re-`set` on every run. A `rules set` only updates the options it is given, so
+  a removed comment is cleared with an explicit empty `--comment`.
 - **The migration property string is replaced wholesale.** An empty
   `proxmox_ha_migration_network` therefore carries the live network through the
   set rather than clearing it.
 
 ## Requirements
 
+- A play-level `become: true` — every `pvesh` / `ha-manager` / `pvesr` call in
+  this role runs as root.
 - Quorate Proxmox VE cluster (rules require PVE 9+); run from any member.
 - Replication targets need matching ZFS storage on every target node.
-
-## Files
-
-- `tasks/main.yml` — cluster/quorum gate, then the migration channel, rules + resources
-- `tasks/datacenter.yml` — cluster-wide `datacenter.cfg` migration options
-- `tasks/rules.yml` — node-affinity rules
-- `tasks/resources.yml` — HA resources
-- `tasks/replication.yml` — `pvesr` replication jobs (`tasks_from: replication`)
 
 ## Troubleshooting
 
@@ -122,3 +130,11 @@ ha-manager config          # the resource index this role parses
 ha-manager migrate ct:150 <node>
 pvesr status               # replication job health
 ```
+
+## Molecule
+
+`molecule test -s default` from the role directory (CI runs the same scenario).
+`ha-manager`, `pvesr`, `qm` and `pct` are stubbed and every mutation is logged,
+so each case asserts the exact commands issued: add, update, removal
+(`enabled: false`), the permuted-target no-op, the unsupported-rule-type
+failure, and orphan reporting with zero mutations.

@@ -1,58 +1,8 @@
 #!/usr/bin/env python3
-"""Gate a consumer repo's vendored copies of weisssrv-lib files.
+"""Gate a consumer repo's vendored copies of weisssrv-lib files against a checkout.
 
-The copy relationship is recorded where the copies live: each consumer ships a
-manifest (scripts/vendored-manifest.yml by convention) naming the library files
-it vendors and the forks it deliberately maintains. The library knows nothing
-about its consumers — it publishes an OFFER list (scripts/vendorable-paths.yml)
-of the paths it supports vendoring, and this engine, which any consumer runs
-against a library checkout at its pinned ref.
-
-Two relationships:
-
-  vendored  byte-identical. A drifted copy means the library's fix is simply
-            absent here, and the next re-vendor silently reverts whatever was
-            edited locally. Both directions fail.
-  forked    deliberately divergent. Asserted to still DIFFER (a converged fork
-            belongs under `vendored`), and — when the entry records
-            `reconciled_sha256` — that the library side has not moved since the
-            fork was last reconciled. Without that, a fork list documents a
-            divergence without noticing the upstream change it needs to absorb.
-
-Manifest schema (the consumer owns this file; the library never reads it):
-
-  vendored:
-    - scripts/check-doc-links.py            # same path both sides
-    - lib: lint/ruff.toml                   # paths differ
-      consumer: ruff.toml
-  forked:
-    - lib: lint/editorconfig
-      consumer: .editorconfig
-      reason: Per-repo file-type sections on a shared base.   # required
-      reconciled_sha256: <sha of the library blob last absorbed>
-
-Library blobs are read at `--ref` when given (`git show <ref>:<path>`). The
-fallback to the checkout's working tree is decided ONCE, per REF, not per path:
-when the ref does not resolve the tag has not been cut yet (it is cut after the
-library MR merges), so a pre-release run compares against the branch it will be
-tagged from and says so. When the ref DOES resolve, a path missing at it fails —
-a file the library added after the tag is not shipped by that release, and
-silently comparing it against a newer working tree would green-light a copy the
-consumer's pin cannot deliver. That failure names its DIRECTION: a path still in
-the library working tree means the pin lags a manifest addition (bump it), not
-that the library dropped the file (drop the entry).
-
-When the library ships its offer list at the ref under test, every manifest
-`lib:` path must appear in it: vendoring an unoffered file is how a consumer
-ends up depending on library internals no release contract covers. A ref that
-predates the offer list skips that arm (and says so) rather than failing
-history retroactively.
-
-There is no skip-when-missing path. An unavailable library checkout is an
-operator error (exit 2), because a gate that quietly disables itself is not one.
-
-  check-vendored-copies.py [--manifest FILE] [--repo-root DIR]
-                           [--lib-path DIR] [--ref GIT_REF] [--list]
+An unavailable library checkout is an operator error, never a skip; exits 0
+clean, 1 on drift, 2 on an operator error. Contract: docs/SCRIPTS.md.
 """
 from __future__ import annotations
 
@@ -66,19 +16,39 @@ from pathlib import Path
 try:
     import yaml
 except ImportError:
-    sys.exit("PyYAML required: pip install pyyaml")
+    print("ERROR: PyYAML required: pip install pyyaml", file=sys.stderr)
+    raise SystemExit(2) from None
 
 MANIFEST_RELPATH = "scripts/vendored-manifest.yml"
 OFFER_RELPATH = "scripts/vendorable-paths.yml"
 
+# Whole-line comment markers by suffix, for the comment-only-fork check. A
+# suffix in neither map is never compared this way, so an unknown format is
+# never reported as a prose-only fork.
+_COMMENT_MARKERS = {
+    ".cfg": ("#",),
+    ".conf": ("#",),
+    ".go": ("//",),
+    ".hcl": ("#", "//"),
+    ".ini": ("#",),
+    ".j2": ("#",),
+    ".js": ("//",),
+    ".py": ("#",),
+    ".sh": ("#",),
+    ".tf": ("#", "//"),
+    ".toml": ("#",),
+    ".ts": ("//",),
+    ".txt": ("#",),
+    ".yaml": ("#",),
+    ".yml": ("#",),
+}
+
 
 class _UniqueKeyLoader(yaml.SafeLoader):
-    """SafeLoader that refuses duplicate mapping keys.
+    """SafeLoader that rejects duplicate mapping keys.
 
-    PyYAML's default keeps the LAST duplicate: a manifest with two `vendored:`
-    sections silently drops every entry in the first one — ungating declared
-    copies with no visible signal. A duplicate is always an editing accident,
-    so it is an error, not a merge.
+    Last-key-wins would silently drop every entry in a duplicated section,
+    ungating declared copies with no visible signal.
     """
 
     def construct_mapping(self, node, deep=False):
@@ -105,28 +75,32 @@ class _UniqueKeyLoader(yaml.SafeLoader):
 class Entry:
     """One registered copy: a library path, a consumer path, and its kind."""
 
-    def __init__(self, lib: str, consumer: str, reason: str = "", reconciled: str = ""):
+    def __init__(
+        self,
+        lib: str,
+        consumer: str,
+        reason: str = "",
+        reconciled: str = "",
+        comment_only: bool = False,
+    ):
         self.lib = lib
         self.consumer = consumer
         self.reason = reason
         self.reconciled = reconciled
+        self.comment_only = comment_only
 
 
 def _validate_relpath(value: str, kind: str) -> str:
     """A manifest path must stay a plain repo-relative path.
 
-    An absolute path or a `..` component would make the gate read files
-    outside the tree it claims to gate — and falsely certify a copy that is
-    not in the repository at all. Rejected loudly at parse time; the symlink
-    variant of the same escape is caught at check time, where resolution is
-    possible.
+    An absolute path or `..` component would gate files outside the tree.
+    The symlink variant of the same escape is caught at check time.
     """
     text = str(value)
     path = Path(text)
-    # Canonical spelling only: pathlib collapses `.` segments and doubled
-    # slashes, so `scripts/./tool.py` and `scripts/tool.py` would otherwise
-    # count as two distinct destinations and dodge the duplicate check. NUL
-    # never belongs in a path handed to the filesystem or git.
+    # Canonical spelling only: `scripts/./tool.py` and `scripts/tool.py` would
+    # otherwise alias one destination past the duplicate check. NUL never
+    # belongs in a path handed to the filesystem or git.
     if (
         not text.strip()
         or "\x00" in text
@@ -160,7 +134,7 @@ def parse_entries(raw: list, kind: str) -> list[Entry]:
         # silently disable the reconciliation guard it meant to arm.
         allowed = {"lib", "consumer"}
         if kind == "forked":
-            allowed.update({"reason", "reconciled_sha256"})
+            allowed.update({"reason", "reconciled_sha256", "comment_only"})
         unknown = set(item) - allowed
         if unknown:
             raise ValueError(
@@ -170,12 +144,19 @@ def parse_entries(raw: list, kind: str) -> list[Entry]:
         reason = str(item.get("reason") or "").strip()
         if kind == "forked" and not reason:
             raise ValueError(f"forked entry {item['lib']} has no `reason:`")
+        comment_only = item.get("comment_only", False)
+        if not isinstance(comment_only, bool):
+            raise ValueError(
+                f"forked entry {item['lib']} has a non-boolean `comment_only:` "
+                f"({comment_only!r}) — the key declares a fact, so it is true or false"
+            )
         entries.append(
             Entry(
                 _validate_relpath(item["lib"], kind),
                 _validate_relpath(item.get("consumer") or item["lib"], kind),
                 reason,
                 str(item.get("reconciled_sha256") or ""),
+                comment_only,
             )
         )
     return entries
@@ -231,15 +212,10 @@ def ref_resolves(lib_root: Path, ref: str | None) -> bool:
 
 
 def lib_blob(lib_root: Path, relpath: str, ref: str | None) -> bytes | None:
-    """The library's bytes for `relpath` — at `ref` when it resolved, else the
-    working tree. `ref` is already known to resolve; a missing path at a
-    resolving ref is None, i.e. this release does not ship the file.
+    """The library's bytes for `relpath` at `ref`, else from the working tree.
 
-    Absence and failure are different answers: `git show` exits non-zero for
-    both a path the release does not carry and a repository that cannot serve
-    the blob, and reading the second as the first would silently disable
-    whatever arm asked. `git ls-tree` confirms which one it was — empty
-    output on a clean run is genuine absence; anything else raises.
+    None means the release does not ship the file. A repository that cannot
+    serve the blob raises instead, because absence and failure invert the fix.
     """
     if ref:
         result = subprocess.run(
@@ -268,14 +244,10 @@ def lib_blob(lib_root: Path, relpath: str, ref: str | None) -> bytes | None:
 
 
 def load_offer(lib_root: Path, ref: str | None) -> set[str] | None:
-    """The library's offer list at `ref` — None only when a RESOLVING ref
-    predates it.
+    """The library's offer list at `ref`, None when a resolving ref predates it.
 
-    That is the one historical case worth tolerating. With no ref the compare
-    target is the working tree, and a working tree that ships this engine
-    ships the offer list beside it — absence there means a broken checkout,
-    and returning None would silently disable the membership arm. A malformed
-    file is an error at any ref.
+    With no ref the compare target is the working tree, where absence means a
+    broken checkout and raises. A malformed file is an error at any ref.
     """
     if ref is None and _symlink_component(lib_root, OFFER_RELPATH) is not None:
         raise ValueError(
@@ -290,10 +262,9 @@ def load_offer(lib_root: Path, ref: str | None) -> set[str] | None:
                 "that ships this engine ships the offer list beside it; the "
                 "membership arm must not silently skip"
             )
-        # A resolving ref without the offer list is only HISTORY if the engine
-        # at that ref predates the offer list too. A release whose engine
-        # names the file but does not ship it is broken, and skipping there
-        # would certify unoffered paths.
+        # A resolving ref without the offer list is history only if the engine
+        # at that ref predates it too. An engine that names the file without
+        # shipping it is a broken release, and skipping would certify unoffered paths.
         engine = lib_blob(lib_root, "scripts/check-vendored-copies.py", ref)
         if engine is not None and OFFER_RELPATH.encode() in engine:
             raise ValueError(
@@ -323,10 +294,8 @@ def _sha(data: bytes) -> str:
 def missing_blob_problem(lib_root: Path, entry: Entry, ref: str | None, kind: str) -> str:
     """Why a registered path has no blob at `ref` — the two causes invert the fix.
 
-    Present in the library working tree means the manifest gained it AHEAD of
-    the tag the consumer pins: that release does not ship it, and the fix is to
-    bump the pin at adoption. Reporting it as "no longer ships" sends whoever
-    reads it to delete an entry the library just added.
+    Present in the library working tree means the manifest gained it ahead of
+    the pinned tag: bump the pin rather than drop the entry.
     """
     if ref and (lib_root / entry.lib).is_file():
         return (
@@ -342,9 +311,8 @@ def missing_blob_problem(lib_root: Path, entry: Entry, ref: str | None, kind: st
 def _symlink_component(root: Path, relpath: str) -> Path | None:
     """First symlink component under root along relpath, or None.
 
-    Bytes read through a link are not the committed artifact: git stores the
-    link's target text, so a working-tree read and `git show` disagree — on
-    either side of the comparison.
+    Git stores a link's target text, so a working-tree read and `git show`
+    disagree on either side of the comparison.
     """
     probe = root
     for part in Path(relpath).parts:
@@ -355,15 +323,10 @@ def _symlink_component(root: Path, relpath: str) -> Path | None:
 
 
 def _local_file(repo_root: Path, entry: Entry, problems: list[str]) -> Path | None:
-    """The entry's path inside the repo, or None (with a problem recorded)
-    when it escapes it.
+    """The entry's path inside the repo, or None with a problem recorded.
 
-    Parse-time validation already rejects absolute paths and `..`; what is
-    left is the symlink variant. One that resolves OUTSIDE the repository
-    would have the gate certify bytes it does not actually gate — and even an
-    in-repo symlink is not the committed artifact: `read_bytes()` follows it
-    while git stores the target text, so a clone-side reader and `git show`
-    would disagree with what this run certified.
+    Parse-time validation rejects absolute paths and `..`; what is left is the
+    symlink variant, whose bytes are not the committed artifact either.
     """
     local = repo_root / entry.consumer
     link = _symlink_component(repo_root, entry.consumer)
@@ -390,12 +353,8 @@ def _lib_side_symlink_problem(
 ) -> bool:
     """Library-side reads must not go through a symlink on either path.
 
-    In a working-tree compare the pre-tag pass would certify the link
-    TARGET's bytes and the pinned-ref compare would then read the committed
-    link text. At a resolving ref, `git show` returns that target text
-    directly — a byte mismatch would surface, but as a misleading "drifted —
-    re-vendor it", sending whoever reads it to copy the link text into the
-    consumer. Both cases get the same named finding instead.
+    Either compare mode would otherwise report a misleading "drifted" finding
+    instead of naming the link.
     """
     if ref is None:
         link = _symlink_component(lib_root, entry.lib)
@@ -421,6 +380,86 @@ def _lib_side_symlink_problem(
         )
         return True
     return False
+
+
+def parse_scans(values: list[str]) -> list[tuple[str, str]]:
+    """`CONSUMER_DIR=LIB_PREFIX` pairs for the unregistered-twin scan."""
+    scans: list[tuple[str, str]] = []
+    for raw in values or []:
+        consumer_dir, sep, lib_prefix = raw.partition("=")
+        if not sep or not consumer_dir.strip() or not lib_prefix.strip():
+            raise ValueError(f"--scan takes CONSUMER_DIR=LIB_PREFIX, got {raw!r}")
+        scans.append((
+            _validate_relpath(consumer_dir.strip().rstrip("/"), "scan"),
+            _validate_relpath(lib_prefix.strip().rstrip("/"), "scan"),
+        ))
+    return scans
+
+
+def unregistered_twins(
+    repo_root: Path,
+    scans: list[tuple[str, str]],
+    vendored: list[Entry],
+    forked: list[Entry],
+    offered: set[str],
+) -> list[str]:
+    """Files under a scanned tree whose library twin is offered but unregistered.
+
+    The per-path arms judge only what the manifest declares. A declared scan dir
+    that does not exist is an operator error, never a silent skip.
+    """
+    registered = {entry.consumer for entry in vendored + forked}
+    problems: list[str] = []
+    for consumer_dir, lib_prefix in scans:
+        tree = repo_root / consumer_dir
+        if not tree.is_dir():
+            raise ValueError(
+                f"--scan names {consumer_dir!r}, which is not a directory in "
+                f"{repo_root} — fix the path; the scan must not silently skip"
+            )
+        for path in sorted(p for p in tree.rglob("*") if p.is_file()):
+            relpath = path.relative_to(tree).as_posix()
+            consumer = path.relative_to(repo_root).as_posix()
+            if f"{lib_prefix}/{relpath}" not in offered or consumer in registered:
+                continue
+            problems.append(
+                f"{consumer}: {lib_prefix}/{relpath} is offered by the library but "
+                "this copy is in no manifest entry — register it as vendored or "
+                "forked, or rename it so it is not mistaken for a copy"
+            )
+    return problems
+
+
+def code_lines(blob: bytes, markers: tuple) -> list[str] | None:
+    """`blob`'s lines with blank and whole-line comment lines dropped.
+
+    None when the bytes are not decodable text. A first-line `#!` is kept: a
+    changed interpreter is a code change.
+    """
+    try:
+        text = blob.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    kept: list[str] = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if number == 1 and stripped.startswith("#!"):
+            kept.append(line)
+            continue
+        if not stripped or stripped.startswith(markers):
+            continue
+        kept.append(line)
+    return kept
+
+
+def diverges_only_in_comments(relpath: str, local: bytes, upstream: bytes) -> bool:
+    """Whether a fork differs from the library only in comments and blank lines."""
+    markers = _COMMENT_MARKERS.get(Path(relpath).suffix)
+    if not markers:
+        return False
+    mine = code_lines(local, markers)
+    theirs = code_lines(upstream, markers)
+    return mine is not None and theirs is not None and mine == theirs
 
 
 def check(
@@ -470,11 +509,25 @@ def check(
         if not local.is_file():
             problems.append(f"{entry.consumer}: listed as a fork but missing here")
             continue
-        if local.read_bytes() == upstream:
+        local_bytes = local.read_bytes()
+        if local_bytes == upstream:
             problems.append(
                 f"{entry.consumer}: identical to {entry.lib} — move the entry to `vendored`"
             )
             continue
+        prose_only = diverges_only_in_comments(entry.lib, local_bytes, upstream)
+        if prose_only and not entry.comment_only:
+            problems.append(
+                f"{entry.consumer}: diverges from {entry.lib} only in comments and "
+                f"blank lines, so its `reason:` ({entry.reason!r}) no longer describes "
+                "real divergence — move the entry to `vendored:` and re-vendor, or set "
+                "`comment_only: true` when the header is meant to differ"
+            )
+        elif entry.comment_only and not prose_only:
+            problems.append(
+                f"{entry.consumer}: declares `comment_only: true` but diverges from "
+                f"{entry.lib} in code — drop the key and let the `reason:` carry it"
+            )
         if entry.reconciled and _sha(upstream) != entry.reconciled:
             problems.append(
                 f"{entry.consumer}: {entry.lib} changed since this fork was last reconciled — "
@@ -483,20 +536,25 @@ def check(
     return problems
 
 
+# This engine's own path: the marker that tells a library checkout from any
+# other directory. A wrong --lib-path would otherwise report every entry as
+# drift instead of as the operator error it is.
+_LIB_MARKER = Path("scripts") / "check-vendored-copies.py"
+
+
 def resolve_lib_root(explicit: str | None, repo_root: Path) -> Path:
-    """The library checkout. An explicit path is taken as given if it exists."""
+    """The library checkout. An explicit path is validated like an implicit one."""
     if explicit:
-        path = Path(explicit)
-        if path.is_dir():
-            return path
+        candidate = Path(explicit)
     else:
         env = os.environ.get("WEISSSRV_LIB_PATH")
         candidate = Path(env) if env else repo_root.parent / "weisssrv-lib"
-        if (candidate / "scripts" / "check-vendored-copies.py").is_file():
-            return candidate
+    if (candidate / _LIB_MARKER).is_file():
+        return candidate
     print(
         "ERROR: no weisssrv-lib checkout found (pass --lib-path, set $WEISSSRV_LIB_PATH, or "
-        f"place one at {repo_root.parent / 'weisssrv-lib'}). This gate never skips.",
+        f"place one at {repo_root.parent / 'weisssrv-lib'}); the path must carry "
+        f"{_LIB_MARKER.as_posix()}. This gate never skips.",
         file=sys.stderr,
     )
     # Exit 2, not 1: a missing checkout is a misconfigured gate, not drift.
@@ -516,12 +574,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     parser.add_argument("--lib-path", help="library checkout (default: $WEISSSRV_LIB_PATH)")
     parser.add_argument("--ref", help="git ref to read library blobs at")
+    parser.add_argument(
+        "--require-ref",
+        action="store_true",
+        help="exit 2 unless --ref resolves, so the comparison is against the pinned "
+             "release and not whatever the library working tree happens to hold",
+    )
+    parser.add_argument(
+        "--scan", action="append", default=[], metavar="CONSUMER_DIR=LIB_PREFIX",
+        help="report files under CONSUMER_DIR whose offered library twin at "
+             "LIB_PREFIX/<relpath> no manifest entry registers; repeatable",
+    )
     parser.add_argument("--list", action="store_true", help="print the manifest's paths and exit")
     args = parser.parse_args(argv)
 
     repo_root = args.repo_root.resolve()
     manifest = args.manifest or (repo_root / MANIFEST_RELPATH)
     try:
+        scans = parse_scans(args.scan)
         vendored, forked = load_manifest(manifest)
     except (OSError, ValueError, yaml.YAMLError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -541,12 +611,24 @@ def main(argv: list[str] | None = None) -> int:
     # One ref decision for the whole run: mixing blobs from two library versions
     # is what makes a per-path fallback silently wrong.
     ref = args.ref if ref_resolves(lib_root, args.ref) else None
-    if args.ref and ref is None:
-        print(
-            f"note: {args.ref} does not resolve in {lib_root} — comparing against the "
-            "working tree (the release tag is cut after the library MR merges).",
-            file=sys.stderr,
-        )
+    if ref is None:
+        # CRITICAL: without a resolving ref the compare target is the library
+        # working tree, so a pass says nothing about the pinned release. The
+        # verdict below says so, and --require-ref refuses to run at all.
+        why = f"{args.ref} does not resolve in {lib_root}" if args.ref else "no --ref given"
+        if args.require_ref:
+            print(
+                f"ERROR: --require-ref: {why} — the comparison would be against the "
+                "library working tree, which proves nothing about the pinned release.",
+                file=sys.stderr,
+            )
+            return 2
+        if args.ref:
+            print(
+                f"note: {args.ref} does not resolve in {lib_root} — comparing against the "
+                "working tree (the release tag is cut after the library MR merges).",
+                file=sys.stderr,
+            )
 
     try:
         offered = load_offer(lib_root, ref)
@@ -559,9 +641,19 @@ def main(argv: list[str] | None = None) -> int:
             "skipping the offer-membership arm (that release predates the offer list).",
             file=sys.stderr,
         )
+        if scans:
+            print(
+                "note: --scan needs the offer list to know which files are twins — "
+                "the unregistered-twin scan is skipped at this ref too.",
+                file=sys.stderr,
+            )
 
     try:
         problems = check(repo_root, lib_root, vendored, forked, ref, offered)
+        if scans and offered is not None:
+            problems += unregistered_twins(
+                repo_root, scans, vendored, forked, offered
+            )
     except (ValueError, OSError) as exc:
         # A failing git repository or unreadable file is an operator error —
         # never a traceback, never a silent pass.
@@ -572,9 +664,13 @@ def main(argv: list[str] | None = None) -> int:
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
         return 1
+    scanned = (
+        f", {len(scans)} tree(s) scanned for unregistered twins" if scans else ""
+    )
+    verdict = f"OK at {ref}" if ref else "REF UNVERIFIED (library working tree, not a release)"
     print(
-        f"OK — {len(vendored)} vendored copy/copies identical, {len(forked)} declared fork(s) "
-        "still reconciled"
+        f"{verdict} — {len(vendored)} vendored copy/copies identical, "
+        f"{len(forked)} declared fork(s) still reconciled{scanned}"
     )
     return 0
 

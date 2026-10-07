@@ -1,39 +1,8 @@
 #!/usr/bin/env python3
 """Read or reconcile ONE user's bcrypt password hash in AdGuardHome.yaml.
 
-AdGuard Home has no password API (/control/profile/update takes only
-name/language/theme), so the hash has to be reconciled in the config file.
-
-Both actions resolve the target line by PARSING the YAML and locating the
-`users:` entry whose `name` matches --user. A line-oriented pair (grep for the
-last indented `password:` + a bare-regexp lineinfile) means "the last password
-key in the file": with a second user, or another nested `password` key, it reads
-and overwrites the wrong account on every deploy while never reconciling the
-admin.
-
-The file is rewritten ONE LINE at a time (temp file + atomic replace, preserving
-mode/uid/gid), never re-emitted from parsed YAML: AdGuard Home owns this file at
-runtime and a round-trip through a Python YAML emitter reformats everything it
-did not write.
-
-Usage:
-    adguard-admin-hash.py --config PATH --user NAME read
-    adguard-admin-hash.py --config PATH --user NAME reconcile   # password: stdin
-
-read       prints the user's current hash (empty line if unset).
-reconcile  reads the plaintext password from stdin (one trailing newline is
-           stripped) and prints UNCHANGED when the stored hash already verifies
-           against it, otherwise writes a fresh bcrypt hash and prints CHANGED.
-           Compare those EXACTLY -- UNCHANGED contains CHANGED, so the usual
-           `'CHANGED' in stdout` idiom matches both.
-
-The password and the hash reach this script on stdin only: neither appears in
-argv or the environment, so neither is readable in /proc by other local users.
-
-Exit codes: 0 ok, 1 error (config unreadable/unparsable, user absent or
-ambiguous, no password key, multi-line scalar, passlib missing, post-write
-verification failed).
-"""
+Usage, verdicts and exit codes: the adguard_home role README.
+Password and hash arrive on stdin only, never in argv or the environment."""
 
 import argparse
 import os

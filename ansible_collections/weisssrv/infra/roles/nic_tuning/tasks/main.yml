@@ -1,17 +1,15 @@
 ---
-# nic_tuning: four host-level network fixes that must survive a reboot — per-NIC
-# ethtool offload overrides (drivers that wedge with GRO/TSO on), a sticky
-# ip_forward, a lowered vm.swappiness on memory-committed hosts, and the
-# active-backup bond all_slaves_active guard. Rationale for each is in README.md.
+# Host-level network fixes that must survive a reboot: per-NIC ethtool offload
+# overrides, a sticky ip_forward, a lowered vm.swappiness, the active-backup
+# bond all_slaves_active guard, and per-interface IPv6 disable. See README.md.
 
 - name: Install sysctl.d drop-in for ip_forward
   ansible.builtin.copy:
     dest: /etc/sysctl.d/99-nic-tuning-ip-forward.conf
     content: |
       # Managed by Ansible nic_tuning role.
-      # Required for overlay-VPN subnet routing. pve_firewall can reset this via
-      # its own sysctl resets; persisting in sysctl.d re-applies it on every boot
-      # and on `sysctl --system`.
+      # Required for overlay-VPN subnet routing. pve-firewall resets the live
+      # value; sysctl.d re-applies it at boot and on `sysctl --system`.
       net.ipv4.ip_forward=1
     owner: root
     group: root
@@ -33,9 +31,8 @@
     dest: /etc/sysctl.d/99-nic-tuning-swappiness.conf
     content: |
       # Managed by Ansible nic_tuning role.
-      # Lower swappiness on memory-committed hosts so the kernel reclaims page
-      # cache / balloons guest RAM before swapping (the default 60 thrashes swap
-      # under guest + ZFS ARC pressure). Re-applied on every boot.
+      # Lower swappiness so the kernel reclaims page cache before swapping;
+      # the default 60 thrashes swap under guest + ZFS ARC pressure.
       vm.swappiness={{ nic_tuning_vm_swappiness }}
     owner: root
     group: root
@@ -82,11 +79,9 @@
   loop: "{{ nic_tuning_existing_dropins.files | default([]) }}"
   loop_control:
     label: "{{ item.path | basename }}"
+  # Reconciles the role's own 99-nic-*-tuning.cfg glob against the declared
+  # list, so clearing nic_tuning_overrides removes the drop-ins it wrote.
   when:
-    # Only clean up if this host has overrides declared — otherwise we'd
-    # delete drop-ins on hosts that legitimately have no overrides but
-    # had them previously (or had them set by another tool).
-    - nic_tuning_overrides | length > 0
     - item.path | basename not in (nic_tuning_overrides | map(attribute='interface') | map('regex_replace', '^(.*)$', '99-nic-\\1-tuning.cfg') | list)
 
 - name: Install per-NIC ethtool drop-ins
@@ -100,10 +95,8 @@
   loop_control:
     label: "{{ item.interface }}"
 
-# Compare-then-set so `changed` reflects a real kernel transition (ethtool is
-# silent on both a real apply and a no-op). Failures are NOT raised here: the
-# read-back assert below owns the diagnosis, and it is also the only thing that
-# catches an exit-0 apply the driver silently ignored.
+# Compare-then-set so `changed` reflects a real kernel transition. Failures are
+# not raised here; the read-back assert below owns the diagnosis.
 - name: Apply ethtool overrides now (compare-then-set)
   ansible.builtin.shell: |
     set -euo pipefail
@@ -120,21 +113,17 @@
   changed_when: "'CHANGED' in nic_tuning_ethtool_apply.stdout"
   failed_when: false
 
-# Without this the role that exists to stop a driver deadlock / TX hang can go
-# fully green with the offloads still on: the apply above swallows failures, the
-# ifup drop-in's only failure signal is a syslog line, and node_exporter's
-# ethtool collector is off by default. A renamed interface or a driver that
-# refuses the feature is exactly the silent no-op this catches.
+# Without this the role can go green with the offloads still on: the apply
+# swallows failures and the ifup drop-in's only failure signal is a syslog line.
 - name: Verify the applied NIC offload overrides took effect
   ansible.builtin.include_tasks: verify-offloads.yml
   when:
     - nic_tuning_verify_offloads | bool
     - nic_tuning_overrides | length > 0
 
-# active-backup bond MAC-flap guard, in three layers because the value is really
-# decided at module load: /etc/modprobe.d/bonding.conf (the boot-time authority —
-# ifupdown2 ignores the interfaces stanza), the interfaces stanza itself, and
-# runtime sysfs for the live fix. Rationale: README.
+# active-backup bond MAC-flap guard in three layers, because the value is decided
+# at module load: /etc/modprobe.d/bonding.conf (the boot-time authority), the
+# interfaces stanza, and runtime sysfs for the live fix. Rationale: README.
 - name: Stat /etc/network/interfaces for the bond all_slaves_active guard
   ansible.builtin.stat:
     path: /etc/network/interfaces
@@ -142,10 +131,9 @@
   when: nic_tuning_bond_asa_guard | bool
 
 - name: Persist bond all_slaves_active=0 in /etc/network/interfaces
-  # Surgical: only rewrites an explicit `...=1` to `0`; never inserts a line, so
-  # a hand-maintained interfaces file is otherwise untouched. Deliberately does
-  # NOT notify a networking reload — the runtime task below applies it live, and
-  # a reload would blip the uplink. The edit takes effect on the next reboot.
+  # Only rewrites an explicit `...=1` to `0`, never inserts a line. No
+  # networking reload: the runtime task below applies it live without blipping
+  # the uplink.
   ansible.builtin.replace:
     path: /etc/network/interfaces
     regexp: '^(\s*bond-all_slaves_active\s+)1\b'
@@ -161,10 +149,9 @@
   when: nic_tuning_bond_asa_guard | bool
 
 - name: Force all_slaves_active=0 in the bonding module options (boot-time control)
-  # Surgical flip of a stale `all_slaves_active=1`, preserving fail_over_mac and
-  # any other module options. Only touches an existing file — without one the
-  # module default is already 0. Takes effect at the next module load; no
-  # initramfs rebuild, since bonding loads at network-up from /etc/modprobe.d.
+  # Flips a stale `all_slaves_active=1`, preserving the other module options.
+  # Without the file the module default is already 0. Applies at next module
+  # load; bonding loads at network-up, so no initramfs rebuild.
   ansible.builtin.replace:
     path: /etc/modprobe.d/bonding.conf
     regexp: '(\ball_slaves_active=)1\b'
@@ -176,13 +163,25 @@
 - name: Enforce all_slaves_active=0 on active-backup bonds at runtime (no reboot)
   ansible.builtin.shell: |
     set -eu
-    [ -r /sys/class/net/bonding_masters ] || { echo OK; exit 0; }
+    [ -r /sys/class/net/bonding_masters ] || { echo "NOBOND no bonding_masters"; exit 0; }
     changed=0
     for b in $(cat /sys/class/net/bonding_masters); do
-      mode=$(awk '{print $1}' "/sys/class/net/$b/bonding/mode" 2>/dev/null || true)
-      cur=$(cat "/sys/class/net/$b/bonding/all_slaves_active" 2>/dev/null || true)
+      d="/sys/class/net/$b/bonding"
+      # A bond torn down mid-loop is benign; an unreadable attribute is not,
+      # because an unchecked bond is the black-hole condition going unnoticed.
+      [ -d "$d" ] || continue
+      if [ ! -r "$d/mode" ] || [ ! -r "$d/all_slaves_active" ]; then
+        echo "READFAIL $d"
+        exit 4
+      fi
+      mode=$(awk '{print $1}' "$d/mode")
+      cur=$(cat "$d/all_slaves_active")
       if [ "$mode" = "active-backup" ] && [ "$cur" = "1" ]; then
-        echo 0 > "/sys/class/net/$b/bonding/all_slaves_active" && changed=1
+        if ! echo 0 > "$d/all_slaves_active"; then
+          echo "WRITEFAIL $d/all_slaves_active"
+          exit 4
+        fi
+        changed=1
       fi
     done
     [ "$changed" -eq 1 ] && echo CHANGED || echo OK
@@ -190,16 +189,34 @@
     executable: /bin/bash
   register: nic_tuning_bond_asa_runtime
   changed_when: "'CHANGED' in nic_tuning_bond_asa_runtime.stdout"
+  failed_when: nic_tuning_bond_asa_runtime.rc != 0
   when: nic_tuning_bond_asa_guard | bool
 
-# Fully disable IPv6 on the listed interfaces so no fe80:: link-local exists on
-# them (an IPv4-only segment's untagged link-local is an unfiltered L2 path the
-# VLAN firewall never sees). Boot persistence is a sysctl.d drop-in written with
-# the SLASH separator, because both `sysctl` and ansible.posix.sysctl translate
-# every '.' in a dotted KEY to '/', which would mangle a VLAN name like nic1.10;
-# systemd-sysctl/procps treat '/' as the separator and keep the dot in the iface
-# segment. The live apply writes /proc directly (dot-safe) and removes the
-# link-local immediately, so no reboot is needed.
+- name: Report that the bond guard was not applied at runtime
+  # The persisted modprobe option applies at the next module load.
+  ansible.builtin.debug:
+    msg: >-
+      No bonding_masters on {{ inventory_hostname }}: all_slaves_active=0 is
+      persisted in /etc/modprobe.d/bonding.conf and applies at the next boot.
+  when:
+    - nic_tuning_bond_asa_guard | bool
+    - "'NOBOND' in nic_tuning_bond_asa_runtime.stdout | default('')"
+
+# Null, empty and whitespace-only all mean unset: an empty string would persist
+# a valueless `bond-primary` attribute and clear the live pin on every bond.
+- name: Pin the preferred leg of an active-backup bond
+  ansible.builtin.include_tasks: bond-primary.yml
+  when: (nic_tuning_bond_primary | default('', true) | trim) | length > 0
+
+- name: Remove a bond-leg pin the inventory no longer declares
+  ansible.builtin.include_tasks: bond-primary-absent.yml
+  when:
+    - (nic_tuning_bond_primary | default('', true) | trim) | length == 0
+    - nic_tuning_bond_primary_manage_absent | default(true) | bool
+
+# Fully disable IPv6 on the listed interfaces: an IPv4-only segment's untagged
+# link-local is an L2 path the VLAN firewall never sees. Slash-separated sysctl
+# keys (see README); the live apply writes /proc directly, so no reboot.
 - name: Install sysctl.d drop-in to disable IPv6 on selected interfaces
   ansible.builtin.copy:
     dest: /etc/sysctl.d/99-nic-tuning-disable-ipv6.conf
@@ -217,18 +234,16 @@
     mode: "0644"
   when: nic_tuning_disable_ipv6 | length > 0
 
-# Removing an interface from the list stops persisting the disable; like the
-# ip_forward/swappiness knobs it does NOT force IPv6 back on live — the value
-# reverts to the kernel default at the next reboot (or `sysctl -w ...=0`).
+# Dropping an interface stops persisting the disable; the live value reverts at
+# the next reboot, like the ip_forward and swappiness knobs.
 - name: Remove disable-IPv6 sysctl.d drop-in when unset
   ansible.builtin.file:
     path: /etc/sysctl.d/99-nic-tuning-disable-ipv6.conf
     state: absent
   when: nic_tuning_disable_ipv6 | length == 0
 
-# Live apply, dot-safe: write the proc nodes directly. Compare-then-set so
-# `changed` reflects a real transition; fails loudly (MISSING, rc 3) on a
-# typo'd or absent interface, mirroring the offload read-back philosophy.
+# Live apply, dot-safe: writes the proc nodes directly. Compare-then-set, and
+# fails loudly (MISSING, rc 3) on an absent interface.
 - name: Disable IPv6 on the listed interfaces now (live, no reboot)
   ansible.builtin.shell: |
     set -eu

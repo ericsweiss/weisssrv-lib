@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # Molecule behavioral check for the network-free helpers in the rendered
-# restic-offsitectl: metric preservation, the freshness parser, the retention
-# ceiling/parse guards, the deep-verify cursor and the stale-lock reaper. The
-# contract-assert pins prove the code EXISTS; this executes it, driving restic
-# through a stub. Runs on the target via ansible.builtin.script.
+# restic-offsitectl. Executes them against a restic stub, where the
+# contract-assert pins only prove the code exists.
 set -euo pipefail
 
 s="${1:-/usr/local/sbin/restic-offsitectl}"
@@ -60,6 +58,66 @@ prune_attempted=0
 write_prom_metrics 0 9 0 0
 grep -qx 'restic_offsite_retention_pending_removals 25' "$PROM_FILE" \
   || fail "a run that never pruned overwrote the retention state"
+
+# With no prior state the retention gauges must be ABSENT, not defaulted: a
+# first-ever run that failed before retention would otherwise publish
+# last_prune_success 1 and the retention tier would read as healthy.
+rm -f "$PROM_FILE"
+prune_attempted=0
+write_prom_metrics 0 9 0 0
+if grep -q '^restic_offsite_last_prune_success ' "$PROM_FILE"; then
+  fail "a run that never reached retention published a prune verdict"
+fi
+if grep -q '^restic_offsite_retention_blocked ' "$PROM_FILE"; then
+  fail "a run that never reached retention published retention_blocked"
+fi
+grep -qx 'restic_offsite_last_run_success 0' "$PROM_FILE" \
+  || fail "the run gauges must still be written when retention is absent"
+
+# --- restic rc=3 is INCOMPLETE, not FAILED -----------------------------------
+# The snapshot exists, so the run must keep it, SKIP retention and exit 0, while
+# publishing the incomplete gauge the consumer's warning alert reads.
+rm -f "$PROM_FILE"
+prune_attempted=0
+run_incomplete=0
+backup_attempted=0
+run_success=0
+backup_success=1
+printf 'error: lstat /a: bad message\nerror: lstat /b: bad message\n' > "$WORK/backup.log"
+classify_rc=0
+classify_backup_rc 3 "$WORK/backup.log" || classify_rc=$?
+[ "$classify_rc" -eq 0 ] || fail "rc=3 must classify as a successful run"
+[ "$run_incomplete" -eq 1 ] || fail "rc=3 did not set run_incomplete"
+apply_retention_decision > "$WORK/incomplete-verdict.log"
+[ "$prune_attempted" = "0" ] || fail "an INCOMPLETE run must skip retention"
+[ "$run_success" = "1" ] || fail "an INCOMPLETE run must not fail — the snapshot landed"
+write_prom_metrics "$run_success" 5 0 0
+grep -qx 'restic_offsite_last_run_incomplete 1' "$PROM_FILE" \
+  || fail "rc=3 did not publish restic_offsite_last_run_incomplete 1"
+grep -qx 'restic_offsite_last_run_success 1' "$PROM_FILE" \
+  || fail "rc=3 must leave the run success gauge at 1"
+grep -qx 'restic_offsite_last_backup_success 1' "$PROM_FILE" \
+  || fail "rc=3 must leave the backup success gauge at 1"
+
+# A run that never reached 'restic backup' must carry the warning forward, or two
+# consecutive incomplete nights never hold the consumer alert's 26h window. Both
+# flags start at 0 in a fresh process, as the next night's run would.
+backup_attempted=0
+run_incomplete=0
+run_success=0
+write_prom_metrics 0 5 0 0
+grep -qx 'restic_offsite_last_run_incomplete 1' "$PROM_FILE" \
+  || fail "a run that never reached backup cleared the incomplete warning"
+
+# Every other non-zero rc still fails, and a clean run publishes incomplete 0.
+classify_rc=0
+classify_backup_rc 11 "$WORK/backup.log" || classify_rc=$?
+[ "$classify_rc" -eq 11 ] || fail "rc=11 must still fail the run"
+run_incomplete=0
+backup_attempted=1
+write_prom_metrics 1 5 0 0
+grep -qx 'restic_offsite_last_run_incomplete 0' "$PROM_FILE" \
+  || fail "a clean run must publish restic_offsite_last_run_incomplete 0"
 
 # --- verify metrics + rotating deep-verify cursor ----------------------------
 printf 'restic_offsite_last_verify_timestamp_seconds 1640000000\n' > "$VERIFY_PROM_FILE"
@@ -149,10 +207,8 @@ STUB_MODE=under; PRUNE_RC=2; rc=0; run_forget >/dev/null || rc=$?
 PRUNE_RC=0
 
 # --- run verdict + retention gauges per forget rc -----------------------------
-# A crashed prune must not read as a deliberate refusal: blocked ONLY on the
-# ceiling sentinel, and only the ceiling keeps the run green.
-# Redirect to a file, never `$(...)`: a command substitution would run
-# apply_forget_rc in a SUBSHELL and none of the gauges it sets would come back.
+# A crashed prune must not read as a refusal: blocked only on the ceiling
+# sentinel. Redirect to a file, never `$(...)`: a subshell loses the gauges.
 _reset_run_state() { prune_success=0; retention_blocked=0; run_success=0; retention_pending=7; }
 VERDICT_LOG="$WORK/verdict.log"
 
@@ -180,13 +236,8 @@ _reset_run_state; apply_forget_rc 1 > "$VERDICT_LOG"
 [ "$run_success" = "0" ] || fail "an unusable dry-run must fail the run"
 
 # --- stale-lock reaper --------------------------------------------------------
-# Same host + dead pid + old enough => unlock. Anything else must be left alone.
-#
-# The stub models the repository as ACTUALLY HELD EXCLUSIVELY, which is the only
-# state the reaper exists for: any LOCKING restic call (the plain `restic`
-# wrapper, which also carries --retry-lock) fails the way restic does, and only
-# the --no-lock probes (`restic_ro`) can read the lock metadata. A reaper whose
-# probes take a lock therefore reaps nothing here — the regression this pins.
+# Same host, dead pid and old enough means unlock; anything else is left alone.
+# The stub holds the repo exclusively, so a reaper whose probes lock reaps nothing.
 DEAD_PID=4194302
 if kill -0 "$DEAD_PID" 2>/dev/null; then fail "test pid $DEAD_PID is alive; pick another"; fi
 LOCK_HOST="${HOSTNAME:-$(uname -n)}"

@@ -1,11 +1,7 @@
 ---
 # Policy data for scripts/check-netpol-except-parity.py (--config).
-#
-# canonical_except_lists: named reserved-CIDR sets an egress `ipBlock` /0 peer
-# must match exactly, in order. Declaring the key REPLACES the built-ins
-# wholesale, so both shipped sets are spelled out here — copying this file with
-# only one of them would retire the other and fail every policy that uses it.
-# Omit the key entirely to keep the built-in `reserved-full` / `lan-fence` pair.
+# canonical_except_lists: reserved-CIDR sets an egress `ipBlock` /0 peer must
+# match exactly. Declaring the key replaces the built-in sets wholesale.
 canonical_except_lists:
   lan-fence:
     - 10.0.0.0/8

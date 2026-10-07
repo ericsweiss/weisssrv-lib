@@ -42,9 +42,8 @@
           - ip_forward_active.stdout == '1'
         fail_msg: "kernel net.ipv4.ip_forward is not 1 — handler didn't apply"
 
-    # vm.swappiness drop-in: file content + live apply. vm.swappiness is not
-    # network-namespaced, so the privileged container's reload writes the host
-    # kernel's value (benign — a lower swappiness on a runner VM is harmless).
+    # Only the drop-in is asserted: vm.swappiness is not namespaced, so the live
+    # value belongs to the machine running the container, not to this scenario.
     - name: Stat swappiness sysctl drop-in
       ansible.builtin.stat:
         path: /etc/sysctl.d/99-nic-tuning-swappiness.conf
@@ -69,17 +68,6 @@
         that:
           - "'vm.swappiness=10' in (swappiness_content.content | b64decode)"
         fail_msg: "swappiness drop-in missing vm.swappiness=10 directive"
-
-    - name: Read current kernel swappiness
-      ansible.builtin.command: sysctl -n vm.swappiness
-      register: swappiness_active
-      changed_when: false
-
-    - name: Assert kernel has vm.swappiness=10 active
-      ansible.builtin.assert:
-        that:
-          - swappiness_active.stdout == '10'
-        fail_msg: "kernel vm.swappiness is not 10 — handler didn't apply"
 
     - name: Stat disable-IPv6 sysctl drop-in
       ansible.builtin.stat:
@@ -114,6 +102,16 @@
       changed_when: false
       failed_when: false
 
+    # A read that fails for any reason but a missing sysctl node would skip the
+    # live-apply proof, so the skip itself is asserted first.
+    - name: Assert the live disable_ipv6 read is usable
+      ansible.builtin.assert:
+        that:
+          - lo_disable_ipv6.rc == 0 or 'no such file' in (lo_disable_ipv6.stderr | lower)
+        fail_msg: >-
+          cat /proc/sys/net/ipv6/conf/lo/disable_ipv6 failed for a reason other
+          than a missing sysctl node — the live-apply proof is being skipped
+
     - name: Assert IPv6 is live-disabled on lo
       ansible.builtin.assert:
         that:
@@ -147,16 +145,8 @@
         fail_msg: "ethtool drop-in missing iface stanza header or expected post-up lines"
 
     # Parse validity: ifupdown2 must associate the post-up lines with the
-    # interface. A bare post-up line (no iface header) is rejected with
-    # "error processing line" and would be silently inert at boot.
-    #
-    # `ifquery lo` reads the RUNNING interface via netlink, which the local
-    # molecule container kernel rejects with EOPNOTSUPP ("Operation not
-    # supported"). Tolerate ONLY that specific limitation (a real non-zero exit
-    # in CI, on a full kernel, still fails the task) and skip the running-state
-    # assertion where it can't run — the "iface header + post-up lines" content
-    # assertion above already catches a missing/orphaned header locally, and CI
-    # runs the full attachment check below.
+    # interface, or they are inert at boot. `ifquery lo` needs netlink, which
+    # the container kernel rejects with EOPNOTSUPP; only that case is tolerated.
     - name: Query lo through ifupdown2
       ansible.builtin.command: ifquery lo
       register: ifquery_lo
@@ -177,15 +167,25 @@
           boot-time persistence would be inert
       when: "'operation not supported' not in (ifquery_lo.stderr | lower)"
 
-    # Read-back of the live apply, where the container kernel allows it: some
-    # container interfaces expose no ethtool feature ioctls, so a failed read is
-    # skipped rather than failed. The assert-offloads unit tests at the bottom
-    # cover the comparison logic deterministically either way.
+    # Read-back of the live apply. Some container interfaces expose no ethtool
+    # feature ioctls, so a failed read is skipped; the assert-offloads unit
+    # tests below cover the comparison logic deterministically.
     - name: Read the live feature state of lo
       ansible.builtin.command: ethtool -k lo
       register: nic_tuning_lo_features
       changed_when: false
       failed_when: false
+
+    # Only a missing ioctl may skip the read-back; any other ethtool failure
+    # would turn the live-apply proof into a permanent no-op.
+    - name: Assert the live ethtool read is usable
+      ansible.builtin.assert:
+        that:
+          - nic_tuning_lo_features.rc == 0
+            or 'not supported' in (nic_tuning_lo_features.stderr | lower)
+        fail_msg: >-
+          ethtool -k lo failed for a reason other than a missing container
+          ioctl — the live-apply proof is being skipped
 
     - name: Assert the requested features are live on lo
       ansible.builtin.assert:
@@ -238,6 +238,15 @@
           damaged the surrounding bond0 stanza)
         success_msg: "bond-all_slaves_active correctly forced to 0 in place"
 
+    - name: Assert no bond-primary stanza with nic_tuning_bond_primary unset
+      ansible.builtin.assert:
+        that:
+          - "'bond-primary' not in (etc_interfaces_content.content | b64decode)"
+        fail_msg: >-
+          A bond-primary line was written with nic_tuning_bond_primary at its
+          null default, which would pin a leg the site never named.
+        success_msg: "no bond-primary stanza at the null default"
+
     # The real fix: the bonding module option (the boot-time control) must be
     # flipped 1 -> 0, with fail_over_mac and the rest of the line preserved.
     - name: Read /etc/modprobe.d/bonding.conf after the bond guard
@@ -257,10 +266,9 @@
           replace clobbered fail_over_mac) — the guard would revert on next boot
         success_msg: "bonding module all_slaves_active=0 (reboot-safe); fail_over_mac preserved"
 
-    # The offload read-back (tasks/assert-offloads.yml) is the only thing that
-    # turns a swallowed `ethtool -K` failure into a red play, and it cannot run
-    # against container interfaces. Drive the real task file with captured
-    # `ethtool --show-features` output instead, in all three directions.
+    # tasks/assert-offloads.yml turns a swallowed `ethtool -K` failure into a
+    # red play but cannot run against container interfaces. Drive it with
+    # captured `ethtool --show-features` output, in all three directions.
     - name: Offload assert | a matching read-back passes
       ansible.builtin.include_role:
         name: weisssrv.infra.nic_tuning
@@ -308,14 +316,26 @@
                     - "generic-receive-offload: on"
 
         - name: Offload assert | the drifted read-back did NOT fail
-          ansible.builtin.fail:
-            msg: >-
-              assert-offloads.yml passed with generic-receive-offload still on —
-              the offload verification cannot detect a failed apply.
+          ansible.builtin.set_fact:
+            nic_tuning_drift_rejected: false
       rescue:
-        - name: Offload assert | drifted read-back correctly failed
-          ansible.builtin.debug:
-            msg: "assert-offloads.yml fails when the requested feature is not live"
+        - name: Offload assert | record that the drifted read-back failed
+          ansible.builtin.set_fact:
+            nic_tuning_drift_rejected: >-
+              {{ 'nic0' in (ansible_failed_result.msg | default('')) }}
+          when: >-
+            ansible_failed_task.name ==
+            'Assert every requested NIC offload override is live'
+
+    - name: Verify a drifted offload read-back is refused
+      ansible.builtin.assert:
+        that:
+          - nic_tuning_drift_rejected | default(false) | bool
+        fail_msg: >-
+          assert-offloads.yml passed with generic-receive-offload still on for
+          nic0, or failed without naming that interface — the offload
+          verification cannot detect a failed apply.
+        success_msg: "a requested feature that is not live fails, naming the interface"
 
     - name: Offload assert | an unreadable interface must fail
       block:
@@ -337,11 +357,306 @@
                   stdout_lines: []
 
         - name: Offload assert | the ethtool error did NOT fail
-          ansible.builtin.fail:
-            msg: >-
-              assert-offloads.yml passed while ethtool could not read the
-              interface — a renamed NIC would be a silent no-op.
+          ansible.builtin.set_fact:
+            nic_tuning_ethtool_error_rejected: false
       rescue:
-        - name: Offload assert | ethtool error correctly failed
-          ansible.builtin.debug:
-            msg: "assert-offloads.yml fails when ethtool cannot read the interface"
+        - name: Offload assert | record that the ethtool error failed
+          ansible.builtin.set_fact:
+            nic_tuning_ethtool_error_rejected: >-
+              {{ 'nic9' in (ansible_failed_result.msg | default('')) }}
+          when: >-
+            ansible_failed_task.name ==
+            'Assert every requested NIC offload override is live'
+
+    - name: Verify an unreadable interface is refused
+      ansible.builtin.assert:
+        that:
+          - nic_tuning_ethtool_error_rejected | default(false) | bool
+        fail_msg: >-
+          assert-offloads.yml passed while ethtool could not read nic9, or
+          failed without naming it — a renamed NIC would be a silent no-op.
+        success_msg: "an interface ethtool cannot read fails, naming the interface"
+
+    # bond-primary: the persistent half writes into the seeded bond0 stanza and
+    # never at EOF, and refuses a file with no active-backup stanza to anchor on.
+    - name: Bond primary | back up the seeded interfaces file
+      ansible.builtin.copy:
+        src: /etc/network/interfaces
+        dest: /etc/network/interfaces.nic-tuning-backup
+        remote_src: true
+        mode: "0644"
+
+    - name: Bond primary | pin nic1 as the preferred leg
+      ansible.builtin.include_role:
+        name: weisssrv.infra.nic_tuning
+        tasks_from: bond-primary.yml
+      vars:
+        nic_tuning_bond_primary: nic1
+        nic_tuning_bond_primary_reselect: failure
+
+    - name: Bond primary | read the rewritten interfaces file
+      ansible.builtin.slurp:
+        src: /etc/network/interfaces
+      register: nic_tuning_bond_primary_written
+
+    - name: Bond primary | assert both lines landed inside the bond0 stanza
+      ansible.builtin.assert:
+        that:
+          - "'    bond-primary nic1' in nic_tuning_bond_primary_lines"
+          - "'    bond-primary_reselect failure' in nic_tuning_bond_primary_lines"
+          - nic_tuning_bond_primary_lines.index('    bond-primary_reselect failure')
+            > nic_tuning_bond_primary_lines.index('    bond-mode active-backup')
+          - nic_tuning_bond_primary_lines[-1] | trim not in
+            ['bond-primary nic1', 'bond-primary_reselect failure']
+        fail_msg: >-
+          bond-primary was appended at the end of /etc/network/interfaces, or
+          landed outside the bond0 stanza:
+          {{ nic_tuning_bond_primary_lines }}
+        success_msg: "bond-primary and its reselect policy land inside the bond stanza"
+      vars:
+        nic_tuning_bond_primary_lines: >-
+          {{ (nic_tuning_bond_primary_written.content | b64decode).splitlines() }}
+
+    - name: Bond primary | clear the pin the inventory no longer declares
+      ansible.builtin.include_role:
+        name: weisssrv.infra.nic_tuning
+        tasks_from: bond-primary-absent.yml
+      vars:
+        nic_tuning_bond_primary: null
+
+    - name: Bond primary | read the interfaces file after the removal
+      ansible.builtin.slurp:
+        src: /etc/network/interfaces
+      register: nic_tuning_bond_primary_cleared
+
+    - name: Bond primary | assert both lines are gone again
+      ansible.builtin.assert:
+        that:
+          - "'bond-primary' not in (nic_tuning_bond_primary_cleared.content | b64decode)"
+        fail_msg: >-
+          bond-primary-absent.yml left a pin in /etc/network/interfaces, so a
+          leg the inventory no longer names is still forced at boot.
+        success_msg: "clearing nic_tuning_bond_primary removes the persisted pin"
+
+    - name: Bond primary | re-run the removal to prove it is idempotent
+      ansible.builtin.include_role:
+        name: weisssrv.infra.nic_tuning
+        tasks_from: bond-primary-absent.yml
+      vars:
+        nic_tuning_bond_primary: null
+
+    - name: Bond primary | remove the bond stanza's mode line
+      ansible.builtin.lineinfile:
+        path: /etc/network/interfaces
+        regexp: '^\s*bond-mode\s+active-backup\s*$'
+        state: absent
+
+    - name: Bond primary | an unanchorable file must fail, not append at EOF
+      block:
+        - name: Bond primary | drive the pin with no active-backup stanza
+          ansible.builtin.include_role:
+            name: weisssrv.infra.nic_tuning
+            tasks_from: bond-primary.yml
+          vars:
+            nic_tuning_bond_primary: nic1
+
+        - name: Bond primary | the missing anchor did NOT fail
+          ansible.builtin.set_fact:
+            nic_tuning_bond_anchor_rejected: false
+      rescue:
+        - name: Bond primary | record that the missing anchor failed
+          ansible.builtin.set_fact:
+            nic_tuning_bond_anchor_rejected: true
+          when: >-
+            ansible_failed_task.name ==
+            'Assert exactly one active-backup bond stanza to pin'
+
+    - name: Verify a file with no anchor stanza is refused
+      ansible.builtin.assert:
+        that:
+          - nic_tuning_bond_anchor_rejected | default(false)
+        fail_msg: >-
+          bond-primary.yml accepted a file with no active-backup stanza —
+          lineinfile would append the pin to the end of the file.
+        success_msg: "bond-primary.yml refuses a file it cannot anchor in"
+
+    - name: Bond primary | restore the seeded interfaces file
+      ansible.builtin.copy:
+        src: /etc/network/interfaces.nic-tuning-backup
+        dest: /etc/network/interfaces
+        remote_src: true
+        mode: "0644"
+
+    - name: Bond primary | an unusable reselect value must fail
+      block:
+        - name: Bond primary | drive the pin with a reselect the kernel rejects
+          ansible.builtin.include_role:
+            name: weisssrv.infra.nic_tuning
+            tasks_from: bond-primary.yml
+          vars:
+            nic_tuning_bond_primary: nic1
+            nic_tuning_bond_primary_reselect: allways
+
+        - name: Bond primary | the bad reselect value did NOT fail
+          ansible.builtin.set_fact:
+            nic_tuning_bond_reselect_rejected: false
+      rescue:
+        - name: Bond primary | record that the bad reselect value failed
+          ansible.builtin.set_fact:
+            nic_tuning_bond_reselect_rejected: true
+          when: >-
+            ansible_failed_task.name ==
+            'Assert the bond-primary reselect value is one the kernel accepts'
+
+    - name: Verify a reselect value the kernel rejects is refused
+      ansible.builtin.assert:
+        that:
+          - nic_tuning_bond_reselect_rejected | default(false)
+        fail_msg: >-
+          bond-primary.yml accepted a reselect value outside always/better/
+          failure; the sysfs write fails silently and the interfaces file gains
+          an invalid line.
+        success_msg: "an unusable bond-primary_reselect value fails the play"
+
+    - name: Bond primary | move /etc/network/interfaces aside
+      ansible.builtin.command: mv /etc/network/interfaces /etc/network/interfaces.moved
+      changed_when: true
+
+    - name: Bond primary | a host with no interfaces file must fail
+      block:
+        - name: Bond primary | drive the pin with no interfaces file
+          ansible.builtin.include_role:
+            name: weisssrv.infra.nic_tuning
+            tasks_from: bond-primary.yml
+          vars:
+            nic_tuning_bond_primary: nic1
+
+        - name: Bond primary | the missing interfaces file did NOT fail
+          ansible.builtin.set_fact:
+            nic_tuning_bond_no_file_rejected: false
+      rescue:
+        - name: Bond primary | record that the missing interfaces file failed
+          ansible.builtin.set_fact:
+            nic_tuning_bond_no_file_rejected: true
+          when: >-
+            ansible_failed_task.name ==
+            'Assert /etc/network/interfaces exists to persist the bond primary'
+
+    - name: Bond primary | put /etc/network/interfaces back
+      ansible.builtin.command: mv /etc/network/interfaces.moved /etc/network/interfaces
+      changed_when: true
+
+    - name: Verify a host that cannot persist the pin is refused
+      ansible.builtin.assert:
+        that:
+          - nic_tuning_bond_no_file_rejected | default(false)
+        fail_msg: >-
+          bond-primary.yml converged green on a host with no
+          /etc/network/interfaces; the pin would exist only in sysfs and be lost
+          at the next reboot.
+        success_msg: "a host that cannot persist the bond primary fails the play"
+
+    # An empty or whitespace-only value is the natural way to clear the variable,
+    # so the gate in main.yml must route it to the removal path, not write a
+    # valueless bond-primary attribute and clear every live pin.
+    - name: Bond primary | re-pin nic1 before the empty-value gate
+      ansible.builtin.include_role:
+        name: weisssrv.infra.nic_tuning
+        tasks_from: bond-primary.yml
+      vars:
+        nic_tuning_bond_primary: nic1
+
+    - name: Bond primary | run the whole role with an empty pin value
+      ansible.builtin.include_role:
+        name: weisssrv.infra.nic_tuning
+      vars:
+        nic_tuning_bond_primary: ""
+
+    - name: Bond primary | read the interfaces file after the empty-value run
+      ansible.builtin.slurp:
+        src: /etc/network/interfaces
+      register: nic_tuning_bond_primary_emptied
+
+    - name: Verify an empty pin value takes the removal path
+      ansible.builtin.assert:
+        that:
+          - nic_tuning_bond_primary_empty_lines
+            | select('search', '^\s*bond-primary\s') | list | length == 0
+        fail_msg: >-
+          An empty nic_tuning_bond_primary took the pin path and left a
+          bond-primary line in /etc/network/interfaces:
+          {{ nic_tuning_bond_primary_empty_lines | select('search', 'bond-primary') | list }}
+        success_msg: "an empty nic_tuning_bond_primary removes the persisted pin"
+      vars:
+        nic_tuning_bond_primary_empty_lines: >-
+          {{ (nic_tuning_bond_primary_emptied.content | b64decode).splitlines() }}
+
+    # A site whose preferred leg is pinned outside Ansible turns the removal arm
+    # off; the role must then leave the hand-written line alone.
+    - name: Bond primary | seed a hand-written pin outside Ansible
+      ansible.builtin.lineinfile:
+        path: /etc/network/interfaces
+        insertafter: '^\s*bond-mode\s+active-backup\s*$'
+        line: "    bond-primary nic0"
+        state: present
+
+    - name: Bond primary | run the whole role with the removal arm turned off
+      ansible.builtin.include_role:
+        name: weisssrv.infra.nic_tuning
+      vars:
+        nic_tuning_bond_primary: null
+        nic_tuning_bond_primary_manage_absent: false
+
+    - name: Bond primary | read the interfaces file after the opt-out run
+      ansible.builtin.slurp:
+        src: /etc/network/interfaces
+      register: nic_tuning_bond_primary_kept
+
+    - name: Verify the removal arm opt-out keeps the hand-written pin
+      ansible.builtin.assert:
+        that:
+          - "'    bond-primary nic0' in nic_tuning_bond_primary_kept_lines"
+        fail_msg: >-
+          nic_tuning_bond_primary_manage_absent: false still removed the
+          hand-written bond-primary line, so a site that pins its preferred
+          leg outside Ansible loses the pin on the first converge.
+        success_msg: "the removal arm opt-out leaves an out-of-band pin alone"
+      vars:
+        nic_tuning_bond_primary_kept_lines: >-
+          {{ (nic_tuning_bond_primary_kept.content | b64decode).splitlines() }}
+
+    - name: Bond primary | drop the hand-written pin again
+      ansible.builtin.lineinfile:
+        path: /etc/network/interfaces
+        regexp: '^\s*bond-primary\s+nic0\s*$'
+        state: absent
+
+    - name: Bond primary | a whitespace-only value must fail the pin path
+      block:
+        - name: Bond primary | drive the pin with a whitespace-only value
+          ansible.builtin.include_role:
+            name: weisssrv.infra.nic_tuning
+            tasks_from: bond-primary.yml
+          vars:
+            nic_tuning_bond_primary: "  "
+
+        - name: Bond primary | the whitespace-only value did NOT fail
+          ansible.builtin.set_fact:
+            nic_tuning_bond_blank_rejected: false
+      rescue:
+        - name: Bond primary | record that the whitespace-only value failed
+          ansible.builtin.set_fact:
+            nic_tuning_bond_blank_rejected: true
+          when: >-
+            ansible_failed_task.name ==
+            'Assert the bond-primary value is a usable interface name'
+
+    - name: Verify a whitespace-only pin value is refused
+      ansible.builtin.assert:
+        that:
+          - nic_tuning_bond_blank_rejected | default(false)
+        fail_msg: >-
+          bond-primary.yml accepted a whitespace-only nic_tuning_bond_primary,
+          which writes a valueless bond-primary attribute and clears the live
+          pin on every active-backup bond.
+        success_msg: "a whitespace-only bond-primary value fails the play"

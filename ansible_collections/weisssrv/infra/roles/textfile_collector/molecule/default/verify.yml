@@ -85,3 +85,33 @@
       changed_when: false
       # systemd-analyze exits non-zero only on a real unit-file error; the
       # collector script/service resolve so a clean run proves the render is valid.
+
+    # Rendering is not starting: the sandbox directives only fail when systemd
+    # sets up the mount namespace, which is where a missing ReadWritePaths entry
+    # takes the unit down.
+    - name: Start the collector service once
+      ansible.builtin.systemd:
+        name: molecule-test-collector.service
+        state: started
+        daemon_reload: true
+
+    - name: Read the started unit's result
+      ansible.builtin.systemd:
+        name: molecule-test-collector.service
+      register: collector_unit_state
+
+    - name: Assert the oneshot ran to completion under the sandbox
+      ansible.builtin.assert:
+        that:
+          - collector_unit_state.status.Result == "success"
+          - collector_unit_state.status.ActiveState == "inactive"
+        fail_msg: >-
+          molecule-test-collector.service did not complete
+          (Result={{ collector_unit_state.status.Result }}). A 226/NAMESPACE
+          result means a ReadWritePaths entry does not exist on the host.
+
+    - name: Assert the collector wrote its .prom from inside the sandbox
+      ansible.builtin.stat:
+        path: /var/lib/node_exporter/molecule_test.prom
+      register: collector_prom
+      failed_when: not collector_prom.stat.exists

@@ -149,13 +149,12 @@
       register: unit_content
 
     # Strip comment lines before matching so the template's explanatory header
-    # (which names the dangerous "Before=zfs-mount" / "RequiredBy=" edges it
-    # deliberately omits) can't satisfy the directive asserts below.
+    # (which names the dangerous "Before=zfs-mount" / "RequiredBy=" edges the
+    # unit omits) can't satisfy the directive asserts below.
     - name: Build a comment-free view of the unit body
-      # Double-quoted (not a >- block): YAML must interpret the `\n` in
-      # join('\n') as a real newline. In a folded/literal block scalar the `\n`
-      # stays a literal backslash-n, splitlines/join silently no-op, and the
-      # body collapses to empty (every directive search below then false-passes).
+      # Double-quoted (not a block scalar): YAML must interpret the `\n` in
+      # join('\n') as a real newline, or splitlines/join no-op and the body
+      # collapses to empty, false-passing every directive search below.
       ansible.builtin.set_fact:
         unit_body_no_comments: "{{ (unit_content.content | b64decode).splitlines() | reject('match', '\\s*#') | join('\n') }}"
 
@@ -285,6 +284,33 @@
         that:
           - (guest_script_content.content | b64decode) is search('VMIDS=\(999\)')
         fail_msg: "zfs-start-encrypted-guests.sh does not render zfs_encryption_guest_vmids (expected VMIDS=(999))"
+
+    # "Not provisioned" must be the missing config file, not a failed
+    # `qm config`, which is also non-zero when pmxcfs is unreadable.
+    - name: Assert the guest-start script keys provisioning off the config path
+      ansible.builtin.assert:
+        that:
+          - (guest_script_content.content | b64decode) is search('mountpoint -q /etc/pve')
+          - (guest_script_content.content | b64decode) is search('/etc/pve/qemu-server/\$\{vm\}.conf')
+          - (guest_script_content.content | b64decode) is search('/etc/pve/lxc/\$\{ct\}.conf')
+          - (guest_script_content.content | b64decode) is not search('qm config')
+          - (guest_script_content.content | b64decode) is not search('pct config')
+        fail_msg: >-
+          zfs-start-encrypted-guests.sh must gate on `mountpoint -q /etc/pve` and
+          test the guest config path; a `qm config`/`pct config` probe reports a
+          pmxcfs failure as "not provisioned" and exits 0 having started nothing.
+
+    # Executed, not grepped: an inverted guard or a flipped exit code renders
+    # the same text, so each arm runs against stub systemctl/mountpoint/qm.
+    - name: Assert zfs-start-encrypted-guests.sh behavior against stub binaries
+      ansible.builtin.script: files/zfs-start-guests-behavior.sh
+      changed_when: false
+
+    # The 0/1/2 taxonomy is what keeps zfs-mount-encrypted.service activating.
+    - name: Assert zfs-mount-encrypted.sh honours its exit-code taxonomy
+      ansible.builtin.script: >-
+        files/zfs-mount-behavior.sh /usr/local/sbin/zfs-mount-encrypted.sh testpool
+      changed_when: false
 
     - name: Check pve-start-encrypted-guests.service enabled state  # noqa command-instead-of-module
       ansible.builtin.command:

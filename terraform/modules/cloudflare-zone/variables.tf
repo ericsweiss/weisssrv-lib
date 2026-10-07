@@ -49,6 +49,10 @@ variable "zone_settings" {
     cache_level              = optional(string, "aggressive")
     browser_cache_ttl        = optional(number, 14400)
     development_mode         = optional(string, "off")
+    # CRITICAL: include_subdomains pins HTTPS for EVERY hostname under the zone,
+    # including names this cluster never serves, for max_age in every browser
+    # that has seen one response. Withdrawal is max_age = 0 plus waiting the
+    # issued pins out, so point this module only at a zone you own outright.
     hsts = optional(object({
       enabled            = optional(bool, true)
       max_age            = optional(number, 31536000)

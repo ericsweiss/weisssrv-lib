@@ -10,21 +10,9 @@ After={{ after_target }}
 {% endfor %}
 
 [Service]
-# Run Plex with the media group as its PRIMARY group (the packaged unit forces
-# Group=plex). A FUSE mount with default_permissions — mergerfs, for the usual
-# pooled library — honours only the primary GID, so a supplementary membership
-# is ignored there and Plex cannot write (e.g. DVR recordings).
-#
-# Overriding Group= REPLACES the primary group from /etc/passwd and does NOT
-# re-add it, so the process would lose the `{{ plex_user }}` group entirely —
-# the group that owns the TLS bundle at {{ plex_cert_dir }} (0640 root:{{ plex_user }}).
-# Without it Plex logs "Found a user-provided certificate, but couldn't install
-# it" and silently serves its plex.direct fallback. SupplementaryGroups restores
-# it; the video/render groups for GPU transcode still come from the plex user's
-# own memberships via initgroups. UMask 0002 keeps new DVR files group-writable
-# so a setgid media tree stays writable — existing library directories need a
-# one-time `chmod -R g+w` on the HOST (an unprivileged container cannot chmod
-# uid-mapped files).
+# media is the PRIMARY group: a FUSE mount honours only the primary GID.
+# Group= replaces it, so SupplementaryGroups restores the {{ plex_user }} group
+# that owns the TLS bundle. UMask 0002 keeps new DVR files group-writable.
 Group={{ plex_media_group }}
 SupplementaryGroups={{ plex_user }}
 UMask=0002

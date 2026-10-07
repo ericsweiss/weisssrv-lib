@@ -1,0 +1,27 @@
+---
+# Shared by proxmox_vm and proxmox_lxc (`tasks_from: guest-nic-firewall`).
+# Inputs: _pmx_cli (qm|pct), _pmx_id, _pmx_delegate. Result: proxmox_vm_guest_nic_firewall_result.
+# Per-guest .fw rules are enforced only when the NIC carries firewall=1.
+- name: Ensure the guest NIC has the firewall flag
+  delegate_to: "{{ _pmx_delegate }}"
+  become: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    current=$({{ _pmx_cli }} config {{ _pmx_id }} | sed -n 's/^net0: //p')
+    # An empty net0 means the flag cannot be reconciled, not that it is set:
+    # a guest without firewall=1 has every per-guest security group inert.
+    if [ -z "$current" ]; then
+      echo "NONET0: {{ _pmx_id }} has no net0 in its config"
+      exit 3
+    fi
+    if ! printf '%s' "$current" | grep -Eq '(^|,)firewall=1($|,)'; then
+      # Strip any existing firewall=<v> (e.g. firewall=0) first so the
+      # repair cannot produce a duplicate key in the net0 string.
+      cleaned=$(printf '%s' "$current" | sed -E 's/(^|,)firewall=[^,]*//g' | sed -E 's/^,//')
+      {{ _pmx_cli }} set {{ _pmx_id }} --net0 "${cleaned},firewall=1"
+      echo CHANGED
+    fi
+  args:
+    executable: /bin/bash
+  register: proxmox_vm_guest_nic_firewall_result
+  changed_when: "'CHANGED' in (proxmox_vm_guest_nic_firewall_result.stdout | default(''))"

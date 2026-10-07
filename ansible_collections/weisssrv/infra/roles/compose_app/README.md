@@ -17,6 +17,10 @@ at the right point in its own flow.
 | Backup metrics | `tasks/backup_lib.yml` + `templates/write_prom_metrics.sh.j2` | `tasks_from: backup_lib.yml` — deploys the sourceable `write_prom_metrics` lib. |
 | Host nginx | `tasks/nginx.yml` | `tasks_from: nginx.yml` — install/cert/validate+deploy-site/reload. |
 
+`meta: flush_handlers` is play-scoped, so including `tasks/main.yml` flushes
+every handler pending in the play, not only this role's. A caller must have its
+own config tasks (and the notifies they queue) complete before including it.
+
 One compose systemd unit template serves every guest, with `RemainAfterExit`
 standardised to `yes` (systemd treats `yes` and `true` identically). The nginx
 `.conf` stays in the caller's role (only the **task flow** is shared) — the site
@@ -38,13 +42,16 @@ binary), but the candidate is still rendered and installed.
 
 ### Backup metrics library
 
-`tasks/backup_lib.yml` is the single home for backup-freshness metric emission —
-any role with a backup wrapper includes it, not only compose guests. The library
-is sourced, and everything variable is a call argument:
+`tasks/backup_lib.yml` installs the backup-freshness metric emitter used by the
+compose app guests: `gitlab`, `immich` and `nextcloud` include it. Roles whose
+wrappers emit a richer or differently-shaped metric set (`restic_offsite`,
+`nas_storage`, `k3s`, `acme_certs`) keep their own emitter. The library is
+sourced, and everything variable is a call argument:
 
 ```bash
 source /usr/local/lib/<app>-backup-lib.sh
 write_prom_metrics <prefix> <success> <duration> <size> <prom_file> [artifact_glob]
+require_mounted_landing_zone <prefix> <path> <nfs_enabled> <prom_file>
 ```
 
 - On failure it re-emits the previous `_last_success_timestamp_seconds`, so
@@ -55,6 +62,14 @@ write_prom_metrics <prefix> <success> <duration> <size> <prom_file> [artifact_gl
   `_last_run_success 0`.
 - Only the size-gauge HELP noun (`compose_app_backup_size_help_object`) is
   rendered per app.
+- `require_mounted_landing_zone` is the fail-closed gate the three wrappers open
+  with. When the landing zone is NFS-backed and not mounted it writes
+  `<prefix>_last_run_success 0` and returns 1, so the artefact never lands on the
+  root disk un-offsited; otherwise it returns 0 and writes nothing.
+- A `.prom` write or rename that fails never fails the backup, but it does log
+  to `daemon.err` under the tag `<prefix>-metrics`. The old file survives, so
+  the previous run's `_last_run_success 1` stays published until the next
+  successful write.
 
 ## Variables
 
@@ -87,12 +102,17 @@ A site that terminates TLS for a wildcard hostname should set
 
 ## Molecule
 
-`molecule/default` is a render/contract scenario (`compose_app_skip_install:
-true`): it renders the compose unit for **both** the `RequiresMountsFor`-present
+`molecule/default` is a contract scenario. Under `compose_app_skip_install:
+true` it renders the compose unit for **both** the `RequiresMountsFor`-present
 and `-absent` cases, renders the `write_prom_metrics` lib and runs it end-to-end
-(success, failure/preserve-timestamp, newest-artefact fallback), and runs the
-host-nginx flow to assert the `creates:` cert guard, the deployed + enabled site
-and the removed default vhost.
+(success, failure/preserve-timestamp, newest-artefact fallback, unwritable
+path), and runs the host-nginx flow to assert the `creates:` cert guard, the
+deployed + enabled site and the removed default vhost.
+
+It then installs nginx and runs the host-nginx flow again with validation on: a
+valid candidate must pass `nginx -t` and land in `sites-available`, and a
+candidate with an unknown directive must fail the play and leave the installed
+site untouched. `expected-junit-failures.txt` declares that deliberate failure.
 
 ## Related
 

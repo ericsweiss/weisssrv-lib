@@ -1,24 +1,14 @@
-"""Tests for scripts/check-default-deny-coverage.py.
-
-The gate exists to FAIL on an unfenced namespace, so every arm is proved against
-a fixture corpus — a live tree is expected to pass and therefore proves nothing
-about failure.
-"""
+"""Tests for scripts/check-default-deny-coverage.py, proved against fixture
+corpora so every failure arm is exercised."""
 from __future__ import annotations
 
-import importlib.util
 import io
 import textwrap
-from pathlib import Path
 
 import pytest
+from script_loader import load_script
 
-SPEC = importlib.util.spec_from_file_location(
-    "check_default_deny_coverage",
-    Path(__file__).resolve().parent.parent / "scripts" / "check-default-deny-coverage.py",
-)
-gate = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(gate)
+gate = load_script("check-default-deny-coverage.py")
 
 
 FENCED = """\
@@ -60,12 +50,9 @@ spec:
   policyTypes: [Ingress]
 """
 
-# The workload kinds the gate's docstring promises, spelled out HERE rather than
-# read from the gate: a parametrization over `gate.WORKLOAD_KINDS` shrinks with
-# the set it is meant to pin, so dropping a kind would silently drop its case
-# too. Each entry is a minimal manifest of that kind, so every member of the set
-# is load-bearing — remove one and its case reports "0 workload namespaces"
-# (exit 2) instead of the unfenced-namespace failure (exit 1).
+# The workload kinds the gate promises, spelled out here rather than read from
+# the gate: a parametrization over `gate.WORKLOAD_KINDS` would shrink with the
+# set it pins.
 WORKLOAD_MANIFESTS = {
     "Deployment": "apiVersion: apps/v1\nkind: Deployment",
     "StatefulSet": "apiVersion: apps/v1\nkind: StatefulSet",
@@ -101,26 +88,27 @@ def _ns_wide_policy(ingress: str, ns: str = "apps") -> str:
     )
 
 
-# Rule shapes that admit every peer on every port. Each satisfies a bare "has an
-# Ingress policyType" test, so counting any of them as the namespace's fence is
-# fail-open: the gate would report OK on a namespace nothing actually closes.
-# An EMPTY label selector is the trap — `{}` matches every object in its scope,
-# so it is the opposite of an absent selector rather than a narrowing of it.
+# Rule shapes that admit every peer on every port. Counting any of them as a
+# fence is fail-open. The trap is the empty label selector: `{}` matches every
+# object in its scope.
 WIDE_OPEN_RULES = {
     "neither from nor ports": "[{}]",
     "a bare {} peer": "[{from: [{}]}]",
     "an empty namespaceSelector (every namespace)": "[{from: [{namespaceSelector: {}}]}]",
-    "an empty podSelector (every pod in the namespace)": "[{from: [{podSelector: {}}]}]",
+    # The explicit namespaceSelector is what widens this shape: the same rule
+    # without it is scoped to the policy's own namespace and fences.
     "both selectors empty": "[{from: [{namespaceSelector: {}, podSelector: {}}]}]",
-    # Peers within one rule are OR'd, so the narrow peer does not constrain the
-    # wide one — a rule is only as closed as its most open peer.
+    # Peers within one rule are OR'd: a rule is only as closed as its most
+    # open peer.
     "a wide peer beside a narrow one": (
         "[{from: [{namespaceSelector: {matchLabels: "
         "{kubernetes.io/metadata.name: observability}}}, {namespaceSelector: {}}]}]"
     ),
     # An empty selector TERM is the same trap one level down: `matchLabels: {}`
-    # requires nothing, so the selector matches everything.
-    "an empty matchLabels selector": "[{from: [{podSelector: {matchLabels: {}}}]}]",
+    # requires nothing, so the selector matches every namespace.
+    "an empty matchLabels namespaceSelector": (
+        "[{from: [{namespaceSelector: {matchLabels: {}}}]}]"
+    ),
     # An ipBlock usually narrows, but the whole address space with no except
     # list admits every peer there is.
     "an unexcepted 0.0.0.0/0 ipBlock": "[{from: [{ipBlock: {cidr: 0.0.0.0/0}}]}]",
@@ -140,10 +128,8 @@ WIDE_OPEN_RULES = {
     "a /0 excepting only public space": (
         "[{from: [{ipBlock: {cidr: 0.0.0.0/0, except: [203.0.113.0/24]}}]}]"
     ),
-    # An except the API rejects (equal to the cidr — for a /0 the one
-    # non-subnet spelling that exists) belongs to a policy that never admits;
-    # it must not erase the network and certify a fence the rejected policy
-    # does not provide.
+    # An except equal to its cidr is rejected by the API, so the policy never
+    # admits and must not be read as a fence.
     "a /0 excepted by itself": (
         "[{from: [{ipBlock: {cidr: 0.0.0.0/0, except: [0.0.0.0/0]}}]}]"
     ),
@@ -171,13 +157,22 @@ FENCING_RULES = {
     "an empty selector narrowed by ports": (
         "[{from: [{podSelector: {}}], ports: [{protocol: TCP, port: 8080}]}]"
     ),
+    # An omitted namespaceSelector scopes the peer to the policy's own
+    # namespace, so every pod in it is still a fence against other namespaces.
+    "a port-less empty podSelector": "[{from: [{podSelector: {}}]}]",
+    "a port-less empty matchLabels podSelector": (
+        "[{from: [{podSelector: {matchLabels: {}}}]}]"
+    ),
     "ports with no from at all": "[{ports: [{protocol: TCP, port: 8080}]}]",
 }
 
 
 def run(monkeypatch, corpus: str, argv: list[str] | None = None) -> int:
     monkeypatch.setattr("sys.stdin", io.StringIO(textwrap.dedent(corpus)))
-    return gate.main(argv or [])
+    try:
+        return gate.main(argv or [])
+    except SystemExit as exc:  # the shared corpus loader exits 2 directly
+        return int(exc.code)
 
 
 def test_fenced_namespace_passes(monkeypatch, capsys) -> None:
@@ -213,10 +208,7 @@ def test_every_workload_kind_is_satisfied_by_a_default_deny(monkeypatch, kind) -
 
 
 def test_the_ok_summary_counts_fenced_and_exempt_namespaces(monkeypatch, capsys) -> None:
-    """The clean-run line is the only evidence an operator reads, so its numbers
-    are pinned on a corpus mixing all three states. `idle` is fenced but owns
-    nothing: a count taken over the fenced set rather than over the workload
-    namespaces would report it and overstate the coverage."""
+    """The clean-run summary counts workload namespaces, not fenced ones."""
     corpus = "---\n".join(
         [
             DEPLOY.format(ns="apps"),
@@ -471,13 +463,22 @@ def test_a_corpus_without_workloads_is_an_operator_error(monkeypatch, capsys) ->
 
 @pytest.mark.parametrize("ns", sorted(gate.EXEMPT_NAMESPACES))
 def test_every_exemption_carries_a_reason(ns: str) -> None:
-    assert len(gate.EXEMPT_NAMESPACES[ns]) > 40
+    reason = gate.EXEMPT_NAMESPACES[ns]
+    assert reason.strip()
+    assert len(reason.split()) >= 8, (
+        f"{ns}: the exemption reason must be a sentence, got {reason!r}"
+    )
+
+
+def test_an_empty_policytypes_list_still_fences(monkeypatch) -> None:
+    """`policyTypes` is omitempty: an empty list round-trips as an absent field,
+    so the CNI applies the ingress default and the namespace is fenced."""
+    no_types = FENCED.format(ns="apps").replace("policyTypes: [Ingress]", "policyTypes: []")
+    assert run(monkeypatch, DEPLOY.format(ns="apps") + "---\n" + no_types) == 0
 
 
 def test_an_empty_matchlabels_default_deny_still_fences(monkeypatch) -> None:
-    """`podSelector: {matchLabels: {}}` selects every pod — the API treats it
-    exactly like `{}`, so a default-deny spelled that way is namespace-wide.
-    The truthiness reading called it app-scoped and failed the namespace."""
+    """`podSelector: {matchLabels: {}}` fences the namespace exactly like `{}`."""
     corpus = DEPLOY.format(ns="apps") + textwrap.dedent(
         """\
         ---
@@ -556,3 +557,56 @@ def test_an_absent_spec_podselector_never_fences(monkeypatch) -> None:
         "spec:\n  policyTypes: [Ingress]\n"
     )
     assert run(monkeypatch, DEPLOY.format(ns="apps") + no_selector) == 1
+
+
+BOTH_WAYS = """\
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {ns}
+spec:
+  podSelector: {{}}
+  policyTypes: [Ingress, Egress]
+"""
+
+
+class TestRequireEgress:
+    """--require-egress is opt-in per namespace; the ingress arm is unchanged."""
+
+    def test_a_namespace_fenced_both_ways_passes(self, monkeypatch, capsys) -> None:
+        corpus = DEPLOY.format(ns="apps") + "---\n" + BOTH_WAYS.format(ns="apps")
+        assert run(monkeypatch, corpus, ["--require-egress", "apps"]) == 0
+        assert "1 egress-fenced" in capsys.readouterr().out
+
+    def test_dropping_the_egress_policytype_fails(self, monkeypatch, capsys) -> None:
+        """The mutation: only `Egress` leaves the fence, and nothing else reds."""
+        corpus = (
+            DEPLOY.format(ns="apps")
+            + "---\n"
+            + BOTH_WAYS.format(ns="apps").replace("[Ingress, Egress]", "[Ingress]")
+        )
+        assert run(monkeypatch, corpus, ["--require-egress", "apps"]) == 1
+        assert "denies egress by default" in capsys.readouterr().err
+
+    def test_an_egress_allow_all_rule_re_opens_the_namespace(self, monkeypatch) -> None:
+        corpus = (
+            DEPLOY.format(ns="apps")
+            + "---\n"
+            + BOTH_WAYS.format(ns="apps")
+            + "  egress: [{}]\n"
+        )
+        assert run(monkeypatch, corpus, ["--require-egress", "apps"]) == 1
+
+    def test_an_egress_rule_naming_ports_still_fences(self, monkeypatch) -> None:
+        corpus = (
+            DEPLOY.format(ns="apps")
+            + "---\n"
+            + BOTH_WAYS.format(ns="apps")
+            + "  egress:\n    - ports: [{protocol: UDP, port: 53}]\n"
+        )
+        assert run(monkeypatch, corpus, ["--require-egress", "apps"]) == 0
+
+    def test_without_the_flag_an_ingress_only_fence_passes(self, monkeypatch) -> None:
+        corpus = DEPLOY.format(ns="apps") + "---\n" + FENCED.format(ns="apps")
+        assert run(monkeypatch, corpus) == 0

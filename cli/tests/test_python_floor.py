@@ -1,23 +1,7 @@
 """Holds the package to its declared `requires-python` floor.
 
-CI runs the suite on one interpreter (the image's 3.13), and `lint/ruff.toml`
-selects no version-gated rules, so nothing else would notice a 3.10+ construct
-landing in a package that promises 3.9. This parses every module at the floor's
-own grammar instead, via `ast.parse(..., feature_version=...)`.
-
-`feature_version` is necessary but NOT sufficient, and the split matters:
-
-* It rejects the features CPython's parser has an explicit version check for —
-  `match`, `except*`, `type X = ...`, PEP 695 type parameters. Those also have
-  their own AST node types, walked below so the failure names the node.
-* It silently ACCEPTS post-3.9 syntax that reuses existing nodes, because the
-  PEG parser has no version check to run. Parenthesized context managers
-  (`with (a as x, b as y):`, 3.10) are the case that bites: they produce a plain
-  `ast.With` carrying no record of the parentheses. `_parenthesized_with_lines`
-  closes that hole off the token stream.
-* It has nothing to say about PEP 604 annotations, which are a runtime error
-  rather than a syntax error on 3.9 — `from __future__ import annotations` is
-  what makes those safe, asserted separately below.
+`ast.parse(feature_version=)` catches version-gated grammar; parenthesized
+context managers and PEP 604 annotations are checked separately below.
 """
 from __future__ import annotations
 
@@ -64,10 +48,8 @@ MODULES = _modules(PACKAGE)
 def _parenthesized_with_lines(source: str) -> list[int]:
     """Lines carrying a 3.10-only parenthesized `with` header.
 
-    Inside a `with` header, `as` at paren depth 0 is every 3.9-legal spelling —
-    `with a as x, b as y:`, and `with (a) as x:` too, whose parentheses have
-    closed by then. `as` at depth > 0 means the parentheses wrap the item list
-    itself, which is the 3.10 grammar and a SyntaxError on 3.9.
+    `as` at paren depth 0 is a 3.9-legal spelling; at depth > 0 the parentheses
+    wrap the item list itself, which is the 3.10 grammar.
     """
     tokens = [
         token
@@ -172,11 +154,9 @@ def test_no_module_uses_syntax_newer_than_the_floor():
 
 
 def _parsed():
-    """Trees for the annotation walk, parsed WITHOUT the floor's grammar.
+    """Trees for the annotation walk, parsed without the floor's grammar.
 
-    A module that fails the floor parse is already reported by the test above;
-    parsing plainly here keeps that failure from resurfacing as a collection-time
-    SyntaxError with nothing to say about annotations.
+    The test above already reports a module that fails the floor parse.
     """
     return [(path, ast.parse(path.read_text(encoding="utf-8"))) for path in MODULES]
 

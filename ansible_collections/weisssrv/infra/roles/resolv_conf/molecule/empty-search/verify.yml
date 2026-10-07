@@ -36,6 +36,38 @@
           - "not (resolv_conf_text | regex_search('^domain', multiline=True))"
         fail_msg: "resolv.conf contains a `domain` line; expected none for empty domain list"
 
+    - name: Verify the custom options list renders as one line
+      ansible.builtin.assert:
+        that:
+          - "'options rotate timeout:1' in resolv_conf_text"
+          - (resolv_conf_text | regex_findall('(?m)^options ') | length) == 1
+        fail_msg: "resolv.conf does not carry the configured options on a single line"
+
+    # The empty-list branch cannot share this host's file with the case above,
+    # so render it to a scratch path instead.
+    - name: Render resolv.conf with an empty options list
+      ansible.builtin.copy:
+        content: >-
+          {{ lookup('ansible.builtin.template',
+                    playbook_dir ~ '/../../templates/resolv.conf.j2') }}
+        dest: /tmp/resolv.conf-no-options
+        mode: "0644"
+      vars:
+        resolv_conf_options: []
+
+    - name: Read the empty-options render
+      ansible.builtin.slurp:
+        src: /tmp/resolv.conf-no-options
+      register: resolv_conf_no_options
+
+    - name: Verify an empty options list omits the line
+      ansible.builtin.assert:
+        that:
+          - >-
+            not ((resolv_conf_no_options.content | b64decode)
+                 | regex_search('^options', multiline=True))
+        fail_msg: "An empty resolv_conf_options still rendered an `options` line"
+
     - name: Check file mode
       ansible.builtin.stat:
         path: /etc/resolv.conf

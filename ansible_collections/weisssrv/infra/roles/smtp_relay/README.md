@@ -14,7 +14,7 @@ collector so a wedged upstream is alertable.
 | `smtp_relay_origin` | `{{ internal_domain }}` | `myorigin` in the default config |
 | `smtp_relay_upstream` | `""` | `relayhost`, e.g. `[smtp.example.net]:587`. Empty = direct delivery |
 | `smtp_relay_default_config` | see `defaults/main.yml` | the shipped `main.cf` map |
-| `smtp_relay_config` | `{}` | site overrides, merged **over** the defaults |
+| `smtp_relay_config` | `{}` | site overrides, merged **over** the defaults. Every key of the merged map is rendered, so any postfix parameter can be set here |
 | `smtp_relay_tls_cert_dir` | `/etc/postfix/tls` | where `fullchain.pem` + `privkey.pem` are expected |
 | `smtp_relay_submission_enabled` | `true` | the 587 service in `master.cf` (see the note below — the role owns the whole file) |
 | `smtp_relay_submission_config` | see `defaults/main.yml` | per-service `-o` overrides for 587 |
@@ -24,7 +24,10 @@ collector so a wedged upstream is alertable.
 `master.cf` is templated in full, not patched: the role's copy of Debian's
 service table is what lands on the host, so the packaged table's own changes
 (a new default service, a reworked `postlogd` line) never arrive. Re-sync
-`templates/master.cf.j2` by hand when the postfix package changes it.
+`templates/master.cf.j2` by hand when the postfix package changes it. The
+molecule scenario compares the rendered table against
+`/usr/share/postfix/master.cf.dist` and fails when the package adds a service
+the template does not carry.
 
 Required credentials, no defaults:
 

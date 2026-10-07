@@ -3,10 +3,6 @@
   ansible.builtin.command: /opt/gitlab/bin/gitlab-ctl reconfigure
   changed_when: true
 
-- name: Save iptables rules
-  ansible.builtin.command: netfilter-persistent save
-  changed_when: true
-
 - name: Restart sshd
   ansible.builtin.service:
     name: "{{ gitlab_ssh_service_name }}"
@@ -25,6 +21,11 @@
 
 - name: Reload systemd for gitlab-backup
   ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Reload systemd for gitlab-ssh-redirect
+  ansible.builtin.systemd:
+    name: gitlab-ssh-redirect.service
     daemon_reload: true
 
 # `state: restarted` (not started) is required: RemainAfterExit makes `started`

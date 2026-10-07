@@ -1,9 +1,7 @@
 ---
-# De-provisioning path for k3s_etcd_snapshot_offnode_enabled: false. Turning the
-# feature off must stand the timer down and drop the NFS mount — an armed unit
-# would keep mounting the export and copying etcd snapshots (whole-cluster
-# Secret material) off-node indefinitely. Stat-gated so a host that never had
-# the feature does no systemd work at all.
+# De-provisioning path for k3s_etcd_snapshot_offnode_enabled: false. Stands the
+# timer down and drops the NFS mount so no further etcd snapshots leave the node.
+# Stat-gated, so a host that never had the feature does no systemd work.
 
 - name: Stat the off-node etcd snapshot artifacts
   ansible.builtin.stat:
@@ -24,10 +22,9 @@
     - not ansible_check_mode
     - k3s_offnode_absent_stat.results[0].stat.exists
 
-# Evidence-gated like the rest of the file: the mount at that path belongs to
-# this feature only when a role-owned artifact says the feature was deployed.
-# Unconditional, this would strip an unrelated fstab entry/mount from a host
-# that never had it.
+# Evidence-gated: the mount belongs to this feature only when a role-owned
+# artifact says it was deployed. Unconditional, this would strip an unrelated
+# fstab entry from a host that never had the feature.
 - name: Unmount and remove the off-node etcd snapshot export
   ansible.posix.mount:
     path: "{{ k3s_etcd_snapshot_mountpoint }}"

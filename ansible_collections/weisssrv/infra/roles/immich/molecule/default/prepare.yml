@@ -35,12 +35,9 @@
         content: "# packaged default vhost\n"
         mode: "0644"
 
-    # Mock `docker` so the backup wrapper's pg_dumpall pipe can be exercised end
-    # to end (success + failure metric paths). /tmp/immich-backup-fail arms the
-    # failure path; /tmp/immich-backup-tiny arms a truncated (too-small) dump.
-    # IMMICH_INFLIGHT_PROBE snapshots the landing zone WHILE the dump streams,
-    # which is the only way to prove the in-progress file is not visible under
-    # the final dump name.
+    # Mock `docker` so the backup wrapper's pg_dumpall pipe runs end to end.
+    # /tmp/immich-backup-fail arms the failure path, /tmp/immich-backup-tiny a
+    # truncated dump; IMMICH_INFLIGHT_PROBE snapshots the landing zone mid-dump.
     - name: Install mock docker for the backup-wrapper test
       ansible.builtin.copy:
         dest: /usr/local/bin/docker

@@ -77,12 +77,9 @@
       register: proxmox_backup_storage_create_result
       changed_when: proxmox_backup_storage_create_result.rc == 0
 
-    # server/export/path/pool are create-fixed in Proxmox's storage plugins —
-    # `pvesh set` cannot change them. Fail loud with the manual recreation
-    # procedure instead of leaving the vars silently diverged from live state.
-    # `pool` matters beyond drift bookkeeping: a zfspool id recreated against a
-    # pool ROOT instead of the intended child dataset lands every new guest disk
-    # on whatever that root's encryption property is, with no other signal.
+    # server/export/path/pool are create-fixed in PVE — fail loud with the
+    # recreation procedure rather than diverging silently. A zfspool id pointed at
+    # a pool ROOT puts new guest disks under that root's encryption property.
     - name: Assert create-fixed storage properties have not drifted
       vars:
         _current: >-
@@ -159,11 +156,26 @@
 - name: Manage vzdump backup jobs
   when: proxmox_backup_vzdump_jobs | length > 0
   tags: [proxmox_backup, proxmox_backup_jobs]
+  vars:
+    # Shared by create and set so a new option cannot reach one path only.
+    _vzdump_flags: >-
+      {{ ['--storage', item.storage,
+          '--schedule', item.schedule,
+          '--mode', item.mode | default('snapshot'),
+          '--compress', item.compress | default('zstd'),
+          '--enabled', item.enabled | default(true) | ternary('1', '0'),
+          '--all', item.all | default('vmid' not in item) | ternary('1', '0')]
+         + (['--vmid', item.vmid | join(',')] if item.vmid is defined else [])
+         + (['--exclude', item.exclude | join(',')] if item.exclude is defined else [])
+         + (['--prune-backups', item.prune_backups] if item.prune_backups is defined else [])
+         + (['--bwlimit', item.bwlimit | string] if item.bwlimit is defined else [])
+         + (['--notification-mode', item.notification_mode] if item.notification_mode is defined else [])
+         + (['--mailnotification', item.mailnotification] if item.mailnotification is defined else [])
+         + (['--mailto', item.mailto] if item.mailto is defined else [])
+         + (['--script', item.script] if item.script is defined else []) }}
   block:
-    # The hookscript belongs to weisssrv.infra.node_exporter_host, which puts it
-    # on EVERY Proxmox host (a cluster-wide `all` job runs on each node and
-    # invokes the hook there). That role typically runs after this one, and
-    # pvesh validates the --script path when the job is saved — so run its
+    # The hookscript ships with node_exporter_host, which runs after this role,
+    # and pvesh validates the --script path when the job is saved, so run its
     # hookscript task here first. Skipped unless a job sets `script`.
     - name: Ensure vzdump metrics hookscript exists before pvesh validates it
       ansible.builtin.include_role:
@@ -187,23 +199,7 @@
 
     - name: Create missing vzdump backup jobs
       ansible.builtin.command:
-        argv: >-
-          {{ ['pvesh', 'create', '/cluster/backup',
-              '--id', item.id,
-              '--storage', item.storage,
-              '--schedule', item.schedule,
-              '--mode', item.mode | default('snapshot'),
-              '--compress', item.compress | default('zstd'),
-              '--enabled', item.enabled | default(true) | ternary('1', '0'),
-              '--all', item.all | default('vmid' not in item) | ternary('1', '0')]
-             + (['--vmid', item.vmid | join(',')] if item.vmid is defined else [])
-             + (['--exclude', item.exclude | join(',')] if item.exclude is defined else [])
-             + (['--prune-backups', item.prune_backups] if item.prune_backups is defined else [])
-             + (['--bwlimit', item.bwlimit | string] if item.bwlimit is defined else [])
-             + (['--notification-mode', item.notification_mode] if item.notification_mode is defined else [])
-             + (['--mailnotification', item.mailnotification] if item.mailnotification is defined else [])
-             + (['--mailto', item.mailto] if item.mailto is defined else [])
-             + (['--script', item.script] if item.script is defined else []) }}
+        argv: "{{ ['pvesh', 'create', '/cluster/backup', '--id', item.id] + _vzdump_flags }}"
       when: item.id not in _proxmox_backup_current_job_ids
       loop: "{{ proxmox_backup_vzdump_jobs }}"
       loop_control:
@@ -215,13 +211,9 @@
       vars:
         _current: >-
           {{ _proxmox_backup_current_jobs | selectattr('id', 'equalto', item.id) | first | default({}) }}
-        # prune-backups may come back from `pvesh ... --output-format json` as a
-        # dict ({'keep-daily': '7', ...}) rather than the legacy comma string
-        # (and PVE may reorder either), so normalise BOTH sides to a sorted
-        # "key=value" list before comparing — splitting a dict raised "descriptor
-        # 'split' for 'str' objects doesn't apply to a 'dict' object". An
-        # undefined desired value inherits the live one (via _current_prune) so
-        # it never registers as drift.
+        # prune-backups comes back as a dict or a comma string and may be reordered,
+        # so normalise both sides to a sorted key=value list. An undefined desired
+        # value inherits the live one via _current_prune, so it never reads as drift.
         _current_prune: >-
           {{ (_current['prune-backups'].items() | map('join', '=') | sort | list)
              if (_current.get('prune-backups') is mapping)
@@ -230,13 +222,9 @@
           {{ (item.prune_backups | string | split(',') | map('trim') | select() | sort | list)
              if item.prune_backups is defined
              else _current_prune }}
-        # Optional fields present on the LIVE job but removed from the desired
-        # config must be explicitly cleared — `pvesh set` only updates the flags
-        # it is given, so a stale `exclude`/`vmid` would keep silently skipping
-        # guests from nightly backups. These map to `--delete <pve-field-name>`
-        # (PVE uses hyphenated `notification-mode`). prune-backups is excluded on
-        # purpose: an undefined desired value inherits the live one (above), a
-        # documented "leave as-is" behaviour, not a removal.
+        # Fields dropped from the desired config must be cleared explicitly: `pvesh
+        # set` only updates the flags it is given, so a stale exclude/vmid would keep
+        # skipping guests. prune-backups is excluded — undefined inherits live.
         _delete_fields: >-
           {{ (['vmid'] if (item.vmid is not defined and (_current.vmid | default('') | string) != '') else [])
              + (['exclude'] if (item.exclude is not defined and (_current.exclude | default('') | string) != '') else [])
@@ -270,21 +258,7 @@
              (_delete_fields | length > 0) }}
       ansible.builtin.command:
         argv: >-
-          {{ ['pvesh', 'set', '/cluster/backup/' ~ item.id,
-              '--storage', item.storage,
-              '--schedule', item.schedule,
-              '--mode', item.mode | default('snapshot'),
-              '--compress', item.compress | default('zstd'),
-              '--enabled', item.enabled | default(true) | ternary('1', '0'),
-              '--all', item.all | default('vmid' not in item) | ternary('1', '0')]
-             + (['--vmid', item.vmid | join(',')] if item.vmid is defined else [])
-             + (['--exclude', item.exclude | join(',')] if item.exclude is defined else [])
-             + (['--prune-backups', item.prune_backups] if item.prune_backups is defined else [])
-             + (['--bwlimit', item.bwlimit | string] if item.bwlimit is defined else [])
-             + (['--notification-mode', item.notification_mode] if item.notification_mode is defined else [])
-             + (['--mailnotification', item.mailnotification] if item.mailnotification is defined else [])
-             + (['--mailto', item.mailto] if item.mailto is defined else [])
-             + (['--script', item.script] if item.script is defined else [])
+          {{ ['pvesh', 'set', '/cluster/backup/' ~ item.id] + _vzdump_flags
              + (['--delete', _delete_fields | join(',')] if _delete_fields | length > 0 else []) }}
       when:
         - item.id in _proxmox_backup_current_job_ids
@@ -295,9 +269,8 @@
       register: proxmox_backup_set_result
       changed_when: proxmox_backup_set_result.rc == 0
 
-    # Deliberately warn-only, mirroring proxmox_ha's orphaned-replication-job
-    # handling: automatic deletion could remove a job someone created live
-    # before it was codified.
+    # Warn-only, mirroring proxmox_ha's orphaned-replication-job handling:
+    # automatic deletion could remove a job created live before it was codified.
     - name: Find unmanaged vzdump backup jobs
       ansible.builtin.set_fact:
         _proxmox_backup_unmanaged_job_ids: >-

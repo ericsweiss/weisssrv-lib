@@ -88,10 +88,9 @@
         chmod 700 /mnt/gitlab-repos/git-data
         chmod 700 /mnt/gitlab-repos/git-data/repositories
 
-        # Seed the drift the ownership guard exists for: a git-data tree that
-        # predates the git user. Converge must chown it once (reporting changed,
-        # as a multi-thousand-inode rewrite should) and then leave it alone,
-        # which the idempotence re-run proves.
+        # Seed the drift the ownership guard exists for: a git-data tree not
+        # owned by the git user. Converge chowns it once, reporting changed,
+        # then leaves it alone, which the idempotence re-run proves.
         chown root:root /mnt/gitlab-repos/git-data
 
         cat > /opt/gitlab/bin/gitlab-ctl << 'EOF'
@@ -107,10 +106,9 @@
         id git || { echo "ERROR: Failed to create git user"; exit 1; }
       changed_when: false
 
-    # Mock gitlab-backup: drops a fake tarball, honours a fault file so verify
-    # can exercise the failure metric path, and records every invocation's
-    # arguments so verify can assert the SKIP contract. Installed via copy (not
-    # the raw heredoc above) to keep the script out of raw's Jinja parsing.
+    # Mock gitlab-backup: drops a fake tarball, honours a fault file for the
+    # failure metric path, and records each invocation's arguments for the SKIP
+    # contract. Copied, not heredoc'd, to keep it out of raw's Jinja parsing.
     - name: Install mock gitlab-backup
       ansible.builtin.copy:
         dest: /opt/gitlab/bin/gitlab-backup

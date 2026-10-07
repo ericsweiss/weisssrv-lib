@@ -1,19 +1,15 @@
-{#- Generate IPSets dynamically from inventory -#}
-{#- This template collects hosts from inventory and their firewall_ipsets memberships -#}
+{#- IPSets derived from each host's firewall_ipsets membership. -#}
 {%- set ipset_members = {} -%}
 {%- set ipset_comments = {
-  'core-cluster': 'Core cluster nodes (Proxmox hosts, DNS, SMTP, k3s VMs)',
+  'core-cluster': 'Core cluster nodes',
   'k3s_nodes': 'K3s cluster nodes + API VIP',
   'nfs_clients': 'Hosts allowed NFS access',
   'pve_hosts': 'Proxmox VE cluster hosts'
 } -%}
 
-{#- Collect all hosts from inventory and their IPSet memberships.
-    proxmox_firewall_node_ip wraps ansible_host so molecule scenarios can
-    keep ansible_host pointing at the docker container (= connection
-    target) while still feeding a realistic per-node IP into the IPSet
-    render. Production inventory only sets ansible_host, which the
-    default() picks up. -#}
+{#- Collect hosts and their IPSet memberships. proxmox_firewall_node_ip wraps
+    ansible_host so molecule can keep ansible_host on the container while still
+    feeding a realistic per-node IP into the render. -#}
 {%- for host in groups['all'] -%}
   {%- set host_ip = hostvars[host]['proxmox_firewall_node_ip'] | default(hostvars[host]['ansible_host']) -%}
   {%- set host_ipsets = hostvars[host].get('firewall_ipsets', []) -%}
@@ -31,21 +27,19 @@
     {%- set _ = ipset_members.update({ipset_name: []}) -%}
   {%- endif -%}
   {%- for entry in special_entries -%}
-    {%- set _ = ipset_members[ipset_name].append({'ip': entry.ip, 'name': entry.comment}) -%}
+    {%- set _ = ipset_members[ipset_name].append({'ip': entry.ip, 'name': entry.comment | default('')}) -%}
   {%- endfor -%}
 {%- endfor -%}
 
-{#- Render every discovered IPSet (sorted), so adding a set to a host's
-    firewall_ipsets in inventory is enough — no hardcoded whitelist to update.
-    A set ipset_comments does not describe (any site-declared scope, e.g. a
-    dns_clients/lan_clients VLAN scope) gets NO header comment line at all —
-    emitting it unconditionally left a bare `# ` behind. -#}
+{#- Render every discovered IPSet (sorted): adding a set to a host's
+    firewall_ipsets in inventory is enough. A set ipset_comments does not
+    describe gets no header comment line. -#}
 {%- for ipset_name in ipset_members.keys() | sort %}
 [IPSET {{ ipset_name }}]
 
 {% if ipset_comments.get(ipset_name) %}# {{ ipset_comments[ipset_name] }}
 {% endif %}
 {%- for member in ipset_members[ipset_name] | sort(attribute='ip') -%}
-{{ member.ip }}  # {{ member.name }}
+{{ member.ip }}{{ '  # ' ~ member.name if member.name else '' }}
 {% endfor %}
 {%- endfor -%}

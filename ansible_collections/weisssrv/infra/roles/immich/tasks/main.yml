@@ -1,9 +1,7 @@
 ---
-# Immich compose stack. Order: mount the persistent volumes -> install Docker +
-# nginx -> render config/compose/nginx -> bring the stack up via a systemd unit
-# -> install the pg_dump backup timer. The shared compose scaffolding (Docker
-# install, compose systemd unit, nginx task flow, backup-metrics helper) is the
-# compose_app role, included below with immich-specific vars.
+# Immich compose stack: mount volumes, install Docker and nginx, render the
+# config, bring the stack up as a systemd unit, install the backup timer. The
+# shared scaffolding is the compose_app role, included below.
 
 - name: Validate the required inputs
   ansible.builtin.assert:
@@ -23,6 +21,8 @@
     success_msg: "Required image pins and URLs present"
 
 # Fail early and clearly when the deploy wrapper did not inject the secrets.
+# Presence-only asserts: no_log would censor the fail_msg, and the expression
+# prints variable names, not values.
 - name: Validate the required database credential
   ansible.builtin.assert:
     that:
@@ -31,7 +31,6 @@
       immich_db_password is empty. Set it, or export IMMICH_DB_PASSWORD (its
       default is that env lookup) from the site's secret manager.
     success_msg: "Database credential present"
-  no_log: true
 
 - name: Validate the required OIDC credentials
   ansible.builtin.assert:
@@ -43,7 +42,6 @@
       or export IMMICH_OAUTH_CLIENT_ID / IMMICH_OAUTH_CLIENT_SECRET. Create the
       OIDC provider first — see the role README (SSO).
     success_msg: "OIDC credentials present"
-  no_log: true
 
 # Without a trusted source nginx attributes every request to the fronting
 # proxy, which is quiet rather than loud — so make it loud.
@@ -70,6 +68,21 @@
       the export requires TLS) and immich_backup_nfs_export.
     success_msg: "Offsite backup landing inputs present"
   when: immich_backup_nfs_enabled | bool
+
+- name: Validate the Immich image pins
+  ansible.builtin.assert:
+    that:
+      # A tag or a digest must terminate each reference, and never the ":@" an
+      # empty version beside a digest would produce.
+      - immich_server_image is search('[:@][^:@/]+$')
+      - immich_server_image is not search(':@')
+      - immich_machine_learning_image is search('[:@][^:@/]+$')
+      - immich_machine_learning_image is not search(':@')
+    fail_msg: >-
+      immich_server_image / immich_machine_learning_image are not pinned: set
+      immich_version (optionally immich_server_digest and
+      immich_machine_learning_digest), or override the image strings.
+    success_msg: "Immich server and machine-learning images pinned"
 
 - name: Validate the Postgres exporter image pin
   ansible.builtin.assert:
@@ -199,14 +212,9 @@
       - "`up -d` reconciles the running stack to the rendered compose/.env/config,"
       - "recreating only the containers whose definition changed."
 
-# immich_backup_dir is the NFS mountpoint when the offsite landing is enabled,
-# otherwise a dir on the app volume. This task creates whichever; the mount
-# below overlays it in the NFS case.
-#
-# The root:root/0750 attrs belong to the local UNDERLAY only. Re-running the file
-# task against a live NFS mount would chown the export root, which an
-# all_squash export rejects with EPERM — so skip it once something is mounted
-# there and let the fileserver own those attrs.
+# immich_backup_dir is the NFS mountpoint when the offsite landing is enabled.
+# The root:root 0750 attrs belong to the local underlay only, so the file task
+# is skipped once something is mounted there. See README.
 - name: Check whether the backup landing directory is already a mountpoint
   ansible.builtin.command: mountpoint -q {{ immich_backup_dir | quote }}
   register: immich_backup_dir_mountpoint

@@ -1,0 +1,39 @@
+---
+# Shared by proxmox_vm and proxmox_lxc (`tasks_from: guest-startup`). Inputs:
+# _pmx_cli (qm|pct), _pmx_id, _pmx_delegate, _pmx_onboot (1|0), _pmx_startup.
+# Result: proxmox_vm_guest_startup_result. Semantics: the proxmox_vm README.
+- name: Reconcile guest autostart and boot order
+  delegate_to: "{{ _pmx_delegate }}"
+  become: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    want_onboot="{{ _pmx_onboot }}"
+    desired_startup="{{ _pmx_startup }}"
+    # Canonicalize a Proxmox startup property-string to "order=O,up=U,down=D"
+    # with absent fields defaulting to 0, so desired and stored compare equal
+    # regardless of which default fields Proxmox omits.
+    norm_startup() {
+      local s="$1" order=0 up=0 down=0 kv k v
+      local IFS=','
+      for kv in $s; do
+        k=${kv%%=*}; v=${kv#*=}
+        case "$k" in order) order=$v ;; up) up=$v ;; down) down=$v ;; esac
+      done
+      echo "order=${order},up=${up},down=${down}"
+    }
+    want_startup=$(norm_startup "$desired_startup")
+    cfg=$({{ _pmx_cli }} config {{ _pmx_id }})
+    # Default onboot when the key is absent from the config is 0 (Proxmox default).
+    cur_onboot=$(printf '%s\n' "$cfg" | sed -n 's/^onboot: //p'); cur_onboot=${cur_onboot:-0}
+    cur_startup=$(norm_startup "$(printf '%s\n' "$cfg" | sed -n 's/^startup: //p')")
+    changed=0
+    [ "$cur_onboot" != "$want_onboot" ] && changed=1
+    [ "$cur_startup" != "$want_startup" ] && changed=1
+    if [ "$changed" = 1 ]; then
+      {{ _pmx_cli }} set {{ _pmx_id }} --onboot "$want_onboot" --startup "$desired_startup"
+      echo CHANGED
+    fi
+  args:
+    executable: /bin/bash
+  register: proxmox_vm_guest_startup_result
+  changed_when: "'CHANGED' in (proxmox_vm_guest_startup_result.stdout | default(''))"

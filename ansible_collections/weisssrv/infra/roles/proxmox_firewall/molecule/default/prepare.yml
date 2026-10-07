@@ -1,12 +1,8 @@
 ---
 - name: Prepare
-  # Only target the real Docker-backed molecule platform for the
-  # systemd/apt/tmpdir setup. The scenario's inventory also defines
-  # several `ansible_connection: local` hosts (dns-01, smtp-relay,
-  # pve-laptop-01, etc.) that exist solely to feed the firewall
-  # template-rendering converge with realistic hostvars; running
-  # `systemctl is-system-running` against the local molecule-ci pod
-  # (which has no systemd) hangs the retry loop until it fails.
+  # Only target the real Docker-backed molecule platform. The scenario's other
+  # inventory hosts are `ansible_connection: local` hostvar fixtures, and
+  # `systemctl is-system-running` against the molecule pod hangs the retry loop.
   hosts: proxmox-firewall-test
   gather_facts: false
   tasks:

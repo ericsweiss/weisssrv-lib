@@ -1,23 +1,37 @@
 ---
 # Decision step over the busy-mount probes: may the remount cycle proceed, and
-# which NFS exports must it unexport first? Split out of mergerfs.yml for the
-# same reason as mergerfs_needs_remount.yml — the unexport/unmount path around
-# it is only reachable on a live fileserver, this part is pure derivation.
-#
-# The gate is deliberately GLOBAL: one busy union blocks the whole cycle,
-# because the unexport/unmount tasks it guards loop over every union.
+# which NFS exports must it unexport first? The gate is global — one busy union
+# blocks the cycle, because the tasks it guards loop over every union.
 
+# CRITICAL: a result with neither `skipped` nor `rc` never ran (the script could
+# not be transferred or executed); counting it clean would unexport and unmount
+# unions that may still have active NFS clients. A skipped probe is the
+# deliberate gate - the process check only runs when a union came back idle -
+# and still blocks the cycle below, which requires full rc == 0 coverage.
+- name: Assert every busy-mount probe that ran produced a result
+  ansible.builtin.assert:
+    that:
+      - nas_storage_mergerfs_nfs_check.results | default([]) | rejectattr('skipped', 'defined') | rejectattr('rc', 'defined') | list | length == 0
+      - nas_storage_mergerfs_process_check.results | default([]) | rejectattr('skipped', 'defined') | rejectattr('rc', 'defined') | list | length == 0
+    fail_msg: >-
+      A MergerFS busy-mount probe produced no rc, so the remount cycle is
+      refused. Unions probed:
+      {{ nas_storage_mergerfs_mounts | map(attribute='name') | join(', ') }}.
+    quiet: true
+  when: nas_storage_mergerfs_needs_remount | default(false)
+
+# Full coverage, not absence of a failure: a skipped or partial probe register
+# is unsafe rather than clean.
 - name: Check if safe remount is possible
   ansible.builtin.set_fact:
     nas_storage_mergerfs_safe_to_remount: >-
       {{ nas_storage_mergerfs_needs_remount | default(false)
-         and (nas_storage_mergerfs_nfs_check.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | list | length == 0)
-         and (nas_storage_mergerfs_process_check.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | list | length == 0) }}
+         and (nas_storage_mergerfs_nfs_check.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list | length) == (nas_storage_mergerfs_mounts | length)
+         and (nas_storage_mergerfs_process_check.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list | length) == (nas_storage_mergerfs_mounts | length) }}
 
-# The exports that actually sit on a MergerFS target, as `<client spec>:<path>`
-# — the argument form `exportfs -u` takes. Everything else on this server (k3s
-# PVs, backup landing zones) must keep serving through the remount, so the
-# unexport is scoped to these and never `exportfs -u -a`.
+# CRITICAL: the exports sitting on a MergerFS target, as `<client spec>:<path>`
+# for `exportfs -u`. Everything else on this server must keep serving through
+# the remount, so the unexport is scoped to these and never `exportfs -u -a`.
 - name: Identify the MergerFS-backed NFS export bindings
   ansible.builtin.set_fact:
     nas_storage_mergerfs_export_bindings: >-

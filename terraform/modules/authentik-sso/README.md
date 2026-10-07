@@ -13,7 +13,7 @@ The tag below is an example: use the tag your repo pins (docs/VERSIONING.md).
 
 ```hcl
 module "sso" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/authentik-sso?ref=v0.17.1"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/authentik-sso?ref=v0.18.0"
 
   oauth2_providers = {
     grafana = {
@@ -130,20 +130,20 @@ carry schema for API fields an older server does not serve.
 | Input | Type | Default | Notes |
 |---|---|---|---|
 | `oauth2_providers` | map(object) | `{}` | Key = state address and default `client_id`. Requires `name` + `redirect_uris`. |
-| `oauth2_client_secrets` | map(string), sensitive | `{}` | Keyed by provider key. A confidential provider with no entry gets a server-generated secret that only exists in state. |
+| `oauth2_client_secrets` | map(string), sensitive | `{}` | Keyed by provider key, and a key matching no provider fails validation. A confidential provider with no entry gets a server-generated secret that only exists in state. |
 | `oauth2_grant_types` | list(string) | `["authorization_code","refresh_token"]` | Per-provider override via `grant_types`. |
-| `proxy_providers` | map(object) | `{}` | Forward-auth providers; `basic_auth_enabled` requires both attribute names. |
+| `proxy_providers` | map(object) | `{}` | Forward-auth providers; `basic_auth_enabled` requires both attribute names. Each one must be named in `embedded_outpost.proxy_provider_keys` or carry `detached = true`. |
 | `saml_providers` | map(object) | `{}` | Requires `name` + `acs_url`. |
-| `groups` | map(object) | `{}` | Key = group name unless `name` overrides. `users` are usernames, resolved to pks — managed (`users` input) or pre-existing. |
+| `groups` | map(object) | `{}` | Key = group name unless `name` overrides. `users` are usernames, resolved to pks — managed (`users` input) or pre-existing. `is_superuser` (default `false`) is a privilege grant — see "Security defaults". |
 | `users` | map(object) | `{}` | Key = username. Identity only (`name`, `email`, `active`, `path`); passwords/MFA stay in authentik's enrollment/recovery flows. `prevent_destroy` — rename keys with `moved {}`. |
-| `group_secret_attributes` | map(map(string)), sensitive | `{}` | Merged into a group's `attributes` — where basic-auth injection credentials live. |
+| `group_secret_attributes` | map(map(string)), sensitive | `{}` | Merged into a group's `attributes` — where basic-auth injection credentials live. A key matching no group fails validation. |
 | `applications` | map(object) | `{}` | Key = slug. `provider_type` (`oauth2`/`proxy`/`saml`) + `provider_key` wire the provider. Needs a `policy_bindings` entry unless `allow_unbound = true`. |
 | `policy_bindings` | map(object) | `{}` | `{application, group, order, enabled, negate}`. |
-| `embedded_outpost` | object | `null` | `proxy_provider_keys` is ordered — the API preserves insertion order, so a reordered list is a permanent diff. |
-| `authorization_flow_slug` | string | `default-provider-authorization-implicit-consent` | See hardening notes. |
+| `embedded_outpost` | object | `null` | `proxy_provider_keys` is ordered — the API preserves insertion order, so a reordered list is a permanent diff. It must cover every non-`detached` proxy provider. |
+| `authorization_flow_slug` | string | `default-provider-authorization-implicit-consent` | See "Security defaults" — the default flow gives a signed-in user no consent prompt. |
 | `invalidation_flow_slug` | string | `default-provider-invalidation-flow` | |
 | `signing_key_name` | string | `authentik Self-signed Certificate` | Signs OIDC tokens and SAML assertions. |
-| `oauth2_scope_mappings` / `saml_property_mappings` | list(string) | stock managed IDs | Order matters (it is the order the API stores). Per-provider override available. |
+| `oauth2_scope_mappings` / `saml_property_mappings` | list(string) | stock managed IDs | Order matters (it is the order the API stores). Per-provider override available. `custom:<key>` is OAuth2 only; the SAML list takes managed ids. |
 | `custom_scope_mappings` | map(object) | `{}` | Scope mappings this module authors; referenced as `custom:<key>`. |
 
 User accounts may be managed via `users` (identity fields only — never
@@ -249,19 +249,29 @@ carries a `precondition` asserting it is bound — a precondition rather than a
 the plan, including a read-only drift-plan job. A tile that really is open to
 everyone declares `allow_unbound = true`.
 
-Only `enabled` bindings satisfy the check: the policy engine never evaluates a
-binding with `enabled = false`, so suspending an application's only binding
-would otherwise widen it to every authenticated user with a green plan. A
-binding with `negate = true` does still satisfy it — under the default
-`policy_engine_mode = "any"` a deny-list-only application is reachable by
-everyone outside the named group, so gate such an app with an allow binding as
-well, or declare it with `allow_unbound = true`.
+Only an enabled, non-negated binding satisfies the check. The policy engine
+never evaluates a binding with `enabled = false`, and a binding with
+`negate = true` admits every user outside the named group, so a deny-list-only
+application is open to nearly everyone. Pair a negate binding with an allow
+binding, or declare the application with `allow_unbound = true`.
 
 **Basic-auth injection.** Credentials for upstreams that keep their own login
 live in `group_secret_attributes`, i.e. as authentik group attributes that merge
 into each member's user attributes; the proxy provider names the two attributes
 and the outpost sends them upstream. Source them from the same secret store item
 the app itself uses so the two can never disagree, and never as literals.
+
+**Superuser groups.** `groups[*].is_superuser = true` grants every member full
+authentik administration — the same rights the Terraform token itself uses,
+including read access to every scope-mapping body and group attribute (where
+basic-auth injection credentials live). Keep it off unless the group IS the
+admin group.
+
+**Forward-auth coverage fails the plan.** The embedded outpost serves only the
+providers named in `embedded_outpost.proxy_provider_keys`, so a proxy provider
+left off that list plans cleanly and 404s at the edge. Every `proxy_providers`
+entry must be named there, or carry `detached = true` to declare that some other
+outpost serves it.
 
 ## Apply is supervised
 
@@ -323,9 +333,14 @@ terraform init -backend=false
 terraform test
 ```
 
-`tests/validation.tftest.hcl` covers every variable validation and every
-precondition — the unbound-application guardrail, the four cross-map reference
-checks and the scope-mapping resolution. `terraform validate` evaluates no
-caller values, so it runs none of them; the runs are plan-only against a
-`mock_provider`, so they need no credentials and create no state. CI runs the
-same command through `ci/validate/terraform.yml` with `test: true`.
+`tests/validation.tftest.hcl` covers the variable validations, the
+unbound-application guardrail, the cross-map reference preconditions, the
+outpost coverage rule and the OAuth2/SAML mapping resolution. `terraform
+validate` evaluates no caller values, so it runs none of them; the runs are
+plan-only against a `mock_provider`, so they need no credentials and create no
+state. CI runs the same command through `ci/validate/terraform.yml` with
+`test: true`.
+
+The module requires Terraform >= 1.11 because this suite uses
+`override_during = plan`; the configuration itself needs 1.9 for its
+cross-variable validations.

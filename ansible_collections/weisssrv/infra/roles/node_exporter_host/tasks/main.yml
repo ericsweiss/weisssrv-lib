@@ -78,7 +78,7 @@
 
 - name: Verify node_exporter is listening on port {{ node_exporter_host_port }}
   ansible.builtin.uri:
-    url: "http://localhost:{{ node_exporter_host_port }}/metrics"
+    url: "http://{{ _node_exporter_host_probe_url_host }}:{{ node_exporter_host_port }}/metrics"
     # The body is needed by the collector assertion below; a 200 alone does not
     # prove a collector produced anything.
     return_content: true
@@ -91,27 +91,17 @@
   tags:
     - molecule-notest
 
-# HTTP 200 is NOT a per-collector gate. node_exporter answers 200 even when a
-# collector errors on every scrape — it just omits that collector's series and
-# sets node_scrape_collector_success{collector="..."} to 0. So the check above
-# and files/node-exporter-healthcheck.sh both pass while node_systemd_* is
-# entirely absent, and every alert built on it (unit-failed, service-restarting)
-# is silently dead rather than firing. Assert the series the alerts key on is
-# actually in the payload at deploy time; the RUNTIME signal is an alert on
-# node_scrape_collector_success{collector="systemd"} == 0 on the metrics side.
+# HTTP 200 is not a per-collector gate: node_exporter answers 200 with a
+# collector's series absent. Assert the series the alerts key on is present.
+# See README "Proving the collector actually ran".
 - name: Assert the systemd collector actually emits node_systemd_unit_state
   ansible.builtin.assert:
     that:
       - "'node_systemd_unit_state{' in node_exporter_host_health.content"
     fail_msg: >-
-      node_exporter answered 200 but exported no node_systemd_unit_state series.
-      --collector.systemd is enabled
-      (node_exporter_host_systemd_collector={{ node_exporter_host_systemd_collector }})
-      yet produced nothing — check `journalctl -u prometheus-node-exporter` for a
-      collector error, and that dbus.service is running: the exporter runs as
-      `prometheus` and reaches systemd over the D-Bus SYSTEM bus (the private
-      socket is root-only). Left unfixed, every node_systemd_* alert is dead,
-      not quiet.
+      node_exporter answered 200 but exported no node_systemd_unit_state series,
+      so every node_systemd_* alert is dead rather than quiet — see README
+      "systemd collector" for the D-Bus diagnosis.
     success_msg: "systemd collector is exporting node_systemd_unit_state"
   when:
     - not ansible_check_mode
@@ -119,11 +109,8 @@
   tags:
     - molecule-notest
 
-# Liveness gate. The check above is deploy-time only; at RUNTIME the exporter can
-# die in a way systemd cannot see — a zombie process keeps its listener bound and
-# systemd keeps reporting "active (running)", so no Restart= policy ever fires.
-# WatchdogSec cannot cover a Type=simple process that never sd_notifies, so probe
-# /metrics the way Prometheus does and restart on a sustained failure.
+# Liveness gate: a zombie exporter keeps its listener bound and stays
+# "active (running)", so no Restart= fires. See README "Liveness gate".
 - name: Install node_exporter healthcheck script
   ansible.builtin.copy:
     src: node-exporter-healthcheck.sh
@@ -154,16 +141,40 @@
   tags:
     - molecule-notest
 
+# The slabinfo collector ships inside the Proxmox block below, so the flag alone
+# installs nothing on any other host.
+- name: Assert the slabinfo collector inputs are consistent
+  ansible.builtin.assert:
+    that:
+      - not (node_exporter_host_slabinfo_collector | bool)
+        or (node_exporter_host_proxmox | bool)
+      # A cache named twice writes the same series twice into one .prom, which
+      # the Prometheus registry rejects for the whole textfile set.
+      - node_exporter_host_slab_caches | unique | length
+        == node_exporter_host_slab_caches | length
+      # An empty list publishes the success sentinel and no per-cache series,
+      # which reads as "the leak stopped" instead of "nothing was measured".
+      - not (node_exporter_host_slabinfo_collector | bool)
+        or (node_exporter_host_slab_caches | default([]) | length) > 0
+    fail_msg: >-
+      node_exporter_host_slabinfo_collector is true but
+      node_exporter_host_proxmox is false (the slabinfo collector ships inside
+      the Proxmox-host textfile collectors and would install nothing here), or
+      node_exporter_host_slab_caches lists a cache twice, or
+      node_exporter_host_slab_caches is empty while the collector is enabled, so
+      it would publish only its success sentinel and no per-cache series:
+      {{ node_exporter_host_slab_caches | default([]) }}.
+    success_msg: "The slabinfo collector's host gate and cache list are consistent"
+
 # Textfile collectors (Proxmox hosts only)
 # One block so the proxmox-group gate lives in a single place; each collector
 # keeps its own script + textfile_collector include.
 - name: Deploy the Proxmox-host textfile collectors
   when: node_exporter_host_proxmox | bool
   block:
-    # Corosync + pmxcfs health: detects the failure class where corosync is
-    # alive (so a host-up alert stays green) but pinned at 99% CPU with
-    # /etc/pve/ha/manager_status frozen. Writes three metrics so alert rules can
-    # fire on either condition and on collector meta-failure.
+    # Corosync + pmxcfs health: catches a corosync that is alive (host-up stays
+    # green) but pinned at 99% CPU with a frozen manager_status. Three metrics,
+    # so rules can fire on either condition and on collector meta-failure.
     - name: Install corosync health collector script
       ansible.builtin.copy:
         src: corosync-health-collector.sh
@@ -212,21 +223,52 @@
           - zfs-import.target
         textfile_collector_timeout_start_sec: 30s
 
-    # vzdump backup metrics hookscript, referenced by the proxmox_backup job's
-    # `script` property. jobs.cfg is clustered, so the `all` job runs on every
-    # node and invokes this hook there — it must exist fleet-wide or that node's
-    # run aborts. Hence deployed here, not in proxmox_backup (which reconciles
-    # the single clustered config on one node). Each node writes its own .prom,
-    # distinguished by the instance label at scrape time.
+    # Per-cache slab usage: node_memory_Slab_bytes only carries the total, so a
+    # leak in one cache is invisible until the host runs out of memory.
+    - name: Install slabinfo collector script
+      ansible.builtin.copy:
+        src: slabinfo-collector.sh
+        dest: /usr/local/sbin/slabinfo-collector.sh
+        owner: root
+        group: root
+        mode: "0755"
+      when: node_exporter_host_slabinfo_collector | bool
+
+    # The allowlist travels in a defaults file, not the ExecStart line: the
+    # shared collector unit passes the textfile dir and nothing else.
+    - name: Configure the slabinfo collector cache allowlist
+      ansible.builtin.copy:
+        dest: /etc/default/slabinfo-collector
+        content: |
+          # {{ ansible_managed }}
+          SLAB_CACHES="{{ node_exporter_host_slab_caches | join(' ') }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when: node_exporter_host_slabinfo_collector | bool
+
+    - name: Deploy slabinfo collector unit + timer
+      ansible.builtin.include_role:
+        name: weisssrv.infra.textfile_collector
+      when: node_exporter_host_slabinfo_collector | bool
+      vars:
+        textfile_collector_name: slabinfo-collector
+        textfile_collector_service_description: Sample per-cache slab usage to node_exporter textfile collector
+        textfile_collector_timer_description: Periodically sample per-cache slab usage
+        textfile_collector_script: /usr/local/sbin/slabinfo-collector.sh
+        textfile_collector_textfile_dir: "{{ node_exporter_host_textfile_dir }}"
+        textfile_collector_on_unit_inactive_sec: 5min
+
+    # CRITICAL: vzdump hookscript referenced by the clustered proxmox_backup
+    # job. The `all` job runs on every node and invokes this hook there, so it
+    # must exist fleet-wide or that node's backup run aborts. That is why it
+    # ships here and not in proxmox_backup, which configures one node.
     - name: Install vzdump metrics hookscript
       ansible.builtin.include_tasks: vzdump_hook.yml
 
     # SMART health: smartd emails on attribute failures but exports nothing to
-    # Prometheus, leaving dashboards blind to reallocated/pending/uncorrectable
-    # sectors and unable to attribute ZFS errors to a disk. Standby-aware
-    # (`smartctl -n standby`)
-    # so it never wakes drives or aborts long self-tests — the documented
-    # reason DEVICESCAN left smartd.conf.
+    # Prometheus. Standby-aware (`smartctl -n standby`), so it never wakes
+    # drives or aborts long self-tests.
     - name: Install smartmon collector script
       ansible.builtin.copy:
         src: smartmon-collector.sh
@@ -263,7 +305,9 @@
            + (['corosync-health-collector.timer']
               if node_exporter_host_corosync_collector | bool else [])
            + (['zpool-status-collector.timer']
-              if node_exporter_host_zpool_collector | bool else []) }}
+              if node_exporter_host_zpool_collector | bool else [])
+           + (['slabinfo-collector.timer']
+              if node_exporter_host_slabinfo_collector | bool else []) }}
       when: not ansible_check_mode
 
     # A host switched off ZFS must not keep the previously deployed timer
@@ -271,13 +315,22 @@
     - name: Reconcile the zpool collector away when disabled
       when: not node_exporter_host_zpool_collector | bool
       block:
-        - name: Stop + disable the zpool collector timer if present
+        - name: Check whether the zpool collector timer unit is still on disk
+          ansible.builtin.stat:
+            path: /etc/systemd/system/zpool-status-collector.timer
+          register: node_exporter_host_zpool_leftover_timer
+
+        # Gated on the unit file rather than failed_when: false, which would
+        # also swallow a D-Bus error or a typo'd unit name and then delete the
+        # files out from under a timer that is still running.
+        - name: Stop + disable the zpool collector timer
           ansible.builtin.systemd:
             name: zpool-status-collector.timer
             enabled: false
             state: stopped
-          failed_when: false
-          when: not ansible_check_mode
+          when:
+            - node_exporter_host_zpool_leftover_timer.stat.exists
+            - not ansible_check_mode
 
         - name: Remove the zpool collector unit, timer, script and metrics
           ansible.builtin.file:
@@ -289,18 +342,35 @@
             - /usr/local/sbin/zpool-status-collector.sh
             - "{{ node_exporter_host_textfile_dir }}/zfs_pool_status.prom"
 
+        # systemd keeps a removed unit loaded until it is told to forget it.
+        - name: Reload systemd after removing the zpool collector units
+          ansible.builtin.systemd:
+            daemon_reload: true
+          when:
+            - node_exporter_host_zpool_leftover_timer.stat.exists
+            - not ansible_check_mode
+
     # Same for a host that is not clustered: an armed timer would keep
     # publishing the mtime-0 series PmxcfsStale fires on.
     - name: Reconcile the corosync collector away when disabled
       when: not node_exporter_host_corosync_collector | bool
       block:
-        - name: Stop + disable the corosync collector timer if present
+        - name: Check whether the corosync collector timer unit is still on disk
+          ansible.builtin.stat:
+            path: /etc/systemd/system/corosync-health-collector.timer
+          register: node_exporter_host_corosync_leftover_timer
+
+        # Gated on the unit file rather than failed_when: false, which would
+        # also swallow a D-Bus error or a typo'd unit name and then delete the
+        # files out from under a timer that is still running.
+        - name: Stop + disable the corosync collector timer
           ansible.builtin.systemd:
             name: corosync-health-collector.timer
             enabled: false
             state: stopped
-          failed_when: false
-          when: not ansible_check_mode
+          when:
+            - node_exporter_host_corosync_leftover_timer.stat.exists
+            - not ansible_check_mode
 
         - name: Remove the corosync collector unit, timer, script and metrics
           ansible.builtin.file:
@@ -312,7 +382,51 @@
             - /usr/local/sbin/corosync-health-collector.sh
             - "{{ node_exporter_host_textfile_dir }}/corosync_health.prom"
 
-# Deliberately no auto-clean when node_exporter_host_proxmox flips to false: a
-# wrong cleanup on a real Proxmox host is worse than stale files on a demoted
-# one. Remove them by hand in that rare case (the collector scripts under
-# /usr/local/sbin plus their /etc/systemd/system units).
+        # systemd keeps a removed unit loaded until it is told to forget it.
+        - name: Reload systemd after removing the corosync collector units
+          ansible.builtin.systemd:
+            daemon_reload: true
+          when:
+            - node_exporter_host_corosync_leftover_timer.stat.exists
+            - not ansible_check_mode
+
+    # A host that no longer needs the per-cache series must not keep the timer
+    # running or serve its stale slab metrics.
+    - name: Reconcile the slabinfo collector away when disabled
+      when: not node_exporter_host_slabinfo_collector | bool
+      block:
+        - name: Check whether the slabinfo collector timer unit is still on disk
+          ansible.builtin.stat:
+            path: /etc/systemd/system/slabinfo-collector.timer
+          register: node_exporter_host_slabinfo_leftover_timer
+
+        - name: Stop + disable the slabinfo collector timer
+          ansible.builtin.systemd:
+            name: slabinfo-collector.timer
+            enabled: false
+            state: stopped
+          when:
+            - node_exporter_host_slabinfo_leftover_timer.stat.exists
+            - not ansible_check_mode
+
+        - name: Remove the slabinfo collector unit, timer, script and metrics
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /etc/systemd/system/slabinfo-collector.timer
+            - /etc/systemd/system/slabinfo-collector.service
+            - /usr/local/sbin/slabinfo-collector.sh
+            - /etc/default/slabinfo-collector
+            - "{{ node_exporter_host_textfile_dir }}/node_slabinfo.prom"
+
+        - name: Reload systemd after removing the slabinfo collector units
+          ansible.builtin.systemd:
+            daemon_reload: true
+          when:
+            - node_exporter_host_slabinfo_leftover_timer.stat.exists
+            - not ansible_check_mode
+
+# No auto-clean when node_exporter_host_proxmox flips to false: a wrong cleanup
+# on a real Proxmox host is worse than stale files on a demoted one. Remove the
+# collector scripts and their units by hand in that case.

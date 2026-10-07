@@ -1,46 +1,32 @@
 #!/bin/sh
 # Managed by Ansible node_exporter_host role.
-#
-# Writes Prometheus metrics to the node_exporter textfile collector so a
-# CorosyncWedged / PmxcfsStale alert can catch a failure class host-up alerting
-# misses: corosync alive but wedged at high CPU, with pmxcfs no longer
-# replicating — a silent split-brain that can run for weeks. Metric table +
-# companion alerts: README "Corosync + pmxcfs health collector".
-#
-# NO `|| true` on the top / stat calls, deliberately: a hung top would then
-# return empty and the script would emit cpu=0 — the exact opposite of the
-# signal CorosyncWedged looks for. Letting set -eu kill the script instead
-# leaves the textfile untouched so the staleness alerts fire.
-#
-# Writes to .tmp then renames so node_exporter never reads a half-written file.
+# Writes textfile metrics so CorosyncWedged / PmxcfsStale can catch corosync
+# alive but wedged with pmxcfs no longer replicating. Metrics + alerts: README.
+
+# A hung or killed top yields an unparseable sample; the guard below exits 1
+# rather than publishing cpu=0, the opposite of what CorosyncWedged looks for.
+# The textfile is written to .tmp and renamed, so no half-written read.
 
 set -eu
 
-# Force C locale so procps-ng top emits %CPU as "99.5" (period), not
-# "99,5" (comma) under de_DE/fr_FR/etc. The normalisation below treats
-# any non-[0-9.] character as a parse failure → cpu=0, which would
-# silently mask a real wedge on any host where someone ran
-# `dpkg-reconfigure locales` and changed LC_NUMERIC.
+# C locale so top prints %CPU as "99.5", not "99,5": a comma is an
+# unparseable sample, which fails the run and stales the sentinel.
 export LC_ALL=C
 
 OUT_DIR="${1:-/var/lib/node_exporter}"
 OUT="$OUT_DIR/corosync_health.prom"
 TMP="$OUT.tmp"
 
-# corosync CPU% via top -bn2. The first iteration is just an init pass
-# (always reports 0.0% for every PID); the real measurement is iteration 2.
-# Count occurrences of the "PID" header line so we know which sample we're
-# reading and only emit on the second.
+# The role creates the dir, but an OUT_DIR override pointing elsewhere
+# would otherwise kill the script before the sentinel is written.
+mkdir -p "$OUT_DIR"
+
+# corosync CPU% via top -bn2: iteration 1 is an init pass reporting 0.0% for
+# every PID, so count "PID" header lines and read only the second sample.
 cpu=0
 pid=""
-# `set +e` around pidof + top to handle two transient cases without poisoning
-# the textfile:
-#   - corosync not running on a cluster host (host being rebuilt, etc.)
-#   - corosync exited between pidof and top — a tiny race, but real
-#   - top hit TimeoutStartSec=15s and was killed
-# In any of these we want to emit cpu=0 rather than let set -eu kill the
-# script and corrupt the metric. The CorosyncHealthCollectorStale meta-alert
-# still catches whole-script failure via the last_success sentinel below.
+# set +e: corosync absent, exiting mid-sample, or a top timeout must emit
+# cpu=0, not kill the run under set -eu.
 set +e
 pid=$(pidof corosync 2>/dev/null)
 if [ -n "$pid" ]; then
@@ -52,11 +38,9 @@ if [ -n "$pid" ]; then
 fi
 set -e
 
-# corosync is RUNNING but produced no usable sample: leave the previous
-# textfile in place and fail. Publishing cpu=0 here would report the healthy
-# value for the wedged-at-100% condition this collector exists to catch, and
-# would refresh the success sentinel while doing it. Failing instead lets the
-# sentinel go stale, which CorosyncHealthCollectorStale alerts on.
+# corosync running but unsampleable: keep the previous textfile and fail, so
+# the sentinel goes stale and CorosyncHealthCollectorStale fires instead of
+# publishing a healthy-looking cpu=0.
 if [ -n "$pid" ]; then
     case "$cpu" in
         ''|*[!0-9.]*)
@@ -67,21 +51,9 @@ if [ -n "$pid" ]; then
     esac
 fi
 
-# corosync not running: 0 is the truthful value. (A running-but-unsampleable
-# corosync already exited above, so this can no longer mask a wedge; the guard
-# stays because an unset cpu would emit a malformed line and node_exporter's
-# textfile parser would reject ALL three metrics, sentinel included.)
-case "$cpu" in
-    ''|*[!0-9.]*) cpu=0 ;;
-esac
-
-# pmxcfs manager_status mtime. File is mode 0640 group www-data; this script
-# runs as root (User=root in the .service), so stat works whenever the file
-# exists. mtime=0 means the file doesn't exist (e.g. HA not configured on
-# this node) — intentionally not a special-cased "no signal": PmxcfsStale
-# fires on mtime=0 by design (time() - 0 >> 600), which catches both
-# legitimate HA-disabled hosts (operator silences) and accidental/deliberate
-# file deletes that would otherwise suppress the staleness signal.
+# pmxcfs manager_status mtime; the script runs as root, so stat always works.
+# mtime=0 means the file is absent, and PmxcfsStale fires on it by design, so a
+# deleted file cannot suppress the staleness signal.
 mtime=0
 if [ -e /etc/pve/ha/manager_status ]; then
     mtime=$(stat -c %Y /etc/pve/ha/manager_status)

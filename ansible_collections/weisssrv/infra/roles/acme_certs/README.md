@@ -29,16 +29,25 @@ the role is a no-op.
 | `acme_certs_email` | ACME account email | yes |
 | `acme_certs_ssh_private_key` / `_ssh_public_key` | Distribution key pair | yes |
 | `acme_certs_ssh_user` | Login user on the targets, and owner of the key here | no (`root`) |
-| `acme_certs_ssh_key_dir` / `_ssh_key_path` | Where the key lives on this host | no (derived) |
-| `acme_certs_local_cert_dir` / `_local_cert_group` | Local install path + reader group | no (`/etc/ssl/private`, `root`) |
+| `acme_certs_ssh_key_dir`, `acme_certs_ssh_key_path` | Where the key lives on this host | no (derived) |
+| `acme_certs_local_cert_dir`, `acme_certs_local_cert_group` | Local install path and reader group | no (`/etc/ssl/private`, `root`) |
 | `acme_certs_textfile_dir` | Where the renewal/distribution metrics land; aliases `node_exporter_host_textfile_dir` | no (`/var/lib/node_exporter`) |
 | `acme_certs_local_reload_command` | Reload for a local consumer of the cert; empty omits the block | no (`""`) |
 | `acme_certs_key_from` | `from="..."` source pin on the distributed key | no (`""`) |
 | `acme_certs_distribute_pubkeys` | Seed the targets; `false` renders locally only | no (`true`) |
 | `acme_certs_skip_distribution` | Skip the proactive push at the end | no (`false`) |
+| `acme_certs_distribution_check_enabled` | Install the daily distribution check timer | no (`true`) |
+| `acme_certs_distribution_check_schedule` | `OnCalendar` for the check timer | no (`*-*-* 05:40:00`) |
+| `acme_certs_distribution_check_random_delay` | `RandomizedDelaySec` for the check timer | no (`30m`) |
+| `acme_certs_distribution_check_nice` | `Nice` for the check service | no (`10`) |
+| `acme_certs_distribution_check_timeout` | `TimeoutStartSec` for the check service | no (`10m`) |
+| `acme_certs_distribution_check_retries` | Retries for a check-mode probe that fails, before the target's gauge is written 0 | no (`2`) |
+| `acme_certs_distribution_check_retry_delay` | Seconds between those retries | no (`10`) |
 | `acme_certs_receiver_path` | Receiver path on each sudo target | no (`/usr/local/sbin/cert-receive`) |
-| `acme_certs_sh_version` / `_sh_tarball_sha256` | Pinned acme.sh release | no |
+| `acme_certs_sh_version`, `acme_certs_sh_tarball_sha256` | Pinned acme.sh release and its checksum | no |
+| `acme_certs_stage_dir` | Root-owned 0700 dir the release tarball is staged in, removed after the install | no (`/run/acme-certs-install`) |
 | `acme_certs_dns_hook` | acme.sh dnsapi hook used for DNS-01 (any hook the pinned tarball ships) | no (`dns_cf`) |
+| `acme_certs_ca_server` | ACME CA acme.sh is pinned to (any name acme.sh accepts, or a CA directory URL) | no (`letsencrypt`) |
 | `acme_certs_distribution_targets` | Target list (schema below) | no (`[]`) |
 
 ### Target schema
@@ -58,6 +67,12 @@ acme_certs_distribution_targets:
     ssh_port: 22
     ssh_no_sudo: false            # true = appliance, legacy scp push
 ```
+
+`restart_command` runs verbatim on the target and must invoke `sudo` itself
+where it needs root: the push cannot prepend `sudo`, because a compound shell
+form such as `if … fi` is not something sudo can execute. An empty or
+whitespace-only `restart_command` counts as unset and falls back to
+`restart_service`.
 
 `key_mode` is group-readable above only because the consuming service runs as a
 non-root user (`group: adguard`). Use `0600` wherever the key can stay
@@ -143,9 +158,11 @@ Another DNS provider is `acme_certs_dns_hook` plus that hook's own credential
 environment: the role checks for the hook, names it in these instructions, and
 does not otherwise care which provider signs the challenge.
 
-`--server letsencrypt` is passed explicitly so the command also works against a
-pre-existing acme.sh install that this role did not pin (acme.sh 3.x otherwise
-defaults to ZeroSSL, which a Let's-Encrypt-only CAA record would refuse).
+`--server` is passed explicitly so the command also works against a pre-existing
+acme.sh install that this role did not pin (acme.sh 3.x otherwise defaults to
+ZeroSSL, which a Let's-Encrypt-only CAA record would refuse). Another CA is
+`acme_certs_ca_server`; the role pins it at install time and re-asserts it on
+every run.
 
 ## Distribution on every run
 
@@ -157,6 +174,30 @@ source. So an unchanged, successfully-applied cert restarts nothing, while a
 target that is missing the cert, holds an older one, was rebuilt, or whose
 previous reload failed gets the full push.
 
+## Appliance push (ssh_no_sudo)
+
+The legacy scp push stages `fullchain.pem` and `privkey.pem` in a per-run 0700
+directory on the target rather than in world-readable `/tmp`, so the unencrypted
+wildcard key is never exposed to other local users. The install steps are
+chained with `&&`, so a partial move never reaches the reload.
+
+## Daily distribution check
+
+`homelab-cert-check.timer` runs `homelab-cert-reload.sh --check` once a day, so
+the per-target gauges move between renewals instead of ageing from the last one.
+The check pushes nothing, runs no reload command and leaves `cert_renewal.prom`
+alone. What it proves per target:
+
+- Sudo targets: an empty bundle reaches the forced-command receiver, which
+  refuses it. That answer proves the transport, the pinned key, the forced
+  command and sudo.
+- `ssh_no_sudo` targets: the hash comparison the real push starts with. A target
+  that is unreachable, or that is not carrying the applied certificate, reports
+  0.
+
+A run with any failed target exits 2, so the unit is marked failed as well.
+`acme_certs_distribution_check_enabled: false` removes both units.
+
 ## Metrics
 
 `homelab-cert-reload.sh` writes two node_exporter textfiles under
@@ -167,10 +208,24 @@ previous reload failed gets the full push.
   `cert_renewal_last_run_duration_seconds`,
   `cert_renewal_last_success_timestamp_seconds`, and
   `cert_local_expiry_timestamp_seconds` (the on-disk cert's `notAfter`, emitted
-  on failed runs too so an expiry alert's `absent()` clause does not false-fire)
+  on failed runs too so an expiry alert's `absent()` clause does not false-fire).
+  A failed run re-emits the previous success timestamp, so staleness measures
+  time since the last success rather than disappearing.
+  `cert_renewal_last_run_success` covers the local certificate only: the renewal
+  and the local reload. A dead distribution target leaves it at 1 and is
+  reported by the distribution gauges below.
 - `cert_distribution_targets.prom` —
   `cert_distribution_target_last_run_success{host="…"}`, so one dead target is
-  visible instead of being collapsed into the run-level bit
+  visible instead of being collapsed into the run-level bit, plus
+  `cert_distribution_last_run_failed_targets`, the number of targets that failed
+  on the last run, so an alert needs no regex over host labels. Written to a
+  temp file and renamed, and a failed write logs `daemon.err` under the tag
+  `homelab-cert-reload-metrics`. The daily check rewrites this file, so its
+  gauges age by a day at most while the timer is enabled.
+
+Alert on both: `cert_renewal_last_run_success == 0` is a local failure, and
+`cert_distribution_last_run_failed_targets > 0` is a target that did not take
+the new cert.
 
 ## Operations
 

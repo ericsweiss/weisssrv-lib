@@ -1,9 +1,5 @@
-"""Fixture consumer config for scripts/check-versions.py.
-
-Small stand-in for a real registry: one entry per lookup category, one pin that
-lives outside the vars file (`version_file`), one multi-file pin, one held entry,
-and one allow-listed untracked pin. Paths resolve against tests/fixtures/
-version-registry/repo (the tests pass it as repo_root).
+"""Fixture consumer config for scripts/check-versions.py, one entry per registry
+feature. Paths resolve against tests/fixtures/version-registry/repo.
 """
 
 CONFIG = {
@@ -29,7 +25,18 @@ CONFIG = {
             "category": "dockerhub",
             "docker_image": "library/registry",
             "tag_regex": r"^\d+\.\d+\.\d+$",
+            "source_url": "https://hub.docker.com/_/registry",
             "deploy_command": "task flux:sync-versions && git push",
+        },
+        {
+            # Coupled: --update-all reports it instead of writing half the pair.
+            "name": "Coupled Tool",
+            "var_name": "coupled_tool_version",
+            "category": "github",
+            "github_repo": "example/coupled-tool",
+            "version_prefix": "v",
+            "coupled_vars": ["coupled_tool_checksum"],
+            "notes": "recompute coupled_tool_checksum from the release asset",
         },
         {
             "name": "Traefik Chart",
@@ -59,11 +66,13 @@ CONFIG = {
             "version_file": "ci",
         },
         {
-            # One tag pinned in two manifests that must agree.
+            # One tag pinned in two manifests that must agree; the manifests
+            # spell the image without Docker Hub's library/ namespace.
             "name": "Python CronJob Base",
             "var_name": "python_cronjob_version",
             "category": "dockerhub",
-            "docker_image": "python",
+            "docker_image": "library/python",
+            "image_ref": "python",
             "version_file": [
                 "kubernetes/apps/one/cronjob.yaml",
                 "kubernetes/apps/two/cronjob.yaml",

@@ -1,9 +1,7 @@
 ---
-# kube-apiserver audit logging (servers only). Included from server.yml when
-# k3s_audit_enabled, and deliberately BEFORE the server config template: that
-# config's kube-apiserver-arg block points at the policy file, and an apiserver
-# whose --audit-policy-file is missing exits at startup — on all three servers,
-# since the config rolls out to each of them.
+# kube-apiserver audit logging (servers only), included from server.yml before
+# the server config template: that config points at the policy file, and an
+# apiserver whose --audit-policy-file is missing exits at startup on every server.
 
 - name: Assert the audit policy is a well-formed audit/v1 Policy
   ansible.builtin.assert:

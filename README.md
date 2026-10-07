@@ -1,14 +1,14 @@
 # weisssrv-lib
 
 Shared CI templates, Ansible roles, Terraform module shapes, lint
-configurations, helper scripts, taskfile fragments, and the project CLI for the
-weisssrv family. One source of truth for the layer every repo in that family
-shares — a lint/version/build change is made once here and pulled in by each
-consumer at a pinned tag.
+configurations, helper scripts, and the project CLI for the weisssrv family.
+One source of truth for the layer every repo in that family shares — a
+lint/version/build change is made once here and pulled in by each consumer at
+a pinned tag.
 
 ## Current release
 
-**v0.17.1.** Every pin example on this page and in `docs/` is written as
+**v0.18.0.** Every pin example on this page and in `docs/` is written as
 `<CURRENT_TAG>`; substitute the release you are adopting, so a release bump
 touches the few copy-paste snippets that must be runnable rather than a dozen
 stale examples. This line is the authority for the literal; the runnable
@@ -36,9 +36,12 @@ each consumer owns (see `scripts/check-vendored-copies.py`).
 ```
 ci/            GitLab CI templates (include:project + spec:inputs)
   lint/        yaml-lint, shellcheck (incl. *.sh.j2 neutralizer), docs-link-check,
-               python-lint (ruff), ansible-lint
+               runbook-anchors, comment-length (blocking, whole tree),
+               python-lint (ruff), ansible-lint, terraform-tflint
   validate/    flux-lint (kustomize+kubeconform, substitute toggle),
-               terraform (fmt + validate, two jobs)
+               terraform (fmt + validate, two jobs), terraform-drift-plan
+               (read-only plan per module, drift is advisory), cluster-drift-plan
+               (the same, over the live cluster through kubectl)
   security/    secret-detection (GitLab managed job + gitleaks ruleset override)
   build/       docker-build (the DinD build_and_push helper, parameterized)
   test/        python-tests (pytest + junit)
@@ -48,12 +51,13 @@ ci/            GitLab CI templates (include:project + spec:inputs)
                copy, vendored not included)
   maintenance/ version-check (read-only report) + version-bump-bot (one bump MR,
                never auto-merged)
-  deploy/      the Ansible deploy toolchain: deploy-base, kubectl-setup,
-               ansible-deploy — shipped and versioned, only deploy-base adopted
+  deploy/      the deploy toolchain: deploy-base and kubectl-setup adopted;
+               cluster-verify-base and ansible-deploy shipped unadopted —
+               adoption per template is docs/INCLUDE-CONTRACT.md
   github/      ci.example.yml + build-image.example.yml (Actions reference
                copies, vendored not included)
   templates/   shared fragments: dep-cache, install-1password,
-               terraform-http-backend
+               terraform-http-backend, docker-dind
   internal/    this library's own pipeline wiring (molecule child pipeline) —
                not a consumer contract
 ansible_collections/weisssrv/infra/
@@ -62,13 +66,15 @@ ansible_collections/weisssrv/infra/
 terraform/
   modules/     reusable module shapes: cloudflare-zone, tailscale-acl,
                authentik-sso, unifi-network
-lint/          shared config files (two yamllint profiles, gitleaks + GitLab
-               ruleset, ruff, editorconfig, pre-commit) — see lint/README.md
+lint/          shared config files (yamllint, gitleaks + GitLab ruleset, ruff,
+               editorconfig, pre-commit, gitattributes) — see lint/README.md.
+               This repo's own .gitattributes is vendored from lint/gitattributes
 scripts/       the gates + generators CI jobs run: version tracking, deploy/
                molecule coverage, Flux + Prometheus checks, doc links, the
                release automation — see docs/SCRIPTS.md
-taskfiles/     go-task include fragments (lint, flux) so `task lint` mirrors CI
-               — see taskfiles/README.md
+kubernetes/reapers/
+               stdlib programs mounted into a consumer's CronJob beside its app
+               script
 docker/        published per release: the two molecule test/CI images for the
                collection + ansible-deploy (the pre-baked deploy job image)
 examples/      copy-and-edit config files for the helper scripts
@@ -90,7 +96,7 @@ include:
     file: /ci/lint/yaml-lint.yml
     inputs:
       tags: []                     # tag-less shared runner (tenant default)
-      config: "-c .yamllint"
+      config: "-c lint/yamllint-relaxed.yml"
       targets: "."
 ```
 
@@ -176,9 +182,10 @@ collections:
 Site data (domains, IPs, pool names) is passed in — never baked into a role
 default. The role table and the inventory-wide alias table are in the
 [collection README](ansible_collections/weisssrv/infra/README.md); per-role
-variables are in each role's own README; the old → new rename map for adopting
-the collection is
-[MIGRATING.md](ansible_collections/weisssrv/infra/MIGRATING.md).
+variables are in each role's own README. Per-release upgrade notes are
+[MIGRATING.md](ansible_collections/weisssrv/infra/MIGRATING.md); the one-time
+map for a repo adopting the collection from un-prefixed in-tree roles is
+[MIGRATING-from-in-tree-roles.md](ansible_collections/weisssrv/infra/MIGRATING-from-in-tree-roles.md).
 
 ## The CLI
 
@@ -205,9 +212,9 @@ here rather than restating it.
 ```bash
 python3 -m pytest tests cli/tests -q     # scripts + CLI tests
 # same target set the pipeline's yaml-lint job passes
-yamllint -c .yamllint ci/ lint/ taskfiles/ ansible_collections/ .gitlab/ .gitlab-ci.yml
+yamllint -c lint/yamllint-self.yml ci/ lint/ ansible_collections/ .gitlab/ examples/ scripts/ docker/ .gitlab-ci.yml .pre-commit-config.yaml
 shellcheck --severity=warning --exclude=SC1091,SC2034 scripts/*.sh
-ruff check --config lint/ruff.toml scripts tests cli examples
+ruff check --config lint/ruff.toml scripts tests cli examples kubernetes
 gitleaks detect --no-git --config lint/gitleaks.toml   # what CI's secret_detection runs
 # YAML smoke over every CI template (tests/test_render_templates.py does the
 # full render; `!reference` needs a loader that knows the tag)
@@ -219,17 +226,40 @@ ANSIBLE_COLLECTIONS_PATH=$PWD:~/.ansible/collections \
 # The *.sh.j2 half needs the template's Jinja neutralizer, so only CI covers it.
 find ansible_collections -name '*.sh' -print0 \
   | xargs -0 shellcheck --severity=warning --exclude=SC1091,SC2034
+# terraform changes only: the two jobs ci/validate/terraform.yml renders
+terraform fmt -check -recursive terraform/
+for m in terraform/modules/*/; do (cd "$m" && terraform init -backend=false -input=false >/dev/null && terraform validate && terraform test); done
+# this repo's own tree gates, all offline and quick
+python3 scripts/check-comment-length.py
+python3 scripts/check-doc-links.py
+python3 scripts/check-role-defaults-documented.py
+python3 scripts/check-role-readme-literals.py --site-domain esweiss.com \
+  --site-domain ericsweiss.com \
+  --site-literal '(?<![\w.])10\.0\.(10|20)\.\d{1,3}(?!\.?\d)'
+CI_FILE=.gitlab-ci.yml ROLES_DIR=ansible_collections/weisssrv/infra/roles \
+  INTEGRATION_DIR="" bash scripts/check-molecule-matrix-coverage.sh
 ```
 
 The library's own pipeline (`.gitlab-ci.yml`) runs those by **including its own
 templates** (`include: local:`), so every template is rendered and executed by
 the MR that changes it, plus a YAML-parse smoke over every CI template. Keep it
 that way: a new job here should be a new template plus an include, not an inline
-job. Three templates have no library-side workload and are still first rendered
-in a consumer — `ci/validate/flux-lint.yml`, the `ci/templates/` fragments, and
-`ci/maintenance/version-bump-bot.yml`; the header comment in `.gitlab-ci.yml`
-carries the reason for each. Merging to `main` runs
+job. Six groups of templates have no library-side workload and are first rendered
+in a consumer — `ci/validate/flux-lint.yml`, the two consumer-only lint gates
+(`ci/lint/runbook-anchors.yml`, `ci/lint/terraform-tflint.yml`), the two drift
+detectors (`ci/validate/terraform-drift-plan.yml`,
+`ci/validate/cluster-drift-plan.yml`), the `ci/templates/` fragments,
+`ci/maintenance/version-bump-bot.yml`, and `ci/deploy/*` (the cluster
+template pins `deploy-base` and `kubectl-setup`). The reason for each is in
+[docs/INCLUDE-CONTRACT.md](docs/INCLUDE-CONTRACT.md). Merging to `main` runs
 `ci/release/semantic-release.yml`, which cuts the tag consumers pin.
+
+The nightly cross-role molecule matrix runs only from a pipeline schedule
+carrying `SCHEDULE_TYPE=full-matrix`. Create it once in the project UI (Build >
+Pipeline schedules, target `main`, variable `SCHEDULE_TYPE=full-matrix`); until
+it exists the clause is inert and the matrix runs only on a merge to `main`
+touching the collection subtrees. Any other schedule is refused outright, so a
+future schedule cannot fire the privileged fan-out by accident.
 
 ## Scope
 
@@ -244,12 +274,12 @@ pool names, credentials — those are inputs), Kubernetes manifests (they live i
 the cluster template so a cluster is self-contained, with no remote kustomize
 bases), and weisssrv's own pipeline glue (`validation-gate`, its hand-written
 per-playbook deploy jobs, `repo-sync`/`repo-policy` checks). The reusable half
-of that deploy layer **is** here, as `ci/deploy/*` — shipped and versioned, with
-only `deploy-base` adopted so far. There is **no
-Renovate** anywhere — version bumps come from
-`ci/maintenance/version-bump-bot.yml`, which each CONSUMER schedules against its
-own version-check command and config. This library ships the template but does
-not run it on itself: it tracks no upstream versions of its own.
+of that deploy layer **is** here, as `ci/deploy/*` — shipped and versioned,
+with `deploy-base` and `kubectl-setup` adopted so far. There is **no Renovate**
+anywhere — version bumps come from `ci/maintenance/version-bump-bot.yml`, which
+each CONSUMER schedules against its own version-check command and config. This
+library ships the template but does not run it on itself: it tracks no upstream
+versions of its own.
 
 A consumer whose backends differ from weisssrv's — Ceph instead of ZFS, a
 secrets store other than 1Password, GitHub instead of GitLab — is meant to be
@@ -267,3 +297,13 @@ cluster can run them unchanged.
 
 Full per-item detail, including which weisssrv job each template reproduces, is
 in [docs/INCLUDE-CONTRACT.md](docs/INCLUDE-CONTRACT.md).
+
+## Queued for the next release
+
+**Split `scripts/check-versions.py`.** It is one ~1,900-line file covering
+seven registry categories (six with a fetcher), the pin writer and the report
+renderer. Splitting it lands in its own MR because it moves code across files
+that two gates pin by name: the new modules each need a
+`scripts/vendorable-paths.yml` entry, a `docs/SCRIPTS.md` row
+(`tests/test_scripts_have_tests.py` fails otherwise), and their own suite. The
+CLI surface and the registry schema do not change.

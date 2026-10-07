@@ -1,10 +1,7 @@
 ---
 # Routing expectations for scripts/check-alertmanager-behaviour.py (--config).
-#
-# route_cases: one case per receiver the config is supposed to reach, plus any
-# ordering the config itself calls load-bearing. `amtool config routes test`
-# prints every matching receiver in tree order and only the first delivers, so
-# `receiver` is compared against the first line.
+# route_cases: one case per receiver the config should reach. Only the first
+# matching receiver delivers, so `receiver` is compared against the first line.
 route_cases:
   # A dead-man's-switch alert carries severity=none and must beat a
   # severity=none null route declared after it.
@@ -26,13 +23,41 @@ route_cases:
 synthetic_route_alerts:
   - SomeUnlabelledAlert
 
-# upstream_alerts: alertnames shipped by a chart's own rule groups. The
-# extractor sees only this repo's PrometheusRules, so a chart alertname named in
-# an inhibit rule would otherwise read as dead. An entry claims the name exists
-# upstream AND is not disabled — verify against the chart before adding one,
-# because a typo'd entry recreates the blind spot.
+# upstream_alerts: alertnames a chart's own rule groups ship, which the
+# extractor cannot see. An entry claims the name exists upstream and is not
+# disabled; verify against the chart, since a typo recreates the blind spot.
 upstream_alerts:
   - InfoInhibitor
   - KubeAggregatedAPIDown
   - KubePodNotReady
   - Watchdog
+
+# escalation_suffixes: a severity=warning alert whose name plus one of these
+# suffixes is a severity=critical alert in the same corpus is an escalation
+# pair, and the pair needs an inhibit rule or it pages twice.
+escalation_suffixes:
+  - Prolonged
+  - Critical
+
+# escalation_equal: label keys the inhibit rule for every pair must share, so
+# one instance's critical does not silence another instance's warning.
+escalation_equal:
+  - instance
+
+# escalation_pairs: pairs whose names share no stem, declared by hand.
+escalation_pairs:
+  - critical: EtcdQuorumLost
+    warning: EtcdQuorumAtRisk
+    equal: [cluster]
+
+# escalation_exceptions: pairs deliberately left un-inhibited, both severities
+# delivering on purpose.
+escalation_exceptions:
+  - critical: CertificateExpiredProlonged
+    warning: CertificateExpired
+
+# matcher_parity_labels: matcher labels whose `=~`/`!~` regex must be a selector
+# the mirrored rule's own expr declares. Leave the list out where no inhibit
+# rule reproduces a rule's selector.
+matcher_parity_labels:
+  - instance

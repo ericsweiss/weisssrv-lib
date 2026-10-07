@@ -1,24 +1,20 @@
 # {{ ansible_managed }}
 # shellcheck shell=bash
-# Sourceable helper: atomically write node_exporter textfile backup-freshness
-# metrics for a backup wrapper. Sourced by each <app>-backup-run.sh, which passes
-# the metric-name prefix and the .prom path so this logic stays identical across
-# apps. On failure it preserves the prior success timestamp so *BackupStale
-# alerts measure time-since-last-success, not time-since-last-attempt.
-#
+
+# Sourceable helper that atomically writes node_exporter textfile
+# backup-freshness metrics. On failure it preserves the prior success
+# timestamp, so *BackupStale measures time since the last success.
+
 # Usage: write_prom_metrics <prefix> <success> <duration> <size> <prom_file> [artifact_glob]
+# Usage: require_mounted_landing_zone <prefix> <path> <nfs_enabled> <prom_file>
 write_prom_metrics() {
   local prefix="$1" success="$2" duration="$3" size="$4" prom_file="$5"
   local artifact_glob="${6:-}"
   local ts tmp prev newest
   ts="$(date +%s)"
   tmp="${prom_file}.$$"
-  # Size the newest EXISTING artefact when this run produced none, so 0 keeps ONE
-  # meaning: no artefact exists at all. A transient failure with good artefacts
-  # still in the landing zone is already carried by ${prefix}_last_run_success 0,
-  # and must not also read as an empty landing path. Callers therefore pass NO
-  # artifact_glob on a fail-closed unmounted-landing-zone path: sizing a shadow
-  # dir under the unmounted mountpoint would suppress *BackupArtifactEmpty.
+  # size 0 must mean 'no artefact exists at all', so fall back to the newest match.
+  # Callers on a fail-closed landing-zone path pass no glob (see README).
   if [ "$size" -eq 0 ] && [ -n "$artifact_glob" ]; then
     # shellcheck disable=SC2012,SC2086 # ls -t for mtime order; the glob MUST expand
     newest="$(ls -1t $artifact_glob 2>/dev/null | head -1 || true)"
@@ -26,6 +22,8 @@ write_prom_metrics() {
       size="$(stat -c %s "$newest" 2>/dev/null || echo 0)"
     fi
   fi
+  # A failed write or rename must not fail the backup, but it must not be silent
+  # either: the preserved .prom keeps the previous run's success=1 published.
   {
     echo "# HELP ${prefix}_last_run_duration_seconds Duration of last backup run"
     echo "# TYPE ${prefix}_last_run_duration_seconds gauge"
@@ -43,13 +41,32 @@ write_prom_metrics() {
     else
       # Preserve the last-known success timestamp so the staleness alert
       # measures time-since-last-success, not time-since-last-attempt.
-      prev="$(awk -v k="${prefix}_last_success_timestamp_seconds" '$1 == k {print $2}' "$prom_file" 2>/dev/null || true)"
+      prev="$(awk -v k="${prefix}_last_success_timestamp_seconds" '$1 == k { v = $2 } END { if (v != "") print v }' "$prom_file" 2>/dev/null || true)"
       if [ -n "$prev" ]; then
         echo "# HELP ${prefix}_last_success_timestamp_seconds Unix timestamp of last successful backup"
         echo "# TYPE ${prefix}_last_success_timestamp_seconds gauge"
         echo "${prefix}_last_success_timestamp_seconds ${prev}"
       fi
     fi
-  } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
-  mv "$tmp" "$prom_file" 2>/dev/null || rm -f "$tmp"
+  } > "$tmp" 2>/dev/null || {
+    logger -t "${prefix}-metrics" -p daemon.err "could not write ${prom_file}"
+    rm -f "$tmp"
+    return 0
+  }
+  mv "$tmp" "$prom_file" 2>/dev/null || {
+    logger -t "${prefix}-metrics" -p daemon.err "could not rename ${tmp} -> ${prom_file}"
+    rm -f "$tmp"
+  }
+}
+
+# Fail closed on an NFS landing zone that is not mounted: the artefact would
+# land on the root disk under the mountpoint, un-offsited and invisible. Records
+# success=0 with no artifact_glob, then returns 1 so the caller aborts.
+require_mounted_landing_zone() {
+  local prefix="$1" path="$2" nfs_enabled="$3" prom_file="$4"
+  [ "$nfs_enabled" = "1" ] || return 0
+  mountpoint -q "$path" && return 0
+  echo "${prefix}: ${path} is NFS-backed but not mounted — aborting" >&2
+  write_prom_metrics "$prefix" 0 0 0 "$prom_file"
+  return 1
 }

@@ -1,0 +1,15 @@
+---
+# The escalation hands each entry to `qm shutdown <vmid> --timeout <seconds>`,
+# and a shape typo parses into a plausible command, so the shape is rejected
+# before the script ships. Split out so negative cases are drivable in test.
+
+- name: Assert the swap-clean stop-guest entries are vmid:name:timeout
+  ansible.builtin.assert:
+    that:
+      - nas_storage_swap_clean_stop_guests | default([])
+        | reject('match', '^[0-9]+:[^:]+:[0-9]+$') | list | length == 0
+    fail_msg: >-
+      nas_storage_swap_clean_stop_guests entries must be
+      'vmid:name:timeout-seconds'; got
+      {{ nas_storage_swap_clean_stop_guests | default([]) }}
+    quiet: true

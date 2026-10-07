@@ -1,11 +1,7 @@
 ---
-# Home Assistant OS is an appliance, not a managed Linux host: this role only
-# renders configuration.yaml + secrets.yaml on the play host and pushes them
-# over the HAOS SSH add-on. Every task below runs on the play host.
-#
-# Each `cmd:` below is a folded scalar whose lines all share one indent, so it
-# folds to a SINGLE line — a more-indented continuation would keep its newline
-# and split the remote command in two.
+# HAOS is an appliance: this role renders configuration.yaml + secrets.yaml on
+# the play host and pushes them over the SSH add-on. Each `cmd:` below is a
+# folded scalar at one indent, so it folds to a single remote command line.
 
 - name: Assert the rendered-config inputs are set
   ansible.builtin.assert:
@@ -29,12 +25,10 @@
       HA_OIDC_CLIENT_SECRET from the environment, which a secret manager
       (`op run -- ...`) is expected to populate.
     success_msg: "OIDC credentials are present"
-  no_log: true
 
-# HAOS SSH is root with no sudo, so the accept-new TOFU path used for ordinary
-# hosts is not acceptable here: a re-imaged HAOS would silently re-key and still
-# receive the secrets push. The operator pins the key once (README) and every
-# ssh/scp below runs with StrictHostKeyChecking=yes.
+# HAOS SSH is root with no sudo, so an accept-new TOFU path would let a
+# re-imaged HAOS re-key and still receive the secrets push. The operator pins the
+# key once (README) and every ssh/scp runs with StrictHostKeyChecking=yes.
 - name: Assert the HAOS connection inputs are set
   ansible.builtin.assert:
     that:
@@ -202,7 +196,7 @@
           register: home_assistant_config_backup
           changed_when: false
 
-        - name: Atomically install the configuration files
+        - name: Install the configuration files (secrets first)
           # secrets.yaml first, so configuration.yaml's `!secret` references
           # always resolve against an up-to-date secrets file; the chained &&
           # leaves /config consistent if the first mv fails.

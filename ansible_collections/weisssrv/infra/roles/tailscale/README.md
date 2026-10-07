@@ -13,10 +13,11 @@ advertised subnet routes, ACL tags) on every run.
 | `tailscale_gpg_fingerprint` | upstream primary key | the downloaded key is verified against this **before** it is trusted |
 | `tailscale_accept_routes` | `false` | keep `false` on a subnet router, or its own advertised routes loop back |
 | `tailscale_accept_dns` | `false` | leave the site's resolvers authoritative |
-| `tailscale_advertise_routes` | `[]` | e.g. `["192.168.0.0/24"]`; a non-empty list also turns on IP forwarding |
+| `tailscale_advertise_routes` | `[]` | e.g. `["10.0.0.0/24"]`; a non-empty list also turns on IP forwarding |
 | `tailscale_advertise_tags` | `[]` | the tag must already exist in the tailnet ACL's `tagOwners` |
 | `tailscale_tags_require_adoption` | `false` | see below |
 | `tailscale_additional_flags` | `[]` | extra `tailscale up` flags; applied only by the initial join |
+| `tailscale_require_authkey` | `false` | `true` fails the play when a node still has to join and `TAILSCALE_AUTH_KEY` is unset, instead of skipping the join |
 
 The auth key is read from the **`TAILSCALE_AUTH_KEY` environment variable**
 (passed to `tailscale up` as `TS_AUTHKEY`), never from a variable — so it never
@@ -55,8 +56,9 @@ forwarding until reboot.
 
 ## Subnet router on a bridging host (local-guest reachability)
 
-A route-advertising node ALSO gets `/usr/local/sbin/tailscale-bridge-masq-fix`
-plus a `tailscaled.service` `ExecStartPost` drop-in that runs it. Without it, a
+A route-advertising node ALSO gets `/usr/local/sbin/tailscale-bridge-masq-fix`,
+a `tailscaled.service` `ExecStartPost` drop-in that runs it, and
+`tailscale-bridge-masq-fix.timer`, which re-runs it every minute. Without it, a
 subnet router that is also a hypervisor (Proxmox, bridged guests) can forward
 tailnet traffic to guests on **other** hosts but not to guests hosted on
 **itself**: `net.bridge.bridge-nf-call-iptables=1` makes the packet re-traverse
@@ -75,8 +77,23 @@ position 1, which pushes a pre-existing ACCEPT below it, and a plain
 insert-if-missing check would then read the mis-ordered rule as present and never
 repair it. The script waits (bounded) for the jump to exist, deletes any stale
 copy, then inserts once at position 1 — deterministic on every restart and cold
-boot. Emptying `tailscale_advertise_routes` removes the script and drop-in; the
-live rule (harmless without marked bridged traffic) clears on reboot.
+boot. Emptying `tailscale_advertise_routes` removes the script, the drop-in and
+the units; the live rule (harmless without marked bridged traffic) clears on
+reboot.
+
+### Durability
+
+`ExecStartPost` only fires when tailscaled (re)starts, so anything that rebuilds
+the NAT table underneath it — a `pve-firewall` reload, Tailscale rewriting its
+own chains — drops the rule until the next restart, which may be never. The
+timer is what makes it durable: `tailscale-bridge-masq-fix.timer` runs the script
+two minutes after boot and every minute after that. The script exits immediately
+when the rule is already in slot 1, so a steady-state run touches nothing, and it
+logs to the journal under `tailscale-bridge-masq-fix` when it defers because
+Tailscale's jump is not there yet.
+
+Check a router with `iptables -t nat -S POSTROUTING`: the ACCEPT rule must be the
+line above `-A POSTROUTING -j ts-postrouting`.
 
 **Prerequisite:** Tailscale must be in **iptables** netfilter mode, not nftables
 — the `ts-postrouting` chain and the `xt_physdev` match are iptables constructs.

@@ -19,9 +19,8 @@ qol_packages:
   - fd-find
 
 # Upstream pins. Oh My Zsh publishes no release tags, so the clone is pinned to
-# a commit (https://github.com/ohmyzsh/ohmyzsh/commits/master); Vundle is tagged.
-# Both are role defaults so a consumer can carry them alongside its other
-# version pins and have them reported by its version-check tooling.
+# a commit; Vundle is tagged. Both are role defaults so a consumer can carry
+# them alongside its other version pins.
 qol_omz_commit: "061f773dd356df52a8bccd5e73377c012f97ef14"
 qol_vundle_version: v0.10.2
 

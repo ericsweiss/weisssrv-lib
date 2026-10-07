@@ -1,26 +1,14 @@
 ---
-# Manage ZFS storage replication jobs (IDs are <VMID>-<job_number>) for Proxmox
-# HA failover. Each guest may replicate to several targets so it can fail over
-# to any available node.
-#
-# Drift handling turns on one Proxmox behaviour: it PERMUTES job-ID<->target
-# pairings when a guest migrates.
-# 1. Target drift = the desired target SET differs from the live set; only then
-#    are the per-ID mismatches deleted+recreated, and only while the guest is
-#    local so a job that can't be recreated here is never deleted. Equal sets
-#    with permuted IDs are NOT drift — churning those forces a full ZFS resync
-#    per target for nothing.
-# 2. Source drift (guest migrated, jobs left on the old node) is flagged, not
-#    corrected.
-#
-# For the same reason a job's --comment may name a stale target: read the live
-# target from `pvesr list`, never from the comment.
+# ZFS storage replication jobs for Proxmox HA failover, with IDs of the form
+# <VMID>-<job_number>. Drift handling and the orphan policy are in the README.
 
+# A failed read must abort — an empty index would fire create for every job and
+# the tolerated "already exists" would hide it behind a green play.
 - name: Get current storage replication jobs
-  ansible.builtin.shell: pvesr list --output-format json 2>/dev/null || echo '[]'
+  ansible.builtin.command: pvesr list --output-format json
   register: proxmox_ha_current_replication_jobs_raw
   changed_when: false
-  failed_when: false
+  failed_when: proxmox_ha_current_replication_jobs_raw.rc != 0
   check_mode: false  # Must run to determine current state
   tags: [proxmox_ha_replication]
 
@@ -28,14 +16,14 @@
   ansible.builtin.set_fact:
     proxmox_ha_current_replication_jobs: "{{ proxmox_ha_current_replication_jobs_raw.stdout | from_json }}"
     proxmox_ha_current_replication_job_ids: "{{ (proxmox_ha_current_replication_jobs_raw.stdout | from_json) | map(attribute='id') | list }}"
-  when: proxmox_ha_current_replication_jobs_raw.stdout != '' and proxmox_ha_current_replication_jobs_raw.rc == 0
+  when: proxmox_ha_current_replication_jobs_raw.stdout | trim | length > 0
   tags: [proxmox_ha_replication]
 
 - name: Set empty list if no jobs exist
   ansible.builtin.set_fact:
     proxmox_ha_current_replication_jobs: []
     proxmox_ha_current_replication_job_ids: []
-  when: proxmox_ha_current_replication_jobs_raw.stdout == '' or proxmox_ha_current_replication_jobs_raw.rc != 0
+  when: proxmox_ha_current_replication_jobs_raw.stdout | trim | length == 0
   tags: [proxmox_ha_replication]
 
 - name: Build detailed current jobs lookup
@@ -147,14 +135,10 @@
 
 - name: Display jobs with target drift
   ansible.builtin.debug:
-    msg: |
-      Found {{ proxmox_ha_drifted_job_ids | length }} replication job(s) with TARGET DRIFT on {{ inventory_hostname }}:
-      {% for job_id in proxmox_ha_drifted_job_ids %}
-      {% set desired = (proxmox_ha_replication_jobs | selectattr('id', 'equalto', job_id) | first).target_node %}
-      - {{ job_id }}: current={{ proxmox_ha_current_jobs_detail[job_id].target }}, desired={{ desired }}
-      {% endfor %}
-
-      These jobs will be deleted and recreated to correct the target node.
+    msg: >-
+      TARGET DRIFT on {{ inventory_hostname }}: jobs
+      {{ proxmox_ha_drifted_job_ids | join(', ') }} point at the wrong target and
+      will be deleted and recreated.
   when: proxmox_ha_drifted_job_ids | length > 0
   tags: [proxmox_ha_replication]
 
@@ -170,16 +154,17 @@
     - "'does not exist' not in proxmox_ha_drift_delete_result.stderr | default('')"
   tags: [proxmox_ha_replication]
 
-- name: Initialize source drift tracking
+# Live job sourced elsewhere while the guest is HERE: delete and recreate.
+- name: Initialize stale-source tracking
   ansible.builtin.set_fact:
-    proxmox_ha_source_drifted_job_ids: []
+    proxmox_ha_stale_source_job_ids: []
   tags: [proxmox_ha_replication]
 
 - name: Detect source drift requiring job deletion
   ansible.builtin.set_fact:
-    proxmox_ha_source_drifted_job_ids: >-
+    proxmox_ha_stale_source_job_ids: >-
       {{
-        proxmox_ha_source_drifted_job_ids | default([]) + (
+        proxmox_ha_stale_source_job_ids | default([]) + (
           [item.id] if (
             item.id in proxmox_ha_current_replication_job_ids and
             item.source_node == inventory_hostname and
@@ -198,21 +183,17 @@
 
 - name: Display jobs with source drift
   ansible.builtin.debug:
-    msg: |
-      Found {{ proxmox_ha_source_drifted_job_ids | length }} replication job(s) with SOURCE DRIFT on {{ inventory_hostname }}:
-      {% for job_id in proxmox_ha_source_drifted_job_ids %}
-      {% set old_source = proxmox_ha_current_jobs_detail[job_id].source %}
-      - {{ job_id }}: currently on {{ old_source }}, should be on {{ inventory_hostname }}
-      {% endfor %}
-
-      These old jobs will be deleted so new jobs can be created on this node.
-  when: proxmox_ha_source_drifted_job_ids | default([]) | length > 0
+    msg: >-
+      STALE SOURCE on {{ inventory_hostname }}: jobs
+      {{ proxmox_ha_stale_source_job_ids | join(', ') }} live on another node
+      while the guest is here, so they are deleted and recreated here.
+  when: proxmox_ha_stale_source_job_ids | default([]) | length > 0
   tags: [proxmox_ha_replication]
 
 # Must run BEFORE the create pass: job IDs are cluster-unique.
 - name: Delete stale replication jobs with source drift
   ansible.builtin.command: pvesr delete {{ item }}
-  loop: "{{ proxmox_ha_source_drifted_job_ids | default([]) }}"
+  loop: "{{ proxmox_ha_stale_source_job_ids | default([]) }}"
   loop_control:
     label: "{{ item }} (source drift correction)"
   register: proxmox_ha_source_drift_delete_result
@@ -234,7 +215,7 @@
     - >-
       (item.id not in proxmox_ha_current_replication_job_ids) or
       (item.id in proxmox_ha_drifted_job_ids | default([])) or
-      (item.id in proxmox_ha_source_drifted_job_ids | default([]))
+      (item.id in proxmox_ha_stale_source_job_ids | default([]))
     - item.enabled | default(true)
     - inventory_hostname == item.source_node
     - item.id.split('-')[0] in proxmox_ha_local_vmids
@@ -270,7 +251,7 @@
   when:
     - item.id in proxmox_ha_current_replication_job_ids
     - item.id not in proxmox_ha_drifted_job_ids | default([])
-    - item.id not in proxmox_ha_source_drifted_job_ids | default([])
+    - item.id not in proxmox_ha_stale_source_job_ids | default([])
     - item.enabled | default(true)
     - inventory_hostname == item.source_node
     - item.id.split('-')[0] in proxmox_ha_local_vmids
@@ -318,31 +299,26 @@
 
 - name: Display orphaned jobs (if any)
   ansible.builtin.debug:
-    msg: |
-      Found {{ proxmox_ha_orphaned_job_ids | length }} orphaned replication job(s) originating from {{ inventory_hostname }}:
-      {{ proxmox_ha_orphaned_job_ids | join(', ') }}
-
-      These jobs exist in Proxmox but are not defined in proxmox_ha_replication_jobs for this node.
-      To clean up, manually run: pvesr delete <job_id>
+    msg: >-
+      ORPHANED JOBS on {{ inventory_hostname }}:
+      {{ proxmox_ha_orphaned_job_ids | join(', ') }} exist in Proxmox but not in
+      proxmox_ha_replication_jobs — see proxmox_ha README, "Behaviour worth knowing".
   when: proxmox_ha_orphaned_job_ids | length > 0
   tags: [proxmox_ha_replication]
 
-# Orphan cleanup stays manual on purpose: an incomplete config would otherwise
-# delete jobs nobody has codified yet.
-
-# A job configured here whose guest lives elsewhere (post-failover/migration)
-# cannot run — report it so the inventory or the guest gets moved back. Job IDs
-# are "<VMID>-<n>", so the VMID is the part before the first dash.
+# A job configured here whose guest lives elsewhere cannot run — report it so
+# the inventory or the guest gets moved back.
+# Job configured here while the guest is NOT here: report only.
 - name: Initialize migrated-guest reporting
   ansible.builtin.set_fact:
-    proxmox_ha_source_drift_jobs: []
+    proxmox_ha_misplaced_guest_jobs: []
   tags: [proxmox_ha_replication]
 
 - name: Detect source drift for jobs configured on this node
   ansible.builtin.set_fact:
-    proxmox_ha_source_drift_jobs: >-
+    proxmox_ha_misplaced_guest_jobs: >-
       {{
-        proxmox_ha_source_drift_jobs | default([]) + (
+        proxmox_ha_misplaced_guest_jobs | default([]) + (
           [{'id': item.id, 'vmid': item.id.split('-')[0], 'configured_source': item.source_node, 'target': item.target_node}]
           if (
             item.source_node == inventory_hostname and
@@ -358,26 +334,13 @@
 
 - name: Display source drift warning
   ansible.builtin.debug:
-    msg: |
-      WARNING: SOURCE DRIFT DETECTED on {{ inventory_hostname }}
-
-      The following replication jobs are configured for this node, but the VMs/CTs
-      are NOT present here. This typically happens after HA failover or manual migration.
-
-      {% for job in proxmox_ha_source_drift_jobs %}
-      - Job {{ job.id }}: VMID {{ job.vmid }} is NOT on {{ inventory_hostname }}
-        Configured: {{ job.configured_source }} -> {{ job.target }}
-      {% endfor %}
-
-      ACTION REQUIRED:
-      1. Determine where VMID(s) {{ proxmox_ha_source_drift_jobs | map(attribute='vmid') | unique | join(', ') }} currently reside
-      2. In the inventory's proxmox_ha_replication_jobs:
-         - Change source_node to the node where the VM currently runs
-         - OR migrate the VM back to the configured source_node
-      3. Re-run this role to reconcile
-
-      NOTE: Replication jobs can only be created/managed on the node where the VM resides.
-  when: proxmox_ha_source_drift_jobs | length > 0
+    msg: >-
+      SOURCE DRIFT: guests
+      {{ proxmox_ha_misplaced_guest_jobs | map(attribute='vmid') | unique | join(', ') }}
+      are not on {{ inventory_hostname }}; jobs
+      {{ proxmox_ha_misplaced_guest_jobs | map(attribute='id') | join(', ') }}
+      cannot run — see proxmox_ha README, "Behaviour worth knowing".
+  when: proxmox_ha_misplaced_guest_jobs | length > 0
   tags: [proxmox_ha_replication]
 
 - name: Detect jobs running from unexpected source nodes
@@ -395,16 +358,10 @@
 
 - name: Display unexpected source warning
   ansible.builtin.debug:
-    msg: |
-      INFO: Found {{ proxmox_ha_unexpected_source_jobs | length }} job(s) that are configured for {{ inventory_hostname }}
-      but are currently running from a DIFFERENT source node:
-
-      {% for job_id in proxmox_ha_unexpected_source_jobs %}
-      {% set actual = (proxmox_ha_current_replication_jobs | selectattr('id', 'equalto', job_id) | first).source %}
-      - {{ job_id }}: Running from {{ actual }}, configured for {{ inventory_hostname }}
-      {% endfor %}
-
-      This indicates the VM has migrated. The jobs are working but config is out of sync.
-      Consider updating proxmox_ha_replication_jobs source_node to match reality.
+    msg: >-
+      UNEXPECTED SOURCE: jobs
+      {{ proxmox_ha_unexpected_source_jobs | join(', ') }} are configured for
+      {{ inventory_hostname }} but run from another node — the guest migrated; see
+      proxmox_ha README, "Behaviour worth knowing".
   when: proxmox_ha_unexpected_source_jobs | length > 0
   tags: [proxmox_ha_replication]

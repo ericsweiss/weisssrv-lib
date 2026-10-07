@@ -1,13 +1,6 @@
 # {{ ansible_managed }}
-#
-# Late, retrying mount of the encrypted datasets once zfs-load-key@<pool> has
-# loaded their keys — the single anchor nfsd and the encrypted-storage guests
-# order After=. Runs LATE and is never Before= a boot target, so it can delay
-# encrypted data but can never hang boot (role README, "Cold-cluster boot").
-#
-# Deliberately NO ProtectSystem=/PrivateTmp/ProtectHome: those put the service
-# in a private mount namespace, so `zfs mount` would mount inside it and the
-# host would never see the mounts. Only namespace-safe hardening is kept.
+# Late, retrying mount of the encrypted datasets after zfs-load-key@<pool>. No
+# ProtectSystem, PrivateTmp or ProtectHome: they would hide the mounts.
 
 [Unit]
 Description=Mount ZFS encrypted datasets after their keys are loaded
@@ -26,13 +19,9 @@ StartLimitIntervalSec=0
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# The until-loop keeps the start job PENDING ("activating", never "failed")
-# until the mount succeeds, so After= dependents stay QUEUED. A plain oneshot +
-# Restart=on-failure would COMPLETE the start job on the first failed attempt,
-# releasing nfs-server / pve-start-encrypted-guests and cascading Requires=
-# failures onto the export .mount units, none of which retry.
-# TimeoutStartSec=0 lets the loop run as long as an operator hand-unlock takes;
-# Restart=on-failure is only a backstop for the bash wrapper itself dying.
+# The until-loop keeps the start job "activating" so After= dependents stay
+# QUEUED; a plain oneshot + Restart=on-failure would release them on the first
+# failed attempt. Restart=on-failure only backstops the bash wrapper dying.
 ExecStart=/bin/bash -c 'until /usr/local/sbin/zfs-mount-encrypted.sh {{ zfs_encryption_pools | map(attribute='name') | join(' ') }}; do sleep 30; done'
 TimeoutStartSec=0
 Restart=on-failure

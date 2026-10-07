@@ -1,8 +1,7 @@
 ---
-# This is a render/contract scenario: docker_engine_skip_install skips the apt
-# repo add, the pinned engine install/hold, and the service enable/start (all
-# need the real download.docker.com repo + a running daemon), so it renders +
-# asserts the journald daemon.json without a container runtime.
+# Render/contract scenario: docker_engine_skip_install skips the apt repo add,
+# the pinned install/hold and the service start, so the journald daemon.json and
+# the required-pin assert are covered without a container runtime.
 platforms:
   - name: docker-engine-test
     image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}

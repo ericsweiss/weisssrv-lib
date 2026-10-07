@@ -2,6 +2,18 @@
 # Enable + start + health-check half of the shared exporter pipeline. Run
 # after the caller has templated its unit file so a unit change is picked up.
 
+# The health probe below is the only consumer of the port, so the service half
+# asserts it. The install half must not: adguard_sync runs install only and has
+# no port to health-check.
+- name: Assert the caller supplied a health-check port
+  ansible.builtin.assert:
+    that:
+      - prometheus_exporter_port | int > 0
+    fail_msg: >-
+      prometheus_exporter_port is required by the service half; the metrics
+      health check probes localhost on that port.
+    quiet: true
+
 - name: Enable and start service {{ prometheus_exporter_service_name }}
   ansible.builtin.systemd:
     name: "{{ prometheus_exporter_service_name }}"
@@ -10,13 +22,8 @@
     daemon_reload: true
 
 - name: Apply pending restarts before health check
-  # Flush so the health probe below sees the freshly restarted binary on a
-  # version/unit change. No-op when nothing notified a restart.
-  # Note: flush_handlers is play-global — when this shared pipeline is included
-  # mid-play (e.g. zfs_exporter after nfs_tls/nas_storage in storage.yml) it
-  # also fires any handlers those earlier roles queued, running them here rather
-  # than at play end. Benign (those roles have finished their tasks) but it does
-  # reorder their handler execution.
+  # Flush so the health probe sees the restarted binary. Play-global: this also
+  # runs handlers queued by earlier roles in the same play.
   ansible.builtin.meta: flush_handlers
 
 - name: Verify metrics endpoint for {{ prometheus_exporter_name }}

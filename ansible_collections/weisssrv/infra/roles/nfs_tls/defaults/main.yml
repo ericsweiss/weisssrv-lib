@@ -1,8 +1,7 @@
 ---
-# Deploys the kernel-TLS handshake daemon (tlshd from ktls-utils), which NFSv4
-# `xprtsec=tls`/`mtls` needs to encrypt its RPC stream. Floors: kernel 6.5+ and
-# nfs-utils 2.6.3+. OPT-IN, and BOTH ends need it — servers and clients.
-# Rollout order (exports, then mount options): README.
+# Deploys tlshd (ktls-utils), which NFSv4 `xprtsec=tls`/`mtls` needs to encrypt
+# its RPC stream. Floors: kernel 6.5+, nfs-utils 2.6.3+. Opt-in, and both ends
+# need it. README carries the rollout order.
 
 nfs_tls_enabled: false
 
@@ -11,10 +10,9 @@ nfs_tls_enabled: false
 # cert + key. Client-only hosts leave it false.
 nfs_tls_is_server: false
 
-# Does the CLIENT need to present a certificate? Only required for xprtsec=mtls.
-# With xprtsec=tls (server-only auth) this stays false and the client block
-# omits the private key — see README "Private-key least privilege". Set true
-# only when migrating an export to xprtsec=mtls.
+# Does the CLIENT present a certificate? Required only for xprtsec=mtls; under
+# xprtsec=tls this stays false and the client block omits the private key.
+# See README "Private-key least privilege".
 nfs_tls_client_cert: false
 
 # Cert + key paths. Defaults match the filenames weisssrv.infra.acme_certs
@@ -23,12 +21,10 @@ nfs_tls_client_cert: false
 nfs_tls_cert_path: /etc/ssl/private/fullchain.pem
 nfs_tls_key_path: /etc/ssl/private/privkey.pem
 
-# Remove the cert + key on a client-only host (they are needed by neither an
-# xprtsec=tls client nor tlshd's client block). Set false when ANOTHER role owns
-# those paths — the defaults above are also acme_certs' local install path, and
-# a host that holds a local cert AND mounts NFS over TLS would otherwise have it
-# deleted here and reinstalled there on every converge.
-nfs_tls_scrub_client_cert: true
+# Set true to have this role DELETE nfs_tls_cert_path + nfs_tls_key_path on a
+# client-only host, where an xprtsec=tls client needs neither. Off by default:
+# those paths are also acme_certs' install path, so another role may own them.
+nfs_tls_scrub_client_cert: false
 
 # Truststore for validation: the system CA bundle, so a publicly-issued cert
 # validates as-is. Override when using an internal CA.

@@ -5,6 +5,10 @@ node_exporter_host_port: 9101
 
 node_exporter_host_textfile_dir: /var/lib/node_exporter
 
+# Empty listens on every interface. Set the scrape-facing address on a host with
+# no firewall in front of the port: the endpoint is unauthenticated plaintext.
+node_exporter_host_bind_address: ""
+
 # Keep well inside the `for:` of the exporter-down alert covering this job, so
 # the self-heal lands before the alert (README "Liveness gate").
 node_exporter_host_healthcheck_interval: 5min
@@ -22,12 +26,24 @@ node_exporter_host_zpool_collector: "{{ node_exporter_host_proxmox }}"
 # mtime 0, which PmxcfsStale treats as stale by design.
 node_exporter_host_corosync_collector: "{{ node_exporter_host_proxmox }}"
 
-# Default-OFF upstream, so node_systemd_* exists nowhere unless asked for. The
-# include pattern bounds cardinality; series list in README "systemd collector".
-#
-# The patterns use `[.]` rather than `\.` on purpose: the value lands in a
-# systemd ExecStart= line, where an unrecognised backslash escape makes systemd
-# reject the whole command.
+# Per-cache /proc/slabinfo series, for attributing a kernel slab leak to one
+# cache. Off by default: it adds scrape series to every host that turns it on,
+# and it ships only where node_exporter_host_proxmox is true.
+node_exporter_host_slabinfo_collector: false
+
+# Caches the slabinfo collector publishes. Names come from /proc/slabinfo. An
+# empty list with the collector enabled is asserted against: it would publish
+# only the collector sentinel and no per-cache series.
+node_exporter_host_slab_caches: []
+
+# Default-OFF upstream; the include pattern bounds cardinality, and the README
+# "systemd collector" section lists the series. The patterns use `[.]` not `\.`:
+# systemd rejects an ExecStart= line carrying an unrecognised backslash escape.
 node_exporter_host_systemd_collector: true
 node_exporter_host_systemd_unit_include: ".+[.](service|timer)"
 node_exporter_host_systemd_unit_exclude: ".+[.](automount|device|mount|scope|slice)"
+
+# Default-OFF upstream and left off: --collector.processes walks all of /proc on
+# every scrape. Turn on where node_processes_* is wanted — it is what fills the
+# node-exporter-full dashboard's System Processes rows (README).
+node_exporter_host_processes_collector: false

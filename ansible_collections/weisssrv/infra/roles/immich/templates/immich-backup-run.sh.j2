@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
 # {{ ansible_managed }}
-# Nightly Immich database backup: pg_dumpall from the compose `database`
-# service, gzipped into the backup landing zone. Emits node_exporter textfile
-# metrics (immich_backup_*) for freshness alerting; the metric-writing logic is
-# the shared write_prom_metrics helper, sourced below.
-#
-# NOT `set -e`: the dump's exit code must be captured and the metric written
-# regardless. pipefail so a pg_dumpall failure isn't masked by a succeeding
-# gzip. The wrapper preserves the prior success timestamp on failure so
-# staleness measures time-since-last-success.
+# Nightly Immich database dump into the backup landing zone, with
+# immich_backup_* textfile metrics for freshness alerting.
+
+# No `set -e`: the dump's exit code must be captured and the metric written.
 set -uo pipefail
 
 COMPOSE_DIR="{{ immich_compose_dir }}"
@@ -19,44 +14,30 @@ PROM_DIR="{{ immich_backup_metrics_dir }}"
 # 1 when the landing zone is the NFS export (immich_backup_nfs_enabled).
 NFS_ENABLED="{{ '1' if (immich_backup_nfs_enabled | bool) else '0' }}"
 
-# Hard gate (no set -e here): without the lib, write_prom_metrics is
-# undefined and the run would proceed metric-less — refuse instead.
-# shellcheck source=/dev/null
-if ! source {{ immich_backup_lib_path }}; then
-  echo "immich-backup: missing backup metrics library {{ immich_backup_lib_path }}" >&2
+METRICS_LIB="{{ immich_backup_lib_path }}"
+# Hard gate: without the lib, write_prom_metrics is undefined and the run would
+# proceed metric-less — refuse instead.
+if [ ! -r "$METRICS_LIB" ]; then
+  echo "immich-backup: metrics library $METRICS_LIB missing — re-run the immich role" >&2
   exit 1
 fi
+# shellcheck source=/dev/null
+. "$METRICS_LIB"
 {% raw %}
 PROM_FILE="${PROM_DIR}/immich_backup.prom"
 START_TS="$(date +%s)"
 DUMP_FILE="${BACKUP_DIR}/immich-$(date +%Y%m%d-%H%M%S).sql.gz"
-# The dump streams into a .partial name and is renamed into DUMP_FILE only once
-# the pipeline AND the size check passed. The FINAL name is what the NAS
-# artefact collector and the offsite file walk key on, so it must only ever
-# appear complete: writing straight to it publishes an in-progress dump as
-# tonight's backup, and a killed run leaves a truncated one there indefinitely.
-# `.partial` is excluded by the collector (and by ARTIFACT_GLOB below), and the
-# rename is atomic within the same directory.
+# Stream to .partial and rename in only after the size check: collectors key on
+# the final name.
 DUMP_TMP="${DUMP_FILE}.partial"
-# Best-effort cleanup on an interrupted run (a SIGKILL cannot fire it — the
-# stale-partial sweep after retention covers that).
+# Best-effort cleanup; the post-retention .partial sweep covers a SIGKILL.
 trap 'rm -f -- "$DUMP_TMP"' EXIT
-# Matches the final name only, so an in-progress .partial can never be sized as
-# a healthy artefact (see write_prom_metrics).
+# Matches the final name only, so a .partial is never sized as a healthy artefact.
 ARTIFACT_GLOB="${BACKUP_DIR}/immich-*.sql.gz"
 
 mkdir -p "$PROM_DIR"
 
-# Fail closed on an unmounted landing zone: when NFS-backed, BACKUP_DIR is the
-# mountpoint; if the mount is missing, writing there would land the dump on the
-# root disk's mountpoint dir — silently un-offsited. Refuse, record success=0,
-# and exit non-zero BEFORE dumping.
-if [ "$NFS_ENABLED" = "1" ] && ! mountpoint -q "$BACKUP_DIR"; then
-  echo "immich-backup: BACKUP_DIR ${BACKUP_DIR} is NFS-backed but not mounted — aborting" >&2
-  # No ARTIFACT_GLOB on the fail-closed path (see write_prom_metrics).
-  write_prom_metrics immich_backup 0 0 0 "$PROM_FILE"
-  exit 1
-fi
+require_mounted_landing_zone immich_backup "$BACKUP_DIR" "$NFS_ENABLED" "$PROM_FILE" || exit 1
 mkdir -p "$BACKUP_DIR"
 
 # pg_dumpall via the compose `database` service. -T disables the pseudo-TTY
@@ -67,10 +48,7 @@ docker compose --project-directory "$COMPOSE_DIR" exec -T database \
   | gzip > "$DUMP_TMP"
 rc=$?
 
-# Validate the dump: rc 0 with a plausibly-sized file. A truncated/empty gzip
-# (e.g. the container was mid-restart) must NOT report a healthy backup — and
-# must never be published under the final name, so the rename is the LAST step
-# and only a validated dump reaches it.
+# Publish only a validated dump: rc 0 and at least 1000 bytes, then rename.
 size=0
 if [ "$rc" -eq 0 ] && [ -f "$DUMP_TMP" ]; then
   size="$(stat -c %s "$DUMP_TMP" 2>/dev/null || echo 0)"
@@ -82,19 +60,14 @@ if [ "$rc" -eq 0 ] && [ -f "$DUMP_TMP" ]; then
 fi
 
 if [ "$rc" -ne 0 ]; then
-  # Only the .partial can exist here: DUMP_FILE is created by the rename above,
-  # which is the last thing that can fail (and leaves the .partial in place).
   size=0
   rm -f -- "$DUMP_TMP"
 fi
 
-# Prune old dumps only after a successful run (never delete the last good copy
-# because a fresh run failed).
+# Prune only after a success, and sweep .partial files a SIGKILL left behind.
 if [ "$rc" -eq 0 ]; then
-  find "$BACKUP_DIR" -name 'immich-*.sql.gz' -type f -mtime "+${KEEP_DAYS}" -delete 2>/dev/null || true
-  # Retention matches the FINAL name only, so a SIGKILLed run's .partial would
-  # otherwise sit in the landing zone forever.
-  find "$BACKUP_DIR" -name 'immich-*.sql.gz.partial' -type f -mtime +1 -delete 2>/dev/null || true
+  find "$BACKUP_DIR" -maxdepth 1 -name 'immich-*.sql.gz' -type f -mtime "+${KEEP_DAYS}" -delete 2>/dev/null || true
+  find "$BACKUP_DIR" -maxdepth 1 -name 'immich-*.sql.gz.partial' -type f -mtime +1 -delete 2>/dev/null || true
 fi
 
 end_ts="$(date +%s)"

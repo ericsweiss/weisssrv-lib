@@ -33,11 +33,9 @@
         success_msg: "Backing swap device {{ encrypted_swap_source_device }} present"
       when: encrypted_swap_require_source_device | bool
 
-    # A host that lost its backing device after an earlier converge still
-    # carries the entries that converge wrote. Leaving them is exactly the boot
-    # failure the stat above exists to prevent — systemd-cryptsetup@<mapper>
-    # fails on every boot naming a device that is gone — so the self-skip arm
-    # reconciles them away rather than only declining to write new ones.
+    # CRITICAL: a host whose backing device is gone still carries the crypttab
+    # and fstab entries an earlier converge wrote, and systemd-cryptsetup@<mapper>
+    # then fails every boot. The self-skip arm reconciles them away.
     - name: Remove the encrypted-swap crypttab entry when the backing device is absent
       ansible.builtin.lineinfile:
         path: /etc/crypttab
@@ -62,6 +60,14 @@
         - not (encrypted_swap_source_present | bool)
         - not ansible_check_mode
 
+    # A frozen `encrypted_swap_mapper_active 1` would keep reading healthy on a
+    # host that no longer has encrypted swap.
+    - name: Remove the encrypted-swap textfile metric when the backing device is absent
+      ansible.builtin.file:
+        path: "{{ encrypted_swap_textfile_dir }}/encrypted_swap.prom"
+        state: absent
+      when: not (encrypted_swap_source_present | bool)
+
     - name: Report encrypted swap skipped for a missing backing device
       ansible.builtin.debug:
         msg: >-
@@ -75,11 +81,9 @@
     - name: Write the encrypted-swap configuration
       when: encrypted_swap_source_present | bool
       block:
-        # BOTH packages: Debian trixie / PVE 9 split the crypttab generator and
-        # the systemd-cryptsetup@.service template into a separate
-        # systemd-cryptsetup package. Without it the generator never
-        # materializes the unit and swap never activates at boot; cryptsetup
-        # alone is only the userspace tools.
+        # Both packages: Debian trixie splits the crypttab generator and the
+        # systemd-cryptsetup@.service template into systemd-cryptsetup. Without
+        # it the unit never materializes and swap never activates at boot.
         - name: Install cryptsetup + the systemd crypttab machinery
           ansible.builtin.apt:
             name:
@@ -130,11 +134,8 @@
             state: absent
 
         # Boot finalize: after the activation reboot, drop the plaintext backing
-        # swap and comment its fstab line exactly once (guarded on the mapper
-        # being ACTIVE swap in /proc/swaps); and — if the plaintext line won the
-        # boot race so the mapper never opened — complete the switch at boot
-        # (memory empty, so the swapoff cannot OOM), always keeping a working
-        # swap on any failure.
+        # swap and comment its fstab line once, guarded on the mapper being
+        # active swap. See README § Design notes.
         - name: Deploy the encrypted-swap boot finalize script
           ansible.builtin.template:
             src: encrypted-swap-finalize.sh.j2

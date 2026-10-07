@@ -14,9 +14,9 @@ platforms:
     tmpfs:
       - /run
       - /tmp
-  # Client-only host (the least-privilege path the six k3s agents take):
-  # key-free tlshd.conf, and prepare-staged PEMs must be REMOVED by the
-  # cleanup task.
+  # Client-only host with nfs_tls_scrub_client_cert: true (the least-privilege
+  # opt-in): key-free tlshd.conf, and prepare-staged PEMs must be REMOVED by
+  # the cleanup task.
   - name: nfs-tls-client-test
     image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}
     pre_build_image: true
@@ -30,10 +30,9 @@ platforms:
     tmpfs:
       - /run
       - /tmp
-  # Client-only host with nfs_tls_scrub_client_cert: false — the escape hatch
-  # for a host whose PEMs another role owns. The prepare-staged PEMs must
-  # SURVIVE converge, otherwise nfs_tls and acme_certs delete and reinstall the
-  # same files on alternate converges.
+  # Client-only host on the default (no scrub): another role owns those PEMs.
+  # The prepare-staged PEMs must survive converge, or nfs_tls and acme_certs
+  # delete and reinstall the same files on alternate converges.
   - name: nfs-tls-noscrub-test
     image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}
     pre_build_image: true
@@ -75,9 +74,9 @@ provisioner:
         nfs_tls_is_server: true
       nfs-tls-client-test:
         nfs_tls_is_server: false
+        nfs_tls_scrub_client_cert: true
       nfs-tls-noscrub-test:
         nfs_tls_is_server: false
-        nfs_tls_scrub_client_cert: false
       nfs-tls-optout-test:
         nfs_tls_enabled: false
         nfs_tls_is_server: false

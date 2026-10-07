@@ -4,11 +4,9 @@
 # everywhere else — the role is a no-op there.
 acme_certs_enabled: false
 
-# Required inputs (no default — asserted in tasks/main.yml when enabled):
-#   acme_certs_domain            — base domain; the cert covers it and *.<domain>
-#   acme_certs_email             — ACME account email
-#   acme_certs_ssh_private_key   — distribution key (secret)
-#   acme_certs_ssh_public_key    — its public half
+# Required when enabled, asserted in tasks/main.yml: acme_certs_domain (the
+# cert covers it and *.<domain>), acme_certs_email, and the distribution
+# keypair acme_certs_ssh_private_key / acme_certs_ssh_public_key.
 acme_certs_domain: ""
 acme_certs_email: ""
 
@@ -21,6 +19,15 @@ acme_certs_sh_tarball_sha256: "a51511ad0e2912be45125cf189401e4ae776ca1a29d5768f0
 # acme.sh dnsapi hook for DNS-01. Any hook the pinned tarball ships works; the
 # operator exports the provider credentials at issuance time.
 acme_certs_dns_hook: dns_cf
+
+# ACME CA acme.sh is pinned to at install time and re-asserted every run. Any
+# name acme.sh accepts (letsencrypt, zerossl, google, buypass, or a CA directory
+# URL); unset, acme.sh 3.x would default to ZeroSSL.
+acme_certs_ca_server: letsencrypt
+
+# Root-owned 0700 staging dir for the acme.sh tarball; removed after the
+# install. Must not sit under a world-writable parent.
+acme_certs_stage_dir: /run/acme-certs-install
 
 acme_certs_local_cert_dir: /etc/ssl/private
 acme_certs_local_cert_group: root
@@ -48,6 +55,20 @@ acme_certs_key_from: ""
 acme_certs_distribute_pubkeys: true
 
 acme_certs_skip_distribution: false
+
+# Daily probe of every distribution target, so the per-target gauges move
+# between renewals. It pushes nothing, reloads nothing and leaves
+# cert_renewal_last_run_success alone.
+acme_certs_distribution_check_enabled: true
+acme_certs_distribution_check_schedule: "*-*-* 05:40:00"
+acme_certs_distribution_check_random_delay: 30m
+acme_certs_distribution_check_nice: 10
+acme_certs_distribution_check_timeout: 10m
+# Retries, and the seconds between them, for a check-mode probe that fails. The
+# gauge it writes holds until the next daily run, so one SSH blip must not read
+# as a dead target for a day. 0 retries restores a single probe.
+acme_certs_distribution_check_retries: 2
+acme_certs_distribution_check_retry_delay: 10
 
 # Forced-command receiver installed on each sudo target; the pinned key can only
 # run this (see the template header). ssh_no_sudo targets keep the legacy push

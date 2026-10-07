@@ -1,20 +1,7 @@
 #!/bin/sh
 # Managed by Ansible node_exporter_host role.
-#
-# Writes per-pool ZFS health metrics to the node_exporter textfile collector.
-# Metric table + companion alerts: README "zpool-status collector".
-#
-# Exists because pool *health* alone misses silent corruption: a single-vdev
-# pool accumulating checksum errors stays ONLINE — zfs_exporter's health gauge
-# stays green, SMART stays PASSED, and the first loud symptom is a backup
-# aborting with EIO.
-#
-# Hosts without ZFS emit only the sentinel, which still proves the collector
-# runs while the pool-labelled series (and their alerts) are simply absent.
-#
-# Writes to .tmp then renames so node_exporter never reads a half-written file.
-# A parse failure on one counter degrades that counter to 0 rather than
-# poisoning every metric in the file, sentinel included.
+# Writes per-pool ZFS health metrics to the node_exporter textfile collector,
+# via .tmp and rename. Metrics, rationale and alerts: role README.
 
 set -eu
 export LC_ALL=C
@@ -26,10 +13,14 @@ TMP="$OUT.tmp"
 # would otherwise kill the script before the sentinel is written.
 mkdir -p "$OUT_DIR"
 
+# 0 says nothing was measured. Without it a host whose pools all vanished emits
+# a fresh sentinel and no per-pool series, which reads as healthy.
+success=1
+
 {
     printf '# HELP zfs_pool_status_health_code Pool health from zpool status: 0=ONLINE 1=DEGRADED 2=other (FAULTED/UNAVAIL/SUSPENDED/...).\n'
     printf '# TYPE zfs_pool_status_health_code gauge\n'
-    printf '# HELP zfs_pool_status_errors_total Sum of per-vdev READ/WRITE/CKSUM error counters from zpool status. Non-zero with the pool still ONLINE is the silent-corruption signature.\n'
+    printf '# HELP zfs_pool_status_errors_total Pool-level READ/WRITE/CKSUM error counters from zpool status. Non-zero with the pool still ONLINE is the silent-corruption signature.\n'
     printf '# TYPE zfs_pool_status_errors_total gauge\n'
     printf '# HELP zfs_pool_status_data_errors Number of entries in the zpool status -v permanent-error list.\n'
     printf '# TYPE zfs_pool_status_data_errors gauge\n'
@@ -41,7 +32,14 @@ mkdir -p "$OUT_DIR"
     printf '# TYPE zfs_pool_status_size_bytes gauge\n'
 
     if command -v zpool >/dev/null 2>&1; then
-        for pool in $(zpool list -H -o name 2>/dev/null); do
+        set +e
+        pools=$(zpool list -H -o name 2>/dev/null)
+        pools_rc=$?
+        set -e
+        { [ $pools_rc -eq 0 ] && [ -n "$pools" ]; } || success=0
+        # Intentional word-splitting of the pool-name list:
+        # shellcheck disable=SC2086
+        for pool in $pools; do
             # `set +e` per pool: a pool that disappears mid-loop (export,
             # device yank) must not kill the whole collector run.
             set +e
@@ -57,37 +55,34 @@ mkdir -p "$OUT_DIR"
                 *)        code=2 ;;
             esac
 
-            # Sum vdev error columns. Vdev table rows are indented lines
-            # whose last three fields are READ WRITE CKSUM; the header row
-            # and the pool-name row are filtered by requiring numeric
-            # error fields. Counters can be suffixed (e.g. 1.2K) on huge
-            # counts — strip the suffix and keep the integer part; alerts
-            # only care about zero vs non-zero.
-            # Positional assignment instead of eval: the awk output is
-            # already constrained to three integers, but eval on generated
-            # text is a habit worth not having. $1 (OUT_DIR) was consumed
-            # at the top, so clobbering the positional params is safe.
+            # Max over the config rows, not a sum: ZFS propagates an error to
+            # both the leaf and its parent vdev, which a sum double-counts.
+            # Counts can be suffixed (1.2K): keep the integer part.
             totals=$(printf '%s\n' "$status" | awk '
                 /^config:/ { in_cfg=1; next }
                 in_cfg && /^errors:/ { in_cfg=0 }
                 in_cfg && /^[[:space:]]+/ && NF >= 5 {
-                    r=$(NF-2); w=$(NF-1); c=$NF
+                    # Positional, not NF-relative: zpool appends a note
+                    # ("(resilvering)", "too many errors") after CKSUM on the
+                    # rows that matter, and NF-relative reads skip them.
+                    r=$3; w=$4; c=$5
                     if (r ~ /^[0-9]/ && w ~ /^[0-9]/ && c ~ /^[0-9]/) {
                         sub(/[^0-9].*$/, "", r); sub(/[^0-9].*$/, "", w); sub(/[^0-9].*$/, "", c)
-                        rs += r; ws += w; cs += c
+                        if (r+0 > rs) rs = r+0
+                        if (w+0 > ws) ws = w+0
+                        if (c+0 > cs) cs = c+0
                     }
                 }
                 END { printf "%d %d %d\n", rs+0, ws+0, cs+0 }')
-            # Intentional word-splitting of three integers:
+            # Positional assignment, not eval; $1 (OUT_DIR) was consumed at
+            # the top. Intentional word-splitting of three integers:
             # shellcheck disable=SC2086
             set -- $totals
             read_e=${1:-0}; write_e=${2:-0}; cksum_e=${3:-0}
 
-            # Permanent-error list length: lines between the "errors:" marker
-            # and EOF that look like dataset:<object> entries.
-            # Blank lines are neutral: zpool separates the marker from
-            # the entries with one, so a bare not-indented test would
-            # close the section before counting anything.
+            # Permanent-error list length: indented dataset:<object> entries
+            # after the "errors:" marker. Blank lines are neutral, since zpool
+            # separates the marker from the entries with one.
             data_errors=$(printf '%s\n' "$status" | awk '
                 /^errors: Permanent errors/ {f=1; next}
                 f && /^[[:space:]]*$/ {next}
@@ -95,18 +90,11 @@ mkdir -p "$OUT_DIR"
                 f {f=0}
                 END {print c+0}')
 
-            # Last-scan completion time. zpool reports a finished scrub as
-            # "scrub repaired ... on <date>" and a finished resilver as
-            # "resilvered ... on <date>"; match both so a completed resilver
-            # also counts as a fresh scan (otherwise the post-resilver /
-            # pre-next-scrub window would falsely trip ZFSPoolScrubStale).
-            # Convert via date -d (GNU date on all Proxmox/Debian hosts).
-            # A scan in progress shows no "... on <date>" line, which would
-            # leave scrub_ts at 0 and falsely trip the alert mid-scan on a long
-            # raidz2 pool — treat an in-progress scrub/resilver as fresh (now)
-            # so the alert only fires when no scan has run for the alert window.
+            # Last-scan completion: a finished scrub or resilver both count,
+            # and a scan in progress counts as now, so ZFSPoolScrubStale fires
+            # only when no scan has run for the alert window.
             scrub_ts=0
-            scrub_date=$(printf '%s\n' "$status" | sed -n 's/.*\(scrub repaired\|resilvered\).*on \(.*\)$/\2/p' | head -1)
+            scrub_date=$(printf '%s\n' "$status" | sed -n 's/.*\(scrub repaired\|resilvered\).* on \(.*\)$/\2/p' | head -1)
             if [ -n "$scrub_date" ]; then
                 set +e
                 scrub_ts=$(date -d "$scrub_date" +%s 2>/dev/null)
@@ -116,12 +104,9 @@ mkdir -p "$OUT_DIR"
                 scrub_ts=$(date +%s)
             fi
 
-            # Capacity gauges from parsable (exact-byte) list output. `-Hp`
-            # prints raw bytes (no K/M/G rounding) so the alloc/size ratio the
-            # ZFSPoolSpace rule computes is accurate. Same `set +e` guard as
-            # above: a pool yanked mid-loop must not kill the run. Emitted only
-            # when the pool reports a real size — a faulted pool printing "-"
-            # would otherwise feed a 0 size into the rule's ratio (div-by-zero).
+            # Capacity gauges from `-Hp` raw bytes, so the ZFSPoolSpace ratio
+            # is exact. Same `set +e` guard as above; a faulted pool printing
+            # "-" falls back to 0 and is skipped at emit time.
             set +e
             cap=$(zpool list -Hpo alloc,size "$pool" 2>/dev/null)
             set -e
@@ -143,8 +128,13 @@ mkdir -p "$OUT_DIR"
                 printf 'zfs_pool_status_size_bytes{pool="%s"} %d\n' "$pool" "$size_bytes"
             fi
         done
+    else
+        success=0
     fi
 
+    printf '# HELP zfs_pool_status_collector_success 1 when zpool was runnable and reported at least one pool.\n'
+    printf '# TYPE zfs_pool_status_collector_success gauge\n'
+    printf 'zfs_pool_status_collector_success %d\n' "$success"
     printf '# HELP zfs_pool_status_collector_last_success_seconds Unix time the zpool textfile collector last completed. Staleness means the collector itself is broken — treat as a meta-failure.\n'
     printf '# TYPE zfs_pool_status_collector_last_success_seconds gauge\n'
     printf 'zfs_pool_status_collector_last_success_seconds %s\n' "$(date +%s)"

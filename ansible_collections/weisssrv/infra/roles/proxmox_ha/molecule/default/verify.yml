@@ -119,8 +119,8 @@
           - ha.l_update == 0
         fail_msg: "Expected delete=0/create=0/update=0 for permuted target set, got delete={{ ha.l_delete }}/create={{ ha.l_create }}/update={{ ha.l_update }}"
 
-    # (m) An orphaned job (on this node but absent from config) is warned
-    #     about, never deleted — orphan cleanup is deliberately manual.
+    # (m) An orphaned job, on this node but absent from config, is warned
+    #     about and never deleted. Orphan cleanup is manual.
     - name: M — orphaned job triggers warning only, NO mutations
       ansible.builtin.assert:
         that:
@@ -174,10 +174,9 @@
           - ha.i_set == 1
         fail_msg: "Expected rules set=1 for resource drift, got set={{ ha.i_set }}"
 
-    # (p) The cluster migration channel is PINNED, not inherited: an unset
-    #     datacenter.cfg key is written, a live `insecure` (cleartext guest RAM
-    #     on 60000-60050) is reverted with the migration network preserved, and
-    #     an already-pinned channel mutates nothing.
+    # (p) The cluster migration channel is pinned, not inherited: an unset key
+    #     is written, a live `insecure` is reverted with the migration network
+    #     preserved, and an already-pinned channel mutates nothing.
     - name: P — an unpinned migration channel is pinned with one pvesh set
       ansible.builtin.assert:
         that:
@@ -197,3 +196,101 @@
         that:
           - ha.p3_total == 0
         fail_msg: "Expected 0 mutations for an already-pinned channel, got {{ ha.p3_total }}"
+
+    # The removal paths are the ones that delete production HA state, so each
+    # one is asserted as an exact command count.
+    - name: Q — a disabled resource is removed and nothing else
+      ansible.builtin.assert:
+        that:
+          - ha.q_remove == 1
+          - ha.q_mutate == 0
+        fail_msg: "Expected remove=1/add+set=0 for a disabled resource, got {{ ha.q_remove }}/{{ ha.q_mutate }}"
+
+    - name: R — a disabled rule is removed BEFORE the next rule is added
+      ansible.builtin.assert:
+        that:
+          - ha.r_remove == 1
+          - ha.r_add == 1
+          - ha.r_set == 0
+          - ha.r_remove_before_add == 1
+        fail_msg: >-
+          Expected remove=1/add=1/set=0 with the remove first, got
+          {{ ha.r_remove }}/{{ ha.r_add }}/{{ ha.r_set }}
+          (remove_before_add={{ ha.r_remove_before_add }})
+
+    - name: S — a disabled job is deleted only where it can be recreated
+      ansible.builtin.assert:
+        that:
+          - ha.s_delete == 1
+          - ha.s_create == 0
+          - ha.s2_total == 0
+        fail_msg: >-
+          Expected delete=1/create=0 locally and ZERO calls for a job sourced
+          elsewhere, got {{ ha.s_delete }}/{{ ha.s_create }}/{{ ha.s2_total }}
+
+    - name: T — an unsupported rule type fails loud with no mutations
+      ansible.builtin.assert:
+        that:
+          - ha.t_failed
+          - ha.t_msg_names_rule
+          - ha.t_total == 0
+        fail_msg: >-
+          A rule type other than node-affinity must fail the play, naming the
+          rule, before any ha-manager call — got failed={{ ha.t_failed }},
+          named={{ ha.t_msg_names_rule }}, mutations={{ ha.t_total }}
+
+    - name: U — uncodified live rules and resources are reported, never touched
+      ansible.builtin.assert:
+        that:
+          - ha.u_total == 0
+          - "'legacy-affinity' in ha.u_rules"
+          - "'dns-affinity' not in ha.u_rules"
+          - "'ct:900' in ha.u_resources"
+          - "'vm:150' not in ha.u_resources"
+        fail_msg: >-
+          Expected zero mutations and the unmanaged reports to name
+          legacy-affinity / ct:900, got {{ ha.u_total }} mutations,
+          rules={{ ha.u_rules }}, resources={{ ha.u_resources }}
+
+    - name: V — a failed `pvesr list` aborts instead of creating every job
+      ansible.builtin.assert:
+        that:
+          - ha.v_aborted
+          - ha.v_total == 0
+        fail_msg: >-
+          A failing `pvesr list` must abort the reconcile with no pvesr
+          mutations, got aborted={{ ha.v_aborted }}, mutations={{ ha.v_total }}
+
+# The delegate seam the role took over from the calling play. Without it, a
+# consumer that drops serial: 1 (as MIGRATING instructs) fans the cluster-wide
+# reconcile out to every node at once.
+- name: Verify delegate selection
+  hosts: proxmox-ha-test
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Load the delegate-selection artifact
+      ansible.builtin.slurp:
+        src: /tmp/molecule-results/ha-delegate.json
+      register: ha_delegate_artifact
+
+    - name: Decode the delegate-selection artifact
+      ansible.builtin.set_fact:
+        ha_delegate: "{{ ha_delegate_artifact.content | b64decode | from_json }}"
+
+    - name: Assert the probe skips an unreachable host and the assert can fire
+      ansible.builtin.assert:
+        that:
+          - ha_delegate.delegate_mixed == 'proxmox-ha-test'
+          - ha_delegate.dead_group_failed
+          - ha_delegate.delegate_pinned == 'proxmox-ha-test'
+        fail_msg: >-
+          Delegate selection is broken: the probe chose
+          {{ ha_delegate.delegate_mixed | default('<none>') }} from a mixed
+          group, a group with no reachable host
+          {{ ha_delegate.dead_group_failed | ternary('failed', 'did NOT fail') }},
+          and the explicit pin resolved to
+          {{ ha_delegate.delegate_pinned | default('<none>') }}.
+        success_msg: >-
+          the probe skips unreachable hosts, fails loudly when none answer, and
+          an explicit proxmox_ha_delegate_host wins

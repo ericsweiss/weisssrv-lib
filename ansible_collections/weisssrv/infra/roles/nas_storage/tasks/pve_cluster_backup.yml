@@ -1,9 +1,16 @@
 ---
-# Nightly /etc/pve archive. vzdump captures guests, not pmxcfs: users/ACLs/API
-# tokens (user.cfg), corosync.conf and priv/ (cluster CA + node certs + authkey)
-# are otherwise backed up nowhere, so a total-cluster loss means rebuilding the
-# PVE cluster identity from scratch. The archive lands in the offsite-eligible
-# landing zone and rides the archive replication out with everything else.
+# Nightly /etc/pve archive, landing in the offsite-eligible zone and riding the
+# archive replication out with everything else.
+
+# Shared write_prom_metrics library the wrapper sources, so the freshness-metric
+# shape stays identical across every backup wrapper in the collection.
+- name: Deploy the shared backup-metrics library
+  ansible.builtin.include_role:
+    name: weisssrv.infra.compose_app
+    tasks_from: backup_lib.yml
+  vars:
+    compose_app_backup_lib_dest: "{{ nas_storage_pve_cluster_backup_lib_path }}"
+    compose_app_backup_size_help_object: "/etc/pve archive"
 
 - name: Deploy the /etc/pve cluster-config backup script
   ansible.builtin.template:

@@ -13,3 +13,25 @@
     name: fail2ban
     state: restarted
   when: base_fail2ban_enabled | default(true)
+
+# Regenerate the GRUB config so base_kernel_cmdline_args lands in the boot
+# entries, refreshing the ESP copies on a proxmox-boot-tool host. Skipped under
+# molecule. Applies at the next reboot; the role never reboots.
+- name: Update GRUB for base kernel cmdline
+  ansible.builtin.shell: |
+    set -euo pipefail
+    update-grub
+    if [ -e /etc/kernel/proxmox-boot-uuids ] && command -v proxmox-boot-tool >/dev/null 2>&1; then
+      proxmox-boot-tool refresh
+    fi
+  args:
+    executable: /bin/bash
+  changed_when: true
+  when: not (base_skip_boot_update | default(false))
+
+- name: Warn that a kernel cmdline reboot is required
+  ansible.builtin.debug:
+    msg: >-
+      Kernel command line changed on {{ inventory_hostname }} — a HOST REBOOT is
+      required before base_kernel_cmdline_args takes effect. NOT rebooting
+      automatically. Apply in a maintenance window.

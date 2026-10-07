@@ -23,6 +23,11 @@ provisioner:
         admin_email: test@test.local
         timezone: America/Los_Angeles
         base_skip_dns_config: true
+        # No boot loader in the container: render the GRUB drop-in, never
+        # regenerate boot artifacts.
+        base_skip_boot_update: true
+        base_kernel_cmdline_args:
+          - slub_nomerge
         base_skip_sudoers_validation: true
         # TWO keys: the role deploys the whole list in ONE authorized_key call
         # (a looped exclusive: true would leave only the last key), so the

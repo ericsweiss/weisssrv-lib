@@ -1,12 +1,7 @@
 ---
 # Classification guard for both consumers of nas_storage_zfs_bind_source_pattern
-# — NFS export bind sources and MergerFS unions — all of which fail OPEN on an
-# unmatched source. The `zfs:` contract is in the role README.
-#
-# `zfs:` must be a BOOLEAN, not merely present: both consumers read it through
-# `| bool`, which maps anything else to False rather than erroring.
-#
-# Split into its own file so molecule can drive it from fabricated inventory.
+# (NFS export bind sources, MergerFS unions), which fail OPEN on an unmatched
+# source. `zfs:` must be a boolean; the contract is in the role README.
 
 - name: Assert every declared export `zfs:` is a boolean
   ansible.builtin.assert:
@@ -56,10 +51,8 @@
     label: "{{ item.bind_source }}"
 
 # MergerFS targets are exempt from the export assert above (mergerfs.yml owns
-# their ordering), so the unions are checked here instead. A union whose branches
-# are the pool ROOTS does not match the pattern — it matches paths INSIDE a root
-# — and would silently lose its zfs-mount anchor. EVERY union is checked: the
-# anchor is derived from the BRANCH SET, not from `systemd_requires`.
+# their ordering), so the unions are checked here. Every union is checked: the
+# anchor is derived from the branch set, not from `systemd_requires`.
 - name: Assert every MergerFS union is classified ZFS-backed or not
   ansible.builtin.assert:
     that:

@@ -35,11 +35,6 @@ adguard_sync_features:
   theme: true
   tlsConfig: false
 
-# Required inputs (no default — asserted in tasks/main.yml):
-# - adguard_sync_version: pinned adguardhome-sync release, fetched by the shared
-#   prometheus_exporter install pipeline.
-# - adguard_sync_origin: primary AdGuard API URL.
-# - adguard_sync_replica: replica AdGuard API URL; optional when
-#   adguard_sync_replicas carries the targets instead.
-# - adguard_sync_admin_user / adguard_sync_admin_password: credentials valid on
-#   BOTH endpoints. Never defaulted here — supply from the secret store.
+# Required inputs, asserted in tasks/main.yml and documented in the README:
+# adguard_sync_version, adguard_sync_origin, adguard_sync_replica (or
+# adguard_sync_replicas), adguard_sync_admin_user, adguard_sync_admin_password.

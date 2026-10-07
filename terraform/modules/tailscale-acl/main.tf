@@ -7,10 +7,7 @@ resource "tailscale_acl" "this" {
   reset_acl_on_destroy = false
 
   # Not an input — `lifecycle` blocks take no variables, so this is fixed for
-  # every consumer. Stop managing the ACL with
-  # `terraform state rm 'module.<name>.tailscale_acl.this'` (the live policy is
-  # untouched, since reset_acl_on_destroy is false), then drop the module block.
-  # See README.md "Apply is supervised".
+  # every consumer. Unmanaging the ACL: README.md "Apply is supervised".
   lifecycle {
     prevent_destroy = true
   }

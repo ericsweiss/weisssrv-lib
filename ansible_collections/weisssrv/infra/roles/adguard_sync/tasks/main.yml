@@ -31,16 +31,23 @@
         quiet: true
       when: adguard_sync_replicas | default([]) | length > 0
 
+    - name: Assert this architecture has an adguardhome-sync build
+      ansible.builtin.assert:
+        that:
+          - ansible_architecture in _adguard_sync_arch_map
+        fail_msg: >-
+          ansible_architecture {{ ansible_architecture }} has no
+          adguardhome-sync build mapping; extend _adguard_sync_arch_map in the
+          role's vars/main.yml.
+        quiet: true
+
     - name: Install adguardhome-sync via shared pipeline
       ansible.builtin.include_role:
         name: weisssrv.infra.prometheus_exporter
         tasks_from: install
       vars:
         _as_base: "https://github.com/bakito/adguardhome-sync/releases/download"
-        # Upstream publishes both arches; select by ansible_architecture — the
-        # version probe execs the binary, so a wrong-arch download breaks
-        # install idempotence.
-        _as_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
+        _as_arch: "{{ _adguard_sync_arch_map[ansible_architecture] }}"
         _as_file: "adguardhome-sync_{{ adguard_sync_version }}_linux_{{ _as_arch }}.tar.gz"
         prometheus_exporter_name: adguardhome-sync
         prometheus_exporter_version: "{{ adguard_sync_version }}"
@@ -86,10 +93,18 @@
         mode: "0600"
       no_log: true
 
-    # Failure signal: the unit's api.port is 0 (metrics disabled), so a silent
-    # sync break would otherwise go unnoticed. The unit's ExecStopPost writes
-    # this .prom on every run for a *Failed/Stale alert (matches the repo's
-    # timer-metric pattern).
+    # The writer is this role's only failure signal, so the role owns the dir
+    # rather than relying on node_exporter_host having run first.
+    - name: Ensure the textfile collector directory exists
+      ansible.builtin.file:
+        path: "{{ adguard_sync_textfile_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    # The unit's api.port is 0 (metrics disabled), so a sync break is otherwise
+    # silent. ExecStopPost writes this .prom each run for the *Failed/Stale alert.
     - name: Install adguardhome-sync metrics writer
       ansible.builtin.template:
         src: adguardhome-sync-metrics.sh.j2

@@ -10,8 +10,10 @@ active-backup bond MAC-flap guard is needed.
   Aquantia AQC113 deadlocks its receive path with GRO on a bridged interface,
   and the onboard Intel e1000e hits a TX "Hardware Unit Hang" with tso/gso/gro
   on. The fix is per-NIC and must survive reboot, so it is applied live *and*
-  written as an `ifup` drop-in.
-- **`ip_forward` drop-in.** Proxmox's `pve_firewall` can reset
+  written as an `ifup` drop-in. The role owns the whole
+  `99-nic-*-tuning.cfg` glob: a drop-in for an interface no longer in
+  `nic_tuning_overrides` is removed, including when the list is emptied.
+- **`ip_forward` drop-in.** Proxmox's `pve-firewall` can reset
   `net.ipv4.ip_forward`, which breaks overlay-VPN subnet routing. A `sysctl.d`
   drop-in keeps the value sticky.
 - **`vm.swappiness` drop-in.** A memory-committed virtualization host (guests
@@ -83,6 +85,38 @@ active-backup bond MAC-flap guard is needed.
 
   Idempotent and a no-op on non-bonded hosts. Set `false` only if a bond
   legitimately needs `=1` (multi-switch multicast RX).
+
+- `nic_tuning_bond_primary` (default `null`) — name the leg an `active-backup`
+  bond should prefer, and `nic_tuning_bond_primary_reselect` (default
+  `failure`) the policy for going back to it. `bond-miimon` only watches
+  carrier, so a NIC whose transmit unit wedges with the link up still looks
+  healthy and the bond never fails over. Naming the other leg as primary makes
+  the defect-prone one backup-only, which turns that failure into a
+  link-detected one. Applied in two layers:
+  - **`/etc/network/interfaces`** stanza — `bond-primary` and
+    `bond-primary_reselect` inserted after the `bond-mode active-backup` line,
+    which ifupdown2 honors for these two attributes.
+  - **live sysfs** `/sys/class/net/<bond>/bonding/primary` — applies now.
+    `primary_reselect` is written first: under the kernel default (`always`) a
+    primary write moves the active slave immediately and blips the uplink.
+
+  Left `null`, empty or whitespace-only the role reconciles the pin away: it
+  removes both lines from `/etc/network/interfaces` and clears
+  `bonding/primary` live, so the kernel default `primary_reselect` ("always")
+  applies again. A host that pinned a leg by hand outside Ansible either names
+  that leg here, or sets `nic_tuning_bond_primary_manage_absent: false`
+  (default `true`) to leave the hand-written pin alone.
+  Set, the role fails the play rather than pin nothing:
+
+  - `nic_tuning_bond_primary` must name an interface. A value that is not an
+    interface name fails the play instead of writing an unusable
+    `bond-primary` line.
+  - `nic_tuning_bond_primary_reselect` must be `always`, `better` or `failure`.
+  - `/etc/network/interfaces` must exist, and hold exactly one
+    `bond-mode active-backup` stanza to anchor on. A host configured through
+    netplan, systemd-networkd or NetworkManager pins the leg there instead.
+  - The named interface must be enslaved by an active-backup bond on a host
+    that has bonding at all. A host with no bonding module is a clean no-op.
 
 - `nic_tuning_disable_ipv6` (default `[]`) — list of interfaces to fully disable
   IPv6 on, removing their `fe80::` link-local. Use where an interface's UNTAGGED

@@ -1,18 +1,29 @@
 ---
-# A byte count is handed to weisssrv.infra.zfs_arc_cap, which owns the whole
-# implementation; empty leaves ARC at the ZFS default and manages nothing.
-# Aliased to the inventory-wide `zfs_arc_max_bytes`; set this directly to
-# decouple.
+# Lets a disabled component's units, scripts and .prom be converged away. Only a
+# file carrying the marker below is stopped and removed; set false on a host
+# adopted with hand-rolled units of the same conventional names.
+nas_storage_manage_absent: true
+
+# Substring that identifies a role-written file. The default is the stable prefix
+# of `ansible_managed`, so a hand-written unit is reported and kept.
+nas_storage_managed_marker: >-
+  {{ ansible_managed | regex_replace('\{.*$', '') | trim }}
+
+# A byte count handed to weisssrv.infra.zfs_arc_cap, which owns the whole
+# implementation. Empty leaves ARC at the ZFS default. Aliased to the
+# inventory-wide `zfs_arc_max_bytes`; set this directly to decouple.
 nas_storage_zfs_arc_max_bytes: "{{ zfs_arc_max_bytes | default('') }}"
 # Passed through as zfs_arc_cap_skip_initramfs: the modprobe.d file still
 # renders, only the update-initramfs rebuild is suppressed. For molecule and
 # check-mode runs, where there is no real /boot kernel.
 nas_storage_zfs_arc_skip_initramfs: false
 
-# Media-mover load-shaping. The mover shares the nightly window with backups,
-# scrub and smartd, so it is deliberately deferential: nice/ionice set absolute
-# priority, and the cgroup-v2 weights (below the 100 default) only bite under
-# contention. bwlimit is an optional hard rsync cap (empty = unlimited).
+# Deploy the media mover. Off removes its units, script and .prom.
+nas_storage_media_mover_enabled: false
+
+# Media-mover load-shaping. It shares the nightly window with backups, scrub and
+# smartd: nice/ionice set absolute priority, the cgroup-v2 weights bite only
+# under contention, and bwlimit is an optional rsync cap (empty = unlimited).
 nas_storage_media_mover_min_age: 12h
 nas_storage_media_mover_schedule: "*-*-* 06:00:00"
 nas_storage_media_mover_nice: 10
@@ -28,10 +39,9 @@ nas_storage_media_mover_bwlimit: ""
 nas_storage_media_group: media
 nas_storage_media_gid: 2000
 
-# Per-app appdata subdirs under the appdata NFS export. The export squashes all
-# client writes to nas_storage_appdata_owner:group, so each dir must be owned by
-# that pair. Apps on their own block device do NOT belong here. Path/uid/gid are
-# reference values, not a contract.
+# Per-app appdata subdirs under the appdata NFS export, which squashes client
+# writes to nas_storage_appdata_owner:group, so each dir carries that pair. Apps
+# on their own block device belong elsewhere; the values here are examples.
 nas_storage_appdata_base: /mnt/ssd/appdata
 nas_storage_appdata_owner: 1000
 nas_storage_appdata_group: "{{ nas_storage_media_gid }}"
@@ -41,38 +51,42 @@ nas_storage_appdata_mode: "0775"
 nas_storage_appdata_dirs: []
 
 # Offsite-eligible logical-dump landing zone: apps on a raw block device land a
-# dump under <base>/<app> so it rides the archive file walk (a file walk cannot
-# see inside a live zvol). Give each app its own per-app NFS export in
-# nas_storage_exports for cross-app isolation; the subdirs come from the generic
-# bind_source handling, so no subdir list is needed here.
+# dump under <base>/<app> so it rides the archive file walk. Per-app NFS exports
+# in nas_storage_exports give cross-app isolation.
 nas_storage_backup_apps_base: /mnt/tank/backups/apps
 
-# RUNTIME mounted-dataset guard for nas_storage_backup_apps_base: an unmounted
-# dataset leaves a plain directory that a writer would shadow-write and the
-# collector would read as fresh, keeping both alert arms green. Never set false
-# on a real NAS.
+# Runtime mounted-dataset guard for nas_storage_backup_apps_base: an unmounted
+# dataset leaves a plain directory a writer shadow-writes and the collector
+# reads as fresh, keeping both alert arms green. Never false on a real NAS.
 nas_storage_backup_require_mounted_dataset: "{{ not (nas_storage_skip_zfs_operations | default(false)) }}"
 
-# NAS-side backup-artifact collector: an independent freshness+size signal, since
-# an app's own wrapper metrics go green even when the dump never REACHED the
-# landing zone. Entries are mappings because `pattern` is MANDATORY — a
-# newest-file-of-any-name collector lets a nightly sidecar hold freshness green.
-# Patterns are shell globs matched against the BASENAME; keep them tight enough
-# to exclude sidecars and partial-backup variants. Optional `companions` globs
-# cover files required to RESTORE the dump but not the dump itself.
+# NAS-side backup-artifact collector: an independent freshness and size signal.
+# `pattern` is mandatory and matched as a shell glob against the basename, tight
+# enough to exclude sidecars. `companions` globs cover restore-only files.
 nas_storage_backup_artifact_metrics_enabled: true
 nas_storage_backup_artifact_apps: []
 
-# Nightly ZFS replication to a detachable archive pool. OFF by default: the
+# NFSv4 pseudo-root directory the role creates. The paths in
+# nas_storage_exports are site data and are not derived from it.
+nas_storage_export_root: /export
+
+# Nightly ZFS replication to a detachable archive pool. Off by default: the
 # control script rewrites pool-root properties and destroys snapshots on
-# nas_storage_archive_backup_pool, so it must never run against a pool a site
-# did not nominate.
+# nas_storage_archive_backup_pool, so a site must nominate that pool.
 nas_storage_archive_backup_enabled: false
 # Destination pool. Its root properties are rewritten by the script.
 nas_storage_archive_backup_pool: ""
 # Replicated recursively, each landing at <pool>/<basename>. Every ROOT entry
 # must be a filesystem, not a zvol.
 nas_storage_archive_backup_sources: []
+# Children excluded from the recursive send, each a descendant of a source
+# entry. Needs `zfs send -X` (OpenZFS 2.3+); the script refuses to run on an
+# older zfs rather than silently replicating an excluded child.
+nas_storage_archive_backup_exclude: []
+# Excluding an already-replicated child destroys its archive-side copy and
+# snapshot history, because the recursive receive uses -F. The run refuses
+# until this is set.
+nas_storage_archive_backup_exclude_destroy_ok: false
 # The one dataset receiving cluster-wide vzdump writes, snapshotted only once
 # writes under its mountpoint have quiesced. Empty disables the guard.
 nas_storage_archive_backup_vzdump_target: ""
@@ -84,22 +98,23 @@ nas_storage_archive_backup_keep_monthly: 6
 # window overruns this.
 nas_storage_archive_backup_schedule: "*-*-* 06:30:00"
 nas_storage_archive_backup_random_delay: "10m"
+# Units started by systemd when a replication run succeeds. Empty renders no
+# OnSuccess= line; a site handing off to restic_offsite names
+# restic-offsite.service here.
+nas_storage_archive_backup_on_success_units: []
 
-# Nightly tar of /etc/pve into the landing zone: vzdump captures GUESTS, not
-# pmxcfs, so the cluster identity is otherwise backed up nowhere. Opt-in, and
-# only meaningful on a PVE member that also holds the landing zone. The archive
-# carries private key material, so it and its directory are root-only.
+# Nightly tar of /etc/pve into the landing zone: vzdump captures guests, not
+# pmxcfs. Opt-in, and meaningful only on a PVE member holding the landing zone.
+# The archive carries private key material, so it is root-only.
 nas_storage_pve_cluster_backup_enabled: false
 nas_storage_pve_cluster_backup_src: /etc/pve
 # RUNTIME mounted-SOURCE guard. /etc/pve is a FUSE mount; with pve-cluster down
 # it is an empty directory that tars into a valid backup of nothing, which
 # retention then retires the real archives behind. Never false on a real PVE host.
 nas_storage_pve_cluster_backup_require_src_mount: "{{ not (nas_storage_skip_zfs_operations | default(false)) }}"
-# CONTENT guard, paths relative to _src: a degraded pmxcfs still tars into a
-# readable archive, so framing checks alone cannot tell it from an archive of
-# nothing. The archive is refused unless every file here is in it. Shorten only
-# for a deployment that genuinely lacks one (a standalone node has no
-# corosync.conf).
+# Content guard, paths relative to _src: a degraded pmxcfs still tars into a
+# readable archive, so framing checks cannot tell it from an archive of nothing.
+# Shorten only for a deployment that genuinely lacks a file.
 nas_storage_pve_cluster_backup_required_files:
   - user.cfg
   - corosync.conf
@@ -107,16 +122,17 @@ nas_storage_pve_cluster_backup_required_files:
   - priv/pve-root-ca.key
   - authkey.pub
   - priv/authkey.key
+# Before the archive replication picks the landing zone up, outside the vzdump slice.
 nas_storage_pve_cluster_backup_schedule: "*-*-* 02:15:00"
 nas_storage_pve_cluster_backup_random_delay: 300
 nas_storage_pve_cluster_backup_keep: 14
 nas_storage_pve_cluster_backup_nice: 10
+# Shared write_prom_metrics helper the wrapper sources, deployed by compose_app.
+nas_storage_pve_cluster_backup_lib_path: /usr/local/lib/nas-storage-backup-lib.sh
 
-# SMART monitoring groups. Each entry: {name, disks[], schedule, ata?}. schedule
-# is smartd's -s regex, staggered so the groups do not thrash together; ata:
-# false drops the ATA-only -o/-S flags, which log warnings on NVMe. The default
-# reproduces the four legacy pool-named lists; a different pool layout sets this
-# list directly.
+# SMART monitoring groups, each {name, disks[], schedule, ata?}. schedule is
+# smartd's -s regex, staggered; ata: false drops the ATA-only flags that warn on
+# NVMe; extra_flags appends per-group flags. A different layout sets this list.
 nas_storage_smartd_tank_disks: []
 nas_storage_smartd_ssd_disks: []
 nas_storage_smartd_nvme_disks: []
@@ -143,16 +159,19 @@ nas_storage_skip_smartd_service: false
 # Never reaches argv. Empty leaves it unmanaged (a warning, not a failure).
 nas_storage_samba_password: "{{ lookup('ansible.builtin.env', 'SAMBA_NAS_PASSWORD', default='') }}"
 
-# Samba listener scope. smbd otherwise also binds 139, which nothing in an
-# SMB3-only deployment uses and only the firewall closes.
+# Samba listener scope. smbd otherwise also binds 139, which an SMB3-only
+# deployment does not use. An empty interfaces list leaves smbd on every
+# interface; a non-empty one also sets `bind interfaces only`.
 nas_storage_samba_ports: "445"
 nas_storage_samba_disable_netbios: true
+nas_storage_samba_interfaces: []
+# Server identity. A site joining a domain sets the role accordingly.
+nas_storage_samba_workgroup: WORKGROUP
+nas_storage_samba_server_role: standalone server
 
-# ZFS mount roots — site data. A bind_source under one of these is treated as
-# ZFS-backed (mounted-dataset guard + zfs-mount boot ordering); anything else is
-# a plain bind with neither, so a different pool layout MUST set this or both
-# protections silently do nothing. A per-entry `zfs: true|false` overrides the
-# classification (README).
+# ZFS mount roots — site data. A bind_source under one of these gets the
+# mounted-dataset guard and zfs-mount boot ordering; anything else is a plain
+# bind with neither, so a different pool layout must set this (README).
 nas_storage_zfs_mount_roots:
   - /mnt/tank
   - /mnt/ssd
@@ -167,9 +186,16 @@ nas_storage_zfs_bind_source_pattern: >-
 # Nightly swap reset. Every knob is declared here rather than left as a template
 # fallback — this mechanism gracefully stops production guests.
 nas_storage_swap_clean_enabled: false
+# Runs after the overnight backup jobs so it reclaims the swap they caused; pin
+# it per host if the window differs.
 nas_storage_swap_clean_schedule: "*-*-* 07:00:00"
 nas_storage_swap_clean_random_delay: 1800
-# Ordered "vmid:name:timeout" escalation candidates.
+# Units the run must not overlap: an active one skips the night as a healthy
+# no-op. The schedule alone is not enough when an overnight job overruns.
+nas_storage_swap_clean_conflicting_units:
+  - archive-backup.service
+  - media-mover.service
+# Ordered "vmid:name:timeout" escalation candidates; the role asserts the shape.
 nas_storage_swap_clean_stop_guests: []
 # min_mb: reclaim below this is not worth a run. margin_mb: free-RAM headroom
 # required before swapoff. arc_shrink_mb: how far the ARC is squeezed for it.
@@ -177,6 +203,9 @@ nas_storage_swap_clean_min_mb: 512
 nas_storage_swap_clean_margin_mb: 2048
 nas_storage_swap_clean_arc_shrink_mb: 2048
 nas_storage_swap_clean_service_timeout: 1200
+# Budget for the EXIT trap after a start timeout: a `qm start` per stopped guest
+# plus the ARC restore. The 90s systemd default is not enough for that.
+nas_storage_swap_clean_stop_timeout: 300
 nas_storage_swap_clean_nice: 10
 
 nas_storage_smartd_enabled: true
@@ -191,21 +220,14 @@ nas_storage_backup_artifact_metrics_dir: >-
 # from its own `options`; a non-empty list overrides that for EVERY union.
 nas_storage_mergerfs_required_opts: []
 
-# NFSv4 delegations. false leaves kernel behaviour alone. true writes an
-# /etc/sysctl.d/ drop-in setting fs.leases-enable=0 and applies it live, so
-# nfsd grants no NEW delegations (existing ones persist until returned or the
-# next reboot). Motive: the 7.0.x kernel leaks one unreclaimable 192 B
-# file_lock per GETATTR delegation-conflict check on a write-delegated file —
-# 33 GB of slab in 9 days on a busy server (2026-08-18 incident). Trade-off:
-# clients lose delegation caching (more GETATTR round-trips), and local
-# fcntl(F_SETLEASE) users are refused (none ship on a NAS host).
+# NFSv4 delegations. true persists fs.leases-enable=0 so nfsd grants no new
+# delegations; false leaves kernel behaviour alone. Cost: lock-heavy NFS
+# workloads stall and local F_SETLEASE users are refused. Trade-off: README.
 nas_storage_nfs_disable_delegations: false
 
 # Live application of the delegation sysctl. true applies drifted values with
-# `sysctl -p` at run time; false writes only the drop-in (picked up at boot /
-# `sysctl --system`). fs.leases-enable is NOT container-namespaced, so test
-# scenarios must set false — a privileged container would set it on the CI
-# host's kernel, an unprivileged one would fail.
+# `sysctl -p`; false writes only the drop-in. fs.leases-enable is not
+# container-namespaced, so test scenarios must set false.
 nas_storage_nfs_apply_delegation_sysctl_live: true
 
 # Component gates, declared so a typo cannot silently disable one.

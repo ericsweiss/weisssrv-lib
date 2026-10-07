@@ -1,0 +1,71 @@
+---
+# Rewrite every Components line in a deb822 sources file to the canonical set.
+# Idempotent from any partial state, and it adds no second sources entry for a
+# suite the file already carries.
+- name: Assert a component set was requested
+  ansible.builtin.assert:
+    that:
+      - apt_signed_repo_components | trim | length > 0
+    fail_msg: >-
+      apt_signed_repo_components is empty, so rewriting
+      {{ apt_signed_repo_sources_path }} would leave a bare Components line
+      that enables nothing. Name the components the including role needs.
+    quiet: true
+
+- name: Check for the deb822 sources file
+  ansible.builtin.stat:
+    path: "{{ apt_signed_repo_sources_path }}"
+  register: apt_signed_repo_sources
+
+# CRITICAL: a skip here is invisible. The caller goes on to install packages
+# that only exist in the components this task was meant to enable, and fails
+# much later with an opaque "Unable to locate package".
+- name: Fail when the deb822 sources file is absent
+  ansible.builtin.fail:
+    msg: >-
+      {{ apt_signed_repo_sources_path }} does not exist, so no Components line
+      can be rewritten. Point apt_signed_repo_sources_path at this host's
+      deb822 sources file, or enable the components with apt_repository for a
+      host still on the one-line sources format.
+  when: not apt_signed_repo_sources.stat.exists
+
+- name: Enable the requested apt components
+  ansible.builtin.replace:
+    path: "{{ apt_signed_repo_sources_path }}"
+    regexp: '^Components:.*$'
+    replace: "Components: {{ apt_signed_repo_components }}"
+  register: apt_signed_repo_components_changed
+
+# Without this the caller hits the "Unable to locate package" the guard above
+# exists to prevent: the new components are on disk but not in the cache.
+- name: Refresh the apt cache after the component rewrite
+  ansible.builtin.apt:
+    update_cache: true
+  when:
+    - apt_signed_repo_components_changed.changed
+    - apt_signed_repo_update_cache | bool
+
+# The rewrite is skipped under --check, so a read-back here would assert against
+# the un-rewritten file and fail a run that did nothing wrong.
+- name: Read back the rewritten sources file
+  ansible.builtin.slurp:
+    src: "{{ apt_signed_repo_sources_path }}"
+  register: apt_signed_repo_sources_content
+  when: not ansible_check_mode
+
+# `replace` reports changed: false both when the line is already correct and
+# when the regexp matched nothing, so the value is what proves the rewrite.
+- name: Assert the sources file carries the requested components
+  ansible.builtin.assert:
+    that:
+      - >-
+        ('Components: ' ~ apt_signed_repo_components)
+        in (apt_signed_repo_sources_content.content | b64decode)
+    fail_msg: >-
+      {{ apt_signed_repo_sources_path }} does not carry
+      "Components: {{ apt_signed_repo_components }}", so the requested
+      components were never enabled.
+    success_msg: >-
+      {{ apt_signed_repo_sources_path }} carries
+      "Components: {{ apt_signed_repo_components }}"
+  when: not ansible_check_mode

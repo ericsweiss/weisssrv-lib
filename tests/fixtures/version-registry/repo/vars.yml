@@ -3,6 +3,8 @@ k3s_version: "v1.36.2+k3s1"
 registry_cache_version: "3.1.1"
 debian_version: 13
 manual_thing_version: "1.0.0"
+coupled_tool_version: "1.0.0"
+coupled_tool_checksum: "sha256:aaaa"
 helm_chart_versions:
   traefik: "40.0.0"  # Currently deployed 40.0.0
   metallb: "0.15.3"

@@ -1,25 +1,14 @@
-"""Tests for sanitize-junit-expected-failures.py.
-
-The sanitizer's contract: downgrade ONLY declared negative-path failures in
-junit XML (replacing the failure element with a system-out note and fixing the
-suite counters), leave undeclared failures red, no-op without declarations,
-and refuse DTD-bearing XML (entity-attack guard).
-"""
+"""sanitize-junit-expected-failures.py downgrades only declared junit failures."""
 from __future__ import annotations
 
-import importlib.util
-import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
 
-_SPEC = importlib.util.spec_from_file_location(
-    "sanitize_junit", Path(__file__).resolve().parent.parent / "scripts" / "sanitize-junit-expected-failures.py"
-)
-sanitize_junit = importlib.util.module_from_spec(_SPEC)
-sys.modules["sanitize_junit"] = sanitize_junit
-_SPEC.loader.exec_module(sanitize_junit)
+from script_loader import load_script
+
+sanitize_junit = load_script("sanitize-junit-expected-failures.py", register=True)
 
 
 JUNIT = """<?xml version='1.0' encoding='utf-8'?>
@@ -103,5 +92,112 @@ class TestSanitize:
 
     def test_load_expectations_skips_comments_and_blanks(self, tmp_path):
         exp = _expectations(tmp_path, ["one", "two"])
-        assert sanitize_junit.load_expectations(exp) == ["one", "two"]
+        assert sanitize_junit.load_expectations(exp) == [("one", 1), ("two", 1)]
         assert sanitize_junit.load_expectations(tmp_path / "nope.txt") == []
+
+    def test_load_expectations_reads_a_declared_count(self, tmp_path):
+        exp = _expectations(tmp_path, ["one ::3", "two ::x"])
+        assert sanitize_junit.load_expectations(exp) == [("one", 3), ("two ::x", 1)]
+
+
+class TestStrict:
+    """A renamed or deleted guard leaves its declaration behind, and the negative
+    path silently stops being exercised."""
+
+    def test_strict_fails_on_an_unobserved_expectation(self, tmp_path, capsys):
+        xml = _write(tmp_path)
+        exp = _expectations(
+            tmp_path,
+            ["Fail if required storage pool does not exist", "A guard that was renamed"],
+        )
+        rc = sanitize_junit.main(
+            ["--junit-dir", str(xml.parent), "--expectations", str(exp), "--strict"]
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "never observed: A guard that was renamed" in err
+        assert "Fail if required storage pool does not exist" not in err
+
+    def test_strict_passes_when_every_expectation_fired(self, tmp_path):
+        xml = _write(tmp_path)
+        exp = _expectations(tmp_path, ["Fail if required storage pool does not exist"])
+        rc = sanitize_junit.main(
+            ["--junit-dir", str(xml.parent), "--expectations", str(exp), "--strict"]
+        )
+        assert rc == 0
+
+    def test_non_strict_only_warns(self, tmp_path, capsys):
+        xml = _write(tmp_path)
+        exp = _expectations(tmp_path, ["A guard that was renamed"])
+        rc = sanitize_junit.main(
+            ["--junit-dir", str(xml.parent), "--expectations", str(exp)]
+        )
+        assert rc == 0
+        assert "never observed" in capsys.readouterr().out
+
+
+TWO_HITS = """<?xml version='1.0' encoding='utf-8'?>
+<testsuites failures="2" errors="0" tests="2">
+  <testsuite name="molecule" failures="2" errors="0" tests="2">
+    <testcase name="[host] Converge: role : Attach additional disks to VM">
+      <failure message="boom">negative path</failure>
+    </testcase>
+    <testcase name="[host] Verify: role : Attach additional disks to VM again">
+      <failure message="real">a genuine failure of the same task</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
+"""
+
+
+class TestOverBroad:
+    """One declaration must not downgrade every testcase whose name contains it."""
+
+    def test_strict_fails_when_a_pattern_matches_more_than_declared(
+        self, tmp_path, capsys
+    ):
+        xml = _write(tmp_path, TWO_HITS)
+        exp = _expectations(tmp_path, ["Attach additional disks to VM"])
+        rc = sanitize_junit.main(
+            ["--junit-dir", str(xml.parent), "--expectations", str(exp), "--strict"]
+        )
+        assert rc == 1
+        assert "matched 2 testcases, declared 1" in capsys.readouterr().err
+
+    def test_strict_passes_when_the_count_is_declared(self, tmp_path):
+        xml = _write(tmp_path, TWO_HITS)
+        exp = _expectations(tmp_path, ["Attach additional disks to VM ::2"])
+        rc = sanitize_junit.main(
+            ["--junit-dir", str(xml.parent), "--expectations", str(exp), "--strict"]
+        )
+        assert rc == 0
+
+    def test_non_strict_only_warns(self, tmp_path, capsys):
+        xml = _write(tmp_path, TWO_HITS)
+        exp = _expectations(tmp_path, ["Attach additional disks to VM"])
+        rc = sanitize_junit.main(
+            ["--junit-dir", str(xml.parent), "--expectations", str(exp)]
+        )
+        assert rc == 0
+        assert "matched 2 testcases" in capsys.readouterr().out
+
+
+class TestAbsentJunitDir:
+    """Declarations that could not be observed are not a clean --strict run."""
+
+    def test_strict_fails_when_the_junit_dir_is_absent(self, tmp_path, capsys):
+        exp = _expectations(tmp_path, ["A declared guard"])
+        rc = sanitize_junit.main(
+            ["--junit-dir", str(tmp_path / "gone"), "--expectations", str(exp),
+             "--strict"]
+        )
+        assert rc == 1
+        assert "does not exist, so none could be observed" in capsys.readouterr().err
+
+    def test_a_missing_junit_dir_is_tolerated_without_strict(self, tmp_path, capsys):
+        exp = _expectations(tmp_path, ["A declared guard"])
+        rc = sanitize_junit.main(
+            ["--junit-dir", str(tmp_path / "gone"), "--expectations", str(exp)]
+        )
+        assert rc == 0
+        assert "none could be observed" in capsys.readouterr().out

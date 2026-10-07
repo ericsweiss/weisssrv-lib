@@ -1,0 +1,107 @@
+spec:
+  inputs:
+    job_name:
+      default: terraform-drift-plan
+      description: >-
+        Job name. Include this template once per module, each with its own
+        job_name — two includes sharing a name collide.
+    stage:
+      default: validate
+    image:
+      default: "hashicorp/terraform:1.15.9"
+      description: >-
+        Terraform image, entrypoint cleared for shell scripts. Alpine-based, so
+        the before_script uses the apk 1Password installer.
+    tags:
+      type: array
+      default: []
+      description: Runner tag(s); the default runs on any runner.
+    module_dir:
+      description: >-
+        Module directory the plan runs in, repo-root relative
+        (e.g. terraform/cloudflare). No default — a drift plan against the wrong
+        module reports drift that is not there.
+    state_name:
+      description: >-
+        Terraform state name under the project. No default: each module owns its
+        own state, and two modules sharing one state overwrite each other.
+    state_base:
+      default: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state"
+      description: >-
+        Base URL of the GitLab-managed state. The default tracks whichever
+        instance the pipeline runs on, which is the only value that can be right
+        everywhere — TF_HTTP_PASSWORD is `${CI_JOB_TOKEN}`, valid only against
+        the instance that issued it.
+    secrets_exports:
+      default: ""
+      description: >-
+        Shell run immediately before the plan, in the module directory, for the
+        module's provider credentials. Assign then export —
+        `TF_VAR_x="$(op read "op://...")"; export TF_VAR_x` — so a failed read
+        aborts the job. `export TF_VAR_x=$(...)` discards the read's exit
+        status and plans with an empty credential.
+    changes:
+      type: array
+      default: ["terraform/**/*"]
+      description: Path list for the post-merge `changes:` rule.
+    default_branch:
+      default: "main"
+      description: >-
+        Consumer's default branch as a LITERAL name. NOT `$CI_DEFAULT_BRANCH` —
+        docs/INCLUDE-CONTRACT.md § default_branch.
+    secrets_guard:
+      default: "true"
+      description: >-
+        Rule expression that must be truthy for the job to run at all. The
+        default always runs the job, so a missing credential reds it rather than
+        removing it. CRITICAL: a falsy guard REMOVES the job, so a consumer that
+        wants the fork-safe skip passes secrets_guard:
+        "$OP_SERVICE_ACCOUNT_TOKEN" and accepts that a scheduled detector then
+        stops silently.
+---
+# Read-only `terraform plan` reporting drift between a module and the live
+# provider. Never applies; reconciling stays a supervised, interactive apply.
+# Requires `.terraform-http-backend` and `.install-1password-alpine` included.
+"$[[ inputs.job_name ]]":
+  # Shared HTTP-backend auth/lock settings; only this module's state is overridden.
+  extends: .terraform-http-backend
+  needs: []
+  stage: $[[ inputs.stage ]]
+  tags: $[[ inputs.tags ]]
+  image:
+    name: $[[ inputs.image ]]
+    entrypoint: [""]
+  variables:
+    TF_HTTP_ADDRESS: "$[[ inputs.state_base ]]/$[[ inputs.state_name ]]"
+    TF_HTTP_LOCK_ADDRESS: "$[[ inputs.state_base ]]/$[[ inputs.state_name ]]/lock"
+    TF_HTTP_UNLOCK_ADDRESS: "$[[ inputs.state_base ]]/$[[ inputs.state_name ]]/lock"
+  before_script:
+    - !reference [.install-1password-alpine, before_script]
+  script:
+    - cd "$[[ inputs.module_dir ]]"
+    # -lockfile=readonly: CI must not rewrite .terraform.lock.hcl (committed
+    # provider hashes; a CI-side change would mask supply-chain drift).
+    - terraform init -lockfile=readonly
+    - |
+      # errexit so a failed secret read aborts instead of planning with an
+      # empty credential. No -u: it persists into the runner's later lines.
+      set -eo pipefail
+      $[[ inputs.secrets_exports ]]
+    # Plan only, never apply — surfaces drift instead of silently reverting it.
+    # -detailed-exitcode: drift exits 2 (a plain plan exits 0 on a non-empty
+    # diff), so allow_failure can render the yellow drift signal.
+    - terraform plan -input=false -no-color -lock-timeout=120s -detailed-exitcode
+  # Drift (exit 2) is the advisory yellow. A broken detector exits 1 and stays
+  # red: a blanket `allow_failure: true` would mask real drift behind a
+  # permanently-broken plan.
+  allow_failure:
+    exit_codes: [2]
+  # CRITICAL: no merge_request_event rule. The job reads provider credentials
+  # from the vault and must never do so in a job running unmerged branch code.
+  rules:
+    # Schedule is the real detector: no changes: filter, so it catches
+    # out-of-band console edits when nothing in-repo changed.
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $[[ inputs.secrets_guard ]]'
+    # Post-merge, before the supervised apply.
+    - if: '$CI_COMMIT_BRANCH == "$[[ inputs.default_branch ]]" && $[[ inputs.secrets_guard ]]'
+      changes: $[[ inputs.changes ]]

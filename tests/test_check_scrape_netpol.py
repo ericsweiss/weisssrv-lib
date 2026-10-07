@@ -1,21 +1,19 @@
 """Tests for scripts/check-scrape-netpol.py."""
 from __future__ import annotations
 
-import importlib.util
 import io
-from pathlib import Path
 
-SPEC = importlib.util.spec_from_file_location(
-    "check_scrape_netpol",
-    Path(__file__).resolve().parent.parent / "scripts" / "check-scrape-netpol.py",
-)
-mod = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(mod)
+from script_loader import load_script
+
+mod = load_script("check-scrape-netpol.py")
 
 
 def _run(stdin_text: str, monkeypatch, argv: list[str] | None = None) -> int:
     monkeypatch.setattr("sys.stdin", io.StringIO(stdin_text))
-    return mod.main(argv or [])
+    try:
+        return mod.main(argv or [])
+    except SystemExit as exc:  # the shared corpus loader exits 2 directly
+        return int(exc.code)
 
 
 DEFAULT_DENY = """
@@ -52,8 +50,7 @@ spec:
   selector: {matchLabels: {app: app}}
 """
 
-# The !180 shape: the monitor is rendered by the chart, so only the HelmRelease
-# values reveal it.
+# Monitor rendered by the chart: only the HelmRelease values reveal it.
 CHART_MONITOR = """
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
@@ -82,7 +79,7 @@ def test_scraped_namespace_with_observability_allow_passes(monkeypatch):
 
 
 def test_chart_native_podmonitor_without_allow_fails(monkeypatch):
-    """The regression that shipped in !180: monitor enabled via HelmRelease values."""
+    """A chart-native monitor enabled through HelmRelease values, with no allow."""
     assert _run(DEFAULT_DENY + CHART_MONITOR, monkeypatch) == 1
 
 
@@ -131,6 +128,13 @@ spec:
   egress: [{}]
 """
     assert _run(egress_only + SERVICE_MONITOR, monkeypatch) == 0
+
+
+def test_an_allow_declared_egress_only_earns_no_ingress_credit(monkeypatch):
+    """CRITICAL: an `ingress:` rule under `policyTypes: [Egress]` admits nothing
+    at runtime. Crediting it would report a scrape-blocked namespace clean."""
+    mislabelled = OBS_ALLOW.replace("policyTypes: [Ingress]", "policyTypes: [Egress]")
+    assert _run(DEFAULT_DENY + mislabelled + SERVICE_MONITOR, monkeypatch) == 1
 
 
 def test_policy_without_policytypes_defaults_to_ingress(monkeypatch):
@@ -266,9 +270,8 @@ def test_unparseable_corpus_is_an_operator_error(monkeypatch, capsys):
 
 
 def test_a_corpus_with_no_scrape_targets_is_an_operator_error(monkeypatch, capsys):
-    """The render loop produced documents but never reached the stage defining
-    the monitors, so every namespace went unexamined — the same zero-subjects
-    arm check-secretstore-scope.py carries for a store-less corpus."""
+    """A corpus with zero scrape targets is an operator error: a gate that
+    checks nothing is not a gate."""
     unrelated = """
 ---
 apiVersion: v1
@@ -308,9 +311,8 @@ spec:
 
 
 def test_a_selector_with_extra_requirements_is_not_credited(monkeypatch):
-    """Only the metadata.name label is guaranteed on a namespace; a selector
-    adding requirements the corpus cannot evaluate must not be credited —
-    the gate errs toward a visible block, never a silent allow."""
+    """Only the metadata.name label is guaranteed on a namespace, so a selector
+    adding a requirement the corpus cannot evaluate is not credited."""
     allow_extra_label = OBS_ALLOW.replace(
         "matchLabels: {kubernetes.io/metadata.name: observability}",
         "matchLabels: {kubernetes.io/metadata.name: observability, team: platform}",
@@ -321,14 +323,11 @@ def test_a_selector_with_extra_requirements_is_not_credited(monkeypatch):
 
 def test_an_empty_matchlabels_default_deny_restricts_the_namespace(monkeypatch):
     """`podSelector: {matchLabels: {}}` selects every pod, so a default-deny
-    spelled that way restricts the namespace exactly like `{}` — the
-    truthiness reading called it app-scoped and the scrape gate never saw the
-    namespace as restricted at all."""
+    spelled that way restricts the namespace exactly like `{}`."""
     spelled = DEFAULT_DENY.replace("podSelector: {}", "podSelector: {matchLabels: {}}")
     assert _run(spelled + SERVICE_MONITOR, monkeypatch) == 1
-    # The allow is app-scoped here so the RESTRICTION can only come from the
-    # empty-matchLabels policy — with the namespace-wide OBS_ALLOW the second
-    # assertion would pass against the pre-fix truthiness reading too.
+    # App-scoped allow, so the restriction can only come from the
+    # empty-matchLabels policy.
     scoped_allow = OBS_ALLOW.replace(
         "podSelector: {}", "podSelector: {matchLabels: {app: app}}"
     )
@@ -356,10 +355,7 @@ spec:
 
 
 def test_an_empty_namespaceselector_anded_with_a_pod_restriction_is_not_credited(monkeypatch):
-    """The API ANDs a peer's two selectors: `namespaceSelector: {}` beside a
-    restrictive podSelector admits only those pods from any namespace — no
-    proof the scraper gets through, so the empty-selector shortcut must not
-    fire."""
+    """`namespaceSelector: {}` ANDed with a restrictive podSelector is not credited."""
     cross_ns_allow = """
 ---
 apiVersion: networking.k8s.io/v1
@@ -378,11 +374,8 @@ spec:
 
 
 def test_a_dual_family_slash_zero_rule_is_credited(monkeypatch):
-    """`0.0.0.0/0` beside `::/0` (peers are OR'd) admits every address of
-    either family — the explicit spelling of the omitted-`from` rule the gate
-    already credits. One family ALONE is not credited: the corpus cannot
-    establish the scraper's family, and crediting it would be the silent
-    false-allow the gate's bias forbids."""
+    """`0.0.0.0/0` beside `::/0` is credited; one family alone is not, because
+    the corpus cannot establish the scraper's family."""
     both = """
 ---
 apiVersion: networking.k8s.io/v1
@@ -481,10 +474,7 @@ spec:
 
 
 def test_typoed_peer_or_rule_keys_and_absent_podselector_never_credit(monkeypatch):
-    """The remaining hierarchy levels: a `podSelecter:` peer key must not ride
-    the empty-selector shortcut, a `form:` rule key must not read as the
-    omitted-`from` allow-all, and an absent spec.podSelector (a REQUIRED
-    field) must not register the policy at all."""
+    """Typoed peer or rule keys and an absent spec.podSelector never credit a policy."""
     typo_peer = """
 ---
 apiVersion: networking.k8s.io/v1
@@ -657,3 +647,404 @@ spec:
         "namespaceSelector: {matchLabels: {app.kubernetes.io/name: other-thing}}",
     )
     assert _run(DEFAULT_DENY + ok + SERVICE_MONITOR, monkeypatch) == 0
+
+
+# --- shapes the gate read wrongly before -------------------------------------
+
+
+def test_an_empty_policytypes_list_still_restricts_the_namespace(monkeypatch):
+    """`policyTypes` is omitempty: an empty list round-trips as an absent field,
+    so the CNI applies the ingress default and the scrape is denied."""
+    no_types = DEFAULT_DENY.replace("policyTypes: [Ingress]", "policyTypes: []")
+    assert _run(DECOY_SCRAPE + no_types + SERVICE_MONITOR, monkeypatch) == 1
+
+
+def test_a_namespaceless_document_is_read_as_default(monkeypatch):
+    """The API defaults an omitted namespace to `default`, so a monitor and a
+    default-deny written without one belong to the same real namespace."""
+    monitor = SERVICE_MONITOR.replace(", namespace: ns", "")
+    deny = DEFAULT_DENY.replace(", namespace: ns", "")
+    assert _run(deny + monitor, monkeypatch) == 1
+    allow = OBS_ALLOW.replace(", namespace: ns", "")
+    assert _run(deny + allow + monitor, monkeypatch) == 0
+
+
+def test_an_unused_exempt_is_reported_not_fatal(monkeypatch, capsys):
+    """Same accounting as the sibling default-deny gate: an exemption the corpus
+    no longer exercises is visible, never a failure."""
+    argv = ["--exempt", "gone=namespace retired"]
+    assert _run(DEFAULT_DENY + OBS_ALLOW + SERVICE_MONITOR, monkeypatch, argv) == 0
+    assert "not exercised by this corpus: gone" in capsys.readouterr().out
+
+
+SERVICE_WITH_METRICS_PORT = """
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app
+  namespace: ns
+  labels: {app: app}
+spec:
+  selector: {app: app}
+  ports:
+    - name: metrics
+      port: 9090
+"""
+
+MONITOR_NAMING_METRICS = """
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata: {name: app, namespace: ns}
+spec:
+  selector: {matchLabels: {app: app}}
+  endpoints:
+    - port: metrics
+"""
+
+
+class TestMonitorPortResolution:
+    def test_a_resolvable_endpoint_port_is_clean(self, monkeypatch):
+        corpus = (
+            DEFAULT_DENY + OBS_ALLOW + SERVICE_WITH_METRICS_PORT + MONITOR_NAMING_METRICS
+        )
+        assert _run(corpus, monkeypatch) == 0
+
+    def test_a_renamed_service_port_is_reported(self, monkeypatch, capsys):
+        """The mutation: prometheus-operator then emits zero targets, so no `up`
+        series appears and an `up == 0` alert arm can never fire."""
+        corpus = (
+            DEFAULT_DENY
+            + OBS_ALLOW
+            + SERVICE_WITH_METRICS_PORT.replace("name: metrics", "name: http-metrics")
+            + MONITOR_NAMING_METRICS
+        )
+        assert _run(corpus, monkeypatch) == 1
+        err = capsys.readouterr().err
+        assert "port 'metrics' is declared by no Service" in err
+        assert "zero targets" in err
+
+    def test_a_service_with_no_named_port_is_reported(self, monkeypatch, capsys):
+        corpus = (
+            DEFAULT_DENY
+            + OBS_ALLOW
+            + SERVICE_WITH_METRICS_PORT.replace("    - name: metrics\n", "    - ")
+            + MONITOR_NAMING_METRICS
+        )
+        assert _run(corpus, monkeypatch) == 1
+        assert "no named port" in capsys.readouterr().err
+
+    def test_a_monitor_whose_service_the_chart_renders_is_not_a_finding(self, monkeypatch):
+        """No matched Service in the corpus proves nothing about the port."""
+        corpus = DEFAULT_DENY + OBS_ALLOW + MONITOR_NAMING_METRICS
+        assert _run(corpus, monkeypatch) == 0
+
+    def test_a_podmonitor_resolves_against_container_ports(self, monkeypatch, capsys):
+        workload = """
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: app, namespace: ns}
+spec:
+  template:
+    metadata:
+      labels: {app: app}
+    spec:
+      containers:
+        - name: app
+          ports:
+            - name: http-metrics
+              containerPort: 9090
+"""
+        monitor = """
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata: {name: app, namespace: ns}
+spec:
+  selector: {matchLabels: {app: app}}
+  podMetricsEndpoints:
+    - port: metrics
+"""
+        assert _run(DEFAULT_DENY + OBS_ALLOW + workload + monitor, monkeypatch) == 1
+        assert "declared by no workload" in capsys.readouterr().err
+
+    def test_a_matchexpressions_selector_is_not_credited_or_failed(self, monkeypatch):
+        monitor = MONITOR_NAMING_METRICS.replace(
+            "selector: {matchLabels: {app: app}}",
+            "selector: {matchExpressions: [{key: app, operator: Exists}]}",
+        )
+        corpus = (
+            DEFAULT_DENY
+            + OBS_ALLOW
+            + SERVICE_WITH_METRICS_PORT.replace("name: metrics", "name: other")
+            + monitor
+        )
+        assert _run(corpus, monkeypatch) == 0
+
+
+WORKLOAD = """
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: app, namespace: ns}
+spec:
+  template:
+    metadata:
+      labels: {app: app}
+    spec:
+      containers:
+        - name: app
+          ports:
+            - name: metrics
+              containerPort: 9090
+"""
+
+POD_MONITOR_BY_NUMBER = """
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata: {name: app, namespace: ns}
+spec:
+  selector: {matchLabels: {app: app}}
+  podMetricsEndpoints:
+    - portNumber: 9090
+"""
+
+
+class TestPodPortSpellings:
+    """`portNumber` and `targetPort` resolve against the container ports too."""
+
+    def test_a_declared_portnumber_is_clean(self, monkeypatch):
+        corpus = DEFAULT_DENY + OBS_ALLOW + WORKLOAD + POD_MONITOR_BY_NUMBER
+        assert _run(corpus, monkeypatch) == 0
+
+    def test_an_undeclared_portnumber_is_reported(self, monkeypatch, capsys):
+        """prometheus-operator discovers declared container ports only, so a
+        number no container declares resolves zero targets."""
+        corpus = (
+            DEFAULT_DENY
+            + OBS_ALLOW
+            + WORKLOAD
+            + POD_MONITOR_BY_NUMBER.replace("portNumber: 9090", "portNumber: 9187")
+        )
+        assert _run(corpus, monkeypatch) == 1
+        err = capsys.readouterr().err
+        assert "portNumber 9187 is declared by no workload" in err
+
+    def test_an_undeclared_podmonitor_targetport_is_reported(self, monkeypatch, capsys):
+        corpus = (
+            DEFAULT_DENY
+            + OBS_ALLOW
+            + WORKLOAD
+            + POD_MONITOR_BY_NUMBER.replace("portNumber: 9090", "targetPort: http")
+        )
+        assert _run(corpus, monkeypatch) == 1
+        assert "targetPort 'http' is declared by no workload" in capsys.readouterr().err
+
+    def test_an_endpoint_naming_no_port_is_not_a_finding(self, monkeypatch):
+        corpus = (
+            DEFAULT_DENY
+            + OBS_ALLOW
+            + WORKLOAD
+            + POD_MONITOR_BY_NUMBER.replace("    - portNumber: 9090", "    - path: /metrics")
+        )
+        assert _run(corpus, monkeypatch) == 0
+
+
+SERVICE_HOP = """
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app
+  namespace: ns
+  labels: {app: app}
+spec:
+  selector: {app: app}
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+"""
+
+
+class TestServiceHopResolution:
+    """A Service port resolves to a pod port, and a NAMED one must exist."""
+
+    def test_a_resolvable_named_targetport_is_clean(self, monkeypatch):
+        corpus = DEFAULT_DENY + OBS_ALLOW + SERVICE_HOP + WORKLOAD + MONITOR_NAMING_METRICS
+        assert _run(corpus, monkeypatch) == 0
+
+    def test_a_named_targetport_no_container_declares_is_reported(
+        self, monkeypatch, capsys
+    ):
+        """The common edit: /metrics moved to its own port, the container
+        `ports:` entry left behind. Namespace-level checking passes it."""
+        corpus = (
+            DEFAULT_DENY
+            + OBS_ALLOW
+            + SERVICE_HOP
+            + WORKLOAD.replace("name: metrics", "name: http")
+            + MONITOR_NAMING_METRICS
+        )
+        assert _run(corpus, monkeypatch) == 1
+        err = capsys.readouterr().err
+        assert "Service app targetPort" in err
+        assert "declared by no workload" in err
+
+    def test_a_numeric_targetport_needs_no_container_port(self, monkeypatch):
+        """A numeric targetPort is routed whatever the container declares."""
+        corpus = (
+            DEFAULT_DENY
+            + OBS_ALLOW
+            + SERVICE_HOP.replace("targetPort: metrics", "targetPort: 9090")
+            + WORKLOAD.replace("name: metrics", "name: http")
+            + MONITOR_NAMING_METRICS
+        )
+        assert _run(corpus, monkeypatch) == 0
+
+    def test_a_selectorless_service_has_no_pods_to_check(self, monkeypatch):
+        """A Service with hand-written endpoints selects no pod in the corpus."""
+        corpus = (
+            DEFAULT_DENY
+            + OBS_ALLOW
+            + SERVICE_HOP.replace("  selector: {app: app}\n", "")
+            + WORKLOAD.replace("name: metrics", "name: http")
+            + MONITOR_NAMING_METRICS
+        )
+        assert _run(corpus, monkeypatch) == 0
+
+    def test_an_endpoint_targetport_resolves_through_the_service_pods(
+        self, monkeypatch, capsys
+    ):
+        monitor = MONITOR_NAMING_METRICS.replace("- port: metrics", "- targetPort: http")
+        corpus = DEFAULT_DENY + OBS_ALLOW + SERVICE_HOP + WORKLOAD + monitor
+        assert _run(corpus, monkeypatch) == 1
+        assert "targetPort 'http' is declared by no workload" in capsys.readouterr().err
+
+
+NARROWED_OBS_ALLOW = """
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-metrics-ingress, namespace: ns}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: observability}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: prometheus}
+      ports: [{protocol: TCP, port: 9090}]
+"""
+SCRAPER = ["--prometheus-pod-label", "app.kubernetes.io/name=prometheus"]
+
+
+class TestScraperPodLabels:
+    """A peer narrowing the observability namespace is judged only against
+    labels declared with --prometheus-pod-label."""
+
+    def test_a_narrowed_peer_is_credited_when_no_labels_are_declared(self, monkeypatch):
+        corpus = DEFAULT_DENY + NARROWED_OBS_ALLOW + SERVICE_MONITOR
+        assert _run(corpus, monkeypatch) == 0
+
+    def test_a_narrowed_peer_that_selects_the_scraper_is_credited(self, monkeypatch):
+        corpus = DEFAULT_DENY + NARROWED_OBS_ALLOW + SERVICE_MONITOR
+        assert _run(corpus, monkeypatch, SCRAPER) == 0
+
+    def test_a_narrowed_peer_that_misses_the_scraper_is_not_credited(
+        self, monkeypatch, capsys
+    ):
+        corpus = DEFAULT_DENY + NARROWED_OBS_ALLOW.replace(
+            "name: prometheus", "name: redis-exporter"
+        ) + SERVICE_MONITOR
+        assert _run(corpus, monkeypatch, SCRAPER) == 1
+        err = capsys.readouterr().err
+        assert "ns: scraped" in err and "ingress-restricted" in err
+
+    def test_a_matchexpressions_peer_is_evaluated_against_the_scraper(self, monkeypatch):
+        peer = NARROWED_OBS_ALLOW.replace(
+            "matchLabels: {app.kubernetes.io/name: prometheus}",
+            "matchExpressions: [{key: app.kubernetes.io/name, operator: In, "
+            "values: [prometheus]}]",
+        )
+        assert _run(DEFAULT_DENY + peer + SERVICE_MONITOR, monkeypatch, SCRAPER) == 0
+
+    def test_a_label_pair_without_an_equals_sign_is_an_operator_error(
+        self, monkeypatch, capsys
+    ):
+        corpus = DEFAULT_DENY + OBS_ALLOW + SERVICE_MONITOR
+        argv = ["--prometheus-pod-label", "prometheus"]
+        assert _run(corpus, monkeypatch, argv) == 2
+        assert "must be KEY=VALUE" in capsys.readouterr().err
+
+
+class TestUnmodelledNotes:
+    """A declined shape must be named, or the failure reads as an absent allow."""
+
+    def test_an_extra_label_requirement_is_named_as_unmodelled(self, monkeypatch, capsys):
+        allow = OBS_ALLOW.replace(
+            "matchLabels: {kubernetes.io/metadata.name: observability}",
+            "matchLabels: {kubernetes.io/metadata.name: observability, team: platform}",
+        )
+        assert _run(DEFAULT_DENY + allow + SERVICE_MONITOR, monkeypatch) == 1
+        err = capsys.readouterr().err
+        assert "not modelled: NetworkPolicy ns/allow-metrics-ingress" in err
+        assert "requirements beyond kubernetes.io/metadata.name" in err
+
+    def test_an_ipblock_peer_is_named_as_unmodelled(self, monkeypatch, capsys):
+        allow = OBS_ALLOW.replace(
+            "        - namespaceSelector:\n"
+            "            matchLabels: {kubernetes.io/metadata.name: observability}\n",
+            "        - ipBlock: {cidr: 10.42.0.0/16}\n",
+        )
+        assert _run(DEFAULT_DENY + allow + SERVICE_MONITOR, monkeypatch) == 1
+        err = capsys.readouterr().err
+        assert "not modelled: NetworkPolicy ns/allow-metrics-ingress" in err
+        assert "is an ipBlock" in err
+
+    def test_a_podselector_scoped_peer_is_named_as_unmodelled(self, monkeypatch, capsys):
+        allow = OBS_ALLOW.replace(
+            "            matchLabels: {kubernetes.io/metadata.name: observability}\n",
+            "            matchLabels: {kubernetes.io/metadata.name: observability}\n"
+            "          podSelector: {matchLabels: {app.kubernetes.io/name: prometheus}}\n",
+        )
+        argv = ["--prometheus-pod-label", "app.kubernetes.io/name=alloy"]
+        assert _run(DEFAULT_DENY + allow + SERVICE_MONITOR, monkeypatch, argv) == 1
+        assert "scopes the observability namespace with a podSelector" in capsys.readouterr().err
+
+    def test_a_peer_naming_another_namespace_earns_no_note(self, monkeypatch, capsys):
+        """A read peer that names a different namespace is not an unmodelled shape."""
+        allow = OBS_ALLOW.replace("observability}", "traefik}")
+        assert _run(DEFAULT_DENY + allow + SERVICE_MONITOR, monkeypatch) == 1
+        assert "not modelled" not in capsys.readouterr().err
+
+    def test_notes_do_not_leak_between_runs(self, monkeypatch, capsys):
+        allow = OBS_ALLOW.replace(
+            "matchLabels: {kubernetes.io/metadata.name: observability}",
+            "matchLabels: {kubernetes.io/metadata.name: observability, team: platform}",
+        )
+        assert _run(DEFAULT_DENY + allow + SERVICE_MONITOR, monkeypatch) == 1
+        capsys.readouterr()
+        assert _run(DEFAULT_DENY + SERVICE_MONITOR, monkeypatch) == 1
+        assert "not modelled" not in capsys.readouterr().err
+
+    def test_a_note_from_a_passing_namespace_is_not_printed(self, monkeypatch, capsys):
+        """Notes are per namespace, so a credited namespace's declined peer stays quiet."""
+        other_allow = OBS_ALLOW.replace("namespace: ns}", "namespace: other}").replace(
+            "    - from:\n",
+            "    - from:\n        - ipBlock: {cidr: 10.42.0.0/16}\n",
+        )
+        other_deny = DEFAULT_DENY.replace("namespace: ns}", "namespace: other}")
+        other_monitor = SERVICE_MONITOR.replace("namespace: ns}", "namespace: other}")
+        corpus = (
+            DEFAULT_DENY + SERVICE_MONITOR + other_deny + other_allow + other_monitor
+        )
+        assert _run(corpus, monkeypatch) == 1
+        err = capsys.readouterr().err
+        assert "  ns: scraped" in err
+        assert "not modelled" not in err

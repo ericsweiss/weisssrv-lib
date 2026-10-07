@@ -13,6 +13,6 @@
     state: restarted
     daemon_reload: true
 
-# The corosync/zpool/smartmon collector timers are reloaded + restarted on a
-# unit change by the shared textfile_collector role (restart-on-change task),
-# so this role no longer carries per-collector reload handlers.
+# The corosync, zpool, slabinfo and smartmon collector timers are restarted on
+# a unit change by weisssrv.infra.textfile_collector, so no per-collector
+# handler lives here.

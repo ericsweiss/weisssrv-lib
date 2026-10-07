@@ -40,6 +40,16 @@ Compute hosts, directly from the play. On a NAS host it is included by
 through — do not also list it in the play there, or the cap is converged twice
 per run.
 
+## File ownership
+
+The role renders the whole of `/etc/modprobe.d/zfs.conf`, so any other
+`options zfs ...` parameter placed in that file is discarded on the next
+converge. Keep other module parameters in their own `modprobe.d` file.
+
+Clearing `zfs_arc_cap_max_bytes` makes the role a no-op; it does not remove an
+existing cap. Retiring one is a manual step: delete the file and rebuild the
+initramfs.
+
 ## Runtime cleanup note
 
 If a host carried a manual `zfs_arc_max` in a **differently-named**

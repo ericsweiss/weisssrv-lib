@@ -11,11 +11,9 @@
       alloy_host_loki_url (the Loki push endpoint) are required.
     quiet: true
 
-# A config rendered with empty credentials ships 401s and silently drops the
-# fleet's journals — fail at deploy time instead. Gate on the URL scheme, not a
-# hostname: an https endpoint is behind an authenticating proxy, while the
-# plaintext fallback endpoint legitimately needs none. Scheme-gating also
-# re-arms the assert if an operator repoints at a different authenticated host.
+# Empty credentials ship 401s and silently drop the fleet's journals, so fail
+# at deploy time. The gate is on the URL scheme: an https endpoint sits behind
+# an authenticating proxy, a plaintext fallback endpoint needs none.
 - name: Assert Loki push credentials are present
   ansible.builtin.assert:
     that:
@@ -60,16 +58,18 @@
     name: alloy
     selection: hold
 
-# The joined args land inside a double-quoted shell assignment, so an embedded
-# `"` would close it early and turn the rest of the line into further shell
-# words — silently changing what the unit runs.
-- name: Assert no Alloy extra argument contains a double quote
+# The joined args land inside a double-quoted assignment, so an embedded `"` or
+# a trailing `\` closes it early (systemd unescapes backslashes inside a quoted
+# EnvironmentFile value) and the rest of the line becomes further words.
+- name: Assert no Alloy extra argument breaks the CUSTOM_ARGS assignment
   ansible.builtin.assert:
     that:
       - '''"'' not in item'
+      - 'not item.endswith("\\")'
     fail_msg: >-
-      alloy_host_extra_args entry {{ item | to_json }} contains a double quote,
-      which would break out of the CUSTOM_ARGS assignment in /etc/default/alloy.
+      alloy_host_extra_args entry {{ item | to_json }} contains a double quote
+      or ends with a backslash, either of which breaks out of the CUSTOM_ARGS
+      assignment in /etc/default/alloy.
     quiet: true
   loop: "{{ alloy_host_extra_args }}"
   loop_control:

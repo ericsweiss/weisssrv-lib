@@ -7,10 +7,9 @@ enable: 1
 log_level_in: {{ guest_firewall_log_level_in | default(proxmox_firewall_log_level_in) }}
 log_level_out: {{ 'info' if guest_firewall_policy_out | default('') == 'DROP' else 'nolog' }}
 {% if guest_firewall_policy_out is defined %}
-{# Unlike host.fw, guest firewalls honor policy_out. Set
-   guest_firewall_policy_out: DROP in a guest's inventory entry to make its
-   security groups' OUT ACCEPT rules an enforced egress allowlist (Proxmox's
-   guest default is ACCEPT, which leaves OUT rules inert). #}
+{# Unlike host.fw, guest firewalls honor policy_out. Setting
+   guest_firewall_policy_out: DROP makes the security groups' OUT ACCEPT rules
+   an enforced egress allowlist; the Proxmox default ACCEPT leaves them inert. #}
 policy_out: {{ guest_firewall_policy_out }}
 {% endif %}
 

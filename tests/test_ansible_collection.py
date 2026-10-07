@@ -1,22 +1,16 @@
 #!/usr/bin/env python3
-"""Repo invariants for the weisssrv.infra collection scaffold.
+"""Repo invariants for the weisssrv.infra collection scaffold: the galaxy
+dependency set, the collection version against the tag semantic-release cuts,
+and the relative depths the shared molecule base config resolves against."""
 
-Three things drift silently and break consumers long after the commit that
-caused them: the galaxy dependency set vs the copies molecule and the CI image
-install, the collection version vs the library tag semantic-release will cut,
-and the relative depths the shared molecule base config resolves against.
-"""
-
-import importlib.util
 import os
 import re
-import shutil
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 import yaml
+from _helpers import git, require_git_checkout, require_tags
+from script_loader import load_script
 
 REPO = Path(__file__).resolve().parent.parent
 COLLECTION = REPO / "ansible_collections" / "weisssrv" / "infra"
@@ -65,6 +59,17 @@ def galaxy() -> dict:
     return _load(GALAXY)
 
 
+def stale_plugin_ignore(collection: Path, build_ignore) -> list:
+    """Real plugin files that `build_ignore: plugins` would keep out of the artifact."""
+    if "plugins" not in (build_ignore or []):
+        return []
+    return sorted(
+        str(p.relative_to(collection))
+        for p in (collection / "plugins").rglob("*")
+        if p.is_file() and p.name != "README.md" and p.suffix != ".pyc"
+    )
+
+
 class TestGalaxyMetadata:
     def test_identity(self, galaxy):
         assert galaxy["namespace"] == "weisssrv"
@@ -100,17 +105,31 @@ class TestGalaxyMetadata:
     def test_requires_ansible_is_declared(self):
         assert _load(RUNTIME)["requires_ansible"].startswith(">=")
 
+    def test_a_nested_local_collection_copy_is_build_ignored(self, galaxy):
+        """A local `ansible-galaxy install` leaves a full copy under .ansible/."""
+        assert ".ansible" in galaxy["build_ignore"]
+
+    def test_plugins_are_not_build_ignored_once_one_ships(self, galaxy):
+        """The empty scaffold is ignored; a real plugin must reach the artifact."""
+        stale = stale_plugin_ignore(COLLECTION, galaxy.get("build_ignore"))
+        assert not stale, (
+            "galaxy.yml still build_ignores plugins/, so %s would not ship: drop "
+            "the entry." % ", ".join(stale)
+        )
+
+    def test_the_build_ignore_gate_fires_on_a_real_plugin(self, tmp_path):
+        """A gate with nothing to catch today is still proven to catch."""
+        modules = tmp_path / "plugins" / "modules"
+        modules.mkdir(parents=True)
+        (modules / "thing.py").write_text("DOCUMENTATION = ''\n")
+        (tmp_path / "plugins" / "README.md").write_text("scaffold\n")
+        assert stale_plugin_ignore(tmp_path, ["plugins"]) == ["plugins/modules/thing.py"]
+        assert stale_plugin_ignore(tmp_path, ["roles/*/molecule"]) == []
+
 
 class TestRoleMetadataParity:
-    """Every role's min_ansible_version agrees with the collection's floor.
-
-    meta/runtime.yml carries the floor a consumer actually installs against;
-    each role's galaxy_info carries its own copy, which nothing reconciles. The
-    two drifted once already — roles kept advertising 2.15 support after the
-    collection moved to 2.18 — and neither ansible-lint nor a molecule run
-    reads the role-level value, so the drift is invisible until a consumer
-    trusts it.
-    """
+    """Every role's galaxy_info min_ansible_version equals meta/runtime.yml's
+    floor; nothing else reconciles the two."""
 
     @pytest.fixture(scope="class")
     def floor(self) -> str:
@@ -149,13 +168,9 @@ class TestRoleMetadataParity:
 
 
 class TestDependencyParity:
-    """galaxy.yml is the consumer contract: exactly what role code addresses.
-
-    The two requirements.yml are TEST-environment supersets (they add the
-    molecule driver's collections), so the invariant is containment with
-    matching pins, not equality — a runtime dependency missing from either, or
-    the same collection pinned two ways, is the drift that breaks a consumer.
-    """
+    """galaxy.yml is the consumer contract. The two requirements.yml are
+    test-environment supersets, so the invariant is containment with matching
+    pins, not equality."""
 
     def _assert_contains(self, path, dependencies):
         pins = _requirement_pins(path)
@@ -178,25 +193,11 @@ class TestDependencyParity:
 
 
 def require_previous_tag(sr, tags) -> str:
-    """The tag semantic-release would compute the next version from, or stop.
-
-    A clone fetched without tags cannot compute the lineage. Locally that is a
-    legitimate checkout shape and skipping is right; under $CI it means the only
-    gate binding the declared version to the tag semantic-release will cut has
-    silently disappeared — and it disappears exactly when the release line has
-    grown past the job's clone depth, i.e. when the release is largest. Fail
-    there instead of going green having asserted nothing.
-    """
+    """The tag semantic-release computes the next version from, or stop."""
     previous = sr.latest_version_tag(tags)
     if previous is not None:
         return previous
-    if os.environ.get("CI"):
-        pytest.fail(
-            "no version tag in this checkout — the release-lineage gate cannot "
-            'run. The job needs the tags: set GIT_DEPTH: "0" on it (the release '
-            "job already does), or fetch them explicitly."
-        )
-    pytest.skip("no version tag in this checkout")
+    require_tags([], "release-lineage")
 
 
 class _NoTags:
@@ -220,35 +221,20 @@ def test_release_lineage_gate_still_skips_outside_ci(monkeypatch):
 
 
 class TestReleaseLineage:
-    """Bind the declared version to the tag semantic-release would actually cut.
-
-    galaxy.yml and cli/pyproject.toml are bumped by hand in the release MR
-    (docs/VERSIONING.md), so without this a mistyped `feat!:` subject cuts
-    v0.3.0 while the shipped collection and `--version` still say 0.2.0.
-    """
-
-    @staticmethod
-    def _git(*args: str) -> str:
-        return subprocess.run(
-            ["git", "-C", str(REPO), *args], check=True, capture_output=True, text=True
-        ).stdout
+    """The declared version binds to the tag semantic-release would cut;
+    galaxy.yml and cli/pyproject.toml are bumped by hand (docs/VERSIONING.md)."""
 
     @pytest.fixture(scope="class")
     def sr(self):
-        script = REPO / "scripts" / "semantic-release.py"
-        spec = importlib.util.spec_from_file_location("semantic_release_lineage", script)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-        return module
+        return load_script("semantic-release.py", register=True)
 
     @pytest.fixture(scope="class")
     def plan(self, sr):
-        if shutil.which("git") is None or not (REPO / ".git").exists():
-            pytest.skip("not a git checkout")
-        tags = self._git("tag", "--list").split()
+        require_git_checkout(REPO)
+        tags = git(REPO, "tag", "--list").split()
         previous = require_previous_tag(sr, tags)
-        log_output = self._git(
+        log_output = git(
+            REPO,
             "log", "--no-merges", "--format=" + sr.LOG_FORMAT, "%s..HEAD" % previous
         )
         return sr.plan_release(tags, log_output)
@@ -274,12 +260,8 @@ class TestReleaseLineage:
 
 
 class TestMoleculeBasePaths:
-    """The base config's relative paths, resolved from the dirs molecule uses.
-
-    ansible-playbook runs with CWD = the scenario dir; ansible-galaxy runs with
-    CWD = the role dir. A tree reshape breaks these silently — nothing fails
-    until a scenario runs in CI.
-    """
+    """The base config's relative paths resolve from the dirs molecule uses:
+    the scenario dir for ansible-playbook, the role dir for ansible-galaxy."""
 
     ROLE_DIR = COLLECTION / "roles" / "somerole"
     SCENARIO_DIR = ROLE_DIR / "molecule" / "default"

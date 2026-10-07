@@ -1,8 +1,7 @@
 ---
 # Render/contract scenario: immich_skip_install skips the Docker/nginx install
-# and all service management, so the compose file, system config (both the
-# SSO-only and bootstrap branches), .env, nginx site, systemd units and the
-# backup wrapper are rendered and asserted without a container runtime.
+# and service management, so the compose file, system config (both branches),
+# .env, nginx site, systemd units and backup wrapper render without a runtime.
 provisioner:
   playbooks:
     prepare: prepare.yml

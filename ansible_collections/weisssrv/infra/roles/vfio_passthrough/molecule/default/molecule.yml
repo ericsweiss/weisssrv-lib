@@ -1,8 +1,7 @@
 ---
-# The container has no GRUB and no real /boot kernel, so
-# vfio_passthrough_skip_boot_update suppresses the update-grub/update-initramfs
-# handlers. What is exercised: the grub drop-in + modprobe.d renders and their
-# exact content (ids=, blacklist, softdep, IOMMU cmdline).
+# The container has no GRUB or real /boot kernel, so
+# vfio_passthrough_skip_boot_update suppresses those handlers. Exercised: the
+# grub drop-in and modprobe.d renders and their exact content.
 platforms:
   - name: vfio-passthrough-test
     image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}
@@ -19,10 +18,9 @@ platforms:
       - /tmp
 provisioner:
   playbooks:
-    # Role-specific prepare: seed /etc/modprobe.d + /etc/modules-load.d (absent in
-    # the minimal image) on top of the shared systemd-wait prep. Re-points
-    # playbooks.prepare off the inherited prepare-common.yml (deep-merge keeps
-    # converge/verify from base).
+    # Role-specific prepare: seeds /etc/modprobe.d + /etc/modules-load.d on top
+    # of the shared systemd-wait prep, replacing the inherited
+    # prepare-common.yml. Deep-merge keeps converge/verify from base.
     prepare: prepare.yml
   inventory:
     group_vars:

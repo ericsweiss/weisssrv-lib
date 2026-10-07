@@ -1,9 +1,7 @@
 ---
-# Prepare: shared systemd/apt prep + one-time nginx fixture seeding. The seeds
-# live here (not converge.yml) so the idempotence re-run doesn't ping-pong with
-# the role: the flow removes the seeded default vhost, tightens the key mode,
-# and owns the ssl-dir mode — re-seeding those every converge would report
-# changed forever.
+# Shared systemd/apt prep plus one-time nginx fixture seeding. The seeds live
+# here rather than in converge.yml because the role removes or retightens them,
+# so re-seeding every converge would report changed forever.
 - name: Prepare
   hosts: all
   gather_facts: false
@@ -14,10 +12,9 @@
     - name: Disable apt background services
       ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/prepare-apt-disable.yml
 
-    # nginx isn't installed under skip_install, so its sites-*/ssl dirs are
-    # created here. Seed a SENTINEL cert + key so the openssl placeholder task's
-    # `creates:` guard leaves them untouched, and a packaged default vhost so
-    # verify can assert the flow removes it.
+    # nginx is not installed under skip_install, so its sites-*/ssl dirs are
+    # created here, with a sentinel cert and key the placeholder task's
+    # `creates:` guard leaves alone and a default vhost verify expects removed.
     - name: Pre-create the nginx sites + ssl layout (nginx not installed under skip)
       ansible.builtin.file:
         path: "{{ item }}"

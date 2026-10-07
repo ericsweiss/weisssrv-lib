@@ -1,23 +1,7 @@
 #!/bin/bash
 # {{ ansible_managed }}
-#
-# zfs-mount-encrypted.sh <pool> [<pool> ...]
-#
-# Best-effort mount: `zfs mount -a` runs regardless of keystatus (it mounts
-# what is unlocked and harmlessly skips the rest, idempotently), so a delayed
-# unlock of one pool never blocks an already-unlocked one.
-#
-# Only the SERVICE going `active` is deferred: any listed pool still locked (or
-# not imported, or a zfs ioctl blip) exits non-zero so the unit's
-# `until <this script>; do sleep 30; done` loop keeps it `activating` — not
-# failed — and its After= dependents stay queued. That is the cold-cluster case
-# where Connect comes up after this host.
-#
-# Exit codes:
-#   0 — every listed pool's keys present AND `zfs mount -a` succeeded
-#   1 — some listed pool's keys not yet loaded / pool not imported (ready pools
-#       were still mounted on this pass); RETRY
-#   2 — `zfs mount -a` itself failed; RETRY
+# zfs-mount-encrypted.sh <pool> [<pool> ...]. Exit 0 mounted, 1 keys not loaded,
+# 2 mount failed; non-zero keeps the unit activating. README, "Cold-cluster boot".
 
 set -euo pipefail
 
@@ -33,10 +17,9 @@ for pool in "$@"; do
         continue
     fi
 
-    # Capture zfs get's own exit status rather than inferring from (empty)
-    # output: a transient ioctl error must trigger a RETRY, never be read as
-    # "no encrypted datasets, nothing to wait for". (Same guard as
-    # zfs-load-key.sh.)
+    # Capture zfs get's exit status rather than inferring from empty output, so
+    # a transient ioctl error retries instead of reading as "no encrypted
+    # datasets".
     if ! roots_raw="$(zfs get -H -t filesystem,volume -o name,value -r encryptionroot "$pool")"; then
         log "zfs get encryptionroot failed for $pool; will retry"
         pending=1

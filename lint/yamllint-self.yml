@@ -1,0 +1,35 @@
+---
+# CRITICAL: this profile must NOT sit at the repo root as `.yamllint`.
+# ansible-lint auto-discovers one there and merges it over its own yaml[*]
+# rules. Callers pass `-c lint/yamllint-self.yml` explicitly.
+
+# The library's OWN YAML (CI templates, lint and example configs): the
+# lint/yamllint-relaxed.yml baseline consumers vendor, with document-start off.
+extends: relaxed
+
+rules:
+  line-length: disable
+  # GitLab CI spec:inputs templates under ci/ must begin with `spec:` (the
+  # first YAML document is the input header), so a leading `---` is not part of
+  # GitLab's documented form and document-start is off repo-wide.
+  document-start: disable
+  # ansible-lint rejects a config it discovers without these and turns fix mode
+  # off. Warning level, matching the baseline.
+  comments:
+    min-spaces-from-content: 1
+    level: warning
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true
+    level: warning
+  # One blank line between blocks (warning, as in `relaxed`).
+  empty-lines:
+    max: 1
+
+# Local-only collection cache and provider checkouts (gitignored); CI lints the
+# explicit target list.
+ignore: |
+  .ansible/
+  .ansible-home/
+  .terraform/
+  terraform/**/.terraform/

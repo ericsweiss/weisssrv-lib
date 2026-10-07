@@ -81,10 +81,12 @@
       chattr +i on /etc/resolv.conf did not take effect — the intended
       tamper/overwrite protection is absent.
     quiet: true
+  # The container waiver applies only where chattr itself failed: a container in
+  # which chattr returned 0 and the flag is still absent fails like any host.
   when:
     - resolv_conf_immutable | bool
     - not ansible_check_mode
-    - not (resolv_conf_is_container | bool)
+    - not (resolv_conf_is_container | bool and resolv_conf_chattr_set.rc | default(1) != 0)
 
 - name: Note the container immutable-flag exception
   ansible.builtin.debug:
@@ -97,4 +99,5 @@
     - resolv_conf_immutable | bool
     - not ansible_check_mode
     - resolv_conf_is_container | bool
+    - resolv_conf_chattr_set.rc | default(1) != 0
     - resolv_conf_attrs_after.stdout | default('') is not search('^[^ ]*i[^ ]* ')

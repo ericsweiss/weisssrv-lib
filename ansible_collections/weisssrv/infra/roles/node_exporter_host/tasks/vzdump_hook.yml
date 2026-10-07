@@ -1,8 +1,7 @@
 ---
 # Entry point for `tasks_from: vzdump_hook`: installs only the vzdump metrics
-# hookscript. weisssrv.infra.proxmox_backup includes this so the path exists
-# before pvesh validates a backup job's `--script`, without a second copy of
-# the file living outside this role.
+# hookscript. weisssrv.infra.proxmox_backup includes it so the path exists
+# before pvesh validates a backup job's `--script`.
 
 - name: Install vzdump metrics hookscript
   ansible.builtin.copy:
@@ -11,3 +10,13 @@
     owner: root
     group: root
     mode: "0755"
+
+- name: Configure the vzdump hookscript textfile directory
+  ansible.builtin.copy:
+    dest: /etc/default/vzdump-metrics-hook
+    content: |
+      # {{ ansible_managed }}
+      TEXTFILE_DIR="{{ node_exporter_host_textfile_dir }}"
+    owner: root
+    group: root
+    mode: "0644"

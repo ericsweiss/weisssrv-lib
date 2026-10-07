@@ -1,13 +1,7 @@
 ---
-# Publish a rendered Jinja template into pmxcfs (/etc/pve), content only:
-# render to staging on the normal root fs, then copy in. template/copy cannot
-# write here — pmxcfs rejects the chown/chmod/utime that atomic_move performs.
-# Full explanation: role README, "Writing into pmxcfs".
-#
-# Caller contract (include_tasks vars): pmxcfs_config_src (template filename),
-# pmxcfs_config_dest (absolute path inside /etc/pve), pmxcfs_config_label
-# (unique, filesystem-safe id, also the staging filename). The caller supplies
-# become / delegate_to via `apply:`, and run_once / when on the include itself.
+# Publish a rendered template into pmxcfs by staging it on the root fs and
+# copying it in. Caller vars: pmxcfs_config_src, pmxcfs_config_dest and a
+# unique pmxcfs_config_label. See README, "Writing into pmxcfs".
 
 - name: Ensure the pmxcfs firewall staging directory exists
   ansible.builtin.file:
@@ -32,12 +26,11 @@
     checksum_algorithm: sha1
   register: proxmox_firewall_pmxcfs_live
 
-# Plain `cp` (no -p) issues no post-copy fchmod/chown/utime, so pmxcfs accepts
-# it and stamps its own root:www-data 0640. Content-only: reusing this helper
-# for a pmxcfs file whose mode carries a write bit would reintroduce the EPERM.
-# Comparing render against live pmxcfs gives idempotence and corrects
-# out-of-band drift. In --check mode `template` returns no checksum, so this
-# guard collapses and the render-to-staging task's `changed` is the signal.
+# CRITICAL: plain `cp` with no -p issues no post-copy fchmod or chown, which is
+# why pmxcfs accepts it and stamps its own root:www-data 0640. This helper is
+# content-only; a pmxcfs file needing its own mode hits EPERM. The checksum
+# compare gives idempotence, and collapses in --check where template returns
+# none.
 - name: Publish the firewall config into pmxcfs when changed for {{ pmxcfs_config_label }}
   ansible.builtin.command:
     cmd: "cp -- {{ proxmox_firewall_staging_dir }}/{{ pmxcfs_config_label }} {{ pmxcfs_config_dest }}"
@@ -45,3 +38,17 @@
     (proxmox_firewall_pmxcfs_render.checksum | default(''))
     != (proxmox_firewall_pmxcfs_live.stat.checksum | default(''))
   changed_when: true
+  register: proxmox_firewall_pmxcfs_publish
+
+# A file pve-firewall refuses to compile is already live at this point and it
+# keeps serving the last good ruleset, so without this the cluster silently stops
+# converging. Some versions still exit 0 on a parse error, hence the stderr test.
+- name: Validate the compiled ruleset after publishing {{ pmxcfs_config_label }}
+  ansible.builtin.command: pve-firewall compile
+  register: proxmox_firewall_compile
+  changed_when: false
+  check_mode: false
+  failed_when: proxmox_firewall_compile_failed | bool
+  when:
+    - not (proxmox_firewall_skip_pveum | default(false))
+    - proxmox_firewall_pmxcfs_publish is changed

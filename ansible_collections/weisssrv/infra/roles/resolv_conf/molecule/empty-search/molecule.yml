@@ -32,13 +32,12 @@ provisioner:
     # Repo root (the dir holding ansible_collections/) so FQCNs resolve; see
     # molecule-shared/base.yml for why the depths differ.
     ANSIBLE_COLLECTIONS_PATH: ../../../../../../..:~/.ansible/collections:/usr/share/ansible/collections
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
   config_options:
     defaults:
       callbacks_enabled: profile_tasks, timer
       stdout_callback: ansible.builtin.default
       result_format: yaml
-    # Self-contained scenario (no -c base.yml): mirror the base's [connection]
+    # Self-contained so the scenario runs without -c: mirror the base's [connection]
     # pipelining — one docker exec per task instead of put-file + exec.
     connection:
       pipelining: true
@@ -56,6 +55,10 @@ provisioner:
           - 192.0.2.11
         # The feature under test.
         resolv_conf_search_domains: []
+        # Custom options list; the default scenario covers the shipped one.
+        resolv_conf_options:
+          - rotate
+          - timeout:1
         # /etc/resolv.conf is bind-mounted in Docker containers; the atomic
         # rename returns EBUSY. Test-only.
         resolv_conf_unsafe_writes: true

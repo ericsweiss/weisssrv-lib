@@ -11,8 +11,8 @@ resource "cloudflare_zone_settings_override" "this" {
   zone_id = data.cloudflare_zone.this.id
 
   settings {
-    # http2, polish, mirage and webp are read-only via the API; Auto Minify was
-    # retired upstream (no minify setting exists).
+    # http2, polish, mirage and webp are read-only over the API; Auto Minify is
+    # not a settable zone setting.
     ssl                      = var.zone_settings.ssl
     always_use_https         = var.zone_settings.always_use_https
     min_tls_version          = var.zone_settings.min_tls_version
@@ -35,17 +35,17 @@ resource "cloudflare_zone_settings_override" "this" {
     }
   }
 
-  # Same policy as every record below: destroying this override reverts
-  # ssl/HSTS/min_tls_version zone-wide, and a consumer stack may auto-apply.
-  # Disabling manage_zone_settings deliberately means `terraform state rm`
-  # first (the live settings survive that), then flipping the variable.
+  # Destroying this override reverts ssl/HSTS/min_tls_version zone-wide, and a
+  # consumer stack may auto-apply. Disabling manage_zone_settings means
+  # `terraform state rm` first (live settings survive), then flipping it.
   lifecycle {
     prevent_destroy = true
   }
 }
 
 # `lifecycle` takes no variables, so the two protection dimensions are expressed
-# as four resources and records are routed by their flags.
+# as four resources and records are routed by their flags. Keep the four
+# argument sets identical; the tests assert that.
 locals {
   records_plain = {
     for key, r in var.records : key => r
@@ -70,7 +70,7 @@ resource "cloudflare_record" "this" {
 
   zone_id  = data.cloudflare_zone.this.id
   name     = each.value.name
-  type     = each.value.type
+  type     = upper(each.value.type)
   content  = each.value.content
   priority = each.value.priority
   proxied  = each.value.proxied
@@ -93,7 +93,7 @@ resource "cloudflare_record" "protected" {
 
   zone_id  = data.cloudflare_zone.this.id
   name     = each.value.name
-  type     = each.value.type
+  type     = upper(each.value.type)
   content  = each.value.content
   priority = each.value.priority
   proxied  = each.value.proxied
@@ -120,7 +120,7 @@ resource "cloudflare_record" "external_content" {
 
   zone_id  = data.cloudflare_zone.this.id
   name     = each.value.name
-  type     = each.value.type
+  type     = upper(each.value.type)
   content  = each.value.content
   priority = each.value.priority
   proxied  = each.value.proxied
@@ -149,7 +149,7 @@ resource "cloudflare_record" "protected_external_content" {
 
   zone_id  = data.cloudflare_zone.this.id
   name     = each.value.name
-  type     = each.value.type
+  type     = upper(each.value.type)
   content  = each.value.content
   priority = each.value.priority
   proxied  = each.value.proxied

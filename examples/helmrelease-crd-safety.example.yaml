@@ -1,0 +1,26 @@
+---
+# Policy data for scripts/check-helmrelease-crd-safety.py (--policy-config).
+# Every HelmRelease in the rendered corpus belongs in crd_keepers or no_crds, so
+# a chart that starts shipping CRDs cannot reach the cluster unnoticed.
+
+# crd_keepers: "namespace/HelmRelease/name" -> the shape that keeps its CRDs:
+# `values` (spec.values.crds.annotations), `postRenderer` (a kustomize patch on
+# the CRDs) or `keep` (spec.values.crds.keep). The first two need RetryOnFailure.
+crd_keepers:
+  cert-manager/HelmRelease/cert-manager: keep
+  metallb-system/HelmRelease/metallb: postRenderer
+  external-secrets/HelmRelease/external-secrets: values
+
+# no_crds: "namespace/HelmRelease/name" -> why an uninstall takes no CR with it.
+# A bare key with no reason is refused: an unexplained exemption is a hole.
+no_crds:
+  kube-system/HelmRelease/reloader: >-
+    the chart ships no CustomResourceDefinition; it watches ConfigMaps and
+    Secrets and annotates workloads
+
+# required_extra_args: "namespace/HelmRelease/name" -> argv entries the release's
+# spec.values.extraArgs must carry, for a controller whose own default would
+# silently stop matching the manifests.
+required_extra_args:
+  external-dns/HelmRelease/external-dns:
+    - --annotation-prefix=external-dns.alpha.kubernetes.io/

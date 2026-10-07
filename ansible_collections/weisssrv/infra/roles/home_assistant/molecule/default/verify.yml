@@ -76,16 +76,6 @@
           home_assistant_oidc_configure_url value (not a hardcoded host), and
           block_login true so password login stays disabled.
 
-    - name: Assert the deprecated YAML SMTP notify platform is not rendered
-      # The `smtp` notify platform is removed upstream in HA 2027.1.0; SMTP
-      # notifications live in a UI config entry instead.
-      ansible.builtin.assert:
-        that:
-          - "home_assistant_t_cfg_text is not search('platform: smtp')"
-        fail_msg: >-
-          A `platform: smtp` notify block was rendered — that platform no longer
-          exists in Home Assistant.
-
     - name: Assert the prometheus, default_config and include lines are present
       ansible.builtin.assert:
         that:
@@ -157,11 +147,9 @@
         that:
           - "home_assistant_t_secrets_text is search('oidc_client_id: \"test-oidc-client-id\"')"
           - "home_assistant_t_secrets_text is search('oidc_client_secret: \"test-oidc-client-secret\"')"
-          - "home_assistant_t_secrets_text is not search('smtp_username')"
-          - "home_assistant_t_secrets_text is not search('smtp_password')"
         fail_msg: >-
-          secrets.yaml is missing an OIDC key, a value is not double-quoted via
-          to_json, or a removed SMTP key came back.
+          secrets.yaml is missing an OIDC key, or a value is not double-quoted
+          via to_json.
       no_log: true
 
     # --- deploy path (render_only=false), driven through local shims ---

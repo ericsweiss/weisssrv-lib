@@ -1,23 +1,21 @@
 ---
-# Policy data for scripts/check-hpa-vpa-invariant.py (--policy-config) and, for
-# the shared CPU-limit allowlist, scripts/validate-helm-values.py.
-#
-# chart_native_hpa_targets: workloads whose HPA lives inside a HelmRelease and is
-# therefore absent from the kustomize corpus. Each must have a mutating VPA that
-# excludes cpu, asserted with --require-chart-native-vpas. Keep in step with the
-# HelmReleases that enable autoscaling.
+# Policy data for scripts/check-hpa-vpa-invariant.py (--policy-config) and the
+# shared CPU-limit allowlist in scripts/validate-helm-values.py.
+# chart_native_hpa_targets: workloads whose HPA lives inside a HelmRelease.
 chart_native_hpa_targets:
   - namespace: traefik
     kind: Deployment
     name: traefik
     source: traefik chart autoscaling.enabled
 
-# cpu_limit_allowlist: "namespace/Kind/name" workloads intentionally permitted a
-# CPU limit. Empty by design — add an entry only with an inline rationale.
-cpu_limit_allowlist: []
+# cpu_limit_allowlist: "namespace/Kind/name" -> why the CPU limit stays. A bare
+# string entry is refused: an unexplained exemption is a hole.
+cpu_limit_allowlist: {}
 
-# vpa_cap_allowlist: "namespace/VerticalPodAutoscaler/name" policies whose
-# maxAllowed.memory has not been re-derived against its container's limit yet.
-# A grace list for an adoption wave, not a standing exemption — an entry without
-# an inline rationale and a plan is drift with extra steps.
-vpa_cap_allowlist: []
+# vpa_cap_allowlist: "namespace/VerticalPodAutoscaler/name" -> why the cap has
+# not been re-derived against its container's limit yet. A grace list.
+vpa_cap_allowlist: {}
+
+# memory_ratio_allowlist: "namespace/Kind/name" -> why requests.memory equals
+# limits.memory under a VPA that rewrites the limit.
+memory_ratio_allowlist: {}

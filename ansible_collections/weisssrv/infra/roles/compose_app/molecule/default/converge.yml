@@ -1,8 +1,7 @@
 ---
-# Converge: render the shared compose unit in BOTH shapes (RequiresMountsFor
-# present and absent), deploy the write_prom_metrics helper library, and run the
-# host-nginx flow — all in skip-install mode, so no container runtime or systemd
-# service management is needed.
+# Renders the shared compose unit in both shapes (RequiresMountsFor present and
+# absent), deploys the write_prom_metrics helper, and runs the host-nginx flow
+# render-only and with a real nginx binary so candidate validation executes.
 - name: Converge
   hosts: all
   become: true
@@ -50,9 +49,8 @@
         compose_app_backup_lib_dest: /usr/local/lib/testapp-backup-lib.sh
         compose_app_backup_size_help_object: "database dump"
 
-    # Case C: the shared host-nginx task flow (skip_install, so nginx is neither
-    # installed nor reloaded). The sites/ssl layout, sentinel cert + key, and
-    # packaged default vhost are seeded once in prepare.yml — seeding them here
+    # Case C: the shared host-nginx task flow under skip_install. prepare.yml
+    # seeds the sites/ssl layout, sentinel cert and default vhost; seeding here
     # would ping-pong with the flow's remove/chmod tasks on the idempotence run.
     - name: Run the shared host-nginx task flow (render-only)
       ansible.builtin.include_role:
@@ -64,3 +62,110 @@
         compose_app_nginx_site_template: "{{ playbook_dir }}/files/testapp-nginx-site.conf.j2"
         compose_app_nginx_ssl_cert: /etc/nginx/ssl/fullchain.pem
         compose_app_nginx_ssl_key: /etc/nginx/ssl/privkey.pem
+
+    # Cases D/E need the real binary: candidate validation is what this flow
+    # exists for, and skip_install gates it off. Installed here, AFTER case C,
+    # so the render-only path is still exercised without nginx present.
+    - name: Install nginx for the validated-install cases
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+        update_cache: true
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+
+    # The awk that injects the candidate's include keys on the `http {` opener;
+    # a trailing comment there is the shape most likely to break it.
+    - name: Put a trailing comment on nginx.conf's http block opener
+      ansible.builtin.lineinfile:
+        path: /etc/nginx/nginx.conf
+        regexp: '^(http \{)$'
+        line: '\1  # trailing comment: the awk injection must still match'
+        backrefs: true
+
+    # Case D: the same flow with validation ON — the candidate must pass
+    # `nginx -t` against the merged config before it reaches sites-available.
+    - name: Run the shared host-nginx task flow (validated install)
+      ansible.builtin.include_role:
+        name: weisssrv.infra.compose_app
+        tasks_from: nginx.yml
+      vars:
+        compose_app_skip_install: false
+        compose_app_nginx_site_name: testapp-live.conf
+        compose_app_nginx_site_template: "{{ playbook_dir }}/files/testapp-nginx-live.conf.j2"
+        compose_app_nginx_ssl_cert: /etc/nginx/ssl/fullchain.pem
+        compose_app_nginx_ssl_key: /etc/nginx/ssl/privkey.pem
+
+    # Case E: a broken candidate under the SAME site name must fail the play and
+    # leave the installed good site untouched — the property the role promises.
+    - name: Reject a broken site candidate (expect failure)
+      block:
+        - name: Run the host-nginx flow with a broken site template
+          ansible.builtin.include_role:
+            name: weisssrv.infra.compose_app
+            tasks_from: nginx.yml
+          vars:
+            compose_app_skip_install: false
+            compose_app_nginx_site_name: testapp-live.conf
+            compose_app_nginx_site_template: "{{ playbook_dir }}/files/testapp-nginx-broken.conf.j2"
+            compose_app_nginx_ssl_cert: /etc/nginx/ssl/fullchain.pem
+            compose_app_nginx_ssl_key: /etc/nginx/ssl/privkey.pem
+        - name: Candidate validation failed to reject a broken site
+          ansible.builtin.copy:
+            dest: /tmp/compose-app-nginx-validate.json
+            content: '{"failed": false}'
+            mode: "0644"
+      rescue:
+        - name: Candidate validation correctly rejected a broken site
+          ansible.builtin.copy:
+            dest: /tmp/compose-app-nginx-validate.json
+            mode: "0644"
+            content: |
+              {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
+          # Test-result marker, not convergence: the negative case re-runs on
+          # every converge, so it must not count toward the idempotence check.
+          changed_when: false
+
+    # A dangling symlink makes `cp -aL` skip that site, so the candidate would
+    # be validated against a partial merge and a collision could slip through.
+    - name: Seed a dangling symlink in sites-enabled
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/absent-site.conf
+        dest: /etc/nginx/sites-enabled/absent-site.conf
+        state: link
+        force: true
+      changed_when: false
+
+    - name: Reject a partial sites-enabled merge (expect failure)
+      block:
+        - name: Run the host-nginx flow over an unreadable existing site
+          ansible.builtin.include_role:
+            name: weisssrv.infra.compose_app
+            tasks_from: nginx.yml
+          vars:
+            compose_app_skip_install: false
+            compose_app_nginx_site_name: testapp-live.conf
+            compose_app_nginx_site_template: "{{ playbook_dir }}/files/testapp-nginx-site.conf.j2"
+            compose_app_nginx_ssl_cert: /etc/nginx/ssl/fullchain.pem
+            compose_app_nginx_ssl_key: /etc/nginx/ssl/privkey.pem
+
+        - name: Candidate validation accepted a partial merge
+          ansible.builtin.copy:
+            dest: /tmp/compose-app-nginx-merge.json
+            content: '{"failed": false}'
+            mode: "0644"
+          changed_when: false
+      rescue:
+        - name: Candidate validation correctly rejected a partial merge
+          ansible.builtin.copy:
+            dest: /tmp/compose-app-nginx-merge.json
+            mode: "0644"
+            content: |
+              {"failed": true, "msg": {{ ansible_failed_result.msg | default('') | to_json }}}
+          changed_when: false
+
+    - name: Remove the dangling symlink
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/absent-site.conf
+        state: absent
+      changed_when: false

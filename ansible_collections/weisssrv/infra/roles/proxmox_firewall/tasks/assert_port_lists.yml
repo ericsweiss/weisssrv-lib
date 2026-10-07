@@ -1,26 +1,7 @@
 ---
-# Schema guard for every hand-authored source list this role renders: the two
-# port lists ({port, sources[], comment?}) and the two flat client-scope lists.
-# cluster.fw.j2 dereferences each with no default, so a typo or a missing key
-# would otherwise surface as a raw undefined-variable error from mid-render
-# instead of a message naming the variable and the entry.
-#
-# `sources` is asserted to be a LIST, not just non-empty: a scalar
-# (`sources: k3s_nodes`) has a length too, and the template's
-# `{% for src in entry.sources %}` iterates it per character — one rule per
-# letter, each naming an IPSet that does not exist, which pve-firewall then
-# refuses to compile. Singular-vs-plural is the likely author error here,
-# because the metrics seam's key was `source` (a scalar) before this release.
-# A MAPPING is rejected for the same reason it is not a list, even though
-# iterating one happens to yield its keys.
-#
-# `port` is asserted to have a VALUE, not merely to be defined: `port:` with the
-# number omitted on the next line is `defined` and null, and the template
-# renders it as `-dport None` into cluster.fw — a datacenter-wide file
-# pve-firewall refuses to compile, written and handler-notified before anyone
-# sees it.
-#
-# Split into its own file so molecule can drive it from fabricated inventory.
+# Schema guard for the hand-authored port and client-scope lists. `sources` must
+# be a LIST and `port` non-null: the template iterates a scalar per character and
+# renders a null port as `-dport None`, which pve-firewall refuses to compile.
 
 - name: Assert the sg-dns admin-port entries carry a port and a list of sources
   ansible.builtin.assert:
@@ -65,31 +46,9 @@
   loop_control:
     label: "{{ item.port | default('?') }}"
 
-# The two client-scope lists are flat lists of IPSet names, iterated by
-# the same `{% for src in ... %}` construct. Both failure shapes are silent:
-# a scalar renders one rule per character naming IPSets that do not exist, and
-# an EMPTY list renders the surface with no rules at all — DNS closed on every
-# VLAN, or the internal ingress closed to every user — in a cluster.fw that
-# compiles perfectly and reports nothing.
-#
-# The container being a non-empty list says nothing about what is IN it, and the
-# template interpolates each element straight into `+dc/{{ src }}`: a null
-# renders `+dc/None`, an empty string renders a bare `+dc/`, and a name with a
-# space in it splits the rule into two arguments.
-#
-#
-# The element pattern is pve-firewall's own `ipset-name` grammar, not merely
-# "no whitespace": a leading letter, then 1-63 more of [A-Za-z0-9_-], i.e. the
-# 2-64 length bounds the schema registers. `/` and `#` are the ones that matter
-# — both are accepted by a whitespace-only test and both make pve-firewall
-# refuse to compile the file this role has already written. `\Z` rather than
-# `$`, because `$` also matches before a trailing newline.
-#
-# Both element tests are needed. `match` STRINGIFIES before matching, so a null
-# reaches it as "None" and passes — the same silent conversion the template
-# performs — and only the `string` test rejects it (a bare number too). `match`
-# is what rejects the empty, mis-charactered and over-long names the `string`
-# test admits.
+# Client-scope lists: a scalar, an empty list or a malformed element name each
+# render a silently wrong cluster.fw (DNS or internal ingress closed, or a file
+# that will not compile). Element grammar is pve-firewall's ipset-name; see README.
 - name: Assert the client-scope source lists are non-empty lists of set names
   ansible.builtin.assert:
     that:
@@ -109,9 +68,126 @@
       scopes, and an element that is null or empty renders `+dc/None` or a bare
       `+dc/`. Each name must match pve-firewall's own ipset grammar — a leading
       letter, then 1-63 of letters, digits, `_` or `-` — so a name carrying a
-      space, a `/` or a `#` is rejected here rather than by pve-firewall
-      refusing to compile the file this role has already written.
+      space, a `/` or a `#` is rejected here rather than by pve-firewall refusing
+      to compile a file the role has already written — a refusal only visible
+      in `pve-firewall compile` or the service log.
     quiet: true
   loop:
     - proxmox_firewall_dns_client_sources
     - proxmox_firewall_k3s_ingress_int_sources
+
+# sg-smtp-relay fails closed: an empty list renders no IN rule at all, so only
+# the shape and the element grammar are checked here.
+- name: Assert the smtp-relay client scope is a list of set names
+  ansible.builtin.assert:
+    that:
+      - proxmox_firewall_smtp_relay_sources is sequence
+      - proxmox_firewall_smtp_relay_sources is not string
+      - proxmox_firewall_smtp_relay_sources is not mapping
+      - proxmox_firewall_smtp_relay_sources | select('string') | list | length == proxmox_firewall_smtp_relay_sources | length
+      - proxmox_firewall_smtp_relay_sources | select('match', '^[A-Za-z][A-Za-z0-9_-]{1,63}\Z') | list | length == proxmox_firewall_smtp_relay_sources | length
+    fail_msg: >-
+      proxmox_firewall_smtp_relay_sources must be a LIST of valid IPSet NAMES
+      (e.g. `[core-cluster]`), or empty to render no rule at all —
+      cluster.fw.j2 renders each entry as `+dc/<name>`, so a bare scalar is
+      iterated per character into rules naming sets that do not exist, and an
+      element that is null or empty renders `+dc/None` or a bare `+dc/`. Each
+      name must match pve-firewall's own ipset grammar — a leading letter, then
+      1-63 of letters, digits, `_` or `-`.
+    quiet: true
+
+- name: Assert the extra egress ports carry a port and a protocol
+  ansible.builtin.assert:
+    that:
+      - item.port is defined
+      - item.port is not none
+      - item.proto is defined
+      - item.proto in ['tcp', 'udp']
+    fail_msg: >-
+      A host-egress or smtp-relay extra-port entry {{ item }} is malformed:
+      every entry of proxmox_firewall_host_egress_extra_ports and
+      proxmox_firewall_smtp_relay_extra_egress_ports needs a `port` with a
+      value and a `proto` of tcp or udp
+      (e.g. `- {port: 2222, proto: tcp, comment: forge SSH}`). A null port
+      renders `-dport None`, which pve-firewall refuses to compile.
+    quiet: true
+  loop: >-
+    {{ (proxmox_firewall_host_egress_extra_ports | default([]))
+       + (proxmox_firewall_smtp_relay_extra_egress_ports | default([])) }}
+  loop_control:
+    label: "{{ item.port | default('?') }}"
+
+# `ip` is required and `comment` optional: an entry with no ip renders `None`
+# into the IPSet, which pve-firewall refuses to compile.
+- name: Assert every IPSet special entry carries an address
+  ansible.builtin.assert:
+    that:
+      - item.1.ip is defined
+      - item.1.ip is not none
+      - item.1.ip is string
+    fail_msg: >-
+      firewall_ipset_special_entries['{{ item.0.key }}'] entry {{ item.1 }}
+      needs an `ip` (address or CIDR); `comment` is optional.
+    quiet: true
+  loop: >-
+    {{ (firewall_ipset_special_entries | default({})) | dict2items | subelements('value') }}
+  loop_control:
+    label: "{{ item.0.key }}"
+
+# Group names share cluster.fw's one namespace with the groups the template
+# renders itself. A second `[group <name>]` section loses one of the two rule
+# sets, and it is not a shape `pve-firewall compile` complains about.
+- name: Assert every per-application security group name is usable and unowned
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.name is defined
+      - item.name is string
+      - item.name is match(_proxmox_firewall_group_name_re)
+      - item.name not in _proxmox_firewall_builtin_groups
+    fail_msg: >-
+      proxmox_firewall_security_groups entry
+      `{{ item.name | default(item) }}` is unusable: every entry is a mapping
+      with a string `name` matching pve-firewall's security-group grammar — a
+      leading letter or digit, then letters, digits, `_` or `-`, 2 to 18
+      characters — and the name must not be one this role already renders
+      ({{ _proxmox_firewall_builtin_groups | join(', ') }}). A duplicate name
+      renders two `[group <name>]` sections and pve-firewall keeps one of them,
+      so either the site's app rules or the built-in allows disappear with
+      nothing in `pve-firewall compile` to show it.
+    quiet: true
+  loop: "{{ proxmox_firewall_security_groups | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default(item) }}"
+
+- name: Assert the per-application security group names are unique
+  ansible.builtin.assert:
+    that:
+      - >-
+        (proxmox_firewall_security_groups | default([])
+         | selectattr('name', 'defined') | map(attribute='name')
+         | list | length)
+        == (proxmox_firewall_security_groups | default([])
+            | selectattr('name', 'defined') | map(attribute='name')
+            | unique | list | length)
+    fail_msg: >-
+      proxmox_firewall_security_groups names two groups the same, so cluster.fw
+      renders two `[group <name>]` sections and pve-firewall keeps one rule set
+      of the two — merge the entries instead.
+    quiet: true
+
+# host.fw renders these as `GROUP <name>` references, so a built-in name here is
+# a deliberate reference rather than a collision: only the grammar is checked.
+- name: Assert the per-host extra security group references are group names
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - item is match(_proxmox_firewall_group_name_re)
+    fail_msg: >-
+      proxmox_firewall_host_extra_groups entry `{{ item }}` is not a security
+      group NAME — host.fw renders each entry as `GROUP <name>`, and
+      pve-firewall's grammar is a leading letter or digit, then letters, digits,
+      `_` or `-`, 2 to 18 characters. The group itself must exist in cluster.fw,
+      either built in or declared in proxmox_firewall_security_groups.
+    quiet: true
+  loop: "{{ proxmox_firewall_host_extra_groups | default([]) }}"

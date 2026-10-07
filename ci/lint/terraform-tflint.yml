@@ -1,0 +1,107 @@
+spec:
+  inputs:
+    job_name:
+      default: terraform-tflint
+      description: Name of the generated job.
+    stage:
+      default: lint
+      description: Pipeline stage the job runs in.
+    image:
+      # Pinned by digest so lint results are reproducible: a moving tag can
+      # change rule behavior between runs.
+      default: ghcr.io/terraform-linters/tflint:v0.61.0@sha256:b835d64d66abfdbc146694b918eb3cd733ec772465ad511464d4e8bebbdd6732
+      description: tflint image. The job overrides its entrypoint.
+    tags:
+      type: array
+      default: ["infrastructure"]
+      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+    work_dir:
+      default: "terraform"
+      description: >-
+        Directory tflint runs in. A directory this repo does not have FAILS the
+        job rather than passing green.
+    config:
+      default: ""
+      description: >-
+        Path to a tflint config file, relative to `work_dir`, passed as
+        `--config=`. Empty lets tflint discover `.tflint.hcl` itself.
+    tflint_args:
+      default: "--recursive --minimum-failure-severity=error"
+      description: >-
+        Arguments for the lint run, word-split. `--recursive` walks every root
+        under `work_dir`; `--minimum-failure-severity` sets what reds the job.
+    default_branch:
+      default: "main"
+      description: >-
+        Consumer's default branch as a LITERAL name (`main`, `master`, `trunk`)
+        for the post-merge rule. NOT `$CI_DEFAULT_BRANCH` —
+        docs/INCLUDE-CONTRACT.md § default_branch.
+    changes:
+      type: array
+      default:
+        - "terraform/**/*"
+        - ".tflint.hcl"
+        - ".gitlab-ci.yml"
+      description: Path list for the MR / default-branch `changes:` rules.
+    job_memory_limit:
+      default: "512Mi"
+      description: >-
+        KUBERNETES_MEMORY_LIMIT for the job pod. Sizing policy:
+        docs/INCLUDE-CONTRACT.md § Resource inputs.
+    job_memory_request:
+      default: "128Mi"
+      description: KUBERNETES_MEMORY_REQUEST for the job pod (scheduler reservation).
+    job_cpu_request:
+      default: "100m"
+      description: >-
+        KUBERNETES_CPU_REQUEST for the job pod (scheduler reservation). Sizing
+        policy: docs/INCLUDE-CONTRACT.md § Resource inputs.
+---
+"$[[ inputs.job_name ]]":
+  needs: []
+  stage: $[[ inputs.stage ]]
+  image:
+    name: $[[ inputs.image ]]
+    entrypoint: [""]
+  tags: $[[ inputs.tags ]]
+  variables:
+    KUBERNETES_MEMORY_LIMIT: $[[ inputs.job_memory_limit ]]
+    KUBERNETES_MEMORY_REQUEST: $[[ inputs.job_memory_request ]]
+    KUBERNETES_CPU_REQUEST: $[[ inputs.job_cpu_request ]]
+    # Routed through a variable so an empty value stays an empty word instead of
+    # rendering a bare `--config=` onto the command line.
+    TFLINT_CONFIG: "$[[ inputs.config ]]"
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - scheduler_failure
+  script:
+    - |
+      set -e
+      if [ ! -d "$[[ inputs.work_dir ]]" ]; then
+        echo "ERROR: work_dir '$[[ inputs.work_dir ]]' does not exist"
+        exit 1
+      fi
+      cd "$[[ inputs.work_dir ]]"
+      # A work_dir with no .tf anywhere under it lints nothing and still exits
+      # 0, which is exactly the silent pass this gate exists to prevent.
+      if [ -z "$(find . -name '*.tf' -print -quit)" ]; then
+        echo "ERROR: no *.tf under work_dir '$[[ inputs.work_dir ]]'"
+        exit 1
+      fi
+      set --
+      if [ -n "$TFLINT_CONFIG" ]; then
+        set -- "--config=$TFLINT_CONFIG"
+      fi
+      tflint --init "$@"
+      # shellcheck disable=SC2086  # intentional word-split of tflint_args
+      tflint "$@" $[[ inputs.tflint_args ]]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: $[[ inputs.changes ]]
+    - if: '$CI_COMMIT_BRANCH == "$[[ inputs.default_branch ]]"'
+      changes: $[[ inputs.changes ]]
+    - if: '$CI_PIPELINE_SOURCE == "web"'

@@ -1,9 +1,4 @@
 # {{ ansible_managed }}
-# kube-apiserver audit policy, rendered verbatim from k3s_audit_policy (see the
-# role README for what each rule keeps and why). Referenced by
-# `audit-policy-file` in /etc/rancher/k3s/config.yaml.
-#
-# The apiserver EXITS if this file is missing or unparseable, so tasks/audit.yml
-# asserts the variable's shape before writing it and writes it BEFORE the server
-# config that points here.
+# kube-apiserver audit policy rendered from k3s_audit_policy, referenced by
+# `audit-policy-file` in /etc/rancher/k3s/config.yaml. Rules: the role README.
 {{ k3s_audit_policy | to_nice_yaml(indent=2, width=1000) | trim }}

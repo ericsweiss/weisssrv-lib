@@ -1,0 +1,17 @@
+---
+# `zfs send -X` only accepts a descendant of the dataset being sent, so an entry
+# outside every source would be a silent no-op. Split out so the negative case
+# is drivable from fabricated inventory in test.
+
+- name: Assert every excluded dataset sits under a replicated source
+  ansible.builtin.assert:
+    that:
+      - nas_storage_archive_backup_exclude | default([])
+        | reject('match', '^(' ~ (nas_storage_archive_backup_sources | default([])
+          | map('regex_escape') | join('|')) ~ ')/')
+        | list | length == 0
+    fail_msg: >-
+      Every nas_storage_archive_backup_exclude entry must be a descendant of a
+      nas_storage_archive_backup_sources entry; got
+      {{ nas_storage_archive_backup_exclude | default([]) }}
+    quiet: true

@@ -50,11 +50,9 @@
         fail_msg: "k3s config file missing expected settings"
         success_msg: "k3s config file contains expected settings"
 
-    # Node-prep: the inotify sysctl drop-in (tasks/main.yml) must render so a
-    # container-dense node cannot exhaust the host-global inotify-instance pool
-    # and kill a fresh molecule container's systemd PID 1 with "Too many open
-    # files". Under k3s_skip_install the role writes the drop-in but does not
-    # apply it live (the container shares the host's /proc/sys).
+    # The inotify sysctl drop-in must render, or a container-dense node exhausts
+    # the per-uid inotify-instance pool every uid-0 container shares. Under
+    # k3s_skip_install the role writes it without applying it live.
     - name: Read the inotify sysctl drop-in
       ansible.builtin.slurp:
         src: /etc/sysctl.d/90-k3s-inotify.conf
@@ -213,6 +211,22 @@
       register: kube_vip_manifest
       failed_when: kube_vip_manifest.stat.exists != (k3s_is_first_server | bool)
 
+    - name: Stat the retired metrics-server override
+      ansible.builtin.stat:
+        path: /var/lib/rancher/k3s/server/manifests/metrics-server-config.yaml
+      register: metrics_server_override
+
+    - name: Assert the stale metrics-server override was removed
+      ansible.builtin.assert:
+        that:
+          - not metrics_server_override.stat.exists
+        fail_msg: >-
+          tasks/server.yml "Remove a stale metrics-server override" did not
+          delete the stale HelmChartConfig; k3s keeps re-applying it on every
+          restart.
+        success_msg: "the stale metrics-server override is removed"
+      when: k3s_is_first_server | default(false)
+
     - name: Read kube-vip manifest
       ansible.builtin.slurp:
         src: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
@@ -224,9 +238,12 @@
         that:
           - "'10.0.0.161' in (kube_vip_content.content | b64decode)"
           - "'kube-vip' in (kube_vip_content.content | b64decode)"
-          # Admin kubeconfig is mounted read-only; unused metrics listener is
-          # disabled via the flag (an empty env var would be ignored).
-          - "'readOnly: true' in (kube_vip_content.content | b64decode)"
+          # Runs on its ServiceAccount token: the node's cluster-admin
+          # kubeconfig must not be mounted, or the ClusterRole is decorative.
+          - "'/etc/kubernetes/admin.conf' not in (kube_vip_content.content | b64decode)"
+          - "'/etc/rancher/k3s/k3s.yaml' not in (kube_vip_content.content | b64decode)"
+          # Unused metrics listener is disabled via the flag (an empty env var
+          # would be ignored).
           - "'--prometheusHTTPServer=' in (kube_vip_content.content | b64decode)"
           - "'prometheus_server' not in (kube_vip_content.content | b64decode)"
           # The API-VIP owner must not be preemptible or BestEffort.
@@ -237,31 +254,46 @@
         success_msg: "kube-vip manifest contains expected settings"
       when: k3s_is_first_server
 
-    # metrics-server override (k3s_metrics_server_override_enabled: true in
-    # molecule.yml): first server only, since it owns the manifests dir.
-    - name: Check the metrics-server override presence matches the first-server role
-      ansible.builtin.stat:
-        path: /var/lib/rancher/k3s/server/manifests/metrics-server-config.yaml
-      register: k3s_metrics_server_manifest
-      failed_when: k3s_metrics_server_manifest.stat.exists != (k3s_is_first_server | bool)
-
-    - name: Read the metrics-server override
-      ansible.builtin.slurp:
-        src: /var/lib/rancher/k3s/server/manifests/metrics-server-config.yaml
-      register: k3s_metrics_server_content
+    # k3s_kube_vip_host_kubeconfig is the documented rollback, so its branch is
+    # rendered and parsed here: an indentation slip in it would only surface
+    # during an API-VIP incident.
+    - name: Locate the kube-vip manifest template
+      ansible.builtin.set_fact:
+        k3s_kube_vip_template: >-
+          {{ (playbook_dir ~ '/../../templates/kube-vip-manifest.yaml.j2') | realpath }}
       when: k3s_is_first_server
 
-    - name: Verify the metrics-server override raises replicas and bounds memory
+    - name: Render the kube-vip rollback manifest
+      ansible.builtin.template:
+        src: "{{ k3s_kube_vip_template }}"
+        dest: /tmp/kube-vip-host-kubeconfig.yaml
+        mode: '0644'
       vars:
-        _override: "{{ (k3s_metrics_server_content.content | b64decode | from_yaml).spec.valuesContent | from_yaml }}"
+        k3s_kube_vip_host_kubeconfig: true
+      when: k3s_is_first_server
+
+    - name: Read the rollback render
+      ansible.builtin.slurp:
+        src: /tmp/kube-vip-host-kubeconfig.yaml
+      register: kube_vip_rollback
+      when: k3s_is_first_server
+
+    - name: Verify the rollback render mounts the host kubeconfig
+      vars:
+        # The manifest is four documents; the pod spec lives under the DaemonSet.
+        _kv_docs: "{{ kube_vip_rollback.content | b64decode | from_yaml_all | list }}"
+        rendered: "{{ (_kv_docs | selectattr('kind', 'equalto', 'DaemonSet') | first).spec.template.spec }}"
       ansible.builtin.assert:
         that:
-          - _override.replicas == 2
-          - _override.resources.limits.memory == '256Mi'
-          - _override.resources.requests.memory == '128Mi'
-          - _override.resources.requests.cpu == '25m'
-        fail_msg: "metrics-server override did not render replicas/resources"
-        success_msg: "metrics-server override renders 2 replicas with a memory limit"
+          - rendered.containers[0].volumeMounts | selectattr('mountPath', 'equalto', '/etc/kubernetes/admin.conf') | list | length == 1
+          - rendered.containers[0].volumeMounts[0].readOnly | bool
+          - rendered.volumes | selectattr('hostPath.path', 'equalto', '/etc/rancher/k3s/k3s.yaml') | list | length == 1
+          - "'--inCluster' not in rendered.containers[0].args"
+          - "'manager' in rendered.containers[0].args"
+        fail_msg: >-
+          The k3s_kube_vip_host_kubeconfig branch does not render a usable
+          manifest, so the documented rollback fails during an API-VIP incident.
+        success_msg: "the kube-vip host-kubeconfig rollback renders correctly"
       when: k3s_is_first_server
 
     # Negative test recorded by converge: re-running the role with a NIC that
@@ -281,6 +313,20 @@
           The kube-vip interface assert did not reject a nonexistent NIC —
           a bad k3s_kube_vip_interface would deploy silently and never announce
           the API VIP. Check the assert in tasks/server.yml.
+
+    - name: Read the off-node snapshot NFS negative-assert result
+      ansible.builtin.slurp:
+        src: /tmp/etcd-snapshot-nfs-assert.json
+      register: k3s_offnode_nfs_assert
+
+    - name: Assert an empty snapshot NFS server fails the role
+      ansible.builtin.assert:
+        that:
+          - (k3s_offnode_nfs_assert.content | b64decode | from_json).failed
+          - "'k3s_etcd_snapshot_nfs_server' in (k3s_offnode_nfs_assert.content | b64decode | from_json).msg"
+        fail_msg: >-
+          The off-node snapshot assert did not reject an empty NFS server — the
+          mount would write a ":/export" line into /etc/fstab and then fail.
 
     - name: Read the kube-vip version negative-assert result
       ansible.builtin.slurp:
@@ -346,12 +392,9 @@
         fail_msg: "copy timer missing OnCalendar/Persistent"
         success_msg: "copy timer renders OnCalendar=hourly and Persistent=true"
 
-    # Behavioral test of the DEPLOYED copy script (not just its rendered text):
-    # seed snapshots + a bind-mounted export, run it, and assert the atomic
-    # copy, *.part exclusion, retention prune, the success metric, and the
-    # preserved-timestamp failure branch. SYS_ADMIN + privileged let us
-    # bind-mount so the script's `mountpoint -q` gate passes. Paths mirror the
-    # k3s defaults baked into the rendered script.
+    # Behavioral test of the DEPLOYED copy script: seed snapshots and a
+    # bind-mounted export, run it, then assert the atomic copy, *.part
+    # exclusion, retention prune, success metric and failure branch.
     - name: Provide a bind-mounted off-node export so `mountpoint -q` passes
       ansible.builtin.shell: |
         set -e
@@ -415,6 +458,43 @@
         fail_msg: "success metric or snapshot timestamp missing from etcd_snapshot_copy.prom"
         success_msg: "success metric emits success=1 with the snapshot's mtime"
 
+    # A metrics write failure must not fail a copy that reached the export: a
+    # full or read-only textfile dir would otherwise mark the unit failed with
+    # the snapshot safely off-node.
+    - name: Replace the textfile directory with a file so even root cannot write
+      ansible.builtin.shell: |
+        set -eu
+        mv /var/lib/node_exporter /var/lib/node_exporter.bak
+        : > /var/lib/node_exporter
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Run the copy script with the textfile directory unwritable
+      ansible.builtin.command: /usr/local/sbin/k3s-etcd-snapshot-copy.sh
+      register: etcd_copy_promfail
+      changed_when: true
+      failed_when: false
+
+    - name: Restore the textfile directory
+      ansible.builtin.shell: |
+        set -eu
+        rm -f /var/lib/node_exporter
+        mv /var/lib/node_exporter.bak /var/lib/node_exporter
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Verify a failed metrics write does not fail the snapshot copy
+      ansible.builtin.assert:
+        that:
+          - etcd_copy_promfail.rc == 0
+        fail_msg: >-
+          the copy script exited {{ etcd_copy_promfail.rc }} because it could not
+          write its .prom, so a full textfile dir marks a successful off-node
+          copy as a failed unit.
+        success_msg: "a failed metrics write leaves the successful copy at rc 0"
+
     - name: Unmount the export to force the failure branch
       ansible.builtin.command: umount /mnt/etcd-snapshots
       changed_when: true
@@ -439,15 +519,9 @@
         fail_msg: "failure branch did not preserve the prior success timestamp"
         success_msg: "failure branch keeps success=0 with the preserved last-good timestamp"
 
-    # De-provisioning path (k3s_etcd_snapshot_offnode_enabled: false). The
-    # scenario opts IN, so this file would otherwise be executed by no scenario
-    # at all — and an armed timer left behind keeps copying etcd snapshots
-    # (whole-cluster Secret material) off-node. Runs at the END of verify
-    # because it removes the artifacts every assertion above inspects.
-    #
-    # include_tasks, not include_role: include_role would also execute the
-    # role's meta dependencies inside verify. The relative path resolves from
-    # this playbook's own directory.
+    # De-provisioning path (k3s_etcd_snapshot_offnode_enabled: false), which no
+    # other scenario covers: a timer left armed keeps copying whole-cluster
+    # Secret material off-node. Runs last; it removes what the assertions read.
     - name: Run the off-node etcd snapshot de-provisioning path
       ansible.builtin.include_tasks: ../../tasks/etcd-snapshot-offnode-absent.yml
 
@@ -474,3 +548,109 @@
       # The stat gate must make this a no-op — a host that never had the
       # feature does no systemd work at all.
       ansible.builtin.include_tasks: ../../tasks/etcd-snapshot-offnode-absent.yml
+
+    # CRITICAL: the cluster-init guard. The scenario sets k3s_skip_install, so
+    # the role never reaches it; drive it here from fabricated probe results.
+    - name: Bootstrap intent | nothing answered and no opt-in must fail
+      vars:
+        k3s_vip_probe: {status: -1}
+        k3s_peer_probe: {results: [{status: -1}]}
+        k3s_bootstrap_peers: [k3s-server-2]
+        k3s_bootstrap_new_cluster: false
+      block:
+        - name: Bootstrap intent | drive the guard with no evidence either way
+          ansible.builtin.include_role:
+            name: weisssrv.infra.k3s
+            tasks_from: assert_bootstrap_intent.yml
+
+        - name: Bootstrap intent | the guard did NOT fire
+          ansible.builtin.set_fact:
+            k3s_bootstrap_guard_fired: false
+      rescue:
+        - name: Bootstrap intent | record that the guard fired
+          ansible.builtin.set_fact:
+            k3s_bootstrap_guard_fired: true
+          when: >-
+            ansible_failed_task.name ==
+            'Assert a greenfield bootstrap was asked for before cluster-init'
+
+    - name: Verify the cluster-init guard refused an undetermined bootstrap
+      ansible.builtin.assert:
+        that:
+          - k3s_bootstrap_guard_fired | default(false)
+        fail_msg: >-
+          A first server with no etcd data, a dead VIP and an unanswering peer
+          was allowed to render cluster-init; it would bootstrap a second etcd
+          cluster against a surviving quorum.
+        success_msg: "the cluster-init guard refused an undetermined bootstrap"
+
+    - name: Bootstrap intent | an explicit greenfield opt-in passes
+      vars:
+        k3s_vip_probe: {status: -1}
+        k3s_peer_probe: {results: [{status: -1}]}
+        k3s_bootstrap_peers: [k3s-server-2]
+        k3s_bootstrap_new_cluster: true
+      ansible.builtin.include_role:
+        name: weisssrv.infra.k3s
+        tasks_from: assert_bootstrap_intent.yml
+
+    - name: Verify the opt-in still renders cluster-init
+      ansible.builtin.assert:
+        that:
+          - not (k3s_join_existing | bool)
+        fail_msg: "k3s_bootstrap_new_cluster: true was forced into join mode"
+        success_msg: "an explicit greenfield opt-in renders cluster-init"
+
+    - name: Bootstrap intent | a live peer forces join mode with no opt-in
+      vars:
+        k3s_vip_probe: {status: -1}
+        k3s_peer_probe: {results: [{status: 401}]}
+        k3s_bootstrap_peers: [k3s-server-2]
+        k3s_bootstrap_new_cluster: false
+      ansible.builtin.include_role:
+        name: weisssrv.infra.k3s
+        tasks_from: assert_bootstrap_intent.yml
+
+    - name: Verify a peer that answered selects join mode
+      ansible.builtin.assert:
+        that:
+          - k3s_join_existing | bool
+        fail_msg: >-
+          A peer answered on the API port and the role still selected
+          cluster-init.
+        success_msg: "a surviving peer forces join mode"
+
+    # An empty peer list disarms the greenfield guard, so the membership assert
+    # has to fire first on a misnamed group.
+    - name: Bootstrap intent | a misnamed server group must fail before the decision
+      vars:
+        k3s_server_group: no_such_group
+        k3s_vip_probe: {status: -1}
+        k3s_peer_probe: {results: [{status: -1}]}
+        k3s_bootstrap_new_cluster: true
+      block:
+        - name: Bootstrap intent | drive the guard with a group that does not exist
+          ansible.builtin.include_role:
+            name: weisssrv.infra.k3s
+            tasks_from: assert_bootstrap_intent.yml
+
+        - name: Bootstrap intent | the membership assert did NOT fire
+          ansible.builtin.set_fact:
+            k3s_group_guard_fired: false
+      rescue:
+        - name: Bootstrap intent | record that the membership assert fired
+          ansible.builtin.set_fact:
+            k3s_group_guard_fired: true
+          when: >-
+            ansible_failed_task.name ==
+            'Assert the server group resolved before deciding the bootstrap mode'
+
+    - name: Verify a misnamed server group fails before the bootstrap decision
+      ansible.builtin.assert:
+        that:
+          - k3s_group_guard_fired | default(false)
+        fail_msg: >-
+          k3s_server_group named a group that does not exist and the role still
+          reached the bootstrap decision, where an empty peer list skips the
+          greenfield guard.
+        success_msg: "a misnamed server group fails before the bootstrap decision"

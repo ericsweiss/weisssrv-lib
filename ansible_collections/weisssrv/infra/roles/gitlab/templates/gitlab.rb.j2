@@ -2,21 +2,9 @@
 # GitLab EE (Omnibus) configuration.
 # https://docs.gitlab.com/omnibus/settings/configuration.html
 {#
-  rb() renders a value as a Ruby literal, safe against both injection classes
-  this file (evaluated as Ruby) is exposed to:
-
-    1. Quote/backslash break-out — to_json handles it: JSON string escaping is
-       valid Ruby double-quoted-string escaping.
-    2. Ruby #{...} interpolation — to_json does NOT escape `#`, and Ruby
-       interpolates inside double quotes, so a credential containing `#{` would
-       be EVALUATED at reconfigure time. `ruby -c` cannot catch it ("#{foo}" is
-       syntactically valid). Escaping every `#` as `\#` closes it: in a Ruby
-       double-quoted string `\#` is a plain `#`. to_json never emits `#` itself,
-       so the replace only touches payload characters, and it runs AFTER to_json
-       so an escaped backslash still pairs correctly.
-
-  Used for every credential-bearing or operator-supplied value below, including
-  the arrays — a Ruby array of double-quoted strings interpolates identically.
+  rb(): Ruby literal via to_json, then every `#` escaped as `\#` so an operator
+  value containing `#{...}` cannot be interpolated at reconfigure time. Use it
+  for every operator-supplied value, arrays included. See README, Template safety.
 #}
 {%- macro rb(value) -%}
 {{ value | to_json | replace('#', '\\#') }}
@@ -45,10 +33,10 @@ gitlab_rails['gitlab_shell_ssh_port'] = {{ gitlab_ssh_port }}
 
 # --- NGINX ---
 
-nginx['listen_https'] = {{ gitlab_nginx_listen_https | lower }}
+nginx['listen_https'] = {{ gitlab_nginx_listen_https | bool | lower }}
 nginx['listen_port'] = {{ gitlab_nginx_listen_port }}
 
-{% if gitlab_nginx_listen_https %}
+{% if gitlab_nginx_listen_https | bool %}
 # Cert + key are written (and rotated) by the external cert distributor, which
 # reloads nginx with `gitlab-ctl hup nginx`.
 nginx['ssl_certificate'] = {{ rb(gitlab_nginx_ssl_certificate) }}
@@ -75,7 +63,7 @@ letsencrypt['auto_renew'] = false
 
 # --- SMTP ---
 
-{% if gitlab_smtp_enabled %}
+{% if gitlab_smtp_enabled | bool %}
 gitlab_rails['smtp_enable'] = true
 gitlab_rails['smtp_address'] = {{ rb(gitlab_smtp_address) }}
 gitlab_rails['smtp_port'] = {{ gitlab_smtp_port }}
@@ -83,13 +71,13 @@ gitlab_rails['smtp_user_name'] = {{ rb(gitlab_smtp_user) }}
 gitlab_rails['smtp_password'] = {{ rb(gitlab_smtp_password) }}
 gitlab_rails['smtp_domain'] = {{ rb(gitlab_smtp_domain) }}
 gitlab_rails['smtp_authentication'] = {{ rb(gitlab_smtp_authentication) }}
-gitlab_rails['smtp_enable_starttls_auto'] = {{ gitlab_smtp_enable_starttls_auto | lower }}
+gitlab_rails['smtp_enable_starttls_auto'] = {{ gitlab_smtp_enable_starttls_auto | bool | lower }}
 gitlab_rails['smtp_openssl_verify_mode'] = 'peer'
 {% endif %}
 
 # --- Container Registry ---
 
-{% if gitlab_registry_enabled %}
+{% if gitlab_registry_enabled | bool %}
 registry_external_url {{ rb(gitlab_registry_external_url) }}
 registry['enable'] = true
 # TLS with the distributed cert, so the proxy->registry hop is encrypted.
@@ -107,7 +95,7 @@ gitlab_rails['registry_path'] = {{ rb(gitlab_registry_data_dir) }}
 
 # --- GitLab Pages ---
 
-{% if gitlab_pages_enabled %}
+{% if gitlab_pages_enabled | bool %}
 pages_external_url {{ rb(gitlab_pages_external_url) }}
 gitlab_pages['enable'] = true
 # The pages daemon binds loopback only; pages_nginx fronts it with TLS on 8443.
@@ -123,7 +111,7 @@ pages_nginx['ssl_protocols'] = {{ rb(gitlab_nginx_ssl_protocols) }}
 
 # --- SAML SSO ---
 
-{% if gitlab_saml_enabled %}
+{% if gitlab_saml_enabled | bool %}
 gitlab_rails['omniauth_enabled'] = true
 gitlab_rails['omniauth_allow_single_sign_on'] = ['saml']
 gitlab_rails['omniauth_sync_email_from_provider'] = 'saml'
@@ -170,8 +158,7 @@ gitlab_rails['omniauth_providers'] = [
 # --- Repository Storage (GitLab 18+) ---
 
 {% if gitlab_git_data_dir != '/var/opt/gitlab/git-data' %}
-# GitLab 18+ takes gitaly['configuration'] rather than git_data_dirs, and the
-# /repositories suffix is now explicit (it used to be appended internally).
+# GitLab 18+ gitaly configuration schema; the /repositories suffix is explicit.
 gitaly['configuration'] = {
   storage: [
     {
@@ -184,11 +171,9 @@ gitaly['configuration'] = {
 
 # --- Backup ---
 
-# manage_backup_path false: on a root-squashed NFS landing zone, Chef's
-# storage_directory resource cannot chown the path and aborts the ENTIRE
-# reconfigure with Errno::EPERM. The export already creates the directory with
-# the right ownership, so Omnibus has nothing to manage. Re-exporting
-# no_root_squash instead would hand every NFS client root on the share.
+# manage_backup_path false: on a root-squashed NFS landing zone Chef cannot
+# chown the path and aborts the whole reconfigure with Errno::EPERM. The export
+# already creates the directory with the right ownership.
 gitlab_rails['manage_backup_path'] = false
 gitlab_rails['backup_path'] = {{ rb(gitlab_backup_path) }}
 gitlab_rails['backup_keep_time'] = {{ gitlab_backup_keep_time }}
@@ -198,7 +183,17 @@ gitlab_rails['backup_keep_time'] = {{ gitlab_backup_keep_time }}
 puma['worker_processes'] = {{ gitlab_puma_workers }}
 sidekiq['concurrency'] = {{ gitlab_sidekiq_concurrency }}
 
+# Serves /-/metrics to an external scraper.
 prometheus_monitoring['enable'] = true
+{% if gitlab_bundled_prometheus_enabled | string | length > 0 %}
+
+# Omnibus's own Prometheus server, independent of /-/metrics above.
+prometheus['enable'] = {{ gitlab_bundled_prometheus_enabled | bool | lower }}
+{% endif %}
+{% if gitlab_bundled_alertmanager_enabled | string | length > 0 %}
+
+alertmanager['enable'] = {{ gitlab_bundled_alertmanager_enabled | bool | lower }}
+{% endif %}
 
 # --- Monitoring endpoints ---
 
@@ -206,9 +201,8 @@ prometheus_monitoring['enable'] = true
 # matches the real_ip from X-Forwarded-For, so a proxied probe is matched on its
 # real client address.
 gitlab_rails['monitoring_whitelist'] = {{ rb(gitlab_monitoring_whitelist) }}
-{# The blank line separating each block below is INSIDE it: with both inputs
-   empty the render must be byte-identical to the pre-seam file, or every
-   consumer's first converge notifies a full `gitlab-ctl reconfigure`. #}
+{# The blank line separating each block is inside it, so an all-empty render
+   stays byte-stable. #}
 {% if gitlab_postgres_exporter_enabled | string | length > 0 %}
 
 postgres_exporter['enable'] = {{ gitlab_postgres_exporter_enabled | bool | lower }}

@@ -10,6 +10,7 @@ spec:
       data:
         alertmanager.yaml: |
           global:
+            smtp_smarthost: "smtp-relay.${cluster_internal_domain}:587"
             smtp_auth_password: {{ .smtpPassword | quote }}
           route:
             receiver: chat

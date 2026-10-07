@@ -1,40 +1,60 @@
 #!/usr/bin/env bash
 # {{ ansible_managed }}
 #
-# Distribute the renewed wildcard cert to every host in
-# acme_certs_distribution_targets. Runs as root on the cert authority host after
-# every acme.sh renewal hook. Each target's per-entry fields control SSH access,
-# file placement and reload semantics — the schema is in the role README.
+# Distributes the renewed wildcard cert to every distribution target, as root on
+# the cert authority host; --check only probes them. Schema: acme_certs README.
 
 set -euo pipefail
 
 _CERT_START_TS="$(date +%s)"
 
 PROM_DIR="{{ acme_certs_textfile_dir }}"
-# node_exporter's textfile collector dir is normally created by the
-# node_exporter_host role, but cert-reload can race that on a fresh host
-# (cron-driven reload firing before the role's first deploy completes).
-# mkdir -p is a no-op on the steady state.
+# node_exporter_host normally owns this dir; a cron-driven reload on a fresh
+# host can run first.
 mkdir -p "$PROM_DIR"
 PROM_FILE="${PROM_DIR}/cert_renewal.prom"
 PROM_TARGET_FILE="${PROM_DIR}/cert_distribution_targets.prom"
+
+# Check mode probes every target and refreshes the distribution gauges without
+# pushing, reloading or writing $PROM_FILE. An unrecognised argument is fatal,
+# so a typo cannot turn the daily check into a push.
+CHECK_ONLY=0
+case "${1:-}" in
+    --check) CHECK_ONLY=1 ;;
+    "") ;;
+    *) echo "usage: $0 [--check]" >&2; exit 1 ;;
+esac
+if [ "${HOMELAB_CERT_CHECK:-0}" = "1" ]; then
+    CHECK_ONLY=1
+fi
+
+# A probe is retried before it writes 0: the gauge holds until the next daily
+# run, so one SSH blip would otherwise read as a dead target for a whole day.
+CHECK_RETRIES={{ acme_certs_distribution_check_retries }}
+CHECK_RETRY_DELAY={{ acme_certs_distribution_check_retry_delay }}
 
 write_prom_metrics() {
   local success="$1" duration="$2"
   local ts notafter_epoch=""
   ts="$(date +%s)"
-  # Compute notAfter before the redirected block so a parse warning reaches real
-  # stderr. Emitted on success AND failure: expiry is a property of the on-disk
-  # cert, and dropping it would false-fire CertExpiringSoon's absent() clause.
-  # Omitted only when the cert is missing/unparseable (which should alert).
+  # Computed before the redirected block so a parse warning reaches real stderr,
+  # and emitted on failed runs too: CertExpiringSoon's absent() clause needs it.
   notafter_epoch="$(date -d "$(openssl x509 -enddate -noout -in "$FULLCHAIN_SRC" 2>/dev/null | cut -d= -f2)" +%s 2>/dev/null || true)"
   [ -n "$notafter_epoch" ] || echo "warning: could not parse cert notAfter; cert_local_expiry_timestamp_seconds omitted" >&2
+  # Staleness must measure time since the last SUCCESS, so a failed run re-emits
+  # the previous timestamp rather than dropping the series.
+  local sval
+  if [ "$success" -eq 1 ]; then
+    sval="$ts"
+  else
+    sval="$(awk -v k=cert_renewal_last_success_timestamp_seconds '$1 == k { v = $2 } END { if (v != "") print v }' "$PROM_FILE" 2>/dev/null || true)"
+  fi
   local tmp="${PROM_FILE}.$$"
   {
     echo "# HELP cert_renewal_last_run_duration_seconds Duration of last cert renewal run"
     echo "# TYPE cert_renewal_last_run_duration_seconds gauge"
     echo "cert_renewal_last_run_duration_seconds ${duration}"
-    echo "# HELP cert_renewal_last_run_success Whether the last cert renewal succeeded (1=success, 0=failure)"
+    echo "# HELP cert_renewal_last_run_success Whether the local cert renewal and reload succeeded (1=success, 0=failure)"
     echo "# TYPE cert_renewal_last_run_success gauge"
     echo "cert_renewal_last_run_success ${success}"
     if [ -n "$notafter_epoch" ]; then
@@ -42,51 +62,92 @@ write_prom_metrics() {
       echo "# TYPE cert_local_expiry_timestamp_seconds gauge"
       echo "cert_local_expiry_timestamp_seconds ${notafter_epoch}"
     fi
-    if [ "$success" -eq 1 ]; then
+    if [ -n "$sval" ]; then
       echo "# HELP cert_renewal_last_success_timestamp_seconds Unix timestamp of last successful cert renewal"
       echo "# TYPE cert_renewal_last_success_timestamp_seconds gauge"
-      echo "cert_renewal_last_success_timestamp_seconds ${ts}"
+      echo "cert_renewal_last_success_timestamp_seconds ${sval}"
     fi
-  } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
-  mv "$tmp" "$PROM_FILE" 2>/dev/null || rm -f "$tmp"
+  } > "$tmp" 2>/dev/null || {
+    logger -t homelab-cert-reload-metrics -p daemon.err "could not write ${PROM_FILE}"
+    rm -f "$tmp"
+    return 0
+  }
+  mv "$tmp" "$PROM_FILE" 2>/dev/null || {
+    logger -t homelab-cert-reload-metrics -p daemon.err "could not rename ${tmp} -> ${PROM_FILE}"
+    rm -f "$tmp"
+  }
 }
 
-# Per-target metrics so a partial failure (one target down) is visible
-# in Prometheus instead of being collapsed into the run-level success
-# bit. Caller appends one entry per target as they finish.
+# Per-target metrics so one dead target is visible instead of collapsing into
+# the run-level success bit.
 _TARGET_METRICS_TMP="$(mktemp)"
 _TARGET_METRICS_FLUSHED=0
+_TARGET_FAIL_COUNT=0
 write_target_metric() {
     local host="$1" success="$2"
+    [ "$success" -eq 1 ] || _TARGET_FAIL_COUNT=$(( _TARGET_FAIL_COUNT + 1 ))
     printf 'cert_distribution_target_last_run_success{host="%s"} %d\n' \
         "$host" "$success" >> "$_TARGET_METRICS_TMP"
 }
 flush_target_metrics() {
-    # Idempotent: the inline call at end-of-script and the EXIT trap
-    # both call this. If we let it run twice the second pass would cat
-    # the already-deleted tmp file and clobber $PROM_TARGET_FILE with
-    # just the HELP/TYPE headers (no host lines).
+    # Idempotent: both the end-of-script call and the EXIT trap reach here, and a
+    # second pass would rewrite $PROM_TARGET_FILE with headers and no host lines.
     if [[ "$_TARGET_METRICS_FLUSHED" -eq 1 ]]; then
         return
     fi
+    # A check run that recorded no target at all (a local error before the loop)
+    # would otherwise publish an empty file over the last run's gauges.
+    if [[ "$CHECK_ONLY" -eq 1 && ! -s "$_TARGET_METRICS_TMP" ]]; then
+        rm -f "$_TARGET_METRICS_TMP"
+        _TARGET_METRICS_FLUSHED=1
+        return 0
+    fi
+    local tmp="${PROM_TARGET_FILE}.$$"
     {
         echo "# HELP cert_distribution_target_last_run_success Per-target cert distribution success (1=ok, 0=failed)"
         echo "# TYPE cert_distribution_target_last_run_success gauge"
         cat "$_TARGET_METRICS_TMP"
-    } > "$PROM_TARGET_FILE" 2>/dev/null || true
+        # Run-level count, so a consumer alerts on "any target failed" without a
+        # regex over host labels.
+        echo "# HELP cert_distribution_last_run_failed_targets Distribution targets that failed on the last run"
+        echo "# TYPE cert_distribution_last_run_failed_targets gauge"
+        echo "cert_distribution_last_run_failed_targets ${_TARGET_FAIL_COUNT}"
+    } > "$tmp" 2>/dev/null || {
+        logger -t homelab-cert-reload-metrics -p daemon.err "could not write ${PROM_TARGET_FILE}"
+        rm -f "$tmp" "$_TARGET_METRICS_TMP"
+        _TARGET_METRICS_FLUSHED=1
+        return 0
+    }
+    mv "$tmp" "$PROM_TARGET_FILE" 2>/dev/null || {
+        logger -t homelab-cert-reload-metrics -p daemon.err "could not rename ${tmp} -> ${PROM_TARGET_FILE}"
+        rm -f "$tmp"
+    }
     rm -f "$_TARGET_METRICS_TMP"
     _TARGET_METRICS_FLUSHED=1
 }
 
+# Cleared by a failed local reload, which is a local failure even though the
+# script still exits 2.
+_LOCAL_OK=1
+
 trap_write_failure_metrics() {
+  local rc="$1"
   local end_ts
   end_ts="$(date +%s)"
   local duration=$(( end_ts - _CERT_START_TS ))
-  write_prom_metrics 0 "$duration"
+  # Exit 2 is a dead distribution target: the local cert renewed and reloaded,
+  # so the renewal bit stays 1 and only the distribution gauges report it.
+  local renewal=0
+  if [ "$rc" -eq 2 ] && [ "$_LOCAL_OK" -eq 1 ]; then
+    renewal=1
+  fi
+  if [ "$CHECK_ONLY" -eq 0 ]; then
+    write_prom_metrics "$renewal" "$duration"
+  fi
   flush_target_metrics
 }
 # shellcheck disable=SC2154 # `rc` is assigned via $? at trap fire time
-trap 'rc=$?; if [ "$rc" -ne 0 ]; then trap_write_failure_metrics; fi; rm -f "$_TARGET_METRICS_TMP"' EXIT
+trap 'rc=$?; if [ "$rc" -ne 0 ]; then trap_write_failure_metrics "$rc"; fi; rm -f "$_TARGET_METRICS_TMP"' EXIT
 
 FULLCHAIN_SRC="{{ acme_certs_local_cert_dir }}/fullchain.pem"
 PRIVKEY_SRC="{{ acme_certs_local_cert_dir }}/privkey.pem"
@@ -97,25 +158,55 @@ IDENTITY_FILE="{{ acme_certs_ssh_key_path }}"
     exit 1
 }
 
-# StrictHostKeyChecking=yes (not accept-new): every target's host_key is pinned
-# into known_hosts by this role, so a rebuilt host or a MITM fails the push
-# loudly instead of being trusted silently.
+# StrictHostKeyChecking=yes, never accept-new: every target's host_key is pinned
+# in known_hosts, so a rebuilt host or a MITM fails the push loudly.
 SSH_OPTS=(-i "$IDENTITY_FILE" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts -o ConnectTimeout=10)
 SCP_OPTS=(-q -i "$IDENTITY_FILE" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts -o ConnectTimeout=10)
 
-# ANY_FAIL: one dead target must not abort distribution to the rest; the script
-# exits 2 at the end.
+# One dead target must not abort distribution to the rest; the script exits 2.
 ANY_FAIL=0
 
 # Boundary between the two PEM parts in the bundle streamed to the receiver.
 # Not valid PEM/base64, so it can never collide with cert or key content.
 DELIM="===CERT-RECEIVE-BUNDLE-BOUNDARY==="
 
+# Check mode for a sudo target: an empty bundle reaches the receiver, which
+# refuses it with "FAIL: empty bundle". That answer proves transport, key, forced
+# command and sudo while installing nothing.
+check_target_receiver() {
+    local host="$1" ip="$2" ssh_user="$3" ssh_port="$4"
+    local out rc attempt=0
+    while :; do
+        if out=$(ssh -p "$ssh_port" "${SSH_OPTS[@]}" "${ssh_user}@${ip}" \
+                    </dev/null 2>&1); then
+            rc=0
+        else
+            rc=$?
+        fi
+        printf '%s\n' "$out" | grep -q 'FAIL: empty bundle' && break
+        [ "$attempt" -ge "$CHECK_RETRIES" ] && break
+        attempt=$((attempt + 1))
+        sleep "$CHECK_RETRY_DELAY"
+    done
+    if printf '%s\n' "$out" | grep -q 'FAIL: empty bundle'; then
+        write_target_metric "$host" 1
+        echo "reachable: ${host}"
+    else
+        echo "FAIL: ${host}: ${out:-ssh exited ${rc}}" >&2
+        write_target_metric "$host" 0
+        ANY_FAIL=1
+    fi
+}
+
 # Sudo targets: stream the bundle to the forced-command receiver in one
 # round-trip; it validates, installs, reloads and prints OK/unchanged/FAIL.
 push_target_receiver() {
     local host="$1" ip="$2" ssh_user="$3" ssh_port="$4"
     local out rc
+    if [ "$CHECK_ONLY" -eq 1 ]; then
+        check_target_receiver "$host" "$ip" "$ssh_user" "$ssh_port"
+        return
+    fi
     if out=$( { cat "$FULLCHAIN_SRC"; printf '\n%s\n' "$DELIM"; cat "$PRIVKEY_SRC"; } \
                 | ssh -p "$ssh_port" "${SSH_OPTS[@]}" "${ssh_user}@${ip}" 2>&1 ); then
         rc=0
@@ -135,22 +226,34 @@ push_target_receiver() {
     fi
 }
 
-# Legacy scp+sudo push, retained ONLY for ssh_no_sudo appliance targets
-# whose authorized_keys is operator-managed and cannot host the forced-command
-# receiver. Migrate an appliance to the receiver path as soon as it can sudo.
+# Legacy scp+sudo push, for ssh_no_sudo appliance targets only: their
+# authorized_keys is operator-managed, so they cannot host the receiver.
 push_target_legacy() {
     local host="$1" ip="$2" cert_dir="$3" \
           ssh_user="$4" ssh_port="$5" sudo_prefix="$6" \
           owner="$7" group="$8" cert_mode="$9" key_mode="${10}" \
           reload_cmd="${11}"
 
-    # Skip the push+reload only when the applied MARKER matches (written after a
-    # successful reload) AND both remote cert files still hash-match the local
-    # source. Gating on the on-disk fullchain.pem alone would permanently skip a
-    # target that received the cert but whose reload FAILED — the cert is copied
-    # before the reload runs, so the file already matches. Requiring both files
-    # keeps a deleted/corrupted/hand-replaced cert or key from suppressing the
-    # self-healing re-push; anything missing or mismatched falls through.
+    # Check mode separates reachability from drift: the three hash reads below
+    # swallow an ssh failure into an empty string, which otherwise reports a
+    # host that never answered as one not carrying the cert.
+    if [ "$CHECK_ONLY" -eq 1 ]; then
+        local probe attempt=0
+        while ! probe=$(ssh -p "$ssh_port" "${SSH_OPTS[@]}" \
+                "${ssh_user}@${ip}" true 2>&1); do
+            if [ "$attempt" -ge "$CHECK_RETRIES" ]; then
+                echo "FAIL: ${host}: ${probe:-ssh exited}" >&2
+                write_target_metric "$host" 0
+                ANY_FAIL=1
+                return
+            fi
+            attempt=$((attempt + 1))
+            sleep "$CHECK_RETRY_DELAY"
+        done
+    fi
+
+    # Skip only when the applied marker AND both remote file hashes match; the
+    # marker is written after a successful reload, so a failed reload re-pushes.
     local local_hash local_key_hash applied_hash remote_hash remote_key_hash
     local_hash=$(sha256sum "$FULLCHAIN_SRC" | cut -d' ' -f1)
     local_key_hash=$(sha256sum "$PRIVKEY_SRC" | cut -d' ' -f1)
@@ -176,15 +279,18 @@ push_target_legacy() {
         return
     fi
 
-    # Stage into a per-run 0700 mktemp dir rather than scp-ing privkey.pem into
-    # world-readable /tmp: that would leave a window where the unencrypted
-    # wildcard key is readable by every local user (TOCTOU + symlink
-    # pre-placement on multi-user VMs). Created + chmodded in one ssh round-trip
-    # and chowned to ${ssh_user} so the scp needs no sudo; the install chain's
-    # rm -rf cleans it up.
-    #
-    # `if ! stage=$(ssh ...)` not a bare assignment: under set -e a non-zero ssh
-    # would abort every LATER target.
+    # Check mode stops at the comparison: the host answered the probe above, so
+    # a mismatch here is the cert, not reachability. Nothing is pushed.
+    if [ "$CHECK_ONLY" -eq 1 ]; then
+        echo "FAIL: ${host}: not carrying the applied cert" >&2
+        write_target_metric "$host" 0
+        ANY_FAIL=1
+        return
+    fi
+
+    # Stage in a per-run 0700 dir: privkey.pem must never sit in world-readable
+    # /tmp. Chowned to ${ssh_user} so the scp needs no sudo.
+    # `if ! stage=$(ssh ...)`: a bare assignment would abort every later target.
     local stage
     if ! stage=$(ssh -p "$ssh_port" "${SSH_OPTS[@]}" "${ssh_user}@${ip}" \
             "set -e; \
@@ -210,14 +316,9 @@ push_target_legacy() {
         return
     fi
 
-    # && (not `;`) so a partial mv short-circuits instead of letting the reload
-    # run against a broken cert pair. Path expansions are quoted so an inventory
-    # value with a space cannot word-split the mv/chown/chmod/rm arguments.
-    #
-    # The reload step deliberately does NOT prepend sudo_prefix: a
-    # restart_command may be a compound shell construct (e.g. `if … fi`) and
-    # `sudo if …` is invalid — sudo wants an executable, not a shell keyword.
-    # Each target's restart_command must invoke sudo itself where it needs root.
+    # && between steps so a partial mv never reaches the reload; every path is
+    # quoted against word-splitting.
+    # reload_cmd carries its own sudo — compound shell forms reject `sudo if`.
     if ! ssh -p "$ssh_port" "${SSH_OPTS[@]}" \
             "${ssh_user}@${ip}" \
             "${sudo_prefix}mv \"${stage}/fullchain.pem\" \"${stage}/privkey.pem\" \"${cert_dir}/\" \
@@ -241,15 +342,13 @@ push_target_legacy() {
 }
 
 {% for target in acme_certs_distribution_targets %}
-{# Per-target overrides; defaults apply when a field is unset.
-
-   _reload: when restart_command is provided, it is rendered verbatim
-   (the script no longer prepends sudo because compound shell forms
-   like `if … then … fi` reject `sudo if`). When restart_service is
-   used instead, the shorthand expansion injects sudo automatically
-   for sudo-capable hosts. #}
+{# Per-target overrides; defaults apply when a field is unset. restart_command
+   renders verbatim and carries its own sudo; the restart_service shorthand gets
+   sudo here. #}
 {% set _sudo = '' if (target.ssh_no_sudo | default(false)) else 'sudo ' %}
-{% set _reload = target.restart_command | default(_sudo ~ 'systemctl restart ' ~ (target.restart_service | default(''))) %}
+{% set _rc = target.restart_command | default('') | trim %}
+{% set _rs = target.restart_service | default('') | trim %}
+{% set _reload = _rc if _rc else (_sudo ~ 'systemctl restart ' ~ _rs) %}
 {% set _ssh_port = target.ssh_port | default(22) %}
 {% set _ssh_user = target.ssh_user | default(acme_certs_ssh_user) %}
 {% if target.ssh_no_sudo | default(false) %}
@@ -278,24 +377,26 @@ push_target_receiver \
 {% endfor %}
 
 {% if acme_certs_local_reload_command | default('') | length > 0 %}
-# Local consumer of the cert, reloaded LAST so a local config regression cannot
-# abort distribution to the remote targets. Skipped when the local cert is
-# unchanged from the one last applied — the proactive Ansible path runs this
-# script on every deploy. Both files must be readable and the hash non-empty
-# before skipping, mirroring the remote-target guard: a deleted or unreadable
-# cert must trigger the reload to self-heal, not read as unchanged.
+# Local consumer of the cert, reloaded last so a local config regression cannot
+# abort distribution to the remote targets. Skipped only when both files are
+# readable and the hash matches the one last applied.
 LOCAL_APPLIED_HASH_FILE="{{ acme_certs_local_cert_dir }}/.applied-fullchain.sha256"
 _local_hash=$(sha256sum "$FULLCHAIN_SRC" 2>/dev/null | cut -d' ' -f1)
 if [[ -r "$LOCAL_APPLIED_HASH_FILE" && -r "$FULLCHAIN_SRC" && -r "$PRIVKEY_SRC" && -n "$_local_hash" \
       && "$(cat "$LOCAL_APPLIED_HASH_FILE")" == "$_local_hash" ]]; then
     echo "unchanged: {{ inventory_hostname }} (local)"
     write_target_metric "{{ inventory_hostname }}" 1
+elif [ "$CHECK_ONLY" -eq 1 ]; then
+    echo "FAIL: local cert differs from the applied copy" >&2
+    write_target_metric "{{ inventory_hostname }}" 0
+    ANY_FAIL=1
 elif {{ acme_certs_local_reload_command }}; then
     printf '%s\n' "$_local_hash" > "$LOCAL_APPLIED_HASH_FILE" 2>/dev/null || true
     write_target_metric "{{ inventory_hostname }}" 1
 else
     echo "FAIL: local reload failed" >&2
     write_target_metric "{{ inventory_hostname }}" 0
+    _LOCAL_OK=0
     ANY_FAIL=1
 fi
 {% endif %}
@@ -304,14 +405,16 @@ flush_target_metrics
 
 if [ "$ANY_FAIL" -ne 0 ]; then
     echo "Certificate distribution finished with one or more failed targets." >&2
-    # Distinct exit code so callers can tell partial-target failure (this
-    # path) from a hard local error (exit 1, e.g. cert files unreadable).
-    # Per-target metrics in $PROM_TARGET_FILE name the offending host(s).
+    # Exit 2 is partial-target failure; exit 1 is a hard local error.
+    # $PROM_TARGET_FILE names the offending host(s).
     exit 2
 fi
 
-echo "Certificate distribution complete."
-
-_CERT_END_TS="$(date +%s)"
-_CERT_DURATION=$(( _CERT_END_TS - _CERT_START_TS ))
-write_prom_metrics 1 "$_CERT_DURATION"
+if [ "$CHECK_ONLY" -eq 1 ]; then
+    echo "Certificate distribution check complete."
+else
+    echo "Certificate distribution complete."
+    _CERT_END_TS="$(date +%s)"
+    _CERT_DURATION=$(( _CERT_END_TS - _CERT_START_TS ))
+    write_prom_metrics 1 "$_CERT_DURATION"
+fi

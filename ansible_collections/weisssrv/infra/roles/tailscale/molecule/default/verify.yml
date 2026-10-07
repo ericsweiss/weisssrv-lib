@@ -1,7 +1,7 @@
 ---
-# The scenario deliberately leaves tailscale_version unset so the shipped
-# default is what gets installed; this play loads that default so the pin
-# assertion below has a value to compare against.
+# The scenario leaves tailscale_version unset so the shipped default is what
+# gets installed. This play loads that default so the pin assertion below has
+# a value to compare against.
 - name: Verify
   hosts: all
   become: true
@@ -151,10 +151,9 @@
         fail_msg: "IP forwarding drop-in has incorrect content"
         success_msg: "IP forwarding drop-in content verified"
 
-    # Subnet-router bridge-masquerade fix: script + drop-in that runs it
-    # (exercised because tailscale_advertise_routes is set). This validates
-    # rendering only; runtime POSTROUTING ordering after a tailscaled restart is
-    # verified live on a real subnet router, not in this container.
+    # Subnet-router bridge-masquerade fix: the script plus the drop-in that
+    # runs it, exercised because tailscale_advertise_routes is set. Rendering
+    # only; runtime POSTROUTING ordering is verified on a real subnet router.
     - name: Stat the bridge-masquerade fix script
       ansible.builtin.stat:
         path: /usr/local/sbin/tailscale-bridge-masq-fix
@@ -180,8 +179,85 @@
           - "'0x40000/0xff0000' in (bridge_masq_script_content.content | b64decode)"
           - "'-C POSTROUTING -j ts-postrouting' in (bridge_masq_script_content.content | b64decode)"
           - "'-I POSTROUTING 1' in (bridge_masq_script_content.content | b64decode)"
+          # Every call takes the xtables lock: pve-firewall rewrites iptables on
+          # its own loop, and a lost lock after the delete sweep leaves no rule.
+          - "'-w 5 -t nat -I POSTROUTING 1' in (bridge_masq_script_content.content | b64decode)"
+          - "(bridge_masq_script_content.content | b64decode).count('-w 5') >= 5"
+          # Slot-1 check: without it the per-minute timer rewrites the rule on
+          # every tick. With it, a re-run is a no-op.
+          - "'sed -n 2p' in (bridge_masq_script_content.content | b64decode)"
+          # The give-up path must say so in the journal, or a router silently
+          # loses reachability to its own guests with no signal anywhere.
+          - "'ts-postrouting jump absent' in (bridge_masq_script_content.content | b64decode)"
+          # Insert-first, sweep-after, and the sweep deletes by rule number: a
+          # spec delete ahead of the insert leaves nat POSTROUTING with no
+          # ACCEPT for as long as the insert waits on the xtables lock.
+          - "'-D POSTROUTING $rule' not in (bridge_masq_script_content.content | b64decode)"
+          - >-
+            (bridge_masq_script_content.content | b64decode).index('-I POSTROUTING 1 $rule')
+            < (bridge_masq_script_content.content | b64decode).index('-D POSTROUTING $((num - 1))')
         fail_msg: "bridge-masquerade fix script missing the wait/insert-at-top logic"
         success_msg: "bridge-masquerade fix script logic verified"
+
+    # A host where Tailscale never uses iptables takes the deferral branch every
+    # minute, so the branch logs once per state change and not per run.
+    - name: Run the fix script twice with no ts-postrouting jump present
+      ansible.builtin.command: /usr/local/sbin/tailscale-bridge-masq-fix
+      register: bridge_masq_runs
+      changed_when: false
+      failed_when: bridge_masq_runs.rc != 0
+      loop: [1, 2]
+
+    - name: Stat the deferral marker
+      ansible.builtin.stat:
+        path: /run/tailscale-bridge-masq-fix.deferred
+      register: bridge_masq_marker
+
+    - name: Verify the deferral branch is exit-0 and logs once per state change
+      ansible.builtin.assert:
+        that:
+          - bridge_masq_marker.stat.exists
+          - "'logger -t tailscale-bridge-masq-fix --' in (bridge_masq_script_content.content | b64decode)"
+          - "'logger -t tailscale-bridge-masq-fix -s' not in (bridge_masq_script_content.content | b64decode)"
+        fail_msg: >-
+          The deferral branch logs on every timer tick, which buries the one
+          occurrence that matters under ~2880 journal entries a day.
+        success_msg: "the deferral branch marks state and logs once"
+
+    # The ExecStartPost alone only re-applies the rule on a tailscaled restart,
+    # so a rule wiped by a firewall rebuild stays gone. The timer is what makes
+    # it survive; assert it is deployed AND armed.
+    - name: Stat the bridge-masquerade fix unit and timer
+      ansible.builtin.stat:
+        path: "/etc/systemd/system/tailscale-bridge-masq-fix.{{ item }}"
+      register: bridge_masq_units
+      loop:
+        - service
+        - timer
+
+    - name: Verify the bridge-masquerade fix unit and timer are deployed
+      ansible.builtin.assert:
+        that: bridge_masq_units.results | map(attribute='stat.exists') | reject | length == 0
+        fail_msg: "tailscale-bridge-masq-fix.service/.timer missing"
+        success_msg: "bridge-masquerade fix unit + timer deployed"
+
+    - name: Read the bridge-masquerade fix timer
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/tailscale-bridge-masq-fix.timer
+      register: bridge_masq_timer_content
+
+    - name: Verify the timer re-asserts the rule on a cadence
+      ansible.builtin.assert:
+        that:
+          - "'OnUnitActiveSec=' in (bridge_masq_timer_content.content | b64decode)"
+          - "'Unit=tailscale-bridge-masq-fix.service' in (bridge_masq_timer_content.content | b64decode)"
+        fail_msg: "bridge-masquerade fix timer does not re-run the repair unit"
+
+    - name: Check the bridge-masquerade fix timer is enabled  # noqa command-instead-of-module
+      ansible.builtin.command: systemctl is-enabled tailscale-bridge-masq-fix.timer
+      register: bridge_masq_timer_enabled
+      changed_when: false
+      failed_when: bridge_masq_timer_enabled.stdout | trim != 'enabled'
 
     - name: Read the bridge-masquerade fix drop-in
       ansible.builtin.slurp:
@@ -194,3 +270,19 @@
           - "'ExecStartPost=-/usr/local/sbin/tailscale-bridge-masq-fix' in (bridge_masq_dropin_content.content | b64decode)"
         fail_msg: "bridge-masquerade fix drop-in does not invoke the script"
         success_msg: "bridge-masquerade fix drop-in wired to the script"
+
+    - name: Read the missing-auth-key result
+      ansible.builtin.slurp:
+        src: /tmp/molecule-results/require-authkey.json
+      register: tailscale_require_authkey_artifact
+
+    - name: Assert a required auth key that is unset fails the play
+      vars:
+        refused: "{{ (tailscale_require_authkey_artifact.content | b64decode | from_json).refused }}"
+      ansible.builtin.assert:
+        that:
+          - refused | bool
+        fail_msg: >-
+          tailscale_require_authkey: true skipped the join instead of failing,
+          so a node that never joined the tailnet reports success.
+        success_msg: "tailscale_require_authkey: true fails when TAILSCALE_AUTH_KEY is unset"

@@ -34,3 +34,31 @@
 
   roles:
     - role: weisssrv.infra.acme_certs
+
+  post_tasks:
+    # acme.sh records the pinned CA in its own conf files. Snapshot the default
+    # arm, drive a second CA through the same input and snapshot that: without
+    # both, a dropped --set-default-ca leaves renewals issuing from ZeroSSL.
+    - name: Snapshot the recorded CA under the default arm
+      ansible.builtin.shell: >-
+        grep -rh ACME_SERVER /root/.acme.sh --include='*.conf'
+        > /tmp/acme-ca-default.txt || true
+      changed_when: false
+
+    - name: Re-run acme_certs with a non-default CA
+      ansible.builtin.include_role:
+        name: weisssrv.infra.acme_certs
+      vars:
+        acme_certs_ca_server: buypass
+
+    - name: Snapshot the recorded CA under the overridden arm
+      ansible.builtin.shell: >-
+        grep -rh ACME_SERVER /root/.acme.sh --include='*.conf'
+        > /tmp/acme-ca-override.txt || true
+      changed_when: false
+
+    # Restore the scenario's default so the live conf matches the rest of the
+    # verify.
+    - name: Re-run acme_certs with the default CA
+      ansible.builtin.include_role:
+        name: weisssrv.infra.acme_certs

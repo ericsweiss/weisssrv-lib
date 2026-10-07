@@ -5,11 +5,10 @@ spec:
     stage:
       default: ai-review
     image:
-      # The `codiumai/` namespace is FROZEN at 0.34 (project donated to the
-      # community org); 0.40.0 ships from `pragent/`. Digest-pinned because the
-      # job handles a GitLab PAT and a model API key; this is the multi-arch
-      # INDEX digest, not the amd64 child manifest, so the pin stays portable.
-      default: pragent/pr-agent:0.40.0@sha256:08c42a2ba01a8d1ef5886e81ae5ac0a9acdf2fd35fc2d1d0bf9a1ffae7a5c690
+      # Ships from `pragent/`; the `codiumai/` namespace is FROZEN at 0.34.
+      # Digest-pinned because the job handles a GitLab PAT and a model API key,
+      # on the multi-arch INDEX digest so the pin stays portable.
+      default: pragent/pr-agent:0.45.0@sha256:e6463e802562daa47db51950de84100a5679472844926d77d53911e529398ee5
       description: Digest-pinned pr-agent image.
     tags:
       type: array
@@ -56,6 +55,10 @@ spec:
         summary-only reviewer.
     extra_instructions:
       default: "Be thorough. Review every file. Flag all bugs, security issues, and documentation drift."
+      description: >-
+        Extra guidance passed to BOTH the reviewer and the code-suggestions tool
+        (PR_REVIEWER__ / PR_CODE_SUGGESTIONS__EXTRA_INSTRUCTIONS). It applies to
+        whichever of those the `commands` input runs.
     gitlab_url:
       default: "$CI_SERVER_URL"
       description: GitLab base URL pr-agent posts back to.
@@ -140,6 +143,7 @@ spec:
     CONFIG__PERSISTENT_INLINE_COMMENTS: "true"
     PR_CODE_SUGGESTIONS__DUAL_PUBLISHING_SCORE_THRESHOLD: "$[[ inputs.dual_publishing_threshold ]]"
     PR_REVIEWER__EXTRA_INSTRUCTIONS: "$[[ inputs.extra_instructions ]]"
+    PR_CODE_SUGGESTIONS__EXTRA_INSTRUCTIONS: "$[[ inputs.extra_instructions ]]"
   script:
     - |
       set -e

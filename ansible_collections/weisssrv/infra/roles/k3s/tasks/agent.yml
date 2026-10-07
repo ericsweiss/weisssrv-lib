@@ -15,8 +15,10 @@
     success_msg: "Required k3s variables are present"
   tags: [validation, always]
 
+# verbosity, not just the tag: a tag selects a task, it does not gate one.
 - name: Debug - Show k3s agent configuration variables
   ansible.builtin.debug:
+    verbosity: 1
     msg:
       - "Host: {{ inventory_hostname }}"
       - "k3s_role: {{ k3s_role }}"
@@ -34,20 +36,6 @@
     - Restart k3s-agent
     - Confirm the restarted k3s-agent is up and stable
     - Wait for agent node Ready
-
-- name: Verify config file was created
-  ansible.builtin.stat:
-    path: /etc/rancher/k3s/config.yaml
-  register: k3s_config_file_stat
-  when: not ansible_check_mode
-
-- name: Assert config file exists
-  ansible.builtin.assert:
-    that:
-      - k3s_config_file_stat.stat.exists
-    fail_msg: "Config file was NOT created at /etc/rancher/k3s/config.yaml!"
-    success_msg: "Config file successfully created at /etc/rancher/k3s/config.yaml"
-  when: not ansible_check_mode
 
 # Runs BEFORE the k3s install/restart below so k3s auto-detects the nvidia
 # container runtime the first time it starts. See tasks/gpu.yml.
@@ -75,15 +63,9 @@
   changed_when: true
   no_log: true
 
-# k3s-install.sh only writes K3S_TOKEN to the agent env file on a (re)install,
-# which is version-gated above — so an already-joined agent would keep whatever
-# token it first joined with. When a distinct lower-privilege agent token is
-# configured (k3s_agent_token != k3s_token), reconcile it on every run so existing
-# agents migrate off the full server token. Servers advertise agent-token earlier
-# in the play (serial server restart), so the new token is already accepted.
-# Gated on the env file existing (in prod it only exists after an install)
-# rather than k3s_skip_install, so the molecule agent scenario can pre-stage
-# the file and cover the migration.
+# k3s-install.sh writes K3S_TOKEN only on a (re)install, so an already-joined
+# agent keeps the token it first joined with. Reconcile it every run when a
+# distinct k3s_agent_token is set. Gated on the env file, which molecule stages.
 - name: Check for the k3s agent service env file
   ansible.builtin.stat:
     path: /etc/systemd/system/k3s-agent.service.env

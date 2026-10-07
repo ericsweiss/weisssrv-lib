@@ -7,4 +7,4 @@ spec:
         spec:
           containers:
             - name: c
-              image: python:3.13-slim
+              image: python:3.13-slim@sha256:0000000000000000000000000000000000000000000000000000000000000001

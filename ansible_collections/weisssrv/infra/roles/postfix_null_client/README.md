@@ -6,8 +6,9 @@ certificate-verified STARTTLS to a central relay.
 
 ## What it manages
 
-- `main.cf` rendered from `postfix_null_client_config` (loopback-only listener,
-  `mydestination` limited to `$myhostname`)
+- `main.cf` rendered from `postfix_null_client_config` merged with
+  `postfix_null_client_config_extra` (loopback-only listener, `mydestination`
+  limited to `$myhostname`)
 - `/etc/mailname`
 - `sasl_passwd` (+ `postmap`, mode `0600`) and `/etc/aliases`
 - optional `virtual` alias table, removed again when the variable goes away
@@ -30,12 +31,13 @@ certificate-verified STARTTLS to a central relay.
 | `postfix_null_client_sasl_password` | SASL password for the relay | yes |
 | `postfix_null_client_relay_port` | Relay port | no (`587`) |
 | `postfix_null_client_root_alias` | Where root's mail is forwarded | no (`root@localhost`) |
-| `postfix_null_client_config` | Full `main.cf` key/value map | no (rendered from the above) |
+| `postfix_null_client_config` | Base `main.cf` key/value map. Every key is rendered, and setting it replaces the map wholesale, so a replacement must keep `myhostname` | no (rendered from the above) |
+| `postfix_null_client_config_extra` | Extra `main.cf` parameters, merged over `postfix_null_client_config`. Use this to add or override one key | no (`{}`) |
 | `postfix_null_client_aliases` | `/etc/aliases` map | no (postmaster/nobody/hostmaster/webmaster → root, root → `_root_alias`) |
 | `postfix_null_client_virtual_aliases` | List of `{from, to}` entries for `virtual` | no (undefined = no table) |
 
-Both credentials are handled with `no_log`. Supply them from the site's secret
-store; never commit them.
+The SASL credentials are written with `no_log`. Supply them from the site's
+secret store; never commit them.
 
 ```yaml
 - hosts: all

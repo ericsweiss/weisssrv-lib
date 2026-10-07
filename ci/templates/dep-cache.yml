@@ -16,17 +16,9 @@ spec:
         Cached directories. Must match the two variables below if either is
         overridden on the consuming job.
 ---
-# Shared pip + ansible-galaxy cache fragment. Defines the hidden `.dep-cache`
-# job; a consumer `include:`s this file and `extends: .dep-cache` (or references
-# its keys) so the pip download cache + galaxy collections persist across jobs
-# instead of re-fetching the same pinned artifacts every run. The cache key
-# includes the pin files so a dependency bump busts it. No-op (just no cache
-# hits) when the runner has no distributed cache backend — safe either way.
-#
-# `key_files` are CONSUMER paths: a repo whose pins live elsewhere must pass its
-# own, or the key is computed from files that never change and the
-# bump-busts-it guarantee does not hold. GitLab caps `cache:key:files` at TWO
-# entries — a third is a pipeline-creation error.
+# Shared pip + ansible-galaxy cache fragment. `key_files` are CONSUMER paths, or
+# the bump-busts-the-cache guarantee does not hold; GitLab caps `cache:key:files`
+# at two entries. Usage: docs/INCLUDE-CONTRACT.md.
 .dep-cache:
   variables:
     PIP_CACHE_DIR: "${CI_PROJECT_DIR}/.cache/pip"

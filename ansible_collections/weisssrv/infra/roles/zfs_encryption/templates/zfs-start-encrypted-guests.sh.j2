@@ -1,25 +1,7 @@
 #!/bin/bash
 # {{ ansible_managed }}
-#
 # Starts the Proxmox guests whose disks live on an encrypted pool, gated on
-# zfs-mount-encrypted.service being ACTIVE — which only happens once every
-# encryption root reports keystatus=available and `zfs mount -a` succeeded, so
-# the encrypted zvol device nodes backing the VM disks exist.
-#
-# Guests WITHOUT encrypted disks are deliberately kept out of the cohort so
-# they start on their normal onboot path (e.g. an etcd node whose cluster
-# quorum must not wait on this host's unlock).
-#
-# Already-running guests are skipped. So are guests whose config does not exist
-# yet: a VMID/CTID may be wired into inventory before the guest is provisioned,
-# and `qm start`/`pct start` on a missing guest would wedge this oneshot in a
-# permanent, silent Restart=on-failure loop (StartLimitIntervalSec=0).
-#
-# Exit codes:
-#   0 — storage ready; every configured guest is running or not provisioned yet
-#   1 — storage not ready, OR a guest start failed. Non-zero lets
-#       Restart=on-failure re-attempt so a transient qm/pct race self-heals;
-#       the already-running guard keeps retries idempotent.
+# zfs-mount-encrypted.service. Exits and skips: README, "Boot ordering".
 
 set -uo pipefail
 
@@ -28,7 +10,7 @@ log() { logger -t "zfs-start-encrypted-guests" -s -- "$*"; }
 VMIDS=({{ zfs_encryption_guest_vmids | default([]) | map('string') | join(' ') }})
 CTIDS=({{ zfs_encryption_guest_ctids | default([]) | map('string') | join(' ') }})
 
-# NOTE: bash array-LENGTH syntax is deliberately avoided here — its brace+hash
+# NOTE: bash array-LENGTH syntax is deliberately avoided here - its brace+hash
 # sequence is read as a Jinja comment opener during templating. "${arr[*]}"
 # expands to "" for an empty array, so -z is an equivalent emptiness test.
 if [ -z "${VMIDS[*]}" ] && [ -z "${CTIDS[*]}" ]; then
@@ -43,14 +25,23 @@ if ! systemctl is-active --quiet zfs-mount-encrypted.service; then
     exit 1
 fi
 
+# Guest configs live in pmxcfs. Without it every guest below would read as
+# "not provisioned" and be skipped silently, so refuse and let the unit retry.
+if ! mountpoint -q /etc/pve; then
+    log "pmxcfs (/etc/pve) not mounted; cannot enumerate guests, will retry"
+    exit 1
+fi
+
 # Let udev finish creating the encrypted zvol device nodes before qm start
 # touches them (key-load triggers async /dev/zvol symlink creation).
 udevadm settle --timeout=30 || true
 
 start_failed=0
 
+# The config path is the provisioning test: a `qm`/`pct` config probe is also
+# non-zero on a transient error, which would skip a real guest and still exit 0.
 for vm in "${VMIDS[@]}"; do
-    if ! qm config "$vm" >/dev/null 2>&1; then
+    if [ ! -f "/etc/pve/qemu-server/${vm}.conf" ]; then
         log "VM $vm not provisioned yet; skipping (will start once it exists)"
         continue
     fi
@@ -67,7 +58,7 @@ for vm in "${VMIDS[@]}"; do
 done
 
 for ct in "${CTIDS[@]}"; do
-    if ! pct config "$ct" >/dev/null 2>&1; then
+    if [ ! -f "/etc/pve/lxc/${ct}.conf" ]; then
         log "CT $ct not provisioned yet; skipping (will start once it exists)"
         continue
     fi
@@ -83,8 +74,7 @@ for ct in "${CTIDS[@]}"; do
     fi
 done
 
-# Exit non-zero on any start failure so Restart=on-failure re-attempts the
-# laggards (idempotent via the grep-running guard above).
+# Non-zero on any start failure so Restart=on-failure re-attempts the laggards.
 if [ "$start_failed" -ne 0 ]; then
     exit 1
 fi

@@ -1,43 +1,16 @@
 #!/usr/bin/env python3
-"""
-Unit tests for version-check-ci.py — the MR-pipeline wrapper around
-check-versions.py.
+"""Unit tests for scripts/version-check-ci.py."""
 
-version-check-ci.py runs in every MR pipeline but had zero coverage. These
-tests pin the contract CI depends on:
-
-  - exit code semantics: 0 up-to-date / 1 updates available / 2 errors
-    (reconciled from the parsed --json summary)
-  - the parse-failure branch writes a self-describing error stub artifact
-    (not a 0-byte / raw-text file that reads like a successful empty report)
-  - the MR comment includes BOTH an Updates and an Errors section when both
-    are present (a transient single-service error must not suppress the
-    actionable update table, or vice versa)
-  - held updates are excluded from the update table via the
-    `not svc.get('held')` guard (MetalLB hold)
-  - the artifact path defaults to version-report.json and is redirectable with
-    --output (a consumer whose CI collects the report elsewhere)
-
-unittest fallback is provided for environments without pytest.
-"""
-
-import importlib.util
 import io
 import json
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Import the hyphen-named module via importlib (same pattern as
-# test_check_versions.py).
-_script_path = Path(__file__).resolve().parent.parent / "scripts" / "version-check-ci.py"
-_spec = importlib.util.spec_from_file_location("version_check_ci", _script_path)
-version_check_ci = importlib.util.module_from_spec(_spec)
-sys.modules["version_check_ci"] = version_check_ci
-_spec.loader.exec_module(version_check_ci)
+from script_loader import load_script
+
+version_check_ci = load_script("version-check-ci.py", register=True)
 
 
 def _completed(stdout: str, stderr: str = "", returncode: int = 0):
@@ -50,12 +23,7 @@ def _completed(stdout: str, stderr: str = "", returncode: int = 0):
 
 
 class _FakeOpen:
-    """Captures all open(..., 'w') writes by filename so tests can assert on
-    the version-report.json artifact without touching the real filesystem.
-
-    `_run_main` also parks the mocked os.makedirs on `.makedirs`, so a test can
-    assert on the parent dir a `--output` path implies.
-    """
+    """Captures open(..., 'w') writes by filename, keeping the filesystem clean."""
 
     def __init__(self):
         self.files: dict[str, io.StringIO] = {}
@@ -78,10 +46,6 @@ class _FakeOpen:
 def _run_main(stdout, *, env, stderr="", returncode=0, argv=None):
     """Run version_check_ci.main() with subprocess/open/post mocked.
 
-    `argv` is always passed explicitly (never None) so the parser never falls
-    back to the pytest process's own sys.argv. os.makedirs is mocked alongside
-    open() so a `--output` with a parent dir never touches the real filesystem.
-
     Returns (exit_code, fake_open, posted_bodies).
     """
     fake_open = _FakeOpen()
@@ -91,8 +55,8 @@ def _run_main(stdout, *, env, stderr="", returncode=0, argv=None):
                       return_value=_completed(stdout, stderr, returncode)), \
          patch("builtins.open", fake_open), \
          patch.object(version_check_ci.os, "makedirs") as fake_makedirs, \
-         patch.object(version_check_ci, "post_mr_comment",
-                      side_effect=lambda body: posted.append(body)), \
+         patch.object(version_check_ci, "upsert_mr_comment",
+                      side_effect=lambda body, token_env=None: posted.append(body)), \
          patch.dict(version_check_ci.os.environ, env, clear=True):
         try:
             version_check_ci.main(argv or [])
@@ -181,10 +145,7 @@ class TestParseFailureStub(unittest.TestCase):
         self.assertEqual(artifact["stderr"], "traceback here")
 
     def test_wrong_shape_json_writes_stub_and_exits_two(self):
-        """Valid JSON that is not an object (list/null/number/string/bool) must
-        be treated as a parse failure: exit 2 + self-describing stub. Without
-        the isinstance(data, dict) guard, `data.get(...)` raises an uncaught
-        AttributeError and the valid empty artifact would be left in place."""
+        """Valid JSON that is not an object is a parse failure: exit 2 plus stub."""
         for shape in ("[]", "[1,2,3]", "null", "123", '"str"', "true"):
             with self.subTest(shape=shape):
                 code, fake_open, _ = _run_main(shape, env={}, returncode=0)
@@ -380,35 +341,171 @@ class TestSubprocessFailureModes(unittest.TestCase):
         self.assertEqual(cm.exception.code, 2)
 
 
-class TestPostMrComment(unittest.TestCase):
-    """post_mr_comment guards on missing credentials and posts otherwise."""
+MR_CREDS = {
+    "CI_API_V4_URL": "https://gitlab.example.com/api/v4",
+    "CI_PROJECT_ID": "1",
+    "CI_MERGE_REQUEST_IID": "42",
+    "GITLAB_API_TOKEN": "tok",
+}
+
+
+def _response(body: bytes):
+    resp = MagicMock()
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    resp.read.return_value = body
+    return resp
+
+
+BOT = _response(b'{"id": 5}')
+
+
+def _note(note_id, author_id, body):
+    return {"id": note_id, "system": False, "author": {"id": author_id}, "body": body}
+
+
+class TestUpsertMrComment(unittest.TestCase):
+    """The note is refreshed, not re-posted, on every pipeline of one MR."""
+
+    def setUp(self):
+        version_check_ci._BOT_USER_ID = None
 
     def test_skips_when_credentials_incomplete(self):
-        # No env at all → returns without attempting a request.
         with patch.object(version_check_ci, "urlopen") as mock_urlopen, \
              patch.dict(version_check_ci.os.environ, {}, clear=True):
-            version_check_ci.post_mr_comment("hi")
+            version_check_ci.upsert_mr_comment("hi")
         mock_urlopen.assert_not_called()
 
-    def test_posts_when_all_credentials_present(self):
-        env = {
-            "CI_API_V4_URL": "https://gitlab.example.com/api/v4",
-            "CI_PROJECT_ID": "1",
-            "CI_MERGE_REQUEST_IID": "42",
-            "GITLAB_API_TOKEN": "tok",
-        }
-        resp = MagicMock()
-        resp.__enter__ = MagicMock(return_value=resp)
-        resp.__exit__ = MagicMock(return_value=False)
-        resp.read.return_value = b""
-        with patch.object(version_check_ci, "urlopen", return_value=resp) as mock_urlopen, \
+    def test_honours_a_custom_token_env(self):
+        env = {k: v for k, v in MR_CREDS.items() if k != "GITLAB_API_TOKEN"}
+        env["BOT_TOKEN"] = "other"
+        with patch.object(version_check_ci, "urlopen",
+                          side_effect=[BOT, _response(b"[]"), _response(b"")]) as mock_urlopen, \
              patch.dict(version_check_ci.os.environ, env, clear=True):
-            version_check_ci.post_mr_comment("hello")
-        mock_urlopen.assert_called_once()
-        req = mock_urlopen.call_args[0][0]
-        # The note is posted to the MR notes endpoint with the token header.
+            version_check_ci.upsert_mr_comment("hello", "BOT_TOKEN")
+        self.assertEqual(mock_urlopen.call_count, 3)
+        self.assertEqual(
+            mock_urlopen.call_args_list[2][0][0].headers.get("Private-token"), "other"
+        )
+
+    def test_posts_when_no_marked_note_exists(self):
+        with patch.object(version_check_ci, "urlopen",
+                          side_effect=[BOT, _response(b"[]"), _response(b"")]) as mock_urlopen, \
+             patch.dict(version_check_ci.os.environ, MR_CREDS, clear=True):
+            version_check_ci.upsert_mr_comment("hello")
+        req = mock_urlopen.call_args_list[2][0][0]
+        self.assertEqual(req.get_method(), "POST")
         self.assertIn("/merge_requests/42/notes", req.full_url)
         self.assertEqual(req.headers.get("Private-token"), "tok")
+
+    def test_updates_the_note_this_job_left_last_time(self):
+        notes = json.dumps([
+            {"id": 7, "system": True, "body": "changed the description"},
+            _note(9, 5, version_check_ci.MARKER + "\n## Version Check"),
+        ]).encode()
+        with patch.object(version_check_ci, "urlopen",
+                          side_effect=[BOT, _response(notes), _response(b"")]) as mock_urlopen, \
+             patch.dict(version_check_ci.os.environ, MR_CREDS, clear=True):
+            version_check_ci.upsert_mr_comment(version_check_ci.MARKER + "\nnew body")
+        req = mock_urlopen.call_args_list[2][0][0]
+        self.assertEqual(req.get_method(), "PUT")
+        self.assertTrue(req.full_url.endswith("/notes/9"))
+
+    def test_a_humans_note_quoting_the_marker_is_never_edited(self):
+        """The marker alone is not proof of authorship; the bot posts instead."""
+        notes = json.dumps([
+            _note(9, 11, version_check_ci.MARKER + "\nlooks wrong to me"),
+        ]).encode()
+        with patch.object(version_check_ci, "urlopen",
+                          side_effect=[BOT, _response(notes), _response(b"")]) as mock_urlopen, \
+             patch.dict(version_check_ci.os.environ, MR_CREDS, clear=True):
+            version_check_ci.upsert_mr_comment(version_check_ci.MARKER + "\nnew body")
+        self.assertEqual(mock_urlopen.call_args_list[2][0][0].get_method(), "POST")
+
+    def test_the_bots_identity_is_fetched_once_per_run(self):
+        notes = json.dumps([_note(9, 5, version_check_ci.MARKER)]).encode()
+        with patch.object(
+            version_check_ci, "urlopen",
+            side_effect=[BOT, _response(notes), _response(b""),
+                         _response(notes), _response(b"")],
+        ) as mock_urlopen, \
+             patch.dict(version_check_ci.os.environ, MR_CREDS, clear=True):
+            version_check_ci.upsert_mr_comment(version_check_ci.MARKER + "\na")
+            version_check_ci.upsert_mr_comment(version_check_ci.MARKER + "\nb")
+        user_calls = [
+            c for c in mock_urlopen.call_args_list if c[0][0].full_url.endswith("/user")
+        ]
+        self.assertEqual(len(user_calls), 1)
+
+    def test_an_unidentifiable_token_degrades_to_a_post(self):
+        """Without an identity the bot must not edit anything."""
+        with patch.object(version_check_ci, "urlopen",
+                          side_effect=[OSError("api down"), _response(b"")]) as mock_urlopen, \
+             patch.dict(version_check_ci.os.environ, MR_CREDS, clear=True):
+            version_check_ci.upsert_mr_comment("hello")
+        self.assertEqual(mock_urlopen.call_args_list[1][0][0].get_method(), "POST")
+
+    def test_a_failed_note_listing_degrades_to_a_post(self):
+        with patch.object(version_check_ci, "urlopen",
+                          side_effect=[BOT, OSError("api down"), _response(b"")]) as mock_urlopen, \
+             patch.dict(version_check_ci.os.environ, MR_CREDS, clear=True):
+            version_check_ci.upsert_mr_comment("hello")
+        self.assertEqual(mock_urlopen.call_args_list[2][0][0].get_method(), "POST")
+
+
+class TestSummaryCounterGuard(unittest.TestCase):
+    """A non-numeric counter from a skewed producer must not crash the wrapper."""
+
+    def test_string_counters_are_treated_as_zero(self):
+        payload = _payload(
+            [{"name": "Foo", "current_version": "1.0", "latest_version": "1.0",
+              "update_available": False}],
+            summary_overrides={"errors": "0", "updates_available": "2"},
+        )
+        code, _, posted = _run_main(payload, env={}, returncode=0)
+        self.assertEqual(code, 0)
+        self.assertEqual(posted, [])
+
+    def test_bool_is_not_a_counter(self):
+        self.assertEqual(version_check_ci._count(True), 0)
+        self.assertEqual(version_check_ci._count(3), 3)
+        self.assertEqual(version_check_ci._count(None), 0)
+
+
+class TestCheckerExitCodeContract(unittest.TestCase):
+    """A CHECK_VERSIONS_CMD exit outside 0/1/2 is reported, not swallowed."""
+
+    def test_out_of_contract_returncode_exits_two(self):
+        payload = _payload([
+            {"name": "Foo", "current_version": "1.0", "latest_version": "1.0",
+             "update_available": False},
+        ])
+        code, _, _ = _run_main(payload, env={}, returncode=3)
+        self.assertEqual(code, 2)
+
+
+class TestMrCommentIsInertMarkdown(unittest.TestCase):
+    """Upstream error text reaches a note posted as the token owner."""
+
+    def test_a_quick_action_in_an_error_body_is_neutralised(self):
+        payload = _payload([
+            {"name": "Bad", "current_version": "2.0", "latest_version": None,
+             "update_available": False, "error": "boom\n/merge"},
+        ])
+        _, _, posted = _run_main(payload, env={"CI_MERGE_REQUEST_IID": "42"}, returncode=2)
+        self.assertEqual(len(posted), 1)
+        self.assertNotIn("\n/merge", posted[0])
+        self.assertIn(" /merge", posted[0])
+
+    def test_a_backtick_run_in_the_failure_output_cannot_close_the_fence(self):
+        _, _, posted = _run_main(
+            "garbage", env={"CI_MERGE_REQUEST_IID": "42"},
+            stderr="```\n/merge", returncode=0,
+        )
+        body = posted[0]
+        fence = "`" * 4
+        self.assertEqual(body.count(fence), 2)
+        self.assertIn(" /merge", body)
 
 
 class TestServicesGuard(unittest.TestCase):

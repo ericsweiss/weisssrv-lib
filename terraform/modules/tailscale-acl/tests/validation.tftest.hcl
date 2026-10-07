@@ -1,7 +1,6 @@
 # `terraform validate` evaluates no caller values, so nothing else exercises the
 # split_dns validations, the IPv4 selection or its precondition. Every run is
-# `command = plan`: a plan creates no state, so the file needs no teardown —
-# which the module's `prevent_destroy` resources would refuse anyway.
+# `command = plan`, so the file creates no state and needs no teardown.
 mock_provider "tailscale" {
   # One IPv4 and one IPv6, the shape a real tailnet device returns.
   mock_data "tailscale_device" {
@@ -115,8 +114,7 @@ run "device_hostname_resolves_to_the_ipv4_address" {
   }
 }
 
-# `one([])` is null rather than an error, so without the precondition an
-# IPv6-only device programs `nameservers = [null]` instead of failing the plan.
+# Without the precondition, `one([])` is null and programs `nameservers = [null]`.
 run "a_device_with_no_ipv4_fails_the_plan" {
   command = plan
 

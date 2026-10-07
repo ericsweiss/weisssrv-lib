@@ -1,0 +1,74 @@
+---
+# Shared by proxmox_vm and proxmox_lxc (`tasks_from: assert-target-pools`).
+# Inputs: _pmx_when (create-path gate), _pmx_storage, _pmx_storage_hint,
+# _pmx_delegate. Create-path only: an existing guest may sit on other storage.
+- name: Get available storage pools on target host
+  delegate_to: "{{ _pmx_delegate }}"
+  become: true
+  ansible.builtin.command: pvesm status
+  register: proxmox_vm_storage_list
+  changed_when: false
+  check_mode: false
+  when: _pmx_when
+
+- name: Check if required storage pool exists
+  ansible.builtin.set_fact:
+    _proxmox_vm_storage_exists: "{{ proxmox_vm_storage_list.stdout_lines | select('match', '^' + _pmx_storage + '\\s') | list | length > 0 }}"
+  when: _pmx_when
+
+- name: Fail if required storage pool does not exist
+  ansible.builtin.fail:
+    msg: |
+      Storage pool '{{ _pmx_storage }}' not found on {{ _pmx_delegate }}.
+
+      Create the pool on that node first (ZFS pools are never created by
+      Ansible) or set {{ _pmx_storage_hint }} / proxmox_storage_defaults.
+
+      Available storage pools on {{ _pmx_delegate }}:
+      {{ proxmox_vm_storage_list.stdout | default('(unable to retrieve)') }}
+  when:
+    - _pmx_when
+    - not _proxmox_vm_storage_exists | default(true)
+    - not ansible_check_mode
+
+# errexit: without it the task rc is `echo`'s, so a failed `pvesh create /pools`
+# reports success. The `pvesh get` probe is exempt as an `if` condition.
+- name: Ensure standard resource pools exist
+  delegate_to: "{{ _pmx_delegate }}"
+  become: true
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      if ! pvesh get /pools/{{ item }} --output-format json 2>/dev/null; then
+        pvesh create /pools --poolid {{ item }}
+        echo "created"
+      else
+        echo "exists"
+      fi
+    executable: /bin/bash
+  loop: "{{ proxmox_resource_pools | default([]) }}"
+  register: proxmox_vm_pool_creation_result
+  # Match the sentinel on its own line: the `pvesh get` JSON body can itself
+  # contain the substring "created".
+  changed_when: "'created' in (proxmox_vm_pool_creation_result.stdout_lines | default([]))"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - not ansible_check_mode
+    - _pmx_when
+    - proxmox_resource_pools is defined
+
+- name: Validate resource pool is in standard list
+  ansible.builtin.fail:
+    msg: |
+      Resource pool '{{ proxmox_resource_pool }}' is not in the standard pools list.
+
+      Standard pools: {{ proxmox_resource_pools | default([]) | join(', ') }}
+
+      Either use one of the standard pools or add '{{ proxmox_resource_pool }}'
+      to proxmox_resource_pools in group_vars/all.yml.
+  when:
+    - _pmx_when
+    - proxmox_resource_pool is defined
+    - proxmox_resource_pools is defined
+    - proxmox_resource_pool not in proxmox_resource_pools

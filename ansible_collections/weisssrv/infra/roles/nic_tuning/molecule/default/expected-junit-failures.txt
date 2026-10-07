@@ -1,0 +1,7 @@
+# Negative-path guards this scenario DELIBERATELY drives to failure; the junit
+# callback records the raw failure, and CI's sanitize-junit step downgrades
+# EXACTLY these names. Job status is the arbiter.
+Assert every requested NIC offload override is live
+Assert exactly one active-backup bond stanza to pin
+Assert the bond-primary reselect value is one the kernel accepts
+Assert /etc/network/interfaces exists to persist the bond primary

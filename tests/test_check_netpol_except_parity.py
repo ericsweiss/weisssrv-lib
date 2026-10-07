@@ -1,18 +1,14 @@
 """Tests for scripts/check-netpol-except-parity.py.
 
-CANONICAL SUITE. A consumer that vendors the script vendors this file too and
-adds only its own smoke test — that its manifest corpus is clean, and that every
-allowlist entry in its config still names a live policy.
+Canonical suite: a consumer that vendors the script vendors this file too.
 """
-import importlib.util
 from pathlib import Path
 
 import pytest
+import yaml
+from script_loader import load_script
 
-MODULE_PATH = Path(__file__).resolve().parent.parent / "scripts" / "check-netpol-except-parity.py"
-spec = importlib.util.spec_from_file_location("check_netpol_except_parity", MODULE_PATH)
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
+mod = load_script("check-netpol-except-parity.py")
 
 
 def _policy(except_list):
@@ -31,8 +27,6 @@ def _policy(except_list):
 
 
 def _write(tmp_path, doc):
-    import yaml
-
     path = tmp_path / "networkpolicy.yaml"
     path.write_text(yaml.safe_dump(doc))
     return path
@@ -101,15 +95,11 @@ def test_an_unfenced_ingress_default_route_is_allowed(tmp_path):
 
 
 def test_yml_files_are_scanned(tmp_path):
-    import yaml
-
     (tmp_path / "netpol.yml").write_text(yaml.safe_dump(_policy(["10.0.0.0/8"])))
     assert mod.check_paths([tmp_path])
 
 
-# --- The bypasses the peer-shaped arms could not see -------------------------
-# All three of these were reproduced against the pre-hardening gate and printed
-# "except-lists match a canonical set", rc=0.
+# --- Bypasses the peer-shaped arms cannot see --------------------------------
 
 
 def _egress_policy(egress_rules, name="allow-egress-thing", namespace=None):
@@ -195,13 +185,8 @@ def test_a_lone_block_covering_the_whole_lan_is_a_violation(tmp_path):
 
 
 def test_split_halves_carrying_the_fence_between_them_clear_the_coverage_arm():
-    """The coverage arm asks what is REACHABLE, not how it is spelled: halves
+    """The coverage arm asks what is reachable, not how it is spelled: halves
     that between them fence the whole LAN reach none of it.
-
-    (Such a policy still fails the check overall, on the older per-peer rule
-    that every except-list must equal a canonical set verbatim — that strictness
-    is deliberate and is what the `_a_dropped_cidr_` tests pin. This asserts the
-    coverage arm alone, so the two cannot be confused for each other.)
     """
     lower = [c for c in mod.LAN_FENCE if c.startswith(("10.", "100."))]
     upper = [c for c in mod.LAN_FENCE if c.startswith(("172.", "192.", "169."))]
@@ -284,30 +269,54 @@ def test_omitted_policy_types_still_counts_as_egress(tmp_path):
 
 
 def _config(tmp_path, doc) -> Path:
-    import yaml
-
     path = tmp_path / "netpol-except.yaml"
     path.write_text(yaml.safe_dump(doc))
     return path
 
 
-def test_an_exemption_is_keyed_on_namespace_and_name(tmp_path, monkeypatch):
+def test_an_exemption_is_keyed_on_namespace_and_name(tmp_path):
     """An allowlisted peer-less rule passes, and only under its own key."""
     key = "ci/job-egress"
     ns, name = key.split("/")
-    monkeypatch.setattr(mod, "UNRESTRICTED_EGRESS_OK", dict(mod.UNRESTRICTED_EGRESS_OK))
-    mod.load_config(_config(tmp_path, {"unrestricted_egress_ok": {key: "job pods deploy"}}))
+    policy = mod.load_config(
+        _config(tmp_path, {"unrestricted_egress_ok": {key: "job pods deploy"}})
+    )
     ok = _write(tmp_path, _egress_policy([{}], name=name, namespace=ns))
-    assert mod.check_paths([ok]) == []
+    assert mod.check_paths([ok], policy) == []
     other = tmp_path / "other"
     other.mkdir()
     moved = _write(other, _egress_policy([{}], name=name, namespace="downloads"))
-    assert mod.check_paths([moved])
+    assert mod.check_paths([moved], policy)
 
 
-def test_the_allowlist_is_empty_without_a_config(tmp_path, monkeypatch):
+def test_a_namespaceless_policy_is_allowlisted_as_default(tmp_path):
+    """An omitted namespace reads as `default`, matching every sibling gate."""
+    policy = mod.load_config(
+        _config(
+            tmp_path,
+            {"unrestricted_egress_ok": {"default/job-egress": "job pods deploy"}},
+        )
+    )
+    ok = _write(tmp_path, _egress_policy([{}], name="job-egress"))
+    assert mod.check_paths([ok], policy) == []
+    other = tmp_path / "other"
+    other.mkdir()
+    fenced = _write(other, _egress_policy([{}], name="job-egress", namespace="ci"))
+    assert mod.check_paths([fenced], policy)
+
+
+def test_a_loaded_config_does_not_leak_into_the_next_caller(tmp_path):
+    """The Policy is a value: loading one config must not change what a caller
+    holding the default policy sees."""
+    policy = mod.load_config(
+        _config(tmp_path, {"canonical_except_lists": {"site": ["10.0.0.0/8"]}})
+    )
+    assert policy.canonical == {"site": ["10.0.0.0/8"]}
+    assert mod.Policy().canonical == mod.CANONICAL
+
+
+def test_the_allowlist_is_empty_without_a_config(tmp_path):
     """Fail-closed: an undeclared peer-less egress rule is a violation."""
-    monkeypatch.setattr(mod, "UNRESTRICTED_EGRESS_OK", {})
     path = _write(tmp_path, _egress_policy([{}], name="job-egress", namespace="ci"))
     assert mod.check_paths([path])
 
@@ -317,27 +326,24 @@ def test_a_reasonless_exemption_is_rejected(tmp_path):
         mod.load_config(_config(tmp_path, {"unrestricted_egress_ok": {"ci/x": ""}}))
 
 
-def test_a_config_replaces_the_canonical_sets(tmp_path, monkeypatch):
-    monkeypatch.setattr(mod, "CANONICAL", dict(mod.CANONICAL))
-    mod.load_config(_config(tmp_path, {"canonical_except_lists": {"site": ["10.0.0.0/8"]}}))
-    assert mod.CANONICAL == {"site": ["10.0.0.0/8"]}
-    assert mod.classify(["10.0.0.0/8"]) == "site"
-    assert mod.classify(mod.RESERVED_FULL) is None
+def test_a_config_replaces_the_canonical_sets(tmp_path):
+    policy = mod.load_config(
+        _config(tmp_path, {"canonical_except_lists": {"site": ["10.0.0.0/8"]}})
+    )
+    assert policy.canonical == {"site": ["10.0.0.0/8"]}
+    assert mod.classify(["10.0.0.0/8"], policy) == "site"
+    assert mod.classify(mod.RESERVED_FULL, policy) is None
 
 
-def test_a_config_replaces_the_fence_networks(tmp_path, monkeypatch):
-    monkeypatch.setattr(mod, "FENCE_NETS", list(mod.FENCE_NETS))
-    mod.load_config(_config(tmp_path, {"fence_networks": ["172.16.0.0/12"]}))
-    assert mod.unfenced_reach([("192.168.0.0/16", [])]) == []
-    assert mod.unfenced_reach([("172.16.0.0/12", [])]) == ["172.16.0.0/12"]
+def test_a_config_replaces_the_fence_networks(tmp_path):
+    policy = mod.load_config(_config(tmp_path, {"fence_networks": ["172.16.0.0/12"]}))
+    assert mod.unfenced_reach([("192.168.0.0/16", [])], policy) == []
+    assert mod.unfenced_reach([("172.16.0.0/12", [])], policy) == ["172.16.0.0/12"]
 
 
 def test_containment_math():
-    """The arm asks 'does a whole fence range fit inside what this reaches?'.
-
-    A block INSIDE a fence range is the deliberate shape (the LAN /32s every
-    NFS/DNS policy in the repo uses) and must stay silent; a block that CONTAINS
-    one is the escape, whatever its prefix length.
+    """A block inside a fence range stays silent; one that contains a fence
+    range is reported, whatever its prefix length.
     """
     assert mod.unfenced_reach([("0.0.0.0/0", [])]) == sorted(
         str(f) for f in mod.FENCE_NETS if f.version == 4
@@ -366,6 +372,11 @@ class TestTheGateRefusesToBeVacuous:
         assert mod.main([str(tmp_path)]) == 2
         assert "0 NetworkPolicy manifests" in capsys.readouterr().err
 
+    def test_an_empty_directory_exits_two(self, tmp_path, capsys):
+        """A renamed manifest subtree leaves the gate pointed at nothing."""
+        assert mod.main([str(tmp_path)]) == 2
+        assert "is not a gate" in capsys.readouterr().err
+
     def test_a_nonexistent_path_is_an_operator_error_not_a_traceback(self, tmp_path, capsys):
         assert mod.main([str(tmp_path / "gone")]) == 2
         assert "no such file or directory" in capsys.readouterr().err
@@ -392,11 +403,10 @@ class TestTheGateRefusesToBeVacuous:
         assert "broken.yaml" in err and "<unicode string>" not in err
 
 
-def test_the_violation_message_names_the_config_key(tmp_path, monkeypatch):
+def test_the_violation_message_names_the_config_key(tmp_path):
     """It must point at `unrestricted_egress_ok` in --config, not at a module
     constant — the script is a vendored copy, so editing it is what the
     vendored-copy gate fails on."""
-    monkeypatch.setattr(mod, "UNRESTRICTED_EGRESS_OK", {})
     path = _write(tmp_path, _egress_policy([{}], name="job-egress", namespace="ci"))
     violations = mod.check_paths([path])
     assert violations
@@ -411,12 +421,7 @@ def test_a_missing_config_file_is_an_operator_error(tmp_path, capsys):
 
 
 class TestAMalformedConfigIsAnOperatorError:
-    """Exit 2 for every broken-config shape.
-
-    Exit 1 is "the LAN fence drifted" and sends the reader into kubernetes/; a
-    traceback is worse. Both were reachable while these arms raised
-    `SystemExit(str)` (which exits 1) or nothing at all.
-    """
+    """Every broken-config shape exits 2; exit 1 means the LAN fence drifted."""
 
     def _run(self, tmp_path, text, capsys):
         config = tmp_path / "netpol.yaml"
@@ -459,12 +464,12 @@ def test_a_fence_assembled_from_smaller_peers_is_still_reached():
     assert "192.168.0.0/16" in reached
 
 
-def test_a_deficient_configured_canonical_list_still_trips_the_fence(tmp_path, monkeypatch):
+def test_a_deficient_configured_canonical_list_still_trips_the_fence(tmp_path):
     """canonical_except_lists is site data: a configured list that omits a
     fence network satisfies the per-peer equality arm, so containment must
     run on literal /0 rules too."""
     deficient = [c for c in mod.LAN_FENCE if not c.startswith("192.168.")]
-    monkeypatch.setattr(mod, "CANONICAL", {"lan-fence": deficient})
+    policy = mod.Policy(canonical={"lan-fence": deficient})
     doc = {
         "apiVersion": "networking.k8s.io/v1",
         "kind": "NetworkPolicy",
@@ -478,5 +483,65 @@ def test_a_deficient_configured_canonical_list_still_trips_the_fence(tmp_path, m
         },
     }
     path = _write(tmp_path, doc)
-    violations = mod.check_paths([path])
+    violations = mod.check_paths([path], policy)
     assert any("192.168.0.0/16" in v for v in violations), violations
+
+
+# --- malformed manifests are operator errors, never fence findings -----------
+
+
+def test_a_null_egress_rule_is_an_operator_error(tmp_path, capsys):
+    """A `- ` with nothing after it deserializes to None. Exit 1 means the fence
+    drifted, so a shape the API rejects must exit 2 and name the file."""
+    (tmp_path / "netpol.yaml").write_text(
+        "apiVersion: networking.k8s.io/v1\n"
+        "kind: NetworkPolicy\n"
+        "metadata: {name: broken, namespace: ns}\n"
+        "spec:\n  podSelector: {}\n  policyTypes: [Egress]\n  egress:\n    -\n"
+    )
+    rc = mod.main([str(tmp_path)])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "netpol.yaml" in err
+    assert "not a mapping" in err
+
+
+def test_a_non_list_peer_key_is_an_operator_error(tmp_path, capsys):
+    (tmp_path / "netpol.yaml").write_text(
+        "apiVersion: networking.k8s.io/v1\n"
+        "kind: NetworkPolicy\n"
+        "metadata: {name: broken, namespace: ns}\n"
+        "spec:\n  podSelector: {}\n  policyTypes: [Egress]\n"
+        "  egress:\n    - to: oops\n"
+    )
+    assert mod.main([str(tmp_path)]) == 2
+    assert "not a list" in capsys.readouterr().err
+
+
+def test_an_unparseable_cidr_is_an_operator_error(tmp_path, capsys):
+    """A typo'd cidr contributes nothing to the reachability analysis, so it
+    must be reported rather than silently dropped."""
+    path = _write(tmp_path, _policy(["10.0.0/8"] + mod.LAN_FENCE[1:]))
+    assert mod.main([str(path)]) == 2
+    assert "unparseable CIDR" in capsys.readouterr().err
+
+
+def test_a_zero_prefix_written_as_double_zero_still_needs_a_fence(tmp_path):
+    """`/00` is a zero-length prefix, judged numerically like `/0`."""
+    doc = _policy(mod.LAN_FENCE)
+    peer = doc["spec"]["egress"][0]["to"][0]["ipBlock"]
+    peer.pop("except")
+    peer["cidr"] = "0.0.0.0/00"
+    path = _write(tmp_path, doc)
+    violations = mod.check_paths([path])
+    assert len(violations) == 1
+    assert "no except-list" in violations[0]
+
+
+def test_an_empty_policytypes_list_takes_the_inferred_default(tmp_path):
+    """`policyTypes` is omitempty, so an empty list reaches the API as an absent
+    field: egress rules are present, so the policy IS an Egress policy."""
+    doc = _egress_policy([{}])
+    doc["spec"]["policyTypes"] = []
+    path = _write(tmp_path, doc)
+    assert mod.check_paths([path]) != []

@@ -1,0 +1,11 @@
+---
+description: Always follow the weisssrv-lib development rules.
+globs:
+alwaysApply: true
+---
+
+# Library development
+
+Before making any change in this repo, read and follow `AGENTS.md` — the
+authoritative rules for the shared library the weisssrv family pins.
+`CLAUDE.md` is a pointer to the same file.

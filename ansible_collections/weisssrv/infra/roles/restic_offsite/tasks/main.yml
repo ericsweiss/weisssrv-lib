@@ -19,11 +19,8 @@
           restic_offsite_enabled is true. The cache holds repository PATHS in
           plaintext — place it on an encrypted dataset.
 
-    # A credential set to the empty string renders an empty RESTIC_PASSWORD and
-    # an empty rclone account: every task converges green and the backup is
-    # non-functional until the next run's metric is read. (An OMITTED variable
-    # already fails loudly — the role ships no default for any of the three.)
-    # no_log: the assert must never render a secret into output.
+    # Presence-only assert: no_log would censor the fail_msg, and the
+    # expression prints variable names, not values.
     - name: Assert the offsite credentials are non-empty
       ansible.builtin.assert:
         that:
@@ -31,7 +28,6 @@
         fail_msg: >-
           restic_offsite_repo_password must be a non-empty value when
           restic_offsite_enabled is true.
-      no_log: true
 
     - name: Assert the B2 credentials are non-empty
       ansible.builtin.assert:
@@ -44,7 +40,6 @@
           restic_offsite_rclone_remote_type + _remote_options for another
           backend).
       when: restic_offsite_rclone_remote_type == 'b2'
-      no_log: true
 
     # The control script derives each throwaway clone's name from the zvol path,
     # so two entries naming the same zvol clone onto each other mid-run.
@@ -58,6 +53,52 @@
         fail_msg: >-
           restic_offsite_zvol_sources must not repeat a zvol or a source name.
 
+    # CRITICAL: swap-clean shrinks the ARC, runs swapoff and gracefully stops
+    # the guests in nas_storage_swap_clean_stop_guests. Overlapping the offsite
+    # run means restic is reading clones of those guests' zvols meanwhile.
+    - name: Assert swap-clean is interlocked against the offsite run
+      ansible.builtin.assert:
+        that:
+          - "'restic-offsite.service' in
+             (nas_storage_swap_clean_conflicting_units | default([]))"
+        fail_msg: >-
+          nas_storage_swap_clean_enabled is true on this host but
+          nas_storage_swap_clean_conflicting_units does not name
+          restic-offsite.service, so swap-clean can shrink the ARC, swapoff and
+          stop the guests in nas_storage_swap_clean_stop_guests while restic
+          reads clones of their zvols. Add it in group_vars or host_vars.
+      when: nas_storage_swap_clean_enabled | default(false) | bool
+
+    # The interlock is two-directional: swap-clean skips while restic runs, and
+    # restic skips while swap-clean runs. One side alone leaves the other's
+    # window unguarded.
+    - name: Assert the offsite run is interlocked against swap-clean
+      ansible.builtin.assert:
+        that:
+          - "'swap-clean.service' in
+             (restic_offsite_conflicting_units | default([]))"
+        fail_msg: >-
+          nas_storage_swap_clean_enabled is true on this host but
+          restic_offsite_conflicting_units does not name swap-clean.service, so
+          a swap-clean night that starts after the offsite run has taken the
+          lock still stops guests underneath it. Add it in group_vars or
+          host_vars.
+      when: nas_storage_swap_clean_enabled | default(false) | bool
+
+    # Replication hand-off is opt-in on the nas_storage side; without it restic
+    # runs on its own timer instead of chaining off a fresh archive.
+    - name: Warn when the archive replication does not chain into the offsite run
+      ansible.builtin.debug:
+        msg: >-
+          nas_storage_archive_backup_enabled is true but
+          nas_storage_archive_backup_on_success_units does not name
+          restic-offsite.service, so this host runs the offsite backup on its own
+          timer rather than after a successful replication.
+      when:
+        - nas_storage_archive_backup_enabled | default(false) | bool
+        - "'restic-offsite.service' not in
+           (nas_storage_archive_backup_on_success_units | default([]))"
+
     # restic stays Debian-packaged; restic_offsite_restic_version is advisory:
     # an exact Debian version pins, empty tracks the distro.
     - name: Install restic
@@ -68,20 +109,18 @@
         update_cache: true
         cache_valid_time: 3600
 
-    # rclone comes from rclone.org's official .deb, NOT Debian apt (which ships
-    # a years-old build): a pinned, checksummed build keeps the backup transport
-    # reproducible instead of drifting with the distro. Fail loud on a bad pin —
-    # an empty version makes the probe's match vacuously true and SILENTLY skips
-    # the pinned install. The deb is amd64-only.
+    # rclone comes from rclone.org's pinned .deb, not Debian apt. An empty
+    # version makes the probe vacuously true and silently skips the install.
     - name: Assert the rclone pin inputs are sane
       ansible.builtin.assert:
         that:
+          - ansible_architecture == 'x86_64'
           - restic_offsite_rclone_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
           - restic_offsite_rclone_deb_sha256 is match('^[A-Fa-f0-9]{64}$')
-          - ansible_architecture == 'x86_64'
         fail_msg: >-
-          restic_offsite_rclone_version/restic_offsite_rclone_deb_sha256 must be a semantic version + sha256
-          of the rclone.org linux-amd64 deb, and the host must be x86_64.
+          restic_offsite installs rclone from an amd64-only pinned .deb, and
+          this host reports {{ ansible_architecture }}. The version must be a
+          semantic version and restic_offsite_rclone_deb_sha256 a sha256.
 
     # dpkg-query, not `rclone version`: PATH could resolve a stray
     # /usr/local/bin copy (removed below) and false-skip the package install.
@@ -97,26 +136,24 @@
           {{ (restic_offsite_rclone_probe.stdout | default(''))
              is match('^' ~ (restic_offsite_rclone_version | regex_escape) ~ '($|-)') }}
 
-    # The .deb is a build artifact, not state: fetch it to /var/tmp, install it,
-    # and remove it even when the install fails, so a version bump does not
-    # leave another ~20 MB behind.
+    # The .deb is a build artifact: install then remove, even on failure.
     - name: Install the pinned rclone release deb
       when: not (restic_offsite_rclone_pin_satisfied | bool)
       block:
         - name: Download the pinned rclone release deb
           ansible.builtin.get_url:
-            url: "https://downloads.rclone.org/v{{ restic_offsite_rclone_version }}/rclone-v{{ restic_offsite_rclone_version }}-linux-amd64.deb"
-            dest: "/var/tmp/rclone-v{{ restic_offsite_rclone_version }}-linux-amd64.deb"
+            url: "https://downloads.rclone.org/v{{ restic_offsite_rclone_version }}/{{ restic_offsite_rclone_deb_name }}"
+            dest: "/var/tmp/{{ restic_offsite_rclone_deb_name }}"
             checksum: "sha256:{{ restic_offsite_rclone_deb_sha256 }}"
             mode: "0644"
 
         - name: Install the downloaded rclone deb
           ansible.builtin.apt:
-            deb: "/var/tmp/rclone-v{{ restic_offsite_rclone_version }}-linux-amd64.deb"
+            deb: "/var/tmp/{{ restic_offsite_rclone_deb_name }}"
       always:
         - name: Remove the downloaded rclone deb
           ansible.builtin.file:
-            path: "/var/tmp/rclone-v{{ restic_offsite_rclone_version }}-linux-amd64.deb"
+            path: "/var/tmp/{{ restic_offsite_rclone_deb_name }}"
             state: absent
 
     # A stray /usr/local/bin/rclone shadows the packaged binary for root and the
@@ -147,10 +184,8 @@
         - "{{ restic_offsite_zvol_mount_root }}"
         - "{{ restic_offsite_cache_dir }}"
 
-    # NOT in the 0700 loop above: the metrics dir is the shared node_exporter
-    # textfile dir — 0700 root:root would stop node_exporter (its own user)
-    # from traversing it, silently killing every textfile metric on the host.
-    # 0755 matches node_exporter_host's own directory task.
+    # 0755, not the 0700 loop above: this is the shared node_exporter textfile
+    # dir and 0700 root:root would kill every textfile metric on the host.
     - name: Ensure the metrics textfile directory is traversable by node_exporter
       ansible.builtin.file:
         path: "{{ restic_offsite_metrics_dir }}"
@@ -159,26 +194,50 @@
         group: root
         mode: "0755"
 
-    # The env file single-quotes every value so whitespace/#/$ can't break its
-    # two parsers (systemd EnvironmentFile + shell source). Single quotes and
-    # backslashes are the two characters those parsers unescape DIFFERENTLY —
-    # a value containing them would silently produce a different password in
-    # systemd runs vs manual shell runs, so refuse them outright.
-    # no_log: the assert must never render the secret into output.
-    - name: Refuse secret values the env-file parsers would disagree on
+    # The env file single-quotes the repository URL, so a quote or backslash
+    # there parses differently under systemd EnvironmentFile and shell `source`.
+    # no_log: the block reads the secret.
+    - name: Refuse secret values the env file and restic would read differently
       ansible.builtin.assert:
         that:
-          - not (restic_offsite_repo_password is search("'"))
-          - not (restic_offsite_repo_password is search('\\\\'))
           - not (restic_offsite_repo is search("'"))
           - not (restic_offsite_repo is search('\\\\'))
+          - restic_offsite_repo_password == (restic_offsite_repo_password | trim)
         fail_msg: >-
-          restic_offsite_repo_password / restic_offsite_repo must not contain single
-          quotes or backslashes (systemd EnvironmentFile and shell `source`
-          parse them differently — rotate the 1Password value instead).
+          restic_offsite_repo must not contain single quotes or backslashes (the
+          env file single-quotes it), and restic_offsite_repo_password must not
+          have leading or trailing whitespace (restic trims a password read from
+          RESTIC_PASSWORD_FILE but not one from RESTIC_PASSWORD, so the key
+          would change).
       no_log: true
 
-    # no_log: the env file renders RESTIC_PASSWORD (repo password) — the
+    # rclone.conf is an INI file rendered as `key = value`: a newline in a value
+    # or a bracket in a key injects arbitrary remote configuration.
+    - name: Refuse rclone remote options that would inject INI syntax
+      ansible.builtin.assert:
+        that:
+          - restic_offsite_rclone_remote_options | default({}) | dict2items
+            | rejectattr('key', 'match', '^[A-Za-z0-9_]+$') | list | length == 0
+          - restic_offsite_rclone_remote_options | default({}) | dict2items
+            | selectattr('value', 'search', '[\\r\\n]') | list | length == 0
+        fail_msg: >-
+          restic_offsite_rclone_remote_options keys must match ^[A-Za-z0-9_]+$
+          and no value may contain a newline — both would inject extra rclone
+          configuration into rclone.conf.
+
+    # RESTIC_PASSWORD_FILE keeps the repo password out of restic's environment,
+    # which the rclone child process inherits.
+    # no_log: the task content IS the secret.
+    - name: Render the restic repository password file (secret)
+      ansible.builtin.copy:
+        content: "{{ restic_offsite_repo_password }}"
+        dest: "{{ restic_offsite_config_dir }}/repo-password"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    # no_log: the env file names the password file and the repository — the
     # template-writes-a-secret pattern ansible-lint does not catch.
     - name: Render restic-offsite EnvironmentFile (secret)
       ansible.builtin.template:
@@ -261,9 +320,7 @@
         daemon_reload: true
       when: not ansible_check_mode
 
-    # Quarterly restore drill. Split from the verify units so the off switch is
-    # a real one: flipping restic_offsite_restore_drill_enabled false stops and
-    # removes them rather than leaving an armed timer behind.
+    # Split from the verify units so the off switch really removes the timer.
     - name: Deploy the quarterly restore-drill systemd units
       ansible.builtin.template:
         src: "{{ item }}.j2"
@@ -288,18 +345,9 @@
         - restic_offsite_restore_drill_enabled | bool
         - not ansible_check_mode
 
-    # Does a PASSING drill's proof metric already exist? This is the
-    # self-healing half of the seed gate below, and it is deliberately a
-    # content probe rather than a stat: write_drill_metrics always writes
-    # backup_restore_drill.prom (it records _last_run_seconds even on failure),
-    # and only ever emits backup_restore_drill_last_success_seconds after a
-    # drill in which every compared file matched. The file existing therefore
-    # proves nothing; that one line is the proof.
-    #
-    # `find` rather than a command: it is read-only, supports check mode
-    # natively (so the probe still evaluates under --check and the gate below
-    # stays honest there), and returns matched=0 instead of failing when the
-    # file is absent.
+    # The proof of a PASSING drill is the _last_success_seconds line, not the
+    # file's existence: the .prom is written on failure too. `find` keeps the
+    # probe honest under --check.
     - name: Probe whether a passing restore drill has ever written its proof metric
       ansible.builtin.find:
         paths: "{{ restic_offsite_metrics_dir }}"
@@ -308,11 +356,8 @@
       register: restic_offsite_drill_proof
       when: restic_offsite_restore_drill_enabled | bool
 
-    # The gate, as one named fact so it is assertable (molecule pins both arms).
-    # LEVEL-triggered: units changed OR the proof metric is still absent, so a
-    # failed seed retries next converge instead of being skipped forever. Once a
-    # drill has passed both arms are false and no re-run re-spends B2 egress.
-    # Why the seed exists at all: README, "Restore drill".
+    # Level-triggered: a failed seed retries on the next converge. Once a drill
+    # has passed, both arms are false. README, "Restore drill".
     - name: Decide whether the first restore drill still needs seeding
       ansible.builtin.set_fact:
         restic_offsite_drill_seed_due: >-
@@ -320,10 +365,8 @@
              or ((restic_offsite_drill_proof.matched | default(0) | int) == 0) }}
       when: restic_offsite_restore_drill_enabled | bool
 
-    # Seed the FIRST drill at install time (a Persistent=true timer does not
-    # fire on first enable). Fails the play when the drill fails — including on
-    # a repository with no snapshot yet; set restic_offsite_restore_drill_seed
-    # false for that first converge. README, "Restore drill".
+    # Seeds the FIRST drill (a Persistent=true timer does not fire on enable).
+    # Set restic_offsite_restore_drill_seed false on a snapshot-less repo.
     - name: Seed the first restore drill so the proof metric exists
       ansible.builtin.systemd:
         name: backup-restore-drill.service
@@ -355,3 +398,12 @@
         - backup-restore-drill.timer
       when: not (restic_offsite_restore_drill_enabled | bool)
       notify: Reload systemd for restic-offsite
+
+    # CRITICAL: the .prom goes with the units. A frozen
+    # backup_restore_drill_last_success_seconds keeps its staleness alert firing
+    # with no timer that could ever clear it.
+    - name: Remove the restore-drill metric when the drill is disabled
+      ansible.builtin.file:
+        path: "{{ restic_offsite_metrics_dir }}/backup_restore_drill.prom"
+        state: absent
+      when: not (restic_offsite_restore_drill_enabled | bool)

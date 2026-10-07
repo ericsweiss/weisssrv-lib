@@ -1,7 +1,6 @@
 # {{ ansible_managed }}
-# Immich compose stack. Shape follows upstream docker/docker-compose.yml for the
-# pinned Immich release ({{ immich_version }}). Managed by the immich Ansible
-# role — do not edit on the host (changes are reverted on the next deploy).
+# Immich compose stack, following upstream docker-compose.yml for the pinned
+# release ({{ immich_version }}). Host edits are reverted on the next deploy.
 name: immich
 
 services:
@@ -25,9 +24,7 @@ services:
     ports:
       # App: loopback only — the host nginx terminates TLS and proxies to it.
       - "127.0.0.1:{{ immich_server_listen_port }}:2283"
-      # Metrics: unauthenticated, published on immich_metrics_bind — 0.0.0.0 by
-      # default, i.e. every interface. Pin it to 127.0.0.1 (or the scrape-facing
-      # address) and firewall these ports if nothing scrapes from off-host.
+      # Unauthenticated metrics ports, published on immich_metrics_bind.
       - "{{ immich_metrics_bind }}:{{ immich_api_metrics_port }}:{{ immich_api_metrics_port }}"
       - "{{ immich_metrics_bind }}:{{ immich_microservices_metrics_port }}:{{ immich_microservices_metrics_port }}"
     depends_on:
@@ -35,6 +32,9 @@ services:
         condition: service_healthy
       database:
         condition: service_healthy
+{% if immich_server_mem_limit | length > 0 %}
+    mem_limit: {{ immich_server_mem_limit }}
+{% endif %}
     restart: always
 
   # CPU ML. immich-server tries machineLearning.urls in order, so when the site
@@ -47,6 +47,9 @@ services:
       - {{ immich_model_cache_dir }}:/cache
     env_file:
       - .env
+{% if immich_machine_learning_mem_limit | length > 0 %}
+    mem_limit: {{ immich_machine_learning_mem_limit }}
+{% endif %}
     restart: always
 
   redis:
@@ -97,12 +100,8 @@ services:
     restart: always
 
 {% endif %}
-# Fixed subnet AND gateway so IMMICH_TRUSTED_PROXIES names a guaranteed hop.
-# The host nginx proxies to immich-server on 127.0.0.1; docker-proxy rewrites
-# that source to this network's gateway, so immich-server's REMOTE_ADDR is the
-# gateway. Pinning it (rather than relying on Docker's .1 convention) keeps
-# IMMICH_TRUSTED_PROXIES = {{ immich_compose_gateway }} correct even if Docker's
-# default-gateway allocation ever changes.
+# Pinned subnet and gateway: docker-proxy rewrites the nginx source to the
+# gateway, so it is what IMMICH_TRUSTED_PROXIES must name.
 networks:
   default:
     driver: bridge

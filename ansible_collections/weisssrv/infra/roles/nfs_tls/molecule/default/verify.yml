@@ -1,19 +1,13 @@
 ---
-# Container-bound checks only — package installed, tlshd.conf rendered with our
-# cert paths, unit recognized. Verifying tlshd actually running would need
-# AF_TLSH netlink and a real NFSv4 client/server pair.
-#
-# Four platforms: SERVER ([authenticate.server] with cert + key, PEMs spared),
-# CLIENT-only (key-free [authenticate.client], staged PEMs scrubbed), CLIENT
-# with nfs_tls_scrub_client_cert: false (PEMs survive), and opted-out
-# (nfs_tls_enabled: false, de-list reconcile). Assertions gate on the
-# per-host vars from the scenario inventory.
+# Container-bound checks: package installed, tlshd.conf rendered, unit
+# recognized. Four platforms (server, scrubbed client, default client,
+# opted-out); assertions gate on the per-host vars from the scenario inventory.
 - name: Verify
   hosts: all
   become: true
   gather_facts: true
   tasks:
-    # 1. ktls-utils package installed (both hosts)
+    # 1. ktls-utils package installed (TLS-enabled hosts)
     - name: Check ktls-utils is installed
       ansible.builtin.package_facts:
         manager: apt
@@ -28,6 +22,8 @@
           - "'nfs-common' in ansible_facts.packages"
         fail_msg: "ktls-utils/nfs-common not installed — role's apt step incomplete"
         success_msg: "ktls-utils (tlshd) + nfs-common (mount.nfs) installed"
+      # The opted-out host skips the role's apt step entirely.
+      when: nfs_tls_enabled | default(true)
 
     # 2. /etc/tlshd.conf rendered (TLS-enabled hosts; content differs per role)
     - name: Stat /etc/tlshd.conf
@@ -56,7 +52,7 @@
       register: tlshd_conf_body
       when: nfs_tls_enabled | default(true)
 
-    - name: Assert tlshd.conf carries the client block + truststore (both hosts)
+    - name: Assert tlshd.conf carries the client block + truststore
       ansible.builtin.assert:
         that:
           - "'[authenticate.client]' in (tlshd_conf_body.content | b64decode)"
@@ -77,12 +73,9 @@
         - nfs_tls_enabled | default(true)
         - nfs_tls_is_server | default(false)
 
-    # Least-privilege client render: with nfs_tls_client_cert: false (the
-    # default, correct for xprtsec=tls), the [authenticate.client] block must
-    # NOT carry the private key — only the truststore. On the server host
-    # (nfs_tls_is_server: true) the private key appears exactly once, in the
-    # [authenticate.server] block. A second occurrence means the client block
-    # is leaking the wildcard key it doesn't need under server-only TLS.
+    # On a server host the private key appears exactly once, in
+    # [authenticate.server]. A second occurrence means the client block leaks
+    # the key it does not need under xprtsec=tls.
     - name: Verify the private key is referenced exactly once (server block only)
       ansible.builtin.assert:
         that:
@@ -110,11 +103,9 @@
         - nfs_tls_enabled | default(true)
         - not (nfs_tls_is_server | default(false))
 
-    # The least-privilege cleanup removes the cert + key only on CLIENT-only
-    # hosts (not nfs_tls_is_server, not nfs_tls_client_cert). prepare.yml staged
-    # both PEMs on BOTH hosts: the server's must survive (dropping the is_server
-    # guard would delete the NFS server's own TLS identity), the client's must
-    # be gone.
+    # The scrub is opt-in (nfs_tls_scrub_client_cert). prepare.yml staged both
+    # PEMs on every host: the server's survive, the scrubbed client's go, the
+    # default client's stay.
     - name: Stat the cert + key after converge
       ansible.builtin.stat:
         path: "{{ item }}"
@@ -146,26 +137,24 @@
       when:
         - nfs_tls_enabled | default(true)
         - not (nfs_tls_is_server | default(false))
-        - nfs_tls_scrub_client_cert | default(true)
+        - nfs_tls_scrub_client_cert | default(false)
 
-    - name: Assert the opt-out spared a client whose PEMs another role owns
+    - name: Assert the default spared a client whose PEMs another role owns
       ansible.builtin.assert:
         that:
           - server_pem_stat.results | map(attribute='stat.exists') | list == [true, true]
         fail_msg: >-
-          The cert/key were removed despite nfs_tls_scrub_client_cert: false —
+          The cert/key were removed without nfs_tls_scrub_client_cert —
           nfs_tls and the role that owns those paths would delete and reinstall
           them on alternate converges.
-        success_msg: "nfs_tls_scrub_client_cert: false left the staged PEMs in place"
+        success_msg: "the default left the staged PEMs in place"
       when:
         - nfs_tls_enabled | default(true)
         - not (nfs_tls_is_server | default(false))
-        - not (nfs_tls_scrub_client_cert | default(true))
+        - not (nfs_tls_scrub_client_cert | default(false))
 
-    # 3. tlshd.service unit recognized by systemd (both hosts)
-    # `systemctl cat` (not the systemd_service module) so this stays a read-only
-    # check that the unit file is on disk and parseable, with an actionable
-    # error if it is not.
+    # tlshd.service unit recognized by systemd on every platform, the opted-out
+    # one included: `systemctl cat` keeps this a read-only on-disk check.
     - name: Verify systemd recognizes tlshd.service  # noqa command-instead-of-module
       ansible.builtin.command: systemctl cat tlshd.service
       register: tlshd_unit_cat
@@ -207,3 +196,20 @@
         fail_msg: "/etc/tlshd.conf survived the opt-out reconcile — removal regressed."
         success_msg: "/etc/tlshd.conf removed after opt-out reconcile"
       when: not (nfs_tls_enabled | default(true))
+
+    # The opt-out gate asks systemd for the unit, so an absent unit must make
+    # the gate false rather than error.
+    - name: Probe the opt-out unit gate with an absent unit  # noqa command-instead-of-module
+      ansible.builtin.command: systemctl list-unit-files nfs-tls-absent.service
+      register: absent_unit_probe
+      changed_when: false
+      failed_when: false
+
+    - name: Assert the opt-out unit gate is false for an absent unit
+      ansible.builtin.assert:
+        that:
+          - not (absent_unit_probe.rc | default(1) == 0 and 'nfs-tls-absent.service' in (absent_unit_probe.stdout | default('')))
+        fail_msg: >-
+          systemctl list-unit-files reported an absent unit as present, so the
+          opt-out stop/disable would run against a unit systemd does not know.
+        success_msg: "the opt-out unit gate is false for an absent unit"

@@ -1,18 +1,7 @@
 ---
-# Prepare. Two host shapes:
-#
-#   encrypted-swap-test      a real backing block device at /dev/pve/swap (a
-#                            loop device symlinked into place — the role stats
-#                            with follow: true), plus two fixtures: a plaintext
-#                            swap fstab line (verify asserts the deferred shape
-#                            KEEPS it) and an obsolete live-switch script
-#                            (verify asserts the role purges it).
-#   encrypted-swap-skip-test no backing device, but the crypttab/fstab entries
-#                            an earlier converge would have written — the
-#                            self-skip arm must reconcile them away.
-#
-# Seeded here, not in converge, so the idempotence re-run does not ping-pong
-# with the role.
+# Two host shapes: encrypted-swap-test gets a real backing device plus fixtures
+# the role must keep and purge; encrypted-swap-skip-test gets none, so the
+# self-skip arm reconciles its stale crypttab and fstab entries away.
 - name: Prepare
   hosts: all
   gather_facts: false
@@ -40,10 +29,9 @@
         group: root
         mode: "0755"
 
-    # Backing device for the non-skip host. The role only stats it (activation
-    # is deferred to reboot), so a loop device is enough — but it has to be a
-    # real block device or the new guard aborts converge before anything is
-    # written and every assertion in verify goes untested.
+    # Backing device for the non-skip host. The role only stats it, so a loop
+    # device suffices, but it must be a real block device or the guard aborts
+    # converge and every assertion in verify goes untested.
     - name: Provision a backing swap block device at /dev/pve/swap
       when: inventory_hostname != 'encrypted-swap-skip-test'
       block:

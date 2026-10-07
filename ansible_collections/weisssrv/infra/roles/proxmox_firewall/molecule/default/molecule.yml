@@ -28,16 +28,17 @@ provisioner:
           - 192.168.0.0/24
         proxmox_firewall_wan_wireguard_vips:
           - 192.168.0.99
-        # Site scrape targets appended to sg-metrics (the role default is
-        # empty, so an app port is never opened fleet-wide by default).
-        # Same {port, sources[], comment?} schema as the sg-dns list below, and
-        # one entry with TWO sources so the per-source fan-out is asserted.
+        # sg-smtp-relay fails closed by default, so the scenario names its own
+        # client scope; two entries assert the per-source fan-out.
+        proxmox_firewall_smtp_relay_sources: [core-cluster, admin_ts]
+        # Site scrape targets appended to sg-metrics. One entry carries two
+        # sources, so the per-source fan-out is asserted.
         proxmox_firewall_metrics_scrape_ports:
           - {port: 32400, sources: [k3s_nodes], comment: plex}
           - {port: 31100, sources: [core-cluster], comment: loki push NodePort}
           - {port: 9993, sources: [k3s_nodes, admin_lan], comment: two-source entry}
-        # An in-cluster scraper deliberately admitted to the resolver's
-        # plaintext admin API, on top of the two default admin sets.
+        # An in-cluster scraper admitted to the resolver's plaintext admin API,
+        # on top of the two default admin sets.
         proxmox_firewall_dns_admin_ports:
           - port: 443
             sources: [admin_ts, admin_lan]
@@ -56,13 +57,15 @@ provisioner:
               - "# ingress -> app TLS"
               - "IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 443 -log nolog"
               - "IN ACCEPT -source +dc/admin_lan -p tcp -dport 443 -log nolog"
+          - name: sg-example-relay
+            rules:
+              - "# inbound submission from the cluster"
+              - "IN ACCEPT -source +dc/core-cluster -p tcp -dport 587 -log nolog"
+              - "OUT ACCEPT -p tcp -dport 587 -log nolog"
           - name: sg-example-authless
-            # Escaped as `$$`: molecule runs this whole file (comments included)
-            # through a string.Template pass — the one that resolves
-            # ${MOLECULE_TEST_IMAGE} above — BEFORE the YAML parse, and a bare
-            # dollar there is an invalid placeholder that aborts the scenario.
-            # The escape collapses back to the single end-of-string anchor the
-            # regex_replace needs.
+            # CRITICAL: escape a literal dollar as `$$` anywhere in this file.
+            # Molecule runs it through string.Template before the YAML parse, so
+            # a bare `$` is an invalid placeholder that aborts the scenario.
             rules: >-
               {{ molecule_authless_api_clients
                  | map('regex_replace', '^', 'IN ACCEPT -source ')
@@ -72,16 +75,12 @@ provisioner:
           - name: api-vip
             cidr: 192.168.0.161
             comment: k3s API VIP
-        # A segmented site declares its client scopes as their own sets, which
-        # is what the overridden-scope render below points the two client-scope
-        # variables at. Declared here so every `+dc/<name>` in the render
-        # resolves to an `[IPSET <name>]` — the referential integrity the
-        # template used to have structurally, before those sources became site
-        # data.
+        # Client scopes as their own sets, so every `+dc/<name>` resolves to an
+        # [IPSET]. The k3s_nodes entry has no `comment`, which must render
+        # without a trailing `#`.
         firewall_ipset_special_entries:
           k3s_nodes:
             - ip: 192.168.0.161
-              comment: k3s API VIP
           dns_clients:
             - ip: 192.168.0.0/24
               comment: every VLAN the resolvers answer
@@ -151,5 +150,5 @@ provisioner:
             guest_firewall_policy_out: "DROP"
             guest_security_groups:
               - sg-vm-admin
-              - sg-smtp-relay
+              - sg-example-relay
               - sg-metrics

@@ -8,14 +8,16 @@ exactly, dearmor it into a binary keyring, clean up, then add the `deb
 [signed-by=...]` source.
 
 Callers in this collection: **`alloy_host`** (Grafana), **`docker_engine`**
-(Docker CE) and **`k3s`** (the NVIDIA container toolkit). Each keeps its own key
-URL, fingerprint, keyring path, repo line and apt filename — the role only owns
-the mechanics.
+(Docker CE), **`gitlab`** (Omnibus), **`k3s`** (the NVIDIA container toolkit)
+and **`plex`** (Plex Media Server). Each keeps its own key URL, fingerprint,
+keyring path, repo line and apt filename — the role only owns the mechanics.
+`gitlab` is the one caller that uses the `apt_signed_repo_when` seam, to skip
+the repo entirely when the install is skipped.
 
 The keyring is the persistent artifact: the download → verify → dearmor →
-cleanup sub-sequence is gated on its absence so the role is idempotent. Key
-rotation is delete-the-keyring-first; callers do their own legacy-keyring
-cleanup (old `.asc`/`.list` files) before the include.
+cleanup sub-sequence is gated on its absence so the role is idempotent. Callers
+do their own legacy-keyring cleanup (old `.asc`/`.list` files) before the
+include.
 
 ## Roles that stay standalone
 
@@ -55,6 +57,46 @@ would regress that behavior.
 | `apt_signed_repo_stage_dir` | Root-only directory the key is staged in | no (default `/run/apt-signed-repo`) |
 | `apt_signed_repo_tmp_key` | Staging path for the download | no (default `<stage_dir>/<keyring-basename>.download`) |
 | `apt_signed_repo_update_cache` | Refresh the apt cache when the repo is added; set `false` for hermetic tests/staged rollouts | no (default `true`) |
+
+## Other entry points
+
+| `tasks_from` | What it does | Inputs |
+|---|---|---|
+| `enable-components.yml` | Rewrites every `Components:` line in a deb822 sources file to one canonical set, idempotently and from any partial state, then refreshes the apt cache | `apt_signed_repo_sources_path` (default `/etc/apt/sources.list.d/debian.sources`), `apt_signed_repo_components` (default `main contrib non-free non-free-firmware`, and it must be non-empty), `apt_signed_repo_update_cache` (default `true`) |
+
+```yaml
+- name: Enable contrib/non-free/non-free-firmware components
+  ansible.builtin.include_role:
+    name: weisssrv.infra.apt_signed_repo
+    tasks_from: enable-components.yml
+  vars:
+    apt_signed_repo_sources_path: "{{ k3s_gpu_debian_sources_path }}"
+    apt_signed_repo_components: main contrib non-free non-free-firmware
+```
+
+The entry point fails when `apt_signed_repo_components` is empty, when the
+sources file does not exist, and when the file does not carry the requested
+components after the rewrite. Each of those would otherwise surface much later
+as an opaque "Unable to locate package" in the calling role. It refreshes the
+apt cache itself on a real rewrite, unless `apt_signed_repo_update_cache` is
+false. A host still on the one-line sources format needs `apt_repository`
+instead.
+
+## Key rotation
+
+Rotation is delete-the-keyring-first. An installed keyring whose primary
+fingerprint does not match `apt_signed_repo_fingerprint` fails the run on every
+host. That is the fail-closed tamper check: the role never replaces a keyring it
+did not expect, so a swapped key is reported rather than overwritten.
+
+When a vendor genuinely rotates its signing key, the play is:
+
+1. Confirm the new fingerprint from the vendor's own published source.
+2. Remove `apt_signed_repo_keyring_path` on the affected hosts.
+3. Bump `apt_signed_repo_key_url` and `apt_signed_repo_fingerprint`, and re-run.
+
+The caller roles that pass their own key pins list the same play in their own
+READMEs.
 
 ## Staging path
 

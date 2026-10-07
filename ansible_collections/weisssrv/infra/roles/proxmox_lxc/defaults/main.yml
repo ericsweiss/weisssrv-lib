@@ -1,43 +1,33 @@
 ---
-# Skips the real-Proxmox-only tasks — the network-input assert, the `pveam
-# download`, the final `wait_for` SSH probe — and, when the container does not
-# exist, the reconciles that would `pct config` a missing CT. It does NOT bypass
-# `pct create`/`pct exec`, idmap edits, or the /etc/pve/lxc/<id>.conf writes:
-# those gate on `proxmox_lxc_exists.rc != 0`, so stubbing `pvesh` to report the
-# container as existing is the supported way to no-op them in a test rig.
+# Skips the real-Proxmox-only tasks: `pveam download`, the SSH `wait_for`, and
+# the reconciles against a missing CT. Create, idmap and conf writes gate on
+# proxmox_lxc_exists.rc, so a test rig stubs `pvesh` to report it existing.
 proxmox_lxc_skip_create: false
 
-# IP address handed to the role's pct-create + SSH-wait logic. Defaults to
-# ansible_host because production inventory routes traffic to each container
-# via that field. Molecule scenarios override this so they can keep
-# ansible_host pointing at the docker container (= connection target) while
-# still feeding a realistic per-container IP into the pct create --net0 line.
+# IP handed to the role's pct-create and SSH-wait logic. Molecule overrides it
+# so ansible_host can stay pointed at the container while --net0 still gets a
+# realistic per-container address.
 proxmox_lxc_target_ip: "{{ ansible_host }}"
 
 # Container resource defaults
 proxmox_lxc_cores: 2
 proxmox_lxc_memory: 2048
 proxmox_lxc_swap: 512
-proxmox_lxc_disk_size: 8G
-# proxmox_lxc_storage is intentionally NOT defined: the role auto-selects from
+proxmox_lxc_disk_size: 8G  # GiB only — the G is stripped and pct takes a bare count
+# proxmox_lxc_storage is NOT defined: the role auto-selects from
 # the Proxmox host's `proxmox_role` via proxmox_storage_defaults. Set it in
 # host_vars to pin one container.
 proxmox_lxc_bridge: vmbr0
 proxmox_lxc_unprivileged: true
 
-# Template settings. Proxmox rotates appliance builds out of the pveam index;
-# the tasks probe the storage cache first, so an already-downloaded older build
-# keeps working for recreation — but NEW hosts need a name the index actually
-# serves. Check `pveam available | grep debian-13` when this 404s and bump.
+# Proxmox rotates appliance builds out of the pveam index, so a new host needs a
+# name the index still serves. Check `pveam available` when this 404s and bump.
 proxmox_lxc_template: "debian-13-standard_13.6-1_amd64.tar.zst"
 proxmox_lxc_template_storage: local
 
-# Network. proxmox_lxc_gateway has no generic default and is REQUIRED on the
-# create path — tasks/main.yml asserts it before `pct create`.
-# proxmox_lxc_netmask_bits is the prefix length written into the container's
-# --net0 address (proxmox_vm_cloudinit_prefix_len is the VM counterpart); a LAN
-# that is not a /24 must set it, or on-link hosts outside the accidental /24 are
-# routed through the gateway.
+# proxmox_lxc_gateway has no default and is required on the create path.
+# proxmox_lxc_netmask_bits is the --net0 prefix length: a LAN that is not a /24
+# must set it, or on-link hosts outside the /24 route through the gateway.
 proxmox_lxc_netmask_bits: 24
 # The two below alias the conventional inventory-wide names; set the prefixed
 # form directly to decouple.
@@ -49,9 +39,9 @@ proxmox_lxc_searchdomain: "{{ proxmox_lxc_internal_domain }}"
 proxmox_lxc_bind_mounts: []
 proxmox_lxc_gpu_passthrough: false
 
-# Unprivileged-container id shift. One uid and one gid are mapped through 1:1
-# so bind-mounted host files stay accessible from inside the container; the GPU
-# variant additionally maps the host's video/render gids through.
+# Unprivileged-container id shift. One uid and one gid map through 1:1 so
+# bind-mounted host files stay accessible; the GPU variant also maps the host's
+# video and render gids.
 proxmox_lxc_idmap_uid: 1000
 proxmox_lxc_idmap_gid: 2000
 proxmox_lxc_idmap_base: 100000

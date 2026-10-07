@@ -63,6 +63,10 @@ printf '%s' "$password" | adguard-admin-hash.py --config … --user <user> recon
   prefixes environment assignments onto the remote command string, where they
   are readable in `/proc` for the length of the run).
 
+It exits 0 on success and 1 on any error: config unreadable or unparsable, the
+user absent or ambiguous, no password key, a multi-line scalar, passlib
+missing, or post-write verification failing.
+
 ### Not managed
 
 - HTTP/DNS port changes after setup (they need a service restart)
@@ -83,19 +87,20 @@ printf '%s' "$password" | adguard-admin-hash.py --config … --user <user> recon
 | `adguard_home_tls_enabled` | Configure TLS once certs are present | no (`true`) |
 | `adguard_home_cert_path` | Where `acme_certs` delivers `fullchain.pem` / `privkey.pem` | no (`<install_path>/certs`) |
 | `adguard_home_upstream_dns` | Upstream resolvers | no (`127.0.0.1:5335`) |
-| `adguard_home_rewrites` / `_user_rules` | Primary-only API-managed records; empty means "manage none" | no (`[]`) |
-| `adguard_home_prune_rewrites` / `_prune_user_rules` | Treat the empty list as authoritative and delete what it does not name | no (`false`) |
-| `adguard_home_web_bind` / `_dns_bind` | Listen addresses written by the first-install wizard | no (`0.0.0.0`) |
-| `adguard_home_after_units` / `_wants_units` | Extra systemd ordering for the upstream resolver | no (`[unbound.service]`) |
+| `adguard_home_rewrites`, `adguard_home_user_rules` | Primary-only API-managed records; empty means "manage none" | no (`[]`) |
+| `adguard_home_prune_rewrites`, `adguard_home_prune_user_rules` | Treat the empty list as authoritative and delete what it does not name | no (`false`) |
+| `adguard_home_web_bind`, `adguard_home_dns_bind` | Listen addresses written by the first-install wizard | no (`0.0.0.0`) |
+| `adguard_home_after_units`, `adguard_home_wants_units` | Extra systemd ordering for the upstream resolver | no (`[unbound.service]`) |
 | `adguard_home_dns_probe_name` | Name resolved by the post-deploy smoke test | no (`google.com`) |
 | `adguard_home_archive_cache_dir` | Local mirror holding `AdGuardHome_linux_<arch>-v<version>.tar.gz`; used instead of the GitHub download when present. Empty disables the lookup | no (`""`) |
+| `adguard_home_stage_dir` | Root-owned 0700 directory the release tarball is downloaded and unpacked in, on disk rather than a tmpfs. Removed after the install | no (`/root/adguard-home-install`) |
 | `adguard_home_archive_sha256` | sha256 the staged archive must match; empty falls back to a `checksums.txt` staged in the same directory | no (`""`) |
 | `adguard_home_skip_api_config` | Skip password + API reconciliation | no (`false`) |
 | `adguard_home_skip_resolv_conf_update` | Leave `/etc/resolv.conf` alone | no (`false`) |
-| `adguard_home_user` / `_group` / `_install_path` | Service identity and prefix | no (`adguard`, `adguard`, `/opt/AdGuardHome`) |
+| `adguard_home_user`, `adguard_home_group`, `adguard_home_install_path` | Service identity and prefix | no (`adguard`, `adguard`, `/opt/AdGuardHome`) |
 | `adguard_home_hash_helper_path` | Where the password helper is installed | no (`/usr/local/sbin/adguard-admin-hash.py`) |
 | `adguard_home_settle_seconds` | Pause between config rewrite and restart (container harnesses only) | no (`0`) |
-| `adguard_home_use_private_tmp` / `_use_protect_system` | systemd sandboxing (disable in containers) | no (`true`) |
+| `adguard_home_use_private_tmp`, `adguard_home_use_protect_system` | systemd sandboxing (disable in containers) | no (`true`) |
 
 The remaining knobs (ports, cache, rate limiting, DHCP, DNSSEC, fallbacks) are
 listed with their defaults in `defaults/main.yml`.
@@ -205,9 +210,14 @@ below rather than installing it anyway.
 - Runs as unprivileged `adguard` user with `CAP_NET_BIND_SERVICE`
 - Config file owned by `adguard:adguard` with mode `0600`
 - The admin UI is **plaintext HTTP**: `force_https` stays false so the role can
-  reconcile over the localhost API, and the wizard binds
-  `adguard_home_web_bind` (`0.0.0.0` by default). Restrict that bind address or
-  firewall `adguard_home_http_port` to trusted networks.
+  reconcile over the plaintext admin API, and the wizard binds
+  `adguard_home_web_bind` (`0.0.0.0` by default). A global HTTP to HTTPS
+  redirect would send those calls to `:443`, where the certificate covers the
+  service hostname and not `127.0.0.1`, so reconciliation would fail. Restrict
+  the bind address or firewall `adguard_home_http_port` to trusted networks
+  instead, and use the `:443` endpoint by hostname elsewhere. The role dials
+  whichever address `adguard_home_web_bind` names, falling back to loopback for
+  a wildcard bind, so restricting the bind does not break its own reconcile.
 - On a **fresh host** there is a window between the service starting and the
   role's `/control/install/configure` POST in which the setup wizard is reachable
   on that bind address and takes **no credentials** — the instance has none yet.

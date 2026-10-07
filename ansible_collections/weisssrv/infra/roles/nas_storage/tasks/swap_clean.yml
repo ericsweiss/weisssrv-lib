@@ -1,9 +1,7 @@
 ---
-# Daily swap reset for the memory-tight NAS. vm.swappiness=1 (nic_tuning) stops
-# the opportunistic cold-page parking, but a near-capacity host still swaps under
-# real peak events (deploys/backups/ML) and that swap never self-clears — so it
-# accumulates over time. This timer resets it safely each night. See the script
-# header (swap-clean.sh.j2).
+# Nightly swap reset for a memory-tight NAS. vm.swappiness=1 stops opportunistic
+# parking, but swap taken during peak events never self-clears. The script header
+# (swap-clean.sh.j2) documents the safety checks.
 
 - name: Deploy swap-clean script
   ansible.builtin.template:

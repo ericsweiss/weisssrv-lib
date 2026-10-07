@@ -6,9 +6,8 @@
   hosts: all
   gather_facts: false
   # Cleanup also runs before create, so the container is often absent. A missing
-  # container surfaces as a task failure on the docker connection (not as
-  # unreachable), so failed_when covers it and ignore_unreachable covers runners
-  # that classify it the other way.
+  # container surfaces as a task failure on the docker connection, so failed_when
+  # covers it and ignore_unreachable covers runners that classify it otherwise.
   ignore_unreachable: true
   tasks:
     - name: Strip immutable attr off /etc/resolv.conf before destroy

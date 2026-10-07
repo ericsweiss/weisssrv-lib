@@ -3,3 +3,5 @@
 # EXACTLY these names. Job status is the arbiter.
 Assert the kube-vip interface exists on this server
 Validate required k3s variables
+Assert a greenfield bootstrap was asked for before cluster-init
+Assert the server group resolved before deciding the bootstrap mode

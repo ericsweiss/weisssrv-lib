@@ -21,11 +21,9 @@
         update_cache: true
         cache_valid_time: 0
 
-    # Stage stale artifacts from a pool that is NOT in zfs_encryption_pools —
-    # a de-listed/renamed pool leaves exactly these behind. Converge must
-    # reconcile both away (env-file removal + unit disable); verify.yml
-    # asserts they are gone. Staged in prepare (not a second converge play)
-    # so the idempotence stage stays clean.
+    # Stage stale artifacts from a pool that is NOT in zfs_encryption_pools, as a
+    # de-listed pool leaves behind. Converge must reconcile both away and
+    # verify.yml asserts they are gone. Staged here to keep idempotence clean.
     - name: Ensure the pools env directory exists for the stale file
       ansible.builtin.file:
         path: /etc/zfs/encryption/pools

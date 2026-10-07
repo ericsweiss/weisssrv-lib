@@ -11,6 +11,13 @@ config, one prepare playbook, and the task files scenarios import directly.
 | `tasks/prepare-apt-disable.yml` | stop/disable the apt background timers (dpkg-lock races) |
 | `tasks/container-warmup.yml` | wait out apt locks, fix interrupted dpkg, refresh the cache |
 
+`prepare-common.yml` and the three `tasks/` files are on
+[scripts/vendorable-paths.yml](../../../../scripts/vendorable-paths.yml): a
+consumer that keeps its own copies holds them byte-identical to these. Their
+headers state purpose only, so the wiring that differs per repo stays on this
+page. `base.yml` is not offered — a consumer's scenarios carry their own
+molecule.yml.
+
 ## Layout the relative paths assume
 
 ```
@@ -23,8 +30,8 @@ config, one prepare playbook, and the task files scenarios import directly.
 
 `base.yml` resolves `role-file`/`requirements-file` against molecule's CWD (the
 role dir), and `playbooks.prepare` plus the `ANSIBLE_ROLES_PATH` /
-`ANSIBLE_COLLECTIONS_PATH` env against the scenario dir — three different
-depths, so all three are wrong if the tree is reshaped. A role scenario
+`ANSIBLE_COLLECTIONS_PATH` env against the scenario dir — four depths against
+two bases, so all four are wrong if the tree is reshaped. A role scenario
 overrides only what it needs; unset keys inherit from here.
 
 `ANSIBLE_COLLECTIONS_PATH` is what lets a scenario address content as

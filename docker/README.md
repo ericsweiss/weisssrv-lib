@@ -51,13 +51,14 @@ default branch). The `ref` below is an example: use the tag your repo pins
 ```yaml
 include:
   - project: eric/weisssrv-lib
-    ref: v0.17.1
+    ref: v0.18.0
     file: /ci/build/docker-build.yml
     inputs:
       job_name: build-molecule-ci
       image_name: molecule-ci
       context: docker/molecule-ci      # self-contained: requirements live here
       tags: [<privileged-runner-tag>]
+      cpu_selector: "<node-label-pin>"
 ```
 
 `docker-build` needs a **privileged** runner (DinD). The shared tag-less runner
@@ -79,3 +80,10 @@ that pins different versions either edits its copy of these files or builds the
 Dockerfile against its own context. That is a deliberate trade: one duplicated
 pin set in exchange for an image that builds from this repo without assuming the
 consumer's layout.
+
+The two pin styles differ on purpose. `requirements.txt` uses exact `==` pins,
+so a rebuild installs what the last one did. `molecule-ci/requirements.yml` uses
+major-line ranges instead, because those specs are shared with the collection's
+`galaxy.yml`, which states a supported range to consumers rather than forcing
+every consumer onto one minor. A rebuild can therefore bake a newer collection
+minor: the image is reproducible on the pip side only.

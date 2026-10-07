@@ -83,15 +83,9 @@ spec:
     default_branch:
       default: "main"
       description: >-
-        The consumer's default branch, as a LITERAL name (`main`, `master`,
-        `trunk`). Gates BOTH the post-merge run (the `rules:` clause) and the
-        `:latest` publish. It is NOT a place for `$CI_DEFAULT_BRANCH`: the value
-        lands inside a quoted `rules:if` string and GitLab does not expand
-        variables inside quotes, so the comparison would be against that literal
-        text and never match. A consumer on `master`/`trunk` that leaves this at
-        `main` never runs the job post-merge, so `:latest` is never pushed —
-        SHA-tagged builds keep succeeding while `--cache-from` and any `:latest`
-        fallback pull silently stop resolving.
+        Consumer's default branch as a LITERAL name (`main`, `master`,
+        `trunk`); gates both the post-merge run and the `:latest` publish. NOT
+        `$CI_DEFAULT_BRANCH` — docs/INCLUDE-CONTRACT.md § default_branch.
     publish_on_main:
       type: boolean
       default: true
@@ -104,11 +98,13 @@ spec:
       default: ["**/*"]
       description: >-
         Path list for the MR/default-branch `changes:` rules. The default
-        `**/*` matches everything, i.e. the unconditional rules this template
-        had before the input existed — narrow it to the image's context (plus
+        `**/*` matches everything; narrow it to the image's context (plus
         anything baked into it) so an unrelated commit does not trigger a
-        multi-minute DinD rebuild and re-push. The `web` clause stays manual and
-        ungated.
+        multi-minute DinD rebuild and re-push. A narrowed list that misses the
+        real source tree creates NO job — nothing `needs:` this one, so the
+        pipeline is GREEN with a stale `:latest` and no `:<short-sha>` image for
+        that commit. Narrow it only to paths genuinely baked into the image. The
+        `web` clause stays manual and ungated.
     schedule_when:
       default: "on_success"
       options: ["on_success", "never"]
@@ -136,35 +132,25 @@ spec:
         `digest_dotenv_var` is), because `artifacts:reports:dotenv` is a static
         key — a missing file would warn on every run.
     cpu_selector:
-      default: "esweiss.com/cpu=modern"
       description: >-
-        KUBERNETES_NODE_SELECTOR_CPU pin. The job always emits this variable, so
-        the value must satisfy the runner's `node_selector_overwrite_allowed`
-        regex — `""` is NOT a "no pin" escape: on a runner that sets that regex
-        (both of this instance's runners allowlist
-        ^esweiss\.com/cpu=(modern|legacy)$) an empty value FAILS the check and
-        the job errors at pod creation. On a runner that sets no regex, overwrite
-        is disabled and any value here is ignored, so this default is safe
-        off-instance too; a runner with a different allowlist needs its own value.
+        REQUIRED — a node label is site data, so this template ships no default.
+        KUBERNETES_NODE_SELECTOR_CPU pin, always emitted, so the value must
+        satisfy the runner's `node_selector_overwrite_allowed` regex. `""` is
+        NOT a "no pin" escape: it fails that regex and the job errors at pod
+        creation. A runner that sets no regex ignores the variable entirely.
     job_memory_limit:
       default: "4Gi"
       description: >-
-        KUBERNETES_MEMORY_LIMIT for the job pod. Right-sized per job class so
-        concurrent pipelines pack into the runner namespace's limits.memory
-        quota instead of every job costing the runner default; raise it per
-        consumer only when the job really needs more (the runner's
-        memory_limit_overwrite_max_allowed is the hard ceiling).
+        KUBERNETES_MEMORY_LIMIT for the job pod. Sizing policy:
+        docs/INCLUDE-CONTRACT.md § Resource inputs.
     job_memory_request:
       default: "1Gi"
       description: KUBERNETES_MEMORY_REQUEST for the job pod (scheduler reservation).
     job_cpu_request:
       default: "900m"
       description: >-
-        KUBERNETES_CPU_REQUEST for the job pod — the scheduler reservation,
-        right-sized per job class so a full concurrency burst packs into the
-        runner nodes' allocatable CPU instead of every job costing the runner
-        default (no CPU limit, repo-wide: CPU is compressible and a limit
-        only buys CFS throttling).
+        KUBERNETES_CPU_REQUEST for the job pod (scheduler reservation). Sizing
+        policy: docs/INCLUDE-CONTRACT.md § Resource inputs.
     service_memory_limit:
       default: "3Gi"
       description: >-
@@ -178,10 +164,8 @@ spec:
 "$[[ inputs.job_name ]]":
   # Pushes an image later jobs may consume; do not interrupt.
   interruptible: false
-  # Infra-class retries only. NOT script_failure: a genuinely broken Dockerfile
-  # must fail fast, not burn three full builds — transient external-dep pulls
-  # are handled cheaply by the in-script build_and_push retry below (cached
-  # layers on re-attempt).
+  # Infra-class retries only - a broken Dockerfile must fail fast; the in-script
+  # build_and_push retry covers transient dep pulls.
   retry:
     max: 2
     when:
@@ -228,16 +212,18 @@ spec:
     # daemon, no CLI). Pinned version + sha256 to match the checksum discipline
     # used for every downloaded binary.
     - |
+      set -eo pipefail
       ARCH=$(dpkg --print-architecture)
       case "$ARCH" in
         amd64) DOCKER_ARCH=x86_64; DOCKER_SHA256="$DOCKER_CLI_SHA256_AMD64" ;;
         arm64) DOCKER_ARCH=aarch64; DOCKER_SHA256="$DOCKER_CLI_SHA256_ARM64" ;;
         *) echo "unsupported arch: $ARCH"; exit 1 ;;
       esac
-      curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-${DOCKER_CLI_VERSION}.tgz" -o /tmp/docker.tgz
-      echo "${DOCKER_SHA256}  /tmp/docker.tgz" | sha256sum -c -
-      tar xz --strip-components=1 -C /usr/local/bin -f /tmp/docker.tgz docker/docker
-      rm /tmp/docker.tgz
+      # Per-job download dir: fixed /tmp paths collide when jobs share /tmp.
+      dl=$(mktemp -d)
+      curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-${DOCKER_CLI_VERSION}.tgz" -o "$dl/docker.tgz"
+      echo "${DOCKER_SHA256}  $dl/docker.tgz" | sha256sum -c -
+      tar xz --strip-components=1 -C /usr/local/bin -f "$dl/docker.tgz" docker/docker
       docker --version
       # Install the Docker buildx CLI plugin (pinned + sha256). Without it
       # DOCKER_BUILDKIT=1 fails: "BuildKit is enabled but the buildx component
@@ -246,11 +232,11 @@ spec:
         amd64) BUILDX_SHA256="$BUILDX_SHA256_AMD64" ;;
         arm64) BUILDX_SHA256="$BUILDX_SHA256_ARM64" ;;
       esac
-      curl -fsSL "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-${ARCH}" -o /tmp/docker-buildx
-      echo "${BUILDX_SHA256}  /tmp/docker-buildx" | sha256sum -c -
+      curl -fsSL "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-${ARCH}" -o "$dl/docker-buildx"
+      echo "${BUILDX_SHA256}  $dl/docker-buildx" | sha256sum -c -
       mkdir -p "$HOME/.docker/cli-plugins"
-      install -m 0755 /tmp/docker-buildx "$HOME/.docker/cli-plugins/docker-buildx"
-      rm /tmp/docker-buildx
+      install -m 0755 "$dl/docker-buildx" "$HOME/.docker/cli-plugins/docker-buildx"
+      rm -rf "$dl"
       docker buildx version
       # Wait for the dind daemon to accept connections before building; it can
       # lag the job start, otherwise `docker build` fails with "Cannot connect
@@ -264,12 +250,9 @@ spec:
       image_ref() {
         if [ -n "$1" ]; then echo "${REGISTRY}/$1"; else echo "${REGISTRY}"; fi
       }
-      # build_and_push: builds ${ref}:<short-sha>, pushes it (and :latest on main
-      # when publish_on_main). Seeds a registry layer cache from the previous
-      # :latest + embeds inline cache for the next run — EXCEPT on a schedule
-      # (rebuild from scratch to exercise fresh external deps). The build+push is
-      # wrapped in a bounded retry so a transient dep pull / registry blip
-      # re-attempts (cheap: cached layers) while a real build error still fails.
+      # build_and_push: builds ${ref}:<short-sha>, pushes it (and :latest on
+      # main when publish_on_main), seeding a registry layer cache except on a
+      # schedule. The bounded retry covers a transient pull, not a build error.
       build_and_push() {
         img="$1"
         ref="$(image_ref "$img")"
@@ -306,20 +289,13 @@ spec:
           docker tag "${ref}:${CI_COMMIT_SHORT_SHA}" "${ref}:latest"
           docker push "${ref}:latest"
         fi
-        # NOTE: an MR build never writes :latest, not even to bootstrap a repo
-        # where it does not exist yet — that tag is consumed by privileged CI
-        # jobs, so unreviewed code must not be able to populate it. A fresh
-        # repo gets :latest from its first default-branch pipeline; MR
-        # pipelines resolve the image they just built via the digest dotenv
-        # (`digest_dotenv_var`) or the immutable :<short-sha> tag.
       }
   script:
     - build_and_push "$IMAGE_NAME"
     - |
-      # Digest pin (opt-in). RepoDigests is populated by the push above, so this
-      # is the digest the registry actually holds for this pipeline's build. An
-      # empty result means the ref was never pushed — fail rather than emit
-      # `VAR=`, which a consumer would resolve to an unusable image.
+      # Digest pin (opt-in). RepoDigests holds what the registry has after the
+      # push above. An empty result means the ref was never pushed; fail rather
+      # than emit `VAR=`, which resolves to an unusable image.
       : > "$DIGEST_DOTENV_FILE"
       if [ -n "$DIGEST_DOTENV_VAR" ]; then
         ref="$(image_ref "$IMAGE_NAME")"

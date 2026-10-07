@@ -1,8 +1,7 @@
 ---
-# Required inputs (no default):
-#   adguard_home_version         — pinned AdGuard Home release
-#   adguard_home_admin_password  — admin password; supply from the secret store
-#   adguard_home_tls_server_name — when adguard_home_tls_enabled
+# Required, asserted in tasks/main.yml: adguard_home_version and
+# adguard_home_admin_password (undeclared here), plus adguard_home_tls_server_name
+# when adguard_home_tls_enabled (empty default below). See README.
 
 adguard_home_user: adguard
 adguard_home_group: adguard
@@ -21,17 +20,17 @@ adguard_home_dns_bind: "0.0.0.0"
 
 adguard_home_dns_probe_name: google.com
 
-# Optional local mirror for the pinned release tarball, named
-# AdGuardHome_linux_<arch>-v<version>.tar.gz. OPT-IN (empty = no lookup, the
-# upstream download always runs). Set it and a staged archive is installed
-# instead of fetching github.com; staged for another version -> the download
-# runs anyway.
+# Opt-in local mirror for the pinned release tarball, named
+# AdGuardHome_linux_<arch>-v<version>.tar.gz. Empty disables the lookup.
 adguard_home_archive_cache_dir: ""
-# A staged archive is verified before it is unpacked, the same way the download
-# is: this sha256 if set, otherwise a checksums.txt in the same directory (the
-# upstream release file). Neither present -> the play fails rather than
-# installing an unverified binary.
+# A staged archive is verified before it is unpacked: this sha256 if set,
+# otherwise a checksums.txt beside it. Neither present fails the play.
 adguard_home_archive_sha256: ""
+
+# Root-owned 0700 staging directory for the release tarball and its unpacked
+# tree, on disk rather than a tmpfs: the two together are ~55 MB of resident RAM
+# on /run. Created and removed by the install block.
+adguard_home_stage_dir: /root/adguard-home-install
 
 # Where files/adguard-admin-hash.py is installed; it is also the operator tool
 # for inspecting or resetting the admin hash (README § Admin password).
@@ -65,7 +64,7 @@ adguard_home_wants_units:
   - unbound.service
 
 # DoT/DoH/DoQ. The server name must match the cert distributed to
-# adguard_home_cert_path, so it has no default.
+# adguard_home_cert_path, so it ships empty and is asserted.
 adguard_home_tls_enabled: true
 adguard_home_tls_server_name: ""
 adguard_home_cert_path: "{{ adguard_home_install_path }}/certs"

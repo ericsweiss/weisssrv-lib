@@ -55,7 +55,7 @@ The role only handles the daemon. The handshake itself is triggered by:
 | `nfs_tls_cert_path` | `/etc/ssl/private/fullchain.pem` | Server cert (matches what `weisssrv.infra.acme_certs` distributes). |
 | `nfs_tls_key_path` | `/etc/ssl/private/privkey.pem` | Matching private key; asserted mode `0600`. |
 | `nfs_tls_truststore` | `/etc/ssl/certs/ca-certificates.crt` | CA bundle for validation. |
-| `nfs_tls_scrub_client_cert` | `true` | Remove cert + key on a client-only host; set `false` when another role owns those paths. |
+| `nfs_tls_scrub_client_cert` | `false` | Set `true` to delete `nfs_tls_cert_path` and `nfs_tls_key_path` on a client-only host. Off by default because another role may own those paths. |
 
 ### Private-key least privilege
 
@@ -64,15 +64,15 @@ the server against the truststore and presents nothing. A client therefore never
 needs the server's private key — which, for a wildcard cert, can impersonate
 every internal service. The role reflects that: `[authenticate.client]` ships
 the key only when `nfs_tls_client_cert: true`, and on a host that is neither a
-server nor an mTLS client it **removes** any `fullchain.pem`/`privkey.pem` a
-previous rollout staged. Keep such hosts out of the cert-distribution target
+server nor an mTLS client it can also **remove** a `fullchain.pem`/`privkey.pem`
+a previous rollout staged. Keep such hosts out of the cert-distribution target
 list entirely; add one back only when migrating an export to `xprtsec=mtls`.
 
-That removal targets `nfs_tls_cert_path`/`nfs_tls_key_path`, whose defaults are
-also where `weisssrv.infra.acme_certs` installs a cert locally. On a host that
-legitimately holds a local cert *and* mounts NFS over TLS, set
-`nfs_tls_scrub_client_cert: false` — otherwise the two roles delete and
-reinstall the same files on alternate converges.
+That removal is opt-in (`nfs_tls_scrub_client_cert: true`) and deletes
+`nfs_tls_cert_path` and `nfs_tls_key_path`, whose defaults are also where
+`weisssrv.infra.acme_certs` installs a cert locally. Leave it off on a host that
+legitimately holds a local cert *and* mounts NFS over TLS, or the two roles
+delete and reinstall the same files on alternate converges.
 
 ## Rollout order
 
@@ -95,36 +95,22 @@ the permissive `none:tls` first if a client cannot be guaranteed ready.
 5. Verify: `xprtsec=tls` in `/proc/mounts` on the clients, successful handshakes
    in `journalctl -u tlshd`, and `exportfs -v` reflecting the per-client value.
 
-## One transport security per client, per server (cutover gotcha)
+### Opting back out
+
+Setting `nfs_tls_enabled: false` and re-running stops and disables `tlshd` and
+removes `/etc/tlshd.conf`. The role asks `systemctl list-unit-files` whether the
+unit exists, so a host that never installed `ktls-utils` skips the stop cleanly.
+
+## One transport security per client, per server
 
 The NFSv4 client keys its transport and client state **per server IP** and
-multiplexes every mount over it. A node therefore cannot hold a plaintext *and*
-an `xprtsec=tls` mount to the same server at once: with a plaintext session
-open, a new TLS mount is refused with `mount.nfs: Operation not permitted`
-(EPERM), and vice versa. This is the usual cause of a post-cutover EPERM even
-though tlshd is up and handshakes succeed — a successful handshake in the tlshd
-journal is a red herring; the rejection is at the NFS layer.
+multiplexes every mount over it, so a node cannot hold a plaintext *and* an
+`xprtsec=tls` mount to the same server at once — the second one is refused with
+`mount.nfs: Operation not permitted`, whichever order they arrive in. A
+successful handshake in the `tlshd` journal is a red herring; the rejection is at
+the NFS layer. Cut each node over atomically (recycle all of its NFS-mounting
+workloads together, and clear any orphaned plaintext mounts left behind). A
+client that only ever mounts plaintext is fine: the rule is that each client is
+internally consistent, not that all clients match.
 
-It bites during the flip because long-running pods keep their **original
-plaintext** mount alive after the PV spec changes, and a force-deleted pod can
-leave an **orphaned** mount the kubelet never unmounts. Either pins the node's
-session to plaintext and blocks every new TLS mount on it, so a freshly
-scheduled pod hangs in `ContainerCreating`.
-
-Cut a node over atomically — recycle **all** of its NFS-mounting pods together:
-
-1. Scale every Deployment on the node that mounts the server to 0 (`Recreate`
-   strategy avoids a new pod racing the old one for an RWO mount).
-2. Force-unmount any orphans the kubelet left behind (safe — those pods are
-   gone):
-   ```sh
-   mount -t nfs4 | grep -E '<server-host>|<server-ip>' | grep -v xprtsec=tls \
-     | awk '{print $3}' | xargs -rn1 sudo umount -f -l
-   ```
-3. Scale back up: the first mount establishes a TLS session and the rest reuse
-   it. Verify with `mount -t nfs4 | grep -c xprtsec=tls`.
-
-Sweep the whole fleet afterwards — any node with a surviving plaintext mount is
-a latent failure that surfaces on the next reschedule. A client that only ever
-mounts plaintext (and never opens a TLS session) is fine: the rule is that each
-client must be internally consistent, not that all clients match.
+The Kubernetes-side cutover procedure lives in the consumer docs.

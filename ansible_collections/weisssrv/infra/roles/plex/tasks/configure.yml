@@ -39,10 +39,9 @@
   notify: Restart plex
   when: plex_render_group.rc == 0
 
-# The bind-mounted directories (/config, /transcode, /media) are deliberately
-# NOT chowned: they come from the host with UID/GID passthrough, and changing
-# ownership from inside an unprivileged container rewrites the host side to
-# high-mapped UIDs, breaking access for every other process.
+# The bind-mounted directories are deliberately NOT chowned: they arrive with
+# UID/GID passthrough, and chowning from inside an unprivileged container
+# rewrites the host side to high-mapped UIDs.
 
 # Custom-certificate hook: an external distributor drops fullchain.pem +
 # privkey.pem into plex_cert_dir, and plex-cert-reload.sh converts the pair into
@@ -69,7 +68,6 @@
           plex_pfx_passphrase is empty. Supply it from the site's secret store —
           it must match the value set under Plex Settings -> Network -> "Custom
           certificate encryption key" — or set plex_custom_cert_enabled false.
-      no_log: true
 
     - name: Deploy the PFX passphrase
       ansible.builtin.copy:
@@ -88,10 +86,9 @@
         group: root
         mode: "0750"
 
-# config, transcode AND media must exist and be really mounted before the
-# service is touched — a stale mountpoint directory passes an existence check
-# and sends the library to the guest root disk. Own file so the molecule
-# scenario can drive it in both directions.
+# config, transcode and media must be real mounts before the service is touched;
+# a stale mountpoint directory sends the library to the guest root disk. Its own
+# file so the molecule scenario can drive it in both directions.
 - name: Verify the Plex bind mounts
   ansible.builtin.include_tasks: assert-mounts.yml
 

@@ -32,10 +32,9 @@
     state: directory
     mode: "0755"
 
-# See k3s_inotify_* in defaults/main.yml for the failure mode. The drop-in
-# persists across reboots; the live apply is skipped under k3s_skip_install so a
-# test container only writes the file and never touches the shared host's
-# /proc/sys.
+# See k3s_inotify_* in defaults/main.yml for the failure mode. The live apply
+# is skipped under k3s_skip_install, so a test container writes the drop-in
+# without touching the shared host's /proc/sys.
 - name: Raise kernel inotify limits for systemd-in-Docker CI containers
   ansible.posix.sysctl:
     name: "{{ item.name }}"
@@ -52,24 +51,18 @@
   when: k3s_inotify_tuning | bool
 
 - name: Remove the k3s inotify sysctl drop-in when disabled
-  # Removes persistence only: the live ceiling stays raised until the next
-  # reboot cleanly reverts it to the kernel default. We deliberately do NOT force
-  # the value back down (same rationale as nic_tuning's ip_forward disable) —
-  # lowering a kernel limit that other workloads on the node may now rely on
-  # could do more harm than leaving it high for one more boot cycle.
+  # Removes persistence only. The live ceiling stays raised until the next
+  # reboot, because lowering a limit other workloads may now rely on is worse
+  # than leaving it high for one boot cycle.
   ansible.builtin.file:
     path: /etc/sysctl.d/90-k3s-inotify.conf
     state: absent
   when: not (k3s_inotify_tuning | bool)
 
-# Pin the GitLab registry hostname to the internal Traefik VIP so containerd
-# resolves it locally (no upstream DNS) and pulls CI images via the direct
-# internal path. See k3s_registry_host_pins in defaults/main.yml for the why +
-# the post-deploy verification. Idempotent; an empty list removes the pin block
-# (blockinfile deletes the managed block when it renders empty), so setting
-# k3s_registry_host_pins: [] genuinely disables the pin instead of leaving a
-# stale entry behind.
-- name: Pin container-registry hostnames to the internal Traefik VIP in /etc/hosts
+# Pin each registry hostname to the address its entry names, so containerd
+# resolves it locally. An empty k3s_registry_host_pins removes the managed
+# block. See k3s_registry_host_pins in defaults/main.yml.
+- name: Pin container-registry hostnames in /etc/hosts
   ansible.builtin.blockinfile:
     path: /etc/hosts
     marker: "# {mark} ANSIBLE MANAGED: k3s registry host pins"
@@ -79,10 +72,10 @@
       {% endfor %}
   when: not (k3s_skip_install | default(false))
 
-# Pin the NAS hostname the NFS-over-TLS PVs mount by, so a remount/reschedule
-# does not depend on AdGuard being up. See k3s_storage_host_pins in
-# defaults/main.yml. Same semantics as above: empty list removes the block.
-- name: Pin the NAS storage hostname in /etc/hosts (DNS-independent NFS mounts)
+# Pin the NFS server hostname the PVs mount by, so a remount or reschedule does
+# not wait on cluster DNS. See k3s_storage_host_pins in defaults/main.yml. Same
+# semantics as above: an empty list removes the block.
+- name: Pin NFS server hostnames in /etc/hosts
   ansible.builtin.blockinfile:
     path: /etc/hosts
     marker: "# {mark} ANSIBLE MANAGED: k3s storage host pins"

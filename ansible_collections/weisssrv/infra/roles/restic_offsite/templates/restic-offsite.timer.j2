@@ -1,11 +1,8 @@
 # {{ ansible_managed }}
 [Unit]
-Description=Fallback trigger for the nightly offsite B2 backup
-# PRIMARY trigger is OnSuccess=restic-offsite.service on the archive replication
-# unit; this timer covers the rare path where that OnSuccess is skipped. It is
-# unconditional by design — the control script's already-uploaded short-circuit
-# decides whether there is anything new to send, so the guard also applies to a
-# manual invocation.
+Description=Nightly trigger for the offsite B2 backup
+# Nightly trigger. A site can also chain this unit off archive replication; the
+# control script's already-uploaded short-circuit makes a double trigger a no-op.
 
 [Timer]
 OnCalendar={{ restic_offsite_timer_calendar }}

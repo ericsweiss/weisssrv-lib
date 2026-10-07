@@ -1,6 +1,12 @@
 ---
 # Postfix null client: forwards all local mail to a central SMTP relay.
 
+- name: Assert the host runs a supported platform
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+    fail_msg: "postfix_null_client supports Debian only (see meta/main.yml)"
+
 - name: Validate the required relay inputs are present
   ansible.builtin.assert:
     that:
@@ -11,8 +17,7 @@
       required (the relay to authenticate to, and the domain appended to
       inventory_hostname for myhostname/mailname).
 
-# Separate from the input assert above so the credential check can carry
-# no_log without hiding the actionable message of the other one.
+# Split from the input assert so each failure names only its own inputs.
 - name: Validate SMTP relay credentials are present
   ansible.builtin.assert:
     that:
@@ -22,7 +27,6 @@
       postfix_null_client_sasl_user / postfix_null_client_sasl_password are not
       set — supply them from the site's secret store.
     success_msg: "SMTP relay credentials validated"
-  no_log: true
 
 - name: Install postfix and dependencies
   ansible.builtin.apt:
@@ -31,7 +35,6 @@
       - libsasl2-modules
       - mailutils
     state: present
-  when: ansible_facts['os_family'] == "Debian"
 
 - name: Configure mailname
   ansible.builtin.copy:
@@ -75,9 +78,9 @@
     - Reload postfix
   when: postfix_null_client_virtual_aliases is defined
 
-# main.cf.j2 drops virtual_alias_maps under the same guard, so when the var is
-# removed the table is no longer referenced — clean up the orphaned files rather
-# than leaving unmanaged state a future re-add could silently reuse.
+# main.cf.j2 drops virtual_alias_maps under the same guard, so dropping the var
+# leaves the table unreferenced. Remove the files rather than leave unmanaged
+# state a re-add could silently reuse.
 - name: Remove orphaned virtual alias table when no aliases are configured
   ansible.builtin.file:
     path: "{{ item }}"
@@ -98,10 +101,8 @@
   notify: Newaliases
 
 # Both map sources are notify-only, so a lost handler leaves a correct source
-# next to a stale compiled .db that postfix keeps reading. Placed before the
-# service start so a first converge has a usable sasl_passwd.db without waiting
-# for the handler flush; import_tasks (static) keeps the tasks --tags
-# addressable and visible to --list-tasks.
+# next to a stale compiled .db that postfix keeps reading. Placed before service
+# start so a first converge has a usable sasl_passwd.db.
 - name: Repair stale compiled postfix maps
   ansible.builtin.import_tasks: repair-compiled-maps.yml
   vars:

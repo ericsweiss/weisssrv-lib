@@ -1,11 +1,6 @@
-# ansible-lint per-file exemptions: "<path> <rule-id>", one per line.
-# Paths are repository-root relative — run ansible-lint from the repo root.
-#
-# var-naming[no-role-prefix] on a molecule scenario playbook is a false
-# positive of the path heuristic: converge/verify/prepare are PLAYBOOKS that
-# happen to live under a role directory, and their registers and set_facts are
-# scenario-local test state, not role API. The rule stays enforced on every
-# role's tasks/, handlers/, defaults/ and vars/.
+# ansible-lint per-file exemptions: "<path> <rule-id>", one per line, paths
+# relative to the repository root. var-naming[no-role-prefix] is waived on
+# molecule playbooks, whose registers and set_facts are scenario-local.
 ansible_collections/weisssrv/infra/roles/acme_certs/molecule/default/verify.yml var-naming[no-role-prefix]
 ansible_collections/weisssrv/infra/roles/adguard_home/molecule/tls/verify.yml var-naming[no-role-prefix]
 ansible_collections/weisssrv/infra/roles/adguard_sync/molecule/default/verify.yml var-naming[no-role-prefix]
@@ -44,3 +39,14 @@ ansible_collections/weisssrv/infra/roles/zfs_encryption/molecule/default/verify.
 ansible_collections/weisssrv/infra/roles/zfs_exporter/molecule/default/verify.yml var-naming[no-role-prefix]
 ansible_collections/weisssrv/infra/roles/zvol_mount/molecule/default/prepare.yml var-naming[no-role-prefix]
 ansible_collections/weisssrv/infra/roles/zvol_mount/molecule/default/verify.yml var-naming[no-role-prefix]
+# yaml[line-length] is waived where a task body does not survive wrapping:
+# long API payload expressions and shell one-liners across six roles.
+ansible_collections/weisssrv/infra/roles/adguard_home/tasks/api_base_config.yml yaml[line-length]
+ansible_collections/weisssrv/infra/roles/adguard_home/tasks/main.yml yaml[line-length]
+ansible_collections/weisssrv/infra/roles/nas_storage/molecule/default/verify.yml yaml[line-length]
+ansible_collections/weisssrv/infra/roles/nas_storage/tasks/mergerfs_remount_gate.yml yaml[line-length]
+ansible_collections/weisssrv/infra/roles/nextcloud/tasks/main.yml yaml[line-length]
+ansible_collections/weisssrv/infra/roles/proxmox_firewall/tasks/main.yml yaml[line-length]
+ansible_collections/weisssrv/infra/roles/proxmox_lxc/tasks/main.yml yaml[line-length]
+ansible_collections/weisssrv/infra/roles/proxmox_vm/molecule/default/converge.yml yaml[line-length]
+ansible_collections/weisssrv/infra/roles/proxmox_vm/tasks/main.yml yaml[line-length]

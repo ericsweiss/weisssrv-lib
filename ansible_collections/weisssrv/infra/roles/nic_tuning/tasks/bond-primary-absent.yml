@@ -1,0 +1,41 @@
+---
+# No pin declared: remove the persisted bond-primary lines and clear the live
+# pin, so a leg the inventory no longer names stops being forced at boot.
+# Dropping bond-primary_reselect restores the kernel default ("always").
+- name: Stat /etc/network/interfaces for the bond primary removal
+  ansible.builtin.stat:
+    path: /etc/network/interfaces
+  register: nic_tuning_bond_primary_absent_interfaces
+
+- name: Remove the persisted bond-primary lines
+  ansible.builtin.lineinfile:
+    path: /etc/network/interfaces
+    regexp: "{{ item }}"
+    state: absent
+  loop:
+    - '^\s*bond-primary\s+'
+    - '^\s*bond-primary_reselect\s+'
+  when: nic_tuning_bond_primary_absent_interfaces.stat.exists
+
+- name: Clear the bond primary at runtime (no reboot)
+  ansible.builtin.shell: |
+    set -eu
+    [ -r /sys/class/net/bonding_masters ] || { echo "NOBOND no bonding_masters"; exit 0; }
+    changed=0
+    for b in $(cat /sys/class/net/bonding_masters); do
+      mode=$(awk '{print $1}' "/sys/class/net/$b/bonding/mode" 2>/dev/null || true)
+      case "$mode" in active-backup*) ;; *) continue ;; esac
+      cur_primary=$(cat "/sys/class/net/$b/bonding/primary" 2>/dev/null || true)
+      [ -n "$cur_primary" ] || continue
+      if ! echo "" > "/sys/class/net/$b/bonding/primary"; then
+        echo "WRITEFAIL /sys/class/net/$b/bonding/primary"
+        exit 4
+      fi
+      changed=1
+    done
+    [ "$changed" -eq 1 ] && echo CHANGED || echo OK
+  args:
+    executable: /bin/bash
+  register: nic_tuning_bond_primary_absent_runtime
+  changed_when: "'CHANGED' in nic_tuning_bond_primary_absent_runtime.stdout"
+  failed_when: nic_tuning_bond_primary_absent_runtime.rc != 0

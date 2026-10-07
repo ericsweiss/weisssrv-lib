@@ -31,9 +31,8 @@
         success_msg: "zfs.conf caps the ARC at the expected byte count (via the zfs_arc_max_bytes alias)"
 
     # Empty value = total no-op, the documented contract for a host that never
-    # sets the knob. Every task gates on the same length test, so the role must
-    # neither render nor rewrite the file — an unguarded task would emit a
-    # capless `options zfs zfs_arc_max=` line and cap the ARC at zero.
+    # sets the knob. Every task gates on the same length test; an unguarded task
+    # would emit `options zfs zfs_arc_max=` and cap the ARC at zero.
     - name: Apply the role with the cap unset
       ansible.builtin.include_role:
         name: weisssrv.infra.zfs_arc_cap

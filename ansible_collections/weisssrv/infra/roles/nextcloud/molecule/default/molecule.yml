@@ -1,8 +1,7 @@
 ---
 # Render/contract scenario: nextcloud_skip_install skips everything needing a
-# Docker daemon and a running Nextcloud, so the compose file, .env, systemd
-# units, nginx site and backup wrapper are rendered + asserted (the wrapper runs
-# end to end against a mocked docker). occ/SSO wiring is lint-checked only.
+# Docker daemon, so the compose file, .env, systemd units, nginx site and backup
+# wrapper are rendered and asserted. occ and SSO wiring is lint-checked only.
 provisioner:
   playbooks:
     prepare: prepare.yml

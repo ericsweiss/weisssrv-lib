@@ -6,12 +6,35 @@
     - name: Container warm-up (apt locks, dpkg state, cache, systemd)
       ansible.builtin.include_tasks: ../../../../molecule-shared/tasks/container-warmup.yml
   tasks:
-    # Normal Proxmox state (zpool collector on). The off-state toggle — the
-    # Ceph/LVM-thin regression test AND the reconcile-away cleanup — lives in
-    # side_effect.yml, which molecule runs AFTER the idempotence check: a
-    # state toggle inside converge can never be idempotent.
+    # Normal Proxmox state, zpool collector on. The off-state toggle lives in
+    # side_effect.yml, which molecule runs after the idempotence check: a state
+    # toggle inside converge can never be idempotent.
     - name: Apply the role
       ansible.builtin.include_role:
         name: weisssrv.infra.node_exporter_host
       vars:
         node_exporter_host_zpool_collector: true
+
+  post_tasks:
+    # Negative test: the slabinfo collector with no caches publishes only its
+    # success sentinel, so the input assert must reject an empty allowlist.
+    - name: Re-run with an empty slab cache allowlist (expect failure)
+      block:
+        - name: Include node_exporter_host with the collector on and no caches
+          ansible.builtin.include_role:
+            name: weisssrv.infra.node_exporter_host
+          vars:
+            node_exporter_host_slab_caches: []
+
+        - name: Empty cache-list assert failed to trigger
+          ansible.builtin.copy:
+            dest: /tmp/node-exporter-slab-caches-assert.json
+            content: '{"failed": false}'
+            mode: "0644"
+      rescue:
+        - name: Empty cache-list assert correctly rejected the allowlist
+          ansible.builtin.copy:
+            dest: /tmp/node-exporter-slab-caches-assert.json
+            mode: "0644"
+            content: |
+              {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}

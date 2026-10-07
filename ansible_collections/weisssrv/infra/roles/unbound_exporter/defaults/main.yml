@@ -1,6 +1,10 @@
 ---
 unbound_exporter_port: 9167
 
+# Bind address for --web.listen-address. Empty = all interfaces, so the host
+# firewall is the only access control; set a management address to narrow it.
+unbound_exporter_listen_address: ""
+
 # Upstream release pin + checksum. Upstream publishes no checksum file, so this
 # is our own sha256 of the release .deb; bump the pair together.
 unbound_exporter_version: "0.6.0"

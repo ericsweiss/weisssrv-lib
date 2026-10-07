@@ -15,14 +15,31 @@
         state: present
       when: ansible_os_family == "Debian"
 
+    # Stage a stale override so the removal step in tasks/server.yml has
+    # something to reconcile.
+    - name: Create the k3s server manifests directory
+      ansible.builtin.file:
+        path: /var/lib/rancher/k3s/server/manifests
+        state: directory
+        mode: "0755"
+      when: k3s_is_first_server | default(false)
+      tags: [molecule-idempotence-notest]
+
+    - name: Stage a stale metrics-server override
+      ansible.builtin.copy:
+        dest: /var/lib/rancher/k3s/server/manifests/metrics-server-config.yaml
+        content: "# stale override the role must remove\n"
+        mode: "0644"
+      when: k3s_is_first_server | default(false)
+      tags: [molecule-idempotence-notest]
+
   roles:
     - role: weisssrv.infra.k3s
 
   post_tasks:
     # Negative test for the kube-vip interface assert (server.yml): with a NIC
-    # name that doesn't exist on the host, the role MUST fail loudly rather than
-    # let kube-vip start and silently fail to announce the API VIP. The positive
-    # path is covered by the main role run above (k3s_kube_vip_interface: eth0).
+    # name that does not exist, the role MUST fail loudly rather than let
+    # kube-vip start and silently fail to announce the API VIP.
     - name: Re-run k3s with a nonexistent kube-vip interface (expect failure)
       block:
         - name: Include k3s with a bogus interface
@@ -66,6 +83,30 @@
         - name: Version assert correctly rejected an empty pin
           ansible.builtin.copy:
             dest: /tmp/kube-vip-version-assert.json
+            mode: "0644"
+            content: |
+              {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
+          changed_when: false
+
+    # Negative test for the off-node snapshot assert: with the feature on and no
+    # NFS server, the role MUST fail before ansible.posix.mount writes a ":/export"
+    # line into /etc/fstab.
+    - name: Re-run k3s with the off-node snapshot server unset (expect failure)
+      block:
+        - name: Include k3s with an empty snapshot NFS server
+          ansible.builtin.include_role:
+            name: weisssrv.infra.k3s
+          vars:
+            k3s_etcd_snapshot_nfs_server: ''
+        - name: Snapshot NFS server assert failed to trigger
+          ansible.builtin.copy:
+            dest: /tmp/etcd-snapshot-nfs-assert.json
+            content: '{"failed": false}'
+            mode: "0644"
+      rescue:
+        - name: Snapshot NFS server assert correctly rejected an empty server
+          ansible.builtin.copy:
+            dest: /tmp/etcd-snapshot-nfs-assert.json
             mode: "0644"
             content: |
               {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}

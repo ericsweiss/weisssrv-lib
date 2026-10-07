@@ -8,15 +8,12 @@ policy_out: ACCEPT
 
 [ALIASES]
 
-{# NOTE: opens with `{#`, not `{#-`. A leading `-` here strips the trailing
-   whitespace of the preceding text node — i.e. the blank line that separates
-   the `[ALIASES]` section header from its first entry — and renders
-   `[ALIASES]<first-alias>` on one line, which pve-firewall will not parse.
-   Host-backed aliases come from inventory: any host setting `firewall_alias`
-    contributes one, pointing at the same address the IPSets use. That keeps the
-    alias list from duplicating (and drifting from) the host addresses. Aliases
-    for things that are not inventory hosts (VIPs, off-cluster peers) go in
-    proxmox_firewall_extra_aliases; an extra with the same name wins. -#}
+{# CRITICAL: this opens with `{#`, not `{#-`. A leading `-` strips the blank
+   line separating `[ALIASES]` from its first entry and renders
+   `[ALIASES]<first-alias>`, which pve-firewall will not parse.
+   Host-backed aliases come from any host setting `firewall_alias`, pointing at
+   the address the IPSets use. Aliases for non-hosts go in
+   proxmox_firewall_extra_aliases, where a same-named extra wins. -#}
 {%- set derived_aliases = [] -%}
 {%- for host in groups['all'] | sort -%}
   {%- set hv = hostvars[host] -%}
@@ -68,10 +65,9 @@ IN ACCEPT -source +dc/admin_ts -p udp -dport 853 -log nolog
 IN ACCEPT -source +dc/admin_lan -p udp -dport 853 -log nolog
 IN ACCEPT -source +dc/admin_ts -p tcp -dport 853 -log nolog
 IN ACCEPT -source +dc/admin_lan -p tcp -dport 853 -log nolog
-{# Resolver admin surfaces (AdGuard Home's HTTPS UI on :443 and its plaintext
-   admin API on :3000). Both port and source sets are site data: the plaintext
-   API carries a reusable admin credential, so a scraper reaching it from the
-   cluster has to be declared, not inherited. #}
+{# Resolver admin surfaces. Both port and source sets are site data: a
+   plaintext admin API carries a reusable credential, so a scraper reaching it
+   from the cluster has to be declared rather than inherited. #}
 {% for entry in proxmox_firewall_dns_admin_ports | default([]) %}
 {% for src in entry.sources %}
 IN ACCEPT -source +dc/{{ src }} -p tcp -dport {{ entry.port }} -log nolog{% if entry.comment is defined %} # {{ entry.comment }}{% endif %}
@@ -79,10 +75,8 @@ IN ACCEPT -source +dc/{{ src }} -p tcp -dport {{ entry.port }} -log nolog{% if e
 {% endfor %}
 {% endfor %}
 {# Standard DNS. The client scope is site data
-   (proxmox_firewall_dns_client_sources): resolution is a service every VLAN
-   needs, which is a wider set than the admin sets the resolver's own
-   management surfaces above are pinned to. Default = the two admin sets, so an
-   unsegmented site renders exactly what it always did. #}
+   (proxmox_firewall_dns_client_sources), a wider set than the admin sets the
+   resolver's management surfaces above are pinned to. #}
 # Standard DNS
 {% for src in proxmox_firewall_dns_client_sources %}
 IN ACCEPT -source +dc/{{ src }} -p tcp -dport 53 -log nolog
@@ -133,10 +127,9 @@ IN ACCEPT -source +dc/admin_lan -p tcp -dport 6443 -log nolog
 
 [group sg-k3s-ingress-int]
 
-{# The internal ingress serves ordinary users, not just operators, so its client
-   scope is site data (proxmox_firewall_k3s_ingress_int_sources) rather than the
-   admin sets. Default = the two admin sets — unchanged for an unsegmented
-   site. Port stays the outer loop: :443 for every source, then :80. #}
+{# The internal ingress serves ordinary users, so its client scope is site data
+   (proxmox_firewall_k3s_ingress_int_sources) rather than the admin sets. Port
+   stays the outer loop: :443 for every source, then :80. #}
 {% for port in [443, 80] %}
 {% for src in proxmox_firewall_k3s_ingress_int_sources %}
 IN ACCEPT -source +dc/{{ src }} -p tcp -dport {{ port }} -log nolog
@@ -147,10 +140,9 @@ IN ACCEPT -source +dc/{{ src }} -p tcp -dport {{ port }} -log nolog
 
 IN ACCEPT -p tcp -dport 443 -log nolog
 IN ACCEPT -p tcp -dport 80 -log nolog
-# WireGuard VPN endpoint from the WAN (the router forwards :51820/udp to a
-# load-balancer VIP). `-dest` scopes each rule to that VIP so it does NOT open
-# the node's own :51820/udp — that is flannel wireguard-native (sg-k3s-core,
-# k3s_nodes only), which must stay off the WAN. Empty list = no WAN WireGuard.
+# WireGuard VPN endpoint from the WAN. `-dest` scopes each rule to the VIP so
+# the node's own :51820/udp (flannel wireguard-native) stays off the WAN.
+# An empty list opens nothing.
 {% for vip in proxmox_firewall_wan_wireguard_vips | default([]) %}
 IN ACCEPT -dest {{ vip }} -p udp -dport 51820 -log nolog
 {% endfor %}
@@ -163,12 +155,10 @@ IN ACCEPT -source +dc/nfs_clients -p tcp -dport 2049 -log nolog
 
 [group sg-metrics]
 
-# Prometheus scraping from k3s cluster (k3s SNATs pod traffic to node IPs).
-# Built in: the exporters this collection's own roles bind. host.fw applies this
-# group on every node, so application scrape targets are site data
-# (proxmox_firewall_metrics_scrape_ports) rather than ports opened fleet-wide
-# for an app that may not be there.
-IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9100 -log nolog  # node-exporter
+# Prometheus scraping from the k3s cluster, which SNATs pod traffic to node IPs.
+# Built in: this collection's own exporter defaults (9101, 9134, 9167) plus the
+# in-cluster node-exporter. App ports: proxmox_firewall_metrics_scrape_ports.
+IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9100 -log nolog  # node-exporter (in-cluster DaemonSet, not a collection role)
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9101 -log nolog  # node-exporter-host (bare metal)
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9134 -log nolog  # zfs-exporter
 IN ACCEPT -source +dc/k3s_nodes -p tcp -dport 9167 -log nolog  # unbound-exporter
@@ -203,32 +193,36 @@ IN ACCEPT -source +dc/smb_clients -p tcp -dport 445 -log nolog
 
 [group sg-smtp-relay]
 
-# SMTP submission from core cluster
-IN ACCEPT -source +dc/core-cluster -p tcp -dport 587 -log nolog
-# SMTP relay from core cluster
-IN ACCEPT -source +dc/core-cluster -p tcp -dport 25 -log nolog
-# Outbound egress allowlist. Only enforced when the guest's .fw sets
-# policy_out: DROP (guest_firewall_policy_out in the guest's inventory entry) —
-# Proxmox's guest default is policy_out ACCEPT, which makes these OUT ACCEPTs
-# no-ops. conntrack auto-allows replies to inbound 25/587.
-# DNS and SMTP submission (upstream relay to Gmail)
-OUT ACCEPT -p udp -dport 853 -log nolog
-OUT ACCEPT -p tcp -dport 853 -log nolog
-OUT ACCEPT -p udp -dport 53 -log nolog
-OUT ACCEPT -p tcp -dport 53 -log nolog
-OUT ACCEPT -p tcp -dport 587 -log nolog
-# apt (the base role runs apt inside the LXC) + ICMP diagnostics
-OUT ACCEPT -p tcp -dport 80 -log nolog
-OUT ACCEPT -p tcp -dport 443 -log nolog
-OUT ACCEPT -p tcp -dport 31100 -log nolog       # Loki push NodePort fallback (alloy_host_loki_url)
-OUT ACCEPT -p icmp -log nolog
+{# Mail relay guest. The OUT rules are inert until the guest itself runs
+   policy_out: DROP; the client scope is site data
+   (proxmox_firewall_smtp_relay_sources). #}
+{% if proxmox_firewall_smtp_relay_sources %}
+# Client scope: {{ proxmox_firewall_smtp_relay_sources | join(', ') }}
+{% endif %}
+{% for src in proxmox_firewall_smtp_relay_sources %}
+# SMTP submission
+IN ACCEPT -source +dc/{{ src }} -p tcp -dport 587 -log nolog
+# SMTP relay
+IN ACCEPT -source +dc/{{ src }} -p tcp -dport 25 -log nolog
+{% endfor %}
+OUT ACCEPT -p udp -dport 853 -log nolog         # DNS over TLS
+OUT ACCEPT -p tcp -dport 853 -log nolog         # DNS over TLS
+OUT ACCEPT -p udp -dport 53 -log nolog          # DNS
+OUT ACCEPT -p tcp -dport 53 -log nolog          # DNS over TCP
+OUT ACCEPT -p tcp -dport 587 -log nolog         # SMTP submission upstream
+OUT ACCEPT -p tcp -dport 80 -log nolog          # apt / HTTP
+OUT ACCEPT -p tcp -dport 443 -log nolog         # apt / HTTPS
+{% for entry in proxmox_firewall_smtp_relay_extra_egress_ports | default([]) %}
+OUT ACCEPT -p {{ entry.proto }} -dport {{ entry.port }} -log nolog{% if entry.comment is defined %}  # {{ entry.comment }}{% endif %}
+
+{% endfor %}
+OUT ACCEPT -p icmp -log nolog                   # ping/diagnostics
 
 [group sg-host-egress]
 
 # Host-originated egress allowlist, referenced by host.fw only where
-# proxmox_firewall_egress_filtering is true (inert otherwise). conntrack
-# auto-allows RELATED/ESTABLISHED replies, so these cover only NEW outbound
-# connections the node initiates; tune them from the OUT DROP rule's drop logs.
+# proxmox_firewall_egress_filtering is true. conntrack auto-allows replies, so
+# these cover only NEW outbound connections; tune from the OUT DROP drop logs.
 OUT ACCEPT -p udp -dport 53 -log nolog          # DNS
 OUT ACCEPT -p tcp -dport 53 -log nolog          # DNS over TCP
 OUT ACCEPT -p udp -dport 853 -log nolog         # DNS over TLS
@@ -239,18 +233,23 @@ OUT ACCEPT -p tcp -dport 443 -log nolog         # apt, Proxmox repos, Tailscale 
 OUT ACCEPT -p udp -dport 41641 -log nolog       # Tailscale direct
 OUT ACCEPT -p udp -dport 3478 -log nolog        # Tailscale STUN
 OUT ACCEPT -p tcp -dport 22 -log nolog          # SSH (migration, host-to-host, cert distribution)
-OUT ACCEPT -p tcp -dport 2222 -log nolog        # GitLab SSH
 OUT ACCEPT -p tcp -dport 587 -log nolog         # SMTP submission to relay
 OUT ACCEPT -p tcp -dport 25 -log nolog          # SMTP relay
 OUT ACCEPT -p tcp -dport 2049 -log nolog        # NFS (backup target / shares)
 OUT ACCEPT -p tcp -dport 111 -log nolog         # rpcbind (NFS)
 OUT ACCEPT -p udp -dport 111 -log nolog         # rpcbind (NFS)
-OUT ACCEPT -p tcp -dport 31100 -log nolog       # Loki push NodePort fallback (alloy_host_loki_url)
 OUT ACCEPT -p udp -dport 5404:5412 -log nolog   # corosync cluster membership
 OUT ACCEPT -p tcp -dport 8006 -log nolog        # Proxmox API (cluster/migration)
 {% if proxmox_firewall_insecure_migration_ports | default(false) %}
 OUT ACCEPT -p tcp -dport 60000:60050 -log nolog # cleartext live-migration channel
 {% endif %}
+{# Site services the nodes talk to (a forge on a non-standard SSH port, a log
+   sink on a NodePort): kept out of the built-in list so a consumer that does
+   not run them gets no hole it never asked for. #}
+{% for entry in proxmox_firewall_host_egress_extra_ports | default([]) %}
+OUT ACCEPT -p {{ entry.proto }} -dport {{ entry.port }} -log nolog{% if entry.comment is defined %}  # {{ entry.comment }}{% endif %}
+
+{% endfor %}
 OUT ACCEPT -p icmp -log nolog                   # ping/diagnostics
 
 [RULES]

@@ -1,12 +1,7 @@
 ---
-# Hermetic scenario: a LOCAL restic file repo (no B2/network) + bind mode
-# (mount --bind of the seeded .zfs/snapshot tree — the container is privileged
-# with SYS_ADMIN, and plain-dir bind mounts work here, as nas_storage's export
-# binds prove) + a fake .zfs/snapshot tree seeded by prepare.yml. Exercises the
-# control script end to end (freshness guard -> bind -> restic backup -> metrics
-# -> restore round-trip -> verify) and statically pins the zvol-clone / subcommand
-# / metric-name contract that the ZFS-less container can't run. Shared driver/
-# provisioner config comes from molecule-shared/base.yml via `-c`.
+# Hermetic scenario: a local restic file repo, bind mode over a fake
+# .zfs/snapshot tree from prepare.yml, no network. Shared driver config comes
+# from molecule-shared/base.yml via `-c`.
 platforms:
   - name: restic-offsite-test
     image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}
@@ -32,10 +27,9 @@ provisioner:
         restic_offsite_enabled: true
         # LOCAL file repo — no rclone/B2 contacted.
         restic_offsite_repo: /tmp/restic-molecule-repo
-        # bind mode: mount --bind the seeded snapshot subtree at BIND_ROOT/<name>,
-        # so the backed-up paths match cmd_restore's --include prefixes (restore
-        # round-trip is testable). Plain-dir bind mounts work in this privileged
-        # SYS_ADMIN container.
+        # bind mode: mount --bind the seeded snapshot subtree at
+        # BIND_ROOT/<name>, so backed-up paths match cmd_restore's --include
+        # prefixes and the restore round-trip is testable.
         restic_offsite_bind_mode: bind
         restic_offsite_zvol_sources: []
         restic_offsite_cache_dir: /tmp/restic-molecule-cache
@@ -49,11 +43,18 @@ provisioner:
             mountpoint: /tmp/molsrc/backups
           - name: appdata
             mountpoint: /tmp/molsrc/appdata
-        # Secrets: test values (dummy B2, real-enough restic password for the
-        # local file repo).
-        # Exercise the keep-tags rendering: verify.yml asserts the flag pair
-        # lands in the rendered FORGET_FLAGS array.
+        # Three distinct per-unit start timeouts: verify.yml asserts each unit
+        # gets its own, so a template wired to the shared floor fails.
+        restic_offsite_backup_timeout_start_sec: 4h
+        restic_offsite_verify_timeout_start_sec: 9h
+        restic_offsite_drill_timeout_start_sec: 3h
+        # Test-only secrets: a dummy B2 pair and a restic password for the
+        # local file repo. verify.yml asserts the keep-tags flag pair lands in
+        # the rendered FORGET_FLAGS array.
         restic_offsite_keep_tags: [legacy]
+        # Inactive by default; verify.yml starts it to prove an overlapping
+        # overnight job makes the run a deliberate skip.
+        restic_offsite_conflicting_units: [restic-molecule-conflict.service]
         restic_offsite_b2_key_id: molecule-b2-key-id
         restic_offsite_b2_application_key: molecule-b2-app-key
         restic_offsite_repo_password: molecule-test-password

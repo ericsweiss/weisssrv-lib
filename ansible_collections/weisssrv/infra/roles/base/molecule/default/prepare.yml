@@ -18,6 +18,18 @@
         ssh-keygen -A
       changed_when: false
 
+    # A host with the openipmi init script but no /dev/ipmi0 is what the role
+    # masks; the container has neither, so seed the init script.
+    - name: Seed an openipmi LSB init script with no IPMI hardware behind it
+      ansible.builtin.copy:
+        dest: /etc/init.d/openipmi
+        content: |
+          #!/bin/sh
+          exit 0
+        owner: root
+        group: root
+        mode: "0755"
+
     # Seed a conflicting cloud-init style drop-in: the role's 00-hardening.conf
     # must sort ahead of it (sshd is FIRST-match-wins), which the role's own
     # sshd -T assert and the verify playbook prove.
@@ -30,10 +42,9 @@
         group: root
         mode: "0644"
 
-    # Two admin users, each seeded with a FOREIGN key nothing in the inventory
-    # lists. testuser converges additively (default) and must KEEP it; keyexcl
-    # converges with base_ssh_authorized_keys_exclusive and must LOSE it. Seeded
-    # here, not in converge, so the idempotence re-run does not ping-pong.
+    # Two admin users, each seeded HERE (not in converge, so the idempotence
+    # re-run is stable) with a FOREIGN key. testuser converges additively and
+    # KEEPS it; keyexcl converges with the exclusive flag and LOSES it.
     - name: Create the two admin users the converge exercises
       ansible.builtin.user:
         name: "{{ item }}"

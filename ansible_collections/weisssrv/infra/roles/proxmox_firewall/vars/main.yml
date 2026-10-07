@@ -1,0 +1,21 @@
+---
+# Security groups cluster.fw.j2 renders itself. A site group of the same name
+# renders a second [group <name>] section, and pve-firewall silently keeps one
+# rule set of the two. Role-owned, so it lives here rather than in defaults/.
+_proxmox_firewall_builtin_groups:
+  - sg-dns
+  - sg-host-admin
+  - sg-vm-admin
+  - sg-k3s-core
+  - sg-k3s-ingress-int
+  - sg-k3s-ingress-pub
+  - sg-nfs-server
+  - sg-metrics
+  - sg-pve-cluster
+  - sg-smb-server
+  - sg-smtp-relay
+  - sg-host-egress
+
+# pve-firewall's own security-group grammar: a leading alphanumeric, then
+# letters, digits, `-` or `_`, 2 to 18 characters total.
+_proxmox_firewall_group_name_re: '^[A-Za-z0-9][A-Za-z0-9_-]{1,17}\Z'

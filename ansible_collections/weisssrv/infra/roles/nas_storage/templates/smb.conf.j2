@@ -1,9 +1,9 @@
 # {{ ansible_managed }}
 
 [global]
-   workgroup = WORKGROUP
+   workgroup = {{ nas_storage_samba_workgroup }}
    server string = {{ inventory_hostname }}
-   server role = standalone server
+   server role = {{ nas_storage_samba_server_role }}
 
    log file = /var/log/samba/log.%m
    max log size = 1000
@@ -14,9 +14,7 @@
    passwd program = /usr/bin/passwd %u
    passwd chat = *Enter\snew\s*\spassword:* %n\n *Retype\snew\s*\spassword:* %n\n *password\supdated\ssuccessfully* .
    pam password change = yes
-   # An unknown user gets a clean auth failure, never a guest session — the
-   # per-share default is `guest ok = no`, so anything else would only surface
-   # the moment a share opted into guests.
+   # An unknown user gets a clean auth failure, never a guest session.
    map to guest = never
 
    # Required SMB3 encryption rejects every pre-SMB3 client.
@@ -27,8 +25,10 @@
    # than depending on a firewall to close the legacy NetBIOS ports.
    smb ports = {{ nas_storage_samba_ports }}
    disable netbios = {{ nas_storage_samba_disable_netbios | ternary('yes', 'no') }}
-
-   socket options = TCP_NODELAY IPTOS_LOWDELAY
+{% if nas_storage_samba_interfaces | default([]) | length > 0 %}
+   interfaces = {{ nas_storage_samba_interfaces | join(' ') }}
+   bind interfaces only = yes
+{% endif %}
 
 {% for share in nas_storage_samba_shares %}
 [{{ share.name }}]

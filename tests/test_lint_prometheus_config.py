@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
-"""Tests for scripts/lint-prometheus-config.sh — the wrapper that turns
-extract-prometheus-config.py plus promtool/amtool into one gate. Its job is to
-be non-zero on any failure; a regression that swallowed one would leave broken
-PromQL or an invalid Alertmanager config green all the way to the cluster.
-
-`promtool`, `amtool` and the extractor are stubs on a controlled PATH, so no
-Prometheus tooling is needed to run this.
+"""scripts/lint-prometheus-config.sh exits non-zero on any extractor, promtool
+or amtool failure. The three tools are PATH stubs here.
 """
 
 import os
@@ -130,11 +125,26 @@ def run(tmp_path):
 
 
 def test_checks_rules_and_alertmanager_and_skips_absent_unit_tests(run):
-    proc, calls = run()
+    proc, calls = run(ALLOW_NO_RULE_TESTS=1)
     assert proc.returncode == 0
     assert [c.split()[0:2] for c in calls] == [["promtool", "check"], ["amtool", "check-config"]]
     assert "skipping promtool alert unit tests" in proc.stdout
     assert "Prometheus rules + Alertmanager config are valid." in proc.stdout
+
+
+def test_an_empty_rule_tests_dir_fails_without_the_opt_out(run):
+    """A dropped RULE_TESTS_DIR must not green a gate that tested no alerts."""
+    proc, _ = run()
+    assert proc.returncode == 1
+    assert str(run.tests_dir) in proc.stderr
+    assert "ALLOW_NO_RULE_TESTS" in proc.stderr
+    assert "valid" not in proc.stdout
+
+
+def test_a_nonexistent_rule_tests_dir_fails(run, tmp_path):
+    proc, _ = run(RULE_TESTS_DIR=str(tmp_path / "absent"))
+    assert proc.returncode == 1
+    assert "absent" in proc.stderr
 
 
 def test_runs_the_alert_unit_tests_against_annotation_stripped_rules(run):
@@ -155,6 +165,26 @@ def test_the_manifest_overrides_reach_the_extractor(run):
     argv = run.extract_trace.read_text().splitlines()
     assert argv[0].startswith("rules ") and argv[0].endswith("--release kube-prometheus-stack.yaml")
     assert argv[1].startswith("alertmanager ") and argv[1].endswith("--am-config alertmanager-secret.yaml")
+
+
+def test_the_rule_source_flags_reach_the_extractor(run):
+    """A consumer declares which sources it has; neither is required by default."""
+    run(REQUIRE_RELEASE_RULES=1, REQUIRE_RULES_DIR=1)
+    argv = run.extract_trace.read_text().splitlines()
+    assert "--require-release-rules" in argv[0]
+    assert "--require-rules-dir" in argv[0]
+
+
+def test_extra_extractor_args_reach_the_extractor(run):
+    run(EXTRACT_ARGS="--dummy slack_url=https://example.invalid")
+    argv = run.extract_trace.read_text().splitlines()
+    assert argv[0].endswith("--dummy slack_url=https://example.invalid")
+
+
+def test_no_rule_source_flag_is_passed_by_default(run):
+    run()
+    argv = run.extract_trace.read_text().splitlines()
+    assert "--require-" not in argv[0]
 
 
 @pytest.mark.parametrize("tool", ["promtool", "amtool"])

@@ -18,17 +18,9 @@ spec:
         DIFFERENT state overrides the three TF_HTTP_*ADDRESS vars per-job —
         exactly as weisssrv's tailscale-drift-plan / authentik-drift-plan do.
 ---
-# GitLab-managed Terraform HTTP state backend fragment. Defines the hidden
-# `.terraform-http-backend` job: TF_HTTP_* env pointing at this project's
-# GitLab-hosted state, authenticated with the pipeline's CI_JOB_TOKEN. A
-# consumer `extends: .terraform-http-backend`.
-#
-# Per-job override for a one-off state (no second include):
-#
-#   variables:
-#     TF_HTTP_ADDRESS: "https://.../terraform/state/<name>"
-#     TF_HTTP_LOCK_ADDRESS: "https://.../terraform/state/<name>/lock"
-#     TF_HTTP_UNLOCK_ADDRESS: "https://.../terraform/state/<name>/lock"
+# GitLab-managed Terraform HTTP state backend: TF_HTTP_* pointing at this
+# project's state, authenticated with CI_JOB_TOKEN. Per-job override for a
+# one-off state: docs/INCLUDE-CONTRACT.md.
 .terraform-http-backend:
   variables:
     TF_HTTP_ADDRESS: "$[[ inputs.api_url ]]/projects/${CI_PROJECT_ID}/terraform/state/$[[ inputs.state_name ]]"

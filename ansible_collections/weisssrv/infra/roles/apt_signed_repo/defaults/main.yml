@@ -1,37 +1,32 @@
 ---
-# Optional inputs. The required inputs have no default and must be supplied by
-# the caller (via include_role vars):
-#   apt_signed_repo_key_url       — URL of the (ASCII-armored) signing key
-#   apt_signed_repo_fingerprint   — expected primary-key fingerprint (no spaces)
-#   apt_signed_repo_keyring_path  — dearmored binary keyring destination
-#   apt_signed_repo_repo_line     — full `deb [signed-by=...] ...` sources line
-#   apt_signed_repo_filename      — apt sources.list.d filename (no extension)
+# Optional inputs. The required ones have no default and are supplied by the
+# caller via include_role vars; the README variables table lists them.
 
 # Extra gate threaded through every task, so a caller can pass its own skip
 # condition (e.g. its own <role>_skip_install) without wrapping the include.
 apt_signed_repo_when: true
 
-# Install gnupg on every run (when true) for callers with no other guarantee it
-# is present — not gated on key absence, because the existing-keyring
-# re-verification also needs gpg when the keyring is already there. Left off
-# where a prerequisite task or the base role provides it.
+# Install gnupg on every run, for callers with no other guarantee it is present.
+# Not gated on key absence: the existing-keyring re-verification needs gpg too.
 apt_signed_repo_install_gnupg: false
 
-# Keyring mode. A public signing key is meant to be world-readable, and apt
-# reports "unverifiable signature" when it cannot read the keyring, so this is
-# pinned rather than left at gpg --dearmor's umask-dependent output. Empty
-# skips the permission task entirely.
+# Keyring mode, pinned rather than left at gpg --dearmor's umask-dependent
+# output: apt reports "unverifiable signature" on a keyring it cannot read.
+# Empty skips the permission task.
 apt_signed_repo_keyring_mode: "0644"
 
-# Staging area for the downloaded key between verification and dearmor. Must be
-# a root-owned 0700 directory under a non-world-writable parent: verify and
-# dearmor are separate SSH invocations, so a path a local user can write is a
-# TOCTOU window in which the verified key is swapped for another. Created (and
-# removed again) by tasks/main.yml.
+# CRITICAL: staging area for the downloaded key between verification and
+# dearmor. It must be a root-owned 0700 directory under a non-world-writable
+# parent — verify and dearmor are separate SSH invocations, so a writable path
+# is a TOCTOU window in which the verified key is swapped for another.
 apt_signed_repo_stage_dir: /run/apt-signed-repo
 apt_signed_repo_tmp_key: "{{ apt_signed_repo_stage_dir }}/{{ apt_signed_repo_keyring_path | basename }}.download"
 
-# Refresh the apt cache when adding the repo. Left true so every real caller
-# picks up the new repo immediately; the molecule scenario sets it false to keep
-# the key-handling test hermetic (no apt-get update against an unreachable repo).
+# tasks_from: enable-components.yml only. The deb822 sources file to rewrite,
+# and the component set every Components line in it is normalised to.
+apt_signed_repo_sources_path: /etc/apt/sources.list.d/debian.sources
+apt_signed_repo_components: main contrib non-free non-free-firmware
+
+# Refresh the apt cache when adding the repo. The molecule scenario sets it
+# false to keep the key-handling test hermetic.
 apt_signed_repo_update_cache: true

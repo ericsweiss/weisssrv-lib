@@ -6,3 +6,257 @@
     - name: Apply the vfio_passthrough role
       ansible.builtin.include_role:
         name: weisssrv.infra.vfio_passthrough
+
+    # The gate is reconciled both ways: with it off, the three files must go, or
+    # the host keeps the GPU bound to vfio-pci and nouveau blacklisted forever.
+    # The enabled state is restored afterwards, outside the idempotence run.
+    - name: Re-run the role with passthrough disabled
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.include_role:
+        name: weisssrv.infra.vfio_passthrough
+      vars:
+        vfio_passthrough_enabled: false
+
+    - name: Stat the VFIO files after the disabled run
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/default/grub.d/vfio-iommu.cfg
+        - /etc/modprobe.d/vfio.conf
+        - /etc/modules-load.d/vfio-pci.conf
+      register: vfio_passthrough_disabled_stat
+
+    - name: Result directory
+      ansible.builtin.file:
+        path: /tmp/molecule-results
+        state: directory
+        mode: "0755"
+
+    - name: Capture the disabled-run result
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/disable.json
+        mode: "0644"
+        content: |
+          {"still_present":
+           {{ vfio_passthrough_disabled_stat.results | selectattr('stat.exists') | map(attribute='item') | list | to_json }}}
+
+    # A site with hand-written VFIO config opts out of the removal arm, which
+    # owns three generically named system paths.
+    - name: Seed a hand-written vfio.conf the role never rendered
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.copy:
+        dest: /etc/modprobe.d/vfio.conf
+        content: "# hand-written\noptions vfio-pci ids=dead:beef\n"
+        mode: "0644"
+
+    - name: Re-run the role disabled with the removal arm opted out
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.include_role:
+        name: weisssrv.infra.vfio_passthrough
+      vars:
+        vfio_passthrough_enabled: false
+        vfio_passthrough_manage_absent: false
+
+    - name: Stat the hand-written vfio.conf after the opted-out run
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.stat:
+        path: /etc/modprobe.d/vfio.conf
+      register: vfio_passthrough_kept_stat
+
+    - name: Capture the opted-out result
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/manage-absent.json
+        mode: "0644"
+        content: |
+          {"kept": {{ vfio_passthrough_kept_stat.stat.exists | to_json }}}
+
+    # With the removal arm ON, a hand-written file must still survive: the
+    # three paths are the conventional VFIO names, not role-namespaced.
+    - name: Seed a hand-written vfio.conf again
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.copy:
+        dest: /etc/modprobe.d/vfio.conf
+        content: "# hand-written\noptions vfio-pci ids=dead:beef\n"
+        mode: "0644"
+
+    - name: Re-run the role disabled with the removal arm on
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.include_role:
+        name: weisssrv.infra.vfio_passthrough
+      vars:
+        vfio_passthrough_enabled: false
+
+    - name: Stat the hand-written vfio.conf after the managed removal
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.stat:
+        path: /etc/modprobe.d/vfio.conf
+      register: vfio_passthrough_unowned_stat
+
+    - name: Capture the ownership-scoped removal result
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/unowned.json
+        mode: "0644"
+        content: |
+          {"kept": {{ vfio_passthrough_unowned_stat.stat.exists | to_json }}}
+
+    - name: Remove the hand-written vfio.conf before restoring the role's own
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.file:
+        path: /etc/modprobe.d/vfio.conf
+        state: absent
+
+    # Restore the enabled state so the content assertions in verify.yml see the
+    # rendered files.
+    - name: Re-apply the role with passthrough enabled
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.include_role:
+        name: weisssrv.infra.vfio_passthrough
+
+    # An unimplemented cmdline method would stage the drop-in and never reach
+    # the kernel, so the role must refuse it rather than report changed.
+    - name: Reject path — an unimplemented cmdline method must fail the role
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Run the role with an unimplemented cmdline method
+          ansible.builtin.include_role:
+            name: weisssrv.infra.vfio_passthrough
+          vars:
+            vfio_passthrough_cmdline_method: systemd-boot
+      rescue:
+        - name: Record that the unimplemented method was rejected
+          ansible.builtin.set_fact:
+            vfio_passthrough_bad_method_rejected: true
+
+    - name: Capture the cmdline-method reject result
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/cmdline-method.json
+        mode: "0644"
+        content: |
+          {"rejected": {{ (vfio_passthrough_bad_method_rejected | default(false)) | to_json }}}
+
+    # With no usable marker the ownership test protects nothing, so the removal
+    # arm would have to treat a hand-written drop-in as its own.
+    - name: Reject path — no usable marker must fail the disabled arm
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Seed a hand-written vfio.conf for the empty-marker run
+          ansible.builtin.copy:
+            dest: /etc/modprobe.d/vfio.conf
+            content: "# hand-written\noptions vfio-pci ids=dead:beef\n"
+            mode: "0644"
+
+        - name: Run the disabled arm with every marker emptied
+          ansible.builtin.include_role:
+            name: weisssrv.infra.vfio_passthrough
+          vars:
+            vfio_passthrough_enabled: false
+            vfio_passthrough_managed_marker: ""
+            vfio_passthrough_legacy_markers: []
+      rescue:
+        - name: Record that the empty marker was rejected
+          ansible.builtin.set_fact:
+            vfio_passthrough_empty_marker_rejected: true
+
+    - name: Stat the hand-written vfio.conf after the empty-marker run
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.stat:
+        path: /etc/modprobe.d/vfio.conf
+      register: vfio_passthrough_empty_marker_stat
+
+    - name: Capture the empty-marker reject result
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/empty-marker.json
+        mode: "0644"
+        content: |
+          {"rejected": {{ (vfio_passthrough_empty_marker_rejected | default(false)) | to_json }},
+           "kept": {{ vfio_passthrough_empty_marker_stat.stat.exists | to_json }}}
+
+    - name: Remove the hand-written vfio.conf again
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.file:
+        path: /etc/modprobe.d/vfio.conf
+        state: absent
+
+    - name: Re-apply the role enabled after the empty-marker run
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.include_role:
+        name: weisssrv.infra.vfio_passthrough
+
+    # Ownership rides a role-owned literal, not ansible_managed: a consumer whose
+    # ansible_managed carries a date would otherwise stop recognising its own
+    # drop-ins and leave the GPU captured.
+    - name: Re-run the role disabled under a different ansible_managed
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.include_role:
+        name: weisssrv.infra.vfio_passthrough
+      vars:
+        vfio_passthrough_enabled: false
+        ansible_managed: "Managed elsewhere 1970-01-01"
+
+    - name: Stat the VFIO files after the marker-skew run
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/default/grub.d/vfio-iommu.cfg
+        - /etc/modprobe.d/vfio.conf
+        - /etc/modules-load.d/vfio-pci.conf
+      register: vfio_passthrough_marker_skew_stat
+
+    - name: Capture the marker-skew removal result
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/marker-skew.json
+        mode: "0644"
+        content: |
+          {"still_present":
+           {{ vfio_passthrough_marker_skew_stat.results | selectattr('stat.exists') | map(attribute='item') | list | to_json }}}
+
+    - name: Re-apply the role enabled after the marker-skew run
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.include_role:
+        name: weisssrv.infra.vfio_passthrough
+
+    # A drop-in written before the role-owned literal shipped carries only the
+    # ansible_managed header. The legacy markers keep it removable, or the GPU
+    # stays captured on a host whose gate is flipped off at the bump.
+    - name: Seed a legacy vfio.conf carrying only the ansible_managed header
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.copy:
+        dest: /etc/modprobe.d/vfio.conf
+        content: |
+          # {{ lookup('ansible.builtin.config', 'DEFAULT_MANAGED_STR') }}
+          options vfio-pci ids=dead:beef
+        mode: "0644"
+
+    - name: Re-run the role disabled against the legacy drop-in
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.include_role:
+        name: weisssrv.infra.vfio_passthrough
+      vars:
+        vfio_passthrough_enabled: false
+
+    - name: Stat the legacy vfio.conf after the disabled run
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.stat:
+        path: /etc/modprobe.d/vfio.conf
+      register: vfio_passthrough_legacy_stat
+
+    - name: Capture the legacy-marker removal result
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/legacy-marker.json
+        mode: "0644"
+        content: |
+          {"kept": {{ vfio_passthrough_legacy_stat.stat.exists | to_json }}}
+
+    - name: Re-apply the role enabled after the legacy-marker run
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.include_role:
+        name: weisssrv.infra.vfio_passthrough

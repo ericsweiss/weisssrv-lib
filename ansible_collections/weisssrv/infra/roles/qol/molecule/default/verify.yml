@@ -157,3 +157,62 @@
           - omz_ownership.stat.pw_name == 'testuser'
         fail_msg: "Oh My Zsh directory has incorrect ownership"
         success_msg: "Oh My Zsh directory has correct ownership"
+
+    - name: Stat the remaining shipped dotfiles
+      ansible.builtin.stat:
+        path: "/home/testuser/{{ item }}"
+      register: qol_dotfiles
+      loop:
+        - .zprofile
+        - .alias.zsh
+        - .local.zsh
+
+    - name: Assert every shipped dotfile was deployed
+      ansible.builtin.assert:
+        that:
+          - qol_dotfiles.results | selectattr('stat.exists') | list | length == 3
+        fail_msg: ".zprofile, .alias.zsh or .local.zsh was not deployed"
+        success_msg: "All shipped dotfiles are present"
+
+    - name: Read .local.zsh content
+      ansible.builtin.slurp:
+        src: /home/testuser/.local.zsh
+      register: qol_local_zsh
+
+    # converge seeds this line and then re-runs the role: force: false means the
+    # second pass must leave the operator's edit alone.
+    - name: Assert the re-run did not overwrite .local.zsh
+      ansible.builtin.assert:
+        that:
+          - "'QOL_LOCAL_SENTINEL' in (qol_local_zsh.content | b64decode)"
+          - "'Local environment overrides' in (qol_local_zsh.content | b64decode)"
+        fail_msg: >-
+          .local.zsh lost its local edit (or its shipped header) — the
+          never-overwrite contract is broken.
+        success_msg: ".local.zsh keeps local edits across runs"
+
+# Separate play so the role's own defaults can be loaded without shadowing the
+# scenario's group_vars: the pin is what keeps Oh My Zsh off master HEAD.
+- name: Verify the Oh My Zsh pin
+  hosts: all
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../../defaults/main.yml
+  tasks:
+    - name: Read the checked-out Oh My Zsh commit  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: git -C /home/testuser/.oh-my-zsh rev-parse HEAD
+      become: true
+      become_user: testuser
+      register: qol_omz_checked_out
+      changed_when: false
+
+    - name: Assert Oh My Zsh is checked out at the pinned commit
+      ansible.builtin.assert:
+        that:
+          - (qol_omz_checked_out.stdout | trim) == qol_omz_commit
+        fail_msg: >-
+          .oh-my-zsh is at {{ qol_omz_checked_out.stdout | trim }}, not
+          qol_omz_commit ({{ qol_omz_commit }}) — the pin is not being applied.
+        success_msg: "Oh My Zsh is checked out at qol_omz_commit"

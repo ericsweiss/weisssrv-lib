@@ -1,18 +1,15 @@
 # {{ ansible_managed }}
-#
-# Loads one pool's ZFS encryption key from 1Password Connect at boot. Instance
-# name is the pool name; its 1P item title comes from
-# /etc/zfs/encryption/pools/<pool>.conf.
-#
-# The ordering below keeps the unlock OFF the boot-blocking path, and the
-# restart budget is sized so a slow Connect never parks the unit in `failed`.
-# Both are explained in the role README ("Boot ordering", "Retry budget").
-# The invariant a future editor must not break: this unit is never
-# Before=/RequiredBy= zfs-mount.service — those edges close an ordering cycle
-# and put a network-dependent unlock in the early local-fs path.
+
+# CRITICAL: never add Before= or RequiredBy=zfs-mount.service — those edges
+# close an ordering cycle and put a network-dependent unlock in the early
+# local-fs path.
+
+# Loads one pool's ZFS encryption key at boot. Instance name is the pool; its
+# key locator comes from /etc/zfs/encryption/pools/<pool>.conf. Ordering and
+# retry budget: role README.
 
 [Unit]
-Description=Load ZFS encryption key for %i from 1Password Connect
+Description=Load ZFS encryption key for %i
 DefaultDependencies=no
 Conflicts=shutdown.target
 Wants=network-online.target
@@ -31,11 +28,9 @@ EnvironmentFile=/etc/zfs/encryption/pools/%i.conf
 ExecStart=/usr/local/sbin/zfs-load-key.sh %i
 Restart=on-failure
 RestartSec=30s
-# Stop retrying only on operator-config errors: 1 (config/arg/token), 3
-# (vault/item/field not found), 4 (`zfs load-key` rejected the passphrase),
-# 7 (Connect rejected the token). rc=2 (Connect unreachable) and rc=5 (pool not
-# imported yet) are deliberately ABSENT — both resolve on their own during a
-# cold-cluster boot, so the unit must keep retrying. Codes: zfs-load-key.sh.
+# Stop retrying only on operator-config errors (codes: zfs-load-key.sh). rc=2
+# (key source unavailable) and rc=5 (pool not imported yet) are absent: both
+# resolve on their own during a cold-cluster boot.
 RestartPreventExitStatus=1 3 4 7
 
 # Hardening
@@ -47,16 +42,12 @@ PrivateTmp=yes
 LockPersonality=yes
 RestrictRealtime=yes
 RestrictNamespaces=yes
-# AF_NETLINK is needed by glibc's getaddrinfo() for AI_ADDRCONFIG (it
-# opens a NETLINK_ROUTE socket to inspect routable address families).
-# Restricting it on some glibc versions causes curl's DNS resolution of
-# the Connect endpoint to fail at cold boot.
+# glibc's getaddrinfo() opens a NETLINK_ROUTE socket for AI_ADDRCONFIG, which a
+# networked key fetch needs at cold boot.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 SystemCallArchitectures=native
 
 [Install]
-# The enable symlink lands in
-# /etc/systemd/system/zfs-mount-encrypted.service.wants/, which is
-# operator-managed (under /etc, not /lib), so a zfsutils-linux upgrade leaves
-# it intact.
+# The enable symlink lands under /etc/systemd/system, so a zfsutils-linux
+# upgrade leaves it intact.
 WantedBy=zfs-mount-encrypted.service

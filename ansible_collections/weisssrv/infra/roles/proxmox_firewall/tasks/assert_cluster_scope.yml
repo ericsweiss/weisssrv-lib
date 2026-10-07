@@ -1,0 +1,58 @@
+---
+# Guard for the variable-scope rule in the role README: a cluster-scope input
+# must be defined where every including play sees it (group_vars/all), because
+# cluster.fw renders from the play's first host, not from the delegate.
+- name: Assert no cluster-scope firewall input is scoped to the Proxmox group
+  vars:
+    _proxmox_firewall_cluster_scope_vars:
+      - proxmox_firewall_admin_lan_cidrs
+      - proxmox_firewall_admin_ts_cidrs
+      - proxmox_firewall_smb_client_cidrs
+      - proxmox_firewall_extra_aliases
+      - proxmox_firewall_wan_wireguard_vips
+      - proxmox_firewall_dns_admin_ports
+      - proxmox_firewall_dns_client_sources
+      - proxmox_firewall_k3s_ingress_int_sources
+      - proxmox_firewall_metrics_scrape_ports
+      - proxmox_firewall_host_egress_extra_ports
+      - proxmox_firewall_smtp_relay_sources
+      - proxmox_firewall_smtp_relay_extra_egress_ports
+      - proxmox_firewall_security_groups
+      - proxmox_firewall_cluster_rules
+      - proxmox_firewall_insecure_migration_ports
+    _proxmox_firewall_delegate_vars: "{{ hostvars[_proxmox_firewall_delegate] }}"
+  ansible.builtin.assert:
+    that:
+      - >-
+        item not in _proxmox_firewall_delegate_vars or
+        _proxmox_firewall_delegate_vars[item] == (vars[item] | default(None))
+    fail_msg: >-
+      {{ item }} differs between this play ({{ vars[item] | default('<undefined>') }})
+      and {{ _proxmox_firewall_delegate }}
+      ({{ _proxmox_firewall_delegate_vars[item] | default('<undefined>') }}).
+      cluster.fw renders from this play's scope, so the datacenter file would be
+      written from the value above. Move it to a scope every including play sees
+      (group_vars/all) — see the role README, "Variable scope".
+    quiet: true
+  loop: "{{ _proxmox_firewall_cluster_scope_vars }}"
+  loop_control:
+    label: "{{ item }}"
+
+# CRITICAL: sg-smtp-relay's IN rules are the only thing opening the relay's
+# :25/:587 under the guest default DROP, and cluster.fw publishes that group
+# before any guest play runs. Guard it here, not in guest.yml.
+- name: Assert a cluster with a relay guest names the sg-smtp-relay client scope
+  vars:
+    _proxmox_firewall_guest_sgs: >-
+      {{ groups['all'] | map('extract', hostvars, 'guest_security_groups')
+         | select('defined') | flatten | list }}
+  ansible.builtin.assert:
+    that:
+      - (proxmox_firewall_smtp_relay_sources | default([])) | length > 0
+    fail_msg: >-
+      An inventory guest carries sg-smtp-relay, but
+      proxmox_firewall_smtp_relay_sources is empty, so cluster.fw would publish
+      the group with no IN rule and the relay's :25/:587 would close. Name the
+      client IPSets in group_vars/all (cluster scope).
+    quiet: true
+  when: "'sg-smtp-relay' in _proxmox_firewall_guest_sgs"

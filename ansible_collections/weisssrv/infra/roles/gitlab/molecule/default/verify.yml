@@ -1,8 +1,6 @@
 ---
-# Verify: gitlab.rb rendering (both nginx branches), the backup wrapper's
-# metric contracts (success, failure, secrets-copy failure, fail-closed guard),
-# the unit files, the NAT redirect invariant, the sshd drop-in and the fail2ban
-# jail.
+# Verify: gitlab.rb rendering, the backup wrapper's metric contracts, the unit
+# files, the NAT redirect invariant, the sshd drop-in and the fail2ban jail.
 - name: Verify
   hosts: all
   become: true
@@ -265,6 +263,27 @@
         fail_msg: "Performance settings not configured correctly"
         success_msg: "Performance settings configured correctly"
 
+    - name: Read the gitlab.rb rendered with the bundled stack disabled
+      ansible.builtin.slurp:
+        src: /tmp/gitlab.rb.bundled
+      register: gitlab_bundled_render
+
+    - name: Verify the bundled monitoring stack switches both ways
+      vars:
+        bundled: "{{ gitlab_bundled_render.content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - "\"prometheus['enable'] = false\" in bundled"
+          - "\"alertmanager['enable'] = false\" in bundled"
+          # The empty defaults must emit no line at all, or every consumer's
+          # bundled stack stops on the next reconfigure.
+          - "\"prometheus['enable']\" not in gitlab_config"
+          - "\"alertmanager['enable']\" not in gitlab_config"
+        fail_msg: >-
+          gitlab_bundled_prometheus_enabled / _alertmanager_enabled are inert,
+          or their empty default writes an enable line anyway.
+        success_msg: "the bundled monitoring stack switches both ways"
+
     - name: Verify Gitaly storage configuration
       ansible.builtin.assert:
         that:
@@ -408,7 +427,9 @@
       ansible.builtin.assert:
         that:
           - (gitlab_backup_nfs_render.content | b64decode) is search('NFS_ENABLED="1"')
-          - (gitlab_backup_nfs_render.content | b64decode) is search('mountpoint -q')
+          - >-
+            (gitlab_backup_nfs_render.content | b64decode)
+            is search('require_mounted_landing_zone gitlab_backup')
         fail_msg: "NFS-backed wrapper missing the not-a-mountpoint fail-closed guard"
         success_msg: "NFS-backed wrapper carries the fail-closed mountpoint guard"
 
@@ -593,19 +614,6 @@
         content: "molecule fixture\n"
         mode: "0600"
 
-    - name: Check mock gitlab-ctl status
-      ansible.builtin.command: /opt/gitlab/bin/gitlab-ctl status
-      register: gitlab_ctl_status
-      changed_when: false
-
-    - name: Verify mock GitLab shows running
-      ansible.builtin.assert:
-        that:
-          - gitlab_ctl_status.rc == 0
-          - gitlab_ctl_status.stdout is search('running')
-        fail_msg: "Mock gitlab-ctl status failed"
-        success_msg: "Mock gitlab-ctl status works correctly"
-
     # prepare.yml seeds drifted variants (a commented PREROUTING rule, an OUTPUT
     # rule missing -o lo); after converge each chain must hold exactly the one
     # managed rule.
@@ -639,6 +647,151 @@
           NAT redirect drift survived converge — expected exactly one managed
           rule per chain (OUTPUT with -o lo, no legacy comment variants).
         success_msg: "Exactly one managed SSH redirect rule per chain; seeded drift cleaned"
+
+    # The rule counter must emit a single clean integer on the no-match path,
+    # since the deletion branch keys off `| int` of this stdout.
+    - name: Count SSH redirect rules in a chain that has none
+      ansible.builtin.shell: |
+        set -uo pipefail
+        out=$(iptables -w 5 -t nat -S POSTROUTING 2>&1) || {
+          case "$out" in
+            *"No chain/target/match by that name"*) echo 0; exit 0 ;;
+            *) printf '%s\n' "$out" >&2; exit 1 ;;
+          esac
+        }
+        printf '%s\n' "$out" | grep -c -- '--dport {{ gitlab_ssh_port }} .* REDIRECT --to-ports 22' || true
+      args:
+        executable: /bin/bash
+      register: gitlab_nat_zero_count
+      changed_when: false
+
+    - name: Assert the no-match rule count is a single zero
+      ansible.builtin.assert:
+        that:
+          - gitlab_nat_zero_count.stdout == '0'
+        fail_msg: >-
+          The rule counter emitted {{ gitlab_nat_zero_count.stdout | to_json }}
+          on a chain with no matching rule; `| int` would fall back to 0 and the
+          drift cleanup would key off a parse failure.
+        success_msg: "The no-match rule count is exactly '0'"
+
+    - name: Count SSH redirect rules in a chain that does not exist
+      ansible.builtin.shell: |
+        set -uo pipefail
+        out=$(iptables -w 5 -t nat -S GITLAB_NO_SUCH_CHAIN 2>&1) || {
+          case "$out" in
+            *"No chain/target/match by that name"*) echo 0; exit 0 ;;
+            *) printf '%s\n' "$out" >&2; exit 1 ;;
+          esac
+        }
+        printf '%s\n' "$out" | grep -c -- '--dport {{ gitlab_ssh_port }} .* REDIRECT --to-ports 22' || true
+      args:
+        executable: /bin/bash
+      register: gitlab_nat_missing_chain_count
+      changed_when: false
+      failed_when: false
+
+    - name: Create a directory for the iptables stub
+      ansible.builtin.file:
+        path: /tmp/gitlab-iptables-stub
+        state: directory
+        mode: "0755"
+
+    - name: Install an iptables that cannot run
+      ansible.builtin.copy:
+        dest: /tmp/gitlab-iptables-stub/iptables
+        content: |
+          #!/bin/sh
+          echo "iptables v1.8.10 (nf_tables): can't initialize iptables table nat" >&2
+          exit 3
+        mode: "0755"
+
+    - name: Count SSH redirect rules with an iptables that cannot run
+      ansible.builtin.shell: |
+        set -uo pipefail
+        out=$(iptables -w 5 -t nat -S PREROUTING 2>&1) || {
+          case "$out" in
+            *"No chain/target/match by that name"*) echo 0; exit 0 ;;
+            *) printf '%s\n' "$out" >&2; exit 1 ;;
+          esac
+        }
+        printf '%s\n' "$out" | grep -c -- '--dport {{ gitlab_ssh_port }} .* REDIRECT --to-ports 22' || true
+      args:
+        executable: /bin/bash
+      environment:
+        PATH: "/tmp/gitlab-iptables-stub:{{ ansible_env.PATH }}"
+      register: gitlab_nat_broken_iptables
+      changed_when: false
+      failed_when: false
+
+    - name: Remove the iptables stub
+      ansible.builtin.file:
+        path: /tmp/gitlab-iptables-stub
+        state: absent
+
+    # A missing chain is a real count of zero; an iptables that could not run is
+    # not, or the drift cleanup is skipped and a duplicate rule is appended.
+    - name: Assert a missing chain counts zero and a broken iptables fails loudly
+      ansible.builtin.assert:
+        that:
+          - gitlab_nat_missing_chain_count.rc == 0
+          - gitlab_nat_missing_chain_count.stdout == '0'
+          - gitlab_nat_broken_iptables.rc != 0
+          - "'initialize iptables table' in gitlab_nat_broken_iptables.stderr"
+        fail_msg: >-
+          The rule counter conflated a missing chain with an iptables failure:
+          missing chain rc={{ gitlab_nat_missing_chain_count.rc }}
+          stdout={{ gitlab_nat_missing_chain_count.stdout | to_json }}, broken
+          iptables rc={{ gitlab_nat_broken_iptables.rc }}
+          stderr={{ gitlab_nat_broken_iptables.stderr | to_json }}.
+        success_msg: "A missing chain counts zero; a broken iptables fails the task"
+
+    # The rules are re-applied at boot by the role's own unit, so the live
+    # ruleset is never saved (which would freeze fail2ban's bans).
+    - name: Re-run the boot-time redirect apply script
+      ansible.builtin.command: /usr/local/sbin/gitlab-ssh-redirect.sh
+      changed_when: false
+
+    - name: Read PREROUTING SSH redirect rules after the re-apply
+      ansible.builtin.shell: |
+        set -o pipefail
+        iptables -t nat -S PREROUTING | grep -- '--dport {{ gitlab_ssh_port }} .* REDIRECT --to-ports 22'
+      args:
+        executable: /bin/bash
+      register: gitlab_nat_prerouting_reapplied
+      changed_when: false
+
+    - name: Stat the Git SSH redirect unit
+      ansible.builtin.stat:
+        path: /etc/systemd/system/gitlab-ssh-redirect.service
+      register: gitlab_ssh_redirect_unit
+
+    - name: Assert the redirect unit exists and re-applying adds no duplicate
+      ansible.builtin.assert:
+        that:
+          - gitlab_ssh_redirect_unit.stat.exists
+          - gitlab_nat_prerouting_reapplied.stdout_lines | length == 1
+        fail_msg: >-
+          The boot-time redirect unit is missing, or its script appended a
+          duplicate rule instead of finding the managed one.
+        success_msg: "The redirect unit is installed and its script is idempotent"
+
+    - name: Read the redirect unit's ordering
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/gitlab-ssh-redirect.service
+      register: gitlab_ssh_redirect_unit_text
+
+    # A unit that installs NAT rules orders itself BEFORE network-pre.target;
+    # After= would let the network come up before the redirect exists.
+    - name: Assert the redirect unit runs before network-pre.target
+      ansible.builtin.assert:
+        that:
+          - "'Before=network-pre.target' in (gitlab_ssh_redirect_unit_text.content | b64decode)"
+          - "'After=network-pre.target' not in (gitlab_ssh_redirect_unit_text.content | b64decode)"
+        fail_msg: >-
+          gitlab-ssh-redirect.service does not order itself before
+          network-pre.target, so sshd can come up before the redirect is applied.
+        success_msg: "The redirect unit is ordered before network-pre.target"
 
     - name: Read the AllowUsers drop-in
       ansible.builtin.slurp:
@@ -685,3 +838,38 @@
         path: /etc/fail2ban/filter.d/gitlab-shell.conf
       register: gitlab_old_filter
       failed_when: gitlab_old_filter.stat.exists
+
+    - name: Read the real-IP negative-assert result
+      ansible.builtin.slurp:
+        src: /tmp/gitlab-realip-assert.json
+      register: gitlab_realip_assert
+
+    - name: Assert an empty real-IP trust list fails the role
+      ansible.builtin.assert:
+        that:
+          - (gitlab_realip_assert.content | b64decode | from_json).failed
+          - >-
+            'gitlab_nginx_real_ip_trusted_addresses resolved empty'
+            in (gitlab_realip_assert.content | b64decode | from_json).msg
+        fail_msg: >-
+          the real-IP assert accepted an empty trust list, so nginx would
+          attribute every request to the fronting proxy
+        success_msg: "an empty real-IP trust list fails the role"
+
+    - name: Read the no-proxy escape-hatch result
+      ansible.builtin.slurp:
+        src: /tmp/gitlab-realip-nofail.json
+      register: gitlab_realip_nofail
+
+    - name: Assert gitlab_nginx_trust_no_proxy skips the trust-list assert
+      vars:
+        gitlab_nofail_stop: >-
+          {{ (gitlab_realip_nofail.content | b64decode | from_json).stopped_at }}
+      ansible.builtin.assert:
+        that:
+          - "'gitlab_nginx_real_ip_trusted_addresses' not in gitlab_nofail_stop"
+          - "'gitlab_smtp_user' in gitlab_nofail_stop"
+        fail_msg: >-
+          gitlab_nginx_trust_no_proxy did not waive the trust-list assert, so an
+          nginx reached directly cannot be configured
+        success_msg: "gitlab_nginx_trust_no_proxy waives the trust-list assert"

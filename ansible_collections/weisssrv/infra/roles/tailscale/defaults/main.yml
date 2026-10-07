@@ -20,5 +20,9 @@ tailscale_additional_flags: []  # extra `tailscale up` flags, e.g. ["--ssh"]
 # a host that silently fails to adopt is caught. See the README (ACL tags).
 tailscale_tags_require_adoption: false
 
+# true fails the play when a node still has to join but TAILSCALE_AUTH_KEY is
+# absent, instead of skipping the join silently.
+tailscale_require_authkey: false
+
 # The auth key is read from the TAILSCALE_AUTH_KEY environment variable, never
 # from a variable — it must not reach argv or a fact.

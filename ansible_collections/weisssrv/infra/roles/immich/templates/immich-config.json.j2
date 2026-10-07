@@ -1,12 +1,8 @@
 {# {{ ansible_managed }} — rendered by the immich role (no_log; contains the OIDC client secret). #}
 {#
-  IMMICH_CONFIG_FILE. When present, Immich sources system config from here and
-  the admin UI settings become read-only. Keys not listed fall back to Immich's
-  built-in defaults (the file is a partial override).
-
-  immich_bootstrap_mode drives the one-time admin-registration escape hatch:
-    true  -> passwordLogin on, oauth off/no-autolaunch (reach the admin signup)
-    false -> passwordLogin off, oauth on + autoLaunch (SSO-only; the default)
+  IMMICH_CONFIG_FILE: a partial override that makes the admin UI settings
+  read-only. immich_bootstrap_mode true opens passwordLogin for the one-time
+  admin signup; false is SSO-only. See the role README.
 #}
 {% set bootstrap = immich_bootstrap_mode | bool %}
 {% set _quota = immich_oauth_default_storage_quota | string %}

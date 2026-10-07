@@ -95,6 +95,15 @@ class TestExportVersions:
         assert r.returncode != 0
         assert "reserved variable name" in r.stderr
 
+    def test_multi_line_value_fails(self, tmp_path: Path):
+        # A newline would span several physical export lines, which the callers
+        # re-read line by line.
+        p = tmp_path / "multiline.yaml"
+        p.write_text("data:\n  notes: |\n    first\n    second\n")
+        r = _run(["export-versions", str(p)])
+        assert r.returncode != 0
+        assert "multi-line value for notes" in r.stderr
+
 
 class TestK8sVersion:
     def test_derives_major_minor_zero(self, cm: Path):

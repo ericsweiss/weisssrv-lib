@@ -73,6 +73,18 @@ control-plane/etcd member whose quorum must not wait on this host's unlock, for
 instance. Guests in the cohort should carry `onboot=0`, since membership here
 is what starts them.
 
+The unit runs un-sandboxed, matching stock `pve-guests.service`: `qm` and `pct`
+fork qemu and lxc, which need setuid helpers and broad `/etc/pve` access, and
+`NoNewPrivileges` would propagate into the guest and break its networking.
+`TimeoutStartSec` is bounded, because `Type=oneshot` otherwise waits forever on
+a hung guest start and `Restart=on-failure` would never fire.
+
+A guest is "not provisioned yet" only when its config file
+(`/etc/pve/qemu-server/<vmid>.conf`, `/etc/pve/lxc/<ctid>.conf`) is missing; it
+is then skipped and the unit still succeeds. If pmxcfs itself is unmounted the
+starter exits non-zero instead, so `Restart=on-failure` retries rather than
+reporting a clean run that started nothing.
+
 ## Threat model
 
 Encryption protects against **disk-leaves-building** scenarios: RMA, disposal,
@@ -101,11 +113,20 @@ control, or encrypt it.
 
 ## Cold-cluster boot
 
+`zfs-mount-encrypted.service` is ordered `After=` the key-load units and is
+never `Before=` a boot target. The anchor, nfsd and the encrypted-storage guests
+order `After=` it, so an ordering edge into a boot target would deadlock the
+boot instead of letting the retry loop converge.
+
 If everything power-cycles together and Connect is not up yet, the per-pool
 units retry continuously and the anchor stays `activating`, so nfsd and the
 gated guests wait rather than fail. When Connect appears, every layer converges
 on its own: keys load → datasets mount → anchor active → nfsd → guests. No
 operator action required.
+
+The mount script is best effort: `zfs mount -a` runs whatever the key status
+is, so a pool that is slow to unlock never blocks another pool's datasets from
+mounting.
 
 If Connect never comes up (or a passphrase was rotated), unlock by hand and the
 retrying units close the loop:
@@ -130,8 +151,8 @@ go `failed` on a locked boot and needs no `reset-failed`.
 | `zfs_encryption_connect_token` | yes, where pools are set | Injected at runtime from 1Password; asserted non-empty. |
 | `zfs_encryption_connect_url` | yes, where pools are set | Defaults to `https://connect.<zfs_encryption_internal_domain>`; asserted non-empty. |
 | `zfs_encryption_internal_domain` | no | Aliases the inventory-wide `internal_domain`. |
-| `zfs_encryption_connect_vault` | no | Vault holding the passphrase items (`Homelab`). A 26-char lowercase id is used as a vault UUID directly; anything else is resolved by name at runtime. Scope it to a vault holding only the passphrases — see below. |
-| `zfs_encryption_guest_vmids` / `_ctids` | no | Guest cohort started after the mount anchor. |
+| `zfs_encryption_connect_vault` | yes, where pools are set | Vault holding the passphrase items. No default; asserted non-empty. A 26-char lowercase id is used as a vault UUID directly, anything else is resolved by name at runtime. Scope it to a vault holding only the passphrases — see below. |
+| `zfs_encryption_guest_vmids`, `zfs_encryption_guest_ctids` | no | Guest cohort started after the mount anchor. |
 | `zfs_encryption_fetch_timeout_seconds` | no | Per-phase deadline inside one script invocation (120). |
 | `zfs_encryption_fetch_retry_seconds` | no | Sleep between Connect retries (5); jittered. |
 | `zfs_encryption_install_zfsutils` | no | Set false only in CI images without `zfsutils-linux`; also skips the pool-is-encrypted assert. |
@@ -175,10 +196,10 @@ One `Password` item per pool in the configured vault, with a field matching
 
 The token lands on disk as a plaintext bearer credential (`0400 root`) on every
 host with pools, and it can read **every item in every vault the token covers**.
-`zfs_encryption_connect_vault` defaults to `Homelab` — the vault name this
-collection's original consumer uses — so a deployment that keeps a mixed-purpose
-vault gives a boot credential read access to all of it. Point it at a vault
-holding only the pool passphrases.
+`zfs_encryption_connect_vault` has no default and is asserted non-empty on any
+host with pools, so each site names its own vault. Point it at a vault holding
+only the pool passphrases: a mixed-purpose vault gives a boot credential read
+access to all of it.
 
 Order matters, because a Connect **token** can only cover vaults the Connect
 **server** itself has access to. Minting a token against a vault the server
@@ -191,11 +212,3 @@ load, and only then revoke the old token.
 
 `zfs_encryption_key_command` sidesteps Connect entirely and is the alternative
 when a dedicated vault is not worth those steps.
-
-## Upgrading
-
-Hosts first configured before the mount-anchor layout may still carry
-`/etc/systemd/system/zfs-mount.service.requires/zfs-load-key@*.service` symlinks
-from the old `RequiredBy=` `[Install]`. The role no longer sweeps them; delete
-any that exist (`systemctl disable` will not, it only removes the current link)
-and `systemctl daemon-reload`, or the next boot fails `zfs-mount.service`.

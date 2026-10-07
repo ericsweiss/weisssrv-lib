@@ -67,6 +67,38 @@
         fail_msg: "Config file missing expected sections"
         success_msg: "Config file has correct structure"
 
+    - name: Read the multi-replica scratch render
+      ansible.builtin.slurp:
+        src: /tmp/adguard-sync-replicas-render.yaml
+      register: replicas_render
+      no_log: true
+
+    - name: Verify the replicas branch renders both entries with credential fallback
+      ansible.builtin.assert:
+        that:
+          # The singular `replica:` key must be gone, not merely outnumbered.
+          - "'replicas:' in (replicas_render.content | b64decode).split('\n')"
+          - "'replica:' not in (replicas_render.content | b64decode).split('\n')"
+          - >-
+            (replicas_render.content | b64decode)
+            | regex_findall('^  - url: ', multiline=True) | length == 2
+          - "'    username: \"replica-one-user\"' in (replicas_render.content | b64decode)"
+          - "'    username: \"admin\"' in (replicas_render.content | b64decode)"
+        fail_msg: "The adguard_sync_replicas branch did not render two entries with the admin fallback"
+        success_msg: "The adguard_sync_replicas branch renders both entries and falls back to the admin credentials"
+
+    - name: Read the url-less replicas assert result
+      ansible.builtin.slurp:
+        src: /tmp/adguard-sync-replicas-assert.json
+      register: replicas_assert
+
+    - name: Verify a replicas entry without a url is rejected
+      ansible.builtin.assert:
+        that:
+          - (replicas_assert.content | b64decode | from_json).failed
+        fail_msg: "A adguard_sync_replicas entry without a url was accepted"
+        success_msg: "A adguard_sync_replicas entry without a url is rejected"
+
     - name: Check if systemd service file exists
       ansible.builtin.stat:
         path: /etc/systemd/system/adguardhome-sync.service
@@ -114,11 +146,19 @@
 
     # Execute the writer (the ExecStopPost passes $SERVICE_RESULT): success and
     # failure arms, asserting the failure arm preserves the last-success timestamp.
-    - name: Create the templated textfile dir (no node_exporter_host in this scenario)
-      ansible.builtin.file:
+    - name: Check the role created the textfile collector dir
+      ansible.builtin.stat:
         path: /tmp/adg-textfile
-        state: directory
-        mode: "0755"
+      register: adg_textfile_dir
+
+    - name: Assert the textfile dir exists without node_exporter_host
+      ansible.builtin.assert:
+        that:
+          - adg_textfile_dir.stat.isdir | default(false)
+        fail_msg: >-
+          the role did not create adguard_sync_textfile_dir, so the writer
+          would log and publish nothing
+        success_msg: "the role owns the textfile collector dir"
 
     - name: Run the metrics writer (success arm)
       ansible.builtin.command: /usr/local/bin/adguardhome-sync-metrics.sh success

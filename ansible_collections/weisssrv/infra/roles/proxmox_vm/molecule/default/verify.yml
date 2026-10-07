@@ -15,6 +15,7 @@
         - 05-existence-guard.json
         - 06-firewall-reconcile.json
         - 07-firewall-zero.json
+        - 07a-no-net0.json
         - 08-disk-vzdump-backup.json
         - 09-disk-slot-assert.json
         - 10-meta-drift.json
@@ -22,6 +23,9 @@
         - 12-hostpci.json
         - 13-windows-int-size.json
         - 14-cloudinit-net.json
+        - 15-zvol-create.json
+        - 16-disk-backend.json
+        - 17-cluster-probe.json
       register: artifacts
 
     - name: Decode artifacts
@@ -33,13 +37,46 @@
         existence: "{{ artifacts.results[4].content | b64decode | from_json }}"
         fw_reconcile: "{{ artifacts.results[5].content | b64decode | from_json }}"
         fw_zero: "{{ artifacts.results[6].content | b64decode | from_json }}"
-        disk_backup: "{{ artifacts.results[7].content | b64decode | from_json }}"
-        slot_assert: "{{ artifacts.results[8].content | b64decode | from_json }}"
-        meta_drift: "{{ artifacts.results[9].content | b64decode | from_json }}"
-        windows: "{{ artifacts.results[10].content | b64decode | from_json }}"
-        hostpci: "{{ artifacts.results[11].content | b64decode | from_json }}"
-        windows_int: "{{ artifacts.results[12].content | b64decode | from_json }}"
-        cloudinit_net: "{{ artifacts.results[13].content | b64decode | from_json }}"
+        no_net0: "{{ artifacts.results[7].content | b64decode | from_json }}"
+        disk_backup: "{{ artifacts.results[8].content | b64decode | from_json }}"
+        slot_assert: "{{ artifacts.results[9].content | b64decode | from_json }}"
+        meta_drift: "{{ artifacts.results[10].content | b64decode | from_json }}"
+        windows: "{{ artifacts.results[11].content | b64decode | from_json }}"
+        hostpci: "{{ artifacts.results[12].content | b64decode | from_json }}"
+        windows_int: "{{ artifacts.results[13].content | b64decode | from_json }}"
+        cloudinit_net: "{{ artifacts.results[14].content | b64decode | from_json }}"
+        zvol_create: "{{ artifacts.results[15].content | b64decode | from_json }}"
+        disk_backend: "{{ artifacts.results[16].content | b64decode | from_json }}"
+        cluster_probe: "{{ artifacts.results[17].content | b64decode | from_json }}"
+
+    - name: A guest with no net0 fails rather than reporting ok
+      ansible.builtin.assert:
+        that:
+          - no_net0.failed
+          - "'NONET0' in no_net0.stdout"
+        fail_msg: >-
+          The NIC firewall repair reported ok for a guest whose config has no
+          net0, so every per-guest security group on it stays inert.
+        success_msg: "a guest with no net0 fails the NIC firewall repair"
+
+    - name: An unimplemented disk backend fails by name
+      ansible.builtin.assert:
+        that:
+          - disk_backend.rejected_by_name
+        fail_msg: >-
+          proxmox_vm_additional_disk_backend is not guarded: an unimplemented
+          backend reached the dynamic include as a file-not-found.
+        success_msg: "an unimplemented disk backend is rejected by name"
+
+    - name: A cluster probe that nothing answered fails by name
+      ansible.builtin.assert:
+        that:
+          - cluster_probe.rejected_by_name
+          - cluster_probe.hosts_probed == 1
+        fail_msg: >-
+          probe-cluster-resources handed the caller an empty answer instead of
+          failing, so a guest whose node could not be read is reconciled green.
+        success_msg: "an unanswered cluster probe fails by name"
 
     - name: NAS host defaults to ssd
       ansible.builtin.assert:
@@ -64,10 +101,9 @@
           - pool_list.failed
           - "'not-a-real-pool' in pool_list.msg"
 
-    # The firewall, agent, and startup reconciles are deliberately ungated by
-    # the existence check, so read-only `qm config` probes are expected. The
-    # guard contract is: no MUTATING qm calls when the VM exists and its NIC
-    # already carries firewall=1 and agent/onboot/startup already match.
+    # The firewall, agent and startup reconciles are ungated by the existence
+    # check, so read-only `qm config` probes are expected. The guard contract is
+    # no MUTATING qm calls once the VM exists and every value already matches.
     - name: Existence guard prevents mutating qm calls when VM already exists
       ansible.builtin.assert:
         that:
@@ -94,10 +130,9 @@
           - fw_zero.stale_key_in_set == 0
           - fw_zero.reconcile_changed
 
-    # vzdump_backup idempotency on additional (passthrough) disks. The contract:
-    # set backup=0 exactly when a vzdump_backup:false disk's state lacks it,
-    # no-op when it already matches (critical — no churn on every deploy), and
-    # never add backup=0 to a default disk that should stay in vzdump.
+    # vzdump_backup idempotency on additional disks: set backup=0 only when a
+    # vzdump_backup:false disk lacks it, no-op when it matches, and never touch
+    # a default disk that should stay in vzdump.
     - name: Additional-disk backup=0 is applied + idempotent + scoped to vzdump_backup:false
       ansible.builtin.assert:
         that:
@@ -129,19 +164,15 @@
           # 8i: scsi_slot 0 (reserved boot disk) -> assert fails (>=1 floor)
           - slot_assert.zero_rejected
 
-    # The agent/memory/onboot/startup reconciles must MUTATE on real drift
-    # (existence case 5 already proves the no-op path, incl. the up=0
-    # normalization since the default stub reports `startup: order=100`). Each
-    # drift case expects exactly one targeted `qm set`.
+    # The agent/memory/onboot/startup reconciles must MUTATE on real drift, one
+    # targeted `qm set` per drift case. Existence case 5 proves the no-op path.
     - name: Agent/memory/onboot/startup drift each triggers exactly one qm set
       ansible.builtin.assert:
         that:
           # 7b: agent enabled=0 -> exactly one `qm set --agent 1`
           - meta_drift.agent_set == 1
           # 7b-ii: stub reports memory 1024 against the desired 2048 -> exactly
-          #        one `qm set --memory 2048` (growth arm; the shrink arm is
-          #        7b-iii). Zero would mean an inventory memory change reaches
-          #        an existing guest through nothing.
+          #        one `qm set --memory 2048` (growth arm; shrink is 7b-iii).
           - meta_drift.memory_set == 1
           # 7c: onboot:0 + stale startup -> exactly one combined onboot/startup set
           #     written with the canonical desired `order=100,up=0` string
@@ -182,10 +213,9 @@
         fail_msg: "proxmox_vm_disk_size: 250 (int) did not assemble `scsi0 ssd:250`"
         success_msg: "bare-int proxmox_vm_disk_size passes the GiB assert and assembles the boot disk"
 
-    # Cloud-init network reconcile on an existing VM: a drifted ipconfig0/
-    # nameserver converges to inventory with exactly one qm set; a matching one
-    # is a pure no-op. Both arms run the reconcile (skip_create:false, not
-    # skipped) — the no-op arm proves the compare, not just the code path.
+    # Cloud-init network reconcile on an existing VM: drifted ipconfig0 or
+    # nameserver converges with exactly one qm set, a matching one is a no-op.
+    # Both arms run the reconcile, so the no-op arm proves the compare.
     - name: Cloud-init net reconcile converges drift and no-ops a match
       ansible.builtin.assert:
         that:
@@ -200,3 +230,55 @@
           - cloudinit_net.nodrift_any_set == 0
           - not cloudinit_net.nodrift_changed
           - not cloudinit_net.nodrift_skipped
+
+    - name: HostPCI list attaches each device at its list index
+      ansible.builtin.assert:
+        that:
+          - hostpci.indexed_pair == 1
+          - hostpci.any_hostpci == 1
+        fail_msg: >-
+          proxmox_vm_hostpci must emit one `qm set` carrying --hostpci0 and
+          --hostpci1 in list order, verbatim — got
+          indexed_pair={{ hostpci.indexed_pair }},
+          any_hostpci={{ hostpci.any_hostpci }}
+
+    - name: Zvols are created once, with -s only for a sparse disk
+      ansible.builtin.assert:
+        that:
+          - zvol_create.sparse_creates == 1
+          - zvol_create.thick_creates == 1
+          - zvol_create.second_run_creates == 0
+        fail_msg: >-
+          Expected exactly one `zfs create -p -s -V 10G` and one
+          `zfs create -p -V 1G` on the first run and none on the second, got
+          {{ zvol_create }}.
+
+    # Escalation must be declared, not inherited: a consumer driving Proxmox
+    # over `ansible_connection: local` can then set `ansible_become: false` and
+    # keep the delegated qm/pveum writes running as root.
+    - name: Read the role's delegated task files  # noqa: no-relative-paths
+      ansible.builtin.set_fact:
+        proxmox_vm_all_tasks: >-
+          {{ (lookup('file', playbook_dir ~ '/../../tasks/main.yml') | from_yaml)
+             + (lookup('file', playbook_dir ~ '/../../tasks/disks-zfs.yml') | from_yaml)
+             + (lookup('file', playbook_dir ~ '/../../tasks/guest-nic-firewall.yml') | from_yaml)
+             + (lookup('file', playbook_dir ~ '/../../tasks/guest-startup.yml') | from_yaml)
+             + (lookup('file', playbook_dir ~ '/../../tasks/probe-cluster-resources-one.yml') | from_yaml) }}
+
+    - name: Every delegated task escalates explicitly
+      vars:
+        proxmox_vm_inheriting_become: >-
+          {{ proxmox_vm_all_tasks
+             | selectattr('delegate_to', 'defined')
+             | rejectattr('become', 'defined')
+             | map(attribute='name')
+             | reject('equalto', 'Wait for VM to be reachable via SSH')
+             | list }}
+      ansible.builtin.assert:
+        that:
+          - proxmox_vm_inheriting_become | length == 0
+        fail_msg: >-
+          These delegated tasks inherit escalation instead of declaring
+          `become: true`, so a caller running with `ansible_become: false`
+          loses root on the Proxmox node: {{ proxmox_vm_inheriting_become }}
+        success_msg: "Every delegated task declares become: true"

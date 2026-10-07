@@ -5,7 +5,8 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/zfs_exporter --web.listen-address=:{{ zfs_exporter_port }}
+{% set _bind = zfs_exporter_listen_address | default('', true) | trim %}{% set _listen = ('[' ~ _bind ~ ']') if ':' in _bind else _bind %}{#- an IPv6 literal must be bracketed or Go rejects addr:port -#}
+ExecStart=/usr/local/bin/zfs_exporter --web.listen-address={{ _listen }}:{{ zfs_exporter_port }}
 Restart=always
 RestartSec=5
 # Root is required for ZFS introspection, but the process gets the same

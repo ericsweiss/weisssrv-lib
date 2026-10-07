@@ -1,38 +1,23 @@
 #!/usr/bin/env python3
-"""Cross-file pins that are asserted equal in COMMENTS are asserted here too.
+"""Cross-file pins asserted equal in comments are asserted here too.
 
-Three sets of pins are copied between files that no single tool reads together,
-each carrying a comment or a doc sentence promising the copies match. A comment
-is not a gate: the copies drift on the next bump and nothing notices.
-
-* `ci/github/ci.example.yml` — the forge-portable GitHub workflow a consumer
-  VENDORS rather than includes. Every tool it pins carries a "Matches the
-  weisssrv-lib <x> template default" comment, and docs/INCLUDE-CONTRACT.md
-  states that "both CI shapes gate on identical tools". Drift means the two
-  shapes silently lint under different linters.
-* The docker CLI / DinD line — one 27.5.1-with-digests set spread over the
-  build template, the library's own release job, its molecule jobs and the
-  molecule-ci image. The DinD service is the one component that runs
-  PRIVILEGED, and it executes the binaries the sha256 pins protect.
-* `docker/molecule-test/Dockerfile`'s `ADGUARD_HOME_VERSION` — the release
-  tarball staged in the image so DNS scenarios install from disk. A mismatch
-  with the version the scenarios pin is not fatal (the role falls back to
-  fetching github.com mid-test), which is exactly why it rots unnoticed: the
-  symptom is a slower, flakier job, not a red one.
-
-tests/test_lint_version_parity.py owns the linter pins shared between the
-molecule image and the ci/lint templates; this module owns everything else.
+The three pin sets: docs/VERSIONING.md. Linter pins live in
+tests/test_lint_version_parity.py.
 """
 
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 import pytest
 import yaml
+from _helpers import template_input_default
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "scripts"))
+from ci_yaml import CILoader as _CILoader  # noqa: E402
 
 GITHUB_EXAMPLE = REPO / "ci" / "github" / "ci.example.yml"
 DOCKER_BUILD_TEMPLATE = REPO / "ci" / "build" / "docker-build.yml"
@@ -41,24 +26,32 @@ MOLECULE_TEST_DOCKERFILE = REPO / "docker" / "molecule-test" / "Dockerfile"
 PRE_COMMIT = REPO / "lint" / "pre-commit-config.yaml"
 LIB_CI = REPO / ".gitlab-ci.yml"
 MOLECULE_JOBS = REPO / ".gitlab" / "ci" / "molecule-jobs.gitlab-ci.yml"
+MOLECULE_MATRIX = REPO / "ci" / "internal" / "molecule-matrix.gitlab-ci.yml"
+KUBECTL_SETUP = REPO / "ci" / "deploy" / "kubectl-setup.yml"
+FLUX_LINT = REPO / "ci" / "validate" / "flux-lint.yml"
+DOCKER_DIND_TEMPLATE = REPO / "ci" / "templates" / "docker-dind.yml"
 ADGUARD_ROLE = (
     REPO / "ansible_collections" / "weisssrv" / "infra" / "roles" / "adguard_home"
 )
+COLLECTION_RUNTIME = (
+    REPO / "ansible_collections" / "weisssrv" / "infra" / "meta" / "runtime.yml"
+)
 
 
-def template_input_default(template: Path, name: str) -> str:
-    """The `default:` of one spec:inputs entry (the first YAML document)."""
-    spec = next(yaml.safe_load_all(template.read_text()))
-    inputs = (spec or {}).get("spec", {}).get("inputs", {})
-    assert name in inputs, f"{template} has no input {name!r}"
-    return str(inputs[name]["default"])
+_VARS_FALLBACK = re.compile(r"\$\{\{\s*vars\.\w+\s*\|\|\s*'([^']+)'\s*\}\}")
 
 
 def workflow_env(name: str) -> str:
-    """One entry of the GitHub example workflow's top-level `env:` block."""
+    """One entry of the GitHub example workflow's top-level `env:` block.
+
+    A `${{ vars.X || 'literal' }}` value resolves to its literal fallback: the
+    pin a consumer that sets no repository variable actually runs.
+    """
     env = yaml.safe_load(GITHUB_EXAMPLE.read_text()).get("env", {})
     assert name in env, f"{GITHUB_EXAMPLE} has no env entry {name!r}"
-    return str(env[name])
+    value = str(env[name])
+    match = _VARS_FALLBACK.fullmatch(value)
+    return match.group(1) if match else value
 
 
 class TestGitHubExampleWorkflowPins:
@@ -69,10 +62,13 @@ class TestGitHubExampleWorkflowPins:
         [
             ("YAMLLINT_VERSION", "ci/lint/yaml-lint.yml", "yamllint_version"),
             ("KUSTOMIZE_VERSION", "ci/validate/flux-lint.yml", "kustomize_version"),
+            ("PYYAML_VERSION", "ci/validate/flux-lint.yml", "pyyaml_version"),
             ("KUSTOMIZE_SHA256", "ci/validate/flux-lint.yml", "kustomize_sha256"),
             ("KUBECONFORM_VERSION", "ci/validate/flux-lint.yml", "kubeconform_version"),
             ("KUBECONFORM_SHA256", "ci/validate/flux-lint.yml", "kubeconform_sha256"),
             ("RUFF_VERSION", "ci/lint/python-lint.yml", "ruff_version"),
+            ("ALLOWED_SKIPS", "ci/validate/flux-lint.yml", "allowed_skips"),
+            ("CRD_CATALOG_REF", "ci/validate/flux-lint.yml", "crd_catalog_ref"),
         ],
         ids=lambda v: v if isinstance(v, str) and v.isupper() else None,
     )
@@ -98,6 +94,93 @@ class TestGitHubExampleWorkflowPins:
 
 
 # `docker:<version>-<variant>@sha256:<digest>` — every pinned reference shape.
+class TestLibraryOwnPins:
+    """Pins the library holds against itself; nothing else reads them."""
+
+    def test_kubectl_pin_is_within_one_minor_of_the_k8s_line(self):
+        """scripts/check-kubectl-version-pin.py reads CONSUMER paths only."""
+        kubectl = template_input_default(KUBECTL_SETUP, "kubectl_version")
+        k8s = workflow_env("K8S_VERSION")
+        km = tuple(int(p) for p in kubectl.lstrip("v").split(".")[:2])
+        sm = tuple(int(p) for p in k8s.split(".")[:2])
+        assert km[0] == sm[0] and abs(km[1] - sm[1]) <= 1, (
+            f"kubectl {kubectl} is more than one minor from K8S_VERSION {k8s}"
+        )
+
+    def test_k8s_minor_matches_the_flux_lint_fallback(self):
+        """K8S_VERSION is otherwise held equal to nothing."""
+        m = re.search(r'K8S_VER="\$\{K8S_VERSION_INPUT:-([\d.]+)\}"', FLUX_LINT.read_text())
+        assert m, "flux-lint simple-mode K8S_VER fallback not found"
+        assert workflow_env("K8S_VERSION") == m.group(1)
+
+
+_DIND_INPUTS = (
+    "dind_service",
+    "docker_cli_version",
+    "docker_cli_sha256_amd64",
+    "docker_cli_sha256_arm64",
+    "buildx_version",
+    "buildx_sha256_amd64",
+    "buildx_sha256_arm64",
+    "login_registry",
+    "login_user",
+    "login_password",
+)
+
+
+_DIND_RESOURCE_INPUTS = ("service_memory_limit", "service_memory_request")
+
+# Exact, not a floor: a variable added to one side only must be red.
+_DIND_SHARED_VARS = frozenset({
+    "KUBERNETES_SERVICE_MEMORY_LIMIT", "KUBERNETES_SERVICE_MEMORY_REQUEST",
+    "DOCKER_HOST", "DOCKER_TLS_CERTDIR", "DOCKER_BUILDKIT",
+    "DOCKER_CLI_VERSION", "DOCKER_CLI_SHA256_AMD64", "DOCKER_CLI_SHA256_ARM64",
+    "BUILDX_VERSION", "BUILDX_SHA256_AMD64", "BUILDX_SHA256_ARM64",
+})
+
+
+def _dind_job(path: Path) -> dict:
+    """The single job a DinD-shaped template defines, past its `spec:` header."""
+    documents = [
+        doc for doc in yaml.load_all(path.read_text(), Loader=_CILoader) if doc
+    ]
+    return list(documents[-1].values())[0]
+
+
+class TestDockerDindTemplateParity:
+    """docker-build.yml copies docker-dind.yml's body; `extends:` is not used."""
+
+    @pytest.mark.parametrize("name", _DIND_INPUTS + _DIND_RESOURCE_INPUTS)
+    def test_the_dind_template_declares_the_same_default(self, name):
+        assert template_input_default(DOCKER_DIND_TEMPLATE, name) == (
+            template_input_default(DOCKER_BUILD_TEMPLATE, name)
+        )
+
+    def test_the_services_block_is_the_same(self):
+        assert _dind_job(DOCKER_DIND_TEMPLATE)["services"] == (
+            _dind_job(DOCKER_BUILD_TEMPLATE)["services"]
+        )
+
+    def test_the_shared_variables_carry_the_same_values(self):
+        dind = _dind_job(DOCKER_DIND_TEMPLATE)["variables"]
+        build = _dind_job(DOCKER_BUILD_TEMPLATE)["variables"]
+        assert set(dind) == _DIND_SHARED_VARS, "docker-dind.yml gained/lost a variable"
+        assert _DIND_SHARED_VARS <= set(build), sorted(_DIND_SHARED_VARS - set(build))
+        assert {k: dind[k] for k in _DIND_SHARED_VARS} == {
+            k: build[k] for k in _DIND_SHARED_VARS
+        }
+
+    def test_the_bootstrap_and_login_steps_are_byte_identical(self):
+        dind = _dind_job(DOCKER_DIND_TEMPLATE)["before_script"]
+        build = _dind_job(DOCKER_BUILD_TEMPLATE)["before_script"]
+        # Shape first: a step appended to the fragment consumers extend would
+        # otherwise be invisible. docker-build.yml carries an extra helper.
+        assert len(dind) == 2, "docker-dind.yml gained/lost a before_script step"
+        assert build[:2] == dind, "the shared bootstrap/login prefix drifted"
+        assert dind[0] == build[0], "the CLI/buildx bootstrap step drifted"
+        assert dind[1] == build[1], "the registry-login step drifted"
+
+
 _DOCKER_IMAGE_RE = re.compile(
     r"docker:(?P<version>\d+\.\d+\.\d+)-(?P<variant>[a-z]+)@sha256:(?P<digest>[0-9a-f]{64})"
 )
@@ -173,9 +256,8 @@ def _scenario_adguard_pins() -> dict[str, str]:
 class TestAdGuardHomeArchivePin:
     """The staged tarball only gets used when its version matches the scenarios.
 
-    `adguard_home_version` has NO role default — it is a required input, because
-    a version pin is site data — so the scenarios' own pins are the contract the
-    image tracks.
+    `adguard_home_version` has no role default, so the scenarios' own pins are
+    the contract the image tracks.
     """
 
     def test_the_image_pins_a_version(self):
@@ -207,6 +289,50 @@ class TestAdGuardHomeArchivePin:
         )
 
 
+def _ci_document(path: Path) -> dict:
+    """The first non-empty YAML document of a GitLab CI file."""
+    return next(doc for doc in yaml.load_all(path.read_text(), Loader=_CILoader) if doc)
+
+
+def _include_inputs(path: Path, local: str) -> dict:
+    """The `inputs:` of one `include: - local: <path>` entry."""
+    for entry in _ci_document(path).get("include", []):
+        if isinstance(entry, dict) and entry.get("local") == local:
+            return entry.get("inputs", {})
+    raise AssertionError(f"{path} has no include of {local}")
+
+
+class TestPyYamlPinParity:
+    """The three PyYAML spellings .gitlab-ci.yml says move together."""
+
+    def test_the_three_spellings_agree(self):
+        variable = str(_ci_document(LIB_CI)["variables"]["PYYAML_VERSION"])
+        include = str(
+            _include_inputs(LIB_CI, "/ci/test/python-tests.yml")["pyyaml_version"]
+        )
+        default = template_input_default(MOLECULE_MATRIX, "pyyaml_version")
+        assert variable == include == default, (
+            f"PYYAML_VERSION {variable}, python-tests input {include}, "
+            f"molecule-matrix default {default}"
+        )
+
+
+class TestAnsibleCoreFloorParity:
+    """collection-floor-build proves the floor the collection advertises."""
+
+    def test_the_floor_build_pins_the_advertised_floor(self):
+        requires = yaml.safe_load(COLLECTION_RUNTIME.read_text())["requires_ansible"]
+        match = re.match(r">=\s*(\d+\.\d+)", requires)
+        assert match, f"requires_ansible {requires!r} is not a >= floor"
+        floor = match.group(1)
+        pinned = str(_ci_document(LIB_CI)["collection-floor-build"]["variables"][
+            "ANSIBLE_CORE_FLOOR"
+        ])
+        assert pinned.startswith(floor + "."), (
+            f"collection-floor-build pins ansible-core {pinned}, not the {floor} floor"
+        )
+
+
 class TestContractIsDocumented:
     """Both sides name the gate, so a bumper is pointed at the other copy."""
 
@@ -215,6 +341,7 @@ class TestContractIsDocumented:
         [
             GITHUB_EXAMPLE,
             DOCKER_BUILD_TEMPLATE,
+            DOCKER_DIND_TEMPLATE,
             MOLECULE_CI_DOCKERFILE,
             MOLECULE_TEST_DOCKERFILE,
         ],

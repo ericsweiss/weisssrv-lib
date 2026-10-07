@@ -3,6 +3,10 @@
 Zone-wide Cloudflare settings plus declarative DNS records for one zone, with
 per-record destroy protection.
 
+Point it only at a zone you own outright. The default settings include HSTS
+with `include_subdomains`, which pins HTTPS for every hostname under the zone
+for a year and cannot be withdrawn on an operator's timescale.
+
 The module is the **shape**; the record inventory is site data the caller
 supplies (a cluster instance's `dns.tf` / `terraform.tfvars`).
 
@@ -12,7 +16,7 @@ The tag below is an example: use the tag your repo pins (docs/VERSIONING.md).
 
 ```hcl
 module "zone" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/cloudflare-zone?ref=v0.17.1"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/cloudflare-zone?ref=v0.18.0"
 
   account_id = var.cloudflare_account_id
   zone_name  = var.external_domain
@@ -68,7 +72,7 @@ posture.
 | `account_id` | string | — | 32 hex chars; scopes the zone lookup so a like-named zone in another account cannot be picked up. |
 | `zone_name` | string | — | Bare FQDN. |
 | `manage_zone_settings` | bool | `true` | `false` skips the settings override (DNS-only token). Flipping `true → false` on a managed zone is a plan error — the override carries `prevent_destroy`; see below. |
-| `zone_settings` | object | hardened baseline | `ssl=strict`, `always_use_https=on`, `min_tls_version=1.2`, `tls_1_3=on`, `http3=on`, `brotli=on`, `cache_level=aggressive`, `browser_cache_ttl=14400`, HSTS on for 1 year with subdomains, `preload=false`. Enum values (`ssl`, `min_tls_version`, `cache_level`, `tls_1_3`, the on/off toggles) are validated at plan time — Cloudflare rejects a bad one mid-apply. The two numeric settings are bounded instead: `browser_cache_ttl` to 0-31536000, and `hsts.max_age` to > 0 while `hsts.enabled` (0 is how HSTS is withdrawn), rising to >= 31536000 with `include_subdomains` when `preload = true` — the browser preload lists refuse anything shorter. |
+| `zone_settings` | object | hardened baseline | `ssl=strict`, `always_use_https=on`, `min_tls_version=1.2`, `tls_1_3=on`, `http3=on`, `brotli=on`, `cache_level=aggressive`, `browser_cache_ttl=14400`, HSTS on for 1 year with subdomains, `preload=false`. Enum values (`ssl`, `min_tls_version`, `cache_level`, `tls_1_3`, the on/off toggles) are validated at plan time — Cloudflare rejects a bad one mid-apply. The two numeric settings are bounded instead: `browser_cache_ttl` to 0-31536000, and `hsts.max_age` to > 0 while `hsts.enabled` (0 is how HSTS is withdrawn), rising to >= 31536000 with `include_subdomains` when `preload = true` — the browser preload lists refuse anything shorter. `include_subdomains` is on by default and covers the WHOLE zone for `max_age`: every browser that has seen one response refuses plain HTTP to any name under it, and the only withdrawal is `max_age = 0` plus waiting the issued pins out. |
 | `records` | map(object) | `{}` | See below. |
 
 Each `records` entry: `name`, `type` (A/AAAA/CNAME/TXT/MX/NS/CAA), exactly one
@@ -146,7 +150,9 @@ terraform test
 ```
 
 `tests/validation.tftest.hcl` covers every variable validation, the four-way
-record routing and the zone-settings switch. `terraform validate` evaluates no
-caller values, so it runs none of them; the runs are plan-only against a
-`mock_provider`, so they need no credentials and create no state. CI runs the
-same command through `ci/validate/terraform.yml` with `test: true`.
+record routing, the zone-settings switch, the argument parity of the four record
+classes and the `ignore_changes = [content]` guard on the two externally-managed
+classes. `terraform validate` evaluates no caller values, so it runs none of
+them; the runs use a `mock_provider`, so they need no credentials, and only the
+seeded `ignore_changes` pair creates state. CI runs the same command through
+`ci/validate/terraform.yml` with `test: true`.

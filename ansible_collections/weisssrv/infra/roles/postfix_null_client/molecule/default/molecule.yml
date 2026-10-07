@@ -25,3 +25,6 @@ provisioner:
         postfix_null_client_sasl_user: testuser
         postfix_null_client_sasl_password: testpassword
         postfix_null_client_root_alias: test@test.local
+        # Proves a site can add a main.cf parameter without restating the map.
+        postfix_null_client_config_extra:
+          message_size_limit: "52428800"

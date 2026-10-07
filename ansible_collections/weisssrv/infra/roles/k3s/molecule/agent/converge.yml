@@ -21,8 +21,7 @@
   post_tasks:
     # Negative test for the agent-token assert (agent.yml): with an empty
     # k3s_agent_token the role MUST fail loudly rather than render a config
-    # that joins with an empty credential. Mirrors the kube-vip interface
-    # negative test in the default scenario.
+    # that joins with an empty credential.
     - name: Re-run k3s with an empty agent token (expect failure)
       block:
         - name: Include k3s with an empty agent token

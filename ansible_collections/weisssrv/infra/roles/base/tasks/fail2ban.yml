@@ -1,8 +1,6 @@
 ---
-# Unprivileged LXC containers lack CAP_NET_ADMIN, so iptables/nftables banning
-# is unavailable there; container mode uses the 'route' banaction (blackhole
-# routes) instead. Trade-offs: bans are IP-wide, the recidive jail is off
-# (route has no allports), and all jails share one routing table.
+# Unprivileged LXC containers lack CAP_NET_ADMIN, so container mode uses the
+# 'route' banaction (blackhole routes). Trade-offs: base role README, fail2ban.
 
 - name: Install fail2ban
   ansible.builtin.apt:

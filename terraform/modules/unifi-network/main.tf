@@ -1,19 +1,11 @@
-# The controller stays the source of truth for everything this provider cannot
-# reach — policy ORDER, mDNS reflection, per-port native/tagged VLAN assignment,
-# device adoption — so this module owns exactly the objects it declares and
-# never a device. README "What this module cannot manage" is the list, and the
-# consuming repo's runbook is where those steps live.
-
 locals {
   policy_zones = distinct(flatten([
     for p in var.policies : [p.source.zone, p.destination.zone]
   ]))
 
   # `for_each` and `count` both reject a value derived from a sensitive
-  # variable, and var.wlans is sensitive because it carries passphrases. The
-  # SHAPE of a WLAN is not a secret: splitting it out keeps both legal and keeps
-  # the plan readable, while `passphrase` is read straight from var.wlans below
-  # and therefore stays sensitive.
+  # variable, so the WLAN shape is split out here; `passphrase` is read
+  # straight from var.wlans below and keeps its mark.
   wlans = nonsensitive({
     for key, w in var.wlans : key => {
       ssid                 = w.ssid
@@ -26,48 +18,60 @@ locals {
     }
   })
 
-  # Only the built-ins a policy names are read. Every entry is a data read on
-  # every plan — the read-only drift plan included — and a display name that is
-  # wrong on this controller fails it, so reading an unreferenced default would
-  # break the whole plan over a zone the configuration never uses.
+  # Only the built-ins a policy names are read: every entry is a data read on
+  # every plan, and a display name wrong on this controller fails it.
   builtin_zones_used = {
     for key, name in var.builtin_zone_names : key => name
     if contains(local.policy_zones, key)
   }
 
-  # Display names a custom zone may not take. `builtin_zone_names` covers the
-  # ones this configuration references — including a localised override — but
-  # its default names only three, so a zone called `Hotspot`, `Vpn` or `Dmz`
-  # would collide with a controller built-in nothing here has declared.
-  #
-  # The literal six are the documented English names on a UniFi OS 10.x console.
-  # They are a heuristic, not an authority: display names are locale-dependent,
-  # so a non-English controller's built-ins are caught by the
-  # `builtin_zone_names` half after they are declared there. Case-sensitive,
-  # because the display name written to the controller is.
+  # Address arithmetic for the DHCP-pool collision precondition on
+  # unifi_client, keyed only where there is something to compare.
+  dhcp_pool_numbers = {
+    for key, n in var.networks : key => {
+      start = sum([for i, octet in split(".", n.dhcp.start) : tonumber(octet) * pow(256, 3 - i)])
+      stop  = sum([for i, octet in split(".", n.dhcp.stop) : tonumber(octet) * pow(256, 3 - i)])
+    } if n.dhcp != null
+  }
+
+  client_ip_numbers = {
+    for key, c in var.clients : key => sum([
+      for i, octet in split(".", c.fixed_ip) : tonumber(octet) * pow(256, 3 - i)
+    ]) if c.fixed_ip != null
+  }
+
+  # CIDRs are disjoint or nested, so masking both to the SHORTER prefix is an
+  # exact overlap test. Reported by the precondition on unifi_network below,
+  # which names the colliding pair.
+  reserved_overlaps = {
+    for key, n in var.networks : key => [
+      for cidr in var.reserved_cidrs : cidr
+      if cidrhost("${cidrhost(n.subnet, 0)}/${min(tonumber(split("/", n.subnet)[1]), tonumber(split("/", cidr)[1]))}", 0)
+      == cidrhost("${cidrhost(cidr, 0)}/${min(tonumber(split("/", n.subnet)[1]), tonumber(split("/", cidr)[1]))}", 0)
+    ]
+  }
+
+  # Display names a custom zone may not take. The literal six are the English
+  # names on a UniFi OS 10.x console, case-sensitive; a localised controller's
+  # built-ins are covered by the `builtin_zone_names` half (README).
   reserved_zone_names = distinct(concat(
     values(var.builtin_zone_names),
     ["Internal", "External", "Gateway", "Hotspot", "Vpn", "Dmz"],
   ))
 }
 
-# `unifi_wlan.user_group_id` is Required with no default; the stock client QoS
-# rate is the one every SSID here uses.
-#
-# Read only when there is a WLAN to assign it to. The lookup is by NAME and the
-# stock rate's name is controller- and locale-dependent, so reading it
-# unconditionally fails every plan on a gateway-only site over a QoS rate that
-# site never uses — the same reason the built-in zones above are read only when
-# a policy names one.
+# `unifi_wlan.user_group_id` is Required with no default. Read only when a WLAN
+# needs it: the lookup is by NAME, so an unconditional read fails every plan on
+# a gateway-only site (README).
 data "unifi_client_qos_rate" "default" {
   count = length(local.wlans) > 0 ? 1 : 0
 
   name = var.qos_rate_name
 }
 
-# Built-in zones are READ, never managed: v0.55.0 cannot import one by name (the
-# fix landed after the tag), and a managed built-in would fight the controller
-# over `network_ids`, which the provider replaces wholesale on every apply.
+# Built-in zones are READ, never managed: v0.55.0 cannot import one by name, and
+# a managed built-in would fight the controller over `network_ids`, which the
+# provider replaces wholesale on every apply (README).
 data "unifi_firewall_zone" "builtin" {
   for_each = local.builtin_zones_used
 
@@ -91,14 +95,9 @@ resource "unifi_network" "this" {
   # and store false, so declaring it either churns the plan or lies about a
   # reflector that is actually a UI setting.
 
-  # Not an input, because "auto" is never right for a network this module
-  # writes: every one of them carries an explicit DHCP scope, DNS list and
-  # domain, which IS what manual means. Under the provider default "auto" the
-  # controller treats those fields as its own and resets them to its defaults on
-  # every write — dhcp_server.dns_enabled, domain_name and igmp_snooping come
-  # back stripped, so the configuration is silently undone AND the apply fails
-  # with "Provider produced inconsistent result after apply". Confirmed on
-  # UniFi Network 10.5 with provider 0.55.0.
+  # "manual": under the provider default "auto" the controller owns
+  # dhcp_server.dns_enabled, domain_name and igmp_snooping and resets them on
+  # every write (README "Apply is supervised").
   setting_preference = "manual"
 
   dhcp_server = each.value.dhcp == null ? null : {
@@ -113,12 +112,15 @@ resource "unifi_network" "this" {
   }
 
   lifecycle {
-    # Not an input — `lifecycle` blocks take no variables, so this is fixed for
-    # every consumer. Destroying a network drops every client on that VLAN, and
-    # a renamed map key would plan exactly that. Stop managing one with
-    # `terraform state rm 'module.<name>.unifi_network.this["<key>"]'` (the live
-    # network is untouched), then delete the entry. README "Destroy protection".
+    # Destroying a network drops every client on that VLAN, and a renamed map
+    # key plans exactly that. README "Destroy protection" has the two-step
+    # removal.
     prevent_destroy = true
+
+    precondition {
+      condition     = length(local.reserved_overlaps[each.key]) == 0
+      error_message = "networks[\"${each.key}\"].subnet ${each.value.subnet} overlaps reserved_cidrs ${join(", ", local.reserved_overlaps[each.key])} — a VLAN sharing the LAN, pod or service range routes cluster traffic onto the wrong wire."
+    }
   }
 }
 
@@ -158,16 +160,9 @@ resource "unifi_firewall_zone" "this" {
       error_message = "zones[\"${each.key}\"].networks names a key that is not in var.networks."
     }
 
-    # A `guest`-purpose network only keeps that purpose inside the controller's
-    # own Hotspot zone — which this module cannot manage, because built-in zones
-    # are read-only here. Anywhere else the controller rewrites the purpose to
-    # `corporate` and the apply dies with an inconsistent-result error, halfway
-    # through a supervised run that has already changed the gateway. Guest
-    # ISOLATION comes from the custom zone's default deny and the WLAN's
-    # `l2_isolation`, never from the purpose flag (variables.tf).
-    #
-    # A key that is not in var.networks is skipped rather than reported twice:
-    # the precondition above already names it.
+    # A `guest` purpose sticks only inside the controller's own Hotspot zone;
+    # anywhere else the controller rewrites it and the apply fails partway
+    # through. A key missing from var.networks is left to the precondition above.
     precondition {
       condition = alltrue([
         for key in each.value.networks :
@@ -176,20 +171,15 @@ resource "unifi_firewall_zone" "this" {
       error_message = "zones[\"${each.key}\"].networks may hold only `corporate` networks — the controller rewrites a `guest` purpose to `corporate` outside its own Hotspot zone, and the apply then fails partway through."
     }
 
-    # The `builtin_zone_names` KEY namespace: a clash lets a custom zone shadow
-    # a built-in in the merged lookup, so every policy naming that zone quietly
-    # points at the wrong one. The DISPLAY-NAME half is the reserved-names
-    # precondition below.
+    # Key namespace: a clash lets a custom zone shadow a built-in in the merged
+    # lookup. The display-name half is the precondition below.
     precondition {
       condition     = !contains(keys(var.builtin_zone_names), each.key)
       error_message = "zones[\"${each.key}\"] collides with a `builtin_zone_names` key — policies resolve custom and built-in zones from one namespace, so the names must be distinct."
     }
 
-    # The key IS the zone's display name on the controller, so
-    # `zones = { Internal = ... }` plans a second zone literally named Internal
-    # next to the data source reading the built-in one — and on a name this
-    # configuration never declared (`Hotspot`), next to a built-in nothing here
-    # can see.
+    # The key IS the display name written to the controller, so `Internal`
+    # here plans a second zone alongside the built-in one.
     precondition {
       condition     = !contains(local.reserved_zone_names, each.key)
       error_message = "zones[\"${each.key}\"] takes a name the controller reserves for a built-in zone. The key is written to the controller as the zone's display name, so it must not be one of ${join(", ", local.reserved_zone_names)}."
@@ -204,11 +194,9 @@ resource "unifi_firewall_policy" "this" {
   action   = each.value.action
   protocol = each.value.protocol
   logging  = each.value.logging
-  # Derived, not passed straight through: the controller's auto-created
-  # established/related companion is an ALLOW. On a BLOCK or REJECT that leaves
-  # an allowance Terraform never holds in state, never reports as drift, and
-  # that survives the deny being deleted — so a deny always writes false,
-  # whatever the entry asked for.
+  # Derived: the controller's established/related companion is an ALLOW, so a
+  # BLOCK or REJECT always writes false — otherwise the deny leaves an
+  # allowance Terraform never holds in state.
   create_allow_respond = each.value.action == "ALLOW" ? each.value.create_allow_respond : false
 
   # `matching_target` is derived, never an input: the controller rejects a
@@ -257,19 +245,9 @@ resource "unifi_firewall_policy" "this" {
       error_message = "policies[\"${each.key}\"] names a network key that is not in var.networks."
     }
 
-    # A network belongs to exactly ONE zone, so an endpoint naming a zone and a
-    # network from a DIFFERENT zone contradicts itself: the two halves of the
-    # match disagree, and the controller either rejects the policy or stores one
-    # that matches nothing.
-    #
-    # A CUSTOM-zone endpoint is checked against the membership this module
-    # declares. A BUILT-IN one cannot be checked the same way — that zone's
-    # membership is a data read, unknown at plan — so the test runs the other
-    # way round: a network this module has placed in a custom zone is not
-    # reachable through a built-in. Whether the controller ALSO leaves it in
-    # Internal is controller behaviour the provider neither performs nor detects
-    # (README), which is why a policy whose two halves disagree is refused
-    # rather than guessed at.
+    # A network belongs to exactly one zone, so `zone` and `networks` must
+    # agree. A built-in zone's membership is a data read, so that half runs in
+    # reverse: a network held by a custom zone is not reachable through it.
     precondition {
       condition = alltrue(flatten([
         for endpoint in [each.value.source, each.value.destination] : [
@@ -303,12 +281,8 @@ resource "unifi_wlan" "this" {
   wpa3_transition = each.value.wpa3
   pmf_mode        = each.value.wpa3 ? "optional" : "disabled"
 
-  # Null — the input's default — writes nothing, and the attribute is
-  # Optional+Computed, so the CONSOLE owns the band set: a band enabled in the
-  # UI survives every apply. That is the only way to run 6 GHz on provider
-  # releases still carrying upstream #406, where "6g" in a written set fails
-  # WLAN creation outright. A non-null `bands` is the opposite bargain —
-  # terraform owns the set and re-asserts it, reverting a UI change.
+  # Optional+Computed: a null writes nothing and the console owns the band set;
+  # a list is terraform-owned and re-asserted on every apply (README).
   wlan_bands = each.value.bands
   # UniFi's "connect high-performance clients to 5 GHz only" — inverted here so
   # the input reads as what it permits.
@@ -320,19 +294,11 @@ resource "unifi_wlan" "this" {
   # pinning them to a guess is how a 2.4 GHz IoT client stops associating.
 
   lifecycle {
-    # The controller assigns the default AP group on every WLAN write and reads
-    # it back (UniFi Network 10.5, provider v0.55.0); this module never sets
-    # ap_group_ids, so without the ignore every apply plans its removal, the
-    # write round-trips the group straight back, and the run ends in a
-    # "Provider produced inconsistent result after apply" error — a standing
-    # flap. AP-group membership is console-owned.
+    # Both are console-owned and read back on every WLAN write; re-planning
+    # either ends the apply in "inconsistent result" or reverts an operator's
+    # setting (README "What this module cannot manage").
     ignore_changes = [
       ap_group_ids,
-      # minrate_setting_preference is console-owned, like the
-      # minimum_data_rate_*_kbps values noted above. The provider defaults it to
-      # "auto", so without this every apply reverts a manually-raised floor (e.g.
-      # a 6 Mbps 2.4 GHz min-rate set from the console to drop the slow legacy
-      # rates). Terraform must never re-assert "auto" over an operator's setting.
       minrate_setting_preference,
     ]
 
@@ -350,10 +316,9 @@ resource "unifi_client" "this" {
   name     = each.value.name
   note     = each.value.note
   fixed_ip = each.value.fixed_ip
-  # The default network never gets a virtual-network override: the controller
-  # rejects it outright (api.err.VirtualNetworkOverrideUnsupportedForDefaultNetwork
-  # — observed on UniFi Network 10.5), and a client reserved on the default
-  # network is natively there, so a fixed IP is the whole reservation.
+  # The controller rejects a virtual-network override on the default network
+  # (api.err.VirtualNetworkOverrideUnsupportedForDefaultNetwork), so a client
+  # there is written as a bare fixed-IP reservation.
   network_id = (each.value.network == null || each.value.network == "default") ? null : lookup(local.network_ids, each.value.network, "")
 
   # The client already exists the moment the controller sees the MAC; every
@@ -365,6 +330,30 @@ resource "unifi_client" "this" {
       condition     = each.value.network == null ? true : contains(keys(var.networks), each.value.network)
       error_message = "clients[\"${each.key}\"].network names a key that is not in var.networks."
     }
+
+    # Containment by the cidrhost mask, as on the DHCP bounds. A key missing
+    # from var.networks is left to the precondition above.
+    precondition {
+      condition = (each.value.fixed_ip == null || !contains(keys(var.networks), each.value.network == null ? "" : each.value.network)) ? true : (
+        cidrhost("${each.value.fixed_ip}/${split("/", var.networks[each.value.network].subnet)[1]}", 0)
+        == cidrhost(var.networks[each.value.network].subnet, 0)
+      )
+      error_message = "clients[\"${each.key}\"].fixed_ip is outside that client's own networks[\"${each.value.network == null ? "" : each.value.network}\"].subnet — the controller never serves a reservation from another segment."
+    }
+
+    # The controller allocates dynamic leases out of the same range, so a
+    # reservation inside the pool is an address conflict waiting on a lease.
+    precondition {
+      condition = (
+        each.value.fixed_ip == null
+        || !contains(keys(var.networks), each.value.network == null ? "" : each.value.network)
+        || var.networks[each.value.network].dhcp == null
+        ) ? true : (
+        local.client_ip_numbers[each.key] < local.dhcp_pool_numbers[each.value.network].start
+        || local.client_ip_numbers[each.key] > local.dhcp_pool_numbers[each.value.network].stop
+      )
+      error_message = "clients[\"${each.key}\"].fixed_ip falls inside the networks[\"${each.value.network == null ? "" : each.value.network}\"] DHCP pool — reserve outside the pool, or move the pool, so the controller cannot lease the address to something else."
+    }
   }
 }
 
@@ -375,7 +364,7 @@ resource "unifi_port_forward" "this" {
   protocol = each.value.protocol
 
   wan = {
-    interface = "wan"
+    interface = each.value.wan_interface
     port      = each.value.wan_port
   }
 
@@ -391,18 +380,9 @@ resource "unifi_port_forward" "this" {
   # rather than pinned to a value the provider may stop sending.
 }
 
-# One site-wide settings object. Only the blocks declared here are read and
-# written; `terraform destroy` drops the state entry and changes nothing on the
-# controller (settings can be reset, never deleted), so it carries no
-# prevent_destroy.
-#
-# "Only the blocks declared here" is BLOCK granularity. Inside a declared block,
-# the attributes left out — `mgmt`'s SSH and ui.com remote access, `usg`'s SYN
-# cookies, ALG modules, Geo-IP filter and conntrack timeouts — survive because
-# they are Optional+Computed and the provider round-trips them (0.52.1 stopped
-# it serialising zeros for unset numerics). That is a per-attribute property of
-# the provider, not a guarantee this module can make, so the first apply against
-# a console is plan-reviewed for any mgmt/usg attribute moving to null or false.
+# One site-wide settings object; only declared blocks are written, and destroy
+# is a state-only no-op. Undeclared mgmt/usg attributes survive only because
+# they are Optional+Computed — plan-review the first apply (README).
 resource "unifi_setting" "site" {
   mgmt = {
     auto_upgrade = var.site_settings.auto_upgrade
@@ -418,11 +398,9 @@ resource "unifi_setting" "site" {
     upnp_nat_pmp_enabled = var.site_settings.upnp
   }
 
-  # Written only when the caller names networks. An empty list writes NO block:
-  # `enabled = false` would turn off snooping a site had configured in the UI on
-  # the first apply, which is a surprise the hardened-posture defaults should not
-  # spring. Emptying the list later stops managing the toggle, it does not
-  # disable it (variables.tf).
+  # An empty list writes NO block, so adopting this module never turns off
+  # snooping the console had configured; emptying the list later stops managing
+  # the toggle rather than disabling it (variables.tf).
   igmp_snooping = length(var.site_settings.igmp_snooping_networks) == 0 ? null : {
     enabled = true
     network_ids = [
@@ -430,24 +408,16 @@ resource "unifi_setting" "site" {
     ]
   }
 
-  # `ips_mode` only: `enabled_categories` and `enabled_networks` are deliberately
-  # left to the console, because a signature-category selection is curated in the
-  # UI and re-declaring it here would fight it. The consequence belongs in the
-  # consuming repo's runbook — an IDS with no categories or no networks selected
-  # detects nothing, and a quiet week of "clean detections" then means nothing.
+  # `ips_mode` only: the signature categories and inspected networks are curated
+  # in the console, and an IDS with neither selected detects nothing (README).
   ips = {
     ips_mode = var.site_settings.ips_mode
   }
 
   lifecycle {
-    # ips is CREATE-TIME INTENT only: UniFi Network 10.5 accepts the API write
-    # and keeps its own value (observed: ips_mode "ids" written, "disabled"
-    # read back, on create and on every later PUT — the same reset-on-write
-    # family as networks' setting_preference, but with no server-side knob to
-    # pin it). Without this ignore, every apply re-plans the write, the
-    # controller reverts it, and the run errors "inconsistent result" — while
-    # silently disabling IPS a operator enabled in the console. Day-2 IPS mode
-    # is therefore console-owned; the consuming repo's runbook must say so.
+    # `ips` is create-time intent only: the controller keeps its own value and
+    # re-planning the write errors "inconsistent result". Day-2 IPS mode is
+    # console-owned (README "Apply is supervised").
     ignore_changes = [ips]
 
     precondition {

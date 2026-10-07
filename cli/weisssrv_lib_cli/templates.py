@@ -1,12 +1,7 @@
 """The copier wrapper behind `new-cluster` and `new-app`.
 
-A thin wrapper: validate the source and destination up front (copier's own
-failure modes are late and messy), then hand off to `copier.run_copy`. copier is
-an OPTIONAL dependency, imported at render time, so argument validation and
-`--help` work without it installed.
-
-The two subcommands differ only in which published template they name; rendering
-is template-agnostic, so any copier template works as a source.
+Validates the source and destination, then hands off to `copier.run_copy`. copier
+is an optional dependency imported at render time. Any copier template works.
 """
 from __future__ import annotations
 
@@ -32,9 +27,8 @@ class TemplateError(ValueError):
 class MissingCopierError(TemplateError):
     """The `cluster` extra is not installed (exit 3).
 
-    A subclass of TemplateError so a caller that only knows the two original
-    classes keeps catching it; the distinct exit code separates "fix your
-    environment" from "fix your arguments".
+    A subclass of TemplateError, so the distinct exit code separates a broken
+    environment from bad arguments without breaking existing callers.
     """
 
 

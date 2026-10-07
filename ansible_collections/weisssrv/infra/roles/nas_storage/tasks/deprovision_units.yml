@@ -1,0 +1,182 @@
+---
+# Converges a disabled component away instead of leaving its last-deployed timer
+# firing a script the role does not render. Callers name the units in
+# nas_storage_deprovision_{timers,services,static_services,paths,metrics}.
+
+- name: Converge a disabled component away
+  when: nas_storage_manage_absent | default(true)
+  block:
+    # One list for the probe and the removal, derived from the unit names, so a
+    # caller cannot name a unit it never removes (or remove a file whose unit is
+    # still enabled).
+    - name: Resolve the component's unit files and extra paths
+      ansible.builtin.set_fact:
+        nas_storage_deprovision_all_paths: >-
+          {{ ((((nas_storage_deprovision_timers | default([]))
+                 + (nas_storage_deprovision_services | default([]))
+                 + (nas_storage_deprovision_static_services | default([])))
+                | map('regex_replace', '^', '/etc/systemd/system/') | list)
+               + (nas_storage_deprovision_paths | default([]))) | unique }}
+
+    - name: Assert the component named something to de-provision
+      ansible.builtin.assert:
+        that:
+          - nas_storage_deprovision_all_paths | length > 0
+        fail_msg: >-
+          This de-provisioning call named no units and no paths, so it would stop
+          and remove nothing. Name the units in
+          nas_storage_deprovision_{timers,services,static_services}.
+        quiet: true
+
+    # CRITICAL: an empty marker matches every file, so the ownership test that
+    # protects a hand-written unit would pass for every declared path.
+    - name: Assert the managed-file marker is usable
+      ansible.builtin.assert:
+        that:
+          - nas_storage_managed_marker | default('') | trim | length > 0
+        fail_msg: >-
+          nas_storage_managed_marker rendered empty, so every declared path would
+          test as role-written. Set it to a literal substring of this role's
+          rendered header.
+        quiet: true
+
+    # Probe every declared path so each unit can be stopped only while its own unit
+    # file is still present: systemd hard-fails on a unit it cannot load.
+    - name: Check which parts of the component are still deployed
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ nas_storage_deprovision_all_paths }}"
+      loop_control:
+        label: "{{ item }}"
+      register: nas_storage_deprovision_probe
+
+    - name: Note which component paths are still present
+      ansible.builtin.set_fact:
+        nas_storage_deprovision_present: >-
+          {{ nas_storage_deprovision_probe.results | selectattr('stat.exists')
+             | selectattr('stat.isreg') | map(attribute='item') | list }}
+
+    # A declared path that exists but is not a regular file is a caller bug: the
+    # ownership test could never classify it, so it would read as hand-written.
+    - name: Assert every declared component path is a regular file
+      vars:
+        _nas_storage_not_files: >-
+          {{ nas_storage_deprovision_probe.results | selectattr('stat.exists')
+             | rejectattr('stat.isreg') | map(attribute='item') | list }}
+      ansible.builtin.assert:
+        that:
+          - _nas_storage_not_files | length == 0
+        fail_msg: >-
+          {{ _nas_storage_not_files | join(', ') }} exists but is not a regular
+          file. Name unit files and scripts in
+          nas_storage_deprovision_{timers,services,static_services,paths}.
+        quiet: true
+
+    - name: Read the component files before de-provisioning them
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop: "{{ nas_storage_deprovision_present }}"
+      loop_control:
+        label: "{{ item }}"
+      register: nas_storage_deprovision_slurp
+      failed_when: false
+
+    # CRITICAL: an unreadable unit file cannot be classified, so it would read as
+    # hand-written and keep firing a script the role no longer renders. A file
+    # that vanished between the probe and the read is benign.
+    - name: Assert every present component file was readable
+      vars:
+        _nas_storage_unreadable: >-
+          {{ nas_storage_deprovision_slurp.results | default([])
+             | selectattr('failed', 'defined') | selectattr('failed')
+             | rejectattr('msg', 'search', 'not exist|not found')
+             | list }}
+      ansible.builtin.assert:
+        that:
+          - _nas_storage_unreadable | length == 0
+        fail_msg: >-
+          {{ _nas_storage_unreadable | map(attribute='item') | join(', ') }}
+          could not be read, so the component was NOT de-provisioned:
+          {{ _nas_storage_unreadable | map(attribute='msg') | join('; ') }}
+        quiet: true
+
+    # CRITICAL: these are the conventional component names, not role-namespaced
+    # ones, so a host that carries a hand-rolled media-mover or swap-clean is left
+    # alone: only a file holding the ansible_managed marker is this role's.
+    # Reset first: the fact survives between the call sites that include this file.
+    - name: Start the role-written path list empty
+      ansible.builtin.set_fact:
+        nas_storage_deprovision_managed: []
+
+    - name: Note which component paths this role wrote
+      ansible.builtin.set_fact:
+        nas_storage_deprovision_managed: "{{ nas_storage_deprovision_managed + [item.item] }}"
+      loop: "{{ nas_storage_deprovision_slurp.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when:
+        - item.content is defined
+        - nas_storage_managed_marker in (item.content | b64decode)
+
+    - name: Report a hand-written component file left in place
+      ansible.builtin.debug:
+        msg: >-
+          {{ item }} carries no '{{ nas_storage_managed_marker }}' marker, so it
+          was written by hand and is left in place.
+      loop: "{{ nas_storage_deprovision_present }}"
+      loop_control:
+        label: "{{ item }}"
+      when: item not in nas_storage_deprovision_managed
+
+    - name: Stop and disable the component timers
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: false
+        state: stopped
+        daemon_reload: true
+      loop: "{{ nas_storage_deprovision_timers | default([]) }}"
+      when:
+        - ('/etc/systemd/system/' ~ item) in nas_storage_deprovision_managed
+        - not ansible_check_mode
+
+    - name: Stop and disable the component services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: false
+        state: stopped
+        daemon_reload: true
+      loop: "{{ nas_storage_deprovision_services | default([]) }}"
+      when:
+        - ('/etc/systemd/system/' ~ item) in nas_storage_deprovision_managed
+        - not ansible_check_mode
+
+    # Static units (no [Install]) are stop-only: `enabled: false` reports changed
+    # and disables nothing, because systemctl is-enabled says `static`.
+    - name: Stop the component static services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+        daemon_reload: true
+      loop: "{{ nas_storage_deprovision_static_services | default([]) }}"
+      when:
+        - ('/etc/systemd/system/' ~ item) in nas_storage_deprovision_managed
+        - not ansible_check_mode
+
+    - name: Remove the role-written component units and scripts
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ nas_storage_deprovision_managed }}"
+      notify: Reload systemd
+
+    # CRITICAL: the .prom goes with the units — a frozen *_last_success_seconds
+    # keeps its staleness alert firing with no timer that could clear it. It
+    # follows the units' ownership verdict, so a kept hand-rolled unit keeps it.
+    - name: Remove the component metrics
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ nas_storage_deprovision_metrics | default([]) }}"
+      when:
+        - nas_storage_deprovision_present
+          | difference(nas_storage_deprovision_managed) | length == 0

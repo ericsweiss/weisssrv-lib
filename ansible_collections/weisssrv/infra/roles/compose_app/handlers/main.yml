@@ -1,17 +1,14 @@
 ---
-# daemon_reload is always safe (works in a plain systemd container), so it is
-# never gated. The service-touching handlers are gated on compose_app_skip_install
-# so the render-only caller/molecule scenarios can notify them without the compose
-# stack or nginx present. (The Docker restart handler lives in the shared
-# docker_engine role, which owns the daemon.json.)
+# daemon_reload is safe in a plain systemd container, so it is never gated. The
+# service-touching handlers are gated on compose_app_skip_install so render-only
+# callers can notify them without the compose stack or nginx present.
 - name: Reload systemd (compose_app)
   ansible.builtin.systemd:
     daemon_reload: true
 
-# `docker compose up -d` reconciles the running stack to the rendered compose +
-# .env + config (recreating only the containers whose definition changed). The
-# caller's compose/.env/config render tasks notify this same handler, so a
-# config change + a unit change coalesce into a single restart.
+# `docker compose up -d` reconciles the running stack to the rendered compose,
+# .env and config. The caller's render tasks notify this same handler, so a
+# config change and a unit change coalesce into a single restart.
 - name: Restart compose stack
   ansible.builtin.systemd:
     name: "{{ compose_app_service_name }}.service"

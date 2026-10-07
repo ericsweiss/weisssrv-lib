@@ -17,12 +17,9 @@ data "authentik_certificate_key_pair" "signing" {
 }
 
 locals {
-  # A scope reference is either a MANAGED id (a blueprint-provided mapping, read
-  # through a data source) or "custom:<key>" naming an entry of
-  # var.custom_scope_mappings that this module authors. One ordered list carries
-  # both, because the API stores property_mappings in list order and a caller
-  # routinely interleaves the two (a replacement `email` scope between the stock
-  # `openid` and `profile`).
+  # A scope reference is either a managed id (read through a data source) or
+  # "custom:<key>" naming a custom_scope_mappings entry. One ordered list carries
+  # both, because the API stores property_mappings in list order.
   oauth2_scope_refs = concat(
     var.oauth2_scope_mappings,
     flatten([
@@ -53,12 +50,11 @@ locals {
     key => p.property_mappings == null ? var.saml_property_mappings : p.property_mappings
   }
 
-  # Slugs that at least one ENABLED binding gates. A disabled binding is not
-  # evaluated by the policy engine, so it is not protection. An application
-  # missing from this set is reachable by every authenticated user (precondition
-  # below).
+  # Slugs a binding actually gates. A disabled binding is never evaluated, and a
+  # negate-only binding admits every user OUTSIDE its group, so neither counts as
+  # protection. An application missing here fails the precondition below.
   bound_application_slugs = toset([
-    for key, b in var.policy_bindings : b.application if b.enabled
+    for key, b in var.policy_bindings : b.application if b.enabled && !b.negate
   ])
 
   group_attributes = {
@@ -73,11 +69,9 @@ data "authentik_property_mapping_provider_scope" "oauth2" {
   managed = each.value
 }
 
-# Caller-authored scope mappings. authentik's own scope mappings are
-# blueprint-managed objects it restores on upgrade, so a claim the server does
-# not emit by default (a `email_verified: True` assertion, an app-specific
-# groups claim) has to be a mapping of its own rather than an edit to a stock
-# one.
+# Caller-authored scope mappings. authentik restores its own blueprint-managed
+# mappings on upgrade, so a claim the server does not emit by default needs a
+# mapping of its own rather than an edit to a stock one.
 resource "authentik_property_mapping_provider_scope" "custom" {
   for_each = var.custom_scope_mappings
 
@@ -108,10 +102,9 @@ data "authentik_property_mapping_provider_saml" "saml" {
   managed = each.value
 }
 
-# Managed user accounts (identity only): credentials and MFA always live
-# outside Terraform, in authentik's own enrollment/recovery flows. A destroy
-# would take the account, its sessions and its consent grants with it, so a
-# renamed map key must be a `moved {}` block, never a delete+create.
+# Managed user accounts, identity only: credentials and MFA live in authentik's
+# enrollment/recovery flows. A destroy takes the account, its sessions and its
+# consent grants, so a renamed key needs a `moved {}` block.
 resource "authentik_user" "this" {
   for_each = var.users
 
@@ -123,18 +116,16 @@ resource "authentik_user" "this" {
 
   lifecycle {
     prevent_destroy = true
-    # Membership is owned by authentik_group.this (its `users` list). This
-    # resource never sets `groups`, and without the ignore Terraform would
-    # reconcile the user's server-side group list back to empty on every
-    # apply after the group resource assigns it — competing ownership.
+    # authentik_group.this owns membership through its `users` list. Without
+    # the ignore, this resource reconciles the server-side group list back to
+    # empty on every apply.
     ignore_changes = [groups]
   }
 }
 
-# Pre-existing (UI-created) members referenced by group lists. Managed users
-# are excluded from the lookup set — a data source cannot resolve a resource
-# created in the same apply — and the membership expression below prefers the
-# resource pk for them instead.
+# Pre-existing (UI-created) members referenced by group lists. Managed users are
+# excluded: a data source cannot resolve a resource created in the same apply, so
+# the membership expression below uses their resource pk.
 data "authentik_user" "member" {
   for_each = setsubtract(local.group_usernames, toset(keys(var.users)))
 
@@ -284,10 +275,8 @@ resource "authentik_group" "this" {
     : data.authentik_user.member[username].pk
   ]
 
-  # null, not `jsonencode({})`, for a group with no attributes: the field is
-  # Optional and the provider owns what an unset value means. Encoding an empty
-  # object instead would assert a value on every group whose attributes this
-  # module does not manage — a diff against an adopted group that carries any.
+  # null, not `jsonencode({})`, for a group with no attributes: encoding an empty
+  # object asserts a value, which diffs against an adopted group that carries any.
   attributes = (
     length(local.group_attributes[each.key]) == 0
     ? null
@@ -339,38 +328,28 @@ resource "authentik_application" "this" {
     # provider_type/provider_key resolve through a map, so a typo would
     # otherwise surface as a bare "Invalid index" naming neither.
     precondition {
-      # A conditional, not `a == null || contains(…)`: both halves have to stay
-      # unevaluated when the application names no provider, or the right-hand
-      # template interpolates a null and the plan dies on "Invalid template
-      # interpolation value" instead of planning a provider-less launch tile.
-      # `?:` guarantees that; `||` short-circuits today but HCL does not promise
-      # it, and the error_message below shows what an eager evaluation costs.
+      # Conditional, not `||`: both halves must stay unevaluated when the
+      # application names no provider.
       condition = (
         each.value.provider_type == null
         ? true
         : contains(keys(local.provider_ids), "${each.value.provider_type}/${each.value.provider_key}")
       )
-      # Null-guarded per half, because error_message is evaluated EAGERLY — it
-      # renders even on the runs where the condition holds, so bare
-      # interpolations here failed the plan for every provider-less application
-      # (tests/validation.tftest.hcl "an_application_with_no_provider_plans").
-      # Conditionals rather than `coalesce(…, "<unset>")`: coalesce skips the
-      # empty string too, which would print "<unset>" for the empty-provider_key
-      # typo this message exists to name.
+      # error_message is evaluated eagerly, so each half is null-guarded; a
+      # conditional rather than coalesce, which would also rewrite the empty
+      # string.
       error_message = "applications[\"${each.key}\"] references provider \"${each.value.provider_type == null ? "<unset>" : each.value.provider_type}/${each.value.provider_key == null ? "<unset>" : each.value.provider_key}\", which is not a key of the matching provider map (oauth2_providers, proxy_providers or saml_providers)."
     }
 
-    # An application with no policy binding is reachable by EVERY authenticated
-    # user — the one guardrail here that fails OPEN, and a missing binding
-    # otherwise produces a perfectly valid plan. A precondition rather than a
-    # `check` block, because check assertions are warnings: this has to fail the
-    # plan, including a read-only drift-plan job.
+    # An unbound application is reachable by every authenticated user and
+    # otherwise plans cleanly. A precondition, not a `check` block: check
+    # assertions are only warnings, and this has to fail the plan.
     precondition {
       condition = (
         each.value.allow_unbound ||
         contains(local.bound_application_slugs, each.key)
       )
-      error_message = "applications[\"${each.key}\"] has no enabled entry in policy_bindings; an unbound application is open to every authenticated user. A binding with enabled = false does not count, because the policy engine never evaluates it. Add a binding, or set allow_unbound = true to declare that deliberate."
+      error_message = "applications[\"${each.key}\"] has no enabled, non-negated entry in policy_bindings; an unbound application is open to every authenticated user. A binding with enabled = false does not count (the policy engine never evaluates it), and neither does one with negate = true (it admits everyone outside the group). Add an allow binding, or set allow_unbound = true to declare that deliberate."
     }
   }
 }
@@ -414,11 +393,9 @@ resource "authentik_outpost" "embedded" {
   # round-trip instead of being diffed and rewritten.
 
   lifecycle {
-    # The embedded outpost is authentik's OWN object, adopted by import: a
-    # destroy removes forward auth for every proxy provider at once and the
-    # replacement is not something Terraform can recreate faithfully. Setting
-    # embedded_outpost back to null is that same destroy — detach with
-    # `terraform state rm` instead.
+    # authentik's own object, adopted by import: a destroy removes forward auth
+    # for every proxy provider at once. Setting embedded_outpost back to null is
+    # that same destroy — detach with `terraform state rm` instead.
     prevent_destroy = true
 
     # proxy_provider_keys resolves through a map, so a typo would otherwise
@@ -429,6 +406,17 @@ resource "authentik_outpost" "embedded" {
         contains(keys(var.proxy_providers), key)
       ])
       error_message = "embedded_outpost.proxy_provider_keys names a key that is not in proxy_providers; the outpost serves proxy providers this module manages."
+    }
+
+    # The reverse direction is the one that fails in production: the outpost
+    # serves only the keys named here, so a proxy provider left off the list
+    # plans clean and 404s at the edge.
+    precondition {
+      condition = length(setsubtract(
+        toset([for key, p in var.proxy_providers : key if !p.detached]),
+        toset(var.embedded_outpost.proxy_provider_keys),
+      )) == 0
+      error_message = "a proxy_providers entry is missing from embedded_outpost.proxy_provider_keys; the outpost serves only the keys named there, so an omitted forward-auth provider 404s at the edge. Add it to the list, or set detached = true on it."
     }
   }
 }

@@ -26,7 +26,7 @@ bump.
 
 One tag versions **everything** in the repo — CI templates, the
 `weisssrv.infra` Ansible collection, `terraform/modules/`, `scripts/`,
-`taskfiles/`, `lint/`, the published molecule images and the CLI — so a consumer
+`lint/`, the published molecule images and the CLI — so a consumer
 pins one ref and gets a self-consistent set. Consequences:
 
 - The CLI distribution version (`cli/pyproject.toml`) mirrors the tag, and
@@ -132,6 +132,13 @@ so **this table is the canonical copy**. A consumer doc states only the
 consequence local to that repo and links here for the mapping; restating the
 table downstream is how the pre-1.0 row loses its `see below`.
 
+A tag that exists with no Release — a run that died between the two halves of
+the single Releases API call, a tag pushed by hand, or a Release deleted out
+from under its tag — is backfilled from its OWN commit range before any new tag
+is cut, so those commits appear in exactly one set of notes. That probe is
+best-effort: an API failure on it is warned about and skipped rather than
+vetoing a healthy release.
+
 No releasable commit means no release (exit 0), so re-running on an
 already-released commit is a no-op. Because the bump comes from commit subjects,
 a breaking change **must** be written as `feat!:` (or carry a `BREAKING CHANGE:`
@@ -213,7 +220,10 @@ The procedure:
 5. If the collection moved, work
    [MIGRATING.md](../ansible_collections/weisssrv/infra/MIGRATING.md) for the
    roles you consume, and land the inventory rename in the SAME MR as the
-   collection bump — most renames have no back-compat shim.
+   collection bump — most renames have no back-compat shim. The one-time
+   in-tree-role adoption map is a separate file,
+   [MIGRATING-from-in-tree-roles.md](../ansible_collections/weisssrv/infra/MIGRATING-from-in-tree-roles.md),
+   and does not change at tag time.
 6. For weisssrv specifically, prove pipeline parity before merging (merged-YAML
    diff + per-pipeline-type job-set enumeration) so no coverage is lost.
 
@@ -223,9 +233,13 @@ Before merging the MR that will cut a tag:
 
 - [ ] `galaxy.yml` `version:`, `cli/pyproject.toml` `version:` and the
       **Current release** line in `README.md` all move TOGETHER to the version
-      the commit subjects will produce (`tests/test_ansible_collection.py`
-      asserts all three agree, so they stay green while all three name the
-      *previous* release — nothing reds until they diverge).
+      the commit subjects will produce. `tests/test_ansible_collection.py`
+      holds all three equal to each other and, via `TestReleaseLineage`, holds
+      `galaxy.yml` and `cli/pyproject.toml` equal to the tag the commit
+      subjects will produce; `tests/test_release_version.py` holds the README
+      line equal to `cli/pyproject.toml`. So the trio reds both when the three
+      diverge from each other and when they name a version the commits do not
+      produce.
 - [ ] That **Current release** line is the ONLY literal tag in the root README,
       `docs/` and the collection README — every pin example there is written as
       `<CURRENT_TAG>`. Sweep for regressions:
@@ -243,18 +257,19 @@ Before merging the MR that will cut a tag:
       `tests/test_release_version.py` holds them equal to `cli/pyproject.toml`
       and to the README **Current release** line, so a missed sweep reds the
       pipeline instead of shipping.
-- [ ] Every changed template's parity note in `INCLUDE-CONTRACT.md` reflects the
-      change, and any new input is listed in that template's input set.
+- [ ] Every changed template's parity note in `INCLUDE-CONTRACT.md` reflects
+      the change, and any new input is listed — in that template's input table,
+      or in **Conventions shared by every template** when the input is
+      cross-cutting. `tests/test_include_contract_inputs.py` is the mechanical
+      half: every `spec:inputs` name must appear somewhere on that page.
 - [ ] `scripts/vendorable-paths.yml` still describes the tree being tagged:
       every offered path exists (`tests/test_vendorable_paths.py` is the
       mechanical half), and a path this release renames or stops shipping is
       called out in MIGRATING.md — consumers' manifests name these paths at
       the pinned tag, so a silent removal reds their gates with no
       consumer-side fix. `reconciled_sha256` values live in consumer
-      manifests and are re-taken there, at adoption. (The old cross-repo
-      sequencing hazard — library-owned registry rows encoding a consumer
-      layout — retired with the registry inversion: a consumer that moves a
-      vendored file edits its own manifest in the same commit.)
+      manifests and are re-taken there, at adoption: a consumer that moves a
+      vendored file edits its own manifest in the same commit.
 - [ ] The collection's
       [MIGRATING.md](../ansible_collections/weisssrv/infra/MIGRATING.md)
       `# Unreleased (next release)` heading is retitled to the tag being cut,
@@ -277,6 +292,22 @@ re-verify the sha256, cut a MINOR/MAJOR tag) or a per-consumer override
 (`inputs:`), never an unpinned moving target. Each downloaded binary is
 sha256-verified before use; service and job images are digest-pinned where they
 carry privilege (the DinD service, the AI-review image).
+
+### Pins asserted across files
+
+Three pin sets are duplicated across files that no single gate renders together,
+so each can drift silently. `tests/test_pin_parity.py` holds them equal.
+
+- **`ci/github/ci.example.yml`** — the forge-portable workflow a consumer
+  VENDORS rather than includes. Every tool it pins must match the corresponding
+  template default, or the two CI shapes lint under different linters.
+- **The docker CLI / DinD line** — one version-with-digests set spread over the
+  build template, this library's release job, its molecule jobs and the
+  molecule-ci image. The DinD service is the one component that runs
+  PRIVILEGED.
+- **`docker/molecule-test/Dockerfile`'s `ADGUARD_HOME_VERSION`** — a mismatch is
+  not fatal (the role falls back to fetching github.com mid-test), which is why
+  it rots unnoticed: the symptom is a slower, flakier job, not a red one.
 
 Two dependencies deliberately move outside this discipline, and both are
 recorded where they bite: the GitLab-managed template nested by

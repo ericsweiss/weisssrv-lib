@@ -37,9 +37,8 @@
         fail_msg: "an image tag did not resolve from its version pin"
 
     # Every published port carries an explicit bind address, so the full
-    # `<address>:<host port>:<container port>` triple is asserted: the exporter
-    # defaults to all interfaces for an off-host Prometheus, and silently
-    # narrowing OR widening that is as much a regression as a wrong port.
+    # address:host:container triple is asserted. Narrowing or widening the
+    # exporter's bind is as much a regression as a wrong port.
     - name: Assert the web port is loopback-bound and the exporter is exposed
       ansible.builtin.assert:
         that:
@@ -105,9 +104,9 @@
           # trusts only loopback + the compose bridge gateway.
           - "'127.0.0.1' in nextcloud_compose_doc.services.nextcloud.environment.TRUSTED_PROXIES"
           - "'172.28.0.0/16' in nextcloud_compose_doc.services.nextcloud.environment.TRUSTED_PROXIES"
-          # Regression guard for the XFF-spoofing fix: a LAN range or pod CIDR
-          # must never be trusted at the container level.
-          - "'192.168.0.0/24' not in nextcloud_compose_doc.services.nextcloud.environment.TRUSTED_PROXIES"
+          # Container-level TRUSTED_PROXIES must never include a LAN range or
+          # the pod CIDR.
+          - "'192.0.2.0/24' not in nextcloud_compose_doc.services.nextcloud.environment.TRUSTED_PROXIES"
           - "'10.42.0.0/16' not in nextcloud_compose_doc.services.nextcloud.environment.TRUSTED_PROXIES"
         fail_msg: "container-level TRUSTED_PROXIES must be the immediate hop only"
 
@@ -175,6 +174,10 @@
           # TLS 1.3 floor: 1.2 dropped.
           - "'ssl_protocols TLSv1.3;' in (nextcloud_nginx_raw.content | b64decode)"
           - "'TLSv1.2' not in (nextcloud_nginx_raw.content | b64decode)"
+          # HSTS is emitted by the terminating proxy, which is this file.
+          - >-
+            'add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;'
+            in (nextcloud_nginx_raw.content | b64decode)
 
     - name: Read the backup wrapper
       ansible.builtin.slurp:
@@ -190,20 +193,21 @@
           - "'pipe_status[1]' in (nextcloud_backup_raw.content | b64decode)"
           # Metric-writing is the sourced shared lib, called with the
           # nextcloud_backup prefix (proves the metric series is unchanged).
-          - "'source /usr/local/lib/nextcloud-backup-lib.sh' in (nextcloud_backup_raw.content | b64decode)"
+          - >-
+            'METRICS_LIB="/usr/local/lib/nextcloud-backup-lib.sh"'
+            in (nextcloud_backup_raw.content | b64decode)
           - "'write_prom_metrics nextcloud_backup' in (nextcloud_backup_raw.content | b64decode)"
           # The metrics dir comes from the role's own var, not another role's.
           - "'PROM_DIR=\"/var/lib/node_exporter\"' in (nextcloud_backup_raw.content | b64decode)"
           # Fail-closed NFS guard: when the landing zone is the offsite export,
           # a missing mount must abort with success=0 rather than dump locally.
-          - "'mountpoint -q' in (nextcloud_backup_raw.content | b64decode)"
-          - "'NFS-backed but not mounted' in (nextcloud_backup_raw.content | b64decode)"
+          - >-
+            'require_mounted_landing_zone nextcloud_backup'
+            in (nextcloud_backup_raw.content | b64decode)
 
-    # …and the guard must also report an EMPTY landing zone. A shadow dump left
-    # under an unmounted mountpoint sits on the root disk and is not offsite:
-    # sizing it would report a healthy artefact for a landing zone nothing can
-    # reach and suppress BackupArtifactEmpty. Rendered copy with NFS_ENABLED=1
-    # over a plain (non-mountpoint) directory holding exactly such a dump.
+    # The guard must also report an EMPTY landing zone: a shadow dump under an
+    # unmounted mountpoint is not offsite, and sizing it would suppress
+    # BackupArtifactEmpty.
     - name: Seed a shadow dump under a non-mountpoint landing zone
       ansible.builtin.shell: |
         set -eo pipefail
@@ -283,10 +287,9 @@
       register: nextcloud_ts_ok
       changed_when: false
 
-    # A failed dump must NOT report 0 bytes while good dumps sit in the landing
-    # zone: 0 means "no artefact at all", whose runbook describes a landing-path
-    # fault. Seeded at a known size (and newest by mtime) so the fallback is
-    # asserted on an exact number.
+    # A failed dump must not report 0 bytes while good dumps sit in the landing
+    # zone: 0 means "no artefact at all". Seeded at a known size, newest by
+    # mtime, so the fallback is asserted on an exact number.
     - name: Seed a known-size prior dump for the failure path
       ansible.builtin.command:
         cmd: dd if=/dev/zero of=/mnt/nextcloud-app/backups/nextcloud-db-20200101-000000.sql.gz bs=4096 count=1
@@ -329,11 +332,9 @@
         path: /tmp/nextcloud-backup-fail
         state: absent
 
-    # Atomic publication. The NAS artefact collector and the offsite file walk
-    # key on the FINAL `nextcloud-db-*.sql.gz` name, so a dump must never appear
-    # under it before it is complete and validated. Run against a dedicated
-    # landing zone (the assertions above pin the real one's contents) with the
-    # mock docker snapshotting that directory mid-stream.
+    # Atomic publication: the artefact collector and the offsite walk key on the
+    # final nextcloud-db-*.sql.gz name, so a dump must not appear under it
+    # before it is complete. Run against a dedicated landing zone.
     - name: Stage a dedicated landing zone for the atomic-publish test
       ansible.builtin.shell: |
         set -eo pipefail

@@ -1,9 +1,7 @@
 """scripts/flux-env.sh — the multi-ConfigMap substitution wrapper.
 
-Functional coverage runs the real script against the real sibling
-flux-render.sh. FLUX_EXTRA_CONFIGMAPS is pinned to "" by default so fixtures
-control the whole input list; the cases that exercise the unset branch pass
-extra_configmaps=None instead.
+FLUX_EXTRA_CONFIGMAPS is pinned to "" so fixtures control the whole input list;
+the cases exercising the unset branch pass extra_configmaps=None instead.
 """
 
 from __future__ import annotations
@@ -64,14 +62,22 @@ def write_sibling_cm(root: Path, data: dict[str, str]) -> Path:
 
 
 def test_bash_syntax_is_valid() -> None:
-    subprocess.run(["bash", "-n", str(SCRIPT)], check=True)
+    proc = subprocess.run(
+        ["bash", "-n", str(SCRIPT)], capture_output=True, text=True
+    )
+    assert proc.returncode == 0, proc.stderr
 
 
 @pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck not on PATH")
 def test_shellcheck_clean() -> None:
-    subprocess.run(
-        ["shellcheck", "--severity=warning", "--exclude=SC1091", str(SCRIPT)], check=True
+    # Local feedback only; ci/lint/shellcheck.yml is the gate, and its exclusion
+    # set is mirrored here.
+    proc = subprocess.run(
+        ["shellcheck", "--severity=warning", "--exclude=SC1091,SC2034", str(SCRIPT)],
+        capture_output=True,
+        text=True,
     )
+    assert proc.returncode == 0, proc.stdout
 
 
 def test_export_versions_merges_files_with_later_file_winning(tmp_path: Path) -> None:
@@ -85,6 +91,17 @@ def test_export_versions_merges_files_with_later_file_winning(tmp_path: Path) ->
     allowlists = [line for line in proc.stdout.splitlines() if "FLUX_ENVSUBST_VARS" in line]
     assert len(allowlists) == 1, "one merged allowlist, not one per file"
     assert "${foo_version}" in allowlists[0] and "${bar_vip}" in allowlists[0]
+
+
+def test_a_key_defined_twice_appears_once_in_the_allowlist(tmp_path: Path) -> None:
+    a = write_cm(tmp_path / "a.yaml", {"shared": "old"})
+    b = write_cm(tmp_path / "b.yaml", {"shared": "new"})
+    proc = run(["export-versions", f"{a.name} {b.name}"], cwd=tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    allowlist = next(
+        line for line in proc.stdout.splitlines() if "FLUX_ENVSUBST_VARS" in line
+    )
+    assert allowlist.count("${shared}") == 1
 
 
 def test_a_file_named_twice_is_read_once(tmp_path: Path) -> None:

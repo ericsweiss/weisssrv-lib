@@ -75,9 +75,7 @@
           # DVR fix: media is the PRIMARY group (a FUSE mount honours only the
           # primary GID for writes).
           - "'Group=media' in plex_override_decoded"
-          # Regression guard: overriding Group= drops plex's own group, which
-          # owns the TLS bundle — without this line Plex cannot read plex.pfx
-          # and silently serves its plex.direct fallback.
+          # Group= must not drop the plex group that owns plex.pfx.
           - "'SupplementaryGroups=plex' in plex_override_decoded"
           - "'UMask=0002' in plex_override_decoded"
           # No claim token was supplied, so the line must be absent.
@@ -87,10 +85,8 @@
       vars:
         plex_override_decoded: "{{ plex_override_content.content | b64decode }}"
 
-    # The cert hook handles TLS private-key material, so its ownership and modes
-    # are load-bearing: the directory is root:plex 0750 (a compromised plex
-    # account must not swap files root's script consumes), the passphrase file
-    # root:plex 0640, the script itself root:root 0750.
+    # The cert hook handles private-key material: dir root:plex 0750, passphrase
+    # 0640, script root:root 0750.
     - name: Check the Plex cert directory
       ansible.builtin.stat:
         path: /etc/ssl/plex
@@ -137,10 +133,8 @@
         fail_msg: "/usr/local/sbin/plex-cert-reload.sh must be root:root 0750"
         success_msg: "/usr/local/sbin/plex-cert-reload.sh is root:root 0750"
 
-    # Behavioural test: stage a self-signed PEM pair, stub systemctl so the
-    # restart/readiness checks pass, serve the pushed cert on the Plex port so
-    # the fingerprint check can succeed, and assert the hook built a
-    # passphrase-verifiable bundle and exited 0 on this first install.
+    # Behavioural test: stage a PEM pair, stub systemctl, serve the pushed cert
+    # on the Plex port, and assert the hook built a verifiable bundle.
     - name: Stage a self-signed PEM pair for the cert-reload hook  # noqa: command-instead-of-module
       ansible.builtin.command:
         cmd: >-
@@ -181,14 +175,11 @@
       poll: 0
       changed_when: false
 
-    - name: Wait for the stub TLS server to listen (best effort)
+    - name: Wait for the stub TLS server to listen
       ansible.builtin.wait_for:
         host: 127.0.0.1
         port: 32400
         timeout: 10
-      # Not up => the hook takes the documented first-install warn path and
-      # still exits 0, so the assertions below hold either way.
-      failed_when: false
 
     - name: Run plex-cert-reload.sh
       ansible.builtin.command: /usr/local/sbin/plex-cert-reload.sh
@@ -197,6 +188,18 @@
       failed_when: plex_cert_reload_run.rc != 0
       environment:
         PATH: "/usr/local/lib/plex-cert-stub:{{ ansible_env.PATH }}"
+
+    # rc 0 alone would also pass on the first-install warn fallback, which never
+    # compares the served leaf.
+    - name: Assert the hook verified the served certificate
+      ansible.builtin.assert:
+        that:
+          - plex_cert_reload_run.stdout is search('plex cert reloaded')
+          - not (plex_cert_reload_run.stderr is search('not serving the pushed certificate'))
+        fail_msg: >-
+          The hook exited 0 through the first-install warn path, so the
+          served-fingerprint comparison was never exercised.
+        success_msg: "the hook matched the served certificate against the pushed pair"
 
     - name: Stop the stub TLS server
       ansible.builtin.command: pkill -f "s_server -accept 32400"
@@ -217,8 +220,7 @@
       changed_when: false
 
     # Negative path: with a prior bundle staged, a served-cert mismatch must
-    # revert and exit non-zero. The success run cannot pin this — the hook also
-    # exits 0 on the first-install warn fallback.
+    # revert and exit non-zero.
     - name: Generate a decoy cert the served-fingerprint check must reject  # noqa: command-instead-of-module
       ansible.builtin.command:
         cmd: >-
@@ -286,9 +288,8 @@
       changed_when: false
       failed_when: plex_user_check.rc != 0
 
-    # The role creates the media group, so its absence is a regression rather
-    # than an environment quirk — asserted unconditionally so a membership check
-    # can never degrade into a skip.
+    # The role creates the media group, so assert it unconditionally - a skip
+    # here would hide a missing group.
     - name: Read the media group
       ansible.builtin.command: getent group media
       register: plex_media_group_members
@@ -332,11 +333,29 @@
         success_msg: "plex user is in the render group"
       when: plex_render_group_members.rc == 0
 
-    - name: Assert GPU drivers were skipped
+    - name: Assert no GPU driver package was installed
       ansible.builtin.command: dpkg -l intel-media-va-driver-non-free
       register: plex_gpu_driver_check
       changed_when: false
       failed_when: plex_gpu_driver_check.rc == 0
+
+    # The scenario points plex_debian_sources_path at a seeded scratch file, so
+    # the components rewrite runs without touching the container's apt sources.
+    - name: Read the scratch deb822 sources file
+      ansible.builtin.slurp:
+        src: /tmp/plex-test-debian.sources
+      register: plex_debian_sources_after
+
+    - name: Assert the non-free components were enabled
+      ansible.builtin.assert:
+        that:
+          - >-
+            'Components: main contrib non-free non-free-firmware'
+            in (plex_debian_sources_after.content | b64decode)
+        fail_msg: >-
+          The deb822 Components line was not rewritten to the canonical set, so
+          the VA-API driver packages would be unreachable.
+        success_msg: "the deb822 Components line carries contrib/non-free/non-free-firmware"
 
     - name: Check the bind-mount stand-in directories exist
       ansible.builtin.stat:
@@ -347,11 +366,8 @@
         - /tmp/plex-config
         - /tmp/plex-transcode
 
-    # The bind-mount preflight is the one guard between a broken mount and Plex
-    # filling the guest's root disk with a library nothing backs up. The
-    # converge runs with plex_skip_service=true (a container has no real bind
-    # mounts), so drive tasks/assert-mounts.yml directly, in BOTH directions,
-    # with the escape switched off. privileged + SYS_ADMIN allow `mount --bind`.
+    # The converge runs with plex_skip_service=true, so drive assert-mounts.yml
+    # directly in both directions with real bind mounts (privileged + SYS_ADMIN).
     - name: Bind-mount the three required Plex paths
       ansible.builtin.shell: |
         set -e
@@ -384,15 +400,25 @@
             plex_skip_service: false
 
         - name: Mount preflight | the unmounted path did NOT fail
-          ansible.builtin.fail:
-            msg: >-
-              assert-mounts.yml passed with /tmp/plex-transcode unmounted — the
-              role would let Plex write persistent data to the guest root
-              filesystem.
+          ansible.builtin.set_fact:
+            plex_mount_preflight_rejected: false
       rescue:
-        - name: Mount preflight | the unmounted path correctly failed
-          ansible.builtin.debug:
-            msg: "assert-mounts.yml fails when a required path exists but is not mounted"
+        - name: Mount preflight | record that the mount assert fired
+          ansible.builtin.set_fact:
+            plex_mount_preflight_rejected: true
+          when: >-
+            ansible_failed_task.name ==
+            'Assert the required Plex paths are real mounts, not stale directories'
+
+    - name: Verify the stale mountpoint was refused
+      ansible.builtin.assert:
+        that:
+          - plex_mount_preflight_rejected | default(false)
+        fail_msg: >-
+          assert-mounts.yml passed over /tmp/plex-transcode while it was
+          unmounted — the role would let Plex write persistent data to the
+          guest root filesystem.
+        success_msg: "a required path that exists but is not mounted fails the preflight"
 
     # …and the escape the role already had must still work, or every container
     # scenario (this one included) would be unable to converge.

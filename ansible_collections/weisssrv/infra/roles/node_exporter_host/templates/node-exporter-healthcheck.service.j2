@@ -1,7 +1,6 @@
 # {{ ansible_managed }}
 # Probes prometheus-node-exporter's own /metrics endpoint and restarts the unit
-# if it stops answering while systemd still reports it active (the zombie-main-PID
-# failure — see the script header). Fired by node-exporter-healthcheck.timer.
+# if it stops answering while systemd still reports it active. Fired by the timer.
 [Unit]
 Description=Restart prometheus-node-exporter if its /metrics endpoint stops answering
 After=prometheus-node-exporter.service
@@ -13,6 +12,7 @@ User=root
 # Two probes at up to 20s each plus the 5s gap, with room for the restart.
 TimeoutStartSec=90s
 Environment=NODE_EXPORTER_TEXTFILE_DIR={{ node_exporter_host_textfile_dir }}
+Environment=NODE_EXPORTER_PROBE_HOST={{ _node_exporter_host_probe_host }}
 # Sandbox mirrors the textfile_collector role's, minus ProtectSystem=strict:
 # this unit calls `systemctl restart`, which needs the private D-Bus socket.
 NoNewPrivileges=yes

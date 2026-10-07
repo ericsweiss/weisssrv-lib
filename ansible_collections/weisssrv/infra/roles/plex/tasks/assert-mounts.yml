@@ -1,17 +1,7 @@
 ---
-# Bind-mount preflight for the three paths Plex must never write to the guest's
-# own root filesystem: config (the library database), transcode (scratch) and
-# media (the library itself).
-#
-# `stat` alone cannot establish that: a failed or removed mount leaves the
-# mountpoint DIRECTORY behind, which exists, is a directory, and is writable —
-# so Plex happily fills the guest root disk with a library that no host backup
-# or replication ever sees. `mountpoint -q` is the check that actually proves
-# the host filesystem is attached.
-#
-# plex_skip_service is the role's existing container/test escape (a container
-# has neither a working systemd nor real bind mounts); it gates the mount check
-# only, so the existence assertion still runs everywhere.
+# Bind-mount preflight: config, transcode and media must be real mounts.
+# A stale mountpoint directory passes `stat`, so Plex would fill the guest root
+# disk with a library nothing backs up; `mountpoint -q` is the real check.
 
 - name: Inspect the required Plex paths
   ansible.builtin.stat:

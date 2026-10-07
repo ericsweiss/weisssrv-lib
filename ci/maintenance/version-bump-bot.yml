@@ -29,8 +29,18 @@ spec:
         REQUIRED. Shell command that rewrites the repo's version pins in place
         (e.g. `task maintenance:update-all-versions`). Anything it leaves
         untracked is ignored; only tracked changes under `paths` are committed.
-        It must exit 0 — a checker that signals "updates found" with rc=1 needs
-        an explicit `|| true`, or the bot never runs.
+        A checker that signals "updates found" with a non-zero rc names that rc
+        in `check_soft_fail_exit_codes`; every other non-zero status fails the
+        job.
+    check_soft_fail_exit_codes:
+      default: "1"
+      description: >-
+        Space-separated exit codes from `check_command` that mean "updates
+        found" and let the bot continue. Any other non-zero status fails the
+        job, so a broken checker cannot look like an empty run. The codes apply
+        to the WHOLE command, so a multi-step `check_command` must remap its own
+        error codes off this list (e.g. `|| exit 2`) or a real failure reads as
+        "updates found".
     paths:
       default: "."
       description: Space-separated paths the bot stages and diffs.
@@ -49,6 +59,19 @@ spec:
     report_path:
       default: ""
       description: Optional file whose contents are embedded in the MR description.
+    artifact_paths:
+      type: array
+      default: []
+      description: >-
+        Paths published as job artifacts on every outcome. Empty (the default)
+        publishes nothing. The MR description embeds only the first 4000
+        characters of `report_path` and links to the artifact for the rest, so a
+        consumer with a long report names it here.
+    artifact_expire_in:
+      default: "30 days"
+      description: >-
+        Retention for `artifact_paths`. The default outlives a weekly MR that
+        sits unreviewed, which is exactly when the full report is wanted.
     git_user_name:
       default: "version-bump-bot"
     git_user_email:
@@ -58,8 +81,22 @@ spec:
       description: >-
         Variable REFERENCE for a PAT with `api` + `write_repository`. CI_JOB_TOKEN
         CANNOT do this job (it cannot push, and the Merge requests API is
-        read-only for job tokens). Mask the variable — the token appears in the
-        push URL.
+        read-only for job tokens). Mask AND PROTECT the variable: protection is
+        what keeps it out of scope on an unprotected ref, and masking only hides
+        it in logs.
+    run_branch:
+      default: "main"
+      description: >-
+        LITERAL branch name (not `$CI_DEFAULT_BRANCH`, which does not expand
+        inside a quoted `rules:if`). Both triggers accept any ref, and
+        `check_command` is that ref's shell running beside the PAT, so the job
+        is pinned to one trusted branch.
+    gate:
+      default: "$VERSION_BUMP_BOT_TOKEN"
+      description: >-
+        Variable expression that must also be non-empty for the job to be
+        created. Interpolated INSIDE a single-quoted `rules:if`, so it must
+        contain no single quote.
 ---
 "$[[ inputs.job_name ]]":
   stage: $[[ inputs.stage ]]
@@ -86,8 +123,18 @@ spec:
     # the value can collide with YAML flow syntax.
     - |
       $[[ inputs.setup_command ]]
+    # CRITICAL: only the listed exit codes are "updates found". A blanket
+    # `|| true` would let a broken checker leave the tree unmodified, and the MR
+    # manager then reads that as an empty run and closes the standing bot MR.
+    # `set -e` inside the subshell keeps errexit on for a multi-line checker:
+    # on the left of `||` the shell otherwise suspends it.
     - |
-      $[[ inputs.check_command ]]
+      rc=0
+      ( set -e; $[[ inputs.check_command ]] ) || rc=$?
+      case " $[[ inputs.check_soft_fail_exit_codes ]] " in
+        *" $rc "*) rc=0 ;;
+      esac
+      [ "$rc" -eq 0 ] || exit "$rc"
     - |
       python3 "$[[ inputs.script_path ]]" \
         --branch "$[[ inputs.branch ]]" \
@@ -99,9 +146,18 @@ spec:
         --report-path "$[[ inputs.report_path ]]" \
         --git-user-name "$[[ inputs.git_user_name ]]" \
         --git-user-email "$[[ inputs.git_user_email ]]"
+  # `when: always`: the run that failed is the one whose report is wanted. An
+  # empty `artifact_paths` publishes nothing.
+  artifacts:
+    paths: $[[ inputs.artifact_paths ]]
+    expire_in: $[[ inputs.artifact_expire_in ]]
+    when: always
+  # `check_command` is the triggering ref's own shell and shares it with the
+  # PAT, so the job is pinned to `run_branch` and the token variable must be
+  # Protected as well as Masked.
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "$[[ inputs.run_branch ]]" && $[[ inputs.gate ]]'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == "$[[ inputs.run_branch ]]" && $[[ inputs.gate ]]'
       when: manual
       # Without this a web pipeline stays "blocked" until the job is played.
       allow_failure: true

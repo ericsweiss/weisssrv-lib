@@ -1,17 +1,17 @@
 ---
-# Boot-time unlock of ZFS-native encrypted pools on bare-metal Proxmox hosts,
-# fetching each pool's passphrase from a 1Password Connect instance. If Connect
-# is unreachable the per-pool units retry forever; the operator fallback is
-# `sudo zfs load-key <pool>` (README "Cold-cluster boot").
+# Boot-time unlock of ZFS-native encrypted pools, fetching each passphrase from
+# a 1Password Connect instance. The per-pool units retry forever while Connect
+# is unreachable; the fallback is README "Cold-cluster boot".
 
 # Must be reachable at boot, before any encrypted pool is mounted. Derived from
 # the inventory-wide `internal_domain` alias; set the URL directly to decouple.
 zfs_encryption_internal_domain: "{{ internal_domain | default('') }}"
 zfs_encryption_connect_url: "{{ ('https://connect.' ~ zfs_encryption_internal_domain) if zfs_encryption_internal_domain else '' }}"
 
-# The token can read this WHOLE vault, so point it at one holding only the
-# passphrases — README "Scoping the Connect token" for the re-scope ordering.
-zfs_encryption_connect_vault: "Homelab"
+# Vault holding the pool passphrases. No default: the token can read this WHOLE
+# vault, so each site names one holding only those items - README "Scoping the
+# Connect token" for the re-scope ordering.
+zfs_encryption_connect_vault: ""
 
 # Connect access token, injected by the caller from 1Password (preferably a
 # group_vars op:// reference run through `op run --`). Required on any host with
@@ -22,8 +22,8 @@ zfs_encryption_connect_token: ""
 zfs_encryption_token_path: /etc/onepassword-connect/token
 
 # Secrets-backend seam. Empty = 1Password Connect. Set to a command PRINTING the
-# passphrase on stdout for any other backend; the Connect code is then not
-# rendered at all. Contract + exit mapping: README "Using a secrets backend".
+# passphrase on stdout for any other backend; the Connect fetch is then not
+# rendered. Contract + exit mapping: README "Using a secrets backend".
 zfs_encryption_key_command: ""
 
 # Item shape: {name, item, field}. Empty = deploy the script + unit template
@@ -31,10 +31,9 @@ zfs_encryption_key_command: ""
 # list is unencrypted at rest — README "Threat model".
 zfs_encryption_pools: []
 
-# Proxmox guests (on THIS host) whose disks live on an encrypted pool and must
-# start only AFTER zfs-mount-encrypted.service mounted it; they should carry
-# onboot=0. Leave out any guest that must start early on its normal onboot
-# path (README "Guest cohort"). Empty = the start unit is not enabled.
+# Proxmox guests on this host whose disks live on an encrypted pool: they carry
+# onboot=0 and start after zfs-mount-encrypted.service. Empty leaves the start
+# unit disabled. See README "Guest cohort".
 zfs_encryption_guest_vmids: []
 zfs_encryption_guest_ctids: []
 

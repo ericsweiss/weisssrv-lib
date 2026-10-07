@@ -2,59 +2,27 @@
 """
 from __future__ import annotations
 
-import importlib.util
+import http.client
 import io
 import json
 import subprocess
-import sys
 import urllib.error
 from pathlib import Path
 
 import pytest
+from script_loader import load_script
 
 REPO = Path(__file__).resolve().parent.parent
 _SCRIPT = REPO / "scripts" / "semantic-release.py"
 
-_spec = importlib.util.spec_from_file_location("semantic_release", _SCRIPT)
-assert _spec and _spec.loader
-sr = importlib.util.module_from_spec(_spec)
 # @dataclass resolves annotations through sys.modules[cls.__module__].
-sys.modules[_spec.name] = sr
-_spec.loader.exec_module(sr)
+sr = load_script("semantic-release.py", register=True)
 
 RS = sr.RECORD_SEP
 FS = sr.FIELD_SEP
 
-# Both forges inject these into every job and main() reads them, so an
-# unscrubbed CI_COMMIT_SHA would override the fake HEAD these tests pin. Scrub
-# the set; a test that wants one sets it explicitly.
-CI_ENV = (
-    "CI",
-    "GITLAB_CI",
-    "CI_COMMIT_SHA",
-    "CI_COMMIT_REF_NAME",
-    "CI_API_V4_URL",
-    "CI_PROJECT_ID",
-    "CI_PROJECT_URL",
-    "CI_PIPELINE_URL",
-    "CI_SERVER_HOST",
-    "CI_PROJECT_PATH",
-    "CI_DEFAULT_BRANCH",
-    "RELEASE_TOKEN",
-    "BOT_TOKEN",
-    "GITHUB_ACTIONS",
-    "GITHUB_API_URL",
-    "GITHUB_REPOSITORY",
-    "GITHUB_SERVER_URL",
-    "GITHUB_SHA",
-    "GITHUB_TOKEN",
-)
-
-
-@pytest.fixture(autouse=True)
-def _scrub_ci_env(monkeypatch):
-    for name in CI_ENV:
-        monkeypatch.delenv(name, raising=False)
+# The forge-injected CI variables main() reads are scrubbed by the autouse
+# fixture in tests/conftest.py.
 
 
 def log(*records):
@@ -288,12 +256,8 @@ def recording_opener(body: bytes = b"{}"):
 
 
 def through(requester, opener):
-    """The `request` seam wired to a REAL requester over a fake urlopen.
-
-    Lets a create_release/get_release test assert on the wire request the caller
-    would actually make — URL, headers and body together — instead of stopping
-    at the seam.
-    """
+    """The `request` seam wired to a real requester over a fake urlopen, so a
+    test can assert on the URL, headers and body actually sent."""
 
     def call(url, token, token_header, payload):
         return requester(url, token, token_header, payload, opener=opener)
@@ -388,9 +352,8 @@ def test_get_release_escapes_the_tag_in_the_url():
 
 
 def test_the_gitlab_wire_request_is_unchanged_by_the_github_backend():
-    """The assertion that must never move: what a GitLab consumer puts on the
-    wire. Every field here predates --platform — URL, the single JOB-TOKEN
-    header, the annotated-tag message, `ref`, `description`, the 60s timeout."""
+    """The GitLab wire request: URL, single JOB-TOKEN header, annotated-tag
+    message, `ref`, `description`, 60s timeout."""
     opener, seen = recording_opener()
     plan = sr.plan_release(["v0.1.1"], log(("a" * 8, "feat: x")))
     sr.create_release(
@@ -706,9 +669,7 @@ def test_main_recovers_a_tag_that_has_no_release(tmp_path, monkeypatch, capsys):
 
 
 def test_main_recovers_an_orphan_tag_that_no_longer_sits_on_head(tmp_path, monkeypatch, capsys):
-    """One commit landing after the half-failed run used to orphan the tag forever:
-    the range was non-empty again, so the recovery branch was skipped and the next
-    tag was cut over commits that appear in no release notes at all."""
+    """An orphan tag is backfilled even when commits landed after it."""
     monkeypatch.setenv("RELEASE_TOKEN", "tok")
     monkeypatch.setattr(
         sr,
@@ -820,9 +781,8 @@ def test_main_records_a_backfill_that_succeeded_before_the_new_tag_failed(
 
 
 def test_main_announces_the_backfill_only_after_it_succeeded(tmp_path, monkeypatch, capsys):
-    """The announcement used to be printed at PLAN time ("… — creating it."), so a
-    run that then died at the backfill left that claim in the log unqualified.
-    A failed repair may state what it found, never what it did."""
+    """The backfill is announced only after the create succeeded; a failed
+    repair states what it found, never what it did."""
     monkeypatch.setenv("RELEASE_TOKEN", "tok")
     orphan_git(monkeypatch)
     failing_create(monkeypatch, "v0.2.0")
@@ -953,14 +913,9 @@ def test_main_names_the_github_env_when_credentials_are_missing(tmp_path, monkey
 
 
 def test_main_backfills_an_orphan_tag_on_github(tmp_path, monkeypatch, capsys):
-    """Crash recovery survives the move to GitHub, where the orphan state is
-    reached by different routes — a tag pushed by hand (what shape B did before
-    this backend existed), or a Release deleted while GitHub kept its tag —
-    and lands in exactly the same place: an empty commit range that reads as
-    "nothing to release" forever. Both halves of the repair hold there:
-    `/releases/tags/:tag` 404s for a tag with no published Release, and creating
-    a Release for an EXISTING tag is a plain create (`target_commitish` is
-    documented as unused once the tag exists)."""
+    """An orphan tag is backfilled identically on the GitHub backend:
+    `/releases/tags/:tag` 404s, and creating a Release for an existing tag is a
+    plain create."""
     monkeypatch.setenv("GITHUB_TOKEN", "ghs_tok")
     orphan_git(monkeypatch)
     calls = recording_create(monkeypatch)
@@ -1051,11 +1006,40 @@ def test_run_cli_reports_an_unreachable_api(monkeypatch, capsys):
     assert "URLError" in err and "Traceback" not in err
 
 
+def _unreadable_http_error():
+    """A 500 whose body read fails, as a connection reset mid-body would."""
+    err = _http_error(500, b"ignored")
+
+    def unreadable(*_a, **_kw):
+        raise ConnectionResetError("connection reset by peer")
+
+    err.read = unreadable
+    return err
+
+
+def test_run_cli_survives_an_http_error_whose_body_cannot_be_read(monkeypatch, capsys):
+    """run_cli formats through describe_api_error, so a body read that throws
+    inside the handler is reported rather than escaping as a traceback."""
+    monkeypatch.setattr(sr, "main", lambda argv=None: (_ for _ in ()).throw(
+        _unreadable_http_error()))
+    assert sr.run_cli(API) == 1
+    err = capsys.readouterr().err
+    assert "body unreadable" in err and "HTTP 500" in err and "Traceback" not in err
+
+
+def test_run_cli_reports_a_truncated_body(monkeypatch, capsys):
+    """http.client.HTTPException is in API_ERRORS; run_cli handles the whole
+    tuple, not a hand-kept subset of it."""
+    monkeypatch.setattr(sr, "main", lambda argv=None: (_ for _ in ()).throw(
+        http.client.IncompleteRead(b"half")))
+    assert sr.run_cli(API) == 1
+    err = capsys.readouterr().err
+    assert "IncompleteRead" in err and "Traceback" not in err
+
+
 # --- Failures that carry no HTTP status --------------------------------------
-#
-# Only HTTPError has `.code`/`.read()`; a DNS failure, reset, timeout or
-# non-JSON body arrives as URLError/OSError/JSONDecodeError. Each must still
-# write release.json — the only record a failed release leaves behind.
+# Only HTTPError carries a status; URLError/OSError/JSONDecodeError must still
+# write release.json.
 
 
 def test_main_records_a_release_that_failed_without_an_http_status(tmp_path, monkeypatch, capsys):
@@ -1106,14 +1090,9 @@ def _git_cmd(args, cwd):
 
 
 def test_a_higher_tag_on_an_unrelated_branch_does_not_drive_the_release(tmp_path):
-    """The one test here that runs real git, because the stub cannot catch this.
-
-    `fake_git` answers every `tag` call with the same list whatever flags it is
-    handed, so a stubbed version of this assertion would pass with or without
-    `--merged HEAD` — a gate that cannot fail. The tag selected here fixes BOTH
-    the next version and the commit range that becomes the release notes, so a
-    stray tag on an abandoned line is a wrong release, not a cosmetic detail.
-    """
+    """Runs real git: `fake_git` ignores tag flags, so a stubbed version would
+    pass with or without `--merged HEAD`. The selected tag fixes both the next
+    version and the commit range that becomes the release notes."""
     repo = tmp_path / "repo"
     repo.mkdir()
     _git_cmd(["init", "-q", "-b", "main"], repo)
@@ -1144,13 +1123,9 @@ def test_a_higher_tag_on_an_unrelated_branch_does_not_drive_the_release(tmp_path
 
 
 def test_main_records_a_failure_whose_error_body_cannot_be_read(tmp_path, monkeypatch, capsys):
-    """The diagnostic itself must not throw.
-
-    An HTTPError body is stream-backed, so `read()` can fail independently of
-    the request that produced it. Raising from inside describe_api_error lands
-    in the handler that called it, skipping write_plan — losing the artifact in
-    exactly the case the broadened catch was added to cover.
-    """
+    """The diagnostic itself must not throw: an HTTPError body is stream-backed,
+    so `read()` can fail independently, and raising inside describe_api_error
+    would skip write_plan and lose the artifact."""
     monkeypatch.setenv("RELEASE_TOKEN", "tok")
     monkeypatch.setattr(sr, "git", fake_git(["v0.1.1"], {"v0.1.1..HEAD": log(("a" * 8, "feat: x"))}))
     monkeypatch.setattr(sr, "get_release", released_tag)
@@ -1179,13 +1154,9 @@ def test_main_records_a_failure_whose_error_body_cannot_be_read(tmp_path, monkey
 
 
 def test_main_records_a_failure_that_is_not_an_oserror(tmp_path, monkeypatch, capsys):
-    """UnicodeDecodeError and http.client.HTTPException are outside OSError.
-
-    A non-UTF-8 body reaches json.loads and raises UnicodeDecodeError (NOT
-    JSONDecodeError — they are disjoint), and a truncated response surfaces as
-    IncompleteRead, whose base is HTTPException. Neither is in the OSError
-    family, so both would escape main() and skip the artifact.
-    """
+    """UnicodeDecodeError and http.client.HTTPException are outside OSError, so
+    a non-UTF-8 body and a truncated response would both escape main() and skip
+    the artifact."""
     import http.client
 
     def raiser(exc):

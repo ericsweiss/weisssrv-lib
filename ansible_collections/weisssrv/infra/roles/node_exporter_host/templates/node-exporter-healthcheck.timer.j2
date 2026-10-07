@@ -1,7 +1,6 @@
 # {{ ansible_managed }}
 # Fires node-exporter-healthcheck.service every {{ node_exporter_host_healthcheck_interval }}.
-# OnUnitInactiveSec (not OnUnitActiveSec) is the Type=oneshot pairing: it counts
-# from when the previous run FINISHED, so a failed probe still re-arms the timer.
+# OnUnitInactiveSec counts from the previous run finishing, so a failed probe re-arms.
 [Unit]
 Description=Periodically verify prometheus-node-exporter is answering scrapes
 

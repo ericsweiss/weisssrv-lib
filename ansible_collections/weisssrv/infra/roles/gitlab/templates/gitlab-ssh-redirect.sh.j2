@@ -1,0 +1,13 @@
+#!/bin/bash
+# Managed by the Ansible gitlab role.
+# Re-applies the managed Git SSH REDIRECT rules at boot. Persisting the whole
+# ruleset instead would freeze fail2ban's live bans into /etc/iptables/rules.v4.
+set -euo pipefail
+
+ensure() {
+  iptables -t nat -C "$@" 2>/dev/null || iptables -t nat -A "$@"
+}
+
+{% for redirect in gitlab_ssh_redirect_chains %}
+ensure {{ redirect.chain }} {% if redirect.out_interface is defined %}-o {{ redirect.out_interface }} {% endif %}-p tcp --dport {{ gitlab_ssh_port }} -j REDIRECT --to-ports 22
+{% endfor %}

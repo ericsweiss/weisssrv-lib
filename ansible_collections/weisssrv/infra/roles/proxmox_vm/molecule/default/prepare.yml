@@ -61,24 +61,20 @@
         content: |
           #!/bin/bash
           echo "qm $*" >> /tmp/molecule-stub-state/qm.log
-          # The role's firewall reconcile parses `qm config` for the
-          # net0 line. Default: NIC already carries firewall=1 (no-op).
-          # The override file, when present, supplies the net0 value
-          # verbatim so converge can exercise legacy variants (flag
-          # missing entirely, or explicit firewall=0).
+          # Default net0 already carries firewall=1 (no-op); the override file
+          # supplies the net0 value verbatim for legacy variants.
           if [ "$1" = "config" ]; then
-            if [ -f /tmp/molecule-stub-state/vm_net0_override ]; then
+            # vm_net0_absent stubs an adopted guest whose NIC is not net0.
+            if [ -f /tmp/molecule-stub-state/vm_net0_absent ]; then
+              :
+            elif [ -f /tmp/molecule-stub-state/vm_net0_override ]; then
               echo "net0: $(cat /tmp/molecule-stub-state/vm_net0_override)"
             else
               echo "net0: virtio=BC:24:11:AA:BB:CC,bridge=vmbr0,firewall=1"
             fi
-            # Emit agent/onboot/startup. Defaults match the role defaults so the
-            # reconcile tasks see NO drift and stay no-op (existence-guard's
-            # zero-mutation invariant). Override files let converge inject drift.
-            # NOTE the default startup is "order=100" (NO up=0): mirrors Proxmox
-            # dropping the up=0 default from the stored string, so the startup
-            # reconcile's normalize-both-sides must treat it as equal to the
-            # desired "order=100,up=0" — else it churns every run.
+            # Defaults match the role defaults (no-op reconciles). Default
+            # startup omits up=0, as Proxmox does: the reconcile must normalize
+            # both sides and treat it as equal to "order=100,up=0".
             if [ -f /tmp/molecule-stub-state/vm_agent_override ]; then
               echo "agent: $(cat /tmp/molecule-stub-state/vm_agent_override)"
             else
@@ -94,28 +90,20 @@
             else
               echo "startup: order=100"
             fi
-            # Memory, same contract: the default matches the role default
-            # (proxmox_vm_memory: 2048) so the memory reconcile sees no drift.
-            # Reporting NO memory line would read as drift against any desired
-            # value and make the reconcile mutate on every run.
+            # Default matches proxmox_vm_memory (2048); omitting the line would
+            # read as drift against any desired value.
             if [ -f /tmp/molecule-stub-state/vm_memory_override ]; then
               echo "memory: $(cat /tmp/molecule-stub-state/vm_memory_override)"
             else
               echo "memory: 2048"
             fi
-            # The additional-disk attach task parses `qm config` for its scsiN
-            # line. The override file, when present, supplies the scsi1 value
-            # verbatim so converge can simulate a passthrough disk already
-            # attached with or without backup=0 (absent => slot not attached).
+            # scsi1 absent by default (slot not attached); the override file
+            # supplies it verbatim, with or without backup=0.
             if [ -f /tmp/molecule-stub-state/vm_scsi1_override ]; then
               echo "scsi1: $(cat /tmp/molecule-stub-state/vm_scsi1_override)"
             fi
-            # Cloud-init network reconcile (exercised only in the skip_create:false
-            # cases) parses ipconfig0/nameserver. Default ABSENT (like scsi1): the
-            # reconcile is skip_create-gated, so the existence-guard and other
-            # existing-VM cases inherit skip_create:true and never read these. The
-            # override files supply the values verbatim so converge can drive the
-            # drift arm (stale strings) and the no-drift arm (desired strings).
+            # ipconfig0/nameserver absent by default: the reconcile is
+            # skip_create-gated. Override files drive the drift/no-drift arms.
             if [ -f /tmp/molecule-stub-state/vm_ipconfig0_override ]; then
               echo "ipconfig0: $(cat /tmp/molecule-stub-state/vm_ipconfig0_override)"
             fi
@@ -126,11 +114,31 @@
           exit 0
       become: true
 
-    - name: Install zfs stub (no-op; not exercised in this scenario)
+    - name: Install zfs stub (argv log + zvol state)
       ansible.builtin.copy:
         dest: /usr/local/bin/zfs
         mode: "0755"
         content: |
           #!/bin/bash
+          STATE=/tmp/molecule-stub-state
+          echo "zfs $*" >> "$STATE/zfs.log"
+          # `list <name>` answers from the zvol state file, so the create branch
+          # is reachable; `create` records the new zvol there.
+          if [ "$1" = "list" ]; then
+            grep -qxF "${2:-}" "$STATE/zvols" 2>/dev/null || exit 1
+            echo "${2} 10G - - - -"
+            exit 0
+          fi
+          if [ "$1" = "create" ]; then
+            echo "${@: -1}" >> "$STATE/zvols"
+            exit 0
+          fi
           exit 0
+      become: true
+
+    - name: Default zvol state to empty (nothing created yet)
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/zvols
+        content: ""
+        mode: "0644"
       become: true

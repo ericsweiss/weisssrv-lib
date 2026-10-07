@@ -1,28 +1,26 @@
 ---
-# GitLab EE (Omnibus) on a dedicated Debian guest.
-#
-# Required inputs (empty here — the site supplies them, and tasks/main.yml
-# asserts each one where it is used):
-#   gitlab_version         pinned gitlab-ee package version
-#   gitlab_external_url    canonical https:// URL
-#   gitlab_root_password   initial root password (secret; install-time only)
-# Every optional feature block (registry, pages, SMTP, SAML, Web IDE, the
-# NFS-backed backup landing, the sshd AllowUsers restriction) is OFF by default
-# and asserts its own inputs when switched on.
+# GitLab EE (Omnibus) on a dedicated Debian guest. Required and empty here,
+# asserted in tasks/main.yml: gitlab_version, gitlab_external_url,
+# gitlab_root_password. Every optional feature block below is off by default.
 gitlab_version: ""
 gitlab_external_url: ""
 
-# Skip the apt package install/upgrade while still converging host config.
-# It covers the Omnibus package and its prerequisites only: iptables-persistent
-# is host config for the Git-SSH redirect and installs either way.
+# Skip the apt package install/upgrade while still converging host config. It
+# covers the Omnibus package and its prerequisites only.
 gitlab_skip_install: false
 
 # Host shown in clone URLs. Derived from gitlab_external_url, which is right
 # whenever web and Git-SSH share a name; override when SSH has its own.
 gitlab_ssh_host: "{{ gitlab_external_url | urlsplit('hostname') | default('', true) }}"
-# Port advertised in clone URLs. The role REDIRECTs it to 22 in nat/PREROUTING
-# and nat/OUTPUT, so Git SSH terminates on the system sshd.
+# Port advertised in clone URLs. The role REDIRECTs it to 22 in the NAT chains
+# below, so Git SSH terminates on the system sshd.
 gitlab_ssh_port: 2222
+# NAT chains carrying the managed REDIRECT rule. A boot-time oneshot re-applies
+# exactly these.
+gitlab_ssh_redirect_chains:
+  - chain: PREROUTING
+  - chain: OUTPUT
+    out_interface: lo
 
 # Repository storage. The default is the Omnibus path on the root disk; point
 # it at a dedicated volume to isolate repo I/O.
@@ -41,10 +39,9 @@ gitlab_registry_data_dir: "/var/opt/gitlab/gitlab-rails/shared/registry"
 gitlab_pages_enabled: false
 gitlab_pages_external_url: ""
 
-# Web IDE extension host. MUST be a different origin from gitlab_external_url
-# (CVE-2026-5816) and a bare hostname, no wildcard — the Application Settings
-# API rejects one. Empty skips the settings pass. DNS/cert/ingress are the
-# site's to provide.
+# Web IDE extension host: a bare hostname on a DIFFERENT origin from
+# gitlab_external_url (CVE-2026-5816); a wildcard is rejected by the API. Empty
+# skips the settings pass. DNS, cert and ingress are the site's (see README).
 gitlab_web_ide_extension_host_domain: ""
 gitlab_web_ide_settings_enabled: "{{ gitlab_web_ide_extension_host_domain | length > 0 }}"
 gitlab_web_ide_marketplace_enabled: true
@@ -72,10 +69,8 @@ gitlab_saml_icon_url: ""
 gitlab_saml_idp_cert_fingerprint: ""
 gitlab_saml_idp_sso_url: ""
 gitlab_saml_groups_attribute: "http://schemas.xmlsoap.org/claims/Group"
-# Auto-created users are unblocked and SAML auto sign-in is on, so an empty
-# required_groups list auto-provisions every IdP user. The role refuses that
-# unless gitlab_saml_allow_all_users is set, so a dropped group_var fails closed
-# instead of silently opening sign-up.
+# Empty auto-provisions every IdP user; the role refuses that unless
+# gitlab_saml_allow_all_users is set.
 gitlab_saml_required_groups: []
 gitlab_saml_admin_groups: []
 gitlab_saml_external_groups: []
@@ -91,29 +86,34 @@ gitlab_nginx_ssl_certificate_key: /etc/gitlab/ssl/privkey.pem
 # TLS 1.3-only floor for all three nginxes; lower it only for a client that
 # cannot speak 1.3.
 gitlab_nginx_ssl_protocols: "TLSv1.3"
-# Proxy CIDRs whose X-Forwarded-For is trusted. Empty omits the directive.
+# Proxy CIDRs whose X-Forwarded-For is trusted. Often derived from inventory,
+# so an empty list is asserted rather than accepted.
 gitlab_nginx_real_ip_trusted_addresses: []
+# True only where nginx is reached directly, with no proxy in front of it.
+gitlab_nginx_trust_no_proxy: false
 
 # Sources allowed to reach the unauthenticated /-/metrics, /-/readiness and
-# /-/liveness endpoints (/-/health is unrestricted). Matched on the real_ip from
-# X-Forwarded-For, so a proxied probe needs its OWN source range listed.
+# /-/liveness endpoints. Matched on real_ip (see README, Monitoring endpoints).
 gitlab_monitoring_whitelist:
   - 127.0.0.1
 
-# Omnibus's bundled postgres_exporter. Empty omits the gitlab.rb lines and keeps
-# the Omnibus default (running, bound to localhost:9187). The endpoint is
-# unauthenticated, so scope any published listen address with the guest firewall.
+# Omnibus's bundled postgres_exporter. Empty keeps the Omnibus default
+# (localhost:9187, unauthenticated). See README, Monitoring endpoints.
 gitlab_postgres_exporter_enabled: ""
 gitlab_postgres_exporter_listen_address: ""
+
+# Omnibus's bundled Prometheus + Alertmanager. Empty keeps the Omnibus default
+# (both running). Set false where the site already scrapes /-/metrics and runs
+# its own alerting.
+gitlab_bundled_prometheus_enabled: ""
+gitlab_bundled_alertmanager_enabled: ""
 
 # Backup landing zone. The default is a local path on the root disk (host-image
 # snapshots are then the only DR copy).
 gitlab_backup_path: "/var/opt/gitlab/backups"
 
-# NFS-backed landing. When enabled, gitlab_backup_path must BE
-# gitlab_backup_mountpoint — the unit and the wrapper fail closed by testing
-# that exact path. Mount by hostname when the export requires TLS: a wildcard
-# cert has no IP SAN.
+# NFS-backed landing. gitlab_backup_path must equal gitlab_backup_mountpoint;
+# mount by hostname when the export requires TLS (see README, Backups).
 gitlab_backup_nfs_enabled: false
 gitlab_backup_nfs_server: ""
 gitlab_backup_nfs_export: ""
@@ -153,19 +153,16 @@ gitlab_root_password: ""
 # fail2ban is already installed (by the base role or the image).
 gitlab_fail2ban_enabled: true
 
-# sshd AllowUsers restriction. gitlab_ssh_port is WAN-facing and REDIRECTs to
-# the system sshd, so without it every local account accepts internet pubkey
-# attempts regardless of the firewall's rules on 22. Supply the FULL list when
-# enabling; disabling REMOVES the drop-in.
+# sshd AllowUsers restriction for the WAN-facing gitlab_ssh_port (README, Git
+# SSH). Supply the FULL list; disabling removes the drop-in.
 gitlab_ssh_allowusers_enabled: false
 gitlab_ssh_allowed_users: []
 # sshd unit restarted after the drop-in changes. Keep it in step with the base
 # role's own service name if that was overridden.
 gitlab_ssh_service_name: ssh
 
-# vm.overcommit_memory + THP off, required by Omnibus Redis (see
-# tasks/main.yml). A test container that must not mutate the host kernel sets
-# this false.
+# vm.overcommit_memory + THP off, required by Omnibus Redis. A test container
+# that must not mutate the host kernel sets this false.
 gitlab_kernel_tuning_enabled: true
 
 gitlab_timezone: "{{ timezone | default('UTC') }}"

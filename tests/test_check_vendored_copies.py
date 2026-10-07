@@ -1,28 +1,20 @@
 """Tests for scripts/check-vendored-copies.py, the consumer-manifest engine.
 
-The engine and this suite live in the library ONLY: a consumer runs the gate
-from a library checkout via `--lib-path` and ships nothing but its own
-manifest plus a smoke test that the manifest passes at its pinned ref.
-Vendoring the engine is deliberately impossible — the offer list excludes it
-(tests/test_vendorable_paths.py::test_the_engine_itself_is_not_offered), so a
-manifest naming it fails the membership arm.
+The engine and this suite live in the library only; a consumer runs the gate
+via `--lib-path` and ships its own manifest. The offer list excludes the engine.
 """
 from __future__ import annotations
 
-import importlib.util
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
 
-REPO = Path(__file__).resolve().parent.parent
+from script_loader import load_script
 
-_SPEC = importlib.util.spec_from_file_location(
-    "check_vendored_copies", REPO / "scripts" / "check-vendored-copies.py"
-)
-mod = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(mod)  # type: ignore[union-attr]
+mod = load_script("check-vendored-copies.py")
 
 
 @pytest.fixture()
@@ -31,6 +23,8 @@ def world(tmp_path):
     lib = tmp_path / "lib"
     (lib / "scripts").mkdir(parents=True)
     (lib / "lint").mkdir()
+    # resolve_lib_root validates any --lib-path by this marker.
+    (lib / "scripts" / "check-vendored-copies.py").write_text("# engine\n")
     (lib / "scripts" / "tool.py").write_text("shared\n")
     (lib / "lint" / "ruff.toml").write_text("profile\n")
 
@@ -76,15 +70,39 @@ def _offer(lib: Path, paths: list[str]) -> None:
     )
 
 
+# The developer's ~/.gitconfig is neutralised: a global commit.gpgsign, an
+# init.templateDir hook or a global pre-commit hook would error every git-backed
+# test here for reasons unrelated to the engine.
+GIT_ISOLATED = {
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+    "GIT_AUTHOR_NAME": "t",
+    "GIT_AUTHOR_EMAIL": "t@t",
+    "GIT_COMMITTER_NAME": "t",
+    "GIT_COMMITTER_EMAIL": "t@t",
+}
+
+
+def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+    """Run git in `repo` with the ambient git configuration neutralised."""
+    commit = args and args[0] == "commit"
+    argv = ["git", "-C", str(repo)]
+    if commit:
+        argv += ["-c", "commit.gpgsign=false"]
+    argv += list(args)
+    if commit:
+        argv += ["--no-verify"]
+    return subprocess.run(
+        argv, check=check, capture_output=True, text=True,
+        env={**os.environ, **GIT_ISOLATED},
+    )
+
+
 def _seed_git(lib: Path) -> None:
     """Commit the fake library checkout so `--ref HEAD` resolves."""
-    subprocess.run(["git", "-C", str(lib), "init", "-q"], check=True)
-    subprocess.run(["git", "-C", str(lib), "add", "-A"], check=True)
-    subprocess.run(
-        ["git", "-C", str(lib), "-c", "user.email=t@t", "-c", "user.name=t",
-         "commit", "-qm", "seed"],
-        check=True,
-    )
+    git(lib, "init", "-q")
+    git(lib, "add", "-A")
+    git(lib, "commit", "-qm", "seed")
 
 
 def _run(world, extra=()):
@@ -153,6 +171,85 @@ class TestForked:
         manifest.write_text(yaml.safe_dump(doc))
         assert _run(world) == 2
         assert "no `reason:`" in capsys.readouterr().err
+
+
+class TestProseOnlyFork:
+    """A fork that converged except for reworded comments keeps a `reason:` that
+    describes nothing: the gate must say so, and `comment_only: true` declares
+    the header difference that is deliberate."""
+
+    def _fork(self, world, lib_text: str, local_text: str, **extra) -> None:
+        lib, consumer, manifest = world
+        (lib / "scripts" / "tool.py").write_text(lib_text)
+        (consumer / "scripts" / "tool.py").write_text(local_text)
+        entry = {"lib": "scripts/tool.py", "reason": "narrower target set"}
+        entry.update(extra)
+        manifest.write_text(yaml.safe_dump({"forked": [entry]}))
+
+    def test_a_comment_only_fork_fails(self, world, capsys):
+        self._fork(world, "# upstream wording\nshared\n", "# local wording\nshared\n")
+        assert _run(world) == 1
+        err = capsys.readouterr().err
+        assert "only in comments and blank lines" in err
+        assert "narrower target set" in err
+
+    def test_a_blank_line_only_fork_fails(self, world, capsys):
+        self._fork(world, "shared\n", "\nshared\n\n")
+        assert _run(world) == 1
+        assert "only in comments and blank lines" in capsys.readouterr().err
+
+    def test_declaring_comment_only_passes(self, world):
+        self._fork(
+            world,
+            "# upstream wording\nshared\n",
+            "# local wording\nshared\n",
+            comment_only=True,
+        )
+        assert _run(world) == 0
+
+    def test_a_code_divergence_still_passes_undeclared(self, world):
+        """Mutation guard: the new arm must not fire on a real fork."""
+        self._fork(world, "# same\nshared\n", "# same\nshared-local\n")
+        assert _run(world) == 0
+
+    def test_declaring_comment_only_on_a_code_fork_fails(self, world, capsys):
+        self._fork(
+            world, "# same\nshared\n", "# same\nshared-local\n", comment_only=True
+        )
+        assert _run(world) == 1
+        assert "diverges from scripts/tool.py in code" in capsys.readouterr().err
+
+    def test_a_changed_shebang_is_code_not_a_comment(self, world):
+        self._fork(world, "#!/bin/sh\nshared\n", "#!/usr/bin/env bash\nshared\n")
+        assert _run(world) == 0
+
+    def test_an_unknown_suffix_is_never_called_prose_only(self, world):
+        """No markers for the suffix means no claim: the fork passes as before."""
+        lib, consumer, manifest = world
+        (lib / "scripts" / "blob.bin").write_text("# upstream\nshared\n")
+        (consumer / "scripts" / "blob.bin").write_text("# local\nshared\n")
+        _offer(lib, ["scripts/blob.bin"])
+        manifest.write_text(
+            yaml.safe_dump(
+                {"forked": [{"lib": "scripts/blob.bin", "reason": "site data"}]}
+            )
+        )
+        assert _run(world) == 0
+
+    def test_a_non_boolean_comment_only_is_an_operator_error(self, world, capsys):
+        self._fork(world, "shared\n", "# x\nshared\n", comment_only="yes")
+        assert _run(world) == 2
+        assert "non-boolean `comment_only:`" in capsys.readouterr().err
+
+    def test_comment_only_is_rejected_on_a_vendored_entry(self, world, capsys):
+        _, _, manifest = world
+        manifest.write_text(
+            yaml.safe_dump(
+                {"vendored": [{"lib": "scripts/tool.py", "comment_only": True}]}
+            )
+        )
+        assert _run(world) == 2
+        assert "unknown keys" in capsys.readouterr().err
 
 
 class TestOffer:
@@ -246,15 +343,26 @@ class TestCli:
         assert _run(world, ["--ref", "v9.9.9"]) == 1
         assert "does not resolve" in capsys.readouterr().err
 
-    def test_a_path_added_after_a_resolving_ref_is_not_shipped_by_it(self, world, capsys):
-        """The fallback is per REF, not per PATH.
+    def test_a_clean_run_without_a_ref_is_not_reported_as_a_verified_pass(self, world, capsys):
+        assert _run(world) == 0
+        assert "REF UNVERIFIED" in capsys.readouterr().out
 
-        A file the library adds AFTER the pinned tag is not in that release, so
-        comparing the consumer's copy against the newer working tree would pass a
-        copy the pin cannot deliver. The message must name THAT direction: the
-        adoption-window fix is bumping the pin, the opposite of the "no longer
-        ships" fix.
-        """
+    def test_require_ref_refuses_an_unresolvable_ref(self, world, capsys):
+        lib, _, _ = world
+        _seed_git(lib)
+        assert _run(world, ["--ref", "HEAD", "--require-ref"]) == 0
+        capsys.readouterr()
+        # 2, not 1: an unverifiable comparison is a misconfigured gate.
+        assert _run(world, ["--ref", "v9.9.9", "--require-ref"]) == 2
+        assert "proves nothing about the pinned release" in capsys.readouterr().err
+
+    def test_require_ref_refuses_a_run_with_no_ref_at_all(self, world, capsys):
+        assert _run(world, ["--require-ref"]) == 2
+        assert "no --ref given" in capsys.readouterr().err
+
+    def test_a_path_added_after_a_resolving_ref_is_not_shipped_by_it(self, world, capsys):
+        """A path added after the pinned ref fails with 'Bump the pin', not
+        'no longer ships'."""
         lib, consumer, manifest = world
         _seed_git(lib)
         (lib / "scripts" / "added-later.py").write_text("post-tag\n")
@@ -271,9 +379,7 @@ class TestCli:
         assert _run(world) == 0
 
     def test_a_fork_added_after_a_resolving_ref_gets_the_same_direction(self, world, capsys):
-        """The fork arm reported the same wrong direction, and a fork entry is
-        the harder one to un-delete: `reason:` and `reconciled_sha256` go with
-        it."""
+        """The fork arm reports the same direction as the vendored arm."""
         lib, consumer, manifest = world
         _seed_git(lib)
         (lib / "lint" / "editorconfig").write_text("shared\n")
@@ -289,17 +395,13 @@ class TestCli:
         assert "does not carry it" in err and "no longer ships" not in err
 
     def test_a_path_the_library_really_dropped_still_says_so(self, world, capsys):
-        """The other direction keeps its own wording: gone from the working tree
-        AND from the ref means the entry (or the copy) is what has to go."""
+        """Gone from the working tree AND the ref keeps the 'no longer ships'
+        wording: the entry or the copy is what has to go."""
         lib, _, _ = world
         _seed_git(lib)
         (lib / "scripts" / "tool.py").unlink()
-        subprocess.run(["git", "-C", str(lib), "rm", "-q", "scripts/tool.py"], check=True)
-        subprocess.run(
-            ["git", "-C", str(lib), "-c", "user.email=t@t", "-c", "user.name=t",
-             "commit", "-qm", "drop"],
-            check=True,
-        )
+        git(lib, "rm", "-q", "scripts/tool.py")
+        git(lib, "commit", "-qm", "drop")
         assert _run(world, ["--ref", "HEAD"]) == 1
         assert "no longer ships scripts/tool.py" in capsys.readouterr().err
 
@@ -371,16 +473,14 @@ class TestManifestSafety:
         assert "more than once" in capsys.readouterr().err
 
     def test_an_escaping_offer_path_is_an_operator_error(self, world, capsys):
-        _, _, _ = world
-        lib = world[0]
+        lib, _, _ = world
         _offer(lib, ["../outside.py"])
         assert _run(world) == 2
         assert "canonical repo-relative path" in capsys.readouterr().err
 
     def test_a_duplicate_yaml_key_is_an_operator_error(self, world, capsys):
-        """PyYAML's default keeps the LAST duplicate mapping key — a manifest
-        with two `vendored:` sections would silently drop every entry in the
-        first, ungating declared copies with no visible signal."""
+        """A duplicate `vendored:` key is an operator error: PyYAML keeps only
+        the last, silently ungating every entry in the first."""
         _, _, manifest = world
         manifest.write_text(
             "vendored:\n  - scripts/tool.py\nvendored:\n  - lint/ruff.toml\n"
@@ -414,9 +514,8 @@ class TestManifestSafety:
         assert "unhashable mapping key" in capsys.readouterr().err
 
     def test_a_release_shipping_the_engine_without_the_offer_is_broken(self, world, capsys):
-        """A resolving ref is only HISTORY when its engine predates the offer
-        list; an engine that names the file without shipping it is a broken
-        release, and skipping would certify unoffered paths."""
+        """A release that names the engine without shipping the offer list is
+        an error, not history: skipping would certify unoffered paths."""
         lib, _, _ = world
         (lib / "scripts" / "vendorable-paths.yml").unlink()
         (lib / "scripts" / "check-vendored-copies.py").write_text(
@@ -438,11 +537,9 @@ class TestManifestSafety:
             assert _run(world) == 2, f"alias {alias!r} was accepted"
             assert "canonical repo-relative path" in capsys.readouterr().err
 
-
     def test_an_in_repo_symlink_is_a_finding_too(self, world, capsys):
-        """Even inside the repo, read_bytes() follows the link while git
-        stores the target text — the certified bytes are not the committed
-        artifact."""
+        """An in-repo symlink is a finding too: read_bytes() follows the link
+        while git stores the target text."""
         lib, consumer, manifest = world
         (consumer / "scripts" / "real.py").write_text("shared\n")
         (consumer / "scripts" / "alias.py").symlink_to(consumer / "scripts" / "real.py")
@@ -478,20 +575,18 @@ class TestManifestSafety:
         assert "is a symlink in the library working tree" in capsys.readouterr().err
 
     def test_a_listed_but_unservable_blob_is_an_operator_error(self, world, capsys):
-        """git failing to SERVE a blob must not read as the release not
-        shipping it — that would silently disable the arm that asked."""
+        """A blob git cannot serve is an operator error, not a release that
+        does not ship the path."""
         lib, _, _ = world
         _seed_git(lib)
         # Corrupt the object store: the tree lists scripts/tool.py but the
         # blob behind it is gone.
-        import subprocess as sp
-        blob = sp.run(["git", "-C", str(lib), "rev-parse", "HEAD:scripts/tool.py"],
-                      capture_output=True, text=True).stdout.strip()
+        blob = git(lib, "rev-parse", "HEAD:scripts/tool.py").stdout.strip()
         victim = lib / ".git" / "objects" / blob[:2] / blob[2:]
         victim.unlink()
         assert _run(world, ["--ref", "HEAD"]) == 2
         err = capsys.readouterr().err
-        assert "git show could not serve it" in err or "failing repository" in err
+        assert "git show could not serve it" in err
 
     def test_a_duplicate_offer_key_is_an_operator_error(self, world, capsys):
         lib, _, _ = world
@@ -501,9 +596,20 @@ class TestManifestSafety:
         assert _run(world) == 2
         assert "duplicate mapping key" in capsys.readouterr().err
 
+    def test_a_lib_path_that_is_not_a_library_checkout_is_an_operator_error(
+        self, world, capsys, tmp_path
+    ):
+        """A wrong --lib-path must not read back as every entry having drifted."""
+        _, consumer, _ = world
+        wrong = tmp_path / "not-the-library"
+        wrong.mkdir()
+        with pytest.raises(SystemExit) as excinfo:
+            mod.main(["--repo-root", str(consumer), "--lib-path", str(wrong)])
+        assert excinfo.value.code == 2
+        assert "no weisssrv-lib checkout found" in capsys.readouterr().err
+
     def test_list_needs_no_library_checkout(self, world, capsys, tmp_path):
-        """--list prints the parsed manifest and nothing else — it must not
-        demand the checkout the compare arms need."""
+        """--list prints the parsed manifest without demanding a checkout."""
         _, consumer, _ = world
         rc = mod.main(["--repo-root", str(consumer), "--list",
                        "--lib-path", str(tmp_path / "definitely-absent")])
@@ -511,9 +617,8 @@ class TestManifestSafety:
         assert "vendored\tscripts/tool.py" in capsys.readouterr().out
 
     def test_a_committed_library_symlink_at_a_ref_is_a_named_finding(self, world, capsys):
-        """At a resolving ref git show serves the link's target TEXT — the
-        mismatch would surface as a misleading "drifted", sending the reader
-        to vendor the link text; it gets its own finding instead."""
+        """A committed library symlink at a ref is its own finding: git show
+        serves the link's target text, which would read as drift."""
         lib, consumer, manifest = world
         (lib / "scripts" / "real3.py").write_text("shared\n")
         (lib / "scripts" / "reflink.py").symlink_to("real3.py")
@@ -529,3 +634,78 @@ class TestManifestSafety:
         _offer(lib, ["scripts/tool.py", "lint/ruff.toml", "scripts/reflink.py"])
         assert _run(world, ["--ref", "HEAD"]) == 1
         assert "committed symlink" in capsys.readouterr().err
+
+
+class TestUnregisteredTwinScan:
+    """The per-path arms judge only what the manifest declares, so a subtree
+    nobody registered is invisible without --scan."""
+
+    def _molecule_twin(self, world, relpath: str = "prepare-common.yml") -> Path:
+        lib, consumer, _manifest = world
+        shared = lib / "ansible_collections" / "weisssrv" / "infra" / "molecule-shared"
+        shared.mkdir(parents=True, exist_ok=True)
+        (shared / relpath).parent.mkdir(parents=True, exist_ok=True)
+        (shared / relpath).write_text("scaffolding\n")
+        _offer(
+            lib,
+            [
+                "scripts/tool.py",
+                "lint/ruff.toml",
+                f"ansible_collections/weisssrv/infra/molecule-shared/{relpath}",
+            ],
+        )
+        local = consumer / "ansible" / "molecule" / relpath
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_text("scaffolding\n")
+        return local
+
+    SCAN = (
+        "--scan",
+        "ansible/molecule=ansible_collections/weisssrv/infra/molecule-shared",
+    )
+
+    def test_unregistered_twin_fails(self, world, capsys):
+        self._molecule_twin(world)
+        assert _run(world, self.SCAN) == 1
+        err = capsys.readouterr().err
+        assert "ansible/molecule/prepare-common.yml" in err
+        assert "is in no manifest entry" in err
+
+    def test_the_same_tree_passes_without_the_scan(self, world):
+        """Without --scan the copy is invisible, which is the gap being closed."""
+        self._molecule_twin(world)
+        assert _run(world) == 0
+
+    def test_registered_twin_passes(self, world):
+        lib, consumer, manifest = world
+        self._molecule_twin(world)
+        doc = yaml.safe_load(manifest.read_text())
+        doc["vendored"].append(
+            {
+                "lib": "ansible_collections/weisssrv/infra/molecule-shared/"
+                       "prepare-common.yml",
+                "consumer": "ansible/molecule/prepare-common.yml",
+            }
+        )
+        manifest.write_text(yaml.safe_dump(doc))
+        assert _run(world, self.SCAN) == 0
+
+    def test_nested_twin_is_found(self, world, capsys):
+        self._molecule_twin(world, "tasks/prepare-base.yml")
+        assert _run(world, self.SCAN) == 1
+        assert "ansible/molecule/tasks/prepare-base.yml" in capsys.readouterr().err
+
+    def test_file_with_no_offered_twin_is_left_alone(self, world):
+        lib, consumer, _manifest = world
+        local = consumer / "ansible" / "molecule" / "site-only.yml"
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_text("site data\n")
+        assert _run(world, self.SCAN) == 0
+
+    def test_missing_scan_dir_exits_2(self, world, capsys):
+        assert _run(world, self.SCAN) == 2
+        assert "which is not a directory" in capsys.readouterr().err
+
+    def test_malformed_scan_argument_exits_2(self, world, capsys):
+        assert _run(world, ["--scan", "ansible/molecule"]) == 2
+        assert "CONSUMER_DIR=LIB_PREFIX" in capsys.readouterr().err

@@ -1,9 +1,7 @@
 ---
 # Regenerate the GRUB config so the appended IOMMU cmdline lands in the boot
-# entries. `update-grub` covers a GRUB-managed host; if the host is
-# additionally proxmox-boot-tool-managed (UUIDs file present), refresh the ESP
-# copies too. Skipped under molecule/check-mode (no real GRUB in the container).
-# Applies only at the next reboot — the role never reboots.
+# entries, refreshing the ESP copies too on a proxmox-boot-tool host. Skipped
+# under molecule. Applies at the next reboot; the role never reboots.
 - name: Update GRUB for VFIO
   ansible.builtin.shell: |
     set -euo pipefail
@@ -23,11 +21,9 @@
   changed_when: true
   when: not (vfio_passthrough_skip_boot_update | default(false))
 
-# PRINT reboot-required — never auto-reboot. VFIO changes (kernel cmdline +
-# vfio-pci bind + nouveau blacklist) only take effect on the next boot; the
-# operator reboots the host in a maintenance window. This handler
-# fires only when a config file actually changed (it is notified by the render
-# tasks), so a no-op run stays quiet.
+# Print reboot-required; never auto-reboot. VFIO changes take effect only on the
+# next boot, and the operator reboots in a maintenance window. Notified by the
+# render tasks, so a no-op run stays quiet.
 - name: Warn that a VFIO reboot is required
   ansible.builtin.debug:
     msg: >-

@@ -1,9 +1,6 @@
 ---
-# Apply the ip_forward sysctl from the drop-in we just wrote.
-# Using the ansible.posix.sysctl module (instead of shelling to `sysctl --system`)
-# scopes the apply to JUST the ip_forward key — if some unrelated file under
-# /etc/sysctl.d/ has a bad entry, our handler still succeeds and the operator
-# isn't misled into thinking the nic_tuning apply itself failed.
+# Each sysctl is applied with the module rather than `sysctl --system`, so an
+# unrelated bad entry under /etc/sysctl.d/ cannot fail or mask these applies.
 - name: Reload sysctl ip_forward
   ansible.posix.sysctl:
     name: net.ipv4.ip_forward
@@ -12,9 +9,6 @@
     sysctl_file: /etc/sysctl.d/99-nic-tuning-ip-forward.conf
     reload: true
 
-# Apply the vm.swappiness sysctl from the drop-in we just wrote. Scoped to the
-# single key (like ip_forward above) so an unrelated bad /etc/sysctl.d/ entry
-# can't mask this apply.
 - name: Reload sysctl swappiness
   ansible.posix.sysctl:
     name: vm.swappiness

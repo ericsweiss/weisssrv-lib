@@ -11,12 +11,11 @@ cluster instantiation: a second cluster consumes the same tag and passes its own
 values. A value with no safe generic default is asserted by name at role entry,
 so a missed rename fails the play instead of rendering an empty string.
 
-Two documented exceptions ship a non-empty default anyway:
+One documented exception ships a non-empty default anyway:
 
 | Default | Why |
 | --- | --- |
 | `nas_storage_appdata_base` (`/mnt/ssd/appdata`), `nas_storage_backup_apps_base` (`/mnt/tank/backups/apps`) | Conventional mount paths under conventional pool names, not site identity — a second cluster with the same pool layout wants exactly these. The datasets *under* them are inputs (`nas_storage_appdata_dirs`, `nas_storage_backup_artifact_apps`), and both default to empty. |
-| `zfs_encryption_connect_vault` (`Homelab`) | A 1Password vault NAME, which is site identity. It is defaulted because emptying it would break every host that currently sets nothing, and because the safe re-scope is a multi-step live operation (the Connect server must be granted the new vault before a token can cover it) rather than a variable change — see the role README, "Scoping the Connect token". Set it. |
 
 ## Install
 
@@ -43,8 +42,12 @@ the current release is named in the library
 (`ansible.posix`, `community.general`), so the install pulls them too;
 `requirements.yml` adds the test-only ones (`community.crypto`,
 `community.docker`) that molecule needs and consumers do not.
-`meta/runtime.yml` declares the ansible-core floor: **2.18**, which is what
-`ansible==11.6.0` ships and what CI tests against.
+`meta/runtime.yml` declares the ansible-core floor: **2.18**. The molecule
+suites run on the core `ansible==14.4.0` ships (2.21); the
+`collection-floor-build` job builds the collection and syntax-checks every
+converge play on `ansible-core` 2.18.18, so a role reaching past the floor reds
+the pipeline rather than a consumer. Bump `requires_ansible` and that job's
+`ANSIBLE_CORE_FLOOR` together.
 
 ## Roles
 
@@ -102,7 +105,7 @@ here.
 
 | Role | Purpose |
 | --- | --- |
-| `k3s` | k3s servers/agents, kube-vip API VIP, TLS SANs, GPU agents, off-node etcd snapshots, optional metrics-server override |
+| `k3s` | k3s servers/agents, kube-vip API VIP, TLS SANs, GPU agents, off-node etcd snapshots |
 
 ### Observability
 
@@ -186,17 +189,14 @@ variable defaulting to
 guest running both roles publishes where the exporter reads without restating
 the path, and a site that moved the textfile dir sets it once. The variables
 following the convention today are `acme_certs_textfile_dir`,
-`adguard_sync_textfile_dir`, `gitlab_textfile_dir`,
-`immich_backup_metrics_dir`, `k3s_etcd_snapshot_textfile_dir`,
-`nas_storage_backup_artifact_metrics_dir`, `nextcloud_backup_metrics_dir`,
-`restic_offsite_metrics_dir` and `smtp_relay_textfile_dir`.
+`adguard_sync_textfile_dir`, `encrypted_swap_textfile_dir`,
+`gitlab_textfile_dir`, `immich_backup_metrics_dir`,
+`k3s_etcd_snapshot_textfile_dir`, `nas_storage_backup_artifact_metrics_dir`,
+`nextcloud_backup_metrics_dir`, `restic_offsite_metrics_dir` and
+`smtp_relay_textfile_dir`.
 
-All but one are keys in their role's `defaults/main.yml`, so they appear in that
-role's variable table. `nas_storage_backup_artifact_metrics_dir` is the
-exception: `nas_storage` resolves the same expression inline at each call site
-(`tasks/backup_metrics.yml` and the four collector templates) instead of
-declaring a default. Setting it in the inventory works identically; it is just
-not discoverable from the role README.
+Each is a key in its role's `defaults/main.yml`, so it appears in that role's
+variables table.
 
 ## Consumers that differ from weisssrv
 
@@ -212,18 +212,23 @@ today's behaviour (`zfs_encryption_key_command`, `proxmox_storage_defaults`,
 by-design list, and the contract for contributing an alternative are in
 [docs/EXTENSIBILITY.md](../../../docs/EXTENSIBILITY.md).
 
-## Migrating from un-prefixed in-tree roles
+## Migrating
 
-**[MIGRATING.md](MIGRATING.md) is the master old → new map** and the list a
-migration executes: every renamed variable, every externalized default (same
-name, site-specific value now empty), and every required input, per role.
+Two files, for two different jobs:
 
-The rename is a breaking change and a **silent** one: each alias and each
-default is `| default(...)`, so a name you miss does not raise
-`AnsibleUndefinedVariable` — it quietly takes the role default. Read MIGRATING's
-"How to check a migration" section before starting; the short version is that a
-`--check` run catches the loud half (required-input asserts) and only a rendered-
-config diff catches the quiet half.
+- **[MIGRATING.md](MIGRATING.md)** is the per-release upgrade record. Read the
+  sections newer than your current pin before every bump.
+- **[MIGRATING-from-in-tree-roles.md](MIGRATING-from-in-tree-roles.md)** is the
+  one-time adoption map for a repo coming from un-prefixed in-tree roles: every
+  renamed variable, every externalized default (same name, site-specific value
+  now empty), and every required input, per role.
+
+Either way the change is a **silent** one: each alias and each default is
+`| default(...)`, so a name you miss does not raise `AnsibleUndefinedVariable`,
+it quietly takes the role default. Read "How to check a migration" in the
+adoption map before starting; the short version is that a `--check` run catches
+the loud half (required-input asserts) and only a rendered-config diff catches
+the quiet half.
 
 Three rules the migration depends on:
 
@@ -265,7 +270,9 @@ and is **removed in ansible-core 2.19** — use the singular form.
 galaxy.yml         collection metadata + runtime dependency contract
 CHANGELOG.md       a pointer to the GitLab Releases page — not a changelog
 LICENSE            ships in the artifact
-MIGRATING.md       old -> new variable map for adopting the collection
+MIGRATING.md       per-release upgrade notes, newest first
+MIGRATING-from-in-tree-roles.md
+                   one-time old -> new variable map for adopting the collection
 meta/runtime.yml   requires_ansible floor
 requirements.yml   galaxy deps for TEST environments (what molecule installs)
 roles/<role>/      one dir per role, each with its own README + molecule scenario
@@ -297,7 +304,8 @@ Every scenario's platform image is
 `${MOLECULE_TEST_IMAGE:-…/molecule-test:latest}` — a full image ref, so a
 consumer building the test image into its own registry exports
 `MOLECULE_TEST_IMAGE` (tag or digest included) instead of patching each
-scenario.
+scenario. The built-in fallback is this project's own registry and its
+locally-built `:latest` tag.
 
 CI runs the same scenarios through a generated child pipeline
 (`ci/internal/molecule-matrix.gitlab-ci.yml`), narrowed to the roles a merge

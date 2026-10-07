@@ -9,11 +9,9 @@
     - name: Disable apt background services
       ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/prepare-apt-disable.yml
 
-    # Contract-test harness, modelled on proxmox_ha/molecule/default: pvesh
-    # is stubbed in /usr/local/bin. Read-only GETs answer from configurable
-    # state files under /tmp/molecule-stub-state so converge can simulate
-    # "absent" / "already correct" / "drifted"; every mutation (create/set)
-    # is logged to pvesh.log for exact-invocation asserts.
+    # Contract-test harness: pvesh is stubbed in /usr/local/bin. GETs answer from
+    # state files under /tmp/molecule-stub-state so converge can simulate absent,
+    # correct and drifted; mutations are logged to pvesh.log for asserts.
     - name: Stub state directory
       ansible.builtin.file:
         path: /tmp/molecule-stub-state

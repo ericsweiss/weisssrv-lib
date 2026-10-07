@@ -6,23 +6,26 @@ and Ansible collection that the weisssrv family pins.
 This file is a pointer, not a second copy. Anything stated in `README.md`,
 `docs/INCLUDE-CONTRACT.md` or `docs/VERSIONING.md` is canonical there; what
 follows is the working discipline and the traps that are not obvious from the
-files themselves.
+files themselves. [CLAUDE.md](CLAUDE.md) points here too — it is not a rival
+source.
 
 ## What this repo is
 
 One source of truth for everything the family shares:
 
 - **`ci/`** — GitLab CI templates with `spec:inputs`, including the Ansible
-  deploy toolchain in `ci/deploy/` (includes like the rest, just not adopted by
-  any consumer yet), plus the `*.example.yml` GitHub workflows, which are the
-  one thing here a forge-portable consumer VENDORS rather than includes.
+  deploy toolchain in `ci/deploy/` (adoption per template is tracked in
+  [docs/INCLUDE-CONTRACT.md](docs/INCLUDE-CONTRACT.md)), plus the
+  `*.example.yml` GitHub workflows, which are the one thing here a
+  forge-portable consumer VENDORS rather than includes.
 - **`ansible_collections/weisssrv/infra/`** — every host-configuration role,
   consumed by FQCN (`weisssrv.infra.<role>`), versioned by the same tag.
 - **`terraform/modules/`** — four module shapes (cloudflare-zone,
   tailscale-acl, authentik-sso, unifi-network).
 - **`scripts/`** — the gates and generators the CI jobs run.
-- **`lint/`**, **`taskfiles/`** — configs and go-task fragments a consumer
-  vendors.
+- **`kubernetes/reapers/`** — the shipped reaper programs a consumer vendors
+  into its own cluster (see [docs/SCRIPTS.md](docs/SCRIPTS.md)).
+- **`lint/`** — linter configs a consumer vendors.
 - **`cli/`** — `weisssrv-new-project`, the copier wrapper that renders the
   cluster template (`new-cluster`) and the app template (`new-app`).
 
@@ -48,9 +51,18 @@ Start with [README.md](README.md), then
   weisssrv's current values; changing a default is a behavior change for
   weisssrv and must be flagged. When you change a template, update its parity
   note and its input list in the include contract.
+- **The cluster template is the product; `weisssrv` is one instance of it.**
+  A generic improvement — a gate, a role behaviour, a CI job, a doc pattern —
+  lands here or in the cluster template first and reaches the running cluster
+  through a tag and a pin bump. Fixing it only in `weisssrv` leaves every future
+  cluster with the old shape and the next re-vendor reverts the edit.
 - **Site data is never a default.** Domains, IPs, hostnames, pool names and
   credentials are inputs, asserted at role entry. A default that names one site
-  is a bug even when it happens to be correct.
+  is a bug even when it happens to be correct. The few shipped exceptions are
+  written down with their reasoning — the collection README's exceptions table
+  for role defaults, and the `cpu_selector` notes in
+  [docs/INCLUDE-CONTRACT.md](docs/INCLUDE-CONTRACT.md) for CI inputs. A new one
+  needs the same written justification.
 - **The commit subject decides the version.** A breaking change written as
   `fix:` ships as a patch and consumers get it unannounced; write `feat!:`.
 
@@ -67,8 +79,8 @@ should be a new template plus an include, not an inline job.
 
 - Templates are GitLab `spec:inputs` files: a `spec:` header document, then
   `---`, then the config that interpolates `$[[ inputs.<name> ]]`. They must
-  begin with `spec:` (no leading `---`) — that is why `.yamllint` disables
-  `document-start`.
+  begin with `spec:` (no leading `---`) — that is why `lint/yamllint-self.yml`
+  disables `document-start`.
 - Interpolate an **array** input only in value position (`tags: $[[ inputs.tags
   ]]`), never mid-string.
 - A value that can contain `<`, `>` or `|` (a pip version ceiling, a shell
@@ -101,3 +113,9 @@ Comments state the current constraint and why it exists. They do not carry
 history: no dates, no MR or pipeline numbers, no "this used to…", no incident
 narration, no site hostnames. Long rationale belongs in the role or template
 README, not in a 20-line header above five lines of code.
+
+A comment block runs to three content lines. A block that guards a trap causing
+an outage may open `CRITICAL:` and run to eight — that marker is for outages,
+not for emphasis or for a long file header. `scripts/check-comment-length.py`
+enforces both over the whole tree and blocks the pipeline; docs/SCRIPTS.md
+carries its contract.

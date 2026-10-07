@@ -1,25 +1,15 @@
-"""Tests for scripts/check-backup-artifact-apps.py.
+"""Tests for scripts/check-backup-artifact-apps.py, both drift directions.
 
-The collector's app list (NAS host_vars) and BackupArtifactStale's
-per-app absent() arms (Flux-reconciled PrometheusRule) are edited on separate
-lifecycles; this gate is what keeps them paired. Exercises both drift
-directions.
-
-CANONICAL SUITE. A consumer that vendors the script vendors this file too and
-adds only its own smoke test — that its committed host_vars and rules agree.
+Canonical suite: a consumer that vendors the script vendors this file too and
+adds only its own smoke test over its committed host_vars and rules.
 """
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
-_SCRIPT = REPO / "scripts" / "check-backup-artifact-apps.py"
+from script_loader import load_script
 
-_spec = importlib.util.spec_from_file_location("check_backup_artifact_apps", _SCRIPT)
-assert _spec and _spec.loader
-mod = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(mod)
+mod = load_script("check-backup-artifact-apps.py")
 
 
 HOST_VARS = """
@@ -61,8 +51,6 @@ def test_app_without_an_arm_is_drift():
 
 def test_arm_without_an_app_is_drift():
     rules = RULES.replace(
-        '                  for: 1h', '                  for: 1h', 1
-    ).replace(
         '                  or absent(backup_artifact_last_mtime_seconds{app="gitlab"})',
         '                  or absent(backup_artifact_last_mtime_seconds{app="gitlab"})\n'
         '                  or absent(backup_artifact_last_mtime_seconds{app="retired"})',
@@ -85,9 +73,60 @@ def test_a_missing_arm_exits_one(tmp_path):
     assert mod.main(_files(tmp_path, host_vars, RULES)) == 1
 
 
+ARMLESS_RULES = """
+              - alert: BackupArtifactStale
+                expr: >-
+                  (time() - backup_artifact_last_mtime_seconds > 180000)
+                for: 1h
+                labels:
+                  severity: warning
+"""
+
+
+def test_an_empty_pairing_is_an_operator_error(tmp_path, capsys):
+    """Nothing declared on either side certifies a contract never inspected."""
+    assert mod.main(_files(tmp_path, "nas_storage_other: []\n", ARMLESS_RULES)) == 2
+    assert "paired nothing" in capsys.readouterr().err
+
+
+def test_an_empty_pairing_passes_when_the_flag_allows_it(tmp_path, capsys):
+    argv = _files(tmp_path, "nas_storage_other: []\n", ARMLESS_RULES)
+    assert mod.main(argv + ["--allow-empty"]) == 0
+    assert "--allow-empty" in capsys.readouterr().out
+
+
+UNRELATED_RULES = """
+              - alert: Unrelated
+                expr: up == 0
+"""
+
+
+def test_no_alert_at_all_passes_with_the_flag(tmp_path, capsys):
+    """The state --allow-empty exists for: no artefacts, so no alert either."""
+    argv = _files(tmp_path, "nas_storage_other: []\n", UNRELATED_RULES)
+    assert mod.main(argv + ["--allow-empty"]) == 0
+    assert "--allow-empty" in capsys.readouterr().out
+
+
+def test_no_alert_at_all_without_the_flag_is_an_operator_error(tmp_path):
+    assert mod.main(_files(tmp_path, "nas_storage_other: []\n", UNRELATED_RULES)) == 2
+
+
+def test_no_alert_but_declared_apps_still_fails(tmp_path):
+    host_vars = HOST_VARS + '  - name: pve-cluster\n    pattern: "etc-pve-*.tar.gz"\n'
+    assert mod.main(_files(tmp_path, host_vars, UNRELATED_RULES) + ["--allow-empty"]) == 1
+
+
 def test_a_missing_file_is_an_operator_error(tmp_path):
     argv = ["--host-vars", str(tmp_path / "absent.yml"), "--rules", str(tmp_path / "absent.yaml")]
     assert mod.main(argv) == 2
+
+
+def test_a_rules_file_without_the_alert_is_an_operator_error(tmp_path, capsys):
+    """A missing BackupArtifactStale rule is a broken gate (2), not drift (1)."""
+    rules = RULES.replace("BackupArtifactStale", "SomethingElse")
+    assert mod.main(_files(tmp_path, HOST_VARS, rules)) == 2
+    assert "BackupArtifactStale" in capsys.readouterr().err
 
 
 COMPANION_RULE = """
@@ -114,7 +153,7 @@ def test_a_companion_rule_with_no_declared_companions_is_a_violation():
     companion, so shipping it with none declared is a rule that can never fire."""
     problems = mod.check_companions(HOST_VARS, COMPANION_RULE, Path("host_vars.yml"), Path("rules.yaml"))
     assert len(problems) == 1
-    assert "can NEVER" in problems[0]
+    assert "can never fire" in problems[0]
 
 
 def test_declared_companions_with_the_rule_present_are_clean():

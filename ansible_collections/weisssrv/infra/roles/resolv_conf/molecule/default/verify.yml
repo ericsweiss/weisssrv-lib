@@ -38,3 +38,56 @@
         path: /etc/resolv.conf
       register: resolv_conf_stat
       failed_when: resolv_conf_stat.stat.mode != "0644"
+
+    # The immutable assert is waived only where chattr itself failed, so a
+    # chattr that returns 0 without setting the flag must fail the play even in
+    # a container.
+    - name: Stub chattr so +i succeeds without setting the flag
+      ansible.builtin.copy:
+        dest: /usr/local/bin/chattr
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          set -eu
+          if [ "${1:-}" = "+i" ]; then
+            exit 0
+          fi
+          exec /usr/bin/chattr "$@"
+
+    - name: Re-run resolv_conf against the stubbed chattr (expect failure)
+      block:
+        - name: Include resolv_conf with the stub ahead of chattr on PATH
+          ansible.builtin.include_role:
+            name: weisssrv.infra.resolv_conf
+
+        - name: Record that the immutable assert failed to trigger
+          ansible.builtin.set_fact:
+            resolv_conf_stub_failed: false
+            resolv_conf_stub_msg: ""
+      rescue:
+        - name: Record that the immutable assert rejected the missing flag
+          ansible.builtin.set_fact:
+            resolv_conf_stub_failed: true
+            resolv_conf_stub_msg: "{{ ansible_failed_result.msg | default('') }}"
+      always:
+        - name: Remove the chattr stub
+          ansible.builtin.file:
+            path: /usr/local/bin/chattr
+            state: absent
+
+        - name: Restore the immutable flag the stub left off
+          ansible.builtin.command:
+            cmd: chattr +i /etc/resolv.conf
+          changed_when: false
+          failed_when: false
+
+    - name: Assert a silent chattr is not waived by guest type
+      ansible.builtin.assert:
+        that:
+          - resolv_conf_stub_failed | bool
+          - resolv_conf_stub_msg is search('did not take effect')
+        fail_msg: >-
+          chattr returned 0 without setting the immutable flag and the role
+          converged green, so the container waiver is still keyed on guest type
+          rather than on chattr having failed.
+        success_msg: "A chattr that returns 0 without the flag fails the play"
