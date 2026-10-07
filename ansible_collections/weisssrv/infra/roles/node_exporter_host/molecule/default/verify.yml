@@ -323,10 +323,11 @@
     - name: Assert the sentinel is published exactly when the run succeeded
       ansible.builtin.assert:
         that:
-          - ("'node_slabinfo_collector_last_success_seconds ' in
-              (node_exporter_host_slab_prom.content | b64decode))
-             == ('node_slabinfo_collector_success 1' in
-              (node_exporter_host_slab_prom.content | b64decode))"
+          - >-
+            ('node_slabinfo_collector_last_success_seconds ' in
+             (node_exporter_host_slab_prom.content | b64decode))
+            == ('node_slabinfo_collector_success 1' in
+                (node_exporter_host_slab_prom.content | b64decode))
         fail_msg: >-
           node_slabinfo_collector_last_success_seconds records the last ATTEMPT
           rather than the last success, or is missing from a successful run.

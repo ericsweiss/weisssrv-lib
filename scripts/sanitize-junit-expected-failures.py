@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 def load_expectations(path: Path) -> list[tuple[str, int]]:
-    """(substring pattern, testcases it may match) pairs; [] when absent.
+    """(substring pattern, testcases it matches) pairs; [] when absent.
 
     A trailing ` ::<n>` declares the count; a plain line declares one.
     """
@@ -99,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         epilog=(
             "Declaration file: one case-sensitive substring per line matched "
             "against the junit testcase name, optionally followed by ` ::<n>` "
-            "for the number of testcases it may match (default 1); blank lines "
+            "for the number of testcases it matches (default 1); blank lines "
             "and # comments are ignored, and an absent file is a no-op so "
             "callers can pass the path unconditionally."
         ),
@@ -109,8 +109,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="fail when a declared expectation matched no testcase, matched more "
-             "than it declares, or could not be observed at all",
+        help="fail when a declared expectation matched no testcase, matched a "
+             "different number of testcases than it declares, or could not be "
+             "observed at all",
     )
     args = parser.parse_args(argv)
 
@@ -149,26 +150,37 @@ def main(argv: list[str] | None = None) -> int:
     for pattern in unobserved:
         print(f"WARNING: declared expectation never observed: {pattern}")
 
-    over_broad = [
+    # The count is EXACT under --strict, in both directions: a declaration wider
+    # than the guard can produce would otherwise absorb a real extra failure of
+    # that same guard, and nothing would say so.
+    mismatched = [
         (pattern, counts[pattern], declared)
         for pattern, declared in expectations
-        if counts.get(pattern, 0) > declared
+        if counts.get(pattern, 0) and counts[pattern] != declared
     ]
-    if over_broad and args.strict:
-        for pattern, observed, declared in over_broad:
+    if mismatched and args.strict:
+        for pattern, observed, declared in mismatched:
             print(
                 f"ERROR: declared expectation matched {observed} testcases, "
                 f"declared {declared}: {pattern}",
                 file=sys.stderr,
             )
-        print(
-            f"    Fix: narrow the pattern so it names only the negative-path "
-            f"task, or declare the count as `<pattern> ::<n>` in "
-            f"{args.expectations}.",
-            file=sys.stderr,
-        )
+        if any(observed > declared for _, observed, declared in mismatched):
+            print(
+                f"    Fix (matched more): narrow the pattern so it names only "
+                f"the negative-path task, or raise the count as "
+                f"`<pattern> ::<n>` in {args.expectations}.",
+                file=sys.stderr,
+            )
+        if any(observed < declared for _, observed, declared in mismatched):
+            print(
+                f"    Fix (matched fewer): lower the count in "
+                f"{args.expectations}, or restore the negative-path case that "
+                f"stopped firing.",
+                file=sys.stderr,
+            )
         return 1
-    for pattern, observed, declared in over_broad:
+    for pattern, observed, declared in mismatched:
         print(
             f"WARNING: declared expectation matched {observed} testcases, "
             f"declared {declared}: {pattern}"

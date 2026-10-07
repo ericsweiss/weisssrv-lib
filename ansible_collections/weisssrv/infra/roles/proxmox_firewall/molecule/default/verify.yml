@@ -1175,6 +1175,24 @@
           /tmp/pve-firewall-disabled — a guest firewall enabled while the
           operator believes the role is off.
 
+    # The compile gate is the last thing between a ruleset the node will not
+    # compile and a green deploy, and pve-firewall can exit 0 on a parse error,
+    # so the publish task's own failed_when has to catch it.
+    - name: Read the compile-gate result
+      ansible.builtin.slurp:
+        src: /tmp/molecule-results/fw-compile-gate.json
+      register: fw_compile_gate
+
+    - name: Assert a parse error that exits 0 fails the publish
+      ansible.builtin.assert:
+        that:
+          - (fw_compile_gate.content | b64decode | from_json).gate_fired
+        fail_msg: >-
+          pve-firewall printed a line-numbered parse error and exited 0, and the
+          role's publish reported success, so the cluster stops converging on a
+          ruleset nothing reports as broken.
+        success_msg: "a parse error that exits 0 fails the publish"
+
     - name: Read the delegate-selection results
       ansible.builtin.slurp:
         src: /tmp/molecule-results/fw-delegate.json

@@ -313,9 +313,9 @@
           {"guard_fired":
            {{ proxmox_firewall_scenario_relay_cluster_guard | to_json }}}
 
-# Seventh play: the compile gate's predicate, driven against what pve-firewall
-# actually prints. The role's own tasks cannot run it here (the scenario sets
-# proxmox_firewall_skip_pveum), so the inputs are loaded and evaluated directly.
+# Seventh play: the compile gate, as its predicate and then end to end through
+# the role's own publish task. Each case STAGES its input as a fact: the role's
+# compile tasks register that name, and a register outranks task vars.
 - name: Converge — pve-firewall compile predicate
   hosts: proxmox-firewall-test
   become: true
@@ -324,11 +324,13 @@
       ansible.builtin.include_vars:
         file: "{{ playbook_dir }}/../../defaults/main.yml"
 
-    - name: Assert the predicate fails a parse error that exited 0
-      vars:
+    - name: Stage the compile result — a line-numbered parse error that exited 0
+      ansible.builtin.set_fact:
         proxmox_firewall_compile:
           rc: 0
           stderr: "cluster.fw (line 12) : no such ipset 'core-cluster'"
+
+    - name: Assert the predicate fails a parse error that exited 0
       ansible.builtin.assert:
         that:
           - proxmox_firewall_compile_failed | bool
@@ -336,31 +338,37 @@
           A line-numbered pve-firewall parse error that exited 0 reads as a
           successful compile, so a broken ruleset deploys green.
 
-    - name: Assert the predicate fails wording carrying no error word
-      vars:
+    - name: Stage the compile result — parse-error wording with no error word
+      ansible.builtin.set_fact:
         proxmox_firewall_compile:
           rc: 0
           stderr: "cluster.fw (line 3) : unknown security group 'sg-x'"
+
+    - name: Assert the predicate fails wording carrying no error word
       ansible.builtin.assert:
         that:
           - proxmox_firewall_compile_failed | bool
         fail_msg: "pve-firewall's own parse-error wording is not matched"
 
-    - name: Assert a non-zero exit fails whatever stderr says
-      vars:
+    - name: Stage the compile result — a non-zero exit with empty stderr
+      ansible.builtin.set_fact:
         proxmox_firewall_compile:
           rc: 2
           stderr: ""
+
+    - name: Assert a non-zero exit fails whatever stderr says
       ansible.builtin.assert:
         that:
           - proxmox_firewall_compile_failed | bool
         fail_msg: "a non-zero pve-firewall exit is not a failure"
 
-    - name: Assert a healthy compile and its notices pass
-      vars:
+    - name: Stage the compile result — a healthy compile and its notices
+      ansible.builtin.set_fact:
         proxmox_firewall_compile:
           rc: 0
           stderr: "pve-firewall: enabling firewall\n"
+
+    - name: Assert a healthy compile and its notices pass
       ansible.builtin.assert:
         that:
           - not (proxmox_firewall_compile_failed | bool)
@@ -370,24 +378,102 @@
 
     # Mutation pair for the line-error arm: the same wording with and without
     # the (line N) prefix, which is the only thing either case can match on.
-    - name: Assert the line-error arm catches an unworded parse error
-      vars:
+    - name: Stage the compile result — an unworded (line N) complaint
+      ansible.builtin.set_fact:
         proxmox_firewall_compile:
           rc: 0
           stderr: "cluster.fw (line 12) : bad"
+
+    - name: Assert the line-error arm catches an unworded parse error
       ansible.builtin.assert:
         that:
           - proxmox_firewall_compile_failed | bool
         fail_msg: "a (line N) complaint pve-firewall did not word as an error passes"
 
-    - name: Assert the same wording without a line number is not a failure
-      vars:
+    - name: Stage the compile result — the same wording with no line number
+      ansible.builtin.set_fact:
         proxmox_firewall_compile:
           rc: 0
           stderr: "cluster.fw : bad"
+
+    - name: Assert the same wording without a line number is not a failure
       ansible.builtin.assert:
         that:
           - not (proxmox_firewall_compile_failed | bool)
         fail_msg: >-
           Something other than the (line N) arm matched, so the line-error arm
           cannot be shown to be what widens the gate.
+
+    - name: Assume the compile gate passed the parse error
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.set_fact:
+        proxmox_firewall_scenario_compile_gate_fired: false
+
+    - name: Result directory
+      ansible.builtin.file:
+        path: /tmp/molecule-results
+        state: directory
+        mode: "0755"
+
+    - name: Compile-gate destination directory
+      ansible.builtin.file:
+        path: /tmp/pve-firewall-compile
+        state: directory
+        mode: "0755"
+
+    # CRITICAL: the asserts above prove the expression, not the wiring. This
+    # publishes through the role's own task against a stub that prints a
+    # line-numbered parse error and exits 0, so failed_when has to catch it.
+    # Tagged so the idempotence replay does not re-fire the guard.
+    - name: Compile gate — a parse error that exits 0 must fail the publish
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Install a pve-firewall stub that exits 0 on a parse error
+          ansible.builtin.copy:
+            dest: /usr/local/bin/pve-firewall
+            mode: "0755"
+            content: |
+              #!/bin/sh
+              echo "cluster.fw (line 12) : no such ipset 'core-cluster'" >&2
+              exit 0
+
+        - name: Publish through the role's own task with the compile gate live
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_firewall
+            tasks_from: deploy-pmxcfs-config
+          vars:
+            proxmox_firewall_skip_pveum: false
+            proxmox_firewall_staging_dir: /var/lib/pve-firewall-ansible-compile
+            pmxcfs_config_src: cluster.fw.j2
+            pmxcfs_config_dest: /tmp/pve-firewall-compile/cluster.fw
+            pmxcfs_config_label: compile-gate.fw
+
+        - name: The compile gate passed a parse error
+          ansible.builtin.fail:
+            msg: >-
+              pve-firewall printed a line-numbered parse error and exited 0, and
+              the publish still succeeded, so a ruleset the node will not compile
+              deploys green.
+      rescue:
+        # Pinned to the role's own compile task: a failure anywhere else in the
+        # publish would otherwise read as the gate firing.
+        - name: Record that the compile gate failed the publish
+          ansible.builtin.set_fact:
+            proxmox_firewall_scenario_compile_gate_fired: true
+          when: >-
+            'Validate the compiled ruleset after publishing'
+            in ansible_failed_task.name
+      always:
+        - name: Remove the pve-firewall stub
+          ansible.builtin.file:
+            path: /usr/local/bin/pve-firewall
+            state: absent
+
+    - name: Capture the compile-gate result
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/fw-compile-gate.json
+        mode: "0644"
+        content: |
+          {"gate_fired":
+           {{ proxmox_firewall_scenario_compile_gate_fired | to_json }}}

@@ -1,11 +1,5 @@
-"""House style for every scenario's converge-driven junit declarations.
-
-A negative case driven from converge sits in a `molecule-idempotence-notest`
-block, so the replay never re-fires it and its ` ::<n>` is hosts x cases. A
-guard reached under `run_once: true` records one testcase however many hosts
-the play selects, so its count is the cases alone. A case driven under
-`ignore_errors` is recorded as passed, is never observed, and must not be
-declared at all.
+"""House style for every scenario's junit declarations: the tag a converge-driven
+negative case carries, and the ` ::<n>` count its guard records in one run.
 """
 from __future__ import annotations
 
@@ -19,6 +13,8 @@ REPO = Path(__file__).resolve().parent.parent
 ROLES = REPO / "ansible_collections" / "weisssrv" / "infra" / "roles"
 SHARED_BASE = ROLES.parent / "molecule-shared" / "base.yml"
 
+# hosts x cases rests on this tag: it keeps the idempotence replay from
+# re-firing a converge-driven guard, which would record the case twice.
 IDEMPOTENCE_SKIP = "molecule-idempotence-notest"
 
 # The consuming script owns the line grammar, including the ` ::<n>` count form.
@@ -110,18 +106,23 @@ CASES = {
         "Assert every per-application security group name is usable and unowned": 3,
         "Assert the per-application security group names are unique": 1,
         "Assert the per-host extra security group references are group names": 1,
-        # main.yml includes assert_cluster_scope.yml under run_once, and carries
-        # run_once on the delegate assert itself.
-        "Assert no cluster-scope firewall input is scoped to the Proxmox group": RunOnce(1),
+        # main.yml reaches assert_cluster_scope.yml under run_once and verify
+        # includes it directly without, so the file-level read cannot settle
+        # these two; both driving plays select one host either way.
+        "Assert no cluster-scope firewall input is scoped to the Proxmox group": 1,
+        "Assert a cluster with a relay guest names the sg-smtp-relay client scope": 1,
         "Assert a reachable Proxmox node was found for the cluster-scope tasks": RunOnce(1),
-        "Assert a cluster with a relay guest names the sg-smtp-relay client scope": RunOnce(1),
+        # The role's own publish task, driven against a pve-firewall stub that
+        # prints a parse error and exits 0; no run_once on it.
+        "Validate the compiled ruleset after publishing": 1,
         # Converge-driven; guest.yml carries no run_once.
         "Assert a relay guest has a client scope for sg-smtp-relay": 1,
     },
     "proxmox_ha/default": {
-        "Assert a reachable Proxmox node was found for the reconcile": 1,
+        # run_once on the assert itself; main.yml includes rules.yml under it.
+        "Assert a reachable Proxmox node was found for the reconcile": RunOnce(1),
+        "Assert every HA rule is a supported type": RunOnce(1),
         "Ensure we're running on a Proxmox VE cluster": 1,
-        "Assert every HA rule is a supported type": 1,
         "Get current storage replication jobs": 1,
     },
     "proxmox_lxc/default": {
@@ -366,6 +367,9 @@ def run_once_for(scenario: str, pattern: str) -> bool | None:
     return reaching.pop()
 
 
+# A case driven under `ignore_errors` is recorded as PASSED, so the sanitizer
+# never observes it and it is never declared. Drive a negative case with
+# block/rescue instead.
 def declared(scenario: str) -> dict[str, int]:
     path = scenario_dir(scenario) / "expected-junit-failures.txt"
     expectations = _SANITIZE.load_expectations(path)
@@ -502,6 +506,45 @@ def test_a_single_testcase_is_declared_as_a_plain_line():
     assert not redundant, "\n  ".join(
         ["one testcase is the default, so the count is noise:", *redundant]
     )
+
+
+def test_every_run_once_marker_matches_the_task_it_names():
+    """The marker is a claim about the role, so read it back off the task — or
+    the include that reaches it — rather than trusting the table."""
+    disagree: list[str] = []
+    readable = 0
+    for scenario, guards in CASES.items():
+        for pattern, cases in guards.items():
+            derived = run_once_for(scenario, pattern)
+            if derived is None:
+                continue
+            readable += 1
+            if derived != isinstance(cases, RunOnce):
+                disagree.append(
+                    f"{scenario}: {pattern!r} runs run_once={derived}, "
+                    f"the table says {isinstance(cases, RunOnce)}"
+                )
+    assert not disagree, "\n  ".join(["run_once disagrees with the task:", *disagree])
+    assert readable > 40, f"only {readable} guards resolved — the read is vacuous"
+
+
+def test_every_run_once_marker_is_confirmed_not_merely_unrefuted():
+    """An unresolvable guard stays on the default rule: a marker the read cannot
+    confirm would be an unchecked claim about the count."""
+    unconfirmed = [
+        f"{scenario}: {pattern!r}"
+        for scenario, guards in CASES.items()
+        for pattern, cases in guards.items()
+        if isinstance(cases, RunOnce) and run_once_for(scenario, pattern) is not True
+    ]
+    assert not unconfirmed, "\n  ".join(
+        ["RunOnce marker the task does not confirm:", *unconfirmed]
+    )
+    assert any(
+        isinstance(cases, RunOnce)
+        for guards in CASES.values()
+        for cases in guards.values()
+    ), "no guard is marked run_once, so the check proves nothing"
 
 
 def test_the_declarations_cover_exactly_the_guards_named_here():

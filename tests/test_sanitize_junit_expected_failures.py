@@ -182,6 +182,99 @@ class TestOverBroad:
         assert "matched 2 testcases" in capsys.readouterr().out
 
 
+ONE_HIT = """<?xml version='1.0' encoding='utf-8'?>
+<testsuites failures="1" errors="0" tests="1">
+  <testsuite name="molecule" failures="1" errors="0" tests="1">
+    <testcase name="[host] Converge: role : Attach additional disks to VM">
+      <failure message="boom">negative path</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
+"""
+
+# Two testcases, ONE task name: the junit callback writes one per host, so this
+# is the same guard firing twice rather than an over-broad pattern.
+SAME_NAME_TWICE = """<?xml version='1.0' encoding='utf-8'?>
+<testsuites failures="2" errors="0" tests="2">
+  <testsuite name="molecule" failures="2" errors="0" tests="2">
+    <testcase name="[host-a] Converge: role : Attach additional disks to VM">
+      <failure message="boom">the negative case, as designed</failure>
+    </testcase>
+    <testcase name="[host-b] Converge: role : Attach additional disks to VM">
+      <failure message="real">a genuine failure of the same guard on another host</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
+"""
+
+
+class TestUnderCount:
+    """Under --strict the count is exact, so a shortfall fails like an excess."""
+
+    def test_strict_fails_when_fewer_hit_than_declared(self, tmp_path, capsys):
+        xml = _write(tmp_path, ONE_HIT)
+        exp = _expectations(tmp_path, ["Attach additional disks to VM ::2"])
+        rc = sanitize_junit.main(
+            ["--junit-dir", str(xml.parent), "--expectations", str(exp), "--strict"]
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "matched 1 testcases, declared 2" in err
+        assert "Fix (matched fewer)" in err
+
+    def test_non_strict_only_warns(self, tmp_path, capsys):
+        xml = _write(tmp_path, ONE_HIT)
+        exp = _expectations(tmp_path, ["Attach additional disks to VM ::2"])
+        rc = sanitize_junit.main(
+            ["--junit-dir", str(xml.parent), "--expectations", str(exp)]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "WARNING: declared expectation matched 1 testcases, declared 2" in out
+
+    def test_an_exact_count_is_accepted_and_both_firings_downgraded(
+        self, tmp_path, capsys
+    ):
+        """What the exact count buys: declaring 2 is only clean when 2 fired, so
+        a count wider than the guard can produce can no longer sit there
+        absorbing a real firing of that same guard on another host."""
+        xml = _write(tmp_path, SAME_NAME_TWICE)
+        exp = _expectations(tmp_path, ["Attach additional disks to VM ::2"])
+        rc = sanitize_junit.main(
+            ["--junit-dir", str(xml.parent), "--expectations", str(exp), "--strict"]
+        )
+        assert rc == 0
+        assert "WARNING" not in capsys.readouterr().out
+        cases = list(ET.parse(xml).getroot().iter("testcase"))
+        assert {case.get("name") for case in cases} == {
+            "[host-a] Converge: role : Attach additional disks to VM",
+            "[host-b] Converge: role : Attach additional disks to VM",
+        }
+        assert all(case.find("failure") is None for case in cases)
+
+    def test_a_second_firing_of_one_guard_is_reported(self, tmp_path, capsys):
+        """The same fixture declared at one: the extra firing stays a failure."""
+        xml = _write(tmp_path, SAME_NAME_TWICE)
+        exp = _expectations(tmp_path, ["Attach additional disks to VM"])
+        rc = sanitize_junit.main(
+            ["--junit-dir", str(xml.parent), "--expectations", str(exp), "--strict"]
+        )
+        assert rc == 1
+        assert "matched 2 testcases, declared 1" in capsys.readouterr().err
+
+    def test_an_unobserved_declaration_keeps_its_own_message(self, tmp_path, capsys):
+        """Observed zero stays the never-observed arm, not a count mismatch."""
+        xml = _write(tmp_path, ONE_HIT)
+        exp = _expectations(tmp_path, ["A guard that no longer exists ::2"])
+        rc = sanitize_junit.main(
+            ["--junit-dir", str(xml.parent), "--expectations", str(exp), "--strict"]
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "never observed" in err
+        assert "matched 0 testcases" not in err
+
+
 class TestAbsentJunitDir:
     """Declarations that could not be observed are not a clean --strict run."""
 

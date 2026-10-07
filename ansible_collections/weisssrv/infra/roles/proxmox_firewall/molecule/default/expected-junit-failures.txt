@@ -12,5 +12,6 @@ Assert the per-application security group names are unique
 Assert the per-host extra security group references are group names
 Assert no cluster-scope firewall input is scoped to the Proxmox group
 Assert a reachable Proxmox node was found for the cluster-scope tasks
+Validate the compiled ruleset after publishing
 Assert a relay guest has a client scope for sg-smtp-relay
 Assert a cluster with a relay guest names the sg-smtp-relay client scope

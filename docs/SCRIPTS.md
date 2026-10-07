@@ -2240,14 +2240,16 @@ sanitize-junit-expected-failures.py --junit-dir junit --expectations <file> [--s
 - **A line may end in ` ::<n>` to declare how many testcases it matches**; a
   plain line declares one. `<n>` must be a positive integer, or the suffix is
   read as part of the pattern and nothing matches it.
-- **`--strict` also fails when a pattern matched more testcases than it
-  declares.** Either the pattern is too broad and names more than the one guard,
-  or the guard really does fail that many times and the count is stale. Narrow
-  the pattern or raise the count.
-- **`<n>` is a cap, not an equality.** Fewer testcases than declared passes
-  without even a warning, so an over-wide count is invisible — and it then
-  downgrades a genuine second failure of that same guard instead of leaving it
-  red. Declare the number the run records, never a margin.
+- **Under `--strict` the count is exact, in both directions.** Matching more
+  than declared means the pattern names more than the one guard, or the guard
+  really fails that often and the count is stale: narrow the pattern or raise
+  the count. Matching fewer means a negative case stopped firing, or the count
+  was always wider than the guard can produce: lower it, or restore the case.
+  The error names the observed and declared numbers either way.
+- **Without `--strict` the count is only a cap, and a mismatch is a warning.**
+  So declare the number the run records, never a margin: a count wider than the
+  guard can produce downgrades a real extra failure of that same guard, and
+  outside strict mode nothing fails to say so.
 - **Count what the run records, not what the scenario reads like.** The junit
   callback writes one testcase per task per host, so a guard that fires on two
   platforms counts twice; a guard driven from several negative cases in one
