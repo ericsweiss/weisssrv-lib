@@ -16,11 +16,9 @@
     path: "{{ plex_debian_sources_path }}"
   register: plex_debian_sources
 
-# Same mechanism weisssrv.infra.k3s uses for the NVIDIA driver's components:
-# rewrite EVERY Components line in the deb822 file to the canonical set. That
-# covers all partial states (`main`, `main non-free-firmware`, already-full),
-# stays idempotent, and adds no second sources entry for suites debian.sources
-# already carries.
+# Rewrite EVERY Components line in the deb822 file to the canonical set: covers
+# every partial state, stays idempotent, adds no second sources entry. Inline
+# rather than apt_signed_repo's enable-components.yml, which fails where this skips.
 - name: Enable contrib/non-free/non-free-firmware components
   ansible.builtin.replace:
     path: "{{ plex_debian_sources_path }}"
@@ -28,6 +26,7 @@
     replace: 'Components: main contrib non-free non-free-firmware'
   when:
     - not (plex_skip_gpu_drivers | bool)
+    - plex_gpu_nonfree_repos | bool
     - plex_debian_sources.stat.exists | default(false)
 
 # Pre-deb822 hosts only (no debian.sources): one-line entries are the sole way
@@ -38,10 +37,11 @@
     state: present
     update_cache: false
   loop:
-    - "deb https://deb.debian.org/debian {{ ansible_distribution_release }} non-free non-free-firmware"
-    - "deb https://deb.debian.org/debian {{ ansible_distribution_release }}-updates non-free non-free-firmware"
+    - "deb https://deb.debian.org/debian {{ ansible_facts['distribution_release'] }} non-free non-free-firmware"
+    - "deb https://deb.debian.org/debian {{ ansible_facts['distribution_release'] }}-updates non-free non-free-firmware"
   when:
     - not (plex_skip_gpu_drivers | bool)
+    - plex_gpu_nonfree_repos | bool
     - not (plex_debian_sources.stat.exists | default(false))
 
 # Plaintext non-free entries are removed everywhere so apt fetches over https
@@ -53,8 +53,8 @@
     state: absent
     update_cache: false
   loop:
-    - "deb http://deb.debian.org/debian {{ ansible_distribution_release }} non-free non-free-firmware"
-    - "deb http://deb.debian.org/debian {{ ansible_distribution_release }}-updates non-free non-free-firmware"
+    - "deb http://deb.debian.org/debian {{ ansible_facts['distribution_release'] }} non-free non-free-firmware"
+    - "deb http://deb.debian.org/debian {{ ansible_facts['distribution_release'] }}-updates non-free non-free-firmware"
 
 - name: Remove one-line non-free repositories superseded by deb822
   ansible.builtin.apt_repository:
@@ -62,13 +62,14 @@
     state: absent
     update_cache: false
   loop:
-    - "deb https://deb.debian.org/debian {{ ansible_distribution_release }} non-free non-free-firmware"
-    - "deb https://deb.debian.org/debian {{ ansible_distribution_release }}-updates non-free non-free-firmware"
+    - "deb https://deb.debian.org/debian {{ ansible_facts['distribution_release'] }} non-free non-free-firmware"
+    - "deb https://deb.debian.org/debian {{ ansible_facts['distribution_release'] }}-updates non-free non-free-firmware"
   when:
     # Skip-gated like the deb822 rewrite above: a skip host's stock main-only
     # debian.sources satisfies the stat, and removing its one-line entries
     # would strip non-free with no replacement written.
     - not (plex_skip_gpu_drivers | bool)
+    - plex_gpu_nonfree_repos | bool
     - plex_debian_sources.stat.exists | default(false)
 
 - name: Update apt cache after adding non-free repos
@@ -76,14 +77,13 @@
     update_cache: true
   when: not (plex_skip_gpu_drivers | bool)
 
-- name: Install Intel GPU drivers for hardware transcoding
+- name: Install the GPU drivers for hardware transcoding
   ansible.builtin.apt:
-    name:
-      - intel-media-va-driver-non-free  # VA-API media driver (incl. Arc)
-      - vainfo                          # VA-API capability check
-      - intel-gpu-tools                 # GPU monitoring
+    name: "{{ plex_gpu_driver_packages }}"
     state: present
-  when: not (plex_skip_gpu_drivers | bool)
+  when:
+    - not (plex_skip_gpu_drivers | bool)
+    - plex_gpu_driver_packages | length > 0
 
 # Plex repository v2 (Plex v1.43.0+); the v1 keyring and sources files conflict
 # with it, so they are removed first.

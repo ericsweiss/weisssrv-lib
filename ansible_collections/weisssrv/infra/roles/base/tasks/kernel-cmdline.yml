@@ -1,0 +1,70 @@
+---
+# Extra kernel boot parameters via a GRUB drop-in. Opt-in: an empty
+# base_kernel_cmdline_args reconciles the drop-in away. Takes effect on the next
+# reboot; the role never reboots.
+
+- name: Assert every kernel cmdline argument is a single bare token
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - item is match('^[A-Za-z0-9][A-Za-z0-9_.:=,/+-]*$')
+    fail_msg: >-
+      base_kernel_cmdline_args entry {{ item | to_json }} is not a single bare
+      token. Entries are joined with spaces into GRUB_CMDLINE_LINUX_DEFAULT, so
+      an entry carrying whitespace or quoting becomes a different parameter than
+      intended. List one parameter per entry.
+    quiet: true
+  loop: "{{ base_kernel_cmdline_args }}"
+  when: base_kernel_cmdline_args | length > 0
+
+# The GRUB drop-in is only read by update-grub. A host whose cmdline comes from
+# /etc/kernel/cmdline (systemd-boot / proxmox-boot-tool in UEFI mode) would stage
+# nothing, report changed and never boot with the argument — refuse instead.
+- name: Check for a systemd-boot kernel command line
+  ansible.builtin.stat:
+    path: /etc/kernel/cmdline
+  register: base_kernel_cmdline_systemd_boot
+  when: base_kernel_cmdline_args | length > 0
+
+- name: Assert the host takes its kernel command line from GRUB
+  ansible.builtin.assert:
+    that:
+      - not (base_kernel_cmdline_systemd_boot.stat.exists | default(false))
+    fail_msg: >-
+      {{ inventory_hostname }} carries /etc/kernel/cmdline, so its boot command
+      line does not come from /etc/default/grub.d and
+      base_kernel_cmdline_args would never reach the kernel. Edit
+      /etc/kernel/cmdline on that host instead — see the role README,
+      "Kernel command line".
+    quiet: true
+  when: base_kernel_cmdline_args | length > 0
+
+- name: Ensure the GRUB drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/default/grub.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: base_kernel_cmdline_args | length > 0
+
+- name: Append the extra kernel parameters via a GRUB drop-in
+  ansible.builtin.template:
+    src: grub-kernel-cmdline.cfg.j2
+    dest: /etc/default/grub.d/99-base-kernel-cmdline.cfg
+    owner: root
+    group: root
+    mode: "0644"
+  when: base_kernel_cmdline_args | length > 0
+  notify:
+    - Update GRUB for base kernel cmdline
+    - Warn that a kernel cmdline reboot is required
+
+- name: Remove the GRUB drop-in when no extra kernel parameters are set
+  ansible.builtin.file:
+    path: /etc/default/grub.d/99-base-kernel-cmdline.cfg
+    state: absent
+  when: base_kernel_cmdline_args | length == 0
+  notify:
+    - Update GRUB for base kernel cmdline
+    - Warn that a kernel cmdline reboot is required

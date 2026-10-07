@@ -1,8 +1,6 @@
 # `terraform validate` evaluates no caller values, so nothing else exercises the
-# variable validations, the preconditions or the reference resolution that
-# builds the 40-odd SSO objects. Every run is `command = plan`: a plan creates
-# no state, so the file needs no teardown — which this module's `prevent_destroy`
-# resources would refuse anyway.
+# variable validations, the preconditions or the reference resolution here.
+# Every run is `command = plan`, which creates no state to tear down.
 mock_provider "authentik" {}
 
 variables {
@@ -77,6 +75,40 @@ run "a_disabled_binding_does_not_count_as_bound" {
   expect_failures = [authentik_application.this]
 }
 
+# Under policy_engine_mode "any" a negated binding admits every user OUTSIDE the
+# group, so on its own it is a deny list, not a gate.
+run "a_negate_only_binding_does_not_count_as_bound" {
+  command = plan
+
+  variables {
+    policy_bindings = {
+      grafana = { application = "grafana", group = "app-grafana", negate = true }
+    }
+  }
+
+  expect_failures = [authentik_application.this]
+}
+
+run "an_allow_binding_alongside_a_negate_binding_plans" {
+  command = plan
+
+  variables {
+    groups = {
+      "app-grafana" = { users = [] }
+      "suspended"   = { users = [] }
+    }
+    policy_bindings = {
+      grafana = { application = "grafana", group = "app-grafana" }
+      denied  = { application = "grafana", group = "suspended", negate = true }
+    }
+  }
+
+  assert {
+    condition     = authentik_application.this["grafana"].slug == "grafana"
+    error_message = "A negate binding paired with an allow binding must plan."
+  }
+}
+
 run "allow_unbound_declares_an_open_tile_deliberate" {
   command = plan
 
@@ -98,12 +130,9 @@ run "allow_unbound_declares_an_open_tile_deliberate" {
   }
 }
 
-# provider_type/provider_key are optional: an application can be a plain launch
-# tile with no protocol provider behind it. Terraform evaluates BOTH operands of
-# `||`, so writing the precondition below as `provider_type == null || contains(…)`
-# interpolates the null into the right-hand template and fails the plan with
-# "Invalid template interpolation value" instead of planning. This run is what
-# holds that precondition to its conditional-expression form.
+# An application may be a plain launch tile with no provider. This run holds the
+# precondition to its conditional form: `||` evaluates both operands, which would
+# interpolate the null and fail the plan.
 run "an_application_with_no_provider_plans" {
   command = plan
 
@@ -346,9 +375,8 @@ run "rejects_an_empty_provider_type" {
 }
 
 # An empty provider_key passes the "set both or neither" validation, so the
-# precondition is what catches it — and its message has to PRINT rather than
-# fail evaluating (a `coalesce(…, "")` around either half raises "no non-null,
-# non-empty-string arguments" here instead of naming the bad reference).
+# precondition catches it — and its message has to print rather than fail
+# evaluating, which a coalesce() around either half would do.
 run "an_empty_provider_key_reports_the_missing_reference" {
   command = plan
 
@@ -512,12 +540,171 @@ run "an_unmanaged_group_member_still_resolves_via_data" {
       "amy" = { name = "Amy", email = "amy@example.com" }
     }
     groups = {
-      "app-grafana" = { users = ["amy", "eric"] }
+      "app-grafana" = { users = ["amy", "bob"] }
     }
   }
 
   assert {
-    condition     = contains(keys(data.authentik_user.member), "eric")
+    condition     = contains(keys(data.authentik_user.member), "bob")
     error_message = "pre-existing username missing from the data lookup set"
   }
+}
+
+# The outpost serves only the keys it is given, so a provider left off it plans
+# clean and 404s at the edge.
+run "a_proxy_provider_missing_from_the_outpost_fails_the_plan" {
+  command = plan
+
+  variables {
+    proxy_providers = {
+      dashboard = { name = "Dashboard", external_host = "https://dashboard.example.com" }
+      wiki      = { name = "Wiki", external_host = "https://wiki.example.com" }
+    }
+    embedded_outpost = {
+      proxy_provider_keys = ["dashboard"]
+    }
+  }
+
+  expect_failures = [authentik_outpost.embedded]
+}
+
+run "a_detached_proxy_provider_need_not_be_on_the_outpost" {
+  command = plan
+
+  variables {
+    proxy_providers = {
+      dashboard = { name = "Dashboard", external_host = "https://dashboard.example.com" }
+      wiki      = { name = "Wiki", external_host = "https://wiki.example.com", detached = true }
+    }
+    embedded_outpost = {
+      proxy_provider_keys = ["dashboard"]
+    }
+  }
+
+  assert {
+    condition     = length(authentik_outpost.embedded[0].protocol_providers) == 1
+    error_message = "The outpost must carry exactly the keys it names."
+  }
+}
+
+run "proxy_providers_with_no_outpost_at_all_fail_the_plan" {
+  command = plan
+
+  variables {
+    proxy_providers = {
+      dashboard = { name = "Dashboard", external_host = "https://dashboard.example.com" }
+    }
+  }
+
+  expect_failures = [var.embedded_outpost]
+}
+
+run "a_saml_provider_plans_with_the_default_property_mappings" {
+  command = plan
+
+  variables {
+    applications = {
+      wiki = {
+        name          = "Wiki"
+        provider_type = "saml"
+        provider_key  = "wiki"
+      }
+    }
+    saml_providers = {
+      wiki = {
+        name    = "Wiki"
+        acs_url = "https://wiki.example.com/saml/acs"
+      }
+    }
+    groups = {
+      "app-wiki" = { users = [] }
+    }
+    policy_bindings = {
+      wiki = { application = "wiki", group = "app-wiki" }
+    }
+  }
+
+  assert {
+    condition     = length(authentik_provider_saml.this["wiki"].property_mappings) == 7
+    error_message = "The seven default SAML property mappings must resolve through the managed-id data sources."
+  }
+
+  assert {
+    condition     = authentik_provider_saml.this["wiki"].acs_url == "https://wiki.example.com/saml/acs"
+    error_message = "The SAML provider must plan with the caller's ACS URL."
+  }
+}
+
+# "custom:<key>" is an OAuth2-only reference form; the SAML list is read straight
+# through a data source, where a bad id is an opaque read failure.
+run "rejects_a_custom_prefixed_saml_property_mapping" {
+  command = plan
+
+  variables {
+    saml_providers = {
+      wiki = {
+        name              = "Wiki"
+        acs_url           = "https://wiki.example.com/saml/acs"
+        property_mappings = ["custom:groups"]
+      }
+    }
+  }
+
+  expect_failures = [var.saml_providers]
+}
+
+run "rejects_a_custom_prefixed_default_saml_property_mapping" {
+  command = plan
+
+  variables {
+    saml_property_mappings = ["custom:groups"]
+  }
+
+  expect_failures = [var.saml_property_mappings]
+}
+
+# A dot whose backslash is itself escaped is still a wildcard in the stored
+# pattern, so the check counts the backslash run rather than one character.
+run "rejects_a_regex_redirect_uri_whose_dot_follows_an_escaped_backslash" {
+  command = plan
+
+  variables {
+    oauth2_providers = {
+      grafana = {
+        name = "Grafana"
+        redirect_uris = [{
+          url           = "https://grafana\\\\.example\\.com/login"
+          matching_mode = "regex"
+        }]
+      }
+    }
+  }
+
+  expect_failures = [var.oauth2_providers]
+}
+
+# Both sensitive maps are consumed with lookup(), so an orphan key would
+# otherwise be dropped in silence.
+run "rejects_an_orphan_oauth2_client_secret_key" {
+  command = plan
+
+  variables {
+    oauth2_client_secrets = {
+      grafanna = "test-secret-unit-only"
+    }
+  }
+
+  expect_failures = [var.oauth2_client_secrets]
+}
+
+run "rejects_an_orphan_group_secret_attributes_key" {
+  command = plan
+
+  variables {
+    group_secret_attributes = {
+      "app-grafanna" = { dashboard_password = "test-password-unit-only" }
+    }
+  }
+
+  expect_failures = [var.group_secret_attributes]
 }

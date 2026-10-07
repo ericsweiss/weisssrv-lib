@@ -33,3 +33,18 @@
 
   roles:
     - role: weisssrv.infra.qol
+
+  post_tasks:
+    # .local.zsh is deployed with force: false — created once, never
+    # overwritten. Edit it, run the role again, and the edit must survive.
+    - name: Add a sentinel line to .local.zsh
+      ansible.builtin.lineinfile:
+        path: /home/testuser/.local.zsh
+        line: export QOL_LOCAL_SENTINEL=1
+        owner: testuser
+        group: testuser
+        mode: "0644"
+
+    - name: Re-run the role over the edited .local.zsh
+      ansible.builtin.include_role:
+        name: weisssrv.infra.qol

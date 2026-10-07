@@ -1,0 +1,96 @@
+---
+# Additional persistent disks on the ZFS backend: create the zvol on the
+# inventory-declared pool owner, then attach it to the VM at its pinned SCSI
+# slot. Selected by proxmox_vm_additional_disk_backend.
+
+# `sparse: true` thin-provisions the zvol; omitting it keeps the zvol thick.
+# Existing disks are unaffected either way. Key table: role README.
+- name: Create ZFS zvol for additional disks
+  delegate_to: "{{ proxmox_host }}"
+  become: true
+  # errexit: without it the task rc is `echo`'s, so a failed `zfs create` (pool
+  # absent/full, quota refusal, typo) reports a CHANGED "created" for a zvol
+  # that does not exist. The `zfs list` probe is exempt as an `if` condition.
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      if ! zfs list {{ item.zvol | quote }} 2>/dev/null; then
+        zfs create -p {{ '-s ' if (item.sparse | default(false) | bool) else '' }}-V {{ item.size | quote }} {{ item.zvol | quote }}
+        echo "created"
+      else
+        echo "exists"
+      fi
+    executable: /bin/bash
+  loop: "{{ proxmox_vm_additional_disks | default([]) }}"
+  register: proxmox_vm_zvol_creation_result
+  changed_when: "'created' in (proxmox_vm_zvol_creation_result.stdout_lines | default([]))"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - not ansible_check_mode
+    - proxmox_vm_additional_disks is defined
+
+# qm config/set must run where the VM resides (proxmox_vm_reconcile_host); the
+# zvol create above stays on proxmox_host, the inventory-declared pool owner.
+# zvol-bearing VMs are node-pinned, so the two diverge only after a hand migration.
+- name: Attach additional disks to VM
+  delegate_to: "{{ proxmox_vm_reconcile_host }}"
+  become: true
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      EXPECTED_PATH=/dev/zvol/{{ item.zvol | quote }}
+      SCSI_SLOT="scsi{{ item.scsi_slot }}"
+      ALLOW_REMAP="{{ 1 if (item.allow_remap | default(false) | bool) else 0 }}"
+      # vzdump_backup: false sets backup=0 so the nightly vzdump skips this
+      # disk (role README key table).
+      WANT_NOBACKUP="{{ 1 if not (item.vzdump_backup | default(true) | bool) else 0 }}"
+      if [ "$WANT_NOBACKUP" = 1 ]; then DISK_SPEC="${EXPECTED_PATH},backup=0"; else DISK_SPEC="$EXPECTED_PATH"; fi
+      CURRENT_CONFIG=$(qm config {{ proxmox_vm_id }} | grep "^${SCSI_SLOT}:" || true)
+      # Drive value without the "scsiN: " prefix; the path is its first
+      # comma-separated token. Compare the path EXACTLY — a substring grep would
+      # treat .../data-old as a match for .../data and skip a needed correction.
+      CURRENT_VALUE="${CURRENT_CONFIG#*: }"
+      CURRENT_PATH="${CURRENT_VALUE%%,*}"
+      HAS_NOBACKUP=0
+      echo "$CURRENT_VALUE" | grep -qE '(^|,)backup=0(,|$)' && HAS_NOBACKUP=1
+
+      # Idempotent on BOTH the zvol path and the backup= state: re-set if the disk
+      # is absent, on the wrong path, or its backup flag differs from desired.
+      if [ -z "$CURRENT_CONFIG" ]; then
+        qm set {{ proxmox_vm_id }} --${SCSI_SLOT} "$DISK_SPEC"
+        echo "CHANGED:attached"
+      elif [ "$CURRENT_PATH" = "$EXPECTED_PATH" ] && [ "$HAS_NOBACKUP" = "$WANT_NOBACKUP" ]; then
+        echo "OK:exists"
+      else
+        # CRITICAL: refuse to remap ANY occupied slot, so a reorder, removal
+        # or typo cannot silently rebind a live disk. A matching path here is
+        # only a backup= flag change and is allowed.
+        if [ "$CURRENT_PATH" != "$EXPECTED_PATH" ] && [ -n "$CURRENT_PATH" ] && [ "$CURRENT_PATH" != "none" ] && [ "$ALLOW_REMAP" != 1 ]; then
+          echo "ERROR: ${SCSI_SLOT} maps $CURRENT_PATH, expected $EXPECTED_PATH." >&2
+          echo "Refusing to remap an occupied slot; set allow_remap: true to override intentionally." >&2
+          exit 1
+        fi
+        qm set {{ proxmox_vm_id }} --${SCSI_SLOT} "$DISK_SPEC"
+        echo "CHANGED:updated"
+      fi
+    executable: /bin/bash
+  loop: "{{ proxmox_vm_additional_disks | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: proxmox_vm_disk_attach_result
+  changed_when: "'CHANGED:' in (proxmox_vm_disk_attach_result.stdout | default(''))"
+  when:
+    - not ansible_check_mode
+    - proxmox_vm_additional_disks is defined
+
+- name: Report disk attachment changes
+  ansible.builtin.debug:
+    msg: "Disk {{ item.item.name }}: {{ item.stdout | regex_replace('^(CHANGED:|OK:)', '') }}"
+  loop: "{{ proxmox_vm_disk_attach_result.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name | default('N/A') }}"
+  when:
+    - proxmox_vm_disk_attach_result.results is defined
+    - item.stdout is defined
+  changed_when: false

@@ -1,23 +1,21 @@
 """Tests for scripts/check-pvc-storageclass.py."""
 from __future__ import annotations
 
-import importlib.util
 import io
-from pathlib import Path
 
 import pytest
 
-SPEC = importlib.util.spec_from_file_location(
-    "check_pvc_storageclass",
-    Path(__file__).resolve().parent.parent / "scripts" / "check-pvc-storageclass.py",
-)
-mod = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(mod)
+from script_loader import load_script
+
+mod = load_script("check-pvc-storageclass.py")
 
 
 def _run(stdin_text: str, monkeypatch) -> int:
     monkeypatch.setattr("sys.stdin", io.StringIO(stdin_text))
-    return mod.main()
+    try:
+        return mod.main()
+    except SystemExit as exc:  # the shared corpus loader exits 2 directly
+        return int(exc.code)
 
 
 PVC_STATIC = """
@@ -147,8 +145,7 @@ items:
 
 def test_malformed_yaml_is_an_operator_error(monkeypatch, capsys):
     """Exit 2, not 1 — exit 1 means "a claim is unpinned"."""
-    monkeypatch.setattr("sys.stdin", io.StringIO("a: [1,\nb: {"))
-    assert mod.main() == 2
+    assert _run("a: [1,\nb: {", monkeypatch) == 2
     assert "failed to parse YAML input" in capsys.readouterr().err
 
 
@@ -181,10 +178,6 @@ def test_the_success_line_reports_the_claims_it_checked(monkeypatch, capsys):
     assert "2 claim(s) across 2 document(s)" in capsys.readouterr().out
 
 
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-v"]))
-
-
 def test_an_explicit_null_storageclass_is_unpinned(monkeypatch, capsys):
     """`storageClassName: null` deserializes as unset, so the default
     StorageClass captures the claim exactly like a missing key."""
@@ -206,7 +199,7 @@ def test_a_null_chart_storageclass_is_unpinned(monkeypatch, capsys):
     as unset and the default class captures the chart's PVC."""
     hr_null = HR_PINNED.replace('storageClass: "-"', "storageClass: null")
     assert _run(hr_null, monkeypatch) == 1
-    assert "no" in capsys.readouterr().err
+    assert "but no storageClass " in capsys.readouterr().err
 
 
 def test_an_empty_existing_claim_is_unpinned(monkeypatch):
@@ -218,3 +211,7 @@ def test_an_empty_existing_claim_is_unpinned(monkeypatch):
 def test_a_named_existing_claim_pins(monkeypatch):
     hr_claim = HR_PINNED.replace('storageClass: "-"', "existingClaim: app-data")
     assert _run(hr_claim, monkeypatch) == 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-v"]))

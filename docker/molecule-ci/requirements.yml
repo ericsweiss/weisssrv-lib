@@ -1,24 +1,12 @@
 ---
-# Ansible Galaxy requirements baked into the molecule-ci image (COPYed by
-# docker/molecule-ci/Dockerfile). A consumer whose roles need more collections
-# either rebuilds this image with its own context or installs the extras in the
-# job's before_script.
+# Galaxy collections baked into the molecule-ci image. A consumer whose roles
+# need more either rebuilds the image from its own context or installs the
+# extras in the job's before_script.
 
 collections:
-  # Major-line ranges, NOT the exact pins the sibling requirements.txt uses.
-  # galaxy.yml states the collection's supported range to consumers, and an
-  # exact pin there would force every consumer onto one minor. The cost is that
-  # a rebuild can bake a newer minor than the last one: the image is
-  # reproducible on the pip side only.
-  #
-  # The gate (tests/test_ansible_collection.py § TestDependencyParity) is
-  # CONTAINMENT, not equality: this file must carry every galaxy.yml
-  # `dependencies` entry at the SAME spec, and must match the collection's own
-  # requirements.yml exactly — but both of those are supersets of galaxy.yml.
-  # The last two entries here are deliberately test-only (the molecule docker
-  # driver and its certificate helpers): no role addresses them, so adding them
-  # to galaxy.yml would grow every consumer's install. Bump a shared range in
-  # all three files at once; a test-only range in these two.
+  # Major-line ranges, not the exact pins requirements.txt uses; docker/README.md
+  # says why. tests/test_ansible_collection.py gates them by CONTAINMENT, so the
+  # last two entries may be test-only. Bump a shared range in all three at once.
   - name: ansible.posix
     version: ">=2.1.0,<3.0.0"
   - name: community.general

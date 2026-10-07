@@ -13,6 +13,41 @@
     success_msg: "vfio_passthrough_pci_ids provided ({{ vfio_passthrough_pci_ids | length }} function(s))"
   when: vfio_passthrough_enabled | default(false)
 
+- name: Assert the kernel-cmdline method is implemented
+  ansible.builtin.assert:
+    that:
+      - vfio_passthrough_cmdline_method in ['grub']
+    fail_msg: >-
+      vfio_passthrough_cmdline_method is
+      '{{ vfio_passthrough_cmdline_method }}'; 'grub' is the only method
+      implemented, and any other value would stage the drop-in without the
+      cmdline ever reaching the kernel.
+    quiet: true
+  when: vfio_passthrough_enabled | default(false)
+
+# The GRUB drop-in is only read by update-grub. A host whose cmdline comes from
+# /etc/kernel/cmdline (systemd-boot / proxmox-boot-tool in UEFI mode) would stage
+# nothing, report changed and never capture the card — refuse instead.
+- name: Check for a systemd-boot kernel command line
+  ansible.builtin.stat:
+    path: /etc/kernel/cmdline
+  register: vfio_passthrough_kernel_cmdline
+  when: vfio_passthrough_enabled | default(false)
+
+- name: Assert the host takes its kernel command line from GRUB
+  ansible.builtin.assert:
+    that:
+      - not (vfio_passthrough_kernel_cmdline.stat.exists | default(false))
+    fail_msg: >-
+      {{ inventory_hostname }} carries /etc/kernel/cmdline, so its boot command
+      line does not come from /etc/default/grub.d and these parameters would
+      never reach the kernel. Only vfio_passthrough_cmdline_method 'grub' is
+      implemented — see the role README, "Assumptions & scope".
+    quiet: true
+  when:
+    - vfio_passthrough_enabled | default(false)
+    - vfio_passthrough_cmdline_method == 'grub'
+
 # IOMMU kernel command line (GRUB drop-in)
 - name: Ensure the GRUB drop-in directory exists
   ansible.builtin.file:
@@ -63,3 +98,73 @@
   notify:
     - Rebuild initramfs for VFIO
     - Warn that a VFIO reboot is required
+
+- name: Remove the vfio-pci force-load when that knob is off
+  ansible.builtin.file:
+    path: /etc/modules-load.d/vfio-pci.conf
+    state: absent
+  when:
+    - vfio_passthrough_enabled | default(false)
+    - not (vfio_passthrough_force_load | default(true))
+  notify:
+    - Rebuild initramfs for VFIO
+    - Warn that a VFIO reboot is required
+
+# CRITICAL: with no usable marker the ownership test protects nothing, so the
+# removal arm would have to treat every file at the three paths as its own.
+- name: Assert the managed-file marker is usable
+  ansible.builtin.assert:
+    that:
+      - _vfio_passthrough_markers | length > 0
+    fail_msg: >-
+      Neither vfio_passthrough_managed_marker nor
+      vfio_passthrough_legacy_markers rendered a non-empty value, so no file at
+      the three VFIO paths can be identified as role-written. Set one to a
+      literal substring of this role's rendered header.
+    quiet: true
+  when:
+    - not (vfio_passthrough_enabled | default(false))
+    - vfio_passthrough_manage_absent | default(true)
+
+# Turning the gate back off must release the device: left in place, the cmdline
+# still captures the GPU and nouveau stays blacklisted forever. Removal is staged
+# like the writes — the host releases the card on its next boot.
+- name: Read the VFIO drop-ins before removing them
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  loop: "{{ _vfio_passthrough_managed_paths }}"
+  register: _vfio_passthrough_dropins
+  failed_when: false
+  when:
+    - not (vfio_passthrough_enabled | default(false))
+    - vfio_passthrough_manage_absent | default(true)
+
+# CRITICAL: the three paths are the conventional VFIO names, not role-namespaced,
+# so only a file carrying one of the ownership markers is this role's to remove.
+- name: Remove the role-written VFIO configuration when passthrough is disabled
+  ansible.builtin.file:
+    path: "{{ item.item }}"
+    state: absent
+  loop: "{{ _vfio_passthrough_dropins.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - item.content is defined
+    - _vfio_passthrough_markers | select('in', item.content | b64decode) | list | length > 0
+  notify:
+    - Update GRUB for VFIO
+    - Rebuild initramfs for VFIO
+    - Warn that a VFIO reboot is required
+
+- name: Report a hand-written VFIO drop-in left in place
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.item }} carries none of the role's ownership markers
+      ({{ _vfio_passthrough_markers | join(', ') }}), so it was written by hand
+      and is left in place. The device stays captured until it is removed.
+  loop: "{{ _vfio_passthrough_dropins.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - item.content is defined
+    - _vfio_passthrough_markers | select('in', item.content | b64decode) | list | length == 0

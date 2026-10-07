@@ -1,0 +1,46 @@
+---
+- name: Deploy the cert distribution check timer
+  when: acme_certs_distribution_check_enabled | bool
+  block:
+    - name: Deploy the cert distribution check units
+      ansible.builtin.template:
+        src: "{{ item }}.j2"
+        dest: "/etc/systemd/system/{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - homelab-cert-check.service
+        - homelab-cert-check.timer
+      notify: Reload systemd
+
+    - name: Enable the cert distribution check timer
+      ansible.builtin.systemd:
+        name: homelab-cert-check.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+
+- name: Remove a previously deployed cert distribution check
+  when: not (acme_certs_distribution_check_enabled | bool)
+  block:
+    - name: Stat the cert distribution check timer unit
+      ansible.builtin.stat:
+        path: /etc/systemd/system/homelab-cert-check.timer
+      register: acme_certs_check_timer_unit
+
+    - name: Stop and disable the cert distribution check timer
+      ansible.builtin.systemd:
+        name: homelab-cert-check.timer
+        enabled: false
+        state: stopped
+      when: acme_certs_check_timer_unit.stat.exists
+
+    - name: Remove the cert distribution check units
+      ansible.builtin.file:
+        path: "/etc/systemd/system/{{ item }}"
+        state: absent
+      loop:
+        - homelab-cert-check.service
+        - homelab-cert-check.timer
+      notify: Reload systemd

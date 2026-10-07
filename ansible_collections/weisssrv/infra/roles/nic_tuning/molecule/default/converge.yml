@@ -4,3 +4,34 @@
   gather_facts: true
   roles:
     - role: weisssrv.infra.nic_tuning
+
+  post_tasks:
+    # Clearing nic_tuning_overrides must remove the drop-ins the role wrote, or
+    # the interface keeps running an ethtool line nothing declares. The role is
+    # re-run with the scenario's list afterwards, outside the idempotence run.
+    - name: De-list pass — run the role with no overrides declared
+      ansible.builtin.include_role:
+        name: weisssrv.infra.nic_tuning
+      vars:
+        nic_tuning_overrides: []
+      tags: [molecule-idempotence-notest]
+
+    - name: Stat the lo drop-in after the de-list pass
+      ansible.builtin.stat:
+        path: /etc/network/interfaces.d/99-nic-lo-tuning.cfg
+      register: nic_tuning_delisted_dropin
+      tags: [molecule-idempotence-notest]
+
+    - name: Assert the de-list pass removed the drop-in
+      ansible.builtin.assert:
+        that:
+          - not nic_tuning_delisted_dropin.stat.exists
+        fail_msg: >-
+          Clearing nic_tuning_overrides left 99-nic-lo-tuning.cfg in place, so
+          the interface would keep applying an undeclared ethtool line at boot.
+      tags: [molecule-idempotence-notest]
+
+    - name: Restore pass — run the role with the scenario's overrides again
+      ansible.builtin.include_role:
+        name: weisssrv.infra.nic_tuning
+      tags: [molecule-idempotence-notest]

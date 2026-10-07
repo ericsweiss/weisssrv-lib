@@ -13,6 +13,10 @@ restic_offsite_restic_version: ""
 restic_offsite_rclone_version: "1.74.4"
 restic_offsite_rclone_deb_sha256: "a9da2eaa70428c6dcc5acbb0b7eac0faec4c61643e0b468d9fe09ddf79b7e929"
 
+# amd64 only: the pinned checksum is for rclone's amd64 .deb, and the role
+# refuses any other architecture rather than installing an unverified artefact.
+restic_offsite_rclone_deb_name: "rclone-v{{ restic_offsite_rclone_version }}-linux-amd64.deb"
+
 # restic repository. REQUIRED when enabled; the rclone b2 backend path form is
 # `rclone:b2:<bucket>/<path>`.
 restic_offsite_repo: ""
@@ -25,9 +29,7 @@ restic_offsite_rclone_remote_type: b2
 restic_offsite_rclone_remote_options: {}
 
 # REQUIRED, no default on purpose: holds the repo index (file PATHS) in
-# PLAINTEXT, so place it on an encrypted, non-exported, non-replicated dataset.
-# --exclude-caches keeps it out of the UPLOAD only, never out of a snapshot or
-# `zfs send` — README "Where the cache goes".
+# plaintext - README "Where the cache goes".
 # restic_offsite_cache_dir: /path/on/an/encrypted/unreplicated/dataset
 
 # Stable path roots: file sources bind their latest snapshot subtree here; the
@@ -39,18 +41,16 @@ restic_offsite_zvol_mount_root: /run/restic-offsite
 restic_offsite_bind_mode: bind
 restic_offsite_zvol_clone_suffix: b2walk
 
-# Throttles: deliberately deferential under I/O contention. The WAN upload is
-# the real cap; RCLONE_BWLIMIT bounds it anyway.
+# Throttles, kept deferential under I/O contention. The WAN upload is the real
+# cap and RCLONE_BWLIMIT bounds it.
 restic_offsite_bwlimit: "50M"           # RCLONE_BWLIMIT
 restic_offsite_rclone_transfers: 4      # RCLONE_TRANSFERS
 restic_offsite_gogc: 20                 # GOGC — caps restic heap during index/prune
 
 restic_offsite_metrics_dir: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
 restic_offsite_snap_prefix: archsync
-# Abort (do not upload) if any source's latest snapshot is older than this. The
-# job chains OnSuccess= after the archive replication, so a fresh snapshot is
-# the norm; >26h tolerates one deferred-archive night while still refusing a
-# stale tree.
+# Abort (do not upload) if any source's latest snapshot is older than this.
+# 26h tolerates one deferred-archive night while still refusing a stale tree.
 restic_offsite_freshness_max_age_h: 26
 
 restic_offsite_restore_base: /mnt/restore/restic
@@ -66,18 +66,15 @@ restic_offsite_keep_yearly: 1
 # Floor independent of the calendar buckets. Retention depth is the only defence
 # when the bucket has no Object Lock.
 restic_offsite_keep_last: 5
-# `host`, not restic's default `host,paths`: the default forks a NEW group
-# whenever the source list changes, freezing the old group under a policy
-# nothing re-evaluates. The ceiling below makes the re-grouping safe.
+# restic forget --group-by. `host`, not restic's default `host,paths` -
+# README "Retention".
 restic_offsite_forget_group_by: host
 # Blast-radius ceiling: the control script dry-runs the policy and refuses a
 # larger delete set. Apply an intended one with
 # `restic-offsitectl prune --max-remove <N>` (README "Retention").
 restic_offsite_forget_max_remove: 3
-# Snapshot tags the retention policy must NEVER forget (`--keep-tag`), e.g. a
-# one-time `legacy` snapshot pinning immutable data whose paths the nightly
-# run excludes — the pin is what keeps that data in the repository after the
-# regular snapshots referencing it age out. Tag snapshots by hand:
+# Snapshot tags the retention policy must never forget (`--keep-tag`), pinning
+# data the nightly run no longer covers. Tag by hand with
 # `restic-offsitectl restic tag --add <tag> <snapshot-id>`.
 restic_offsite_keep_tags: []
 # Wait this long for a concurrent holder's repository lock instead of failing
@@ -97,21 +94,31 @@ restic_offsite_restore_drill_enabled: true
 # extra here: repo-wide bit-rot is the rotating deep verify's job.
 restic_offsite_restore_drill_sample_files: 5
 restic_offsite_restore_drill_max_bytes: 16777216  # 16 MiB
-# Minimum candidate size. Without a floor the sampler takes the globally
-# smallest files, which on a real estate are 1-byte marker files: the drill
-# passes having proven almost no bytes.
+# Minimum candidate size for the drill sampler (bytes) - README "Restore drill".
 restic_offsite_restore_drill_min_bytes: 4096
 # DISTINCT file sources that must contribute a sampled file, or the drill fails.
 # Only restic_offsite_sources count: a zvol source is unmounted between runs and
 # has no comparand.
 restic_offsite_restore_drill_min_sources: 1
-# Run ONE drill at install until one PASSES: a Persistent=true timer does not
-# fire on first enable, so the staleness alert's absent() arm would page for a
-# whole quarter. false for a first converge on an empty repo (README).
+# Run one drill at install until one passes - README "First converge runs one
+# drill". false for a first converge on an empty repo.
 restic_offsite_restore_drill_seed: true
 # 05:00 on the 5th of Jan/Apr/Jul/Oct — a quarter, offset well clear of both the
 # nightly backup window and the Sunday deep verify.
 restic_offsite_restore_drill_timer_calendar: "*-01,04,07,10-05 05:00:00"
+
+# Start timeout for the three oneshot units. systemd disables it for
+# Type=oneshot, so without this a wedged restic run holds the lock forever.
+restic_offsite_timeout_start_sec: 6h
+# Per-unit start timeouts. The rotating deep verify re-downloads and re-hashes
+# 1/restic_offsite_verify_groups of the whole repository, so it ships with a
+# higher default than the incremental nightly and the sampled drill.
+restic_offsite_backup_timeout_start_sec: "{{ restic_offsite_timeout_start_sec }}"
+restic_offsite_verify_timeout_start_sec: 12h
+restic_offsite_drill_timeout_start_sec: "{{ restic_offsite_timeout_start_sec }}"
+# Bounds the teardown after a start-timeout kill: the failure metric is written
+# first, so a longer budget only delays SIGKILL.
+restic_offsite_timeout_stop_sec: 5m
 
 # systemd load-shaping: deferential under contention.
 restic_offsite_nice: 10
@@ -119,14 +126,19 @@ restic_offsite_io_class: best-effort
 restic_offsite_io_priority: 6
 restic_offsite_cpu_weight: 20
 restic_offsite_io_weight: 20
-# Fallback timer (the PRIMARY trigger is OnSuccess=restic-offsite.service on the
-# archive job). Set it shortly after that job normally finishes.
-restic_offsite_timer_calendar: "*-*-* 07:15:00"
+# Nightly trigger. Set it shortly after the archive job normally finishes when a
+# site also wires the OnSuccess handoff, and clear of the nas_storage swap-clean
+# window, which stops guests whose zvols a run clones.
+restic_offsite_timer_calendar: "*-*-* 08:00:00"
 # Rotating deep verify (restic check --read-data-subset): midday Sunday, far
 # from the nightly backup window. The full repo is re-read against bit-rot every
 # restic_offsite_verify_groups runs.
 restic_offsite_verify_timer_calendar: "Sun *-*-* 12:00:00"
 restic_offsite_timer_randomized_delay: 10m
+# Overnight units a run must not overlap: an active one makes the run a
+# deliberate skip that retries on the next timer. Name swap-clean.service here
+# on a host that also runs nas_storage swap-clean.
+restic_offsite_conflicting_units: []
 
 # Site data, item shape {name, mountpoint}: each binds <mountpoint>'s latest
 # snapshot subtree at <bind_root>/<name>. A dataset with zvol-backed CHILDREN
@@ -134,7 +146,8 @@ restic_offsite_timer_randomized_delay: 10m
 restic_offsite_sources: []
 
 # Site data, item shape {name, zvol, fstype, mount_opts}: a file walk cannot see
-# a live zvol, so each is clone-mounted read-only for the run.
+# a live zvol, so each is clone-mounted read-only for the run. mount_opts
+# defaults to `ro`, which lets ext4 replay the journal onto the writable clone.
 restic_offsite_zvol_sources: []
 
 # Site data. Patterns are matched against the BIND paths

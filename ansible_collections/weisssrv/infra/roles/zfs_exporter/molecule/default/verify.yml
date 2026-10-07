@@ -40,6 +40,32 @@
         fail_msg: "Service file missing expected configuration"
         success_msg: "Service file has correct configuration"
 
+    # An IPv6 bind must be bracketed or Go's net.SplitHostPort rejects it and
+    # the exporter never starts. Side-rendered: the address is not routable here.
+    - name: Side-render the unit with an IPv6 listen address  # noqa no-relative-paths
+      ansible.builtin.template:
+        src: ../../templates/zfs-exporter.service.j2
+        dest: /tmp/zfs-exporter-ipv6.service
+        mode: "0600"
+      vars:
+        zfs_exporter_listen_address: "fd00::5"
+
+    - name: Read the IPv6-bound unit
+      ansible.builtin.slurp:
+        src: /tmp/zfs-exporter-ipv6.service
+      register: zfs_exporter_ipv6_unit
+
+    - name: Assert an IPv6 listen address is bracketed
+      ansible.builtin.assert:
+        that:
+          - >-
+            ('--web.listen-address=[fd00::5]:' ~ zfs_exporter_port)
+            in (zfs_exporter_ipv6_unit.content | b64decode)
+        fail_msg: >-
+          An IPv6 listen address rendered unbracketed, so the exporter fails to
+          parse its own --web.listen-address and never starts.
+        success_msg: "an IPv6 listen address renders bracketed"
+
     # Mock binary: enabled, not necessarily running.
     - name: Check service status
       ansible.builtin.systemd:

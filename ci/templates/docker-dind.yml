@@ -1,0 +1,121 @@
+spec:
+  inputs:
+    dind_service:
+      default: "docker:27.5.1-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce"
+      description: >-
+        Docker-in-Docker service image (daemon-embedded BuildKit). Digest-pinned
+        (multi-arch INDEX digest, so it stays portable) — this is the one
+        component that runs PRIVILEGED, and it executes the binaries the sha256
+        pins below protect. Keep its Docker release equal to docker_cli_version.
+    dind_mtu:
+      default: "1420"
+      description: >-
+        MTU of the dind daemon's bridge (`dockerd --mtu`). Inside a Kubernetes
+        job pod it must not exceed the pod interface MTU (1420 on flannel over
+        WireGuard or VXLAN); the 1500 default black-holes large TLS frames and
+        shows up as connection resets on fetches from the job's containers.
+    docker_cli_version:
+      default: "27.5.1"
+      description: >-
+        Static docker CLI version (sha256-pinned per arch below). Bump the
+        version and both shas together, and move dind_service to the same
+        release.
+    docker_cli_sha256_amd64:
+      default: "4f798b3ee1e0140eab5bf30b0edc4e84f4cdb53255a429dc3bbae9524845d640"
+    docker_cli_sha256_arm64:
+      default: "e6b53725a73763ab3f988c73f8772eaed429754c1a579db5ff11f21990fd1817"
+    buildx_version:
+      default: "v0.35.0"
+      description: >-
+        Static docker buildx CLI-plugin version (sha256-pinned per arch below).
+        The static docker CLI ships NO buildx plugin, so with DOCKER_BUILDKIT=1
+        the plugin is what makes `docker build` work at all. Bump the version
+        and both shas together.
+    buildx_sha256_amd64:
+      default: "d41ece72044243b4f58b343441ae37446d9c29a7d6b5e11c61847bbcf8f7dfda"
+    buildx_sha256_arm64:
+      default: "c4248d6cbc4a619a7e0b4609c11e509ad4ac0b475e1c64817c0ac20c5d90c766"
+    login_registry:
+      default: "$CI_REGISTRY"
+      description: >-
+        Registry HOST `docker login` targets. Defaults to the GitLab built-in;
+        pass ghcr.io / docker.io / a Harbor host together with the two below.
+    login_user:
+      default: "$CI_REGISTRY_USER"
+      description: Username for `login_registry` (a CI variable REFERENCE).
+    login_password:
+      default: "$CI_REGISTRY_PASSWORD"
+      description: >-
+        Password/token for `login_registry` (a CI variable REFERENCE, never a
+        literal — it is echoed into `docker login --password-stdin`).
+    service_memory_limit:
+      default: "3Gi"
+      description: >-
+        KUBERNETES_SERVICE_MEMORY_LIMIT for the DinD service container — BuildKit
+        runs there, not in the build container.
+    service_memory_request:
+      default: "512Mi"
+      description: KUBERNETES_SERVICE_MEMORY_REQUEST for the DinD service container.
+---
+# A working docker CLI against a DinD daemon, logged in to a registry. Needs a
+# PRIVILEGED runner. ci/build/docker-build.yml carries the same body, held equal
+# by tests/test_pin_parity.py. Contract: docs/INCLUDE-CONTRACT.md, docker-dind.yml.
+.docker-dind:
+  services:
+    # Explicit alias: the runner derives one from the image name, and a
+    # digest-pinned name must still answer at the `docker` host DOCKER_HOST uses.
+    - name: $[[ inputs.dind_service ]]
+      alias: docker
+      command: ["--mtu=$[[ inputs.dind_mtu ]]"]
+  variables:
+    KUBERNETES_SERVICE_MEMORY_LIMIT: $[[ inputs.service_memory_limit ]]
+    KUBERNETES_SERVICE_MEMORY_REQUEST: $[[ inputs.service_memory_request ]]
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    # Route `docker build` through the dind daemon's embedded BuildKit (enables
+    # --cache-from + inline cache). The static docker CLI ships no buildx plugin,
+    # so before_script installs a pinned buildx before any build runs.
+    DOCKER_BUILDKIT: "1"
+    DOCKER_CLI_VERSION: "$[[ inputs.docker_cli_version ]]"
+    DOCKER_CLI_SHA256_AMD64: "$[[ inputs.docker_cli_sha256_amd64 ]]"
+    DOCKER_CLI_SHA256_ARM64: "$[[ inputs.docker_cli_sha256_arm64 ]]"
+    BUILDX_VERSION: "$[[ inputs.buildx_version ]]"
+    BUILDX_SHA256_AMD64: "$[[ inputs.buildx_sha256_amd64 ]]"
+    BUILDX_SHA256_ARM64: "$[[ inputs.buildx_sha256_arm64 ]]"
+  before_script:
+    # Install the static docker CLI (NOT docker.io: some bases ship only the
+    # daemon, no CLI). Needs curl, tar and `dpkg --print-architecture`, so a
+    # non-Debian job image fails here.
+    - |
+      set -eo pipefail
+      ARCH=$(dpkg --print-architecture)
+      case "$ARCH" in
+        amd64) DOCKER_ARCH=x86_64; DOCKER_SHA256="$DOCKER_CLI_SHA256_AMD64" ;;
+        arm64) DOCKER_ARCH=aarch64; DOCKER_SHA256="$DOCKER_CLI_SHA256_ARM64" ;;
+        *) echo "unsupported arch: $ARCH"; exit 1 ;;
+      esac
+      # Per-job download dir: fixed /tmp paths collide when jobs share /tmp.
+      dl=$(mktemp -d)
+      curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-${DOCKER_CLI_VERSION}.tgz" -o "$dl/docker.tgz"
+      echo "${DOCKER_SHA256}  $dl/docker.tgz" | sha256sum -c -
+      tar xz --strip-components=1 -C /usr/local/bin -f "$dl/docker.tgz" docker/docker
+      docker --version
+      # Install the Docker buildx CLI plugin (pinned + sha256). Without it
+      # DOCKER_BUILDKIT=1 fails: "BuildKit is enabled but the buildx component
+      # is missing or broken".
+      case "$ARCH" in
+        amd64) BUILDX_SHA256="$BUILDX_SHA256_AMD64" ;;
+        arm64) BUILDX_SHA256="$BUILDX_SHA256_ARM64" ;;
+      esac
+      curl -fsSL "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-${ARCH}" -o "$dl/docker-buildx"
+      echo "${BUILDX_SHA256}  $dl/docker-buildx" | sha256sum -c -
+      mkdir -p "$HOME/.docker/cli-plugins"
+      install -m 0755 "$dl/docker-buildx" "$HOME/.docker/cli-plugins/docker-buildx"
+      rm -rf "$dl"
+      docker buildx version
+      # Wait for the dind daemon to accept connections before building; it can
+      # lag the job start, otherwise `docker build` fails with "Cannot connect
+      # to the Docker daemon at tcp://docker:2375".
+      for i in $(seq 1 30); do docker info >/dev/null 2>&1 && break; echo "waiting for docker daemon ($i/30)..."; sleep 2; done
+      docker info >/dev/null 2>&1 || { echo "docker daemon did not become ready"; exit 1; }
+    - echo "$[[ inputs.login_password ]]" | docker login -u "$[[ inputs.login_user ]]" --password-stdin "$[[ inputs.login_registry ]]"

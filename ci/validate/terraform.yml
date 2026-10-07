@@ -36,10 +36,8 @@ spec:
       default: "main"
       description: >-
         Consumer's default branch as a LITERAL name (`main`, `master`, `trunk`)
-        for the post-merge rules of BOTH jobs. NOT `$CI_DEFAULT_BRANCH`: the
-        value lands inside a quoted `rules:if` string, which GitLab does not
-        expand, so the comparison would never match and the jobs would silently
-        stop running post-merge.
+        for the post-merge rules of BOTH jobs. NOT `$CI_DEFAULT_BRANCH` —
+        docs/INCLUDE-CONTRACT.md § default_branch.
     changes:
       type: array
       default: ["terraform/**/*"]
@@ -47,22 +45,16 @@ spec:
     job_memory_limit:
       default: "1Gi"
       description: >-
-        KUBERNETES_MEMORY_LIMIT for the job pod. Right-sized per job class so
-        concurrent pipelines pack into the runner namespace's limits.memory
-        quota instead of every job costing the runner default; raise it per
-        consumer only when the job really needs more (the runner's
-        memory_limit_overwrite_max_allowed is the hard ceiling).
+        KUBERNETES_MEMORY_LIMIT for the job pod. Sizing policy:
+        docs/INCLUDE-CONTRACT.md § Resource inputs.
     job_memory_request:
       default: "256Mi"
       description: KUBERNETES_MEMORY_REQUEST for the job pod (scheduler reservation).
     job_cpu_request:
       default: "200m"
       description: >-
-        KUBERNETES_CPU_REQUEST for the job pod — the scheduler reservation,
-        right-sized per job class so a full concurrency burst packs into the
-        runner nodes' allocatable CPU instead of every job costing the runner
-        default (no CPU limit, repo-wide: CPU is compressible and a limit
-        only buys CFS throttling).
+        KUBERNETES_CPU_REQUEST for the job pod (scheduler reservation). Sizing
+        policy: docs/INCLUDE-CONTRACT.md § Resource inputs.
 ---
 "$[[ inputs.fmt_job_name ]]":
   needs: []

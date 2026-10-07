@@ -1,13 +1,7 @@
 #!/bin/sh
 # Managed by Ansible smtp_relay role.
-#
-# Writes Postfix relay health metrics to the node_exporter textfile collector
-# (postfix_queue_depth, postfix_up, plus a last-success sentinel; see README).
-# Exists because a wedged upstream hop — expired app password, rate-limit —
-# queues mail silently: the host stays up, postfix stays active, and nothing
-# surfaces the growing deferred queue.
-#
-# Writes to .tmp then renames so node_exporter never reads a half-written file.
+# Writes Postfix relay health metrics to the node_exporter textfile collector,
+# via .tmp then rename so a half-written file is never read. See the README.
 
 set -eu
 export LC_ALL=C
@@ -33,11 +27,9 @@ set +e
 queue_json=$(postqueue -j 2>/dev/null); pq_rc=$?
 set -e
 if [ "$pq_rc" -ne 0 ]; then
-    # postqueue needs the master-spawned showq(8), so it fails whenever the
-    # master is down — the exact condition PostfixDown must catch. Only bail-to-
-    # stale (leaving the last .prom so PostfixQueueCollectorStale flags a broken
-    # collector) when postfix is UP but showq was momentarily unreadable; when
-    # postfix is DOWN, fall through and emit postfix_up 0 so PostfixDown fires.
+    # postqueue needs the master-spawned showq(8). Bail to stale only when
+    # postfix is up and showq was momentarily unreadable; when postfix is down
+    # fall through and emit postfix_up 0 so PostfixDown fires.
     if [ "$postfix_up" -eq 1 ]; then
         exit 1
     fi

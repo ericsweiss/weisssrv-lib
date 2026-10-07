@@ -1,8 +1,7 @@
 ---
-# Shared k3s version detection + install-script staging.
-# Included by both server.yml and agent.yml; only the final install command
-# (server vs agent, plus K3S_URL for agents) differs and stays in those files.
-# Exports k3s_needs_install (the single install/upgrade gate) for the callers.
+# Shared k3s version detection and install-script staging, included by
+# server.yml and agent.yml. Exports k3s_needs_install, the single
+# install/upgrade gate the callers read.
 
 - name: Check current k3s version
   ansible.builtin.command: k3s --version
@@ -19,22 +18,20 @@
   ansible.builtin.set_fact:
     k3s_needs_install: "{{ k3s_current_version.rc != 0 or (k3s_installed_version | default('')) != k3s_version }}"
 
-- name: Debug k3s version info
+# Stays always-on: one line recording what this deploy actually changed.
+- name: Report the k3s version this run installs
   ansible.builtin.debug:
-    msg:
-      - "Installed version: {{ k3s_installed_version | default('not installed') }}"
-      - "Target version: {{ k3s_version }}"
-      - "Needs install/upgrade: {{ k3s_needs_install }}"
+    msg: >-
+      k3s {{ k3s_installed_version | default('not installed') }} -> {{ k3s_version }}
+      (install/upgrade: {{ k3s_needs_install }})
   tags: [debug]
 
 - name: Download k3s install script
   ansible.builtin.get_url:
-    # Download and execute are separate tasks (never `curl | sh`) so the
-    # root-run installer can be integrity-checked first; /root 0700 keeps /tmp
-    # symlink abuse out, and force: true keeps upgrades on the current upstream
-    # installer. The optional per-version `checksum` protects the installer
-    # SCRIPT (force-pushed tag, compromised CDN, MITM) — install.sh separately
-    # verifies the k3s binary it downloads. Empty default => get_url omits it.
+    # CRITICAL: download and execute stay separate tasks, never `curl | sh`, so
+    # the root-run installer is integrity-checked first. /root 0700 keeps /tmp
+    # symlink abuse out; the optional per-version checksum protects the script
+    # itself, while install.sh verifies the binary it downloads.
     url: "{{ k3s_install_script_url }}"
     dest: /root/k3s-install.sh
     owner: root
@@ -42,6 +39,14 @@
     mode: "0700"
     force: true
     checksum: "{{ k3s_install_script_checksum | default(omit, true) }}"
+    # get_url's 10s default expires mid-handshake against get.k3s.io.
+    timeout: 60
   when:
     - k3s_needs_install | bool
     - not (k3s_skip_install | default(false))
+  # A stalled handshake is retried instead of failing the play. The optional
+  # checksum still gates what runs as root.
+  register: k3s_install_script_download
+  until: k3s_install_script_download is succeeded
+  retries: 3
+  delay: 5

@@ -1,10 +1,7 @@
 ---
-# Mount block devices attached to the guest as extra SCSI disks.
-#
-# Input: zvol_mount_disks — dicts of name, mount_point, fstype, scsi_slot.
-# /dev/sdX is NOT stable across reboots, so devices are addressed through
-# zvol_mount_device_id_prefix + the slot. Slot 0 is the root disk, so extra
-# disks start at 1 (which is also what the idx + 1 fallback produces).
+# Mount block devices attached to the guest as extra SCSI disks, addressed by
+# zvol_mount_device_id_prefix + slot because /dev/sdX is not stable. Slot 0 is
+# the root disk, so extra disks start at 1. See README.
 
 # The role's one required input; the loop below is its first consumption, so
 # without this the failure is a raw undefined-variable error.
@@ -64,11 +61,11 @@
     - zvol_mount_disk_exists is defined
     - not item.stat.exists
 
-# Use lsblk -no FSTYPE to detect existing filesystems. Unlike blkid, which can
-# return non-zero for transient I/O errors (leading to destructive reformat),
-# lsblk returns empty string only when the disk is truly unformatted.
+# lsblk over blkid: blkid can exit non-zero on a transient I/O error, which
+# would read as "unformatted" and reformat. -d keeps the probe on the disk
+# itself, so a child partition's filesystem never masks an empty disk.
 - name: Detect filesystem type on additional disks
-  ansible.builtin.command: "lsblk -no FSTYPE {{ item.path }}"
+  ansible.builtin.command: "lsblk -dno FSTYPE {{ item.path }}"
   loop: "{{ zvol_mount_disk_devices | default([]) }}"
   loop_control:
     label: "{{ item.name }} ({{ item.path }})"
@@ -79,9 +76,38 @@
   check_mode: false
   when: zvol_mount_disk_devices is defined
 
-# Fail fast if a disk has an existing filesystem different from the expected type.
-# Without this check, the next task would skip formatting (since the disk is "already formatted")
-# but then try to mount it with the wrong fstype, which can fail at boot.
+# FSTYPE is empty on a disk that carries only a partition table, so PTTYPE is
+# the second half of the "is this disk really blank" test.
+- name: Detect partition table on additional disks
+  ansible.builtin.command: "lsblk -dno PTTYPE {{ item.path }}"
+  loop: "{{ zvol_mount_disk_devices | default([]) }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.path }})"
+  register: zvol_mount_disk_pttypes
+  changed_when: false
+  check_mode: false
+  when: zvol_mount_disk_devices is defined
+
+- name: Assert a blank-looking disk carries no partition table either
+  vars:
+    zvol_mount_fstype_seen: "{{ zvol_mount_disk_fstypes.results[zvol_mount_idx].stdout | default('') | trim }}"
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | default('') | trim) == '' or zvol_mount_fstype_seen != ''
+    fail_msg: >-
+      Disk {{ item.item.name }} at {{ item.item.path }} has no filesystem but
+      carries a '{{ item.stdout | trim }}' partition table, so it was used for
+      something. Refusing to format it: wipe it deliberately
+      (`wipefs -a {{ item.item.path }}`) if that is really intended.
+    quiet: true
+  loop: "{{ zvol_mount_disk_pttypes.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name }} ({{ item.item.path }})"
+    index_var: zvol_mount_idx
+  when: zvol_mount_disk_devices is defined
+
+# Without this the format step is skipped (the disk is "already formatted") and
+# the mount is then attempted with the wrong fstype, which fails at boot.
 - name: Assert existing filesystem matches expected type (or disk is empty)
   ansible.builtin.assert:
     that:
@@ -139,15 +165,10 @@
     - zvol_mount_disk_uuids is defined
     - not ansible_check_mode  # Skip validation in check mode (disks may not be formatted)
 
-# Guard against duplicate ext4 UUIDs. The wrong-location findmnt check and
-# the final mount both key on the blkid UUID, which is NOT unique across a
-# zvol cloned or `zfs send | receive`d from a snapshot (the documented
-# restore / re-provision pattern — a fresh zvol from a snapshot of a
-# formatted disk inherits the source's filesystem UUID). Two attached disks
-# sharing a UUID make `UUID=<x>` an ambiguous mount source: findmnt could
-# report the wrong target and the mount could bind the wrong device. Fail
-# loud here rather than silently mounting the wrong filesystem. Fix on the
-# Proxmox host with `tune2fs -U random <dev>` (ext4) after a clone/restore.
+# CRITICAL: two attached disks sharing a filesystem UUID make `UUID=<x>` an
+# ambiguous mount source, so the mount can bind the wrong device. A zvol cloned
+# or received from a formatted snapshot inherits its source's UUID. Fail loud
+# rather than mount the wrong filesystem. See README.
 - name: Assert additional-disk filesystem UUIDs are unique
   vars:
     _zvol_mount_uuids: >-

@@ -20,6 +20,8 @@
   when: item != unbound_dropin_name
   notify: Restart unbound
 
+# Validated before the write: an invalid directive would otherwise be restarted
+# into a hard failure, and this resolver is the only DoT upstream in front of it.
 - name: Deploy Unbound main configuration
   ansible.builtin.template:
     src: unbound-managed.conf.j2
@@ -27,6 +29,7 @@
     owner: root
     group: root
     mode: "0644"
+    validate: "{{ '/usr/sbin/unbound-checkconf %s' if not (unbound_skip_validate | default(false)) else omit }}"
   notify: Restart unbound
 
 - name: Deploy remote-control configuration
@@ -40,6 +43,7 @@
     owner: root
     group: root
     mode: "0644"
+    validate: "{{ '/usr/sbin/unbound-checkconf %s' if not (unbound_skip_validate | default(false)) else omit }}"
   notify: Restart unbound
 
 - name: Ensure Unbound is enabled and running

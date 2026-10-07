@@ -1,0 +1,4 @@
+# {{ ansible_managed }}
+# vzdump owns the hookscript's first argument (the phase), so its output
+# directory travels here rather than on the invocation.
+TEXTFILE_DIR="{{ node_exporter_host_textfile_dir }}"

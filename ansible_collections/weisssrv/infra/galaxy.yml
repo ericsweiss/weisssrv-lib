@@ -1,7 +1,7 @@
 ---
 namespace: weisssrv
 name: infra
-version: 0.17.1
+version: 0.18.0
 readme: README.md
 authors:
   - Eric S. Weiss
@@ -28,10 +28,9 @@ homepage: https://git.ericsweiss.com/eric/weisssrv-lib
 documentation: https://git.ericsweiss.com/eric/weisssrv-lib/-/blob/main/ansible_collections/weisssrv/infra/README.md
 issues: https://git.ericsweiss.com/eric/weisssrv-lib/-/issues
 
-# Runtime contract for consumers: exactly the collections the roles' own
-# tasks/handlers/templates address by FQCN. requirements.yml is the superset the
-# TEST environment installs; tests/test_ansible_collection.py checks that this
-# set is contained in it, with matching pins.
+# Runtime contract: exactly the collections the roles address by FQCN.
+# requirements.yml is the superset the TEST environment installs;
+# tests/test_ansible_collection.py checks containment, with matching pins.
 dependencies:
   ansible.posix: ">=2.1.0,<3.0.0"
   community.general: ">=12.2.0,<13.0.0"
@@ -42,12 +41,15 @@ dependencies:
 build_ignore:
   - molecule-shared
   - roles/*/molecule
-  # No changelog file ships, by policy: release notes are generated per tag from
-  # the conventional commits (docs/VERSIONING.md). A hand-maintained
-  # changelogs/changelog.yaml went stale within one release and told consumers
-  # a different story than the tag notes; this entry keeps a stray one out of
-  # the artifact if the antsibull tooling is ever run here by accident.
+  # No changelog ships (docs/VERSIONING.md § No changelog file); this keeps a
+  # stray antsibull changelogs/ out of the artifact.
   - changelogs
+  # An empty scaffold is repo content, not artifact content. Drop this entry in
+  # the MR that ships the first real plugin.
+  - plugins
+  # Local ansible-galaxy runs leave a nested copy of this collection here;
+  # the built-in walk does not skip it.
+  - .ansible
   # The TEST-environment superset. `dependencies:` above is the runtime
   # contract; shipping this alongside it in the artifact invites a consumer to
   # install the test-only collections too.

@@ -3,13 +3,6 @@
   hosts: all
   become: true
   gather_facts: true
-  # Mirrors the role's own handler: the de-provisioning tasks included at the end
-  # of this play notify it, and include_tasks (unlike include_role) does not
-  # bring the role's handlers into the play.
-  handlers:
-    - name: Reload systemd
-      ansible.builtin.systemd:
-        daemon_reload: true
   tasks:
     - name: Check if NFS server is installed
       ansible.builtin.package:
@@ -26,10 +19,16 @@
       failed_when: not exports_file.stat.exists
 
     - name: Verify NFSv4 delegation kill-switch drop-in landed with the exact sysctl
-      ansible.builtin.command: grep -qx "fs.leases-enable=0" /etc/sysctl.d/99-z-weisssrv-nas-storage-nfs-leases.conf
+      ansible.builtin.command: grep -qx "fs.leases-enable=0" /etc/sysctl.d/99-z-nas-storage-nfs-leases.conf
       register: leases_dropin
       changed_when: false
       failed_when: leases_dropin.rc != 0
+
+    - name: Stat the site-named NFSv4 delegation drop-in the role now removes
+      ansible.builtin.stat:
+        path: /etc/sysctl.d/99-z-weisssrv-nas-storage-nfs-leases.conf
+      register: leases_legacy_dropin
+      failed_when: leases_legacy_dropin.stat.exists
 
     - name: Verify exports file contains expected exports
       ansible.builtin.command: grep -q "/tank/media/unified" /etc/exports
@@ -38,41 +37,40 @@
       changed_when: false
 
     # exports.j2 xprtsec precedence: a per-client value overrides the
-    # export-level one, including opting one client out of TLS on a mixed
-    # export. Client lines are backslash-continued, so each client spec lands
-    # on its own physical line and greps as one.
+    # export-level one, including opting one client out of TLS. Client lines are
+    # backslash-continued, so each client spec greps as one line.
 
     - name: Assert plaintext export has no xprtsec on its client line
       ansible.builtin.command: >-
-        grep -F '192.168.0.0/24(ro,sync,no_subtree_check)' /etc/exports
+        grep -F '192.0.2.0/24(ro,sync,no_subtree_check)' /etc/exports
       register: plain_grep
       changed_when: false
       failed_when: plain_grep.rc != 0 or 'xprtsec' in plain_grep.stdout
 
     - name: Assert export-level xprtsec=tls reaches the first client line
       ansible.builtin.command: >-
-        grep -F '/tank/appdata/tls 192.168.0.200/29(rw,sync,no_subtree_check,fsid=91,xprtsec=tls)' /etc/exports
+        grep -F '/tank/appdata/tls 192.0.2.200/29(rw,sync,no_subtree_check,fsid=91,xprtsec=tls)' /etc/exports
       register: tls_first
       changed_when: false
       failed_when: tls_first.rc != 0
 
     - name: Assert export-level xprtsec=tls reaches the continued client line
       ansible.builtin.command: >-
-        grep -F '192.168.0.220/29(rw,sync,no_subtree_check,fsid=91,xprtsec=tls)' /etc/exports
+        grep -F '192.0.2.220/29(rw,sync,no_subtree_check,fsid=91,xprtsec=tls)' /etc/exports
       register: tls_cont
       changed_when: false
       failed_when: tls_cont.rc != 0
 
     - name: Assert mixed export requires TLS (xprtsec=tls) on the opted-in k3s client
       ansible.builtin.command: >-
-        grep -F '/tank/media/mixed 192.168.0.200/29(rw,sync,no_subtree_check,fsid=92,xprtsec=tls)' /etc/exports
+        grep -F '/tank/media/mixed 192.0.2.200/29(rw,sync,no_subtree_check,fsid=92,xprtsec=tls)' /etc/exports
       register: mixed_tls
       changed_when: false
       failed_when: mixed_tls.rc != 0
 
     - name: Assert mixed export leaves the .154 client plaintext (no xprtsec)
       ansible.builtin.command: >-
-        grep -F '192.168.0.154/32(ro,sync,no_subtree_check,fsid=92)' /etc/exports
+        grep -F '192.0.2.154/32(ro,sync,no_subtree_check,fsid=92)' /etc/exports
       register: mixed_plain
       changed_when: false
       # rc 0 = the exact plaintext spec is present; if xprtsec had leaked onto
@@ -169,9 +167,9 @@
       changed_when: false
       failed_when: media_mover_timer.stdout | trim != 'enabled'
 
-    # swap-clean: script + timer render (nas_storage_swap_clean_enabled: true in
-    # molecule.yml) and the timer is enabled. This is the memory-safety mechanism
-    # that can gracefully stop production guests, so pin its rendered output.
+    # swap-clean: the render and metric-name contracts. Behaviour that needs no
+    # swap (the ARC-cap restore, the pre-flight decision) is executed by
+    # files/swap-clean-behavior.sh below.
     - name: Stat swap-clean script
       ansible.builtin.stat:
         path: /usr/local/sbin/swap-clean.sh
@@ -183,6 +181,46 @@
       register: swap_clean_stop_guests_check
       changed_when: false
       failed_when: swap_clean_stop_guests_check.rc != 0
+
+    - name: Verify swap-clean rejects a malformed stop-guest entry at run time
+      ansible.builtin.command: grep -qF "ignoring malformed stop-guest entry" /usr/local/sbin/swap-clean.sh
+      register: swap_clean_entry_guard
+      changed_when: false
+      failed_when: swap_clean_entry_guard.rc != 0
+
+    # The schedule alone stops guarding the moment an overnight job overruns, so
+    # every conflicting unit must reach the rendered pre-flight.
+    - name: Verify swap-clean guards every configured conflicting unit
+      ansible.builtin.command: grep -qF "{{ item }}" /usr/local/sbin/swap-clean.sh
+      loop:
+        - restic-offsite.service
+        - archive-backup.service
+        - media-mover.service
+      register: swap_clean_conflicting
+      changed_when: false
+      failed_when: swap_clean_conflicting.rc != 0
+
+    - name: Read the swap-clean service unit
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/swap-clean.service
+      register: swap_clean_unit
+
+    # TimeoutStopSec is the EXIT trap's budget after a start timeout; the
+    # ExecStopPost is the only restore that survives a SIGKILL.
+    - name: Assert the swap-clean unit budgets its stop path and restores the ARC cap
+      ansible.builtin.assert:
+        that:
+          - "'TimeoutStopSec=300' in (swap_clean_unit.content | b64decode)"
+          - "'ExecStopPost=' in (swap_clean_unit.content | b64decode)"
+          - "nas_storage_zfs_arc_max_bytes in (swap_clean_unit.content | b64decode)"
+        fail_msg: >-
+          swap-clean.service must budget TimeoutStopSec and restore the ARC cap
+          from ExecStopPost: {{ swap_clean_unit.content | b64decode }}
+        success_msg: "swap-clean.service budgets its stop path and restores the ARC cap"
+
+    - name: Assert swap-clean ARC-restore + pre-flight behavior (executed, not grepped)
+      ansible.builtin.script: files/swap-clean-behavior.sh
+      changed_when: false
 
     # The failure/abort path must preserve the last-success timestamp (same
     # contract as media-mover) so a staleness alert measures time-since-success,
@@ -221,10 +259,9 @@
         or appdata_grafana.stat.uid != 1000
         or appdata_grafana.stat.gid != 2000
 
-    # backups-apps: per-app exports each scoped to a single writer (cross-app
-    # isolation). authentik = k3s require-TLS; gitlab = VM require-TLS (now on the
-    # wire); home-assistant = the one plaintext appliance exception. The plaintext
-    # HA line's trailing `)` right after fsid=98 anchors that no xprtsec leaked in.
+    # backups-apps: per-app exports each scoped to a single writer. authentik and
+    # gitlab require TLS; home-assistant is the plaintext appliance exception,
+    # whose trailing `)` after fsid=98 anchors that no xprtsec leaked in.
     - name: Read /etc/exports for the per-app backups-apps assertions
       ansible.builtin.slurp:
         src: /etc/exports
@@ -234,13 +271,13 @@
       ansible.builtin.assert:
         that:
           - >-
-            '/export/backups-apps/authentik 192.168.0.200/29(rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=96,xprtsec=tls)'
+            '/export/backups-apps/authentik 192.0.2.200/29(rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=96,xprtsec=tls)'
             in (backups_apps_exports.content | b64decode)
           - >-
-            '/export/backups-apps/gitlab 192.168.0.153/32(rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=97,xprtsec=tls)'
+            '/export/backups-apps/gitlab 192.0.2.153/32(rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=97,xprtsec=tls)'
             in (backups_apps_exports.content | b64decode)
           - >-
-            '/export/backups-apps/home-assistant 192.168.0.154/32(rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=98)'
+            '/export/backups-apps/home-assistant 192.0.2.154/32(rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=98)'
             in (backups_apps_exports.content | b64decode)
         fail_msg: "per-app backups-apps exports not scoped/TLS-set as expected (authentik+gitlab TLS, HAOS plaintext)"
         success_msg: "backups-apps split into per-app exports: authentik/gitlab require TLS, HAOS stays plaintext"
@@ -280,13 +317,11 @@
       changed_when: false
       failed_when: backup_artifact_timer.stdout | trim != 'enabled'
 
-    # Behavioural gate on the per-app artefact pattern. A collector that takes
-    # the newest file of ANY name lets an app's nightly config/sidecar copies
-    # hold the freshness signal green while no restorable dump ever lands. Both
-    # arms are asserted: a dir holding only sidecars must report 0, and the same
-    # dir must report a real mtime and a non-zero size once an artefact lands.
-    # Seeded NON-empty on purpose: exclusion must come from the name, not the
-    # size, and the companion size metric needs a real byte count to assert on.
+    # CRITICAL: a collector taking the newest file of ANY name lets nightly
+    # sidecar copies hold the freshness signal green while no restorable dump
+    # ever lands. Both arms are asserted: a sidecar-only dir reports 0, and the
+    # same dir reports a real mtime and size once an artefact lands. Sidecars are
+    # seeded non-empty, so exclusion must come from the name, not the size.
     - name: Seed the gitlab landing dir with sidecar files only (non-restorable)
       ansible.builtin.copy:
         dest: "/mnt/tank/backups/apps/gitlab/{{ item }}"
@@ -382,10 +417,8 @@
           a tarball with no key material would restore to unreadable columns.
 
     # Mounted-dataset guard: with the backups dataset unmounted the landing zone
-    # is a plain dir on the root fs, where a NAS-local producer would have
-    # shadow-written and this collector would read the shadow copy as fresh. The
-    # container path is never a mountpoint, so the rendered guard is off here;
-    # flip it on to exercise the behaviour production runs.
+    # is a plain root-fs dir holding shadow copies the collector would read as
+    # fresh. The container path is never a mountpoint, so the guard is forced on.
     - name: Run the collector with the mounted-dataset guard forced ON
       ansible.builtin.shell: |
         set -eo pipefail
@@ -435,6 +468,29 @@
         not nas_storage_pve_cluster_script.stat.exists
         or nas_storage_pve_cluster_script.stat.mode != '0755'
 
+    - name: Read the pve-cluster backup script
+      ansible.builtin.slurp:
+        src: /usr/local/sbin/pve-cluster-backup.sh
+      register: nas_storage_pve_cluster_script_raw
+
+    - name: Read the shared metrics library the pve-cluster wrapper sources
+      ansible.builtin.slurp:
+        src: /usr/local/lib/nas-storage-backup-lib.sh
+      register: nas_storage_pve_cluster_metrics_lib
+
+    - name: Assert the wrapper sources the shared library rather than its own copy
+      ansible.builtin.assert:
+        that:
+          - (nas_storage_pve_cluster_metrics_lib.content | b64decode) is search('write_prom_metrics\\(\\)')
+          - (nas_storage_pve_cluster_metrics_lib.content | b64decode) is search('/etc/pve archive')
+          - (nas_storage_pve_cluster_script_raw.content | b64decode) is search('\\. "\\$METRICS_LIB"')
+          - (nas_storage_pve_cluster_script_raw.content | b64decode)
+            is not search('(?m)^write_prom_metrics\\(\\) \\{')
+        fail_msg: >-
+          The pve-cluster wrapper carries its own write_prom_metrics copy, or the
+          shared library is missing or was rendered without its size-help noun.
+        success_msg: "The pve-cluster wrapper sources the shared metrics library"
+
     - name: Check the pve-cluster-backup timer is enabled  # noqa command-instead-of-module
       ansible.builtin.command: systemctl is-enabled pve-cluster-backup.timer
       register: nas_storage_pve_cluster_timer
@@ -475,17 +531,11 @@
           - "'pve_cluster_backup_last_size_bytes 0' in (nas_storage_pve_cluster_prom_fail.content | b64decode)"
         fail_msg: "An absent source did not record a failed run — the alert arms would stay green."
 
-    # Landing-zone mount guard, the runtime half of the deploy-time
-    # `mountpoint -q` in tasks/pve_cluster_backup.yml. This producer is local, so
-    # without the guard it would tar /etc/pve — priv/ included — onto the root
-    # filesystem, report success with a non-zero size, and the artefact collector
-    # would read the same shadowed dir. Rendered off in the container; forced on
-    # here to test the fail-closed path.
-    # A stale archive is seeded under the (redirected) DEST_DIR on purpose: with
-    # the landing zone unmounted, everything under it is a shadow copy on the
-    # root filesystem, so the run must NOT size it into a healthy-looking
-    # last_size_bytes — that would suppress the very empty-landing-zone signal
-    # this guard exists to raise.
+    # CRITICAL: without the landing-zone mount guard this local producer tars
+    # /etc/pve, priv/ included, onto the root filesystem and reports success, and
+    # the collector reads the same shadowed dir. The guard is forced on here. A
+    # stale archive is seeded under the redirected DEST_DIR so the run must not
+    # size a shadow copy into a healthy-looking last_size_bytes.
     - name: An unmounted landing zone must fail closed, not shadow-write the source
       ansible.builtin.shell: |
         set -o pipefail
@@ -535,11 +585,10 @@
           nothing can reach.
         success_msg: "The unmounted-landing-zone run distrusts shadow archives and reports size 0"
 
-    # Source-side mount guard, the mirror of the one above. /etc/pve is FUSE:
-    # with pve-cluster.service down the path still exists as an empty directory
-    # and every downstream check passes on it (tar exits 0, the archive is valid
-    # gzip framing), so the run would publish a backup of nothing as success and
-    # retention would retire the real archives behind it.
+    # CRITICAL: /etc/pve is FUSE, so with pve-cluster.service down it is an empty
+    # directory every downstream check passes on. Without the source-side mount
+    # guard the run publishes a backup of nothing as success, and retention
+    # retires the real archives behind it.
     - name: An unmounted pmxcfs source must fail closed, not archive an empty mountpoint
       ansible.builtin.shell: |
         set -o pipefail
@@ -568,10 +617,9 @@
       changed_when: false
       failed_when: nas_storage_pve_cluster_src_unmounted_state.stdout_lines != ['1', '0']
 
-    # The REAL pmxcfs layout: the CA certificate sits at the root and only the
-    # private half lives under priv/. The script refuses to publish an archive
-    # missing any of nas_storage_pve_cluster_backup_required_files, so a fixture
-    # with invented paths would test a guard that can never pass on a real host.
+    # The real pmxcfs layout: the CA certificate sits at the root, only the
+    # private half under priv/. Invented paths would test a guard that can never
+    # pass against nas_storage_pve_cluster_backup_required_files on a real host.
     - name: Seed a synthetic pmxcfs tree (real cluster-identity paths)
       ansible.builtin.shell: |
         set -eo pipefail
@@ -599,6 +647,20 @@
       args:
         executable: /bin/bash
       changed_when: false
+
+    # A trailing slash on the source must not reach the required-files check:
+    # "etc/pve//user.cfg" is a path tar never emits, so every run would delete
+    # its own archive and exit 1.
+    - name: A trailing slash on the source must still publish an archive
+      ansible.builtin.shell: |
+        set -eo pipefail
+        sed 's#^SRC=.*#SRC="/tmp/fake-pve/"#' /usr/local/sbin/pve-cluster-backup.sh > /tmp/pvecb-slash.sh
+        bash /tmp/pvecb-slash.sh
+      args:
+        executable: /bin/bash
+      register: nas_storage_pve_cluster_slash
+      changed_when: false
+      failed_when: nas_storage_pve_cluster_slash.rc != 0
 
     - name: Read the metrics written by the successful run
       ansible.builtin.slurp:
@@ -656,10 +718,10 @@
         - authkey.pub
         - priv/authkey.key
 
-    # The content guard's destructive direction: a source that tars perfectly
-    # (non-empty, `tar -tzf`-readable) but is missing one identity file is a
-    # degraded/empty pmxcfs, and publishing it would retire a real archive per
-    # night through retention. It must refuse and leave the landing zone alone.
+    # CRITICAL: a source that tars perfectly but is missing one identity file is
+    # a degraded pmxcfs, and publishing it retires a real archive per night
+    # through retention. The content guard must refuse and leave the landing
+    # zone alone.
     - name: Count the archives before the missing-identity-file run
       ansible.builtin.find:
         paths: /mnt/tank/backups/apps/pve-cluster
@@ -704,10 +766,9 @@
           out behind a backup that cannot restore the cluster identity.
         success_msg: "A readable archive of an incomplete pmxcfs is refused, not published"
 
-    # …and the non-destructive direction of the size fallback: with the landing
-    # zone MOUNTED (REQUIRE_MOUNT=0 here), a failed run must still size the
-    # newest existing archive, because 0 bytes means "no artefact at all" and
-    # has a different runbook from "tonight's run failed".
+    # The size fallback's non-destructive direction: with the landing zone
+    # mounted, a failed run still sizes the newest existing archive, because
+    # 0 bytes means no artefact at all and carries a different runbook.
     - name: Read the metrics written by the refused run
       ansible.builtin.slurp:
         src: /var/lib/node_exporter/pve_cluster_backup.prom
@@ -758,32 +819,136 @@
       register: smb_service
       failed_when: smb_service.status.LoadState != 'loaded'
 
-    # archive-backupctl contract. MAP/RMAP, the lock list, and the restore
-    # targets are all derived from SRC_LIST inside the script, so the
-    # assertions in files/archive-contract-assert.sh (a real *.sh: shellcheck
-    # lints it, and its embedded quotes don't trip Ansible's arg splitter the
-    # way an inline `shell:` block would) pin what derivation can't protect:
-    # SRC_LIST membership, the root-is-a-filesystem allow-list, basename
-    # uniqueness. It also bash -n's the REAL render and pins the zvol-vs-
-    # filesystem type->arm coupling so an inversion is caught.
+    # archive-backupctl contract: MAP/RMAP, locks and restore targets all derive
+    # from SRC_LIST, so files/archive-contract-assert.sh pins inventory reaching
+    # SRC_LIST intact, basename uniqueness and the type-to-arm coupling.
+    - name: Write the expected archive source set from the inventory
+      ansible.builtin.copy:
+        content: "{{ nas_storage_archive_backup_sources | join('\n') }}\n"
+        dest: /tmp/expected-archive-sources
+        mode: "0644"
+
     - name: Assert the archive-backupctl contract (restorable, lock-listed, type-coupled)
-      ansible.builtin.script: files/archive-contract-assert.sh
+      ansible.builtin.script: files/archive-contract-assert.sh /usr/local/sbin/archive-backupctl /tmp/expected-archive-sources
       changed_when: false
 
-    # The archive-backup unit must chain the offsite B2 backup on success. Dropping
-    # OnSuccess= would silently break the restic-offsite trigger (it would then run
-    # only on its fallback timer, a day-scale delay behind the fresh snapshot).
+    # The per-child exclusion seam: the container has no ZFS, so the render, the
+    # per-source -X derivation and the fail-loud capability probe are driven
+    # against a second render carrying exclusions.
+    - name: Render archive-backupctl with an exclusion list  # noqa no-relative-paths
+      ansible.builtin.template:
+        src: ../../templates/archive-backupctl.sh.j2
+        dest: /tmp/archive-backupctl-excluded
+        mode: "0755"
+      vars:
+        nas_storage_archive_backup_exclude:
+          - tank/share/scratch
+          - ssd/appdata/cache
+        nas_storage_archive_backup_keep_recent: 3
+        nas_storage_archive_backup_keep_monthly: 6
+        nas_storage_zfs_scrub_schedule: monthly
+        nas_storage_backup_artifact_metrics_dir: /var/lib/node_exporter
+
+    - name: Render archive-backupctl with exclusions and the destroy opt-in  # noqa no-relative-paths
+      ansible.builtin.template:
+        src: ../../templates/archive-backupctl.sh.j2
+        dest: /tmp/archive-backupctl-excluded-ok
+        mode: "0755"
+      vars:
+        nas_storage_archive_backup_exclude:
+          - tank/share/scratch
+          - ssd/appdata/cache
+        nas_storage_archive_backup_exclude_destroy_ok: true
+        nas_storage_archive_backup_keep_recent: 3
+        nas_storage_archive_backup_keep_monthly: 6
+        nas_storage_zfs_scrub_schedule: monthly
+        nas_storage_backup_artifact_metrics_dir: /var/lib/node_exporter
+
+    - name: Assert the archive exclusion seam (rendered, derived, probed)
+      ansible.builtin.script: >-
+        files/archive-exclude-behavior.sh /tmp/archive-backupctl-excluded
+        /usr/local/sbin/archive-backupctl /tmp/archive-backupctl-excluded-ok
+      changed_when: false
+
+    - name: Drive the exclusion guard - every entry under a replicated source
+      ansible.builtin.include_tasks: ../../tasks/assert_archive_exclude.yml
+      vars:
+        nas_storage_archive_backup_sources: [tank/share, ssd/appdata]
+        nas_storage_archive_backup_exclude: [tank/share/scratch, ssd/appdata/cache]
+
+    - name: Drive the exclusion guard - an entry outside every source
+      block:
+        - name: Include the exclusion guard with an orphan entry
+          ansible.builtin.include_tasks: ../../tasks/assert_archive_exclude.yml
+          vars:
+            nas_storage_archive_backup_sources: [tank/share]
+            nas_storage_archive_backup_exclude: [tank/other/scratch]
+      rescue:
+        - name: Record that the orphan exclusion was rejected
+          ansible.builtin.set_fact:
+            nas_archive_exclude_rejected: >-
+              {{ 'must be a descendant' in (ansible_failed_result | to_json) }}
+
+    # A source itself is not a valid exclusion: `-X` on the dataset being sent
+    # would empty the stream.
+    - name: Drive the exclusion guard - an entry equal to a source
+      block:
+        - name: Include the exclusion guard with a source as the entry
+          ansible.builtin.include_tasks: ../../tasks/assert_archive_exclude.yml
+          vars:
+            nas_storage_archive_backup_sources: [tank/share]
+            nas_storage_archive_backup_exclude: [tank/share]
+      rescue:
+        - name: Record that the source-as-exclusion was rejected
+          ansible.builtin.set_fact:
+            nas_archive_exclude_self_rejected: >-
+              {{ 'must be a descendant' in (ansible_failed_result | to_json) }}
+
+    - name: Assert the exclusion guard fails closed
+      ansible.builtin.assert:
+        that:
+          - nas_archive_exclude_rejected | default(false) | bool
+          - nas_archive_exclude_self_rejected | default(false) | bool
+        fail_msg: >-
+          The exclusion guard accepted an entry that `zfs send -X` cannot apply,
+          which would replicate the excluded child anyway.
+        success_msg: "exclusion guard rejects orphan and self entries"
+
+    # The unit must chain whatever nas_storage_archive_backup_on_success_units
+    # names; dropping OnSuccess= leaves the offsite backup to its fallback timer,
+    # a day-scale delay behind the fresh snapshot.
     - name: Read the archive-backup service unit
       ansible.builtin.slurp:
         src: /etc/systemd/system/archive-backup.service
       register: archive_backup_unit
 
-    - name: Assert archive-backup chains restic-offsite on success
+    - name: Assert archive-backup chains the configured units on success
       ansible.builtin.assert:
         that:
           - "'OnSuccess=restic-offsite.service' in (archive_backup_unit.content | b64decode)"
-        fail_msg: "archive-backup.service is missing OnSuccess=restic-offsite.service (offsite trigger broken)"
-        success_msg: "archive-backup.service chains OnSuccess=restic-offsite.service"
+        fail_msg: >-
+          archive-backup.service does not chain the configured on-success units
+        success_msg: "archive-backup.service chains the configured OnSuccess units"
+
+    - name: Render the archive-backup unit with no OnSuccess units  # noqa no-relative-paths
+      ansible.builtin.template:
+        src: ../../templates/archive-backup.service.j2
+        dest: /tmp/archive-backup-nochain.service
+        mode: "0644"
+      vars:
+        nas_storage_archive_backup_on_success_units: []
+
+    - name: Read the un-chained archive-backup unit
+      ansible.builtin.slurp:
+        src: /tmp/archive-backup-nochain.service
+      register: archive_backup_nochain
+
+    - name: Assert an empty unit list renders no OnSuccess line
+      ansible.builtin.assert:
+        that:
+          - "'OnSuccess' not in (archive_backup_nochain.content | b64decode)"
+        fail_msg: "nas_storage_archive_backup_on_success_units is not a real seam - OnSuccess= is still rendered"
+        success_msg: "an empty on-success list renders no OnSuccess line"
 
     # Executes the ZFS-free metric helpers (deferral accounting, timestamp
     # preservation, swap-clean's write_prom_metrics + cleanup restart-failure
@@ -792,11 +957,287 @@
       ansible.builtin.script: files/archive-metrics-behavior.sh
       changed_when: false
 
-    # MergerFS remount decision logic. The remount cycle itself unexports NFS
-    # paths and force-unmounts binds on a live fileserver (no FUSE in the
-    # container, so converge sets nas_storage_skip_mergerfs), but the facts that
-    # gate it are pure derivations — drive them from fabricated register results
-    # the way nic_tuning splits verify-offloads from assert-offloads.
+    # The MergerFS bind probe against real mounts: a bind of a union shares its
+    # mount device id, so findmnt's SOURCE column cannot distinguish them. A
+    # private tmpfs stands in for the union so the device id is its own.
+    - name: Drive the MergerFS bind probe against real bind mounts
+      block:
+        - name: Create the probe fixture mounts
+          ansible.builtin.shell: |
+            set -eo pipefail
+            mkdir -p /tmp/mergerfs-probe/union /tmp/mergerfs-probe/bind /tmp/mergerfs-probe/subbind /tmp/mergerfs-probe/empty-bin
+            mountpoint -q /tmp/mergerfs-probe/union || mount -t tmpfs tmpfs /tmp/mergerfs-probe/union
+            mkdir -p /tmp/mergerfs-probe/union/sub
+            mountpoint -q /tmp/mergerfs-probe/bind \
+              || mount --bind /tmp/mergerfs-probe/union /tmp/mergerfs-probe/bind
+            mountpoint -q /tmp/mergerfs-probe/subbind \
+              || mount --bind /tmp/mergerfs-probe/union/sub /tmp/mergerfs-probe/subbind
+          args:
+            executable: /bin/bash
+          changed_when: false
+
+        - name: List the binds of the fixture union
+          ansible.builtin.script: ../../files/mergerfs-bind-probe.sh list /tmp/mergerfs-probe/union
+          register: nas_probe_list
+          changed_when: false
+
+        - name: Check the fixture union for active NFS clients
+          ansible.builtin.script: ../../files/mergerfs-bind-probe.sh check /tmp/mergerfs-probe/union
+          register: nas_probe_check
+          changed_when: false
+          failed_when: false
+
+        - name: Assert the probe finds the root bind and the subdirectory bind
+          ansible.builtin.assert:
+            that:
+              - "'/tmp/mergerfs-probe/bind' in nas_probe_list.stdout_lines"
+              - "'/tmp/mergerfs-probe/subbind' in nas_probe_list.stdout_lines"
+              - "'/tmp/mergerfs-probe/union' not in nas_probe_list.stdout_lines"
+              - "'BIND_EXPORTS' in nas_probe_check.stdout"
+            fail_msg: >-
+              The bind probe missed a bind of the union, so the busy gate would
+              let the remount cycle run under live NFS clients:
+              {{ nas_probe_list.stdout }} / {{ nas_probe_check.stdout }}
+            success_msg: "bind probe matches root and subdirectory binds by mount device id"
+
+        - name: Remove the binds, leaving the union mounted
+          ansible.builtin.shell: |
+            set -eo pipefail
+            umount /tmp/mergerfs-probe/subbind
+            umount /tmp/mergerfs-probe/bind
+          args:
+            executable: /bin/bash
+          changed_when: false
+
+        - name: Check the unbound union
+          ansible.builtin.script: ../../files/mergerfs-bind-probe.sh check /tmp/mergerfs-probe/union
+          register: nas_probe_none
+          changed_when: false
+
+        - name: Assert an unbound union reports no bind exports
+          ansible.builtin.assert:
+            that:
+              - "'NO_NFS_BIND_EXPORTS' in nas_probe_none.stdout"
+            fail_msg: "A union with no binds must not block the remount cycle: {{ nas_probe_none.stdout }}"
+            success_msg: "unbound union: NO_NFS_BIND_EXPORTS"
+
+        - name: Run the probe with a bad mode
+          ansible.builtin.script: ../../files/mergerfs-bind-probe.sh wrong /tmp/mergerfs-probe/union
+          register: nas_probe_bad_mode
+          changed_when: false
+          failed_when: false
+
+        - name: Run the probe with no union argument
+          ansible.builtin.script: ../../files/mergerfs-bind-probe.sh list
+          register: nas_probe_no_union
+          changed_when: false
+          failed_when: false
+
+        # The remount guard keys off rc, so a usage error must never look like
+        # an empty bind list.
+        - name: Assert a usage error exits non-zero rather than printing nothing
+          ansible.builtin.assert:
+            that:
+              - nas_probe_bad_mode.rc == 2
+              - nas_probe_no_union.rc == 2
+              - nas_probe_bad_mode.stdout | trim | length == 0
+              - nas_probe_no_union.stdout | trim | length == 0
+            fail_msg: >-
+              The bind probe accepted a bad invocation, so the leftover-mount
+              guard would read "could not run" as "nothing holds the union".
+            success_msg: "bind probe usage errors exit 2 with empty stdout"
+
+        # A probe result carrying no rc never ran. Feeding one to the gate must
+        # refuse the remount, not read as "no failure, therefore clean".
+        - name: Evaluate the remount gate against a probe that never ran
+          vars:
+            nas_storage_mergerfs_needs_remount: true
+            nas_storage_mergerfs_mounts:
+              - name: media
+                target: /tmp/mergerfs-probe/union
+            nas_storage_mergerfs_nfs_check:
+              results:
+                - failed: true
+                  msg: "could not execute the probe script"
+            nas_storage_mergerfs_process_check:
+              results:
+                - rc: 0
+          ansible.builtin.set_fact:
+            nas_gate_without_rc: >-
+              {{ nas_storage_mergerfs_needs_remount | default(false)
+                 and (nas_storage_mergerfs_nfs_check.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list | length) == (nas_storage_mergerfs_mounts | length)
+                 and (nas_storage_mergerfs_process_check.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list | length) == (nas_storage_mergerfs_mounts | length) }}
+
+        - name: Assert a probe that never ran blocks the remount cycle
+          ansible.builtin.assert:
+            that:
+              - not (nas_gate_without_rc | bool)
+            fail_msg: >-
+              The remount gate read a probe result with no rc as clean, so the
+              cycle would unexport and unmount unions that were never checked.
+            success_msg: "a probe that never ran blocks the remount cycle"
+
+        # A missing fuser must read as "I could not look", never as an idle
+        # union: reading it clean would unmount a union processes still hold.
+        - name: Read the idle probe out of the task file
+          ansible.builtin.slurp:
+            src: ../../tasks/mergerfs.yml
+          register: nas_mergerfs_tasks
+          delegate_to: localhost
+          become: false
+
+        - name: Assert the idle probe refuses to run without fuser
+          ansible.builtin.assert:
+            that:
+              - "'command -v fuser' in (nas_mergerfs_tasks.content | b64decode)"
+              - "'NO_FUSER' in (nas_mergerfs_tasks.content | b64decode)"
+            fail_msg: >-
+              tasks/mergerfs.yml lost its fuser guard, so an absent binary
+              reads as an idle union.
+            success_msg: "the idle probe guards on fuser being present"
+
+        - name: Run the idle probe's fuser guard with fuser off PATH
+          ansible.builtin.shell: |
+            set -o pipefail
+            MOUNTPOINT=/tmp/mergerfs-probe/union
+            command -v fuser >/dev/null 2>&1 || {
+              echo "NO_FUSER: cannot determine whether $MOUNTPOINT is in use"
+              exit 3
+            }
+            echo "IDLE"
+            exit 0
+          args:
+            executable: /bin/bash
+          environment:
+            PATH: /tmp/mergerfs-probe/empty-bin
+          register: nas_probe_no_fuser
+          changed_when: false
+          failed_when: false
+
+        - name: Evaluate the remount gate against a probe that could not look
+          vars:
+            nas_storage_mergerfs_needs_remount: true
+            nas_storage_mergerfs_mounts:
+              - name: media
+                target: /tmp/mergerfs-probe/union
+            nas_storage_mergerfs_nfs_check:
+              results:
+                - rc: 0
+            nas_storage_mergerfs_process_check:
+              results:
+                - rc: "{{ nas_probe_no_fuser.rc }}"
+          ansible.builtin.set_fact:
+            nas_gate_without_fuser: >-
+              {{ nas_storage_mergerfs_needs_remount | default(false)
+                 and (nas_storage_mergerfs_nfs_check.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list | length) == (nas_storage_mergerfs_mounts | length)
+                 and (nas_storage_mergerfs_process_check.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list | length) == (nas_storage_mergerfs_mounts | length) }}
+
+        - name: Assert a probe with no fuser exits 3 and blocks the remount cycle
+          ansible.builtin.assert:
+            that:
+              - nas_probe_no_fuser.rc == 3
+              - "'NO_FUSER' in nas_probe_no_fuser.stdout"
+              - not (nas_gate_without_fuser | bool)
+            fail_msg: >-
+              The idle probe reported IDLE with no fuser installed, so the
+              remount cycle would unmount a union that may still be in use.
+            success_msg: "a probe that cannot look blocks the remount cycle"
+      always:
+        - name: Tear down the probe fixture mounts
+          ansible.builtin.shell: |
+            umount -l /tmp/mergerfs-probe/subbind 2>/dev/null || true
+            umount -l /tmp/mergerfs-probe/bind 2>/dev/null || true
+            umount -l /tmp/mergerfs-probe/union 2>/dev/null || true
+            rm -rf /tmp/mergerfs-probe
+          args:
+            executable: /bin/bash
+          changed_when: false
+
+    # The stop-guest list is handed to `qm shutdown <vmid> --timeout <s>`, so a
+    # shape typo builds a plausible command out of a misconfiguration.
+    - name: Drive the stop-guest guard - a well-formed list
+      ansible.builtin.include_tasks: ../../tasks/assert_swap_clean_guests.yml
+      vars:
+        nas_storage_swap_clean_stop_guests: ["100:gitlab:180", "999:test-guest:60"]
+
+    - name: Drive the stop-guest guard - malformed entries
+      block:
+        - name: Include the stop-guest guard with malformed entries
+          ansible.builtin.include_tasks: ../../tasks/assert_swap_clean_guests.yml
+          vars:
+            nas_storage_swap_clean_stop_guests: ["100", "100:60", "100:name:abc"]
+      rescue:
+        - name: Record that the malformed entries were rejected
+          ansible.builtin.set_fact:
+            nas_swap_clean_guests_rejected: >-
+              {{ 'vmid:name:timeout-seconds' in (ansible_failed_result | to_json) }}
+
+    - name: Assert the stop-guest guard fails closed
+      ansible.builtin.assert:
+        that:
+          - nas_swap_clean_guests_rejected | default(false) | bool
+        fail_msg: "A malformed stop-guest entry must fail the deploy, not reach `qm shutdown`"
+        success_msg: "stop-guest guard rejects entries that are not vmid:name:timeout"
+
+    # Per-group smartd flags: the seam for drives that spin down, which the
+    # reference deployment does not use, so only a fabricated render covers it.
+    - name: Render smartd.conf with per-group extra flags  # noqa no-relative-paths
+      ansible.builtin.template:
+        src: ../../templates/smartd.conf.j2
+        dest: /tmp/smartd-extra.conf
+        mode: "0644"
+      vars:
+        nas_storage_smartd_disk_groups:
+          - name: spindown
+            disks: [/dev/disk/by-id/probe-disk]
+            schedule: "(S/../.././02)"
+            extra_flags: "-n standby,q"
+
+    - name: Read the smartd render
+      ansible.builtin.slurp:
+        src: /tmp/smartd-extra.conf
+      register: nas_smartd_extra
+
+    - name: Assert the extra flags land on the directive line
+      ansible.builtin.assert:
+        that:
+          - "'/dev/disk/by-id/probe-disk -a -o on -S on -s (S/../.././02) -n standby,q -m root'
+             in (nas_smartd_extra.content | b64decode)"
+        fail_msg: "smartd group extra_flags did not reach the directive: {{ nas_smartd_extra.content | b64decode }}"
+        success_msg: "smartd groups carry per-group extra flags"
+
+    # Server identity is a variable, so a site on another workgroup (or joining a
+    # domain) does not have to fork the template.
+    - name: Render smb.conf with a non-default identity  # noqa no-relative-paths
+      ansible.builtin.template:
+        src: ../../templates/smb.conf.j2
+        dest: /tmp/smb-identity.conf
+        mode: "0644"
+      vars:
+        nas_storage_samba_workgroup: OTHERGROUP
+        nas_storage_samba_server_role: standalone server
+        nas_storage_samba_ports: "445"
+        nas_storage_samba_disable_netbios: true
+        nas_storage_samba_interfaces: [lo, eth0]
+
+    - name: Read the smb.conf render
+      ansible.builtin.slurp:
+        src: /tmp/smb-identity.conf
+      register: nas_smb_identity
+
+    - name: Assert the Samba identity and listener scope are variable-driven
+      ansible.builtin.assert:
+        that:
+          - "'workgroup = OTHERGROUP' in (nas_smb_identity.content | b64decode)"
+          - "'interfaces = lo eth0' in (nas_smb_identity.content | b64decode)"
+          - "'bind interfaces only = yes' in (nas_smb_identity.content | b64decode)"
+          - "'socket options' not in (nas_smb_identity.content | b64decode)"
+        fail_msg: "smb.conf still hard-codes the server identity: {{ nas_smb_identity.content | b64decode }}"
+        success_msg: "smb.conf takes its workgroup and listener scope from variables"
+
+    # MergerFS remount decision logic. The remount cycle needs FUSE, which the
+    # container lacks, but the facts that gate it are pure derivations, so they
+    # are driven from fabricated register results.
     - name: Drive the remount decision — nothing changed, every union healthy
       ansible.builtin.include_tasks: ../../tasks/mergerfs_needs_remount.yml
       vars:
@@ -835,10 +1276,9 @@
         fail_msg: "A changed fstab entry must trigger the remount cycle, or new options are never applied"
         success_msg: "fstab-changed path: needs_remount true"
 
-    # The OTHER clause of the OR: nothing changed in fstab, but a union is not
-    # mounted / not mergerfs / lost inodecalc+noforget (any non-zero status
-    # check). This is the arm that recovers a union someone unmounted by hand —
-    # without it the media exports serve an unmounted stub forever.
+    # The other clause of the OR: fstab unchanged but a union is unmounted, not
+    # mergerfs, or missing inodecalc+noforget. This arm recovers a union
+    # unmounted by hand; without it the media exports serve a stub forever.
     - name: Drive the remount decision — fstab unchanged, one union unhealthy
       ansible.builtin.include_tasks: ../../tasks/mergerfs_needs_remount.yml
       vars:
@@ -858,10 +1298,9 @@
         fail_msg: "A non-zero status check must trigger the remount cycle, or a hand-unmounted union never recovers"
         success_msg: "status-check path: needs_remount true"
 
-    # Classification guard (tasks/assert_zfs_classification.yml), driven from
-    # fabricated inventory in all four shapes it decides. The live path is the
-    # converge above; these pin the FAIL-CLOSED direction, which no inventory
-    # that converges can exercise.
+    # Classification guard (tasks/assert_zfs_classification.yml) driven from
+    # fabricated inventory in all four shapes it decides. These pin the
+    # fail-closed direction, which no converging inventory can exercise.
     - name: Drive the classification guard — every source declared or derived
       ansible.builtin.include_tasks: ../../tasks/assert_zfs_classification.yml
       vars:
@@ -1033,12 +1472,12 @@
           - path: /export/media
             bind_source: /mnt/media
             clients:
-              - spec: 192.168.0.200/29
-              - spec: 192.168.0.154/32
+              - spec: 192.0.2.200/29
+              - spec: 192.0.2.154/32
           - path: /export/share
             bind_source: /mnt/tank/share
             clients:
-              - spec: 192.168.0.200/29
+              - spec: 192.0.2.200/29
 
     - name: Assert the idle path unblocks the remount and scopes the unexport
       ansible.builtin.assert:
@@ -1048,7 +1487,7 @@
           - (nas_storage_mergerfs_export_bindings | map(attribute='0.path')
              | unique | list) == ['/export/media']
           - (nas_storage_mergerfs_export_bindings | map(attribute='1.spec') | list)
-            == ['192.168.0.200/29', '192.168.0.154/32']
+            == ['192.0.2.200/29', '192.0.2.154/32']
         fail_msg: >-
           The unexport must be scoped to the MergerFS-backed exports only —
           got {{ nas_storage_mergerfs_export_bindings
@@ -1098,15 +1537,9 @@
         fail_msg: "An established NFS client must block the unexport/unmount cycle"
         success_msg: "active-client path: safe_to_remount false"
 
-    # The fstab option string itself, in all four shapes the anchor rule decides,
-    # plus both directions of the explicit `zfs:` override. The mount that
-    # consumes it needs FUSE (converge sets nas_storage_skip_mergerfs), so the
-    # derivation is driven from fabricated inventory the same way the two
-    # decision files above are.
-    #
-    # The two override unions are the SAME shapes the classification guard above
-    # accepts on an explicit boolean: driving them through both files keeps the
-    # guard's verdict and the rendered anchor from drifting apart.
+    # The fstab option string in all four anchor shapes plus both directions of
+    # the `zfs:` override, driven from fabricated inventory because the mount
+    # needs FUSE. The override unions match the ones the guard above accepts.
     - name: Derive the fstab options for the four anchor shapes and both overrides
       ansible.builtin.include_tasks: ../../tasks/mergerfs_opts.yml
       vars:
@@ -1192,13 +1625,9 @@
             sources: [/mnt/nvme/optout, /mnt/tank/optout]
             zfs: false
 
-    # The ARC-cap seam: nas_storage owns no cap of its own, it hands
-    # nas_storage_zfs_arc_max_bytes + _skip_initramfs to weisssrv.infra.zfs_arc_cap.
-    # Driven here because converge skips zfs.yml wholesale
-    # (nas_storage_skip_zfs_operations), so nothing else exercises the hand-off.
-    - name: Drive the ARC cap pass-through
-      ansible.builtin.include_tasks: ../../tasks/zfs_arc.yml
-
+    # The ARC-cap seam: nas_storage hands nas_storage_zfs_arc_max_bytes and
+    # _skip_initramfs to weisssrv.infra.zfs_arc_cap, included independently of
+    # the pool work so it is reached even with skip_zfs_operations set.
     - name: Read the rendered ARC modprobe.d file
       ansible.builtin.slurp:
         src: /etc/modprobe.d/zfs.conf
@@ -1214,28 +1643,81 @@
           {{ nas_zfs_arc_conf.content | b64decode }}
         success_msg: "nas_storage_zfs_arc_max_bytes reaches zfs_arc_cap's modprobe.d render"
 
-    # De-provisioning path (nas_storage_archive_backup_enabled: false).
-    # molecule.yml opts IN, so converge only ever runs archive_backup.yml and
-    # archive_backup_absent.yml would otherwise be executed by no scenario at
-    # all — the opt-out is the moment an operator most needs the play to
-    # converge. It runs at the END of verify because it removes the units every
-    # assertion above inspects, and verify is the last state-touching step of
-    # the sequence (idempotence has already run).
+# The de-provisioning tasks are included directly, so the role's defaults are
+# loaded here for the managed marker they carry, and its handler is mirrored:
+# include_tasks (unlike include_role) brings neither into a play.
+- name: Verify the de-provisioning path
+  hosts: all
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../../defaults/main.yml
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+  tasks:
+    # De-provisioning path (nas_storage_archive_backup_enabled: false), which no
+    # other scenario runs because molecule.yml opts in. It runs last: it removes
+    # the units the play above inspects.
     - name: Check the archive-backup service is static (no [Install] section)  # noqa command-instead-of-module
-      # The premise of the stop-only de-provisioning below: the timer carries
-      # WantedBy=timers.target, the service carries nothing, so there is nothing
-      # to disable. If a future edit adds [Install] to the service template, this
-      # fails and archive_backup_absent.yml needs revisiting.
+      # A static unit has nothing to disable; the enabled-unit case below covers
+      # the other half.
       ansible.builtin.command: systemctl is-enabled archive-backup.service
       register: archive_backup_service_enabled
       changed_when: false
       failed_when: archive_backup_service_enabled.stdout | trim != 'static'
 
+    # The ownership test is a plain substring match, so the marker has to be a
+    # literal the deployed headers really carry - this role's own templates and
+    # the units a delegate role renders for it.
+    - name: Read the headers of a role-rendered and a delegate-rendered unit
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      register: nas_managed_headers
+      loop:
+        - /etc/systemd/system/archive-backup.service
+        - /etc/systemd/system/backup-artifact-mtime-collector.service
+
+    - name: Verify every deployed unit carries the managed marker
+      ansible.builtin.assert:
+        that:
+          - nas_storage_managed_marker in (item.content | b64decode)
+        fail_msg: >-
+          {{ item.item }} carries no '{{ nas_storage_managed_marker }}' header,
+          so the opt-out reads this role's own file as hand-written and leaves
+          its timer armed.
+        success_msg: "{{ item.item }} carries the managed marker"
+      loop: "{{ nas_managed_headers.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
     # include_tasks, not include_role: include_role would also execute the
     # role's meta dependency (weisssrv.infra.base) inside verify. The relative
     # path resolves from this playbook's own directory.
     - name: Run the archive-backup de-provisioning path
-      ansible.builtin.include_tasks: ../../tasks/archive_backup_absent.yml
+      ansible.builtin.include_tasks: ../../tasks/deprovision_units.yml
+      vars:
+        nas_storage_deprovision_timers: [archive-backup.timer]
+        nas_storage_deprovision_static_services: [archive-backup.service]
+        nas_storage_deprovision_paths:
+          - /usr/local/sbin/archive-backupctl
+        nas_storage_deprovision_metrics:
+          - "{{ nas_storage_backup_artifact_metrics_dir }}/archive_backup.prom"
+
+    # Call sites name the units, not their paths, so a unit can never be stopped
+    # without its file being removed.
+    - name: Verify the unit files are derived from the unit names
+      ansible.builtin.assert:
+        that:
+          - "'/etc/systemd/system/archive-backup.timer' in nas_storage_deprovision_all_paths"
+          - "'/etc/systemd/system/archive-backup.service' in nas_storage_deprovision_all_paths"
+          - "'/usr/local/sbin/archive-backupctl' in nas_storage_deprovision_all_paths"
+          - nas_storage_deprovision_all_paths | length == 3
+        fail_msg: >-
+          The de-provisioning path did not derive its unit files from the unit
+          names: {{ nas_storage_deprovision_all_paths }}
+        success_msg: "the de-provisioning path derives unit files from unit names"
 
     - name: Flush handlers so the systemd daemon-reload lands before the checks
       ansible.builtin.meta: flush_handlers
@@ -1266,8 +1748,434 @@
           / timers: {{ archive_backup_timers.stdout_lines | select('search', 'archive-backup') | list }}
         success_msg: "archive-backup opt-out removed both units, the script and the timer schedule"
 
+    # A component whose service carries an [Install] section must lose its
+    # .wants symlink too, or systemd warns on every daemon-reload.
+    - name: Deploy an enabled scratch unit for the de-provisioning path
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/nas-deprovision-probe.service
+        mode: "0644"
+        content: |
+          # {{ nas_storage_managed_marker }}
+          [Unit]
+          Description=nas_storage de-provisioning probe
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/true
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable the scratch unit
+      ansible.builtin.systemd:
+        name: nas-deprovision-probe.service
+        enabled: true
+        daemon_reload: true
+
+    - name: Run the de-provisioning path on the enabled scratch unit
+      ansible.builtin.include_tasks: ../../tasks/deprovision_units.yml
+      vars:
+        nas_storage_deprovision_timers: []
+        nas_storage_deprovision_services: [nas-deprovision-probe.service]
+
+    - name: Flush handlers after the scratch-unit de-provisioning
+      ansible.builtin.meta: flush_handlers
+
+    - name: Stat the scratch unit's WantedBy symlink
+      ansible.builtin.stat:
+        path: /etc/systemd/system/multi-user.target.wants/nas-deprovision-probe.service
+      register: nas_deprovision_probe_link
+
+    - name: Verify the de-provisioning path left no dangling .wants symlink
+      ansible.builtin.assert:
+        that:
+          - not nas_deprovision_probe_link.stat.exists
+        fail_msg: >-
+          de-provisioning removed the unit file but left its multi-user.target
+          .wants symlink, so systemd warns on every daemon-reload.
+        success_msg: "de-provisioning disables the unit before removing it"
+
+    # The component names are conventional, so a host adopted with a hand-rolled
+    # unit of the same name must keep it: no marker, no removal and no stop.
+    - name: Deploy an enabled hand-written unit the role never rendered
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/nas-deprovision-handrolled.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Hand-written unit the role must not touch
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/true
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable the hand-written unit
+      ansible.builtin.systemd:
+        name: nas-deprovision-handrolled.service
+        enabled: true
+        daemon_reload: true
+
+    # The .prom follows the unit's ownership verdict: a kept hand-rolled timer
+    # keeps writing this series, so deleting it only puts a gap in the graph.
+    - name: Seed the hand-written unit's metrics file
+      ansible.builtin.copy:
+        dest: "{{ nas_storage_backup_artifact_metrics_dir }}/nas_deprovision_handrolled.prom"
+        content: "nas_deprovision_handrolled 1\n"
+        mode: "0644"
+
+    - name: Run the de-provisioning path on the hand-written unit
+      ansible.builtin.include_tasks: ../../tasks/deprovision_units.yml
+      vars:
+        nas_storage_deprovision_services: [nas-deprovision-handrolled.service]
+        nas_storage_deprovision_metrics:
+          - "{{ nas_storage_backup_artifact_metrics_dir }}/nas_deprovision_handrolled.prom"
+
+    - name: Stat the hand-written unit, its WantedBy symlink and its metrics file
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: nas_deprovision_handrolled
+      loop:
+        - /etc/systemd/system/nas-deprovision-handrolled.service
+        - /etc/systemd/system/multi-user.target.wants/nas-deprovision-handrolled.service
+        - "{{ nas_storage_backup_artifact_metrics_dir }}/nas_deprovision_handrolled.prom"
+
+    - name: Verify the de-provisioning path kept the hand-written unit
+      ansible.builtin.assert:
+        that:
+          - nas_deprovision_handrolled.results | map(attribute='stat.exists') | select | list | length == 3
+          - nas_storage_deprovision_managed | length == 0
+        fail_msg: >-
+          The de-provisioning path stopped or removed a unit carrying no
+          '{{ nas_storage_managed_marker }}' marker, or deleted the .prom that
+          unit still writes.
+        success_msg: "the de-provisioning path leaves a hand-written unit and its metrics in place"
+
+    - name: Delete the hand-written unit's metrics fixture
+      ansible.builtin.file:
+        path: "{{ nas_storage_backup_artifact_metrics_dir }}/nas_deprovision_handrolled.prom"
+        state: absent
+
+    - name: Remove the hand-written unit fixture
+      ansible.builtin.systemd:
+        name: nas-deprovision-handrolled.service
+        enabled: false
+        state: stopped
+        daemon_reload: true
+
+    - name: Delete the hand-written unit fixture file
+      ansible.builtin.file:
+        path: /etc/systemd/system/nas-deprovision-handrolled.service
+        state: absent
+
+    # A declared path that is not a regular file cannot be classified, so it must
+    # fail rather than read as a hand-written unit and skip the whole component.
+    - name: Reject path — a declared component path that is not a regular file
+      block:
+        - name: De-provision with a directory in the declared path list
+          ansible.builtin.include_tasks: ../../tasks/deprovision_units.yml
+          vars:
+            nas_storage_deprovision_services: []
+            nas_storage_deprovision_paths: [/etc/systemd/system]
+      rescue:
+        - name: Record that the non-file path was refused
+          ansible.builtin.set_fact:
+            nas_deprovision_nonfile_refused: true
+
+    - name: Verify a declared path that is not a regular file fails the play
+      ansible.builtin.assert:
+        that:
+          - nas_deprovision_nonfile_refused | default(false) | bool
+        fail_msg: >-
+          A directory in nas_storage_deprovision_paths read as a hand-written
+          unit, so the component was silently left deployed.
+        success_msg: "a declared component path that is not a regular file fails the play"
+
+    - name: Deploy a role-written scratch unit for the manage_absent gate
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/nas-deprovision-optout.service
+        mode: "0644"
+        content: |
+          # {{ nas_storage_managed_marker }}
+          [Unit]
+          Description=nas_storage manage_absent probe
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/true
+
+    - name: Run the de-provisioning path with nas_storage_manage_absent false
+      ansible.builtin.include_tasks: ../../tasks/deprovision_units.yml
+      vars:
+        nas_storage_manage_absent: false
+        nas_storage_deprovision_static_services: [nas-deprovision-optout.service]
+
+    - name: Stat the scratch unit the opt-out must leave alone
+      ansible.builtin.stat:
+        path: /etc/systemd/system/nas-deprovision-optout.service
+      register: nas_deprovision_optout
+
+    - name: Verify nas_storage_manage_absent false removes nothing
+      ansible.builtin.assert:
+        that:
+          - nas_deprovision_optout.stat.exists
+        fail_msg: >-
+          nas_storage_manage_absent: false still removed
+          /etc/systemd/system/nas-deprovision-optout.service
+        success_msg: "nas_storage_manage_absent: false leaves a deployed component alone"
+
+    - name: Delete the manage_absent scratch unit
+      ansible.builtin.file:
+        path: /etc/systemd/system/nas-deprovision-optout.service
+        state: absent
+
+    # An empty marker matches every file, so the ownership test that keeps a
+    # hand-written unit would pass for every declared path.
+    - name: Deploy a role-written scratch unit for the empty-marker gate
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/nas-deprovision-marker.service
+        mode: "0644"
+        content: |
+          # {{ nas_storage_managed_marker }}
+          [Unit]
+          Description=nas_storage empty-marker probe
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/true
+
+    - name: Reject path — an empty managed marker must fail the de-provisioning
+      block:
+        - name: De-provision with an empty nas_storage_managed_marker
+          ansible.builtin.include_tasks: ../../tasks/deprovision_units.yml
+          vars:
+            nas_storage_managed_marker: ""
+            nas_storage_deprovision_static_services: [nas-deprovision-marker.service]
+      rescue:
+        - name: Record that the empty marker was refused
+          ansible.builtin.set_fact:
+            nas_deprovision_marker_refused: true
+          when: ansible_failed_task.name == 'Assert the managed-file marker is usable'
+
+    - name: Stat the scratch unit the empty-marker run must leave alone
+      ansible.builtin.stat:
+        path: /etc/systemd/system/nas-deprovision-marker.service
+      register: nas_deprovision_marker_unit
+
+    - name: Verify an empty managed marker fails the play and keeps the unit
+      ansible.builtin.assert:
+        that:
+          - nas_deprovision_marker_refused | default(false) | bool
+          - nas_deprovision_marker_unit.stat.exists
+        fail_msg: >-
+          An empty nas_storage_managed_marker did not fail the de-provisioning,
+          so every declared path tests as role-written and a hand-written unit
+          would be removed.
+        success_msg: "an empty nas_storage_managed_marker fails the de-provisioning"
+
+    - name: Delete the empty-marker scratch unit
+      ansible.builtin.file:
+        path: /etc/systemd/system/nas-deprovision-marker.service
+        state: absent
+
+    - name: Reject path — a component naming nothing must fail the de-provisioning
+      block:
+        - name: De-provision with every component list empty
+          ansible.builtin.include_tasks: ../../tasks/deprovision_units.yml
+          vars:
+            nas_storage_deprovision_timers: []
+            nas_storage_deprovision_services: []
+            nas_storage_deprovision_static_services: []
+            nas_storage_deprovision_paths: []
+            nas_storage_deprovision_metrics: []
+      rescue:
+        - name: Record that the empty component was refused
+          ansible.builtin.set_fact:
+            nas_deprovision_empty_refused: true
+          when: ansible_failed_task.name == 'Assert the component named something to de-provision'
+
+    - name: Verify a component naming nothing fails the play
+      ansible.builtin.assert:
+        that:
+          - nas_deprovision_empty_refused | default(false) | bool
+        fail_msg: >-
+          A de-provisioning call naming no units and no paths did not fail, so a
+          caller typo would stop and remove nothing without saying so.
+        success_msg: "a de-provisioning call naming nothing fails the play"
+
+    # The stat gate must make this a no-op, which is what keeps `systemctl stop`
+    # off a unit that no longer exists.
     - name: Re-run the de-provisioning path on the now-clean host
-      # The stat gate must make this a no-op — a host that never had the feature
-      # (or a second converge after the opt-out) does no systemd work at all,
-      # which is also what keeps `systemctl stop` off a unit that no longer exists.
-      ansible.builtin.include_tasks: ../../tasks/archive_backup_absent.yml
+      ansible.builtin.include_tasks: ../../tasks/deprovision_units.yml
+      vars:
+        nas_storage_deprovision_timers: [archive-backup.timer]
+        nas_storage_deprovision_static_services: [archive-backup.service]
+        nas_storage_deprovision_paths:
+          - /usr/local/sbin/archive-backupctl
+        nas_storage_deprovision_metrics:
+          - "{{ nas_storage_backup_artifact_metrics_dir }}/archive_backup.prom"
+
+    - name: Re-stat the de-provisioned archive-backup units and script
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: archive_backup_still_absent
+      loop:
+        - /etc/systemd/system/archive-backup.timer
+        - /etc/systemd/system/archive-backup.service
+        - /usr/local/sbin/archive-backupctl
+
+    - name: Verify the second de-provisioning run took the no-op path
+      ansible.builtin.assert:
+        that:
+          - nas_storage_deprovision_probe.results | selectattr('stat.exists') | list | length == 0
+          - archive_backup_still_absent.results | map(attribute='stat.exists') | select | list | length == 0
+        fail_msg: >-
+          The de-provisioning path did not see a clean host on the second run -
+          the stat gate no longer protects `systemctl stop` on an absent unit.
+        success_msg: "the de-provisioning path is a no-op on an already-clean host"
+
+    # A component whose first declared path is already gone must still be
+    # stopped: the probe covers the whole set, not just the first entry.
+    - name: Seed a surviving archive-backup service with its timer already gone
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/archive-backup.service
+        content: |
+          # {{ nas_storage_managed_marker }}
+          [Unit]
+          Description=Partially removed archive backup
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/true
+        mode: "0644"
+
+    - name: Run the de-provisioning path against the partial remains
+      ansible.builtin.include_tasks: ../../tasks/deprovision_units.yml
+      vars:
+        nas_storage_deprovision_timers: [archive-backup.timer]
+        nas_storage_deprovision_static_services: [archive-backup.service]
+        nas_storage_deprovision_paths:
+          - /usr/local/sbin/archive-backupctl
+
+    - name: Verify the probe saw the surviving unit behind an absent first path
+      ansible.builtin.assert:
+        that:
+          - nas_storage_deprovision_probe.results | selectattr('stat.exists') | list | length == 1
+        fail_msg: >-
+          The de-provisioning probe read only its first path, so a partially
+          removed component is deleted without ever being stopped or disabled.
+        success_msg: "the de-provisioning probe covers every declared path"
+
+    - name: Re-stat the partially removed archive-backup service
+      ansible.builtin.stat:
+        path: /etc/systemd/system/archive-backup.service
+      register: archive_backup_partial_removed
+
+    - name: Verify the partial remains were removed too
+      ansible.builtin.assert:
+        that:
+          - not archive_backup_partial_removed.stat.exists
+        fail_msg: "the de-provisioning path left a surviving unit file behind"
+        success_msg: "the de-provisioning path removes partial remains"
+
+    # The same converge-on-opt-out contract for the components that share
+    # tasks/deprovision_units.yml. Runs last: it removes units the assertions
+    # above inspect.
+    - name: De-provision the media mover
+      ansible.builtin.include_tasks: ../../tasks/deprovision_units.yml
+      vars:
+        nas_storage_deprovision_timers: [media-mover.timer]
+        nas_storage_deprovision_services: [media-mover.service]
+        nas_storage_deprovision_paths:
+          - /usr/local/sbin/media-mover.sh
+        nas_storage_deprovision_metrics:
+          - "{{ nas_storage_backup_artifact_metrics_dir }}/media_mover.prom"
+
+    - name: De-provision swap-clean
+      ansible.builtin.include_tasks: ../../tasks/deprovision_units.yml
+      vars:
+        nas_storage_deprovision_timers: [swap-clean.timer]
+        nas_storage_deprovision_services: [swap-clean.service]
+        nas_storage_deprovision_paths:
+          - /usr/local/sbin/swap-clean.sh
+        nas_storage_deprovision_metrics:
+          - "{{ nas_storage_backup_artifact_metrics_dir }}/swap_clean.prom"
+
+    - name: De-provision the backup-artifact collector
+      ansible.builtin.include_tasks: ../../tasks/deprovision_units.yml
+      vars:
+        nas_storage_deprovision_timers: [backup-artifact-mtime-collector.timer]
+        nas_storage_deprovision_services: [backup-artifact-mtime-collector.service]
+        nas_storage_deprovision_paths:
+          - /usr/local/sbin/backup-artifact-mtime-collector.sh
+        nas_storage_deprovision_metrics:
+          - "{{ nas_storage_backup_artifact_metrics_dir }}/backup_artifact_mtime.prom"
+
+    - name: Flush handlers so the systemd daemon-reload lands before the checks
+      ansible.builtin.meta: flush_handlers
+
+    - name: Stat the de-provisioned component units and scripts
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: nas_components_removed
+      loop:
+        - /etc/systemd/system/media-mover.timer
+        - /etc/systemd/system/media-mover.service
+        - /usr/local/sbin/media-mover.sh
+        - /etc/systemd/system/swap-clean.timer
+        - /etc/systemd/system/swap-clean.service
+        - /usr/local/sbin/swap-clean.sh
+        - /etc/systemd/system/backup-artifact-mtime-collector.timer
+        - /etc/systemd/system/backup-artifact-mtime-collector.service
+        - /usr/local/sbin/backup-artifact-mtime-collector.sh
+        - "{{ nas_storage_backup_artifact_metrics_dir }}/media_mover.prom"
+        - "{{ nas_storage_backup_artifact_metrics_dir }}/swap_clean.prom"
+        - "{{ nas_storage_backup_artifact_metrics_dir }}/backup_artifact_mtime.prom"
+        - "{{ nas_storage_backup_artifact_metrics_dir }}/archive_backup.prom"
+
+    - name: List the remaining timers  # noqa command-instead-of-module
+      ansible.builtin.command: systemctl list-timers --all --no-legend
+      register: nas_components_timers
+      changed_when: false
+
+    - name: Verify each opt-out removed its units, script and schedule
+      ansible.builtin.assert:
+        that:
+          - nas_components_removed.results | map(attribute='stat.exists') | select | list | length == 0
+          - "'media-mover' not in nas_components_timers.stdout"
+          - "'swap-clean' not in nas_components_timers.stdout"
+          - "'backup-artifact-mtime-collector' not in nas_components_timers.stdout"
+        fail_msg: >-
+          A flipped-off component left an armed timer, or a frozen .prom whose
+          staleness alert can never clear:
+          {{ nas_components_removed.results | selectattr('stat.exists')
+             | map(attribute='item') | list }}
+        success_msg: "every opt-out removes its units, script, timer and .prom"
+
+    # Partial state: the unit file is already gone but the script survives, so
+    # `systemctl stop` would hard-fail on a unit systemd cannot load.
+    - name: Deploy only the script half of a de-provisioned component
+      ansible.builtin.copy:
+        dest: /usr/local/sbin/nas-deprovision-partial.sh
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          # {{ nas_storage_managed_marker }}
+          exit 0
+
+    - name: Run the de-provisioning path with the unit file already absent
+      ansible.builtin.include_tasks: ../../tasks/deprovision_units.yml
+      vars:
+        nas_storage_deprovision_timers: [nas-deprovision-partial.timer]
+        nas_storage_deprovision_services: [nas-deprovision-partial.service]
+        nas_storage_deprovision_paths:
+          - /usr/local/sbin/nas-deprovision-partial.sh
+
+    - name: Stat the surviving script after the partial de-provisioning
+      ansible.builtin.stat:
+        path: /usr/local/sbin/nas-deprovision-partial.sh
+      register: nas_deprovision_partial_script
+
+    - name: Verify a partially removed component converges instead of failing
+      ansible.builtin.assert:
+        that:
+          - not nas_deprovision_partial_script.stat.exists
+        fail_msg: >-
+          The de-provisioning path left /usr/local/sbin/nas-deprovision-partial.sh
+          behind, so a host whose unit files are already gone never converges.
+        success_msg: "de-provisioning clears a leftover script with no unit file present"

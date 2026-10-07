@@ -5,7 +5,8 @@ After=network.target unbound.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/unbound_exporter --unbound.host unix:///run/unbound.ctl --unbound.ca "" --unbound.cert "" --unbound.key "" --web.listen-address=:{{ unbound_exporter_port }}
+{% set _bind = unbound_exporter_listen_address | default('', true) | trim %}{% set _listen = ('[' ~ _bind ~ ']') if ':' in _bind else _bind %}{#- an IPv6 literal must be bracketed or Go rejects addr:port -#}
+ExecStart=/usr/bin/unbound_exporter --unbound.host unix:///run/unbound.ctl --unbound.ca "" --unbound.cert "" --unbound.key "" --web.listen-address={{ _listen }}:{{ unbound_exporter_port }}
 Restart=always
 RestartSec=5
 # Unprivileged + sandboxed: only needs read access to the unbound control

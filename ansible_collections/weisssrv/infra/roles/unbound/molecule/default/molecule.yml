@@ -21,9 +21,8 @@ provisioner:
   inventory:
     group_vars:
       all:
-        # Names the drop-in prepare seeds: the role default emptied in v0.8.0
-        # (it used to name one site's file), so the removal path is only
-        # exercised when the scenario supplies the name itself.
+        # The role default is empty (site data), so name the drop-in the
+        # prepare step seeds to exercise the removal path.
         unbound_legacy_dropins:
           - weisssrv.conf
         unbound_port: 5335

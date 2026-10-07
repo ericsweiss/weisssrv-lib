@@ -23,12 +23,11 @@
     - role: weisssrv.infra.alloy_host
 
   post_tasks:
-    # Negative test for the Loki credentials assert (the role's first task):
-    # an https push URL without creds MUST fail fast — the regression this
-    # guards is a rendered config shipping 401s that silently drop the
-    # fleet's journals. The assert runs before anything mutates, so the
-    # rescued failure leaves the converged state untouched.
+    # Negative test for the Loki credentials assert: an https push URL with no
+    # creds must fail fast, before anything mutates. Skipped on the idempotence
+    # re-run so the guard fires once, as expected-junit-failures.txt declares.
     - name: Re-run alloy_host with https URL and empty creds (expect failure)
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include alloy_host with https URL and no credentials
           ansible.builtin.include_role:
@@ -51,11 +50,9 @@
             content: |
               {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
 
-    # Positive render of the production path (https + basic_auth). A full
-    # role re-run with an https URL would overwrite /etc/alloy/config.alloy
-    # (breaking verify's NodePort assert) and flip the file between converge
-    # runs (breaking idempotence), so render the template directly to a
-    # scratch path instead.
+    # Positive render of the production path (https + basic_auth). Rendered to
+    # a scratch path: a full role re-run would overwrite /etc/alloy/config.alloy
+    # and break both verify's NodePort assert and idempotence.
     - name: Render config.alloy with https URL and creds (production path)
       ansible.builtin.copy:
         content: "{{ lookup('ansible.builtin.template', playbook_dir ~ '/../../templates/config.alloy.j2') }}"

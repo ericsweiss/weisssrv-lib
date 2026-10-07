@@ -9,43 +9,31 @@ POOL_DST="{{ nas_storage_archive_backup_pool }}"
 RESTORE_BASE="/mnt/restore"
 SNAP_PREFIX="archsync"
 {% endraw %}
-# Archive scrub timer. plug/plug-arm enable it and unplug disables it, so scrub
-# coverage tracks pool presence instead of storage-deploy timing (the Ansible
-# enable in zfs.yml fires only when the pool happens to be imported during a
-# deploy). The schedule token must match the zfs-scrub-<schedule>@ units
-# zfsutils-linux ships and zfs.yml enables.
+# Archive scrub timer: plug enables it and unplug disables it, so scrub coverage
+# tracks pool presence rather than deploy timing. The schedule token must name a
+# zfs-scrub-<schedule>@ unit zfsutils-linux ships.
 SCRUB_TIMER="zfs-scrub-{{ nas_storage_zfs_scrub_schedule }}@{{ nas_storage_archive_backup_pool }}.timer"
 {% raw %}
 
 # Retention: the newest N snapshots always, plus the newest snapshot of each of
 # the last M calendar months (grandfather).
 {% endraw %}
-KEEP_RECENT={{ nas_storage_archive_backup_keep_recent }}
-KEEP_MONTHLY={{ nas_storage_archive_backup_keep_monthly }}
+KEEP_RECENT={{ nas_storage_archive_backup_keep_recent | int }}
+KEEP_MONTHLY={{ nas_storage_archive_backup_keep_monthly | int }}
 {% raw %}
 
-# vzdump-overrun guard (see replicate_one). A cluster-wide vzdump target is
-# written by remote PVE nodes over NFS, so a local pgrep can't see an in-flight
-# backup and the nightly archsync snapshot could capture a half-written .vma.
-# Before snapshotting that ONE dataset, wait (bounded) for writes under its
-# mountpoint to quiesce — no file modified within the last VZDUMP_QUIESCE_MIN
-# minutes — giving up (and skipping it for this run) after VZDUMP_MAX_WAIT_MIN.
-# Other datasets are unaffected; empty means no dataset gets the guard.
+# vzdump-overrun guard for the ONE cluster-wide dump target: remote nodes write
+# it over NFS, so a local pgrep sees nothing. It is snapshotted only once writes
+# under its mountpoint quiesce; empty means no dataset gets the guard.
 {% endraw %}
 VZDUMP_TARGET="{{ nas_storage_archive_backup_vzdump_target }}"
 {% raw -%}
 VZDUMP_QUIESCE_MIN=10
 VZDUMP_MAX_WAIT_MIN=30
 
-# Datasets to replicate (recursive: includes children), from
-# nas_storage_archive_backup_sources. Datasets already captured indirectly
-# belong OUT of that list — VM disks, for instance, ride along in the vzdump
-# target this script already replicates.
-#
-# INVARIANT: each SRC_LIST ROOT must be a filesystem. Zvols are fine as CHILDREN
-# (-R never targets them with -o mountpoint/canmount), but a top-level zvol is
-# rejected by the RECV_SAFE_OPTS receive in the -R/resume paths — not only in
-# the re-seed loop, which type-splits per dataset and would cope.
+# Datasets to replicate, recursively; leave out anything already captured
+# indirectly (a VM disk inside the vzdump target). Each ROOT must be a
+# filesystem: the -R receive's -o mountpoint/canmount is rejected on a zvol.
 {% endraw %}
 SRC_LIST=(
 {% for src in nas_storage_archive_backup_sources %}
@@ -53,11 +41,82 @@ SRC_LIST=(
 {% endfor %}
 )
 {% raw %}
+# Children left OUT of the recursive send, from
+# nas_storage_archive_backup_exclude. Each entry must be a descendant of a
+# SRC_LIST root; the role asserts that before the script ships.
+{% endraw %}
+EXCLUDE_LIST=(
+{% for excluded in nas_storage_archive_backup_exclude | default([]) %}
+  "{{ excluded }}"
+{% endfor %}
+)
+{% raw %}
+# Opt-in for destroying an excluded child that is already on the archive pool.
+{% endraw %}
+EXCLUDE_DESTROY_OK={{ nas_storage_archive_backup_exclude_destroy_ok | default(false) | bool | lower }}
+{% raw %}
+# `zfs send -X` takes a descendant of the dataset being sent, so the flags are
+# rebuilt per source. Requires OpenZFS 2.3+; older zfs is refused rather than
+# silently replicating an excluded child.
+EXCLUDE_FLAGS=()
+exclude_flags_for() {
+  local src="$1" ex
+  EXCLUDE_FLAGS=()
+  for ex in "${EXCLUDE_LIST[@]}"; do
+    case "$ex" in
+      "$src"/*) EXCLUDE_FLAGS+=( -X "$ex" ) ;;
+    esac
+  done
+}
+
+is_excluded() {
+  local ds="$1" ex
+  for ex in "${EXCLUDE_LIST[@]}"; do
+    if [[ "$ds" == "$ex" || "$ds" == "$ex"/* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Fail loud, never silently: an exclusion the running zfs cannot honour would
+# ship the excluded child to the archive.
+assert_send_exclude_supported() {
+  [[ ${#EXCLUDE_LIST[@]} -gt 0 ]] || return 0
+  local usage
+  usage="$(zfs send 2>&1 || true)"
+  case "$usage" in
+    *-X*) return 0 ;;
+  esac
+  log "FATAL: nas_storage_archive_backup_exclude is set but this zfs has no 'send -X' (OpenZFS 2.3+)"
+  return 1
+}
+
+# An exclusion for a child that is already replicated destroys the archive-side
+# copy: the recursive receive uses -F, which removes datasets absent from the
+# stream. Refuse the run unless the site opted in.
+assert_exclude_destroy_opt_in() {
+  [[ ${#EXCLUDE_LIST[@]} -gt 0 ]] || return 0
+  local ex src dst
+  for ex in "${EXCLUDE_LIST[@]}"; do
+    for src in "${SRC_LIST[@]}"; do
+      case "$ex" in
+        "$src"/*) dst="${MAP[$src]}${ex#"$src"}" ;;
+        *) continue ;;
+      esac
+      zfs list -H -o name "$dst" >/dev/null 2>&1 || continue
+      if [[ "$EXCLUDE_DESTROY_OK" != true ]]; then
+        log "FATAL: ${dst} exists on the archive pool and is excluded from this send; receive -F would destroy it and its snapshot history. Save it, then set nas_storage_archive_backup_exclude_destroy_ok: true to proceed."
+        return 1
+      fi
+      log "WARNING: ${dst} is excluded from this send and will be destroyed by receive -F"
+    done
+  done
+  return 0
+}
 # MAP/RMAP are derived, never hand-maintained: every backup lands at
-# ${POOL_DST}/<basename of the source>. The lock list and the restore targets
-# are derived from the same arrays, so adding a dataset to SRC_LIST is the
-# ONLY edit. Duplicate basenames would collide on one archive dataset — fail
-# loudly before any zfs command can run.
+# ${POOL_DST}/<basename>, and so do the lock list and the restore targets.
+# Duplicate basenames would collide, so they fail before any zfs command runs.
 declare -A MAP=() RMAP=()
 for _src in "${SRC_LIST[@]}"; do
   _dst="${POOL_DST}/${_src##*/}"
@@ -93,11 +152,9 @@ _PRUNE_FAILED=0
 
 log() { echo "[$(date -Is)] $*"; }
 
-# Record a failed snapshot destroy inside the per-dataset child. Two routes back
-# to the parent: exit 76 (cmd_run_one) is the primary one, the marker covers a
-# child that dies before it can return. A marker that cannot be written is
-# FATAL — the `|| note_prune_failure` callers then fail the child rather than
-# letting the parent report retention as healthy.
+# Record a failed snapshot destroy inside the per-dataset child: exit 76 is the
+# primary route back, the marker covers a child that dies first. An unwritable
+# marker is FATAL, or the parent would report retention as healthy.
 note_prune_failure() {
   PRUNE_OK=0
   _PRUNE_FAILED=1
@@ -117,10 +174,9 @@ write_prom_metrics() {
     log "FATAL: cannot create ${PROM_DIR}; no metrics written"
     return 1
   fi
-  # Read the children's marker but do NOT consume it here: the gauge it feeds is
-  # only published by the mv below, so a marker deleted first would take the
-  # retention failure with it whenever the write fails. Covers the ERR-trap path
-  # too — whichever call writes the textfile folds in the children's failures.
+  # Read the children's marker, do not consume it: the gauge it feeds is only
+  # published by the mv below, so deleting it first would lose the retention
+  # failure whenever the write fails.
   local had_marker=0
   if [[ -e "$PRUNE_FAIL_MARKER" ]]; then
     had_marker=1
@@ -180,10 +236,9 @@ write_prom_metrics() {
   return 0
 }
 
-# _emit_dataset_gauge <metric> <help> <assoc-array-name>: exposition block for
-# a per-dataset gauge. MAP filter: only current SRC_LIST members are emitted,
-# so a dataset removed from the archive set ages out of the textfile on the
-# next run instead of leaving an orphan series that alerts stale forever.
+# _emit_dataset_gauge <metric> <help> <assoc-array-name>: one per-dataset gauge
+# block. Only current SRC_LIST members are emitted, so a dataset dropped from
+# the archive set ages out instead of leaving a series that alerts stale.
 _emit_dataset_gauge() {
   local metric="$1" help="$2" ds
   local -n _arr="$3"
@@ -238,6 +293,10 @@ dataset_present() { zfs list -H -o name "$1" >/dev/null 2>&1; }
 
 # LOCKDOWN / SAFETY
 
+# A readonly=on that did not take leaves the replica writable. The flag demotes
+# the run to success=0; `|| true` would hide the broken invariant entirely.
+_LOCKDOWN_FAILED=0
+
 # Force backup tree into a safe, non-mountable, read-only state.
 lock_backup_tree() {
   local root="$1"
@@ -245,14 +304,16 @@ lock_backup_tree() {
 
   zfs set mountpoint=none "$root" >/dev/null 2>&1 || true
   zfs set canmount=off "$root"   >/dev/null 2>&1 || true
-  zfs set readonly=on "$root"    >/dev/null 2>&1 || true
+  zfs set readonly=on "$root" >/dev/null 2>&1 \
+    || { log "Lockdown: FAILED readonly=on on ${root}"; _LOCKDOWN_FAILED=1; }
 
   # `zfs inherit` (there is no `zfs set mountpoint=inherit`) so children track
   # the root's mountpoint=none; `|| true` — zvol children reject mountpoint.
   while IFS= read -r child; do
     zfs inherit mountpoint "$child" >/dev/null 2>&1 || true
     zfs set canmount=off "$child"   >/dev/null 2>&1 || true
-    zfs set readonly=on "$child"    >/dev/null 2>&1 || true
+    zfs set readonly=on "$child" >/dev/null 2>&1 \
+      || { log "Lockdown: FAILED readonly=on on ${child}"; _LOCKDOWN_FAILED=1; }
   done < <(zfs list -H -o name -r "$root" | tail -n +2)
 
   zfs unmount -r "$root" >/dev/null 2>&1 || true
@@ -276,10 +337,8 @@ unlock_for_receive() {
   zfs unmount -r "$root" >/dev/null 2>&1 || true
 }
 
-# ATOMIC RECEIVE SAFETY
-# Forces every received dataset to land with a safe mountpoint so it can never
-# temporarily inherit a dangerous one (e.g. capturing a live path) during the
-# receive.
+# Every received dataset lands with a safe mountpoint, so it can never
+# temporarily inherit a dangerous one (capturing a live path) mid-receive.
 RECV_SAFE_OPTS=( -o mountpoint=none -o canmount=off -o readonly=on )
 
 maybe_resume_receive() {
@@ -329,11 +388,9 @@ latest_common_snapshot() {
     | sed -n "s|^${src}@||p" \
     | grep -E "^${SNAP_PREFIX}-" || true)"
 
-  # The incremental base must exist on EVERY dataset in the dst tree, not just
-  # its root: an interrupted recursive receive leaves later children one
-  # snapshot behind the root, and `zfs send -R -i` into such a tree fails on
-  # the child missing the base. Keep only snapshot names carried by all
-  # ds_count datasets (max one per dataset, so count==ds_count means all).
+  # The incremental base must exist on EVERY dataset in the dst tree: an
+  # interrupted recursive receive leaves children a snapshot behind, and
+  # `zfs send -R -i` then fails on the child missing the base.
   local ds_count
   ds_count="$(zfs list -H -o name -r "$dst" 2>/dev/null | grep -c . || true)"
   [[ "$ds_count" -gt 0 ]] || return 0
@@ -446,21 +503,18 @@ replicate_one() {
   # un-imported pool) must age into ArchiveBackupDatasetStale, not refresh it.
   dataset_present "$src" || { log "SKIP: missing source $src"; return 73; }
 
-  # vzdump-overrun guard: only for the cluster-wide dump target. Wait for the
-  # remote-node NFS writes to settle so this run's snapshot never captures a
-  # half-written backup; skip the dataset (leaving last night's copy in place,
-  # retried next run) if they don't settle within the bound. Snapshot/receive
-  # of OTHER datasets is unaffected. Runs before the snapshot below.
+  # vzdump-overrun guard: wait for the remote-node NFS writes to settle so this
+  # snapshot never captures a half-written backup, and defer the dataset (last
+  # night's copy kept) if they do not settle within the bound.
   if [[ "$src" == "$VZDUMP_TARGET" ]]; then
     local vz_mp vz_waited=0
     vz_mp="$(zfs get -H -o value mountpoint "$src" 2>/dev/null || true)"
     if [[ -n "$vz_mp" && "$vz_mp" != "-" && -d "$vz_mp" ]]; then
       while find "$vz_mp" -type f -mmin "-${VZDUMP_QUIESCE_MIN}" -print -quit 2>/dev/null | grep -q .; do
         if (( vz_waited >= VZDUMP_MAX_WAIT_MIN )); then
-          # 75 (EX_TEMPFAIL) tells cmd_run this dataset was DEFERRED, not
-          # failed: the run's success metric stays meaningful for real
-          # send/receive errors, while chronic deferral surfaces via the
-          # per-dataset last-success/deferred-runs metrics and their alerts.
+          # 75 (EX_TEMPFAIL) marks this dataset DEFERRED, not failed, so the
+          # run's success metric stays meaningful for real send/receive errors.
+          # Chronic deferral surfaces through the per-dataset gauges.
           log "DEFER ${src}: vzdump still writing under ${vz_mp} after ${vz_waited}m; leaving prior backup, will retry next run"
           return 75
         fi
@@ -471,34 +525,23 @@ replicate_one() {
     fi
   fi
 
-  # Encrypted sources must be sent raw (-w): ZFS refuses to send an encrypted
-  # dataset with properties (-R) unless raw. A raw stream carries the wrapped
-  # key, so the archive holds encrypted-at-rest blobs and the backup runs with
-  # no key loaded. Detect encryption RECURSIVELY: -R aborts the whole send if
-  # any descendant is encrypted and -w is absent, so a single encrypted child
-  # under a plaintext parent must still force raw. All-plaintext trees (every
-  # value off or -) send non-raw.
+  # Encrypted sources must be sent raw (-w): ZFS refuses -R on an encrypted
+  # dataset otherwise, and the archive then holds ciphertext. Detected
+  # RECURSIVELY - one encrypted child under a plaintext parent aborts the send.
   local raw_flags=()
   if zfs get -H -o value -r encryption "$src" 2>/dev/null | grep -Eqv '^(off|-)$'; then
     raw_flags=(-w)
   fi
 
-  # Recovery: a re-seed interrupted after its replacement was fully received but
-  # before the swap finished leaves a COMPLETE temp sibling. Promote it instead
-  # of re-sending, so a crash mid-swap never loses the backup or forces a
-  # multi-TB re-send. "Complete" requires BOTH no resume token AND at least one
-  # backup snapshot — a token-less temp with no snapshot is a failed/empty
-  # receive and must be discarded, never promoted over a good dst. Anything not
-  # promotable (partial token, or empty) is discarded so the re-seed rebuilds it.
+  exclude_flags_for "$src"
+
+  # A re-seed interrupted after its replacement was fully received leaves a
+  # COMPLETE temp sibling: promote it rather than re-send multi-TB. Complete =
+  # a snapshot present AND no resume token; anything else is discarded.
   if dataset_present "$reseed_tmp"; then
-    # Promote only a verifiably-complete temp tree, and FAIL CLOSED: capture the
-    # marker + token list explicitly so a failed `zfs get` can't be negated into
-    # a false "complete". Complete = the post-loop completion marker is set AND
-    # no dataset in the tree still carries a resume token (the marker is written
-    # only after every dataset is received, so a token-less-but-incomplete tree —
-    # a crash between two receives leaving later children missing — is not
-    # complete). Anything else is discarded + rebuilt, never promoted over a good
-    # dst.
+    # Fail closed: the marker and token list are captured explicitly, so a failed
+    # `zfs get` cannot be negated into a false "complete" and promoted over a
+    # good dst. The marker is written only after every dataset is received.
     local reseed_marker reseed_tokens reseed_snaps
     reseed_marker="$(zfs get -H -o value "${SNAP_PREFIX}:reseed_complete" "$reseed_tmp" 2>/dev/null || echo "?")"
     if reseed_tokens="$(zfs get -H -o value -r receive_resume_token "$reseed_tmp" 2>/dev/null)" \
@@ -529,21 +572,15 @@ replicate_one() {
   log "Snapshot: ${src}@${snap_now}"
   zfs snapshot -r "${src}@${snap_now}"
 
-  # A raw stream cannot continue a non-raw base, so a source that has since been
-  # encrypted needs a one-time raw re-seed. It is built in a temp sibling and
-  # swapped in only after a COMPLETE receive, so the old copy survives a failed
-  # or interrupted re-seed. Only an exact encryption=off triggers it — a
-  # transient `zfs get` blip must not destroy a good encrypted backup. See the
-  # role README (Archive Backup) for the full sequence.
+  # A raw stream cannot continue a non-raw base, so a source encrypted after the
+  # fact needs a one-time raw re-seed: built in a temp sibling, swapped in only
+  # after a complete receive. Only an exact encryption=off triggers it.
   if [[ ${#raw_flags[@]} -gt 0 ]] && dataset_present "$dst" \
      && [[ "$(zfs get -H -o value encryption "$dst" 2>/dev/null)" == "off" ]]; then
     log "Re-seed: ${src} is encrypted but ${dst} is non-raw; building raw copy in ${reseed_tmp} (current snapshot only)"
-    # Current snapshot per dataset, never -R: -R would ship the source's whole
-    # snapshot history (auto-snap churn the archive does not retain) and can
-    # overflow the pool. The loop is driven by the @snap_now snapshots, listed
-    # up front so a failed enumeration cannot run a partial loop and still set
-    # the completion marker, and sorted by '/' depth because snapshot names do
-    # not sort parent-before-child lexically (a child's '/' precedes '@').
+    # Current snapshot per dataset, never -R: -R ships the whole snapshot history
+    # and can overflow the pool. Listed up front so a failed enumeration cannot
+    # set the completion marker, and depth-sorted to get parents before children.
     local snap ds sub recv_opts dtype snap_list
     if ! snap_list="$(zfs list -H -o name -t snapshot -r "$src" \
         | awk -F@ -v s="$snap_now" '$2 == s { d = $1; print gsub(/\//, "/", d) "\t" $0 }' \
@@ -554,13 +591,14 @@ replicate_one() {
     [[ -n "$snap_list" ]] || { log "Re-seed aborted: no ${snap_now} snapshots under ${src}"; return 1; }
     while IFS= read -r snap; do
       ds="${snap%@${snap_now}}"
+      # The -R paths drop these through -X; this per-dataset loop skips them.
+      if is_excluded "$ds"; then
+        continue
+      fi
       sub="${reseed_tmp}${ds#"${src}"}"
-      # zfs REJECTS a per-dataset '-o mountpoint/canmount' override on a zvol
-      # receive, so volumes get read-only only. Only this non-R loop needs the
-      # split; the -R paths apply -o to the stream's top-level dataset alone.
-      # '|| true' lets a transient `zfs get` error fall through with an empty
-      # dtype, so the else branch aborts loudly with a $ds-specific log rather
-      # than a zvol silently taking the filesystem branch.
+      # zfs REJECTS a per-dataset mountpoint/canmount override on a zvol receive,
+      # so volumes get read-only only. `|| true` leaves dtype empty on a get
+      # error, so the else branch aborts instead of guessing filesystem.
       dtype="$(zfs get -H -o value type "$ds" 2>/dev/null || true)"
       if [[ "$dtype" == "volume" ]]; then
         recv_opts=( -o readonly=on )
@@ -591,7 +629,7 @@ replicate_one() {
 
   if ! dataset_present "$dst"; then
     log "Initial replicate -> ${dst} (raw=${raw_flags[*]:-no})"
-    zfs send -R "${raw_flags[@]}" "${src}@${snap_now}" \
+    zfs send -R "${raw_flags[@]}" "${EXCLUDE_FLAGS[@]}" "${src}@${snap_now}" \
       | zfs receive -s -u "${RECV_SAFE_OPTS[@]}" "${dst}"
     lock_backup_tree "$dst"
   else
@@ -602,11 +640,11 @@ replicate_one() {
 
     if [[ -z "$prev" ]]; then
       log "No common ${SNAP_PREFIX}-* snapshots; full replicate to ${dst} (receive -F, raw=${raw_flags[*]:-no})"
-      zfs send -R "${raw_flags[@]}" "${src}@${snap_now}" \
+      zfs send -R "${raw_flags[@]}" "${EXCLUDE_FLAGS[@]}" "${src}@${snap_now}" \
         | zfs receive -s -u -F "${RECV_SAFE_OPTS[@]}" "${dst}"
     else
       log "Incremental: ${src}@${prev} -> ${src}@${snap_now} into ${dst} (receive -F, raw=${raw_flags[*]:-no})"
-      zfs send -R "${raw_flags[@]}" -i "${src}@${prev}" "${src}@${snap_now}" \
+      zfs send -R "${raw_flags[@]}" "${EXCLUDE_FLAGS[@]}" -i "${src}@${prev}" "${src}@${snap_now}" \
         | zfs receive -s -u -F "${RECV_SAFE_OPTS[@]}" "${dst}"
     fi
 
@@ -649,18 +687,17 @@ cmd_run() {
     exit 0
   fi
 
+  assert_send_exclude_supported
+  assert_exclude_destroy_opt_in
+
   set_pool_root_props
 
   log "Starting replication to '${POOL_DST}'"
   local failed=0 deferred=0 rc
   for src in "${SRC_LIST[@]}"; do
-    # Isolate each dataset in a fresh process so one persistently failing
-    # dataset cannot starve the later ones of backups. A plain
-    # `if replicate_one ...` would NOT do: bash disables errexit and the ERR
-    # trap for a function called inside a condition, turning unguarded
-    # send|receive failures into silent false successes. The child keeps full
-    # set -Eeuo pipefail semantics; it inherits fd 9 (lock stays held) and its
-    # _BACKUP_METRICS_ACTIVE stays 0, so only this parent writes metrics.
+    # Isolate each dataset in a fresh process: one failing dataset must not
+    # starve the rest, and `if replicate_one ...` would disable errexit and the
+    # ERR trap, turning send|receive failures into silent successes.
     rc=0
     "$0" __run-one "$src" || rc=$?
     if [[ "$rc" -eq 0 ]]; then
@@ -674,16 +711,22 @@ cmd_run() {
       PRUNE_OK=0
       _DS_SUCCESS_TS["$src"]="$(date +%s)"
       _DS_DEFERRED["$src"]=0
+    elif [[ "$rc" -eq 77 ]]; then
+      # Replicated fine, did not lock down: the copy IS current, but it is
+      # writable, so the run fails while the dataset keeps its timestamp.
+      log "Replication OK for ${src} but LOCKDOWN FAILED; the replica is writable"
+      failed=1
+      _DS_SUCCESS_TS["$src"]="$(date +%s)"
+      _DS_DEFERRED["$src"]=0
     elif [[ "$rc" -eq 75 ]]; then
       # Deferred (vzdump quiesce timeout): prior copy kept, not a run failure.
       log "Replication DEFERRED for ${src}; prior backup kept, retrying next run"
       deferred=1
       _DS_DEFERRED["$src"]=$(( ${_DS_DEFERRED["$src"]:-0} + 1 ))
     elif [[ "$rc" -eq 73 ]]; then
-      # Missing source: not a success (the timestamp keeps aging into
-      # ArchiveBackupDatasetStale) and not a deferral (reset the counter so a
-      # dataset that vanishes mid-deferral doesn't keep firing the
-      # ChronicallyDeferred alert with a misleading vzdump-overrun story).
+      # Missing source is neither a success (the timestamp keeps aging into
+      # ArchiveBackupDatasetStale) nor a deferral: reset the counter so a
+      # dataset that vanishes mid-deferral stops firing ChronicallyDeferred.
       log "Replication SKIPPED for ${src} (source dataset missing)"
       _DS_DEFERRED["$src"]=0
     else
@@ -708,7 +751,7 @@ cmd_run() {
   local end_ts
   end_ts="$(date +%s)"
   local duration=$(( end_ts - _BACKUP_START_TS ))
-  if [[ "$failed" -eq 1 ]]; then
+  if [[ "$failed" -eq 1 || "$_LOCKDOWN_FAILED" -eq 1 ]]; then
     write_prom_metrics 0 "$duration"
     exit 1
   fi
@@ -721,9 +764,11 @@ cmd_run() {
 cmd_run_one() {
   local src="$1"
   [[ -n "${MAP[$src]:-}" ]] || { log "__run-one: '${src}' is not in SRC_LIST"; exit 2; }
+  assert_send_exclude_supported
   # errexit exits with replicate_one's own code on 73/75/failure, so this line
   # is reached only after a clean replication. 76: replicated, did not prune.
   replicate_one "$src" "${MAP[$src]}"
+  [[ "$_LOCKDOWN_FAILED" -eq 0 ]] || exit 77
   [[ "$_PRUNE_FAILED" -eq 0 ]] || exit 76
 }
 
@@ -744,12 +789,9 @@ cmd_status() {
   zfs list -r "${POOL_DST}" 2>/dev/null || true
 }
 
-# Single-instance lock shared with cmd_run (which takes it with its own
-# exit-0 "already running" semantics). plug/plug-arm/unplug and the restores
-# must never interleave with a mid-send replication: plug re-locks datasets an
-# active receive needs writable, unplug would die on a busy `zpool export`
-# after already disabling the timer, and a restore would race the pruner.
-# Fail fast rather than block: a held lock means replication is mid-send.
+# Single-instance lock shared with cmd_run: plug/unplug and the restores must
+# never interleave with a mid-send replication (plug re-locks datasets an active
+# receive needs writable, unplug dies on a busy export). Fail fast, never block.
 _take_run_lock_or_die() {
   exec 9>/run/archive-backup.lock
   if ! flock -n 9; then
@@ -841,10 +883,9 @@ _restore_mount_tree() {
   done < <(zfs list -H -o name -r "$restore_root" | tail -n +2)
 
   zfs mount -r "$restore_root" >/dev/null 2>&1 || true
-  # A restored encrypted dataset is raw and key-less (keystatus=unavailable), so
-  # the mount above is a silent no-op. Don't claim it mounted — tell the operator
-  # how to unlock it instead, so a real restore isn't trusted as readable when
-  # the directory is empty.
+  # A restored encrypted dataset is raw and key-less (keystatus=unavailable),
+  # so the mount above is a silent no-op. Say how to unlock it rather than
+  # report an empty directory as a readable restore.
   if zfs get -H -o value -r keystatus "$restore_root" 2>/dev/null | grep -q '^unavailable$'; then
     log "Restore tree ${restore_root} contains encrypted key-less datasets — mount is incomplete."
     log "  Unlock + mount: zfs load-key -r -L prompt ${restore_root} && zfs mount -r ${restore_root}  (mounts under ${mp})"
@@ -853,15 +894,9 @@ _restore_mount_tree() {
   fi
 }
 
-# A force-restored stream carries the archive's local lockdown props
-# (mountpoint=none, canmount=off, readonly=on) as received values — and the
-# fresh/recreated dst has no local props masking them, so left alone the
-# restored data sits unmounted and read-only while `zfs mount -a` silently
-# no-ops. Reset the tree. The original mountpoint is NOT in the stream:
-# restore the /mnt/<pool>/<dataset> production convention and let the next
-# storage deploy re-assert the host_vars properties. (`zfs receive -x/-o`
-# can't do this: with -R they apply only to the stream's top-level dataset,
-# so children would stay locked.)
+# A restored stream carries the archive's lockdown props (mountpoint=none,
+# canmount=off, readonly=on). Reset the tree to /mnt/<pool>/<dataset>; `zfs
+# receive -x/-o` cannot, reaching only the stream's top dataset under -R.
 _force_restore_reset_props() {
   local root="$1"
   local child dtype
@@ -900,10 +935,9 @@ _restore_one() {
   snap_full="$(latest_backup_snapshot_fullname "$bdst")"
   [[ -n "$snap_full" ]] || { log "SKIP restore: no ${SNAP_PREFIX}- snapshots on $bdst"; return 0; }
 
-  # Encrypted backups can only be sent raw (the archive never has keys loaded),
-  # so the restored dataset is itself encrypted and needs `zfs load-key` (with
-  # the original source's key) before it can be mounted. Detect recursively: a
-  # `zfs send -R` over a tree with any encrypted descendant requires -w.
+  # Encrypted backups can only be sent raw, so the restored dataset is itself
+  # encrypted and needs the source's `zfs load-key` before it mounts. Detected
+  # recursively: `zfs send -R` over any encrypted descendant requires -w.
   local raw_flags=()
   if zfs get -H -o value -r encryption "$bdst" 2>/dev/null | grep -Eqv '^(off|-)$'; then
     raw_flags=(-w)
@@ -945,12 +979,9 @@ _restore_usage_targets() {
   printf '%s' "${out}all"
 }
 
-# A restore READS the archive but WRITES into the source pool: safe mode
-# receives ${dst}-restore-<ts> trees onto tank/ssd (the space cost lands on
-# the SOURCE pool, not the archive), force receives in place over the live
-# dataset. It must never interleave with the nightly replication reading and
-# pruning the same datasets, so take the SAME single-instance lock cmd_run
-# uses (fail-fast — see _take_run_lock_or_die).
+# A restore READS the archive but WRITES into the source pool, so it must never
+# interleave with the nightly replication reading and pruning the same datasets:
+# it takes the same single-instance lock cmd_run uses.
 _cmd_restore_impl() {
   local mode="$1" what="$2" cmd_name="$3"
 

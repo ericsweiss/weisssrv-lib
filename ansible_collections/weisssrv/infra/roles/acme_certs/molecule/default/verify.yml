@@ -61,6 +61,28 @@
         fail_msg: "acme.sh is not executable"
         success_msg: "acme.sh is installed and executable"
 
+    - name: Read the CA snapshots from both converge arms
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      register: acme_ca_snapshots
+      loop:
+        - /tmp/acme-ca-default.txt
+        - /tmp/acme-ca-override.txt
+
+    - name: Assert acme_certs_ca_server reached acme.sh's default CA
+      vars:
+        acme_ca_default: "{{ acme_ca_snapshots.results[0].content | b64decode }}"
+        acme_ca_override: "{{ acme_ca_snapshots.results[1].content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - "'DEFAULT_ACME_SERVER' in acme_ca_default"
+          - "'letsencrypt' in acme_ca_default"
+          - "'buypass' in acme_ca_override"
+        fail_msg: >-
+          acme_certs_ca_server did not reach acme.sh's recorded default CA, so
+          renewals issue from whichever CA acme.sh defaults to (ZeroSSL on 3.x)
+        success_msg: "acme.sh pins the CA acme_certs_ca_server names, default and override"
+
     # The role installs from the pinned release tarball precisely so the
     # dnsapi/ hooks ship with it — a single-file install would leave DNS-01
     # issuance/renewal broken on a fresh host.
@@ -99,11 +121,9 @@
         fail_msg: "Cert reload script missing expected content"
         success_msg: "Cert reload script contains all expected variables and commands"
 
-    # The dns-02 target is a sudo host, so it goes through the forced-command
-    # receiver (push_target_receiver), not the legacy scp path: its reload
-    # command lives in the receiver ON that host, and the script itself only
-    # carries acme_certs_local_reload_command. The receiver is exercised end to
-    # end by the cert-distribution integration test.
+    # A sudo target goes through the forced-command receiver
+    # (push_target_receiver), not the legacy scp path, so its reload command
+    # lives in the receiver on that host.
     - name: Verify cert reload script uses the forced-command receiver dispatch
       ansible.builtin.assert:
         that:
@@ -114,8 +134,151 @@
         fail_msg: "Cert reload script is not using the forced-command receiver path for sudo targets"
         success_msg: "Cert reload script dispatches sudo targets through the receiver"
 
+    # node_exporter drops every textfile metric for a scrape that reads a
+    # half-written file, so both .prom writers build a temp file and rename it.
+    - name: Verify both textfile writers are atomic and log a failed write
+      vars:
+        script: "{{ cert_reload_content.content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - '"> \"$PROM_TARGET_FILE\"" not in script'
+          - '"mv \"$tmp\" \"$PROM_TARGET_FILE\"" in script'
+          - script.count('logger -t homelab-cert-reload-metrics -p daemon.err') >= 4
+        fail_msg: >-
+          A cert-reload textfile writer writes in place or swallows its failure,
+          so a dead distribution target can keep reading healthy.
+        success_msg: "both textfile writers rename into place and log daemon.err"
+
+    - name: Verify a failed run re-emits the previous success timestamp
+      vars:
+        script: "{{ cert_reload_content.content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - "'awk -v k=cert_renewal_last_success_timestamp_seconds' in script"
+          - "'cert_renewal_last_success_timestamp_seconds ${sval}' in script"
+        fail_msg: >-
+          A failed run drops cert_renewal_last_success_timestamp_seconds, so a
+          staleness rule sees absent() instead of a growing age.
+        success_msg: "a failed run preserves the last-success timestamp"
+
+    - name: Verify a dead target is reported separately from the renewal bit
+      vars:
+        script: "{{ cert_reload_content.content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - "'cert_distribution_last_run_failed_targets ${_TARGET_FAIL_COUNT}' in script"
+          - '"trap_write_failure_metrics \"$rc\"" in script'
+          - '"[ \"$rc\" -eq 2 ] && [ \"$_LOCAL_OK\" -eq 1 ]" in script'
+        fail_msg: >-
+          The run-level gauges do not separate a dead distribution target from a
+          failed local renewal, so one unreachable target pages the renewal
+          alert.
+        success_msg: "a dead target reports on the distribution gauges only"
+
+    - name: Verify an empty target list retires the per-target gauges
+      vars:
+        script: "{{ cert_reload_content.content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - '"_TARGETS_WALKED=1" in script'
+          - '"[[ \"$_TARGETS_WALKED\" -eq 0 && ! -s \"$_TARGET_METRICS_TMP\" ]]" in script'
+          - '"[[ \"$CHECK_ONLY\" -eq 1 && ! -s \"$_TARGET_METRICS_TMP\" ]]" not in script'
+        fail_msg: >-
+          The target metrics flush keeps the previous gauges whenever it recorded
+          nothing, so a target removed from the inventory keeps alerting from a
+          stale series.
+        success_msg: "an empty target list publishes an empty target set"
+
+    # A check-mode probe that cannot reach a target must say so: the legacy
+    # path's hash reads swallow an ssh failure, and the gauge it writes holds
+    # until the next daily run.
+    - name: Verify a check-mode probe separates reachability from cert drift
+      vars:
+        script: "{{ cert_reload_content.content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - '"FAIL: ${host}: ${probe:-ssh exited}" in script'
+          - '"CHECK_RETRIES=2" in script'
+          - '"CHECK_RETRY_DELAY=10" in script'
+          - script.count('[ "$attempt" -ge "$CHECK_RETRIES" ]') >= 2
+          - '"FAIL: ${host}: not carrying the applied cert" in script'
+        fail_msg: >-
+          A check-mode probe writes a target's gauge 0 without retrying, or
+          reports an unreachable host as one not carrying the cert, so one SSH
+          blip pages until the next daily check.
+        success_msg: "a check-mode probe retries and names the ssh error"
+
+    - name: Stat the cert distribution check units
+      ansible.builtin.stat:
+        path: "/etc/systemd/system/{{ item }}"
+      register: cert_check_units
+      loop:
+        - homelab-cert-check.service
+        - homelab-cert-check.timer
+
+    - name: Verify both cert distribution check units are installed
+      ansible.builtin.assert:
+        that: item.stat.exists
+        fail_msg: "{{ item.item }} was not deployed"
+        success_msg: "{{ item.item }} is deployed"
+      loop: "{{ cert_check_units.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Read the cert distribution check units
+      ansible.builtin.slurp:
+        src: "/etc/systemd/system/{{ item }}"
+      register: cert_check_unit_content
+      loop:
+        - homelab-cert-check.service
+        - homelab-cert-check.timer
+
+    # Without --check the daily timer would push to every target instead of
+    # probing them.
+    - name: Verify the check service probes and the timer fires daily
+      vars:
+        units: "{{ cert_check_unit_content.results | map(attribute='content') | map('b64decode') | join('\n') }}"
+      ansible.builtin.assert:
+        that:
+          - "'ExecStart=/usr/local/sbin/homelab-cert-reload.sh --check' in units"
+          - "'OnCalendar=*-*-* 05:40:00' in units"
+          - "'WantedBy=timers.target' in units"
+        fail_msg: >-
+          The distribution check units do not run the script in check mode on a
+          daily timer.
+        success_msg: "the distribution check runs daily in check mode"
+
+    - name: Check cert distribution check timer enabled  # noqa command-instead-of-module
+      ansible.builtin.command: systemctl is-enabled homelab-cert-check.timer
+      register: cert_check_timer_enabled
+      changed_when: false
+      failed_when: cert_check_timer_enabled.stdout | trim != 'enabled'
+
     - name: Check if certificate directory exists
       ansible.builtin.stat:
         path: /opt/AdGuardHome/certs
       register: cert_dir
       failed_when: not cert_dir.stat.exists or not cert_dir.stat.isdir
+
+    # The installer runs as root from what is on disk, so the tarball is staged
+    # in a root-owned 0700 directory and removed afterwards.
+    - name: Stat the staging directory
+      ansible.builtin.stat:
+        path: /run/acme-certs-install
+      register: acme_certs_stage_dir_stat
+
+    - name: Find acme.sh leftovers under /tmp
+      ansible.builtin.find:
+        paths: /tmp
+        patterns: 'acme.sh-*'
+        file_type: any
+      register: acme_certs_tmp_leftovers
+
+    - name: Assert nothing was staged under /tmp and the staging dir is gone
+      ansible.builtin.assert:
+        that:
+          - not acme_certs_stage_dir_stat.stat.exists
+          - acme_certs_tmp_leftovers.files | length == 0
+        fail_msg: >-
+          acme.sh was staged under world-writable /tmp, or the staging directory
+          was left behind after the install.

@@ -18,6 +18,7 @@ The exporter talks to Unbound through the local Unix control socket
 | Variable | Default | Purpose |
 |---|---|---|
 | `unbound_exporter_port` | `9167` | `--web.listen-address` port and the health-check target |
+| `unbound_exporter_listen_address` | `""` | `--web.listen-address` host. Empty is all interfaces, so the host firewall is the only access control; the endpoint is unauthenticated |
 | `unbound_exporter_version` | `0.6.0` | Upstream release tag; also what the dpkg version check compares against |
 | `unbound_exporter_checksum` | `sha256:4f61876a…` | Upstream publishes no checksum file, so this is our own sha256 of the release `.deb` — bump it together with the version |
 

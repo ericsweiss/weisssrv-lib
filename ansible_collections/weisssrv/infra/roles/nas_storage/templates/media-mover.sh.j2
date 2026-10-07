@@ -48,8 +48,15 @@ write_prom_metrics() {
       echo "# TYPE media_mover_last_success_timestamp_seconds gauge"
       echo "media_mover_last_success_timestamp_seconds ${sval}"
     fi
-  } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
-  mv "$tmp" "$PROM_FILE" 2>/dev/null || rm -f "$tmp"
+  } > "$tmp" 2>/dev/null || {
+    logger -t media-mover-metrics -p daemon.err "could not write ${PROM_FILE}"
+    rm -f "$tmp"
+    return 0
+  }
+  mv "$tmp" "$PROM_FILE" 2>/dev/null || {
+    logger -t media-mover-metrics -p daemon.err "could not rename ${tmp} -> ${PROM_FILE}"
+    rm -f "$tmp"
+  }
 }
 
 trap_write_failure_metrics() {
@@ -106,11 +113,9 @@ if [[ "${DRY_RUN:-0}" == "1" ]]; then
   exit 0
 fi
 
-# Prune only dirs older than MIN_AGE, so a client that mkdir'd its destination
-# before the file lands is not deleted out from under an in-progress download.
-# A dir that passed -empty can be repopulated before rmdir (TOCTOU), making find
-# exit non-zero — a benign race AFTER every file has moved, so it must NOT flip
-# media_mover_last_run_success. Only the rsync result determines success.
+# Prune only dirs older than MIN_AGE so an in-progress download's destination
+# survives. A dir repopulated between -empty and rmdir makes find exit non-zero;
+# that benign race must not flip media_mover_last_run_success, only rsync does.
 find "$SRC" -mindepth 1 -type d -empty -mmin +"$AGE_MINUTES" -print -delete \
   || echo "media-mover: empty-dir cleanup hit a benign delete race (dir repopulated mid-scan); leaving for next run"
 

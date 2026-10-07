@@ -1,39 +1,18 @@
-"""Behavioural tests for adguard_home's staged-archive verification chain.
+"""adguard_home staged-archive gates.
 
-`adguard_home_archive_cache_dir` lets an operator pre-stage the release tarball
-so an air-gapped or rate-limited host does not fetch it from GitHub. That path
-BYPASSES `get_url`'s `checksum:`, so without a verification step the cache
-directory is an unauthenticated way to put arbitrary bytes on the resolver and
-run them as root.
-
-Two gates guard it, and they are tested separately because they answer different
-questions:
-
-* The **trust boundary** — the cache directory and the files staged in it must
-  be root-owned and closed to group/other writers. This runs FIRST, because a
-  digest only proves the bytes match a value stored in the same directory: a
-  writer who can swap the archive can swap the `checksums.txt` beside it, and
-  the comparison would still pass. It also gates the explicit-pin path, whose
-  target a directory writer can still redirect.
-* The **verification** — the archive's sha256 must match `adguard_home_archive_sha256`
-  or a line in the staged `checksums.txt`.
-
-Both are `assert`s whose conditions are inline Jinja, so the only cheap way to
-test them is the way tests/test_nextcloud_role.py tests its gate: pull the real
-expressions out of the role and evaluate them against representative
-`stat`/`slurp` results. The expressions are READ FROM THE ROLE, never restated,
-so a regression fails these assertions rather than diverging from a copy.
+The trust-boundary and digest-verification `assert` conditions are read out of
+the role and evaluated here; molecule cannot reach them.
 """
 
 from __future__ import annotations
 
 import base64
-import re
 from pathlib import Path
 
 import jinja2
 import pytest
 import yaml
+from _helpers import ansible_env
 
 REPO = Path(__file__).resolve().parent.parent
 ROLE = REPO / "ansible_collections" / "weisssrv" / "infra" / "roles" / "adguard_home"
@@ -52,11 +31,8 @@ ARCH = "amd64"
 GOOD = "a" * 64
 OTHER = "b" * 64
 
-# The role's condition embeds a regex (`\s+\S*...\.tar\.gz`) in a Jinja string
-# literal, and Jinja's lexer unicode-escape-decodes those. `\s` is not a valid
-# Python escape, so the decode warns — under Ansible too. It is the production
-# behaviour, not a defect in these tests, so the noise is filtered rather than
-# the regex rewritten.
+# The role's condition embeds a regex in a Jinja string literal; the decode
+# warning is production behaviour, so it is filtered here.
 pytestmark = pytest.mark.filterwarnings(
     "ignore:invalid escape sequence:DeprecationWarning"
 )
@@ -90,22 +66,13 @@ def _when(task: dict) -> list[str]:
 
 
 def _env() -> jinja2.Environment:
-    env = jinja2.Environment(undefined=jinja2.ChainableUndefined)
-    env.filters["b64decode"] = lambda v: base64.b64decode(v).decode()
-    # `bool` is an Ansible filter; the conditions only ever yield a real boolean
-    # here, so Python's is a faithful stand-in for Ansible's string-aware one.
-    env.filters["bool"] = bool
-    # `search` is an Ansible test, not a stock Jinja one.
-    env.tests["search"] = lambda value, pattern: re.search(pattern, str(value)) is not None
-    return env
+    return ansible_env()
 
 
 def _evaluate(*, pin: str = "", checksums: str | None = None, staged: str = GOOD) -> bool:
     """Evaluate the role's real assert condition against a staged-archive state.
 
-    `checksums` is the plaintext of a staged checksums.txt, or None when the
-    slurp never ran (the task is skipped when the pin is set, or when no
-    checksums.txt is beside the archive).
+    `checksums` is a staged checksums.txt, or None when the slurp never ran.
     """
     env = _env()
     conditions = _task(VERIFY)["ansible.builtin.assert"]["that"]
@@ -137,12 +104,8 @@ SKIPPED = {"skipped": True}
 def _evaluate_trust(*, cache=None, archive=None, checksums=None) -> bool:
     """Evaluate the role's real trust-boundary conditions against a stat state.
 
-    Each argument overrides fields on an otherwise-trusted `stat` result, or is
-    the sentinel SKIPPED for a register whose task never ran. `checksums=None`
-    means no checksums.txt was consulted (an explicit pin is set, or none is
-    staged) — the state the role reaches on its pin path.
-
-    `assert`'s `that` is an AND over the list, which is what `all` reproduces.
+    Each argument overrides an otherwise-trusted `stat` result, or is SKIPPED
+    for a register whose task never ran; `checksums=None` is the pin path.
     """
     env = _env()
 
@@ -289,10 +252,7 @@ def test_a_cache_path_that_is_not_a_directory_is_not_trusted() -> None:
 
 @pytest.mark.parametrize("name", [CACHE_STAT, STAGED_STAT, STAGED_CHECKSUMS_STAT])
 def test_the_trust_stats_do_not_follow_symlinks(name: str) -> None:
-    """`stat` defaults to follow: false, and that default is load-bearing here:
-    following reports the TARGET's ownership while the symlink — the part an
-    attacker repoints — goes unexamined. Setting follow: true would open the
-    boundary, so it must stay unset."""
+    """The trust stats leave `follow` unset, so a symlink is not followed."""
     assert _task(name)["ansible.builtin.stat"].get("follow", False) is False
 
 

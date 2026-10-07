@@ -1,9 +1,5 @@
 ---
-# Required inputs (empty defaults, asserted in tasks/main.yml):
-#   home_assistant_host               — address the HAOS SSH add-on listens on
-#   home_assistant_host_key           — pinned SSH host key (README)
-#   home_assistant_trusted_proxies    — CIDRs allowed to set X-Forwarded-For
-#   home_assistant_oidc_configure_url — OIDC discovery URL of the IdP
+# Required inputs, asserted in tasks/main.yml. See the README variables table.
 home_assistant_host: ""
 home_assistant_host_key: ""
 home_assistant_trusted_proxies: []
@@ -33,10 +29,9 @@ home_assistant_ssl_enabled: false
 home_assistant_ssl_certificate: /ssl/fullchain.pem
 home_assistant_ssl_key: /ssl/privkey.pem
 
-# Opinionated configuration.yaml blocks, each omitted when emptied/disabled.
-# home_assistant_extra_config can only APPEND, so these are the seams for
-# removing a block (`ha core check` fails the deploy when an !include target
-# does not exist on the host).
+# Opinionated configuration.yaml blocks, each omitted when emptied or disabled.
+# home_assistant_extra_config can only append, so these are the seams for
+# removing a block.
 home_assistant_enable_prometheus: true
 home_assistant_enable_default_config: true
 home_assistant_tts_platforms:

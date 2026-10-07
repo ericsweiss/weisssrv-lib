@@ -1,7 +1,5 @@
 ---
-# Waits for systemd, then ensures the ansible temp dir exists. Imported at the
-# top of every scenario prepare.yml (and of prepare-common.yml); a role that
-# installs apt packages imports prepare-apt-disable.yml right after.
+# Waits for systemd, then ensures the ansible temp dir exists.
 - name: Wait for systemd to be ready
   ansible.builtin.raw: |
     for i in $(seq 1 30); do

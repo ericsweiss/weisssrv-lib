@@ -1,26 +1,19 @@
 ---
-# Role vars are prefixed; where a value is conventionally inventory-wide (and
-# read by other roles too) the prefixed var is ALIASED to it, so a site can set
-# either. `admin_user: root` — the fallback — means "manage no admin user": the
-# create/sudoers/authorized_keys tasks all self-skip.
+# Role vars are prefixed; a conventionally inventory-wide value is ALIASED to the
+# unprefixed name, so a site can set either. `admin_user: root` manages no admin
+# user: account, .ssh dir and sudoers self-skip; the keys still land on root.
 base_admin_user: "{{ admin_user | default('root') }}"
 # default(..., true) so an admin_email that resolves empty also falls back.
 base_admin_email: "{{ admin_email | default('root@localhost', true) }}"
 
 base_ssh_port: "{{ ssh_port | default(22) }}"
 base_ssh_permit_root_login: "{{ ssh_permit_root_login | default('no') }}"
-# Normalized to sshd's own spelling and used everywhere the value is rendered or
-# compared: YAML parses an unquoted `no`/`yes` as a boolean, which would write
-# `PermitRootLogin False` (sshd rejects it) and read as != 'no' in the lockout
-# guard below — i.e. the guard would report a surviving login path for the one
-# spelling that disables root login.
+# sshd's own spelling: unquoted YAML no/yes arrive as booleans.
 base_ssh_permit_root_login_effective: >-
   {{ (base_ssh_permit_root_login is boolean)
      | ternary(base_ssh_permit_root_login | ternary('yes', 'no'),
                base_ssh_permit_root_login | string | lower) }}
-# Coerced here, not at each use site: a quoted or env-supplied "false" is
-# truthy to Python, so the template's ternary and the lockout guard's | bool
-# would disagree and write PasswordAuthentication yes behind a passing assert.
+# Coerced once here so the template and the lockout guard agree.
 base_ssh_password_authentication: "{{ ssh_password_authentication | default(false) | bool }}"
 base_ssh_pubkey_authentication: "{{ ssh_pubkey_authentication | default(true) | bool }}"
 base_ssh_service_name: ssh
@@ -30,9 +23,8 @@ base_ssh_authorized_keys: "{{ ssh_authorized_keys | default([]) }}"
 base_ssh_authorized_keys_exclusive: false
 
 # Lockout guard, asserted in tasks/ssh.yml: a login path survives when a managed
-# non-root account carries a key, or root login is permitted, or password auth is
-# on. It lives here so the role and the accept/reject matrix in
-# molecule/default/verify.yml share ONE expression — see README.
+# non-root account carries a key, root login is permitted, or password auth is
+# on. Shared with molecule/default/verify.yml's accept/reject matrix.
 base_ssh_login_path_survives: >-
   {{ (base_admin_user != 'root' and base_ssh_authorized_keys | default([]) | length > 0)
      or (base_ssh_permit_root_login_effective != 'no')
@@ -112,6 +104,15 @@ base_bootstrap_dns_servers:
   - 1.1.1.1
   - 8.8.8.8
 base_resolver_probe_name: example.com
+
+# Extra kernel boot parameters appended to GRUB_CMDLINE_LINUX_DEFAULT via a
+# drop-in (e.g. ['slub_nomerge']). One bare token per entry; an empty list
+# removes the drop-in. Takes effect on the next reboot.
+base_kernel_cmdline_args: []
+
+# Skips update-grub and the reboot warning. Set true under molecule, where the
+# container has no boot loader to regenerate.
+base_skip_boot_update: false
 
 # Component gates
 # Each skips one block of the role; declared here so a typo cannot silently

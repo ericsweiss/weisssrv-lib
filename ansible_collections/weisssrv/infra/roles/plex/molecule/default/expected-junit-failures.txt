@@ -1,0 +1,4 @@
+# Negative cases this scenario drives on purpose; job status is the arbiter.
+# CI's sanitize-junit step downgrades EXACTLY these names, and ` ::<n>` is
+# hosts x cases.
+Assert the required Plex paths are real mounts, not stale directories

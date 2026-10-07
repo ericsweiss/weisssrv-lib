@@ -1,27 +1,45 @@
 """Tests for scripts/check-doc-links.py (the offline Markdown link gate).
 
-Exercises relative-`.md`-link resolution, the URL/anchor/non-md exclusions, the
-tracked-vs-fallback file discovery, and a smoke check on the real repo docs.
+Covers link resolution, section citations, the exclusions, file discovery, the
+exit codes, and a smoke check on the real repo docs.
 """
 from __future__ import annotations
 
-import importlib.util
+import os
+import subprocess
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
-_SCRIPT = REPO / "scripts" / "check-doc-links.py"
+from script_loader import load_script
 
-# Import the hyphenated-name module the same way test_check_versions.py does.
-_spec = importlib.util.spec_from_file_location("check_doc_links", _SCRIPT)
-assert _spec and _spec.loader
-cdl = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(cdl)
+REPO = Path(__file__).resolve().parent.parent
+
+cdl = load_script("check-doc-links.py")
 
 
 def _write(p: Path, text: str) -> Path:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(text, encoding="utf-8")
     return p
+
+
+def _git_init(root: Path, *, commit: bool) -> None:
+    env = {
+        **os.environ,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.com",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.com",
+    }
+    subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True, env=env)
+    if commit:
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, env=env)
+        subprocess.run(
+            ["git", "-C", str(root), "commit", "-qm", "x", "--no-verify"],
+            check=True,
+            env=env,
+        )
 
 
 class TestBrokenLinks:
@@ -93,19 +111,178 @@ class TestDocFiles:
 
     def test_tracked_scan_covers_markdown_outside_docs(self, tmp_path: Path):
         # In a git checkout every tracked *.md is scanned, not just docs/.
-        import subprocess
-
         _write(tmp_path / "roles" / "foo" / "README.md", "[x](../../docs/01-a.md)\n")
         _write(tmp_path / "docs" / "01-a.md", "a\n")
-        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
-               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
-        import os as _os
-        env = {**_os.environ, **env}
-        subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True, env=env)
-        subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True, env=env)
-        subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "x"], check=True, env=env)
+        _git_init(tmp_path, commit=True)
         names = {str(p.relative_to(tmp_path)) for p in cdl.doc_files(tmp_path)}
         assert "roles/foo/README.md" in names
+
+    def test_git_checkout_with_nothing_tracked_does_not_fall_back(self, tmp_path: Path):
+        # An unstaged checkout must report nothing found, not a partial pass
+        # over docs/ that leaves the rest of the tree unchecked.
+        _write(tmp_path / "docs" / "01-a.md", "a\n")
+        _write(tmp_path / "README.md", "r\n")
+        _write(tmp_path / "AGENTS.md", "[gone](docs/99-missing.md)\n")
+        _git_init(tmp_path, commit=False)
+        assert cdl.doc_files(tmp_path) == []
+
+
+class TestExitCodes:
+    def test_no_markdown_is_an_operator_error(self, tmp_path: Path, capsys):
+        assert cdl.main(["check-doc-links.py", str(tmp_path)]) == 2
+        assert "no Markdown files found" in capsys.readouterr().err
+
+    def test_enumeration_failure_is_reported_not_raised(self, tmp_path: Path, capsys, monkeypatch):
+        def boom(root):
+            raise RuntimeError(f"cannot enumerate tracked Markdown under {root}: git")
+
+        monkeypatch.setattr(cdl, "_tracked_markdown", boom)
+        _git_init(tmp_path, commit=False)
+        assert cdl.main(["check-doc-links.py", str(tmp_path)]) == 2
+        assert "cannot enumerate tracked Markdown" in capsys.readouterr().err
+
+    def test_broken_link_exits_one(self, tmp_path: Path):
+        _write(tmp_path / "docs" / "01-a.md", "[gone](99-missing.md)\n")
+        assert cdl.main(["check-doc-links.py", str(tmp_path)]) == 1
+
+
+class TestBacktickedPaths:
+    def test_resolving_repo_path_passes(self, tmp_path: Path):
+        _write(tmp_path / "scripts" / "tool.sh", "#!/bin/sh\n")
+        src = _write(tmp_path / "docs" / "01-a.md", "run `scripts/tool.sh` first\n")
+        assert cdl.rotted_paths([src], tmp_path) == []
+
+    def test_rotted_repo_path_is_reported(self, tmp_path: Path):
+        (tmp_path / "scripts").mkdir()
+        src = _write(tmp_path / "docs" / "01-a.md", "run `scripts/gone.sh` first\n")
+        assert cdl.rotted_paths([src], tmp_path) == [(src, "scripts/gone.sh")]
+
+    def test_directory_token_resolves(self, tmp_path: Path):
+        (tmp_path / "scripts" / "lib").mkdir(parents=True)
+        src = _write(tmp_path / "docs" / "01-a.md", "see `scripts/lib/`\n")
+        assert cdl.rotted_paths([src], tmp_path) == []
+
+    def test_foreign_and_placeholder_tokens_are_left_alone(self, tmp_path: Path):
+        (tmp_path / "scripts").mkdir()
+        src = _write(
+            tmp_path / "docs" / "01-a.md",
+            "`/etc/hosts` `../elsewhere/x.yml` `scripts/<name>.sh` "
+            "`kubernetes/apps/x.yaml` `a b/c`\n",
+        )
+        assert cdl.rotted_paths([src], tmp_path) == []
+
+    def test_a_path_relative_to_the_citing_document_resolves(self, tmp_path: Path):
+        _write(tmp_path / "docs" / "ref" / "detail.md", "# d\n")
+        src = _write(tmp_path / "docs" / "01-a.md", "see `ref/detail.md`\n")
+        assert cdl.rotted_paths([src], tmp_path) == []
+
+    def test_a_path_resolving_under_neither_base_is_reported(self, tmp_path: Path):
+        (tmp_path / "docs" / "ref").mkdir(parents=True)
+        src = _write(tmp_path / "docs" / "01-a.md", "see `ref/gone.md`\n")
+        assert cdl.rotted_paths([src], tmp_path) == [(src, "ref/gone.md")]
+
+    def test_ignore_patterns_exempt_a_token(self, tmp_path: Path, monkeypatch):
+        (tmp_path / "scripts").mkdir()
+        src = _write(tmp_path / "docs" / "01-a.md", "`scripts/consumer-only.yml`\n")
+        monkeypatch.setenv("CHECK_DOC_LINKS_IGNORE", "scripts/consumer-*.yml")
+        assert cdl.rotted_paths([src], tmp_path) == []
+
+    def test_pass_is_opt_in(self, tmp_path: Path, monkeypatch):
+        (tmp_path / "scripts").mkdir()
+        _write(tmp_path / "docs" / "01-a.md", "`scripts/gone.sh`\n")
+        monkeypatch.delenv("CHECK_DOC_LINKS_PATHS", raising=False)
+        assert cdl.main(["check-doc-links.py", str(tmp_path)]) == 0
+        monkeypatch.setenv("CHECK_DOC_LINKS_PATHS", "1")
+        assert cdl.main(["check-doc-links.py", str(tmp_path)]) == 1
+
+
+class TestSectionCitations:
+    """`<doc> § <Heading>` pointers resolve against the real headings."""
+
+    def _tree(self, tmp_path: Path, citing: str) -> Path:
+        _write(tmp_path / "docs" / "07-flux.md", "# Flux\n\n## Rotating a secret\n")
+        return _write(tmp_path / "docs" / "01-a.md", citing)
+
+    def test_a_citation_naming_a_real_heading_passes(self, tmp_path: Path):
+        src = self._tree(tmp_path, "see `docs/07-flux.md` § Rotating a secret.\n")
+        assert cdl.dangling_sections([src], tmp_path) == []
+
+    def test_a_citation_naming_a_heading_that_does_not_exist_fails(self, tmp_path: Path):
+        """The rot this arm exists for: the heading was renamed, the pointer was
+        not, and the link arm never looks past the filename."""
+        src = self._tree(tmp_path, "see `docs/07-flux.md` § Rotating a token.\n")
+        found = cdl.dangling_sections([src], tmp_path)
+        assert len(found) == 1
+        assert found[0][2] == "Rotating a token."
+        assert "rotating a secret" in found[0][3]
+
+    def test_a_numbered_prefix_resolves_to_the_document(self, tmp_path: Path):
+        src = self._tree(tmp_path, "see (docs/07 § Rotating a token)\n")
+        assert len(cdl.dangling_sections([src], tmp_path)) == 1
+
+    def test_prose_continuing_past_the_heading_is_not_part_of_it(self, tmp_path: Path):
+        src = self._tree(
+            tmp_path, "see `docs/07-flux.md` § Rotating a secret, then redeploy.\n"
+        )
+        assert cdl.dangling_sections([src], tmp_path) == []
+
+    def test_a_heading_cut_short_by_a_line_wrap_still_resolves(self, tmp_path: Path):
+        src = self._tree(tmp_path, "see `docs/07-flux.md` § Rotating a\nsecret now.\n")
+        assert cdl.dangling_sections([src], tmp_path) == []
+
+    def test_a_bare_word_is_not_treated_as_a_document(self, tmp_path: Path):
+        """"the role README § Metrics" names no path, so there is nothing to
+        resolve and prose cannot red the gate."""
+        src = self._tree(tmp_path, "see the role README § Metrics.\n")
+        assert cdl.dangling_sections([src], tmp_path) == []
+
+    def test_an_unresolvable_document_is_left_alone(self, tmp_path: Path):
+        src = self._tree(tmp_path, "see `docs/99-gone.md` § Anything.\n")
+        assert cdl.dangling_sections([src], tmp_path) == []
+
+    def test_a_template_source_resolves_before_the_repos_own_doc(self, tmp_path: Path):
+        """A template repo carries its own docs and a generated repo's; the
+        nearest tree wins, so the two do not cross over."""
+        _write(tmp_path / "docs" / "runbooks.md", "# Runbooks\n")
+        _write(
+            tmp_path / "template" / "docs" / "runbooks.md.jinja",
+            "# Runbooks\n\n## Registry pull-through cache\n",
+        )
+        src = _write(
+            tmp_path / "template" / "apps" / "r.md",
+            "see `docs/runbooks.md` § Registry pull-through cache.\n",
+        )
+        assert cdl.dangling_sections([src], tmp_path) == []
+
+    def test_prose_running_on_without_punctuation_still_resolves(self, tmp_path: Path):
+        """Nothing bounds the citation, so only the words it shares with the
+        heading can identify the section."""
+        _write(
+            tmp_path / "docs" / "07-flux.md",
+            "# Flux\n\n## Rotating a secret: the ordered path\n",
+        )
+        src = _write(
+            tmp_path / "docs" / "01-a.md",
+            "see `docs/07-flux.md` § Rotating a secret needs the token first\n",
+        )
+        assert cdl.dangling_sections([src], tmp_path) == []
+
+    def test_two_shared_words_are_not_enough(self, tmp_path: Path):
+        """`Rotating a token` shares `rotating a` with `Rotating a secret`;
+        accepting that would let every renamed section through."""
+        src = self._tree(tmp_path, "see `docs/07-flux.md` § Rotating a token now\n")
+        assert len(cdl.dangling_sections([src], tmp_path)) == 1
+
+    def test_a_dangling_citation_exits_one(self, tmp_path: Path):
+        self._tree(tmp_path, "see `docs/07-flux.md` § Rotating a token.\n")
+        assert cdl.main(["check-doc-links.py", str(tmp_path)]) == 1
+
+    def test_the_arm_can_be_turned_off(self, tmp_path: Path, monkeypatch):
+        """A template repo whose citations point at the generated tree opts out
+        rather than rewording every pointer."""
+        self._tree(tmp_path, "see `docs/07-flux.md` § Rotating a token.\n")
+        monkeypatch.setenv("CHECK_DOC_LINKS_SECTIONS", "0")
+        assert cdl.main(["check-doc-links.py", str(tmp_path)]) == 0
 
 
 class TestRealRepo:

@@ -1,16 +1,6 @@
-# Pre-built molecule TEST image: the systemd-enabled Debian container molecule
-# spins up, with the roles' apt dependencies baked in so a scenario doesn't spend
-# 3-5 minutes on apt-get install every CI run.
-#
-#   docker build -t <registry>/molecule-test:latest docker/molecule-test/
-#
-# Rebuild when a role adds a new apt dependency that is slow to install. The
-# image is a cache optimization — molecule tests still pass without it (they just
-# install packages at runtime).
-# Pinned by manifest-list digest (multi-arch index, not a platform digest) so
-# the rolling `trixie` tag can't silently change the base under a rebuild.
-# Bump deliberately: resolve the new digest with
-#   docker buildx imagetools inspect ghcr.io/hifis-net/debian-systemd:trixie
+# The systemd-enabled Debian container molecule spins up, with the roles' apt
+# dependencies baked in; scenarios still pass without it. Build context is THIS
+# directory. Digest bump: docker buildx imagetools inspect ghcr.io/hifis-net/debian-systemd:trixie
 FROM ghcr.io/hifis-net/debian-systemd:trixie@sha256:d1ef7a336af9e98fb94bc0fe18d0bc7f863bae943c8cecadad2d8d08db09e687
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -36,10 +26,8 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     lsb-release \
     sudo \
     pciutils \
-    # --- base role (VM packages) ---
-    # NOTE: qemu-guest-agent intentionally excluded — the base role's
-    # molecule verify asserts it's NOT installed in Docker containers.
-    # --- base role (SSH + misc) ---
+    # --- base role (SSH + misc); qemu-guest-agent is deliberately absent, the
+    # base role's molecule verify asserts it is not installed in a container ---
     openssh-server \
     fail2ban \
     logrotate \
@@ -83,17 +71,11 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     # `update_cache: true` then hit a warm cache instead of re-downloading all
     # package metadata (~30MB image cost).
 
-# AdGuard Home release tarball, staged where the adguard_home role looks
-# (adguard_home_archive_cache_dir) so DNS scenarios install from disk instead of
-# fetching github.com mid-test — a stalled TLS handshake there costs a whole
-# molecule attempt. Keep this in step with the version the scenarios pin; a
-# mismatch is not fatal, the role just falls back to the upstream download,
-# which is why tests/test_pin_parity.py gates it rather than the build.
-# Verified against upstream checksums.txt at build time; checksums.txt is
-# staged alongside so the role re-verifies the archive at converge.
+# AdGuard Home release tarball and its checksums.txt, staged where the
+# adguard_home role looks so DNS scenarios install from disk. The version is
+# held equal to what the scenarios pin by tests/test_pin_parity.py.
 ARG ADGUARD_HOME_VERSION=0.107.78
-# --retry: this is the one network fetch in the build that reaches github.com,
-# and a single 5xx from the release CDN otherwise fails the whole image.
+# --retry: the one github.com fetch in the build; a single 5xx would fail it.
 RUN ARCH=$(dpkg --print-architecture) \
     && AGH_URL="https://github.com/AdguardTeam/AdGuardHome/releases/download/v${ADGUARD_HOME_VERSION}" \
     && mkdir -p /var/cache/adguard-home /tmp/agh \
@@ -112,14 +94,10 @@ RUN ARCH=$(dpkg --print-architecture) \
 # temporary directory" errors during molecule prepare)
 RUN mkdir -p /root/.ansible/tmp && chmod 700 /root/.ansible/tmp
 
-# Disable services that auto-start on install — roles should be the ones
-# that enable/start them (mirrors real-world where packages are installed
-# but services don't auto-start until Ansible runs). Without this, the
-# idempotence check fails because systemd restarts them between plays.
-RUN systemctl disable apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true \
-    && systemctl disable postfix 2>/dev/null || true \
-    && systemctl disable unbound 2>/dev/null || true \
-    && systemctl disable nfs-kernel-server 2>/dev/null || true \
-    && systemctl disable smbd nmbd 2>/dev/null || true \
-    && systemctl disable ssh 2>/dev/null || true \
-    && systemctl disable fail2ban 2>/dev/null || true
+# Roles must be what enables these: a package that auto-starts its service makes
+# the idempotence check fail when systemd restarts it between plays. A unit
+# missing here has been renamed, and fails the build instead of shipping enabled.
+RUN for unit in apt-daily.timer apt-daily-upgrade.timer postfix unbound \
+        nfs-kernel-server smbd nmbd ssh fail2ban; do \
+      systemctl disable "$unit" || exit 1; \
+    done

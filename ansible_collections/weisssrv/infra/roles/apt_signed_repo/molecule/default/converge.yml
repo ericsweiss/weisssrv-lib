@@ -1,12 +1,7 @@
 ---
 # Hermetic converge: generate a throwaway signing key, serve it over file://,
-# then exercise both the accept (correct fingerprint) and reject (wrong
-# fingerprint) paths of apt_signed_repo. update_cache is off so the test never
-# reaches for the (non-existent) repo — the three real callers cover the
-# apt-update path end to end in their own scenarios.
-#
-# Every reject/dry-run block below reports changed/failed by design on every
-# pass — hence the molecule-idempotence-notest tag on each.
+# then exercise the accept and reject paths of apt_signed_repo. Each reject and
+# dry-run block reports changed by design, hence its idempotence-notest tag.
 - name: Converge
   hosts: all
   become: true
@@ -89,10 +84,9 @@
           apt_signed_repo did NOT fail on a wrong fingerprint — the primary-key
           verification is not enforcing.
 
-    # Build the two-key file OUTSIDE the rescued block below: if key
-    # construction fails here it must fail the play loudly, not be swallowed by
-    # the block's rescue and misread as the guard rejecting (which would let the
-    # multi-key guard go untested with a false green).
+    # Built outside the rescued block below so a failure here fails the play
+    # loudly instead of being misread as the guard rejecting, which would leave
+    # the multi-key guard untested.
     - name: Build a two-key file (original key first) in the same GNUPGHOME
       ansible.builtin.shell: |
         set -o pipefail
@@ -100,10 +94,9 @@
         gpg --batch --passphrase '' \
           --quick-generate-key 'apt-signed-repo test2 <test2@example.com>' \
           ed25519 sign none
-        # Original key FIRST so its fingerprint is the primary the role
-        # extracts — proving pub_count>1 is rejected even when the primary
-        # fingerprint matches exactly (the exact key-bundling bypass the
-        # single-fingerprint pin cannot catch on its own).
+        # Original key first, so its fingerprint is the primary the role
+        # extracts. This proves pub_count>1 is rejected even when the primary
+        # fingerprint matches exactly.
         gpg --armor --export 'apt-signed-repo test'  >  /tmp/testkey-multi.asc
         gpg --armor --export 'apt-signed-repo test2' >> /tmp/testkey-multi.asc
       args:
@@ -140,10 +133,9 @@
           though the primary fingerprint matched — the pub_count==1 fail-closed
           guard is not enforcing, so an appended signing key would be trusted.
 
-    # Existing-keyring re-verification: test-ok.gpg is already installed (accept
-    # path above). Re-run the role against it with a WRONG fingerprint — the
-    # download/verify/dearmor steps all skip on an existing keyring, so only the
-    # new existing-keyring re-verify can catch the drift. It must fail.
+    # test-ok.gpg is already installed by the accept path above. The
+    # download and dearmor steps skip on an existing keyring, so only the
+    # existing-keyring re-verify can catch a drifted fingerprint.
     - name: Existing-keyring re-verify — a drifted fingerprint on an installed keyring must fail
       tags: [molecule-idempotence-notest]
       block:
@@ -174,11 +166,9 @@
           no longer matches the pinned fingerprint — an existing keyring is
           trusted without re-verification.
 
-    # Dry run against an UNPROVISIONED keyring path. In check mode the dearmor
-    # writes nothing, so the keyring is still absent when the permission task is
-    # reached — and `file` with an implicit state=file fails "is absent, cannot
-    # continue" in check mode too. Without the post-dearmor existence re-check
-    # this makes `ansible-playbook --check` red on every fresh host.
+    # Dry run against an unprovisioned keyring path. Check mode writes nothing,
+    # so the keyring is still absent at the permission task, which is what the
+    # post-dearmor existence re-check covers.
     - name: Check-mode dry run — an absent keyring must not fail the permission task
       tags: [molecule-idempotence-notest]
       check_mode: true
@@ -210,3 +200,127 @@
           exist yet — `task infra:check` would be red on every unprovisioned
           host for every caller of this pipeline.
         success_msg: "check mode is clean on an unprovisioned keyring path"
+
+    # enable-components.yml is a separate entry point, so its three guards need
+    # their own reject paths.
+    - name: Components reject path — an absent sources file must fail
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Rewrite components in a sources file that does not exist
+          ansible.builtin.include_role:
+            name: weisssrv.infra.apt_signed_repo
+            tasks_from: enable-components.yml
+          vars:
+            apt_signed_repo_sources_path: /tmp/does-not-exist.sources
+            apt_signed_repo_components: main contrib
+            apt_signed_repo_update_cache: false
+      rescue:
+        - name: Record that the absent sources file was rejected
+          ansible.builtin.set_fact:
+            apt_signed_repo_missing_sources_failed: true
+
+    - name: Seed a deb822 sources file carrying the stock Components line
+      ansible.builtin.copy:
+        dest: /tmp/stock-components.sources
+        content: |
+          Types: deb
+          URIs: http://deb.debian.org/debian
+          Suites: trixie
+          Components: main
+        mode: '0644'
+
+    - name: Seed a deb822 sources file with no Components line
+      ansible.builtin.copy:
+        dest: /tmp/no-components.sources
+        content: |
+          Types: deb
+          URIs: http://deb.debian.org/debian
+          Suites: trixie
+        mode: '0644'
+
+    - name: Components reject path — a file with no Components line must fail
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Rewrite components in a file that carries no Components line
+          ansible.builtin.include_role:
+            name: weisssrv.infra.apt_signed_repo
+            tasks_from: enable-components.yml
+          vars:
+            apt_signed_repo_sources_path: /tmp/no-components.sources
+            apt_signed_repo_components: main contrib
+            apt_signed_repo_update_cache: false
+      rescue:
+        - name: Record that the missing Components line was rejected
+          ansible.builtin.set_fact:
+            apt_signed_repo_no_components_failed: true
+
+    - name: Components reject path — an empty component set must fail
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Rewrite components with an empty component set
+          ansible.builtin.include_role:
+            name: weisssrv.infra.apt_signed_repo
+            tasks_from: enable-components.yml
+          vars:
+            apt_signed_repo_sources_path: /tmp/no-components.sources
+            apt_signed_repo_components: ""
+            apt_signed_repo_update_cache: false
+      rescue:
+        - name: Record that the empty component set was rejected
+          ansible.builtin.set_fact:
+            apt_signed_repo_empty_components_failed: true
+
+    # Accept path for the components entry point. Untagged, so the idempotence
+    # run proves a second rewrite is a no-op; force: false keeps the seed from
+    # resetting the file the first run rewrote.
+    - name: Seed a deb822 sources file for the real component rewrite
+      ansible.builtin.copy:
+        dest: /tmp/accept-components.sources
+        force: false
+        content: |
+          Types: deb
+          URIs: http://deb.debian.org/debian
+          Suites: trixie
+          Components: main
+        mode: '0644'
+
+    - name: Components accept path — rewrite the stock Components line for real
+      ansible.builtin.include_role:
+        name: weisssrv.infra.apt_signed_repo
+        tasks_from: enable-components.yml
+      vars:
+        apt_signed_repo_sources_path: /tmp/accept-components.sources
+        apt_signed_repo_components: main contrib non-free-firmware
+        apt_signed_repo_update_cache: false
+
+    # Check mode writes nothing, so every guard in the entry point must hold
+    # against the file as it stands instead of reading back an unmade rewrite.
+    - name: Components check mode — a host needing the rewrite must not fail
+      tags: [molecule-idempotence-notest]
+      check_mode: true
+      block:
+        - name: Rewrite components in check mode against the stock Components line
+          ansible.builtin.include_role:
+            name: weisssrv.infra.apt_signed_repo
+            tasks_from: enable-components.yml
+          vars:
+            apt_signed_repo_sources_path: /tmp/stock-components.sources
+            apt_signed_repo_components: main contrib non-free
+            apt_signed_repo_update_cache: false
+      rescue:
+        - name: Record that the check-mode component rewrite failed
+          ansible.builtin.set_fact:
+            apt_signed_repo_components_checkmode_failed: true
+
+    - name: Record the enable-components reject outcomes for verify
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.copy:
+        dest: /tmp/molecule-enable-components.json
+        mode: '0644'
+        content: |
+          {
+            "missing_sources_failed": {{ (apt_signed_repo_missing_sources_failed | default(false)) | to_json }},
+            "no_components_failed": {{ (apt_signed_repo_no_components_failed | default(false)) | to_json }},
+            "empty_components_failed": {{ (apt_signed_repo_empty_components_failed | default(false)) | to_json }},
+            "checkmode_failed": {{ (apt_signed_repo_components_checkmode_failed | default(false)) | to_json }}
+          }

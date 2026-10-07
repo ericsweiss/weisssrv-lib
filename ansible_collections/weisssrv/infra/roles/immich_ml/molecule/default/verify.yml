@@ -38,14 +38,13 @@
           - (immich_ml_compose.content | b64decode) is search('- "104"')
           # Model cache volume, timezone, published port and restart policy.
           - (immich_ml_compose.content | b64decode) is search('- model-cache:/cache')
-          - (immich_ml_compose.content | b64decode) is search('"3003:3003"')
+          - (immich_ml_compose.content | b64decode) is search('"0.0.0.0:3003:3003"')
           # Quoted whole: the ': ' inside the pattern would otherwise make YAML
           # parse the list entry as a mapping (a truthy no-op, not a test).
           - "(immich_ml_compose.content | b64decode) is search('TZ: America/Los_Angeles')"
           - "(immich_ml_compose.content | b64decode) is search('restart: always')"
-          # The OCR batch-size mitigation stays a commented-out example.
-          - (immich_ml_compose.content | b64decode) is search('# MACHINE_LEARNING_MAX_BATCH_SIZE__OCR')
-          - (immich_ml_compose.content | b64decode) is not search('\n\s+MACHINE_LEARNING_MAX_BATCH_SIZE__OCR')
+          # No extra env by default: only TZ under `environment:`.
+          - (immich_ml_compose.content | b64decode) is not search('MACHINE_LEARNING_MAX_BATCH_SIZE__OCR')
         fail_msg: "docker-compose.yml missing expected image pin / GPU / cache / port config"
         success_msg: "docker-compose.yml pins the -openvino image and wires GPU, cache, port 3003"
 
@@ -66,3 +65,19 @@
           - (immich_ml_unit.content | b64decode) is not search('RequiresMountsFor')
         fail_msg: "immich-ml-compose.service missing expected docker-compose lifecycle wiring"
         success_msg: "immich-ml-compose.service owns the compose lifecycle (no volume coupling)"
+
+    # The extra-env and bind seams (side-rendered in converge).
+    - name: Slurp the seam render
+      ansible.builtin.slurp:
+        src: /tmp/immich-ml-compose-seams.yml
+      register: immich_ml_seams
+
+    - name: Verify extra env keys and the pinned publish address render
+      ansible.builtin.assert:
+        that:
+          - "(immich_ml_seams.content | b64decode) is search('MACHINE_LEARNING_MAX_BATCH_SIZE__OCR: \"3\"')"
+          - (immich_ml_seams.content | b64decode) is search('"10.10.0.58:3003:3003"')
+          # TZ is not displaced by the extra keys.
+          - "(immich_ml_seams.content | b64decode) is search('TZ: America/Los_Angeles')"
+        fail_msg: "immich_ml_extra_env / immich_ml_bind did not reach the compose file"
+        success_msg: "the extra-env map and the publish address are real seams"

@@ -1,40 +1,21 @@
 #!/usr/bin/env bash
 # {{ ansible_managed }}
-#
-# Daily NAS swap reset: shrink ARC for headroom, swapoff -a / swapon -a,
-# restore ARC. Event-driven swap-out on a near-full box (deploys, backups,
-# large uploads) never pages back in on its own and only accumulates;
-# vm.swappiness=1 reduces but cannot prevent it.
-#
-# Escalation when ARC headroom alone cannot cover the swap: gracefully shut
-# down heavy guests from a configured candidate list, in order, only as many as
-# needed. Guests are only ever stopped with `qm shutdown` — a guest that will
-# not stop within its timeout aborts the reclaim rather than being forced. A
-# single cleanup trap on ANY exit restarts every guest it touched; one it could
-# not restart demotes the run to failed via swap_clean_guest_restart_failures.
-#
-# Two guards keep a reset from leaving the box swapless:
-#   - PRE-FLIGHT skip: any fstab swap device absent (e.g. encrypted_swap's
-#     cryptswap mapper before its activating reboot) or restic-offsite mid-run
-#     exits early as a healthy no-op, WITHOUT cycling swap.
-#   - POST-SWAPON guard: if no swap comes back it retries the backing device,
-#     and records a FAILED run if swap is still absent.
-#
-# Device-agnostic throughout (/proc/meminfo + `swapoff -a`/`swapon -a`, never a
-# hardcoded device), so it works unchanged against the encrypted-swap mapper.
+# Daily swap reset: shrink ARC, swapoff -a / swapon -a, restore ARC. Short headroom
+# stops nas_storage_swap_clean_stop_guests, and the EXIT trap restarts them.
 set -euo pipefail
 
-# Jinja values are assigned to shell vars first (kept out of arithmetic contexts)
-# so the *.sh.j2 shellcheck lint - which rewrites Jinja expressions to the literal
-# token JINJA before shellcheck runs - sees an assigned variable rather than a
-# bare undefined token.
-min_clear_mb="{{ nas_storage_swap_clean_min_mb }}"
-margin_mb="{{ nas_storage_swap_clean_margin_mb }}"
-arc_shrink_bytes="{{ nas_storage_swap_clean_arc_shrink_mb * 1048576 }}"
+min_clear_mb="{{ nas_storage_swap_clean_min_mb | int }}"
+margin_mb="{{ nas_storage_swap_clean_margin_mb | int }}"
+arc_shrink_bytes="{{ (nas_storage_swap_clean_arc_shrink_mb | int) * 1048576 }}"
+# Authoritative cap, the same value zfs_arc_cap renders into modprobe.d. Empty
+# means the cap is unmanaged and the pre-run live value is the fallback.
+arc_restore_bytes="{{ nas_storage_zfs_arc_max_bytes | default('') }}"
 # Ordered "vmid:name:timeout" candidates to gracefully stop (only as many as
 # needed) when ARC-shrink headroom alone cannot cover the swap. Empty => never
-# stops a guest (pure abort-and-retry, the pre-escalation behaviour).
+# stops a guest; an ARC-shrink shortfall then aborts the run instead.
 stop_guests="{{ nas_storage_swap_clean_stop_guests | join(' ') }}"
+# Overnight jobs this run must not overlap.
+conflicting_units="{{ nas_storage_swap_clean_conflicting_units | default([]) | join(' ') }}"
 # Last-resort swap device for the post-swapon guard (the standard Proxmox LVM
 # swap LV; under encrypted_swap this is busy as the cryptswap backing device, so
 # the fallback swapon is a harmless no-op there).
@@ -44,17 +25,64 @@ log() { logger -t swap-clean "$*"; echo "swap-clean: $*"; }
 field_kb() { awk -v k="$1:" '$1==k {print $2}' /proc/meminfo; }
 # `qm status` failing (e.g. VM absent) must not trip set -e mid-pipe.
 vm_state() { { qm status "$1" 2>/dev/null || true; } | awk '{print $2}'; }
+swap_used_now_kb() { echo $(( $(field_kb SwapTotal) - $(field_kb SwapFree) )); }
 
-# node_exporter textfile metrics (mirrors media-mover.sh). run_success defaults
-# to 0 so an unexpected set -e death, signal, or unsafe abort records a FAILED
-# run; the success branches below flip it to 1 and set swap_cleared_bytes.
-# Emitted on EVERY exit by the cleanup() EXIT trap, so a single unsafe-abort
-# night or a guest-stop escalation is directly alertable — not only via the
-# indirect 2-day swap-build-up proxy.
+# Host RAM a running guest releases, in KB: its CURRENT resident use, 0 when
+# unreadable. Configured memory over-promises for a ballooned or lightly
+# resident guest, making an unreachable target look feasible.
+guest_memory_kb() {
+  local bytes
+  bytes="$({ qm status "$1" --verbose 2>/dev/null || true; } | awk '$1 == "mem:" { print $2; exit }')"
+  case "$bytes" in
+    ''|*[!0-9]*) echo 0 ;;
+    *) echo $(( bytes / 1024 )) ;;
+  esac
+}
+
+# Swap a running guest's own process holds, in KB: a stop releases it, so the
+# swapoff does not have to pull it back. 0 when unreadable.
+guest_swap_kb() {
+  local pid status
+  pid="$({ qm status "$1" --verbose 2>/dev/null || true; } | awk '$1 == "pid:" { print $2; exit }')"
+  case "$pid" in ''|*[!0-9]*) echo 0; return 0 ;; esac
+  status="${PROC_ROOT:-/proc}/${pid}/status"
+  [ -r "$status" ] || { echo 0; return 0; }
+  awk '$1 == "VmSwap:" { v = $2 } END { print v + 0 }' "$status"
+}
+
+# Sets attainable_kb to the headroom stopping every RUNNING candidate attains,
+# their resident memory plus the swap they release, and stop_candidates to how
+# many that is. Globals, not an echo: a subshell would drop the count.
+attainable_kb=0
+stop_candidates=0
+compute_attainable_headroom() {
+  local entry vmid
+  attainable_kb="$1"
+  stop_candidates=0
+  # shellcheck disable=SC2086  # deliberate word-split of the space-joined list
+  for entry in $stop_guests; do
+    case "$entry" in [0-9]*:?*:[0-9]*) ;; *) continue ;; esac
+    vmid="${entry%%:*}"
+    [ "$(vm_state "$vmid")" = running ] || continue
+    stop_candidates=$(( stop_candidates + 1 ))
+    attainable_kb=$(( attainable_kb + $(guest_memory_kb "$vmid") + $(guest_swap_kb "$vmid") ))
+  done
+}
+
+# node_exporter textfile metrics, written on EVERY exit by the cleanup() trap.
+# run_success defaults to 0 so an unexpected death or unsafe abort records a
+# FAILED run.
 PROM_DIR="{{ nas_storage_backup_artifact_metrics_dir }}"
 PROM_FILE="${PROM_DIR}/swap_clean.prom"
 run_success=0
 swap_cleared_bytes=0
+# Why the run skipped. A pre-flight skip keeps run_success 1 and refreshes the
+# success timestamp, so without its own gauge a permanently-active conflicting
+# unit is invisible; an unreachable escalation sets it with run_success 0.
+skip_reason=""
+
+# Prometheus label value: no backslash, no quote, whitespace collapsed.
+sanitize_label() { printf '%s' "$1" | tr -d '\\"' | tr -s '[:space:]' ' '; }
 
 write_prom_metrics() {
   local success="$1" cleared="$2" stopped="$3" restart_failed="${4:-0}"
@@ -71,7 +99,7 @@ write_prom_metrics() {
     if [ "$success" -eq 1 ]; then
       sval="$ts"
     else
-      sval="$(awk '/^swap_clean_last_success_timestamp_seconds/ {print $2}' "$PROM_FILE" 2>/dev/null || true)"
+      sval="$(awk -v k=swap_clean_last_success_timestamp_seconds '$1 == k { v = $2 } END { if (v != "") print v }' "$PROM_FILE" 2>/dev/null || true)"
     fi
     if [ -n "$sval" ]; then
       echo "# HELP swap_clean_last_success_timestamp_seconds Unix timestamp of last successful run"
@@ -81,7 +109,7 @@ write_prom_metrics() {
     echo "# HELP swap_clean_swap_cleared_bytes Bytes of swap reclaimed by the last run (0 = nothing to do, skipped, or aborted)"
     echo "# TYPE swap_clean_swap_cleared_bytes gauge"
     echo "swap_clean_swap_cleared_bytes ${cleared}"
-    echo "# HELP swap_clean_guests_stopped_count Guests gracefully stopped by the last run's escalation (0 = ARC-shrink headroom sufficed)"
+    echo "# HELP swap_clean_guests_stopped_count Guests gracefully stopped by the last run's escalation (0 = ARC-shrink headroom sufficed, or the escalation was unreachable)"
     echo "# TYPE swap_clean_guests_stopped_count gauge"
     echo "swap_clean_guests_stopped_count ${stopped}"
     # Always emitted (0 when all stopped guests came back). >0 means a guest the
@@ -89,22 +117,38 @@ write_prom_metrics() {
     echo "# HELP swap_clean_guest_restart_failures Guests the escalation stopped but could not restart (0 = all recovered)"
     echo "# TYPE swap_clean_guest_restart_failures gauge"
     echo "swap_clean_guest_restart_failures ${restart_failed}"
-  } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
-  mv "$tmp" "$PROM_FILE" 2>/dev/null || rm -f "$tmp"
+    echo "# HELP swap_clean_last_run_skipped Whether the last run skipped the swap cycle (1=skipped by pre-flight or an unreachable escalation, 0=ran)"
+    echo "# TYPE swap_clean_last_run_skipped gauge"
+    if [ -n "$skip_reason" ]; then
+      echo "swap_clean_last_run_skipped 1"
+      echo "# HELP swap_clean_skip_reason_info The pre-flight reason the last run skipped"
+      echo "# TYPE swap_clean_skip_reason_info gauge"
+      # fstab and systemd unit names carry backslash escapes, which are not
+      # valid in a Prometheus label value: one would void the whole .prom.
+      echo "swap_clean_skip_reason_info{reason=\"$(sanitize_label "$skip_reason")\"} 1"
+    else
+      echo "swap_clean_last_run_skipped 0"
+    fi
+  } > "$tmp" 2>/dev/null || {
+    logger -t swap-clean-metrics -p daemon.err "could not write ${PROM_FILE}"
+    rm -f "$tmp"
+    return 0
+  }
+  mv "$tmp" "$PROM_FILE" 2>/dev/null || {
+    logger -t swap-clean-metrics -p daemon.err "could not rename ${tmp} -> ${PROM_FILE}"
+    rm -f "$tmp"
+  }
 }
 
-# Single cleanup trap: ensure every guest we tried to stop ends up RUNNING again
-# (however we exit), restore ARC, then write the run's metrics. A guest is
-# recorded in guests_to_restore BEFORE it is stopped, so an abort/crash/kill
-# mid-reclaim can never strand it. A stopped guest that will not come back demotes
-# the run to failed and increments swap_clean_guest_restart_failures. Installed
-# (in main) BEFORE the below-threshold early exit so even a "nothing to do" night
-# emits fresh metrics.
+# Single cleanup trap: restart every guest we stopped (recorded before the stop,
+# so an abort cannot strand one), restore ARC, write metrics. A guest that will
+# not come back fails the run, and so does an ARC cap left shrunk.
 arc_path=/sys/module/zfs/parameters/zfs_arc_max
 arc_orig=""
+arc_shrunk=0
 guests_to_restore=""
 cleanup() {
-  local v st stopped_count=0 restart_failed=0
+  local v st stopped_count=0 restart_failed=0 arc_target arc_rc=0
   for v in $guests_to_restore; do
     stopped_count=$(( stopped_count + 1 ))
     st=$(vm_state "$v")
@@ -118,25 +162,28 @@ cleanup() {
   done
   # A guest we stopped that could not be brought back is a FAILED run.
   if [ "$restart_failed" -gt 0 ]; then run_success=0; fi
-  if [ -n "$arc_orig" ]; then echo "$arc_orig" > "$arc_path" 2>/dev/null || true; fi
+  # Restore the AUTHORITATIVE cap, not just the pre-run live value: a run killed
+  # before this line leaves the live value at the shrink target, which the next
+  # run would otherwise adopt as the value to restore.
+  if [ "$arc_shrunk" -eq 1 ]; then
+    arc_target="${arc_restore_bytes:-${arc_orig:-0}}"
+    printf '%s\n' "$arc_target" > "$arc_path" 2>/dev/null || arc_rc=1
+    [ "$(cat "$arc_path" 2>/dev/null)" = "$arc_target" ] || arc_rc=1
+    if [ "$arc_rc" -ne 0 ]; then
+      log "ERROR: zfs_arc_max not restored to ${arc_target} - ARC left shrunk"
+      run_success=0
+    fi
+  fi
   write_prom_metrics "$run_success" "$swap_cleared_bytes" "$stopped_count" "$restart_failed"
 }
 
-# Pre-flight: is this a deliberate no-op night (skip the swap cycle entirely)?
-# Prints a reason to skip, or nothing to proceed. Two skip conditions:
-#   1. Any fstab swap device is absent — a swapoff -a / swapon -a would then
-#      leave the box with ZERO swap (the encrypted_swap deferred-activation
-#      window, where fstab names the not-yet-present /dev/mapper/cryptswap).
-#   2. restic-offsite is mid-run (it chains off archive-backup, which shares the
-#      same nightly window) — do not cycle swap out from under it.
+# Pre-flight: prints a reason to skip the swap cycle entirely, or nothing to
+# proceed.
 preflight_skip_reason() {
-  local dev fstype
-  # fstab fields: <device> <mountpoint> <fstype> <options> <dump> <pass>.
-  # Only a missing dm-crypt MAPPER is a healthy skip (the known
-  # encrypted_swap deferred-activation window, resolved by the next reboot).
-  # Any OTHER absent swap device is unexpected breakage: proceed into the
-  # normal flow, whose post-swapon zero-swap guard demotes the run — a
-  # healthy-forever skip here would mask a genuinely swapless box.
+  local dev fstype u
+  # Only a missing dm-crypt MAPPER is a healthy skip (encrypted_swap's
+  # deferred-activation window). Any other absent swap device proceeds, so the
+  # post-swapon guard can demote the run.
   while read -r dev _ fstype _; do
     case "$dev" in ''|'#'*) continue ;; esac
     [ "$fstype" = swap ] || continue
@@ -144,15 +191,16 @@ preflight_skip_reason() {
       /dev/mapper/*)
         [ -e "$dev" ] || { echo "encrypted-swap mapper $dev pending activation reboot"; return 0; } ;;
     esac
-  done < /etc/fstab
-  # is-active non-zero also covers systemctl/D-Bus errors — deliberately
-  # fail-open: the schedule separation is the primary guard and the memory
-  # safety-gate below prevents harm; failing closed would let a broken
-  # systemctl silently disable swap-clean forever.
-  if systemctl is-active --quiet restic-offsite.service; then
-    echo "restic-offsite.service active"
-    return 0
-  fi
+  done < "${FSTAB:-/etc/fstab}"
+  # Fail-open on a systemctl/D-Bus error: failing closed would let a broken
+  # systemctl disable swap-clean forever.
+  # shellcheck disable=SC2086  # deliberate word-split of the space-joined list
+  for u in $conflicting_units; do
+    if systemctl is-active --quiet "$u"; then
+      echo "$u active"
+      return 0
+    fi
+  done
   return 0
 }
 
@@ -166,11 +214,12 @@ main() {
     log "pre-flight skip (${skip}) — deliberate no-op, not cycling swap"
     run_success=1  # healthy: a skipped night is a no-op, not a failure
     swap_cleared_bytes=0
+    skip_reason="$skip"
     exit 0
   fi
 
   local swap_used_kb min_clear_kb
-  swap_used_kb=$(( $(field_kb SwapTotal) - $(field_kb SwapFree) ))
+  swap_used_kb=$(swap_used_now_kb)
   min_clear_kb=$(( min_clear_mb * 1024 ))
   if [ "$swap_used_kb" -lt "$min_clear_kb" ]; then
     log "swap ${swap_used_kb}KB below ${min_clear_kb}KB threshold - nothing to do"
@@ -178,9 +227,12 @@ main() {
     exit 0
   fi
 
-  # Shrink ARC to free headroom for the swapoff.
+  # Shrink ARC to free headroom for the swapoff. A live value already AT the
+  # shrink target means a previous run died before restoring: do not adopt it.
   if [ -w "$arc_path" ]; then
     arc_orig=$(cat "$arc_path")
+    [ "$arc_orig" = "$arc_shrink_bytes" ] && arc_orig=""
+    arc_shrunk=1
     echo "$arc_shrink_bytes" > "$arc_path"
     sleep 5
   fi
@@ -194,9 +246,23 @@ main() {
   # guests in order until MemAvailable covers the swap. cleanup() restarts them.
   if [ "$avail_kb" -lt "$need_kb" ] && [ -n "$stop_guests" ]; then
     log "ARC-shrink headroom ${avail_kb}KB < needed ${need_kb}KB - escalating to guest stop"
+    # Feasibility gate: stopping every candidate must be able to reach need_kb,
+    # or the escalation stops production guests for an abort it can predict.
+    compute_attainable_headroom "$avail_kb"
+    if [ "$attainable_kb" -lt "$need_kb" ]; then
+      log "escalation cannot reach ${need_kb}KB even after stopping all ${stop_candidates} candidates (attainable ${attainable_kb}KB) - skipping without stopping guests"
+      skip_reason="escalation unreachable"
+      exit 0  # run_success stays 0 (aborted-unsafe) — surfaces via the metric
+    fi
     # shellcheck disable=SC2086  # deliberate word-split of the space-joined list
     for entry in $stop_guests; do
       [ "$avail_kb" -ge "$need_kb" ] && break
+      # A malformed entry parses into a plausible command (a bare vmid yields
+      # vmid == timeout), so reject the shape rather than act on it.
+      case "$entry" in
+        [0-9]*:?*:[0-9]*) ;;
+        *) log "ignoring malformed stop-guest entry '$entry'"; continue ;;
+      esac
       vmid="${entry%%:*}"
       gtimeout="${entry##*:}"
       _mid="${entry#*:}"
@@ -211,7 +277,11 @@ main() {
       log "recovery: gracefully stopping VM $vmid ($gname), timeout ${gtimeout}s"
       if qm shutdown "$vmid" --timeout "$gtimeout" >/dev/null 2>&1; then
         sleep 5
+        # A stopped guest releases its own swap as well as its RAM, so need_kb
+        # is re-read: against the pre-stop figure the loop can never finish.
         avail_kb=$(field_kb MemAvailable)
+        swap_used_kb=$(swap_used_now_kb)
+        need_kb=$(( swap_used_kb + margin_kb ))
         log "recovery: VM $vmid stopped - MemAvailable now ${avail_kb}KB (need ${need_kb}KB)"
       else
         log "recovery: VM $vmid ($gname) did not shut down gracefully within ${gtimeout}s - NOT forcing; aborting reclaim (cleanup restarts it)"
@@ -220,19 +290,19 @@ main() {
     done
   fi
 
-  # Final safety gate: only swapoff if the freed RAM comfortably covers the swap;
-  # otherwise pulling it all back could OOM the guests.
+  # Final safety gate: only swapoff if the freed RAM comfortably covers the swap
+  # still in use; otherwise pulling it all back could OOM the guests.
+  avail_kb=$(field_kb MemAvailable)
+  swap_used_kb=$(swap_used_now_kb)
+  need_kb=$(( swap_used_kb + margin_kb ))
   if [ "$avail_kb" -lt "$need_kb" ]; then
     log "ABORT: MemAvailable ${avail_kb}KB < swap ${swap_used_kb}KB + ${margin_kb}KB margin - unsafe, skipping (cleanup restarts any stopped guests)"
     exit 0  # run_success stays 0 (aborted-unsafe) — surfaces via the metric
   fi
 
   log "resetting ${swap_used_kb}KB swap (MemAvailable ${avail_kb}KB)"
-  # rc-captured: the script runs under set -e, so bare swapoff/swapon calls
-  # would exit on failure BEFORE the post-swapon guard below — which is the
-  # single arbiter of whether the box ended up with active swap (it attempts
-  # the fallback device and records a FAILED run if swap is gone). Capture the
-  # rcs so every failure mode flows into that guard instead of bypassing it.
+  # rc-captured so a failing swapoff/swapon reaches the post-swapon guard below
+  # instead of exiting under set -e before it.
   local swapoff_rc=0 swapon_rc=0
   swapoff -a || swapoff_rc=$?
   swapon -a || swapon_rc=$?
@@ -240,10 +310,9 @@ main() {
     log "swap cycle returned non-zero (swapoff rc=${swapoff_rc}, swapon rc=${swapon_rc}) - verifying swap before recording the failure"
   fi
 
-  # POST-SWAPON guard: swapon -a must leave swap active. If SwapTotal is 0 (an
-  # fstab swap line the pre-flight didn't catch, a mkswap race), fall back to the
-  # standard backing device, and if swap is STILL absent record a FAILED run
-  # (SwapCleanFailed) rather than silently leaving the box swapless.
+  # POST-SWAPON guard: swapon -a must leave swap active; fall back to the backing
+  # device, and record a FAILED run if swap is still absent rather than leave the
+  # box swapless.
   if [ "$(field_kb SwapTotal)" -eq 0 ]; then
     log "post-swapon: SwapTotal=0 after swapon -a - attempting ${fallback_swap_dev} fallback"
     if [ -e "$fallback_swap_dev" ]; then swapon "$fallback_swap_dev" 2>/dev/null || true; fi
@@ -253,10 +322,8 @@ main() {
     fi
   fi
 
-  # Swap is ACTIVE again, but a non-zero swapoff/swapon means the reclaim did
-  # not fully complete (e.g. a busy page set swapoff couldn't move): recording
-  # success here would claim swap_cleared_bytes that never cleared. Failed run;
-  # cleanup still restarts guests + restores ARC.
+  # Swap is active but a non-zero rc means the reclaim did not complete: fail the
+  # run rather than claim swap_cleared_bytes that never cleared.
   if [ "$swapoff_rc" -ne 0 ] || [ "$swapon_rc" -ne 0 ]; then
     log "swap cycle incomplete (swapoff rc=${swapoff_rc}, swapon rc=${swapon_rc}) - swap active but reclaim did not complete; recording FAILED run"
     exit 1

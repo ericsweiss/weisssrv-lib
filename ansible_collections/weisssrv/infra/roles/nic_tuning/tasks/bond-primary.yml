@@ -1,0 +1,201 @@
+---
+# Pin the preferred leg of an active-backup bond, in two layers: the
+# /etc/network/interfaces stanza (boot-time authority for bond-primary) and
+# runtime sysfs for the live fix. Rationale: README.
+- name: Assert the bond-primary reselect value is one the kernel accepts
+  ansible.builtin.assert:
+    that:
+      - nic_tuning_bond_primary_reselect in ['always', 'better', 'failure']
+    fail_msg: >-
+      nic_tuning_bond_primary_reselect is
+      '{{ nic_tuning_bond_primary_reselect }}'; the kernel accepts only always,
+      better or failure. Any other value fails the sysfs write and writes an
+      invalid bond-primary_reselect line into /etc/network/interfaces.
+    success_msg: "bond-primary_reselect is a value the kernel accepts"
+
+- name: Assert the bond-primary value is a usable interface name
+  ansible.builtin.assert:
+    that:
+      - nic_tuning_bond_primary is match('^[A-Za-z0-9._:-]+$')
+    fail_msg: >-
+      nic_tuning_bond_primary is '{{ nic_tuning_bond_primary }}'; it must be an
+      interface name. Any other value writes a bond-primary line
+      /etc/network/interfaces cannot use and clears the live pin.
+    success_msg: "bond-primary names an interface"
+
+- name: Stat /etc/network/interfaces for the bond primary
+  ansible.builtin.stat:
+    path: /etc/network/interfaces
+  register: nic_tuning_bond_primary_interfaces
+
+# CRITICAL: without this file the pin exists only in sysfs and is lost at the
+# next reboot, which is the wedged-leg failure the variable exists to prevent.
+- name: Assert /etc/network/interfaces exists to persist the bond primary
+  ansible.builtin.assert:
+    that:
+      - nic_tuning_bond_primary_interfaces.stat.exists
+    fail_msg: >-
+      nic_tuning_bond_primary is set, but {{ inventory_hostname }} has no
+      /etc/network/interfaces, so the pin cannot be persisted and would be lost
+      at the next reboot. Pin the leg in this host's own network configuration
+      (netplan, systemd-networkd or NetworkManager), or leave
+      nic_tuning_bond_primary null.
+    success_msg: "/etc/network/interfaces is present to persist the bond primary"
+
+- name: Read /etc/network/interfaces for the bond primary
+  ansible.builtin.slurp:
+    src: /etc/network/interfaces
+  register: nic_tuning_bond_primary_file
+
+- name: Resolve the active-backup mode lines
+  ansible.builtin.set_fact:
+    nic_tuning_bond_mode_lines: >-
+      {{ (nic_tuning_bond_primary_file.content | b64decode).splitlines()
+         | select('match', '^\s*bond[-_]mode\s+(active-backup|1)\s*$')
+         | list }}
+
+# CRITICAL: lineinfile appends at END OF FILE when insertafter matches nothing,
+# which would attach bond attributes to an unrelated stanza. Two matches means
+# lineinfile's file-global regexp could pin the wrong bond.
+- name: Assert exactly one active-backup bond stanza to pin
+  ansible.builtin.assert:
+    that:
+      - nic_tuning_bond_mode_lines | length == 1
+    fail_msg: >-
+      nic_tuning_bond_primary is set, but /etc/network/interfaces holds
+      {{ nic_tuning_bond_mode_lines | length }} `bond-mode active-backup`
+      stanzas (1 required). With none, the pin would be appended to the end of
+      the file; with several, it could land on the wrong bond. Declare the bond
+      in /etc/network/interfaces, or leave nic_tuning_bond_primary null and pin
+      the leg in the stanza by hand.
+    success_msg: "one active-backup bond stanza found for the bond-primary pin"
+
+# CRITICAL: ordered ahead of the writes below. A primary the bond does not
+# enslave has to fail with the file untouched, or /etc/network/interfaces
+# carries an unusable bond-primary line into the next boot.
+- name: Read the bond membership of the requested primary
+  ansible.builtin.shell: |
+    set -euo pipefail
+    want={{ nic_tuning_bond_primary | quote }}
+    # Declared membership: the slave list of the one active-backup stanza.
+    declared=$(awk '
+      /^[^[:space:]]/ { if (ab) exit; slaves = ""; next }
+      $1 ~ /^bond[-_](slaves|ports)$/ {
+        slaves = ""
+        for (i = 2; i <= NF; i++) slaves = slaves $i " "
+        next
+      }
+      $1 ~ /^bond[-_]mode$/ && ($2 == "active-backup" || $2 == "1") { ab = 1 }
+      END { if (ab) print slaves }
+    ' /etc/network/interfaces)
+    case " $declared " in
+      *" $want "*) decl=yes ;;
+      *) if [ -n "$declared" ]; then decl=no; else decl=unknown; fi ;;
+    esac
+    # Live membership, where the host has bonding at all.
+    live=unknown
+    bonds=
+    if [ -r /sys/class/net/bonding_masters ]; then
+      live=no
+      for b in $(cat /sys/class/net/bonding_masters); do
+        d="/sys/class/net/$b/bonding"
+        [ -d "$d" ] || continue
+        mode=$(awk '{print $1}' "$d/mode" 2>/dev/null || true)
+        [ "$mode" = "active-backup" ] || continue
+        s=$(tr '\n' ' ' < "$d/slaves" 2>/dev/null || true)
+        bonds="$bonds $b=[$s]"
+        case " $s " in *" $want "*) live=yes ;; esac
+      done
+    fi
+    if [ "$decl" = no ] || [ "$live" = no ]; then
+      echo "MISMATCH primary=$want interfaces-slaves=[$declared] active-backup-bonds=[$bonds]"
+    else
+      echo "OK primary=$want"
+    fi
+  args:
+    executable: /bin/bash
+  register: nic_tuning_bond_primary_members
+  changed_when: false
+
+- name: Assert the bond primary is a slave of the active-backup bond
+  ansible.builtin.assert:
+    that:
+      - nic_tuning_bond_primary_members.stdout is match('^OK')
+    fail_msg: >-
+      {{ nic_tuning_bond_primary_members.stdout }}. nic_tuning_bond_primary
+      must name a slave of the active-backup bond, in /etc/network/interfaces
+      and in the kernel where the host has bonding. Nothing is written yet:
+      correct the name, or leave nic_tuning_bond_primary null.
+    success_msg: "the bond primary is a slave of the active-backup bond"
+
+- name: Persist bond-primary_reselect in /etc/network/interfaces
+  # Inserted after the active-backup mode line, which is what makes the stanza a
+  # bond this variable applies to.
+  ansible.builtin.lineinfile:
+    path: /etc/network/interfaces
+    regexp: '^\s*bond-primary_reselect\s+'
+    line: "    bond-primary_reselect {{ nic_tuning_bond_primary_reselect }}"
+    insertafter: "^{{ nic_tuning_bond_mode_lines | first | regex_escape }}$"
+    firstmatch: true
+
+- name: Persist bond-primary in /etc/network/interfaces
+  ansible.builtin.lineinfile:
+    path: /etc/network/interfaces
+    regexp: '^\s*bond-primary\s+'
+    line: "    bond-primary {{ nic_tuning_bond_primary }}"
+    insertafter: "^{{ nic_tuning_bond_mode_lines | first | regex_escape }}$"
+    firstmatch: true
+
+- name: Set the bond primary at runtime (no reboot)
+  # primary_reselect is written first: with the kernel default ("always") a
+  # primary write moves the active slave immediately, which blips the uplink.
+  # Only bonds in active-backup mode that actually enslave the interface.
+  ansible.builtin.shell: |
+    set -eu
+    [ -r /sys/class/net/bonding_masters ] || { echo "NOBOND no bonding_masters"; exit 0; }
+    want_iface={{ nic_tuning_bond_primary | quote }}
+    want_reselect={{ nic_tuning_bond_primary_reselect | quote }}
+    changed=0
+    matched=0
+    for b in $(cat /sys/class/net/bonding_masters); do
+      mode=$(awk '{print $1}' "/sys/class/net/$b/bonding/mode" 2>/dev/null || true)
+      [ "$mode" = "active-backup" ] || continue
+      # Whole-field literal match: a leg name may carry '.', which a regex or a
+      # -w word match would read as a wildcard and pin the wrong slave.
+      slaves=" $(tr '\n' ' ' < "/sys/class/net/$b/bonding/slaves" 2>/dev/null || true) "
+      case "$slaves" in *" $want_iface "*) ;; *) continue ;; esac
+      matched=1
+      cur_reselect=$(awk '{print $1}' "/sys/class/net/$b/bonding/primary_reselect" 2>/dev/null || true)
+      if [ "$cur_reselect" != "$want_reselect" ]; then
+        if ! echo "$want_reselect" > "/sys/class/net/$b/bonding/primary_reselect"; then
+          echo "WRITEFAIL /sys/class/net/$b/bonding/primary_reselect"
+          exit 4
+        fi
+        changed=1
+      fi
+      cur_primary=$(cat "/sys/class/net/$b/bonding/primary" 2>/dev/null || true)
+      if [ "$cur_primary" != "$want_iface" ]; then
+        if ! echo "$want_iface" > "/sys/class/net/$b/bonding/primary"; then
+          echo "WRITEFAIL /sys/class/net/$b/bonding/primary"
+          exit 4
+        fi
+        changed=1
+      fi
+    done
+    if [ "$matched" -eq 0 ]; then
+      echo "MISSING $want_iface not enslaved by any active-backup bond"
+      exit 3
+    fi
+    [ "$changed" -eq 1 ] && echo CHANGED || echo OK
+  args:
+    executable: /bin/bash
+  register: nic_tuning_bond_primary_runtime
+  changed_when: "'CHANGED' in nic_tuning_bond_primary_runtime.stdout"
+  failed_when: nic_tuning_bond_primary_runtime.rc != 0
+
+- name: Report that the bond primary was not applied at runtime
+  ansible.builtin.debug:
+    msg: >-
+      No bonding_masters on {{ inventory_hostname }}: the bond-primary pin is
+      persisted in /etc/network/interfaces and applies at the next reboot.
+  when: "'NOBOND' in nic_tuning_bond_primary_runtime.stdout | default('')"

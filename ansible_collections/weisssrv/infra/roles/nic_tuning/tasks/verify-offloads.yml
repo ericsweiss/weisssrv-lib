@@ -1,8 +1,7 @@
 ---
 # Read the live offload state for every overridden interface, then hand it to
-# assert-offloads.yml. Split in two so the assert can be exercised against
-# captured `ethtool --show-features` output (molecule/default/verify.yml), which
-# is the only way to test it where containers expose no ethtool feature ioctls.
+# assert-offloads.yml. The split lets verify.yml exercise the assert against
+# captured output, where containers expose no ethtool feature ioctls.
 - name: Read back the effective NIC offload state
   ansible.builtin.command:
     cmd: "ethtool --show-features {{ item.interface }}"

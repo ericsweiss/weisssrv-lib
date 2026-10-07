@@ -134,12 +134,12 @@
       ansible.builtin.stat:
         path: /opt/AdGuardHome/AdGuardHome.yaml
       register: adguard_home_config_file
+      failed_when: not adguard_home_config_file.stat.exists
 
-    - name: Read AdGuardHome.yaml if it exists
+    - name: Read AdGuardHome.yaml
       ansible.builtin.slurp:
         src: /opt/AdGuardHome/AdGuardHome.yaml
       register: adguard_home_config_content
-      when: adguard_home_config_file.stat.exists
 
     # The admin's own entry must carry a bcrypt hash — a bare "password:" match
     # would also pass on a different user's line, the exact confusion
@@ -154,10 +154,202 @@
             | list | length == 1
         fail_msg: "The admin user's password is not a bcrypt hash"
         success_msg: "The admin user's password is a bcrypt hash"
-      when: adguard_home_config_file.stat.exists
 
     - name: Check the admin-password helper is installed
       ansible.builtin.stat:
         path: /usr/local/sbin/adguard-admin-hash.py
       register: adguard_home_hash_helper
       failed_when: not adguard_home_hash_helper.stat.exists
+
+    # The binary is installed as root from what is on disk, so the tarball is
+    # staged in a root-owned 0700 directory and removed afterwards.
+    - name: Stat the AdGuard Home staging directory
+      ansible.builtin.stat:
+        path: /root/adguard-home-install
+      register: adguard_home_stage_dir_stat
+
+    - name: Find AdGuard Home leftovers under /tmp
+      ansible.builtin.find:
+        paths: /tmp
+        patterns: 'AdGuardHome*'
+        file_type: any
+      register: adguard_home_tmp_leftovers
+
+    - name: Assert nothing was staged under /tmp and the staging dir is gone
+      ansible.builtin.assert:
+        that:
+          - not adguard_home_stage_dir_stat.stat.exists
+          - adguard_home_tmp_leftovers.files | length == 0
+        fail_msg: >-
+          AdGuard Home was staged under world-writable /tmp, or the staging
+          directory was left behind after the install.
+        success_msg: "AdGuard Home staged in a root-owned directory and cleaned up"
+
+    # The refusal direction of the staged-archive trust boundary, proved
+    # through real Ansible rather than a stand-in. It runs from verify because
+    # staging a decoy cache and tearing it down again cannot be idempotent.
+    - name: Load the role's arch map under a name of its own
+      ansible.builtin.include_vars:
+        file: ../../vars/main.yml
+        name: adguard_home_role_vars
+
+    - name: Stage a group-writable archive cache
+      ansible.builtin.file:
+        path: /tmp/adguard-untrusted-cache
+        state: directory
+        owner: root
+        group: root
+        mode: "0775"
+
+    - name: Put a decoy archive in it for the pin below
+      vars:
+        adguard_home_untrusted_arch: >-
+          {{ adguard_home_role_vars._adguard_home_arch_map[ansible_architecture] }}
+      ansible.builtin.copy:
+        dest: "/tmp/adguard-untrusted-cache/AdGuardHome_linux_{{ adguard_home_untrusted_arch | trim }}-v99.99.99.tar.gz"
+        content: "decoy\n"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Refuse to install from an untrusted staging path
+      block:
+        # A staging path of its own, so the install-hygiene assert above holds
+        # whatever this arm leaves behind.
+        - name: Re-run the role against the untrusted cache
+          ansible.builtin.include_role:
+            name: weisssrv.infra.adguard_home
+          vars:
+            adguard_home_archive_cache_dir: /tmp/adguard-untrusted-cache
+            adguard_home_stage_dir: /root/adguard-untrusted-stage
+            adguard_home_version: "99.99.99"
+            adguard_home_skip_api_config: true
+            adguard_home_skip_resolv_conf_update: true
+
+        - name: The untrusted cache was not refused
+          ansible.builtin.fail:
+            msg: "the role accepted a group-writable staging directory"
+      rescue:
+        - name: Record which failure the untrusted cache produced
+          ansible.builtin.set_fact:
+            adguard_home_untrusted_msg: "{{ ansible_failed_result.msg | default('') }}"
+      always:
+        - name: Clean up after the refused run
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /root/adguard-untrusted-stage
+            - /tmp/adguard-untrusted-cache
+
+    - name: Assert a group-writable staging path is refused by name
+      ansible.builtin.assert:
+        that:
+          - "'is not a trusted staging path' in (adguard_home_untrusted_msg | default(''))"
+        fail_msg: >-
+          The role failed on a group-writable staged-archive cache for some
+          other reason than the trust assert:
+          {{ adguard_home_untrusted_msg | default('the role did not refuse it at all') }}
+        success_msg: "A group-writable staged-archive cache is refused by the trust assert"
+
+    # The refusal lands before anything is unpacked, so the live install is
+    # still the pinned version once the arm has run.
+    - name: Read the installed version after the refused run
+      ansible.builtin.command: /opt/AdGuardHome/AdGuardHome --version
+      register: adguard_home_version_after
+      changed_when: false
+
+    - name: Assert the refused run installed nothing
+      ansible.builtin.assert:
+        that:
+          - adguard_home_version_after.stdout is search('v' ~ adguard_home_version)
+        fail_msg: >-
+          The refused staging path still replaced the binary:
+          {{ adguard_home_version_after.stdout }}
+        success_msg: "the refused run left the pinned AdGuard Home binary in place"
+
+    # The API base is derived from the bind, so hardening the bind does not
+    # point the role's own reconcile at a loopback nothing listens on.
+    - name: Resolve the API base for a specific bind address
+      ansible.builtin.include_vars:
+        file: ../../vars/main.yml
+      vars:
+        adguard_home_web_bind: 192.0.2.5
+        adguard_home_http_port: 3000
+
+    - name: Assert the API base follows a non-wildcard bind
+      vars:
+        adguard_home_web_bind: 192.0.2.5
+        adguard_home_http_port: 3000
+      ansible.builtin.assert:
+        that:
+          - _adguard_home_api_base | trim == 'http://192.0.2.5:3000'
+        fail_msg: >-
+          The API base ignored adguard_home_web_bind
+          ({{ _adguard_home_api_base | trim }}), so a site that restricts the
+          bind would fail every reconcile task with connection refused.
+        success_msg: "the API base follows adguard_home_web_bind"
+
+    - name: Assert a wildcard bind still dials loopback
+      vars:
+        adguard_home_web_bind: "0.0.0.0"
+        adguard_home_http_port: 3000
+      ansible.builtin.assert:
+        that:
+          - _adguard_home_api_base | trim == 'http://127.0.0.1:3000'
+        fail_msg: "a wildcard bind must still be dialled on loopback"
+        success_msg: "a wildcard bind is dialled on loopback"
+
+    - name: Assert an IPv6 bind is bracketed
+      vars:
+        adguard_home_web_bind: "2001:db8::5"
+        adguard_home_http_port: 3000
+      ansible.builtin.assert:
+        that:
+          - _adguard_home_api_base | trim == 'http://[2001:db8::5]:3000'
+        fail_msg: "an IPv6 bind must be bracketed or every API task dials an unparseable URL"
+        success_msg: "an IPv6 bind is bracketed"
+
+    - name: Assert the IPv6 wildcard bind still dials loopback
+      vars:
+        adguard_home_web_bind: "::"
+        adguard_home_http_port: 3000
+      ansible.builtin.assert:
+        that:
+          - _adguard_home_api_base | trim == 'http://127.0.0.1:3000'
+        fail_msg: "the '::' wildcard must fall back to loopback"
+        success_msg: "the IPv6 wildcard bind is dialled on loopback"
+
+    # The API reads carry no_log, so a failed probe must still name the URL and
+    # the status instead of a censored result.
+    - name: Drive an API read against a port nothing listens on
+      block:
+        - name: Reconcile rewrites against a closed port
+          ansible.builtin.include_role:
+            name: weisssrv.infra.adguard_home
+            tasks_from: api_config.yml
+          vars:
+            adguard_home_web_bind: 127.0.0.1
+            adguard_home_http_port: 9
+            adguard_home_admin_user: molecule
+            adguard_home_admin_password: molecule
+
+        - name: The read assert did NOT fire
+          ansible.builtin.set_fact:
+            adguard_home_read_guard_fired: false
+      rescue:
+        - name: Record the failed API read
+          ansible.builtin.set_fact:
+            adguard_home_read_guard_fired: true
+            adguard_home_read_failure: "{{ ansible_failed_result.msg | default('') }}"
+
+    - name: Assert a failed API read reports the URL and status
+      ansible.builtin.assert:
+        that:
+          - adguard_home_read_guard_fired | default(false)
+          - "'http://127.0.0.1:9/control/rewrite/list' in adguard_home_read_failure"
+          - "'returned HTTP' in adguard_home_read_failure"
+        fail_msg: >-
+          A rewrite-list read against a closed port did not fail with the URL
+          and status: {{ adguard_home_read_failure | default('the read did not fail at all') }}
+        success_msg: "a failed API read names the URL and status"

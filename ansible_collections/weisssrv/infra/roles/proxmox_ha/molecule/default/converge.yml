@@ -6,10 +6,9 @@
   # deferring gather_facts behind a raw mkdir.
   gather_facts: false
   vars:
-    # Fixtures exercised across the cases below. The role gates each task
-    # file behind `<var> | length > 0`, so non-empty lists activate them.
-    # proxmox_ha_rules is present (representative) and, with the stubs' empty
-    # current-state, drives the rule "add" path too.
+    # Fixtures for the cases below. The role gates each task file behind
+    # `<var> | length > 0`, so a non-empty list activates it; with the stubs'
+    # empty current state, proxmox_ha_rules also drives the rule "add" path.
     test_ha_rules:
       - name: dns-affinity
         type: node-affinity
@@ -32,6 +31,45 @@
         state: started
         max_restart: 3
         max_relocate: 3
+    # `enabled: false` is how inventory says "unmanage this": the removal paths
+    # are the ones that delete production HA state, so they are driven too.
+    test_ha_resources_disabled:
+      - type: vm
+        vmid: 150
+        state: started
+        enabled: false
+    test_ha_rules_disabled:
+      - name: dns-affinity
+        type: node-affinity
+        resources: [vm:150]
+        nodes: ["pve-opt-01:2", "pve-opt-02:1"]
+        strict: true
+        comment: "keep dns off nas"
+        enabled: false
+      - name: web-affinity
+        type: node-affinity
+        resources: [vm:160]
+        nodes: [pve-opt-02]
+        strict: false
+    # Only node-affinity is implemented; any other type must fail loud rather
+    # than be silently skipped by the type-gated create/update tasks.
+    test_ha_rules_bad_type:
+      - name: db-together
+        type: resource-affinity
+        resources: [vm:150, vm:151]
+        nodes: [pve-opt-01]
+    test_replication_jobs_disabled:
+      - id: "150-0"
+        source_node: "{{ inventory_hostname }}"
+        target_node: pve-opt-02
+        schedule: "*/15"
+        enabled: false
+    test_replication_jobs_disabled_remote:
+      - id: "150-0"
+        source_node: pve-opt-09
+        target_node: pve-opt-02
+        schedule: "*/15"
+        enabled: false
     test_replication_jobs:
       - id: "150-0"
         source_node: "{{ inventory_hostname }}"
@@ -52,10 +90,9 @@
         target_node: pve-opt-03
         schedule: "*/15"
         enabled: true
-    # `ha-manager config` index exactly matching test_ha_resources[0] — the
-    # idempotency case (no `ha-manager set` expected). Indentation is spaces,
-    # not Proxmox's tabs: the role matches with `\s+`/substring checks, so
-    # spaces are equivalent and sidestep YAML tab-in-block ambiguity.
+    # `ha-manager config` index matching test_ha_resources[0]: the idempotency
+    # case, no `ha-manager set` expected. Indentation is spaces, not Proxmox's
+    # tabs; the role matches with `\s+`, so the two are equivalent.
     ha_index_match: |
       vm:150
         state started
@@ -76,10 +113,9 @@
         comment legacy note
         max_restart 3
         max_relocate 3
-    # Two resources in one index: vm:150 matches its desired entry, ct:151 has
-    # a drifted state. Guards the per-SID attribution of the single index read
-    # — a parser that leaks one resource's block into another's drift check
-    # would either miss ct:151 or churn vm:150.
+    # Two resources in one index: vm:150 matches, ct:151 has a drifted state.
+    # Guards per-SID attribution of the single index read, where a leaking
+    # parser would miss ct:151 or churn vm:150.
     ha_index_two_resources: |
       vm:150
         state started
@@ -202,10 +238,9 @@
       register: case_c
       changed_when: false
 
-    # CASE C2 — fields REMOVED from config (comment/max_restart/max_relocate
-    # still set live) trigger exactly one `ha-manager set` that clears the
-    # comment (--comment "") and --deletes the numeric keys — the removal
-    # must CONVERGE, not re-fire every run.
+    # CASE C2 — fields removed from config while still set live trigger
+    # exactly one `ha-manager set` that clears the comment and deletes the
+    # numeric keys. The removal must converge, not re-fire every run.
     - name: C2 — reset log, seed a removal-drift index
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -241,10 +276,8 @@
       changed_when: false
 
     # CASE C2b — post-clear convergence: with the fields gone from the live
-    # detail too, the trimmed config must trigger NO further `set` (drives
-    # all three "not defined and empty current" arms false — the one
-    # convergence path no other case covers; tests role drift logic, not
-    # real Proxmox `--comment ""` behavior, which a stub cannot model).
+    # detail too, the trimmed config triggers no further `set`. It drives all
+    # three "not defined and empty current" arms false.
     - name: C2b — reset log, seed the post-clear clean index
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -276,10 +309,9 @@
       register: case_c2b
       changed_when: false
 
-    # CASE N — two resources in one `ha-manager config` index: the matching
-    # one must not be touched, the drifted one gets exactly one `set`. The
-    # index is the ONLY source of per-resource state (real PVE rejects
-    # `ha-manager config <sid>`), so this pins the per-SID attribution.
+    # CASE N — two resources in one index: the matching one is untouched, the
+    # drifted one gets exactly one `set`. The index is the only source of
+    # per-resource state, so this pins per-SID attribution.
     - name: N — reset log, seed a two-resource index (one matching, one drifted)
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -318,10 +350,9 @@
       register: case_n
       changed_when: false
 
-    # CASE D — replication job absent triggers `pvesr create-local-job`.
-    # Stub state: pvesr list empty + VMID 150 resides locally (qm).
-    # Replication tasks are not in main.yml; include them directly, exactly
-    # as playbooks/proxmox-ha.yml does (tasks_from: replication).
+    # CASE D — an absent replication job triggers `pvesr create-local-job`.
+    # Stub state: empty pvesr list, VMID 150 local. Replication tasks are not
+    # in main.yml, so they are included directly as the playbook does.
     - name: D — reset log, empty replication list, VMID local
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -426,10 +457,9 @@
       register: case_k
       changed_when: false
 
-    # CASE L — permuted job-ID<->target assignments with an IDENTICAL target
-    # set (what Proxmox leaves behind after a migration round-trip): NOT
-    # drift. No delete/create/update — a delete+recreate here would force a
-    # full ZFS resync per touched target.
+    # CASE L — permuted job-ID/target assignments over an identical target set
+    # are not drift, so no delete, create or update fires. A delete and
+    # recreate here would force a full ZFS resync per touched target.
     - name: L — reset log, seed permuted-ID jobs (same target set), VMID local
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -469,7 +499,7 @@
 
     # CASE M — orphaned job (exists on this node, absent from config) next
     # to an already-correct configured job: warning only, ZERO mutations.
-    # Orphan cleanup is deliberately manual (see tasks/replication.yml).
+    # Orphan cleanup is manual (see tasks/replication.yml).
     - name: M — reset log, seed a matching job + an orphan, VMID local
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -507,10 +537,9 @@
       register: case_m
       changed_when: false
 
-    # CASE E — already-correct node-affinity RULE triggers NO `rules set`.
-    # PVE9 `ha-manager rules list --output-format=json` returns nodes/resources
-    # as HASHES; the stub serves a rule matching test_ha_rules[0] exactly (node
-    # priority 0 == the desired unprioritised nodes), so drift must be false.
+    # CASE E — an already-correct node-affinity rule triggers no `rules set`.
+    # PVE9 returns nodes and resources as hashes, and the stub serves a rule
+    # matching test_ha_rules[0] exactly, so drift must be false.
     - name: E — reset log, pre-seed a matching node-affinity rule (PVE9 hash form)
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -582,10 +611,9 @@
       register: case_f
       changed_when: false
 
-    # CASE E2 — already-correct rule whose nodes carry EXPLICIT priorities
-    # (the real inventory shape) triggers NO `rules set`. Pre-seeded PVE9 hash
-    # matches the priorities/strict/comment exactly. Locks in the priority-
-    # preservation contract production rules depend on.
+    # CASE E2 — an already-correct rule whose nodes carry explicit priorities
+    # triggers no `rules set`. The pre-seeded PVE9 hash matches the priorities,
+    # strict flag and comment, locking in priority preservation.
     - name: E2 — reset log, pre-seed a matching prioritised rule (PVE9 hash form)
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -733,12 +761,9 @@
       register: case_i
       changed_when: false
 
-    # NOTE on the string-form fallback branch (tasks/rules.yml `else` arms of
-    # _current_nodes/_current_resources): it only fires if a future PVE returns
-    # nodes/resources as comma-STRINGS instead of hashes. PVE9 always emits
-    # hashes and the stub mirrors that, so that branch isn't reachable from
-    # molecule without seeding a non-PVE9 JSON shape the role would never see in
-    # prod. Left untested deliberately — it's a defensive fallback, not a path.
+    # The string-form fallback in tasks/rules.yml fires only if PVE returns
+    # nodes and resources as comma-strings. PVE9 emits hashes and the stub
+    # mirrors that, so that defensive branch is untested here.
 
     # CASE P — datacenter.cfg carries no migration key at all (the cluster is
     # inheriting PVE's default rather than declaring one): exactly one
@@ -832,6 +857,287 @@
       register: case_p3
       changed_when: false
 
+    # CASE Q — a resource marked `enabled: false` while live is REMOVED, with
+    # no add/set alongside it.
+    - name: Q — reset log, seed the resource as live
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: ha-manager.log, content: ""}
+        - {name: ha_config_list, content: "{{ ha_index_match }}"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Q — run role with the resource disabled
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+      vars:
+        proxmox_ha_resources: "{{ test_ha_resources_disabled }}"
+
+    - name: Q — count ha-manager calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/ha-manager.log
+        remove=$(grep -cxF 'ha-manager remove vm:150' "$log" || true)
+        mutate=$(grep -cE '^ha-manager (add|set) ' "$log" || true)
+        echo "{\"remove_calls\": ${remove}, \"mutate_calls\": ${mutate}}"
+      args:
+        executable: /bin/bash
+      register: case_q
+      changed_when: false
+
+    # CASE R — a rule marked `enabled: false` is removed, and the removal runs
+    # BEFORE the add of the second rule (a resource in two node-affinity rules
+    # mid-run can fail PVE's feasibility check).
+    - name: R — reset log, seed the rule as live
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: ha-manager.log, content: ""}
+        - name: ha_rules_list
+          content: |
+            [
+              {"rule": "dns-affinity", "type": "node-affinity",
+               "nodes": {"pve-opt-01": {"priority": 2}, "pve-opt-02": {"priority": 1}},
+               "resources": {"vm:150": {}}, "strict": 1,
+               "comment": "keep dns off nas"}
+            ]
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: R — run role with one rule disabled and one absent
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+      vars:
+        proxmox_ha_rules: "{{ test_ha_rules_disabled }}"
+
+    - name: R — count rule mutations and their order
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/ha-manager.log
+        remove=$(grep -cxF 'ha-manager rules remove dns-affinity' "$log" || true)
+        add=$(grep -c '^ha-manager rules add node-affinity web-affinity ' "$log" || true)
+        dns_set=$(grep -c '^ha-manager rules set node-affinity dns-affinity ' "$log" || true)
+        remove_line=$(grep -nxF 'ha-manager rules remove dns-affinity' "$log" | head -1 | cut -d: -f1)
+        add_line=$(grep -n '^ha-manager rules add node-affinity web-affinity ' "$log" | head -1 | cut -d: -f1)
+        order=0
+        if [ -n "$remove_line" ] && [ -n "$add_line" ] && [ "$remove_line" -lt "$add_line" ]; then
+          order=1
+        fi
+        echo "{\"remove_calls\": ${remove}, \"add_calls\": ${add}, \"set_calls\": ${dns_set}, \"remove_before_add\": ${order}}"
+      args:
+        executable: /bin/bash
+      register: case_r
+      changed_when: false
+
+    # CASE S — a replication job marked `enabled: false` is deleted while the
+    # guest is local; the same job sourced from ANOTHER node is left alone
+    # (a job that could not be recreated here is never deleted).
+    - name: S — reset log, seed the job as live
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - name: pvesr_list
+          content: |
+            [{"id": "150-0", "source": "{{ inventory_hostname }}",
+              "target": "local/pve-opt-02", "schedule": "*/15"}]
+        - {name: qm_vmids, content: "150\n"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: S — run replication tasks with the job disabled
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+        tasks_from: replication
+      vars:
+        proxmox_ha_replication_jobs: "{{ test_replication_jobs_disabled }}"
+
+    - name: S — count pvesr calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/pvesr.log
+        delete=$(grep -cxF 'pvesr delete 150-0' "$log" || true)
+        create=$(grep -c '^pvesr create-local-job ' "$log" || true)
+        echo "{\"delete_calls\": ${delete}, \"create_calls\": ${create}}"
+      args:
+        executable: /bin/bash
+      register: case_s
+      changed_when: false
+
+    - name: S2 — reset log, same live job but sourced from another node
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - name: pvesr_list
+          content: |
+            [{"id": "150-0", "source": "pve-opt-09",
+              "target": "local/pve-opt-02", "schedule": "*/15"}]
+        - {name: qm_vmids, content: "150\n"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: S2 — run replication tasks for a job this node does not source
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+        tasks_from: replication
+      vars:
+        proxmox_ha_replication_jobs: "{{ test_replication_jobs_disabled_remote }}"
+
+    - name: S2 — count pvesr calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        total=$(grep -c '^pvesr ' /tmp/molecule-stub-state/pvesr.log || true)
+        echo "{\"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_s2
+      changed_when: false
+
+    # CASE T — an unsupported rule type must fail the play, not be skipped.
+    - name: T — reset log and empty the live rule list
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: ha-manager.log, content: ""}
+        - {name: ha_rules_list, content: "[]\n"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: T — run role with an unsupported rule type
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: T — include proxmox_ha (expected to fail)
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_ha
+          vars:
+            proxmox_ha_rules: "{{ test_ha_rules_bad_type }}"
+        - name: T — unsupported rule type did not fail
+          ansible.builtin.set_fact:
+            bad_rule_type_failed: false
+            bad_rule_type_msg: ""
+      rescue:
+        - name: T — unsupported rule type failed as expected
+          ansible.builtin.set_fact:
+            bad_rule_type_failed: true
+            bad_rule_type_msg: "{{ ansible_failed_result | default({}) | to_json }}"
+
+    - name: T — count ha-manager mutations
+      ansible.builtin.shell: |
+        set -o pipefail
+        total=$(grep -c '^ha-manager ' /tmp/molecule-stub-state/ha-manager.log || true)
+        echo "{\"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_t
+      changed_when: false
+
+    # CASE U — live rules/resources absent from inventory are REPORTED, never
+    # touched: zero mutations, and the unmanaged facts name them.
+    - name: U — reset log, seed a matching rule plus an uncodified one
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: ha-manager.log, content: ""}
+        - name: ha_rules_list
+          content: |
+            [
+              {"rule": "dns-affinity", "type": "node-affinity",
+               "nodes": {"pve-opt-01": {"priority": 2}, "pve-opt-02": {"priority": 1}},
+               "resources": {"vm:150": {}}, "strict": 1,
+               "comment": "keep dns off nas"},
+              {"rule": "legacy-affinity", "type": "node-affinity",
+               "nodes": {"pve-opt-01": {"priority": 0}},
+               "resources": {"vm:900": {}}, "strict": 0}
+            ]
+        - name: ha_config_list
+          content: |
+            vm:150
+              state started
+              max_restart 3
+              max_relocate 3
+            ct:900
+              state started
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: U — run role against uncodified live state
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+      vars:
+        proxmox_ha_rules: "{{ test_ha_rules_prio }}"
+        proxmox_ha_resources: "{{ test_ha_resources }}"
+
+    - name: U — record the unmanaged reports
+      ansible.builtin.set_fact:
+        unmanaged_rule_ids: "{{ proxmox_ha_unmanaged_rule_ids | default([]) }}"
+        unmanaged_resource_sids: "{{ proxmox_ha_unmanaged_resource_sids | default([]) }}"
+
+    - name: U — count ha-manager mutations
+      ansible.builtin.shell: |
+        set -o pipefail
+        total=$(grep -c '^ha-manager ' /tmp/molecule-stub-state/ha-manager.log || true)
+        echo "{\"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_u
+      changed_when: false
+
+    # CASE V — a failed `pvesr list` must ABORT: read as "no jobs exist" it
+    # would fire create-local-job for every job, and the tolerated
+    # "already exists" would hide that behind a green play.
+    - name: V — reset log and make the pvesr read fail
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - {name: pvesr_list_fail, content: "1\n"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: V — run replication tasks against a failing read
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: V — include replication (expected to fail)
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_ha
+            tasks_from: replication
+          vars:
+            proxmox_ha_replication_jobs: "{{ test_replication_jobs }}"
+        - name: V — failed read did not abort
+          ansible.builtin.set_fact:
+            pvesr_read_failure_aborted: false
+      rescue:
+        - name: V — failed read aborted as expected
+          ansible.builtin.set_fact:
+            pvesr_read_failure_aborted: true
+
+    - name: V — count pvesr mutations and restore the stub
+      ansible.builtin.shell: |
+        set -o pipefail
+        total=$(grep -c '^pvesr ' /tmp/molecule-stub-state/pvesr.log || true)
+        rm -f /tmp/molecule-stub-state/pvesr_list_fail
+        echo "{\"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_v
+      changed_when: false
+
     - name: Capture HA contract results
       ansible.builtin.copy:
         dest: /tmp/molecule-results/ha-contract.json
@@ -873,4 +1179,136 @@
            "p_total": {{ (case_p.stdout | from_json).total }},
            "p2_revert": {{ (case_p2.stdout | from_json).revert_calls }},
            "p2_total": {{ (case_p2.stdout | from_json).total }},
-           "p3_total": {{ (case_p3.stdout | from_json).total }}}
+           "p3_total": {{ (case_p3.stdout | from_json).total }},
+           "q_remove": {{ (case_q.stdout | from_json).remove_calls }},
+           "q_mutate": {{ (case_q.stdout | from_json).mutate_calls }},
+           "r_remove": {{ (case_r.stdout | from_json).remove_calls }},
+           "r_add": {{ (case_r.stdout | from_json).add_calls }},
+           "r_set": {{ (case_r.stdout | from_json).set_calls }},
+           "r_remove_before_add": {{ (case_r.stdout | from_json).remove_before_add }},
+           "s_delete": {{ (case_s.stdout | from_json).delete_calls }},
+           "s_create": {{ (case_s.stdout | from_json).create_calls }},
+           "s2_total": {{ (case_s2.stdout | from_json).total }},
+           "t_failed": {{ bad_rule_type_failed | ternary('true', 'false') }},
+           "t_msg_names_rule": {{ ('db-together' in bad_rule_type_msg) | ternary('true', 'false') }},
+           "t_total": {{ (case_t.stdout | from_json).total }},
+           "u_total": {{ (case_u.stdout | from_json).total }},
+           "u_rules": {{ unmanaged_rule_ids | to_json }},
+           "u_resources": {{ unmanaged_resource_sids | to_json }},
+           "v_aborted": {{ pvesr_read_failure_aborted | ternary('true', 'false') }},
+           "v_total": {{ (case_v.stdout | from_json).total }}}
+
+# The delegate seam: the role serializes the cluster-wide reconcile itself with
+# run_once + a reachability probe, so the calling play needs no serial: 1.
+- name: Converge — delegate selection
+  hosts: proxmox-ha-test
+  become: true
+  gather_facts: false
+  pre_tasks:
+    # add_host runs after `hosts:` is resolved, so neither group re-enters a
+    # play. 192.0.2.1 is TEST-NET-1 and never answers.
+    - name: Register a mixed reachable/unreachable probe group
+      ansible.builtin.add_host:
+        name: "{{ item.name }}"
+        groups: "{{ item.groups }}"
+        ansible_host: "{{ item.host | default(omit) }}"
+        ansible_connection: "{{ item.connection | default(omit) }}"
+        ansible_ssh_common_args: >-
+          -o ConnectTimeout=2 -o StrictHostKeyChecking=no
+      loop:
+        - {name: proxmox-ha-unreachable, groups: "ha_probe_mixed,ha_probe_dead",
+           host: 192.0.2.1, connection: ssh}
+        - {name: proxmox-ha-test, groups: ha_probe_mixed}
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: false
+
+  tasks:
+    - name: W — an unreachable host is skipped and the reachable one is chosen
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+      vars:
+        proxmox_ha_host_group: ha_probe_mixed
+
+    - name: W — record the resolved delegate
+      ansible.builtin.set_fact:
+        delegate_mixed: "{{ _proxmox_ha_delegate | trim }}"
+
+    - name: W2 — assume the non-member host did not fail
+      ansible.builtin.set_fact:
+        nonmember_failed: false
+
+    # The host group is the role's own membership guard, so the dead group (which
+    # this host is NOT in) drives it rather than the delegate seam below.
+    - name: W2 — a host outside the HA group must fail loudly
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: W2 — run the whole role from outside the host group
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_ha
+          vars:
+            proxmox_ha_host_group: ha_probe_dead
+
+        - name: W2 — the non-member host did NOT fail
+          ansible.builtin.fail:
+            msg: >-
+              The role reconciled cluster-wide HA state from a host outside its
+              own group, so a non-Proxmox host would write /etc/pve.
+      rescue:
+        - name: W2 — record that the non-member host failed
+          ansible.builtin.set_fact:
+            nonmember_failed: true
+          when: >-
+            ansible_failed_task.name ==
+            "Ensure we're running on a Proxmox VE cluster"
+
+    - name: X — assume the empty probe result did not fail
+      ansible.builtin.set_fact:
+        dead_group_failed: false
+
+    # tasks_from: delegate drives the seam on its own: the membership guard above
+    # fires first in a full include, so it would mask this assert.
+    - name: X — no reachable host must fail loudly
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: X — resolve a delegate from a group that never answers
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_ha
+            tasks_from: delegate
+          vars:
+            proxmox_ha_host_group: ha_probe_dead
+
+        - name: X — the empty probe result did NOT fail
+          ansible.builtin.fail:
+            msg: >-
+              The role resolved a delegate with no host answering the probe, so
+              a whole-cluster outage would reconcile green.
+      rescue:
+        - name: X — record that the empty probe result failed
+          ansible.builtin.set_fact:
+            dead_group_failed: true
+          when: >-
+            ansible_failed_task.name ==
+            'Assert a reachable Proxmox node was found for the reconcile'
+
+    - name: Y — an explicit delegate pin wins over an empty probe result
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+        tasks_from: delegate
+      vars:
+        proxmox_ha_host_group: ha_probe_dead
+        proxmox_ha_delegate_host: proxmox-ha-test
+
+    - name: Y — record the pinned delegate
+      ansible.builtin.set_fact:
+        delegate_pinned: "{{ _proxmox_ha_delegate | trim }}"
+
+    - name: Capture delegate-selection results
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/ha-delegate.json
+        mode: "0644"
+        content: |
+          {"delegate_mixed": {{ delegate_mixed | to_json }},
+           "nonmember_failed": {{ nonmember_failed | default(false) | ternary('true', 'false') }},
+           "dead_group_failed": {{ dead_group_failed | default(false) | ternary('true', 'false') }},
+           "delegate_pinned": {{ delegate_pinned | to_json }}}

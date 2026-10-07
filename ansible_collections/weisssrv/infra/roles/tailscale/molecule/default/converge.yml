@@ -6,3 +6,36 @@
   become: true
   roles:
     - role: weisssrv.infra.tailscale
+
+# TAILSCALE_AUTH_KEY is empty in this scenario, so the required-key arm must
+# fail rather than skip the join.
+- name: Converge — a required auth key that is unset fails the play
+  hosts: all
+  become: true
+  tasks:
+    - name: Reject path — require an auth key that the environment does not carry
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Run the role with tailscale_require_authkey set
+          ansible.builtin.include_role:
+            name: weisssrv.infra.tailscale
+          vars:
+            tailscale_require_authkey: true
+      rescue:
+        - name: Record that the missing auth key was refused
+          ansible.builtin.set_fact:
+            tailscale_missing_authkey_refused: true
+
+    - name: Result directory
+      ansible.builtin.file:
+        path: /tmp/molecule-results
+        state: directory
+        mode: "0755"
+
+    - name: Capture the missing-auth-key result
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/require-authkey.json
+        mode: "0644"
+        content: |
+          {"refused": {{ (tailscale_missing_authkey_refused | default(false)) | to_json }}}

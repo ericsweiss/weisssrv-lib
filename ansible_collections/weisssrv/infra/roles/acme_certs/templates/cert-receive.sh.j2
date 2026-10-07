@@ -1,16 +1,8 @@
 #!/usr/bin/env bash
 # {{ ansible_managed }}
 #
-# Forced-command receiver for wildcard-cert distribution: the authority host's
-# homelab-cert-reload.sh pipes a cert bundle here over SSH, on a key pinned in
-# authorized_keys with command="sudo /usr/local/sbin/cert-receive",restrict.
-#
-# So a leaked cert key can ONLY install a *.{{ acme_certs_domain }} cert that
-# passes every check below (parses, unexpired, matches its key, covers the
-# wildcard SAN, chains to a CA this host already trusts) and then run the one
-# baked-in reload — never a shell or arbitrary sudo. Every operational
-# parameter (paths, owner, mode, reload) is baked in at deploy time, so the
-# untrusted side controls only the validated cert bytes on stdin.
+# Forced-command receiver for wildcard-cert distribution: every parameter is
+# baked in, so the untrusted side controls only the cert bytes on stdin.
 
 set -euo pipefail
 
@@ -21,10 +13,8 @@ GROUP="{{ acme_certs_target.group }}"
 CERT_MODE="{{ acme_certs_target.cert_mode }}"
 KEY_MODE="{{ acme_certs_target.key_mode }}"
 EXPECT_DOMAIN="{{ acme_certs_domain }}"
-# This script already runs as root (forced command is `sudo cert-receive`), so
-# the reload runs verbatim. restart_command values that carry their own `sudo`
-# still work — sudo root->root needs no password or tty on these Debian hosts
-# (no `Defaults requiretty`).
+# This already runs as root (the forced command is `sudo cert-receive`), so the
+# reload runs verbatim; a restart_command carrying its own sudo still works.
 {% set _restart_command = acme_certs_target.restart_command | default('') | trim %}
 {% set _restart_service = acme_certs_target.restart_service | default('') | trim %}
 {% if _restart_command %}
@@ -32,8 +22,8 @@ RELOAD={{ _restart_command | quote }}
 {% elif _restart_service %}
 RELOAD={{ ('systemctl restart ' ~ _restart_service) | quote }}
 {% else %}
-# Neither key set on this target — the role asserts against it, so an empty
-# RELOAD means a hand-installed receiver. Step 6 refuses to run.
+# Neither key set — the role asserts against it, so this is a hand-installed
+# receiver. Step 6 refuses to run.
 RELOAD=''
 {% endif %}
 DELIM="===CERT-RECEIVE-BUNDLE-BOUNDARY==="
@@ -45,17 +35,12 @@ TMP="$(mktemp -d /tmp/cert-receive.XXXXXX)"
 chmod 0700 "$TMP"
 trap 'rm -rf "$TMP"' EXIT
 
-# 1. Read stdin (untrusted) with a hard size cap — a cert bundle is a few KB;
-#    the cap stops a rogue key from filling /tmp. Read one byte PAST the cap and
-#    reject when it arrives: `head -c $MAX_BYTES` succeeds on oversized input and
-#    would hand the validators a truncated PEM, reported as "does not parse".
+# 1. Read stdin with a hard size cap (one byte past, to detect oversize).
 head -c "$((MAX_BYTES + 1))" > "$TMP/in" || fail "could not read bundle"
 [ -s "$TMP/in" ] || fail "empty bundle"
 [ "$(wc -c < "$TMP/in")" -le "$MAX_BYTES" ] || fail "bundle exceeds ${MAX_BYTES} bytes"
 
-# 2. Split at the fixed delimiter. The RECEIVER assigns the output filenames
-#    (fullchain.pem / privkey.pem) — nothing from stdin becomes a path, so a
-#    hostile bundle cannot traverse out of $TMP.
+# 2. Split at the fixed delimiter; the receiver assigns the filenames.
 awk -v d="$DELIM" -v out="$TMP" '
   $0==d { part=1; next }
   part==0 { print > (out "/fullchain.pem") }
@@ -64,9 +49,8 @@ awk -v d="$DELIM" -v out="$TMP" '
 [ -s "$TMP/fullchain.pem" ] || fail "bundle missing certificate part"
 [ -s "$TMP/privkey.pem" ]   || fail "bundle missing key part"
 
-# 3. Validate before trusting: parseable cert + key, cert not expired, the key
-#    matches the leaf, and the leaf actually covers *.{{ acme_certs_domain }}
-#    (blocks pushing an unrelated but otherwise-valid cert).
+# 3. Validate: parses, unexpired, key matches, wildcard SAN, chains to the host
+#    truststore.
 openssl x509 -in "$TMP/fullchain.pem" -noout >/dev/null 2>&1 || fail "certificate does not parse"
 openssl pkey -in "$TMP/privkey.pem" -noout >/dev/null 2>&1 || fail "private key does not parse"
 if ! openssl x509 -in "$TMP/fullchain.pem" -checkend 0 >/dev/null 2>&1; then
@@ -79,20 +63,17 @@ if ! openssl x509 -in "$TMP/fullchain.pem" -noout -ext subjectAltName 2>/dev/nul
      | tr ',' '\n' | tr -d ' ' | grep -Fxq "DNS:*.${EXPECT_DOMAIN}"; then
   fail "certificate does not cover *.${EXPECT_DOMAIN}"
 fi
-# Self-consistency is not enough — a self-signed cert with the right SAN passes
-# every check above. Require the leaf to chain to a CA the host already trusts
-# (fullchain supplies the intermediate via -untrusted; roots from the system
-# store). Fails closed on a stale truststore.
+# Self-consistency is not enough: a self-signed cert with the right SAN passes
+# every check above. -untrusted supplies the intermediate from the fullchain.
 if ! openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt \
        -untrusted "$TMP/fullchain.pem" "$TMP/fullchain.pem" >/dev/null 2>&1; then
   fail "certificate does not chain to a trusted CA"
 fi
 
-# 4. Idempotence, decided server-side: if this exact cert was already applied
-#    (marker + on-disk fullchain AND privkey all match) skip the reload.
+# 4. Idempotence: skip the reload only when marker and both on-disk hashes match.
 new_hash="$(sha256sum "$TMP/fullchain.pem" | cut -d' ' -f1)"
 new_key_hash="$(sha256sum "$TMP/privkey.pem" | cut -d' ' -f1)"
-applied_hash="$(cat "${CERT_DIR}/.applied-fullchain.sha256" 2>/dev/null | tr -d '[:space:]' || true)"
+applied_hash="$(2>/dev/null tr -d '[:space:]' < "${CERT_DIR}/.applied-fullchain.sha256" || true)"
 cur_hash="$(sha256sum "${CERT_DIR}/fullchain.pem" 2>/dev/null | cut -d' ' -f1 || true)"
 cur_key_hash="$(sha256sum "${CERT_DIR}/privkey.pem" 2>/dev/null | cut -d' ' -f1 || true)"
 if [ -n "$applied_hash" ] && [ "$applied_hash" = "$new_hash" ] \
@@ -101,20 +82,15 @@ if [ -n "$applied_hash" ] && [ "$applied_hash" = "$new_hash" ] \
   exit 0
 fi
 
-# 5. Install with the baked-in ownership/modes. Each file lands via a
-#    same-directory temp + rename (install then mv) so a concurrent reader or a
-#    crash mid-write never observes a truncated fullchain.pem/privkey.pem — a
-#    plain `install` copies in place (O_TRUNC) and would expose a torn file.
+# 5. Install with the baked-in ownership/modes, via same-directory temp +
+#    rename so no reader sees a torn file.
 install -o "$OWNER" -g "$GROUP" -m "$CERT_MODE" "$TMP/fullchain.pem" "${CERT_DIR}/.fullchain.pem.new"
 mv -f "${CERT_DIR}/.fullchain.pem.new" "${CERT_DIR}/fullchain.pem"
 install -o "$OWNER" -g "$GROUP" -m "$KEY_MODE"  "$TMP/privkey.pem"  "${CERT_DIR}/.privkey.pem.new"
 mv -f "${CERT_DIR}/.privkey.pem.new" "${CERT_DIR}/privkey.pem"
 
-# 6. Reload the consuming service. A receiver with no reload baked in cannot
-#    complete the push, and must not record the cert as applied — refuse rather
-#    than run `bash -c ''` and report success. Marker is written ONLY after a
-#    clean reload, so a failed reload re-fires (self-heals) on the next push
-#    instead of being masked by a stale "applied" hash.
+# 6. Reload; write the applied marker only on success, so a failed reload
+#    re-fires on the next push. No reload baked in is a refusal, not a no-op.
 [ -n "$RELOAD" ] || fail "no reload command baked into this receiver" 5
 if bash -c "$RELOAD"; then
   printf '%s\n' "$new_hash" > "${CERT_DIR}/.applied-fullchain.sha256"

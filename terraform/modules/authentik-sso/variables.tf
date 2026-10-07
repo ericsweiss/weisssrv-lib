@@ -3,7 +3,7 @@ variable "authorization_flow_slug" {
     Authorization flow every provider uses. The stock implicit-consent flow
     never prompts a signed-in user; switch to
     `default-provider-authorization-explicit-consent` to require a per-app
-    consent screen (see README "Hardening notes").
+    consent screen (see README "Security defaults").
   EOT
   type        = string
   default     = "default-provider-authorization-implicit-consent"
@@ -96,7 +96,11 @@ variable "custom_scope_mappings" {
 }
 
 variable "saml_property_mappings" {
-  description = "Managed IDs of the SAML property mappings assigned to every SAML provider, in the order the API stores them."
+  description = <<-EOT
+    Managed IDs of the SAML property mappings assigned to every SAML provider,
+    in the order the API stores them. Managed ids only: there is no SAML
+    equivalent of the OAuth2 `custom:<key>` reference.
+  EOT
   type        = list(string)
   default = [
     "goauthentik.io/providers/saml/name",
@@ -107,6 +111,13 @@ variable "saml_property_mappings" {
     "goauthentik.io/providers/saml/upn",
     "goauthentik.io/providers/saml/ms-windowsaccountname",
   ]
+
+  validation {
+    condition = alltrue([
+      for managed in var.saml_property_mappings : !startswith(managed, "custom:")
+    ])
+    error_message = "saml_property_mappings takes managed ids only; \"custom:<key>\" is an OAuth2-only reference form."
+  }
 }
 
 variable "oauth2_providers" {
@@ -156,7 +167,9 @@ variable "oauth2_providers" {
     condition = alltrue(flatten([
       for key, p in var.oauth2_providers : [
         for r in p.redirect_uris :
-        length(regexall("(^|[^\\\\])\\.", r.url)) == 0
+        # Each match is the backslash run immediately before a dot, plus the dot
+        # itself: an even length means an odd run, i.e. the dot IS escaped.
+        alltrue([for m in regexall("\\\\*\\.", r.url) : length(m) % 2 == 0])
         if r.matching_mode == "regex"
       ]
     ]))
@@ -179,6 +192,14 @@ variable "oauth2_client_secrets" {
   type        = map(string)
   default     = {}
   sensitive   = true
+
+  validation {
+    condition = alltrue([
+      for key, secret in var.oauth2_client_secrets :
+      contains(keys(var.oauth2_providers), key)
+    ])
+    error_message = "oauth2_client_secrets keys must be oauth2_providers keys; an unmatched key is silently ignored and the provider keeps a server-generated secret."
+  }
 }
 
 variable "proxy_providers" {
@@ -199,6 +220,9 @@ variable "proxy_providers" {
     basic_auth_password_attribute = optional(string, "")
     access_token_validity         = optional(string, "hours=24")
     refresh_token_validity        = optional(string, "days=30")
+    # A provider deliberately not served by the embedded outpost (its own
+    # outpost, or one managed outside this module).
+    detached = optional(bool, false)
   }))
   default = {}
 
@@ -212,7 +236,7 @@ variable "proxy_providers" {
 }
 
 variable "saml_providers" {
-  description = "SAML providers keyed by a stable identifier."
+  description = "SAML providers keyed by a stable identifier. `property_mappings` overrides `saml_property_mappings` and takes managed ids only."
   type = map(object({
     name                            = string
     acs_url                         = string
@@ -235,10 +259,26 @@ variable "saml_providers" {
     default_relay_state             = optional(string, "")
   }))
   default = {}
+
+  validation {
+    condition = alltrue(flatten([
+      for key, p in var.saml_providers :
+      p.property_mappings == null ? [] : [
+        for managed in p.property_mappings : !startswith(managed, "custom:")
+      ]
+    ]))
+    error_message = "saml_providers[*].property_mappings takes managed ids only; \"custom:<key>\" is an OAuth2-only reference form."
+  }
 }
 
 variable "groups" {
-  description = "Groups keyed by a stable identifier (the key is the group name unless `name` overrides it). `users` holds usernames, which the module resolves to pks."
+  description = <<-EOT
+    Groups keyed by a stable identifier (the key is the group name unless `name`
+    overrides it). `users` holds usernames, which the module resolves to pks.
+
+    `is_superuser` grants every member full authentik administration; leave it
+    false unless the group IS the admin group.
+  EOT
   type = map(object({
     name         = optional(string)
     is_superuser = optional(bool, false)
@@ -253,6 +293,14 @@ variable "group_secret_attributes" {
   type        = map(map(string))
   default     = {}
   sensitive   = true
+
+  validation {
+    condition = alltrue([
+      for key, attributes in var.group_secret_attributes :
+      contains(keys(var.groups), key)
+    ])
+    error_message = "group_secret_attributes keys must be groups keys; an unmatched key is silently dropped and the proxy provider injects nothing."
+  }
 }
 
 variable "users" {
@@ -301,10 +349,8 @@ variable "applications" {
   default = {}
 
   validation {
-    # `a.provider_type` bare, not `coalesce(a.provider_type, "oauth2")`: the
-    # null case is already short-circuited, so the only value the coalesce
-    # rewrote was the empty string — which it turned into "oauth2" and waved
-    # through, leaving `""` to fail later against the provider map instead.
+    # `provider_type` bare, not coalesced: the empty string must fail this enum
+    # rather than be defaulted.
     condition = alltrue([
       for slug, a in var.applications :
       a.provider_type == null || contains(["oauth2", "proxy", "saml"], a.provider_type)
@@ -332,9 +378,11 @@ variable "policy_bindings" {
     Group bindings that gate application access, keyed by a stable identifier.
     An application with no binding is open to every authenticated user, so give
     each application at least one; with policy_engine_mode "any", any one
-    binding grants access. Only `enabled` bindings satisfy the unbound-application
-    precondition — setting `enabled = false` on an application's last binding
-    fails the plan rather than silently opening the app.
+    binding grants access.
+
+    Only an enabled, non-negated binding satisfies the unbound-application
+    precondition. `enabled = false` is never evaluated, and `negate = true`
+    admits every user outside the group, so neither is protection on its own.
   EOT
   type = map(object({
     application = string
@@ -349,7 +397,12 @@ variable "policy_bindings" {
 variable "embedded_outpost" {
   description = <<-EOT
     Provider assignment for authentik's embedded proxy outpost. null leaves the
-    outpost alone.
+    outpost alone, which is allowed only when every `proxy_providers` entry is
+    marked `detached`.
+
+    Every proxy provider must be named here or marked `detached`: the outpost
+    serves only the keys in this list, so an omitted forward-auth provider plans
+    clean and 404s at the edge.
 
     The outpost object is created by authentik itself, so managing it means
     importing it first (README "Adopting existing objects"). Going back to null
@@ -363,4 +416,12 @@ variable "embedded_outpost" {
     proxy_provider_keys = list(string)
   })
   default = null
+
+  validation {
+    condition = (
+      var.embedded_outpost != null ||
+      length([for key, p in var.proxy_providers : key if !p.detached]) == 0
+    )
+    error_message = "embedded_outpost is null while proxy_providers holds an entry that is not detached; those providers would be served by no outpost. Manage the embedded outpost, or set detached = true on each provider served elsewhere."
+  }
 }

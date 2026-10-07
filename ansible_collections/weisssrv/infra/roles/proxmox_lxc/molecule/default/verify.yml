@@ -4,10 +4,8 @@
   become: true
   gather_facts: false
   vars:
-    # Golden GPU idmap render for video=44 / render=104:
-    # ordered GID passthrough with gap mappings, media (2000) preserved, and
-    # the /dev/dri passthrough appended. Must be identical for BOTH GID
-    # orderings (the role sorts FIRST/SECOND_GPU_GID).
+    # Golden GPU idmap render for video=44 / render=104. Identical for both GID
+    # orderings, since the role sorts FIRST/SECOND_GPU_GID.
     expected_conf_gpu: |
       arch: amd64
       lxc.idmap: u 0 100000 1000
@@ -48,6 +46,7 @@
         - 11-idmap-gpu-nobind.json
         - 12-netmask.json
         - 13-dns-reconcile.json
+        - 14-create-inputs.json
       register: artifacts
 
     - name: Decode artifacts
@@ -65,6 +64,7 @@
         idmap_gpu_nobind: "{{ artifacts.results[10].content | b64decode | from_json }}"
         netmask: "{{ artifacts.results[11].content | b64decode | from_json }}"
         dns_reconcile: "{{ artifacts.results[12].content | b64decode | from_json }}"
+        create_inputs: "{{ artifacts.results[13].content | b64decode | from_json }}"
 
     - name: Compute host defaults to local-ssd
       ansible.builtin.assert:
@@ -176,11 +176,8 @@
           (got {{ netmask.prefix22_calls }} /22 and
           {{ netmask.prefix24_calls }} /24 create lines).
 
-    # Per-container DNS reconcile on an existing container: a drifted
-    # nameserver/searchdomain converges to inventory with exactly one pct set;
-    # a matching one is a pure no-op. The reconcile runs on every existing
-    # container (no skip_create gate), so the no-op arm is what keeps a matching
-    # container from churning a pct set every deploy.
+    # Per-container DNS reconcile on an existing container: drift converges
+    # with exactly one pct set, a match is a pure no-op.
     - name: DNS reconcile converges drift and no-ops a match
       ansible.builtin.assert:
         that:
@@ -195,3 +192,17 @@
           - dns_reconcile.nodrift_any_set == 0
           - not dns_reconcile.nodrift_changed
           - not dns_reconcile.nodrift_skipped
+
+    # The create-input assert is gated on the container being ABSENT, not on
+    # skip_create: `pct create` runs under skip_create and is the sole consumer
+    # of these values, while a reconcile-only run reads none of them.
+    - name: Create inputs are asserted on the create path only
+      ansible.builtin.assert:
+        that:
+          - create_inputs.missing_gateway_failed
+          - create_inputs.bad_disk_size_failed
+          - create_inputs.reconcile_without_gateway_ok
+        fail_msg: >-
+          Expected an absent container to fail on an empty gateway and on a
+          non-GiB disk size, and an EXISTING container to reconcile without
+          either — got {{ create_inputs }}.

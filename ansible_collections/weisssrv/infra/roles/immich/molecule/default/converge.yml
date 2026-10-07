@@ -46,3 +46,79 @@
       vars:
         immich_postgres_exporter_enabled: true
         immich_postgres_exporter_version: "0.19.0"
+
+    # Branch coverage for the optional image digests (empty by default).
+    - name: Render the compose file with the Immich images digest-pinned  # noqa: no-relative-paths
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/docker-compose.yml.j2"
+        dest: /tmp/immich-compose-digests.yml
+        mode: "0640"
+      vars:
+        immich_server_digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        immich_machine_learning_digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+
+    # Branch coverage for the memory-limit seam (empty by default).
+    - name: Render the compose file with the container memory limits set  # noqa: no-relative-paths
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/docker-compose.yml.j2"
+        dest: /tmp/immich-compose-memlimits.yml
+        mode: "0640"
+      vars:
+        immich_server_mem_limit: "8g"
+        immich_machine_learning_mem_limit: "3g"
+
+    # Negative test: an empty real-IP trust list must fail the role. Accepting
+    # it would attribute every request to the fronting proxy instead of the
+    # client, silently.
+    - name: Re-run immich with a trust list that resolves empty (expect failure)
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Include immich with a nonexistent proxy group
+          ansible.builtin.include_role:
+            name: weisssrv.infra.immich
+          vars:
+            immich_skip_install: true
+            immich_nginx_trust_no_proxy: false
+            immich_nginx_real_ip_groups:
+              - nonexistent_group_xyz
+        - name: Real-IP assert failed to trigger
+          ansible.builtin.copy:
+            dest: /tmp/immich-realip-assert.json
+            content: '{"failed": false}'
+            mode: "0644"
+      rescue:
+        - name: Real-IP assert correctly rejected an empty trust list
+          ansible.builtin.copy:
+            dest: /tmp/immich-realip-assert.json
+            mode: "0644"
+            content: |
+              {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
+          # Test-result marker, not convergence.
+          changed_when: false
+
+    # Negative test: an empty exporter version beside a digest renders ":@",
+    # which must fail rather than deploy an unpinned exporter.
+    - name: Re-run immich with an unpinned postgres exporter (expect failure)
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Include immich with an empty exporter version
+          ansible.builtin.include_role:
+            name: weisssrv.infra.immich
+          vars:
+            immich_skip_install: true
+            immich_postgres_exporter_enabled: true
+            immich_postgres_exporter_version: ""
+            immich_postgres_exporter_digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+        - name: Exporter pin assert failed to trigger
+          ansible.builtin.copy:
+            dest: /tmp/immich-pgexporter-assert.json
+            content: '{"failed": false}'
+            mode: "0644"
+      rescue:
+        - name: Exporter pin assert correctly rejected an unpinned image
+          ansible.builtin.copy:
+            dest: /tmp/immich-pgexporter-assert.json
+            mode: "0644"
+            content: |
+              {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
+          changed_when: false

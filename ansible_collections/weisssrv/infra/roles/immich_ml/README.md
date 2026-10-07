@@ -20,7 +20,8 @@ keeping its own CPU ML container as the failover.
   outage here degrades to the Immich guest's CPU ML rather than to broken ML.
 - **Authless endpoint**: the ML API has no authentication by upstream design. A
   firewall rule admitting **only** the Immich guest on `immich_ml_listen_port`
-  IS the security boundary.
+  IS the security boundary. `immich_ml_bind` narrows the published address on
+  top of it.
 - **No state**: the multi-GB model cache is a named docker volume in the guest's
   root filesystem — re-downloadable cache, not data. No attached volumes, no
   backup enrollment, so the guest can boot unattended.
@@ -41,10 +42,8 @@ keeping its own CPU ML container as the failover.
 ## VRAM
 
 `openvinotoolkit/openvino#32665`: on some Arc cards OCR batches leak device
-memory. The compose template carries a commented
-`MACHINE_LEARNING_MAX_BATCH_SIZE__OCR` line — uncomment it (or add the same key
-through the site's own override) to cap the batch size. The default stays
-upstream.
+memory. Set `immich_ml_extra_env: {MACHINE_LEARNING_MAX_BATCH_SIZE__OCR: "3"}`
+to cap the batch size. The default stays upstream.
 
 ## Deployed compose file
 
@@ -63,11 +62,13 @@ restart is expected.
 | `immich_ml_skip_install` | Render-only: skip the GPU guard, Docker install and service management (alias: `skip_immich_ml_deploy`) | `false` |
 | `immich_ml_compose_dir` | Compose project dir | `/opt/immich-ml/compose` |
 | `immich_ml_listen_port` | Published port (container listens on 3003) | `3003` |
+| `immich_ml_bind` | Publish address for that port; pin it to the address the Immich guest reaches for defence in depth | `0.0.0.0` |
+| `immich_ml_extra_env` | Extra environment keys merged into the container | `{}` |
 | `immich_ml_timezone` | Container `TZ` | `timezone` or `UTC` |
-| `immich_ml_render_device` / `_card_device` | Device nodes asserted present; their GIDs feed `group_add` | `/dev/dri/renderD128`, `/dev/dri/card0` |
+| `immich_ml_render_device`, `immich_ml_card_device` | Device nodes asserted present; their GIDs feed `group_add` | `/dev/dri/renderD128`, `/dev/dri/card0` |
 | `immich_ml_device_dir` | Device dir handed to the container | `/dev/dri` |
-| `immich_ml_video_gid` / `_render_gid` | `group_add` fallbacks, overwritten by the discovered GIDs | `44` / `104` |
-| `immich_ml_health_retries` / `_health_delay` | `/ping` wait budget | `30` × `10s` |
+| `immich_ml_video_gid`, `immich_ml_render_gid` | `group_add` fallbacks, overwritten by the discovered GIDs | `44` / `104` |
+| `immich_ml_health_retries`, `immich_ml_health_delay` | `/ping` wait budget | `30` × `10s` |
 
 ## Molecule
 

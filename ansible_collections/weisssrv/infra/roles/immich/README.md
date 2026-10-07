@@ -39,8 +39,9 @@ compose scaffolding is `weisssrv.infra.compose_app`.
 | `immich_db_password` | Postgres password; defaults to `$IMMICH_DB_PASSWORD` |
 | `immich_oauth_client_id` / `immich_oauth_client_secret` | OIDC client; default to `$IMMICH_OAUTH_CLIENT_ID` / `$IMMICH_OAUTH_CLIENT_SECRET` |
 
-All seven non-secret inputs are asserted at the top of the role; the three
-credentials are asserted `no_log`.
+All seven non-secret inputs are asserted at the top of the role, and so is the
+presence of the three credentials. Those asserts test length only, so they run
+without `no_log` and name the missing variable when they fail.
 
 ## Parameters
 
@@ -51,6 +52,8 @@ credentials are asserted `no_log`.
 | `immich_app_dir` / `immich_db_data_location` / `immich_data_dir` | Mount points for the compose+config volume, Postgres, and the library | `/mnt/immich-app`, `/mnt/immich-postgres`, `/mnt/immich-data` |
 | `immich_upload_location` | Library dir inside the data volume | `<data_dir>/library` |
 | `immich_machine_learning_image` | In-guest CPU ML image | `…/immich-machine-learning:<version>` |
+| `immich_server_digest` / `immich_machine_learning_digest` | Optional `sha256:` digests appended to the two Immich images, pinning them by content the way the database and cache images already are | `""`, `""` |
+| `immich_server_mem_limit` / `immich_machine_learning_mem_limit` | Docker `mem_limit` on the two containers (`8g`), empty meaning unlimited. A server limit below the guest's RAM keeps a thumbnail or transcode burst from taking the whole VM to the OOM killer | `""`, `""` |
 | `immich_ml_urls` | `machineLearning.urls`, tried in order | in-guest CPU container only |
 | `immich_compose_subnet` / `immich_compose_gateway` | Fixed compose bridge (the gateway is `IMMICH_TRUSTED_PROXIES`) | `172.28.0.0/16`, `172.28.0.1` |
 | `immich_db_username` / `immich_db_database_name` | Postgres superuser + database | `postgres`, `immich` |
@@ -58,23 +61,26 @@ credentials are asserted `no_log`.
 | `immich_postgres_exporter_enabled` | Add the `postgres-exporter` sidecar (DB-level metrics) | `false` |
 | `immich_postgres_exporter_version` / `_digest` / `_image` | Its image pin; the image derives from the version + optional digest, or override it outright | `""`, `""`, `quay.io/prometheuscommunity/postgres-exporter:<version>` |
 | `immich_postgres_exporter_port` | Host port for the exporter (unauthenticated) | `9187` |
-| `immich_metrics_bind` | Publish address for all three unauthenticated metrics ports — pin to `127.0.0.1` when nothing scrapes from off-host | `0.0.0.0` |
-| `immich_oauth_scope` / `_button_text` / `_storage_label_claim` | OIDC presentation + claims | `openid email profile`, `Sign in with SSO`, `preferred_username` |
-| `immich_oauth_auto_register` / `_auto_launch` | Provision on first login / skip the login page | `true` / `true` |
+| `immich_metrics_bind` | Publish address for all three unauthenticated metrics ports; widen it to the scrape-facing address when Prometheus runs off-host | `127.0.0.1` |
+| `immich_oauth_scope`, `immich_oauth_button_text`, `immich_oauth_storage_label_claim` | OIDC presentation + claims | `openid email profile`, `Sign in with SSO`, `preferred_username` |
+| `immich_oauth_auto_register`, `immich_oauth_auto_launch` | Provision on first login / skip the login page | `true` / `true` |
 | `immich_oauth_default_storage_quota` | Per-user quota in GiB for new accounts; empty = unlimited | `""` |
 | `immich_bootstrap_mode` | One-time password-login escape hatch (see below) | `false` |
 | `immich_builtin_db_backup_enabled` | Immich's own nightly dump (off: the timer below is the single path) | `false` |
 | `immich_server_listen_port` | Loopback port nginx proxies to | `2283` |
-| `immich_nginx_ssl_cert` / `_key` | Cert material the site's distribution writes | `/etc/nginx/ssl/{fullchain,privkey}.pem` |
-| `immich_nginx_self_signed_subj` / `_san` | Placeholder identity until that first push | `/CN=<inventory_hostname>` / none |
+| `immich_nginx_ssl_cert`, `immich_nginx_ssl_key` | Cert material the site's distribution writes | `/etc/nginx/ssl/{fullchain,privkey}.pem` |
+| `immich_nginx_self_signed_subj`, `immich_nginx_self_signed_san` | Placeholder identity until that first push | `/CN=<inventory_hostname>` / none |
 | `immich_nginx_real_ip_groups` | Inventory groups whose members are trusted proxies | `[k3s_servers, k3s_agents]` |
 | `immich_nginx_real_ip_from` | Resolved trust list — override to set addresses directly | derived from the groups |
 | `immich_nginx_trust_no_proxy` | Accept an empty trust list (nginx is directly exposed) instead of failing the assert | `false` |
 | `immich_timezone` | Container `TZ` | `timezone` or `UTC` |
-| `immich_backup_hour` / `_minute` / `_keep_days` | Dump schedule + local retention | `02:30`, `3` |
+| `immich_backup_hour`, `immich_backup_minute`, `immich_backup_keep_days` | Dump schedule + local retention | `02:30`, `3` |
 | `immich_backup_metrics_dir` / `immich_backup_lib_path` | textfile dir + sourced metrics helper | `node_exporter_host_textfile_dir`, `/usr/local/lib/immich-backup-lib.sh` |
-| `immich_backup_nfs_enabled` / `_server` / `_export` / `_options` / `_mountpoint` | Offsite landing zone (below) | `false`, `""`, `""`, `vers=4.2,…,xprtsec=tls`, `/mnt/backups-offsite` |
+| `immich_backup_nfs_enabled`, `immich_backup_nfs_server`, `immich_backup_nfs_export`, `immich_backup_nfs_options`, `immich_backup_mountpoint` | Offsite landing zone (below) | `false`, `""`, `""`, `vers=4.2,…,xprtsec=tls`, `/mnt/backups-offsite` |
 | `immich_backup_dir` | Resolved landing dir | the mountpoint when NFS-backed, else `<app_dir>/backups` |
+| `immich_compose_dir`, `immich_config_dir`, `immich_model_cache_dir` | Compose project, rendered config and ML model cache, all under `immich_app_dir` | `<app_dir>/{compose,config,model-cache}` |
+| `immich_server_image`, `immich_postgres_image`, `immich_valkey_image` | Full image refs, derived from the version and digest pairs above; override one outright for a fork | derived |
+| `immich_postgres_exporter_digest`, `immich_postgres_exporter_image` | Optional digest for the exporter image, and the resolved ref | `""`, derived |
 
 ## Real client IP
 
@@ -108,9 +114,21 @@ logical dump (a file walk cannot read a block-device volume). Two rules:
 - **Mount by hostname** when the export requires TLS (`xprtsec=tls`, the default
   option string). A wildcard certificate has no IP SAN, so an IP mount fails the
   handshake. The guest also needs a running tlshd — `weisssrv.infra.nfs_tls`.
+- The role sets `root:root` 0750 on the local underlay directory only. Once
+  something is mounted there it leaves those attributes to the fileserver,
+  because an `all_squash` export rejects the chown with EPERM.
 - The wrapper **fails closed**: if the landing dir is NFS-backed but not
   mounted, it records `success=0` and exits non-zero *before* dumping, rather
   than writing to the mountpoint's underlying directory.
+
+## Compose environment file
+
+`immich.env` is rendered 0640 root:root and holds `DB_PASSWORD`. That value is
+double-quoted with backslash, double-quote and dollar escaped, because the
+compose-go dotenv parser interpolates `$` in an unquoted value and single
+quotes cannot hold an embedded quote. `DB_HOSTNAME` and `REDIS_HOSTNAME` stay
+unset so compose service names apply, and image tags are pinned in
+`docker-compose.yml` rather than through the env file.
 
 ## SSO bootstrap (one-time)
 
@@ -131,6 +149,13 @@ system config (both the SSO-only and bootstrap branches), `.env`, nginx site
 hosts), systemd units and the backup wrapper (success + failure metric paths,
 against a mocked `docker`) are rendered and asserted without a container
 runtime.
+
+Two negative cases re-run the role and must fail: a real-IP trust list that
+resolves empty, and a postgres-exporter image left unpinned. Both guards run
+ahead of every mutating task, so the rescued re-runs leave the converged host
+untouched. `expected-junit-failures.txt` declares one junit failure each, which
+the `molecule-idempotence-notest` tag on the two blocks keeps true across the
+idempotence re-run of converge.
 
 ## Related
 

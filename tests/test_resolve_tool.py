@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
-"""Unit tests for scripts/resolve-tool.sh.
+"""Unit tests for scripts/resolve-tool.sh, one tier of the chain per test.
 
-resolve-tool.sh is the single source of truth for the 3-tier dev-tool
-resolution chain (PATH -> `python3 -m <module>` -> validated pyenv glob) used by
-the Taskfile and ansible/test-all-roles.sh. Each test invokes the script in a
-bash subprocess under a controlled PATH/HOME/PYTHONPATH so no real tool on the
-developer's machine leaks into the result, and asserts the printed invocation
-and exit code for one tier.
+The chain is PATH -> `python3 -m <module>` -> validated pyenv glob; each test
+runs it under a controlled PATH/HOME/PYTHONPATH so no real tool leaks in.
 """
 
 from __future__ import annotations

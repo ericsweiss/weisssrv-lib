@@ -1,14 +1,11 @@
 ---
-# Required inputs (no default — asserted in tasks/main.yml unless
-# docker_engine_skip_install): docker_engine_ce_version,
-# docker_engine_containerd_version, docker_engine_buildx_plugin_version,
-# docker_engine_compose_plugin_version. There is no safe default for a version
-# pin: a stale one here would silently downgrade a consumer's engine.
+# docker_engine_{ce,containerd,buildx_plugin,compose_plugin}_version have no
+# default here; tasks/main.yml asserts them unless docker_engine_skip_install.
+# A stale default pin would silently downgrade a consumer's engine.
 
 # Render-only escape hatch: skip every step that needs the real apt repo, the
-# Docker binary, or a running daemon (used by this role's molecule scenario and
-# by any caller that wants a template-only render). Callers gate the whole
-# include on their own skip flag, so this is primarily for the scenario.
+# Docker binary or a running daemon. Callers gate the whole include on their own
+# skip flag, so this is primarily for the molecule scenario.
 docker_engine_skip_install: false
 
 # download.docker.com signing key + repo.

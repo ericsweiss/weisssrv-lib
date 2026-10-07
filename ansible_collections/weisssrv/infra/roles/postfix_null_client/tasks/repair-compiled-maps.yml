@@ -1,13 +1,7 @@
 ---
-# Self-heal for postfix's COMPILED map databases (.db). Both sources are
-# templated with notify:, so a run that loses its handlers leaves a correct
-# source next to a stale .db — and postfix reads the .db. Both checks compare
-# against the CONFIGURED value: a .db serving a retired target or credential
-# still satisfies a value-blind "resolves to something" test, so that drift
-# would never be reported or repaired.
-#
-# Shared with weisssrv.infra.smtp_relay, which includes this file.
-# Caller input: postfix_null_client_maps_root_alias — the /etc/aliases root target.
+# Self-heal for postfix's compiled map databases, comparing each .db against
+# the configured value rather than just "resolves to something". Shared with
+# weisssrv.infra.smtp_relay. Input: postfix_null_client_maps_root_alias.
 
 - name: Check that the compiled alias database resolves root to the configured target
   ansible.builtin.command:
@@ -25,10 +19,9 @@
     - postfix_null_client_maps_root_alias | default('', true) | length > 0
     - (postfix_null_client_maps_alias_root.stdout | trim) != (postfix_null_client_maps_root_alias | trim)
 
-# The credential must never reach a log or a registered value, so the whole
-# comparison happens inside the shell and only its exit status leaves: rc 0 =
-# the .db serves what the source holds; anything else (missing .db, stale value,
-# unparseable source) means rebuild.
+# The comparison happens inside the shell so the credential never reaches a log
+# or a registered value. rc 0 means the .db matches the source; anything else
+# rebuilds.
 - name: Check that the compiled SASL map matches the deployed credential
   ansible.builtin.shell: |
     set -o pipefail

@@ -20,7 +20,7 @@ Both write to the same Loki backend; labels distinguish the source.
 |---|---|---|
 | `alloy_host_version` | apt package version to pin (`alloy=<version>`), then `dpkg`-held so an `apt upgrade` cannot move it | yes |
 | `alloy_host_loki_url` | Loki push endpoint | yes |
-| `alloy_host_loki_user` / `_password` | basic-auth credentials; asserted non-empty when the endpoint is `https://` (an authenticating proxy) | for https |
+| `alloy_host_loki_user`, `alloy_host_loki_password` | basic-auth credentials; asserted non-empty when the endpoint is `https://` (an authenticating proxy) | for https |
 | `alloy_host_wal_enabled` | on-disk WAL for `loki.write` | no (`true`) |
 | `alloy_host_wal_max_segment_age` | WAL segment cut interval — bounds replay lag and disk use | no (`1h`) |
 | `alloy_host_journal_max_age` | how far back a restarted Alloy re-reads the journal | no (`3h`) |
@@ -46,7 +46,12 @@ well applies the rules a second time, after Alloy has dropped the `__journal_*`
 metadata, so each `target_label` is set to `""` — i.e. deleted, and every
 `unit=` dashboard query silently returns nothing.
 
-**`unit` is the only journal stream label, deliberately.** Every rule here
+**`job` is pinned by a relabel rule.** `loki.source.journal` stamps its own
+component id over the `job` label set in the source's `labels` block, so the
+rule that rewrites `job` to `journal` is what keeps `{job="journal"}` selectors
+matching. Relabel is the only pass that runs after the source.
+
+**`unit` is the only journal stream label from the metadata, deliberately.** Every rule here
 becomes a Loki stream label, and each one multiplies the chunks the ingester
 holds open for up to `max_chunk_age`. `priority` (a pure ~1.4x multiplier with
 no dashboard consumer) and `hostname` (a duplicate of the `host` label the
@@ -59,10 +64,19 @@ Re-read entries older than that window are pushed and then rejected
 `too_far_behind` and lost, in short restart-shaped bursts. Keep the two in
 lockstep: raise both or neither.
 
+**Scope of the `alloy_host_extra_args` guard.** `/etc/default/alloy` is read by
+systemd as an `EnvironmentFile`. systemd parses the quoting itself and never
+runs a shell, so `$(...)` and backticks are inert bytes there. Only a double
+quote or a trailing backslash can terminate the `CUSTOM_ARGS` value early and
+turn the rest into extra arguments, so the assert rejects those two and nothing
+else. Widening it into a general shell filter would reject legitimate arguments.
+
 ## Files
 
 - `tasks/main.yml` — adds the Grafana apt repo (fingerprint-verified, via
-  `weisssrv.infra.apt_signed_repo`), installs + holds Alloy, manages
+  `weisssrv.infra.apt_signed_repo`; a vendor key rotation is
+  delete-the-keyring-first, see that role's README § Key rotation), installs +
+  holds Alloy, manages
   `CUSTOM_ARGS` in `/etc/default/alloy` and the config file; relies on the
   packaged systemd unit
 - `templates/config.alloy.j2` — Alloy config (journald → Loki)

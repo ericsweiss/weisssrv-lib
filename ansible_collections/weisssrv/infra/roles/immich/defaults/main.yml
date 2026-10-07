@@ -1,9 +1,7 @@
 ---
-# Immich (docker compose) behind a host nginx TLS terminator.
-#
-# Required inputs (empty here, asserted in tasks/main.yml): the five image pins,
-# immich_external_url, immich_oauth_issuer_url and the three credentials. Worked
-# example and the SSO bootstrap procedure: README.md.
+# Immich (docker compose) behind a host nginx TLS terminator. Required inputs
+# are empty here and asserted in tasks/main.yml; the README carries the worked
+# example and the SSO bootstrap procedure.
 
 # Render-only escape hatch: gates every step that needs Docker, nginx or a
 # systemd service, so a scenario can render + assert the templates without a
@@ -37,13 +35,27 @@ immich_postgres_version: ""
 immich_postgres_digest: ""
 immich_valkey_version: ""
 immich_valkey_digest: ""
-immich_server_image: "ghcr.io/immich-app/immich-server:{{ immich_version }}"
+# Optional digests for the two Immich images. Empty leaves them tag-only; set
+# them to pin by content the way the database and cache images already are.
+immich_server_digest: ""
+immich_machine_learning_digest: ""
+immich_server_image: >-
+  ghcr.io/immich-app/immich-server:{{ immich_version
+  }}{{ ('@' ~ immich_server_digest) if immich_server_digest else '' }}
 immich_postgres_image: "ghcr.io/immich-app/postgres:{{ immich_postgres_version }}@{{ immich_postgres_digest }}"
 immich_valkey_image: "docker.io/valkey/valkey:{{ immich_valkey_version }}@{{ immich_valkey_digest }}"
 # In-VM CPU machine-learning container. Named apart from the immich_ml role's
 # own immich_ml_image (the GPU variant) so an inventory-wide set cannot reach
 # the other guest.
-immich_machine_learning_image: "ghcr.io/immich-app/immich-machine-learning:{{ immich_version }}"
+immich_machine_learning_image: >-
+  ghcr.io/immich-app/immich-machine-learning:{{ immich_version
+  }}{{ ('@' ~ immich_machine_learning_digest) if immich_machine_learning_digest else '' }}
+
+# Docker `mem_limit` for the two Immich containers, empty meaning unlimited. Set
+# the server one below the guest's RAM: a thumbnail or transcode burst otherwise
+# takes the whole VM to the OOM killer instead of one container.
+immich_server_mem_limit: ""
+immich_machine_learning_mem_limit: ""
 
 # Deterministic compose network so IMMICH_TRUSTED_PROXIES can name the bridge
 # gateway the host nginx SNATs through. Must not collide with the site's LAN or
@@ -67,10 +79,10 @@ immich_telemetry_include: all
 immich_api_metrics_port: 8081
 immich_microservices_metrics_port: 8082
 
-# Publish address for every metrics port. All of them are UNAUTHENTICATED, and
-# the default publishes on every interface — pin it to 127.0.0.1, or to the
-# scrape-facing address with the ports firewalled to the scrapers.
-immich_metrics_bind: "0.0.0.0"
+# Publish address for the three UNAUTHENTICATED metrics ports (API,
+# microservices, postgres-exporter). Closed by default; widen it to the
+# scrape-facing address when Prometheus runs off-host.
+immich_metrics_bind: "127.0.0.1"
 
 # Opt-in postgres_exporter sidecar (DB-level metrics). Reuses the stack's .env
 # credentials; requires a pinned image.
@@ -142,9 +154,8 @@ immich_backup_metrics_dir: "{{ node_exporter_host_textfile_dir | default('/var/l
 immich_backup_lib_path: /usr/local/lib/immich-backup-lib.sh
 
 # Offsite backup landing zone: lands the dump on an NFS export so a file-walking
-# offsite backup can see it (a file walk cannot read a zvol). Mount BY HOSTNAME
-# when the export requires TLS — a wildcard cert has no IP SAN — and give the
-# guest a tlshd (weisssrv.infra.nfs_tls).
+# backup can see it. A TLS export must be mounted BY HOSTNAME (no IP SAN) and
+# needs tlshd on the guest (weisssrv.infra.nfs_tls).
 immich_backup_nfs_enabled: false
 immich_backup_nfs_server: ""
 immich_backup_nfs_export: ""

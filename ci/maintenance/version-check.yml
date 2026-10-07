@@ -54,10 +54,16 @@ spec:
       default: "main"
       description: >-
         Consumer's default branch as a LITERAL name (`main`, `master`, `trunk`)
-        for the post-merge rule. NOT `$CI_DEFAULT_BRANCH`: the value lands
-        inside a quoted `rules:if` string, which GitLab does not expand, so the
-        comparison would never match and the job would silently stop running
-        post-merge.
+        for the post-merge rule. NOT `$CI_DEFAULT_BRANCH` —
+        docs/INCLUDE-CONTRACT.md § default_branch.
+    soft_fail_exit_codes:
+      type: array
+      default: [1]
+      description: >-
+        Exit codes that do not redden the scheduled sweep or the default-branch
+        run. `[1]` is "updates available" from the stock checker, so a checker
+        error (rc=2) reds the job; `[1, 2]` soft-fails both. The web and
+        merge-request runs are always soft-fail.
     changes:
       type: array
       default: ["**/*"]
@@ -68,22 +74,13 @@ spec:
         a report that silently stops existing is worse than one that runs too
         often. Pass narrower paths to filter it.
 ---
-# Reports available dependency/pin updates WITHOUT changing anything — the
-# read-only half of the pair whose other half (ci/maintenance/version-bump-bot.yml)
-# rewrites pins and raises the MR on a schedule.
-#
-# NO CREDENTIAL RETRIEVAL HERE. `setup_command` and `check_command` come from the
-# .gitlab-ci.yml of the ref under test and run in one shell, so on an MR they ARE
-# the code under review: anything this job fetches, that code can read, and any
-# guard around the fetch is defeatable by the step that runs before it. A consumer
-# needing a token passes a masked CI variable scoped to what it would tolerate
-# leaking (an MR comment needs only Reporter + `api`); privileged work belongs in
-# a separate job triggered from a trusted ref.
-#
-# SOFT-FAIL ON EVERY TRIGGER: "updates are available" is rc=1 from most checkers,
-# which must not redden a pipeline. The artifact is published `when: always`.
-# The web rule needs its own `allow_failure: true` — a rules-based manual job
-# defaults to allow_failure FALSE and leaves the pipeline "blocked".
+# CRITICAL: no credential retrieval here. `setup_command` and `check_command`
+# come from the ref under test, so on an MR they are the code under review and
+# can read anything this job fetches.
+
+# Reports available updates without changing anything; the rewriting half is
+# ci/maintenance/version-bump-bot.yml. Soft-fails by default, so rc=1 ("updates
+# available") does not redden a pipeline.
 "$[[ inputs.job_name ]]":
   # Starts immediately rather than waiting out a build stage it has no
   # dependency on. Soft-fail everywhere, so an earlier start is free.
@@ -100,10 +97,9 @@ spec:
     REPORT_PATH: "$[[ inputs.report_path ]]"
     VERSION_CHECK_GITHUB_TOKEN: "$[[ inputs.github_token ]]"
   script:
-    # The bridge hop: see the github_token input. Both names the stock checker
-    # reads are exported, before the consumer commands — but only when the
-    # bridge carried a value, so an empty resolution cannot blank a token the
-    # job inherited some other way.
+    # The bridge hop (see the github_token input): both names the stock checker
+    # reads are exported ahead of the consumer commands, and only when the
+    # bridge carried a value, so an empty resolution blanks nothing.
     - |
       if [ -n "$VERSION_CHECK_GITHUB_TOKEN" ]; then
         export GH_API_TOKEN="$VERSION_CHECK_GITHUB_TOKEN"
@@ -122,11 +118,15 @@ spec:
       - "$[[ inputs.report_path ]]"
     expire_in: 7 days
     when: always
+  # Job-level, because only this form can name exit codes. A blanket
+  # `allow_failure: true` would report a broken checker (rc=2) as "updates
+  # available" (rc=1) on a weekly sweep nobody reads the log of.
+  allow_failure:
+    exit_codes: $[[ inputs.soft_fail_exit_codes ]]
   rules:
-    # Scheduled: the weekly sweep. Soft-fail — rc=1 only means updates exist.
+    # Scheduled: the weekly sweep, soft-failed per soft_fail_exit_codes.
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      allow_failure: true
-    # Web: manual, and explicitly soft-fail (see the note above).
+    # Web: manual, and soft-fail on any exit.
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
       allow_failure: true
@@ -134,6 +134,5 @@ spec:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes: $[[ inputs.changes ]]
       allow_failure: true
-    # Default branch: informational.
+    # Default branch: informational, per soft_fail_exit_codes.
     - if: '$CI_COMMIT_BRANCH == "$[[ inputs.default_branch ]]"'
-      allow_failure: true

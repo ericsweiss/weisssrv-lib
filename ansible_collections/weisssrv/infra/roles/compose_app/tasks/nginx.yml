@@ -1,12 +1,9 @@
 ---
-# Shared host-nginx TLS-terminator task flow for compose app guests. Installs
-# nginx, seeds a self-signed placeholder cert until the site's cert distribution
-# delivers the real one, validates then deploys the caller's site template (kept
-# per-app for its security-sensitive proxy/real-IP/TLS directives — passed by
-# absolute path), disables the packaged default vhost, and reloads. Every value
-# that diverges between apps is a compose_app_nginx_* parameter.
+# Shared host-nginx TLS-terminator flow for compose app guests: install nginx,
+# seed a placeholder cert, validate and deploy the caller's site template, drop
+# the packaged default vhost, reload. Per-app values are compose_app_nginx_*.
 
-# Resolved by the CALLER (README § nginx site template): an unresolved or
+# Resolved by the CALLER (README § nginx: validated before install): an unresolved or
 # relative value reaches the template module as an opaque "src is empty".
 - name: Assert the nginx site template is an absolute path
   ansible.builtin.assert:
@@ -37,14 +34,9 @@
     group: root
     mode: "{{ compose_app_nginx_cert_dir_mode }}"
 
-# The site's cert authority (weisssrv.infra.acme_certs) pushes the real cert here
-# after every renewal and reloads nginx. On a fresh guest that push hasn't fired,
-# so seed a self-signed placeholder to get nginx started and the guest reachable
-# for the first push. That push overwrites both files unconditionally; the
-# `creates` guard makes this a one-shot that never clobbers a distributed cert.
-#
-# umask 077 so the key is never group/world-readable, not even between openssl
-# writing it and the chmod below.
+# acme_certs pushes the real cert here after every renewal. Seed a self-signed
+# placeholder so a fresh guest starts nginx and is reachable for that first
+# push; the `creates` guard keeps it one-shot and umask 077 protects the key.
 - name: Seed a self-signed TLS placeholder until the real cert is distributed
   ansible.builtin.shell:
     cmd: >-
@@ -67,11 +59,10 @@
     mode: "0600"
   when: compose_app_nginx_bootstrap_cert | default(true)
 
-# Validate the site BEFORE installing it: render a candidate into a temp dir,
-# `nginx -t` a copy of nginx.conf whose sites-enabled include points at that temp
-# dir, and only then copy the candidate into place. Validating after install
-# would leave a broken .conf enabled, so the next nginx start (reboot, node
-# reboot controller) could not bring the guest back.
+# CRITICAL: validate the site BEFORE installing it — render a candidate into a
+# temp dir, `nginx -t` against it, then copy it into place. Validating after
+# install leaves a broken .conf enabled, and the next nginx start cannot bring
+# the guest back.
 - name: Create temp dir for nginx site validation
   ansible.builtin.tempfile:
     state: directory
@@ -98,8 +89,13 @@
         tmp={{ compose_app_nginx_validate_dir.path | quote }}
         site={{ compose_app_nginx_site_name | quote }}
         mkdir -p "$tmp/sites-enabled"
+        # A partial copy would validate a subset, so a dangling link fails here.
         if [ -d /etc/nginx/sites-enabled ]; then
-          cp -aL /etc/nginx/sites-enabled/. "$tmp/sites-enabled/" 2>/dev/null || true
+          if ! cp -aL /etc/nginx/sites-enabled/. "$tmp/sites-enabled/" 2>"$tmp/cp.err"; then
+            echo "could not stage the existing sites-enabled set for validation:" >&2
+            cat "$tmp/cp.err" >&2
+            exit 1
+          fi
         fi
         rm -f "$tmp/sites-enabled/default"
         cp "$tmp/candidate.conf" "$tmp/sites-enabled/$site"

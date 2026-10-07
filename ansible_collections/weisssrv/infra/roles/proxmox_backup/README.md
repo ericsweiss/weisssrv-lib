@@ -4,6 +4,8 @@ Declaratively manages Proxmox storage entries (`storage.cfg`) and vzdump
 backup jobs (`jobs.cfg`) via `pvesh`, so the backup configuration lives in git
 instead of only in the GUI.
 
+## Variables
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `proxmox_backup_storage` | `[]` | Storage entries to reconcile (schema below) |
@@ -12,7 +14,7 @@ instead of only in the GUI.
 Both files live on the clustered `/etc/pve`, so run this role against exactly
 one node. It no-ops while both lists are empty.
 
-## What This Role Manages
+## What it manages
 
 - **Storage entries** (`/storage` API): creates missing entries; reconciles
   the mutable properties (`content`, `nodes`, `mountpoint`, `sparse`,
@@ -33,7 +35,11 @@ one node. It no-ops while both lists are empty.
   `enabled`, guest selection (`all`, `vmid`, `exclude`), `prune-backups`,
   notification and mail settings, and the `script` hookscript path on drift.
   Unmanaged live jobs are **warned about, never deleted** (same policy as
-  proxmox_ha's orphaned replication jobs).
+  proxmox_ha's orphaned replication jobs). Storage entries get no such warning:
+  `jobs.cfg` is a namespace this role owns, while `storage.cfg` is shared with
+  Proxmox's own install-time entries (`local`, `local-lvm`) and with entries
+  other roles create, so the role reconciles the declared ids and says nothing
+  about the rest.
 - **vzdump metrics hookscript**: a job's `script` key points at
   `/usr/local/bin/vzdump-metrics-hook.sh`, which writes
   `vzdump_backup_last_run_success` + `_last_success_timestamp_seconds` to the
@@ -65,7 +71,7 @@ proxmox_backup_storage:
     type: zfspool
     pool: ssd/pve            # create-fixed: the dataset new disks inherit from
     content: "images,rootdir"
-    nodes: pve-nas-01        # comma-separated; keeps a local pool off other nodes
+    nodes: node-01           # comma-separated; keeps a local pool off other nodes
     mountpoint: /mnt/ssd/pve
     sparse: false
 
@@ -100,12 +106,15 @@ Prerequisite for `xprtsec=tls`: the nas_storage export for `/tank-proxmox`
 must allow TLS and tlshd must run on the mounting host (see the nfs_tls
 role); mount by **hostname** — a wildcard cert has no IP SAN.
 
-## Files
-
-- `tasks/main.yml` - Storage + vzdump job reconciliation via pvesh
-- `defaults/main.yml` - Default empty lists + variable shapes
-
 ## Dependencies
 
 - Proxmox VE node with `pvesh` (cluster quorate for /etc/pve writes)
 - For NFS-over-TLS targets: nfs_tls role deployed on server and mounting host
+
+## Molecule
+
+`molecule test -s default` from the role directory (CI runs the same scenario).
+`pvesh` is stubbed: GETs answer from state files under
+`/tmp/molecule-stub-state`, every mutation is logged, and the cases assert the
+exact invocations for absent, already-correct, drifted and create-fixed-drift
+storage entries and vzdump jobs.

@@ -24,18 +24,18 @@ spec:
         render one literal-pinned path and kubeconform it — non-root safe,
         stdlib-only tool download.
     kubeconform_version:
-      default: "0.6.7"
+      default: "0.8.0"
     kubeconform_sha256:
-      default: "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73"
+      default: "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883"
     kustomize_version:
-      default: "5.4.3"
+      default: "5.8.1"
     kustomize_sha256:
-      default: "3669470b454d865c8184d6bce78df05e977c9aea31c30df3c669317d43bcc7a7"
+      default: "029a7f0f4e1932c52a0476cf02a0fd855c0bb85694b82c338fc648dcb53a819d"
     helm_version:
-      default: "3.18.4"
+      default: "3.22.0"
       description: Only installed in substitute mode (schema-validating HelmRelease values).
     helm_sha256:
-      default: "f8180838c23d7c7d797b208861fecb591d9ce1690d8704ed1e4cb8e2add966c1"
+      default: "1e4ab49e429626cf6c6958d914248b78c9730803c2751b87627e171dc800e7bb"
     pyyaml_version:
       default: "6.0.2"
       description: >-
@@ -49,10 +49,25 @@ spec:
         the ConfigMap's k3s_version; tenants pass a literal (e.g. "1.36.0").
     kustomize_path:
       default: "kubernetes/flux"
-      description: (substitute=false) directory kustomize builds.
+      description: >-
+        (substitute=false) the ONE directory the simple arm builds. The default
+        is the tenant layout the app template renders; a repo laid out
+        differently passes the path it actually reconciles, or the gate
+        validates a tree it does not own.
+    allowed_skips:
+      default: "0"
+      description: >-
+        (substitute=false) how many rendered resources kubeconform may validate
+        against NO schema. Above it the job fails, and so does a summary with no
+        `Skipped:` field at all, which is what an unreachable catalog looks
+        like. Raise it per kind the catalog does not carry. Substitute mode uses
+        expected_skipped_file instead.
     cluster_dir:
-      default: "kubernetes/clusters/weisssrv"
-      description: (substitute=true) dir of Flux Kustomizations to iterate.
+      default: ""
+      description: >-
+        (substitute=true) dir of Flux Kustomizations to iterate. REQUIRED in
+        substitute mode, which fails when it is empty; a cluster name is site
+        data, so there is no real default. The simple arm never reads it.
     require_cluster_root:
       type: boolean
       default: true
@@ -73,24 +88,36 @@ spec:
     skipped_script:
       default: "scripts/kubeconform-skipped.py"
       description: (substitute=true) repo-local copy of the unvalidated-kind tracker.
+    crd_catalog_ref:
+      default: "ad3b08c5045129d7bb1eeffd8e61719b2c8dd1e2"
+      description: >-
+        Ref of datreeio/CRDs-catalog the kubeconform schema location resolves
+        against. Pinned to a commit sha so a catalog rewrite cannot change what
+        a gate accepts; point it at an internal mirror ref to self-host.
+    expected_skipped_file:
+      default: ""
+      description: >-
+        (substitute=true) repo-local baseline of apiVersion/Kind pairs known to
+        have no schema in the catalog, one per line. Set it and a kind skipped
+        outside the baseline FAILS the job, so an unreachable catalog can no
+        longer degrade the run to core-kinds-only in silence. Empty (the
+        default) keeps the tracker informational.
     extra_validation:
       default: ""
       description: >-
         (substitute=true) extra shell injected after the render loop, with
-        $RENDER_ALL / $K8S_VER / $FAILED in scope. It runs corpus gates over the
-        accumulated render — this library ships check-pvc-storageclass.py,
-        check-scrape-netpol.py, check-default-deny-coverage.py and
-        check-secretstore-scope.py, which read the corpus on stdin exactly as
-        this input expects — alongside any consumer-local script (an HPA/VPA
-        invariant, a helm-values check).
+        $RENDER_ALL / $K8S_VER / $FAILED in scope. The supported shape is a
+        consumer gate chain listed in scripts/render-gates.conf and run by
+        scripts/run-render-gates.sh, so the value stays one line:
+        `bash scripts/run-render-gates.sh --flux-env scripts/flux-env.sh`. The
+        runner honours the same RENDER_ALL / VERSIONS_CONFIGMAP contract and
+        exits non-zero on a failing gate. Any other shell still works.
     default_branch:
       default: "main"
       description: >-
         Consumer's default branch as a LITERAL name (`main`, `master`, `trunk`)
-        for the post-merge rule. NOT `$CI_DEFAULT_BRANCH`: the value lands
-        inside a quoted `rules:if` string, which GitLab does not expand, so the
-        comparison would never match and the job would silently stop running
-        post-merge.
+        for the post-merge rule. NOT `$CI_DEFAULT_BRANCH` —
+        docs/INCLUDE-CONTRACT.md § default_branch.
     changes:
       type: array
       default:
@@ -103,22 +130,16 @@ spec:
     job_memory_limit:
       default: "2Gi"
       description: >-
-        KUBERNETES_MEMORY_LIMIT for the job pod. Right-sized per job class so
-        concurrent pipelines pack into the runner namespace's limits.memory
-        quota instead of every job costing the runner default; raise it per
-        consumer only when the job really needs more (the runner's
-        memory_limit_overwrite_max_allowed is the hard ceiling).
+        KUBERNETES_MEMORY_LIMIT for the job pod. Sizing policy:
+        docs/INCLUDE-CONTRACT.md § Resource inputs.
     job_memory_request:
       default: "512Mi"
       description: KUBERNETES_MEMORY_REQUEST for the job pod (scheduler reservation).
     job_cpu_request:
       default: "300m"
       description: >-
-        KUBERNETES_CPU_REQUEST for the job pod — the scheduler reservation,
-        right-sized per job class so a full concurrency burst packs into the
-        runner nodes' allocatable CPU instead of every job costing the runner
-        default (no CPU limit, repo-wide: CPU is compressible and a limit
-        only buys CFS throttling).
+        KUBERNETES_CPU_REQUEST for the job pod (scheduler reservation). Sizing
+        policy: docs/INCLUDE-CONTRACT.md § Resource inputs.
 ---
 "$[[ inputs.job_name ]]":
   needs: []
@@ -154,23 +175,27 @@ spec:
     PYYAML_VERSION: "$[[ inputs.pyyaml_version ]]"
     K8S_VERSION_INPUT: "$[[ inputs.k8s_version ]]"
     KUSTOMIZE_PATH: "$[[ inputs.kustomize_path ]]"
+    ALLOWED_SKIPS: "$[[ inputs.allowed_skips ]]"
     CLUSTER_DIR: "$[[ inputs.cluster_dir ]]"
     REQUIRE_CLUSTER_ROOT: "$[[ inputs.require_cluster_root ]]"
     VERSIONS_CONFIGMAP: "$[[ inputs.versions_configmap ]]"
     FLUX_RENDER_SCRIPT: "$[[ inputs.flux_render_script ]]"
     SKIPPED_SCRIPT: "$[[ inputs.skipped_script ]]"
+    CRD_CATALOG_REF: "$[[ inputs.crd_catalog_ref ]]"
+    EXPECTED_SKIPPED_FILE: "$[[ inputs.expected_skipped_file ]]"
   before_script:
     - |
       set -eo pipefail
       KC_URL="https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
       KZ_URL="https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
       if [ "$SUBSTITUTE" = "true" ]; then
-        # --- ROOT path (privileged runner). apt + /usr/local/bin +
-        # a VERIFIED-TARBALL cache: every run re-checks each tarball against its
-        # pinned sha256 and re-extracts, so a mutated runner cache can never
-        # smuggle an unverified binary onto PATH. ---
+        # ROOT path (privileged runner): apt, /usr/local/bin and a verified
+        # tarball cache. Every run re-checks each tarball against its pinned
+        # sha256 and re-extracts.
         apt-get update -qq && apt-get install -y -qq curl gettext-base
-        pip install --quiet "pyyaml==$PYYAML_VERSION"
+        # `--user` like every other template: the user site dir is on sys.path,
+        # so the inline parser imports it without a PATH change.
+        pip install --user --quiet "pyyaml==$PYYAML_VERSION"
         TOOLS_CACHE="${CI_PROJECT_DIR}/.cache/flux-lint-tools"
         TOOLS_BIN=/usr/local/bin
         mkdir -p "$TOOLS_CACHE"
@@ -208,28 +233,55 @@ spec:
     - |
       set -eo pipefail
       FAILED=0
-      CATALOG='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+      CATALOG="https://raw.githubusercontent.com/datreeio/CRDs-catalog/${CRD_CATALOG_REF}/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
 
       if [ "$SUBSTITUTE" != "true" ]; then
-        # --- Simple mode (tenant): render one literal-pinned path, validate it. ---
-        # The non-root tools were extracted to .bin in before_script; prepend it
-        # here too. This is ONLY done in simple mode: in substitute (root) mode
-        # the sha256-verified kustomize/kubeconform live in /usr/local/bin, and a
-        # repo-controlled .bin/kustomize on PATH must not be able to shadow them.
+        # Simple mode (tenant): render one literal-pinned path, validate it.
+        # .bin is prepended only here; in substitute mode the verified tools
+        # live in /usr/local/bin and a repo-controlled .bin must not shadow them.
         export PATH="$CI_PROJECT_DIR/.bin:$PATH"
+        # Held equal to ci/github/ci.example.yml's K8S_VERSION by
+        # tests/test_pin_parity.py.
         K8S_VER="${K8S_VERSION_INPUT:-1.36.0}"
         echo "=== kustomize build $KUSTOMIZE_PATH ==="
         kustomize build "$KUSTOMIZE_PATH" > /tmp/rendered.yaml
+        # CRITICAL: an emptied or mistyped `resources:` list renders nothing and
+        # both tools exit 0 on it, while the cluster-side Kustomization's prune
+        # then deletes every object this repo applied.
+        if ! grep -q '^kind:' /tmp/rendered.yaml; then
+          echo "ERROR: kustomize build $KUSTOMIZE_PATH rendered no document — check for an emptied or mistyped resources: list"
+          exit 1
+        fi
         echo "=== kubeconform (k8s $K8S_VER) ==="
         # -ignore-missing-schemas lets platform CRDs validate against the
         # datreeio catalog; core kinds validate against the bundled schemas.
-        kubeconform -strict -ignore-missing-schemas \
-          -kubernetes-version "$K8S_VER" \
-          -schema-location default \
-          -schema-location "$CATALOG" \
-          -summary /tmp/rendered.yaml
+        # 2>&1 because per-resource failures go to stderr.
+        if ! SUMMARY=$(kubeconform -strict -ignore-missing-schemas \
+            -kubernetes-version "$K8S_VER" \
+            -schema-location default \
+            -schema-location "$CATALOG" \
+            -summary /tmp/rendered.yaml 2>&1); then
+          printf '%s\n' "$SUMMARY"
+          exit 1
+        fi
+        printf '%s\n' "$SUMMARY"
+        # CRITICAL: -ignore-missing-schemas exits 0 on a resource it could not
+        # schema-validate, so an unreachable catalog degrades the run to core
+        # kinds in silence. A summary with no Skipped: field is that signature.
+        case "$ALLOWED_SKIPS" in
+          ''|*[!0-9]*) echo "ERROR: allowed_skips must be a non-negative integer, got '$ALLOWED_SKIPS'"; exit 1 ;;
+        esac
+        SKIPPED=$(printf '%s\n' "$SUMMARY" | sed -n 's/.*Skipped: \([0-9][0-9]*\).*/\1/p')
+        if [ -z "$SKIPPED" ] || [ "$SKIPPED" -gt "$ALLOWED_SKIPS" ]; then
+          echo "ERROR: kubeconform validated ${SKIPPED:-?} resource(s) against no schema (allowed_skips=$ALLOWED_SKIPS)"
+          echo "The catalog at $CRD_CATALOG_REF moved or was unreachable, or the kind has no published schema."
+          echo "Add a -schema-location for it, or raise allowed_skips."
+          exit 1
+        fi
         exit 0
       fi
+
+      [ -n "$CLUSTER_DIR" ] || { echo "ERROR: cluster_dir is required when substitute=true: name the dir of Flux Kustomizations to iterate"; exit 1; }
 
       # --- Substitute mode: mirror the kustomize-controller postBuild step,
       # then kubeconform every rendered top-level Kustomization. ---
@@ -238,6 +290,7 @@ spec:
       eval "$VARS"
 
       RENDER_ALL=$(mktemp)
+      export RENDER_ALL
       trap 'rm -f "$RENDER_ALL"' EXIT
 
       if [ -n "$K8S_VERSION_INPUT" ]; then
@@ -245,23 +298,55 @@ spec:
       else
         K8S_VER=$(bash "$FLUX_RENDER_SCRIPT" k8s-version "$VERSIONS_CONFIGMAP")
       fi
+      export K8S_VER
       echo "kubeconform -kubernetes-version: $K8S_VER (from versions-configmap k3s_version)"
 
       for ks in "$CLUSTER_DIR"/*.yaml; do
         [ -f "$ks" ] || continue
         NAME=$(basename "$ks" .yaml)
         [ "$NAME" = "kustomization" ] && continue
-        if ! SRCPATH=$(python3 -c '
-      import yaml, sys
+        # A cluster dir also holds non-Kustomization documents (GitRepository,
+        # Secret); only a Flux Kustomization has a spec.path to build, and the
+        # apiVersion tells one apart from a kustomize.config kustomization.yaml.
+        if ! META=$(python3 -c '
+      import sys
+
+      import yaml
+
       with open(sys.argv[1]) as f:
-          doc = yaml.safe_load(f)
-      print(doc.get("spec", {}).get("path", "") or "")
+          docs = [d for d in yaml.safe_load_all(f) if isinstance(d, dict)]
+      flux = [d for d in docs if d.get("kind") == "Kustomization"
+              and str(d.get("apiVersion", "")).startswith("kustomize.toolkit")]
+      if len(flux) > 1:
+          sys.exit("%s holds %d Flux Kustomizations; give each one its own file"
+                   % (sys.argv[1], len(flux)))
+      if flux:
+          doc, label = flux[0], "Kustomization"
+      elif docs:
+          doc = docs[0]
+          label = "%s %s" % (doc.get("apiVersion") or "?", doc.get("kind") or "?")
+      else:
+          doc, label = {}, "empty document"
+      print(label)
+      print((doc.get("spec") or {}).get("path") or "")
       ' "$ks"); then
-          echo "ERROR: failed to parse $ks"
+          echo "ERROR: failed to read $ks"
           FAILED=1
           continue
         fi
-        [ -z "$SRCPATH" ] && continue
+        KSKIND=$(printf '%s\n' "$META" | sed -n 1p)
+        SRCPATH=$(printf '%s\n' "$META" | sed -n 2p)
+        if [ "$KSKIND" != "Kustomization" ]; then
+          echo "SKIP: $ks is a $KSKIND, not a Flux Kustomization"
+          continue
+        fi
+        if [ -z "$SRCPATH" ]; then
+          # Flux reconciles the repository root when spec.path is absent, which
+          # this job cannot build; the path is required, not skipped.
+          echo "ERROR: $ks is a Flux Kustomization with no spec.path: spell the path it reconciles"
+          FAILED=1
+          continue
+        fi
         SRCPATH="${SRCPATH#./}"
         echo "=== Building + validating $ks (path $SRCPATH) ==="
         if ! RAW=$(kustomize build "$SRCPATH" 2>&1); then
@@ -270,19 +355,9 @@ spec:
           FAILED=1
           continue
         fi
-        # Every read of a rendered manifest, and of anything derived from one,
-        # goes through printf '%s\n', never echo: a manifest whose first line
-        # begins `-n` or `-e` would be swallowed as an echo option, and echo's
-        # escape handling varies with the shell and its build (xpg_echo) while
-        # printf's does not.
-        #
-        # Every ${var} reference in the pre-substitution output must be a known
-        # ConfigMap key. envsubst renders unknown vars as empty (Flux does too),
-        # so post-substitution grep would miss typos — check pre-substitution.
-        # Flux's Go envsubst PARSE-errors on `${` followed by anything that
-        # cannot start a variable name, and silently eats `${1}`-style refs —
-        # while the GNU envsubst below ignores both. `$${` is Flux's escape
-        # and is exempt. The sed uses `[{]`, which both GNU and BSD accept.
+        # Rendered manifests are read with printf, never echo: a first line
+        # beginning `-n` would be swallowed as an option. Flux's envsubst
+        # parse-errors on a malformed `${` and eats `${1}` refs; `$${` escapes.
         MALFORMED=$(printf '%s\n' "$RAW" | sed 's/\$\$[{]/__FLUX_ESCAPED__/g' | grep -nE '\$\{[^A-Za-z_]' || true)
         if [ -n "$MALFORMED" ]; then
           echo "ERROR: $SRCPATH renders a \${ sequence Flux's envsubst mishandles (escape as \$\${ or assemble at runtime):"
@@ -291,10 +366,9 @@ spec:
           continue
         fi
         MISSING=""
-        # Strip Flux's `$${` escape first (same as the MALFORMED check above):
-        # an escaped sequence still CONTAINS `${var}` textually, and without
-        # the strip a legitimately-escaped Grafana panel var false-positives
-        # as an unknown substitution key.
+        # Strip Flux's `$${` escape first: an escaped sequence still contains
+        # `${var}` textually, so without the strip an escaped Grafana panel var
+        # false-positives as an unknown substitution key.
         for ref in $(printf '%s\n' "$RAW" | sed 's/\$\$[{]/__FLUX_ESCAPED__/g' | grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' | sort -u); do
           varname=${ref#\$\{}
           varname=${varname%\}}
@@ -320,28 +394,38 @@ spec:
         fi
       done
 
-      # [informational] Track which rendered kinds kubeconform could NOT
-      # schema-validate (-ignore-missing-schemas skipped them). Never fails the
-      # gate (|| true) — the per-Kustomization passes above are the gate.
-      echo "=== kubeconform unvalidated-kind tracking (informational) ==="
+      # A gate that inspects nothing is not a gate: every check below reads
+      # $RENDER_ALL.
+      if [ ! -s "$RENDER_ALL" ]; then
+        echo "ERROR: no Kustomization under $CLUSTER_DIR rendered any manifest — check cluster_dir and each child's spec.path"
+        FAILED=1
+      fi
+
+      # Which rendered kinds kubeconform could NOT schema-validate
+      # (-ignore-missing-schemas skipped them). With expected_skipped_file set a
+      # kind outside that baseline fails the job; without it, informational.
+      echo "=== kubeconform unvalidated-kind tracking ==="
+      SKIPPED_JSON=$(mktemp)
       kubeconform -verbose -ignore-missing-schemas -kubernetes-version "$K8S_VER" \
         -schema-location default \
         -schema-location "$CATALOG" \
-        -output json < "$RENDER_ALL" 2>/dev/null | python3 "$SKIPPED_SCRIPT" || true
+        -output json < "$RENDER_ALL" > "$SKIPPED_JSON" || true
+      if [ -n "$EXPECTED_SKIPPED_FILE" ]; then
+        python3 "$SKIPPED_SCRIPT" "$EXPECTED_SKIPPED_FILE" < "$SKIPPED_JSON" || FAILED=1
+      else
+        python3 "$SKIPPED_SCRIPT" < "$SKIPPED_JSON" || true
+      fi
+      rm -f "$SKIPPED_JSON"
 
-      # Build the cluster root to catch a malformed top-level kustomization.yaml
-      # (the loop above validates target paths, not the root itself). The root
-      # pulls in flux-system/, which `flux bootstrap` writes: BOTH gotk files
-      # absent is the genuine pre-bootstrap state and skips, either one present
-      # means bootstrap has run, so build and let a missing resource fail loudly.
-      # `-e || -L`, not `-f`: a directory or a dangling symlink at those paths
-      # must not read as pre-bootstrap and skip a root that is actually corrupt.
+      # Build the cluster root to catch a malformed top-level kustomization.
+      # Both gotk files absent is the pre-bootstrap state and skips. `-e || -L`,
+      # not `-f`, so a dangling symlink cannot read as pre-bootstrap.
       gotk_components="$CLUSTER_DIR/flux-system/gotk-components.yaml"
       gotk_sync="$CLUSTER_DIR/flux-system/gotk-sync.yaml"
-      # Shape of the tree FIRST, independent of bootstrap state. The -L tests
-      # below inspect only each path's FINAL component, so containment is also
-      # asserted on the RESOLVED path — otherwise an intermediate symlink
-      # (kubernetes/clusters -> /tmp/x) hands kustomize a tree outside the repo.
+      # CRITICAL: check the shape of the tree first, independent of bootstrap
+      # state. The -L tests below inspect only each path's final component, so
+      # containment is asserted on the resolved path too. Otherwise an
+      # intermediate symlink hands kustomize a tree outside the repo.
       repo_root=$(pwd -P)
       cluster_real=$(readlink -f "$CLUSTER_DIR" 2>/dev/null || echo "")
       case "${cluster_real:-/nonexistent}/" in

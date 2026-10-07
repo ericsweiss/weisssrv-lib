@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Daily certificate distribution check
+
+[Timer]
+OnCalendar={{ acme_certs_distribution_check_schedule }}
+RandomizedDelaySec={{ acme_certs_distribution_check_random_delay }}
+Persistent=true
+Unit=homelab-cert-check.service
+
+[Install]
+WantedBy=timers.target

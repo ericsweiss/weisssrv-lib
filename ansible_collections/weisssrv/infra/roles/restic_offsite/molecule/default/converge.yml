@@ -7,15 +7,9 @@
       ansible.builtin.include_role:
         name: weisssrv.infra.restic_offsite
 
-    # RESTORE-DRILL SEED GATE — both arms, behaviourally.
-    #
-    # The seed itself is molecule-notest (no snapshot exists at converge time),
-    # but the gate is: unchanged units + proof metric present => not due;
-    # unchanged units + proof metric absent => due (retry). Contract: README,
-    # "Restore drill".
-    #
-    # Every helper here is changed_when: false — molecule's idempotence step
-    # re-runs this playbook and must see no changes.
+    # Seed gate, both arms: unchanged units + proof metric present => not due,
+    # metric absent => due. Helpers are changed_when: false so the idempotence
+    # step sees no change. Contract: README, "Restore drill".
     - name: Write a proof metric as a PASSING drill would
       ansible.builtin.copy:
         dest: /var/lib/node_exporter/backup_restore_drill.prom
@@ -42,11 +36,8 @@
           passed — every converge would re-run the drill and re-spend B2 egress.
         success_msg: "The restore-drill seed is not re-run once a drill has passed"
 
-    # A drill that RAN and FAILED still writes backup_restore_drill.prom (it
-    # records _last_run_seconds unconditionally) — it just never writes the
-    # _last_success_seconds line. That is why the probe reads content and not
-    # mere existence, and this file is exactly what a failed first seed leaves
-    # behind.
+    # A failed drill still writes the .prom with _last_run_seconds and no
+    # _last_success_seconds, so the probe reads content, not existence.
     - name: Overwrite it with what a FAILED first seed leaves behind
       ansible.builtin.copy:
         dest: /var/lib/node_exporter/backup_restore_drill.prom
@@ -78,3 +69,116 @@
         path: /var/lib/node_exporter/backup_restore_drill.prom
         state: absent
       changed_when: false
+
+    # restic trims a password read from RESTIC_PASSWORD_FILE, so a padded value
+    # would open a different repository key than the operator stored.
+    - name: Re-apply the role with a whitespace-padded repository password
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Run the role with a padded password
+          ansible.builtin.include_role:
+            name: weisssrv.infra.restic_offsite
+          vars:
+            restic_offsite_repo_password: " padded-password "
+
+        - name: Record that the padded password was accepted
+          ansible.builtin.set_fact:
+            restic_offsite_padded_refused: false
+      rescue:
+        - name: Record that the padded password was refused
+          ansible.builtin.set_fact:
+            restic_offsite_padded_refused: true
+
+    - name: Assert a padded repository password is refused
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.assert:
+        that:
+          - restic_offsite_padded_refused | bool
+        fail_msg: >-
+          The role accepted a repository password with leading or trailing
+          whitespace, so restic would derive a different key from the file than
+          from the stored value.
+        success_msg: "A padded repository password is refused"
+
+    - name: Re-apply the role so the converged state is restored
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.include_role:
+        name: weisssrv.infra.restic_offsite
+
+    # Interlock guard: swap-clean enabled on the same host without
+    # restic-offsite.service in its conflict list must fail the play.
+    - name: Re-apply the role with swap-clean enabled and no interlock
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Run the role with an interlock-less conflict list
+          ansible.builtin.include_role:
+            name: weisssrv.infra.restic_offsite
+          vars:
+            nas_storage_swap_clean_enabled: true
+            nas_storage_swap_clean_conflicting_units: [archive-backup.service]
+
+        - name: Record that the missing interlock was accepted
+          ansible.builtin.set_fact:
+            restic_offsite_interlock_refused: false
+      rescue:
+        - name: Record that the missing interlock was refused
+          ansible.builtin.set_fact:
+            restic_offsite_interlock_refused: true
+
+    - name: Assert a swap-clean host with no interlock is refused
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.assert:
+        that:
+          - restic_offsite_interlock_refused | bool
+        fail_msg: >-
+          The role accepted nas_storage_swap_clean_enabled with no
+          restic-offsite.service in nas_storage_swap_clean_conflicting_units, so
+          swap-clean can stop the guests whose zvol clones restic is reading.
+        success_msg: "A swap-clean host with no interlock is refused"
+
+    # Off-switch: the units AND the .prom go, or a frozen
+    # backup_restore_drill_last_success_seconds keeps a staleness alert firing.
+    - name: Check the drill off-switch removes its metric with its units
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Write a drill metric for the off-switch to clear
+          ansible.builtin.copy:
+            dest: /var/lib/node_exporter/backup_restore_drill.prom
+            content: |
+              backup_restore_drill_last_run_seconds 1
+              backup_restore_drill_last_success_seconds 1
+            owner: root
+            group: root
+            mode: "0644"
+          changed_when: false
+
+        - name: Run the role with the restore drill disabled
+          ansible.builtin.include_role:
+            name: weisssrv.infra.restic_offsite
+          vars:
+            restic_offsite_restore_drill_enabled: false
+
+        - name: Stat what the off-switch should have removed
+          ansible.builtin.stat:
+            path: "{{ item }}"
+          register: restic_offsite_drill_off
+          loop:
+            - /var/lib/node_exporter/backup_restore_drill.prom
+            - /etc/systemd/system/backup-restore-drill.service
+            - /etc/systemd/system/backup-restore-drill.timer
+
+        - name: Assert the disabled drill leaves no metric and no units behind
+          ansible.builtin.assert:
+            that:
+              - restic_offsite_drill_off.results | rejectattr('stat.exists') | list | length == 3
+            fail_msg: >-
+              Disabling the restore drill left
+              {{ restic_offsite_drill_off.results | selectattr('stat.exists')
+                 | map(attribute='item') | list }}
+              behind — a frozen proof metric alerts forever with no timer to clear it.
+            success_msg: "Disabling the restore drill removes its metric and its units"
+
+    - name: Re-apply the role so the drill units are restored
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.include_role:
+        name: weisssrv.infra.restic_offsite

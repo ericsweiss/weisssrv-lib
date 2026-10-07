@@ -15,7 +15,12 @@ point the script at it. Each script's config resolution is documented in
 | `b2-bucket.example.json` | `b2-bucket-drift.py` | `scripts/b2-bucket.json` |
 | `netpol-except.example.yaml` | `check-netpol-except-parity.py` | `scripts/netpol-except.yaml` |
 | `alertmanager-behaviour.example.yaml` | `check-alertmanager-behaviour.py` | `scripts/alertmanager-behaviour.yaml` |
+| `render-gates.example.conf` | `run-render-gates.sh` | `scripts/render-gates.conf` |
+| `unifi-settings.example.json` | `unifi-settings-drift.py` | `scripts/unifi-settings.json` |
+| `helmrelease-crd-safety.example.yaml` | `check-helmrelease-crd-safety.py` | `kubernetes/helmrelease-crd-safety.yaml` |
+| `comment-length.example.yml` | `check-comment-length.py` | `.comment-length.yml` |
 
 The values in these files are illustrative placeholders, not a live
-configuration. `b2-bucket.example.json` in particular carries `REPLACE-WITH-…`
-identifiers; the others name upstreams and layout paths only.
+configuration. `b2-bucket.example.json` and `unifi-settings.example.json` in
+particular carry `REPLACE-WITH-…` identifiers; the others name upstreams and
+layout paths only.

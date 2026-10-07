@@ -1,9 +1,7 @@
 ---
-# Asserts that the role's
-# /control/tls/configure POST actually took effect: /control/tls/status must
-# echo back the enabled flag, server_name, ports, and certificate/key paths.
-# (The certificate_path-comparison idempotence is enforced by molecule's
-# idempotence step re-running converge and requiring no change.)
+# Asserts the role's /control/tls/configure POST took effect: /control/tls/status
+# echoes back the enabled flag, server_name, ports and certificate/key paths.
+# Idempotence is covered by molecule's own idempotence step.
 - name: Verify
   hosts: all
   become: true

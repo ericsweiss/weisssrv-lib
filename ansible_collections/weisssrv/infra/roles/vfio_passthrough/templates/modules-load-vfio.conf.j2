@@ -1,9 +1,6 @@
-{# Deployed content (/etc/modules-load.d/vfio-pci.conf) behind the same
-   update-grub / rebuild-initramfs / reboot-required handler chain as
-   grub-vfio.cfg.j2 — keep byte-stable, narrative in README.md. #}
+{# Byte-stable: a reword rebuilds boot artifacts on every consumer - see README. #}
 # {{ ansible_managed }}
-# Managed by the vfio_passthrough Ansible role.
+# managed by weisssrv.infra.vfio_passthrough
 #
-# Force vfio-pci to load at real-root boot as a fallback to the primary
-# vfio-pci.ids= kernel cmdline bind (vfio_passthrough README).
+# Force-loads vfio-pci at real-root boot, backing the vfio-pci.ids= cmdline bind.
 vfio-pci

@@ -2,46 +2,19 @@
 """
 from __future__ import annotations
 
-import importlib.util
+import io
 import subprocess
+import urllib.error
 from pathlib import Path
 
 import pytest
 
-REPO = Path(__file__).resolve().parent.parent
-_SCRIPT = REPO / "scripts" / "version-bump-mr.py"
+from script_loader import load_script
 
-_spec = importlib.util.spec_from_file_location("version_bump_mr", _SCRIPT)
-assert _spec and _spec.loader
-bot = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(bot)
+bot = load_script("version-bump-mr.py")
 
-# GitLab injects these into every job and main()'s argparse defaults read them at
-# call time (--target-branch from $CI_DEFAULT_BRANCH, --api-url, --project-id,
-# the remote URL from $CI_SERVER_HOST/$CI_PROJECT_PATH, the description's
-# pipeline link). Scrub them so the suite behaves identically in and out of a
-# pipeline; a test that wants one sets it explicitly.
-CI_ENV = (
-    "CI",
-    "GITLAB_CI",
-    "CI_COMMIT_SHA",
-    "CI_COMMIT_REF_NAME",
-    "CI_API_V4_URL",
-    "CI_PROJECT_ID",
-    "CI_PROJECT_URL",
-    "CI_PIPELINE_URL",
-    "CI_SERVER_HOST",
-    "CI_PROJECT_PATH",
-    "CI_DEFAULT_BRANCH",
-    "RELEASE_TOKEN",
-    "BOT_TOKEN",
-)
-
-
-@pytest.fixture(autouse=True)
-def _scrub_ci_env(monkeypatch):
-    for name in CI_ENV:
-        monkeypatch.delenv(name, raising=False)
+# The forge-injected CI variables main() reads are scrubbed by the autouse
+# fixture in tests/conftest.py.
 
 
 def test_changed_paths_ignores_untracked_by_default():
@@ -321,9 +294,7 @@ def test_main_commits_tracked_pins_only(repo, monkeypatch):
 
 
 def test_main_stages_bumps_when_a_paths_entry_has_no_tracked_files(repo, monkeypatch):
-    """`git add -- reports/` aborts rc 128 on a pathspec matching no TRACKED file,
-    while `git status --` tolerates it — so a --paths list mixing a real tree with
-    an artifact-only directory detected the bumps and then died before committing."""
+    """A --paths entry matching no tracked file must not abort the commit (git add rc 128)."""
     work, _ = repo
     _bump(work)
     (work / "reports").mkdir()
@@ -338,10 +309,7 @@ def test_main_stages_bumps_when_a_paths_entry_has_no_tracked_files(repo, monkeyp
 
 
 def test_main_stages_a_pin_whose_path_git_would_c_quote(repo, monkeypatch):
-    """`git status --porcelain` C-quotes any path with a non-ASCII byte
-    (`"ansible/r\\303\\264le/pins.yml"`); stripping the quotes without decoding the
-    escapes hands `git add` a literal that matches nothing — rc 128, the same
-    abort the detected-list staging was written to remove. `-z` never quotes."""
+    """A non-ASCII pin path is staged verbatim; git status -z never C-quotes it."""
     work, _ = repo
     role = work / "rôle"
     role.mkdir()
@@ -358,9 +326,7 @@ def test_main_stages_a_pin_whose_path_git_would_c_quote(repo, monkeypatch):
 
 
 def test_main_handles_a_repo_dir_below_the_repo_root(repo, monkeypatch):
-    """`git status --porcelain` always answers in repo-root-relative paths while
-    `git add` resolves pathspecs against the CWD, so staging the detected list
-    from a subdirectory --repo-dir needs the `:(top)` anchor to match at all."""
+    """A --repo-dir below the repo root still stages the detected paths (:(top) anchor)."""
     work, _ = repo
     sub = work / "sub"
     sub.mkdir()
@@ -450,3 +416,140 @@ def test_main_dry_run_touches_no_remote(repo, monkeypatch):
     rc = bot.main(["--repo-dir", str(work), "--remote-url", str(remote), "--dry-run"])
     assert rc == 0
     assert bot.remote_tree(str(work), "bot/version-bumps", str(remote)) == ""
+
+
+# --- credentials never reach git's argv ---------------------------------------
+
+def test_the_default_remote_url_carries_no_token(repo, monkeypatch):
+    """The push URL in argv holds the username only; the token goes through
+    GIT_ASKPASS, out of the runner's process table."""
+    work, remote = repo
+    _bump(work)
+    monkeypatch.setenv("BOT_TOKEN", "glpat-tok")
+    monkeypatch.setenv("CI_SERVER_HOST", "git.example")
+    monkeypatch.setenv("CI_PROJECT_PATH", "group/proj")
+    monkeypatch.setattr(bot, "GitLabClient", lambda *a, **kw: FakeClient())
+    seen = {}
+
+    def fake_remote_tree(repo_dir, branch, remote_url, env=None):
+        seen["url"] = remote_url
+        seen["env"] = env
+        return ""
+
+    monkeypatch.setattr(bot, "remote_tree", fake_remote_tree)
+    monkeypatch.setattr(bot, "push_branch", lambda *a: None)
+    assert bot.main([
+        "--repo-dir", str(work), "--target-branch", "main",
+        "--api-url", "https://git.example/api/v4", "--project-id", "42",
+    ]) == 0
+    assert seen["url"] == "https://gitlab-ci-token@git.example/group/proj.git"
+    assert "glpat-tok" not in seen["url"]
+    assert seen["env"]["GIT_BOT_SECRET"] == "glpat-tok"
+
+
+def test_askpass_shim_prints_the_secret_and_is_removed():
+    with bot.askpass_env("glpat-tok") as env:
+        shim = env["GIT_ASKPASS"]
+        out = subprocess.run([shim, "Password for 'x':"], capture_output=True, text=True, env=env)
+        assert out.stdout == "glpat-tok"
+    assert not Path(shim).exists()
+
+
+def test_askpass_env_without_a_secret_inherits_the_environment():
+    with bot.askpass_env("") as env:
+        assert env is None
+
+
+def test_a_credential_in_remote_url_is_registered_for_redaction(repo, monkeypatch, capsys):
+    """--remote-url is used verbatim, so its userinfo must reach redact()."""
+    work, _ = repo
+    _bump(work)
+    monkeypatch.setenv("BOT_TOKEN", "glpat-tok")
+    monkeypatch.setattr(bot, "GitLabClient", lambda *a, **kw: FakeClient())
+    monkeypatch.setattr(bot, "remote_tree", lambda *a, **kw: "")
+
+    def failing_push(*a, **kw):
+        raise subprocess.CalledProcessError(
+            128, ["git", "push", "https://u:s3cr3t@host/x.git"],
+            stderr="remote: rejected https://u:s3cr3t@host/x.git",
+        )
+
+    monkeypatch.setattr(bot, "push_branch", failing_push)
+    rc = bot.run_cli([
+        "--repo-dir", str(work),
+        "--remote-url", "https://u:s3cr3t@host/x.git",
+        "--target-branch", "main",
+        "--api-url", "https://git.example/api/v4", "--project-id", "42",
+    ])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "s3cr3t" not in err
+    assert "***" in err
+
+
+# --- the commit is scoped to the detected paths -------------------------------
+
+def test_commit_ignores_what_the_check_command_staged_outside_paths(repo, monkeypatch):
+    """The documented contract is "only tracked changes under --paths are
+    committed"; a pathspec commit enforces it even with a dirty index."""
+    work, _ = repo
+    (work / "other.yml").write_text("unrelated: 1\n")
+    bot.git(["add", "-A"], str(work))
+    bot.git(["commit", "--quiet", "-m", "add the unrelated file"], str(work))
+    _bump(work)
+    (work / "other.yml").write_text("unrelated: 2\n")
+    bot.git(["add", "--", "other.yml"], str(work))
+
+    rc, _client = _run_main(repo, monkeypatch, paths="pins.yml")
+
+    assert rc == 0
+    assert _committed(work) == ["pins.yml"]
+
+
+# --- run_cli(): failures as one line, not a traceback -------------------------
+
+def test_run_cli_redacts_a_failed_git_command(monkeypatch, capsys):
+    def boom(argv=None):
+        bot._SECRETS.append("glpat-tok")
+        raise subprocess.CalledProcessError(
+            128, ["git", "push", "https://gitlab-ci-token:glpat-tok@host/x.git"],
+            stderr="remote: rejected glpat-tok",
+        )
+
+    monkeypatch.setattr(bot, "main", boom)
+    assert bot.run_cli([]) == 1
+    err = capsys.readouterr().err
+    assert "glpat-tok" not in err
+    assert err.count("***") == 2
+    assert "Traceback" not in err
+
+
+def test_run_cli_redacts_an_api_error_body(monkeypatch, capsys):
+    def boom(argv=None):
+        bot._SECRETS.append("glpat-tok")
+        raise urllib.error.HTTPError(
+            "https://git.example", 403, "Forbidden", {},
+            io.BytesIO(b'{"message": "token glpat-tok denied"}'),
+        )
+
+    monkeypatch.setattr(bot, "main", boom)
+    assert bot.run_cli([]) == 1
+    err = capsys.readouterr().err
+    assert "glpat-tok" not in err and "***" in err and "403" in err
+
+
+def test_run_cli_reports_a_remote_failure_as_one_line(monkeypatch, capsys):
+    monkeypatch.setattr(bot, "main", lambda argv=None: (_ for _ in ()).throw(
+        bot.GitRemoteError("git fetch of bot/version-bumps failed (rc=128): boom")))
+    assert bot.run_cli([]) == 1
+    err = capsys.readouterr().err
+    assert len(err.strip().splitlines()) == 1
+    assert "Traceback" not in err
+
+
+def test_run_cli_reports_an_unreachable_host(monkeypatch, capsys):
+    monkeypatch.setattr(bot, "main", lambda argv=None: (_ for _ in ()).throw(
+        urllib.error.URLError("name or service not known")))
+    assert bot.run_cli([]) == 1
+    err = capsys.readouterr().err
+    assert "URLError" in err and "Traceback" not in err

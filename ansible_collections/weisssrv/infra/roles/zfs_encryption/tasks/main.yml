@@ -23,10 +23,9 @@
     - ansible_facts['os_family'] == "Debian"
     - zfs_encryption_install_zfsutils | default(true)
 
-# Fail loudly when the operator forgets `op run --` on a host that has
-# pools to unlock. Without the token the per-pool services silently exit
-# 1 at boot with a misleading "missing token file"; this assert
-# short-circuits with a clear pointer.
+# Fail loudly when the token is absent on a host that has pools to unlock:
+# the per-pool services would otherwise exit 1 at boot with a misleading
+# "missing token file".
 - name: Validate the Connect access point is set
   ansible.builtin.assert:
     that: zfs_encryption_connect_url | default('') | length > 0
@@ -44,17 +43,29 @@
     fail_msg: >-
       zfs_encryption_connect_token is empty. Supply it from the site's secret
       store — e.g. `op run -- env ZFS_ENCRYPTION_CONNECT_TOKEN="$(op read
-      'op://{{ zfs_encryption_connect_vault }}/<token item>/credential')"
-      ansible-playbook ...` — or set zfs_encryption_key_command to fetch keys
-      another way. See README § Scoping the Connect token.
+      'op://<vault>/<token item>/credential')" ansible-playbook ...` — or set
+      zfs_encryption_key_command to fetch keys another way. See README §
+      Scoping the Connect token.
   when:
     - zfs_encryption_pools | default([]) | length > 0
     - zfs_encryption_key_command | default('') | length == 0
 
-# Token deploy is gated on zfs_encryption_pools: a host that never loads a key
-# has no business holding the Connect credential (blast radius). It is also
-# skipped when zfs_encryption_key_command replaces the Connect fetch — the
-# rendered script then has no Connect code to authenticate.
+# No default: a vault name is site identity, and the token can read every item
+# in whatever vault it names.
+- name: Validate the Connect vault is named
+  ansible.builtin.assert:
+    that: zfs_encryption_connect_vault | default('') | length > 0
+    fail_msg: >-
+      zfs_encryption_connect_vault is empty — name the 1Password vault holding
+      the pool passphrases, scoped to only those items. See README § Scoping
+      the Connect token.
+  when:
+    - zfs_encryption_pools | default([]) | length > 0
+    - zfs_encryption_key_command | default('') | length == 0
+
+# Token deploy is gated on zfs_encryption_pools, so a host that never loads a
+# key holds no Connect credential. It is skipped too when
+# zfs_encryption_key_command replaces the Connect fetch.
 - name: Ensure the Connect token directory exists
   ansible.builtin.file:
     path: "{{ zfs_encryption_token_path | dirname }}"
@@ -132,9 +143,8 @@
   notify: Reload systemd
 
 # Late, retrying pass that mounts the encrypted datasets once their keys are
-# loaded — the single anchor nfsd + encrypted-storage guests order After=.
-# (See the README for why this is separate from the early stock
-# zfs-mount.service.)
+# loaded: the single anchor nfsd and encrypted-storage guests order After=.
+# Why it is separate from stock zfs-mount.service: role README.
 - name: Deploy zfs-mount-encrypted mount script
   ansible.builtin.template:
     src: zfs-mount-encrypted.sh.j2
@@ -145,8 +155,7 @@
 
 # Rendered only where there is something to mount: with no pool arguments the
 # script exits 1 on its usage guard, and the unit's `until ... done` ExecStart
-# under TimeoutStartSec=0 would spin forever if anyone started it by hand.
-# Removed again below when the pool list is emptied.
+# under TimeoutStartSec=0 would spin forever if started by hand.
 - name: Deploy zfs-mount-encrypted.service systemd unit
   ansible.builtin.template:
     src: zfs-mount-encrypted.service.j2
@@ -180,22 +189,16 @@
 - name: Apply pending systemd reloads
   ansible.builtin.meta: flush_handlers
 
-# Footgun guard: a listed pool that isn't actually encrypted would leave
-# zfs-load-key@<pool>.service failing forever at every boot, so
-# zfs-mount-encrypted.service never converges and its dependents (nfsd, the
-# gated guests) stay queued. Fail the play up front instead.
-#
-# The check must be recursive: the encryption root may be the pool itself OR a
-# child dataset (in which case the pool reports 'off'). A pool is acceptable iff
-# at least one dataset under it has encryption != 'off' (and != '-', which is
-# what snapshots report).
+# CRITICAL: a listed pool that is not actually encrypted leaves
+# zfs-load-key@<pool>.service failing at every boot, so
+# zfs-mount-encrypted.service never converges and nfsd and the gated guests
+# stay queued. The probe is recursive because the encryption root may be a
+# child dataset while the pool itself reports 'off'; a pool passes when at
+# least one dataset under it reports encryption other than 'off' or '-'.
 - name: Discover any encrypted dataset under each listed pool
-  # awk deliberately reads ALL of stdin (never `exit`s early) because this runs
-  # under `set -o pipefail`: any early-exit form (`head -n1`, `awk ... exit`)
-  # races SIGPIPE — the producer's next write trips EPIPE, the pipeline returns
-  # 141, and the `item.rc == 0` assert below misfires "pool has no encrypted
-  # datasets" on a pool that has them. Scanning every dataset name costs
-  # microseconds at any realistic pool size.
+  # awk reads all of stdin because this runs under `set -o pipefail`: an
+  # early-exit form races SIGPIPE, the pipeline returns 141, and the assert
+  # below misfires on a pool that does have encrypted datasets.
   ansible.builtin.shell: |
     set -o pipefail
     zfs get -r -H -o value encryption {{ item.name }} \
@@ -248,9 +251,8 @@
     - zfs_encryption_install_zfsutils | default(true)
 
 # Enable the late mount anchor first: zfs-load-key@<pool> is
-# WantedBy=zfs-mount-encrypted.service, so the anchor must exist + be enabled
-# (WantedBy=multi-user.target) for the per-pool .wants symlinks to be pulled
-# into the boot transaction.
+# WantedBy=zfs-mount-encrypted.service, so the anchor must be enabled for the
+# per-pool .wants symlinks to reach the boot transaction.
 - name: Enable zfs-mount-encrypted.service (late encrypted-dataset mount anchor)
   ansible.builtin.systemd:
     name: zfs-mount-encrypted.service

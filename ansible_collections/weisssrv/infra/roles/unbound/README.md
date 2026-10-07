@@ -41,6 +41,7 @@ for a LAN-facing filtering resolver (`weisssrv.infra.adguard_home`).
 | `unbound_serve_expired` / `unbound_serve_expired_ttl` | `true` / `86400` | Serve stale answers while refreshing |
 | `unbound_aggressive_nsec` | `true` | |
 | `unbound_edns_buffer_size` | `1232` | |
+| `unbound_skip_validate` | `false` | Skip the pre-write `unbound-checkconf`. Only for hosts without the binary |
 | `unbound_use_caps_for_id` | `true` | 0x20 randomization; redundant behind DoT and a SERVFAIL source against upstreams that normalize case — set `false` if an upstream misbehaves |
 
 `cache-min-ttl` (60s), `cache-max-ttl` (86400s), `prefetch`, and the
@@ -62,6 +63,7 @@ unbound-control flush_zone .
 journalctl -u unbound -f
 ```
 
-If Unbound will not start, `unbound-checkconf` on the drop-in names the offending
-line; if queries fail, confirm the socket with `ss -tlnp | grep 5335` and the DoT
-path with `openssl s_client -connect 1.1.1.1:853`.
+The role runs `unbound-checkconf` before it writes the drop-in, so an invalid
+render fails the play instead of reaching disk. If queries fail, confirm the
+socket with `ss -tlnp | grep 5335` and the DoT path with
+`openssl s_client -connect 1.1.1.1:853`.

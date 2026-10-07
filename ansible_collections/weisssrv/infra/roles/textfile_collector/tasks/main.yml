@@ -1,11 +1,7 @@
 ---
-# Render a node_exporter textfile-collector oneshot service + its timer from
-# per-collector vars, with the shared systemd hardening. Mirrors the
-# prometheus_exporter wrapper pattern: callers include_role this with vars.
-#
-# Scope: this helper owns ONLY the unit/timer scaffold. The collector SCRIPT and
-# the enable/start of the timer stay in the calling role, whose own molecule
-# gating rides on the enable/start task.
+# Render a node_exporter textfile-collector oneshot service and its timer from
+# per-collector vars, with the shared systemd hardening. This helper owns only
+# the unit scaffold; the collector script and timer enable stay in the caller.
 
 # Named here rather than left to a mid-render undefined-variable error.
 - name: Assert the required per-collector vars are supplied

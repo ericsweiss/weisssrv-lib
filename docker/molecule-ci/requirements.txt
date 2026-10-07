@@ -1,21 +1,11 @@
-# Python dependencies baked into the molecule-ci image.
-#
-# Exact pins, not lower bounds: this file is COPYed and pip-installed by
-# docker/molecule-ci/Dockerfile, so a rebuild must be reproducible and must never
-# silently pull a new major. The claim is scoped to pip — the sibling
-# requirements.yml pins galaxy collections as major-line RANGES because those
-# specs are shared with galaxy.yml, and that file's header says why.
-#
-# Three pins below (ansible-lint, black, yamllint) are the molecule side of a
-# parity contract with the ci/lint template defaults — see
-# tests/test_lint_version_parity.py for the exact pairs. ansible-core is not in
-# that contract: no template input pins it, ansible-lint pulls its own.
-ansible==11.6.0
-ansible-lint==25.12.2
-# black is a transitive dep (ansible-lint's jinja rule imports it); the black
-# 26.5.x wheels ship a broken mypyc extension that makes ansible-lint fail to
-# load. Lift once 26.5.x is fixed.
-black<26.5.0
+# Baked into the molecule-ci image; exact pins so a rebuild is reproducible.
+# ansible-lint, black and yamllint are held equal to the ci/lint template
+# defaults by tests/test_lint_version_parity.py. ansible-core is outside it.
+ansible==14.4.0
+ansible-lint==26.8.0
+# A transitive dep of ansible-lint's jinja rule, held below 26.5.x, whose
+# wheels ship a broken mypyc extension that makes ansible-lint fail to load.
+black==26.3.1
 molecule==26.4.0
 molecule-plugins[docker]==25.8.12
 yamllint==1.38.0

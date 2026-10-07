@@ -12,6 +12,14 @@
         state: directory
         mode: "0755"
 
+    # ProtectSystem=strict fails the unit at start on a ReadWritePaths entry
+    # that does not exist, so the extra path the scenario passes must be real.
+    - name: Create the extra writable path the scenario passes
+      ansible.builtin.file:
+        path: /var/lib/molecule-extra
+        state: directory
+        mode: "0755"
+
     - name: Install a dummy collector script (the calling role owns the real one)
       ansible.builtin.copy:
         dest: /usr/local/sbin/molecule-test-collector.sh

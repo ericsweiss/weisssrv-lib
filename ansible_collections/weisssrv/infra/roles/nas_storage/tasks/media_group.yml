@@ -1,0 +1,9 @@
+---
+# Shared by the NFS and Samba includes; either can run alone and the group task
+# is idempotent.
+
+- name: Ensure the shared media group exists
+  ansible.builtin.group:
+    name: "{{ nas_storage_media_group }}"
+    gid: "{{ nas_storage_media_gid }}"
+    state: present

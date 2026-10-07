@@ -88,7 +88,9 @@
 
 - name: Wait for the ML service to answer /ping
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ immich_ml_listen_port }}/ping"
+    url: >-
+      http://{{ '127.0.0.1' if immich_ml_bind in ['0.0.0.0', '127.0.0.1']
+      else immich_ml_bind }}:{{ immich_ml_listen_port }}/ping
     status_code: 200
   register: immich_ml_ping
   until: immich_ml_ping.status == 200

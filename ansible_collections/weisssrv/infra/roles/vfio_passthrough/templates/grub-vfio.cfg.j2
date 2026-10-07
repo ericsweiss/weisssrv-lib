@@ -1,15 +1,5 @@
-{# Deployed content (/etc/default/grub.d/vfio-iommu.cfg). The writing task
-   notifies `Update GRUB for VFIO` and `Warn that a VFIO reboot is required`,
-   so even a comment reword makes an existing
-   consumer regenerate its boot artifacts and print reboot-required. Keep
-   byte-stable; narrative goes in README.md. #}
+{# Byte-stable: a reword rebuilds boot artifacts on every consumer - see README. #}
 # {{ ansible_managed }}
-# Managed by the vfio_passthrough Ansible role.
-#
-# Debian's grub sources every /etc/default/grub.d/*.cfg AFTER /etc/default/grub,
-# so this appends the kernel parameters without editing the main grub file.
-# Takes effect after `update-grub` + a reboot — the role never reboots.
-#
-# vfio-pci.ids= is the PRIMARY bind: as a module cmdline parameter it claims the
-# functions the instant vfio-pci loads in the initramfs, ahead of udev.
+# managed by weisssrv.infra.vfio_passthrough
+# Read by `update-grub`; vfio-pci.ids= binds the functions in the initramfs.
 GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT {{ vfio_passthrough_cmdline_params | join(' ') }} vfio-pci.ids={{ vfio_passthrough_pci_ids | join(',') }}"

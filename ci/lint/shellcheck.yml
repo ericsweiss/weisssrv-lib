@@ -35,10 +35,8 @@ spec:
       default: "main"
       description: >-
         Consumer's default branch as a LITERAL name (`main`, `master`, `trunk`)
-        for the post-merge rule. NOT `$CI_DEFAULT_BRANCH`: the value lands
-        inside a quoted `rules:if` string, which GitLab does not expand, so the
-        comparison would never match and the job would silently stop running
-        post-merge.
+        for the post-merge rule. NOT `$CI_DEFAULT_BRANCH` —
+        docs/INCLUDE-CONTRACT.md § default_branch.
     changes:
       type: array
       default:
@@ -50,22 +48,16 @@ spec:
     job_memory_limit:
       default: "512Mi"
       description: >-
-        KUBERNETES_MEMORY_LIMIT for the job pod. Right-sized per job class so
-        concurrent pipelines pack into the runner namespace's limits.memory
-        quota instead of every job costing the runner default; raise it per
-        consumer only when the job really needs more (the runner's
-        memory_limit_overwrite_max_allowed is the hard ceiling).
+        KUBERNETES_MEMORY_LIMIT for the job pod. Sizing policy:
+        docs/INCLUDE-CONTRACT.md § Resource inputs.
     job_memory_request:
       default: "128Mi"
       description: KUBERNETES_MEMORY_REQUEST for the job pod (scheduler reservation).
     job_cpu_request:
       default: "100m"
       description: >-
-        KUBERNETES_CPU_REQUEST for the job pod — the scheduler reservation,
-        right-sized per job class so a full concurrency burst packs into the
-        runner nodes' allocatable CPU instead of every job costing the runner
-        default (no CPU limit, repo-wide: CPU is compressible and a limit
-        only buys CFS throttling).
+        KUBERNETES_CPU_REQUEST for the job pod (scheduler reservation). Sizing
+        policy: docs/INCLUDE-CONTRACT.md § Resource inputs.
 ---
 "$[[ inputs.job_name ]]":
   needs: []
@@ -83,21 +75,15 @@ spec:
       - scheduler_failure
   script:
     - echo "Running ShellCheck..."
-    # `linted` and `failed` are carried across these script blocks (the runner
-    # concatenates them into ONE shell script) and both are checked in the
-    # final block. A green job that checked nothing is the silent pass this
-    # gate prevents, the same guard ci/lint/yaml-lint.yml applies to its
-    # targets. No block exits on its own: an early exit would suppress the
-    # other blocks' findings AND skip the accounting.
+    # `linted` and `failed` carry across these blocks (the runner concatenates
+    # them into ONE script) and are checked in the last one, so a job that
+    # checked nothing cannot pass. No block exits on its own.
     - linted=0
     - failed=0
     - |
-      # Direct files/globs (scripts/ + any repo-root helper scripts). Iterate
-      # the globs and lint only files that actually exist: a tenant whose tree
-      # lacks a glob's files (e.g. no `ansible/*.sh`) is SKIPPED with a note
-      # instead of failing — passing an UNMATCHED glob literally to shellcheck
-      # would error "No such file". In POSIX sh an unmatched glob stays literal,
-      # so `[ -e ]` distinguishes a real file from a non-matching pattern.
+      # Direct files/globs, linting only what exists: an unmatched glob stays
+      # literal in POSIX sh, so `[ -e ]` separates a real file from a pattern
+      # that matched nothing and the tenant is skipped with a note, not failed.
       rc=0
       # word-split + glob-expand direct_globs on purpose (SC2086).
       for f in $[[ inputs.direct_globs ]]; do
@@ -118,20 +104,17 @@ spec:
       elif [ ! -d "$FIND_DIR" ]; then
         echo "no such find_dir '$FIND_DIR' — skipping role shell + template checks"
       else
-        # Also lint shell scripts shipped under the find dir (e.g. Ansible
-        # roles). `find ... | while ...` would mask failures: the pipeline's
-        # exit code is the while loop's, i.e. the rc of its LAST iteration — a
-        # shellcheck failure on any earlier file goes green. `-exec ... {} +`
-        # returns non-zero if shellcheck fails on ANY file.
-        #
-        # rc must be CAPTURED: the runner checks only the block's LAST command,
-        # which here is the `linted` assignment and always succeeds. It is
-        # folded into `failed` rather than exited on, so the *.sh.j2 block
-        # still runs.
+        # One walk into a list file: `find | while` would report only the LAST
+        # iteration's status, and rc must be CAPTURED because the runner checks
+        # only this block's last command. Folded into `failed` so *.sh.j2 runs.
         rc=0
-        find "$FIND_DIR" -name '*.sh' -type f \
-          -exec shellcheck --severity=$[[ inputs.severity ]] --exclude=$[[ inputs.exclude ]] {} + || rc=1
-        linted=$((linted + $(find "$FIND_DIR" -name '*.sh' -type f | wc -l)))
+        sh_list=$(mktemp)
+        find "$FIND_DIR" -name '*.sh' -type f > "$sh_list"
+        if [ -s "$sh_list" ]; then
+          xargs shellcheck --severity=$[[ inputs.severity ]] --exclude=$[[ inputs.exclude ]] < "$sh_list" || rc=1
+        fi
+        linted=$((linted + $(wc -l < "$sh_list")))
+        rm -f "$sh_list"
         [ "$rc" -eq 0 ] || { echo "ShellCheck failed on one or more role shell scripts"; failed=1; }
       fi
     - |
@@ -139,16 +122,9 @@ spec:
       if [ -z "$FIND_DIR" ] || [ ! -d "$FIND_DIR" ]; then
         echo "no usable find_dir — skipping *.sh.j2 template checks"
       else
-        # Lint shell-script Jinja templates (*.sh.j2): real values can't be
-        # rendered, so Jinja is neutralized first. A {# #} comment-RANGE delete
-        # would eat bash ${#arr[@]}, so {% raw %}-wrapped templates (literal bash)
-        # drop only FULL-LINE {# ... #} comments; plain ones keep the full
-        # neutralizer. CONSTRAINT: an inline/multi-line {# #} in the out-of-raw
-        # header of a raw-wrapped template is NOT stripped — keep those single-line.
-        #
-        # rc is accumulated via a list file, not `find | while` (whose status is
-        # only the last iteration's) and not a pipe/process substitution (this
-        # job's shell is ash), so the loop runs in the current shell.
+        # Jinja is neutralized before linting *.sh.j2. A {# #} comment-RANGE
+        # delete would eat bash ${#arr[@]}, so {% raw %}-wrapped templates drop
+        # only FULL-LINE {# ... #} comments; keep out-of-raw headers single-line.
         rendered=$(mktemp)
         tmpl_list=$(mktemp)
         rc=0
@@ -177,10 +153,9 @@ spec:
         [ "$rc" -eq 0 ] || { echo "ShellCheck failed on one or more *.sh.j2 templates"; failed=1; }
       fi
     - |
-      # An individual skip is a layout difference between consumers; ALL of them
-      # skipping means `direct_globs` and `find_dir` describe a tree this repo
-      # does not have, and the job would otherwise report "ShellCheck passed"
-      # having read no file at all.
+      # One skip is a layout difference; ALL of them skipping means
+      # `direct_globs` and `find_dir` describe a tree this repo does not have,
+      # and the job would report "ShellCheck passed" having read nothing.
       [ "$linted" -gt 0 ] || {
         echo "ERROR: shellcheck matched no files — direct_globs and find_dir cover nothing in this repo"
         exit 1

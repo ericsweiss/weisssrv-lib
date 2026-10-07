@@ -1,0 +1,25 @@
+# {{ ansible_managed }}
+# Probes every distribution target without pushing, so the per-target gauges
+# move between renewals. Fired by the timer.
+[Unit]
+Description=Check the certificate distribution targets
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/homelab-cert-reload.sh --check
+User=root
+TimeoutStartSec={{ acme_certs_distribution_check_timeout }}
+# Low priority: a reachability probe is never urgent.
+Nice={{ acme_certs_distribution_check_nice }}
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# ProtectHome is read-only, not yes: the distribution key lives under the
+# acme_certs_ssh_user home.
+ProtectSystem=full
+ProtectHome=read-only
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native

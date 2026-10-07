@@ -1,8 +1,6 @@
 ---
-# encrypted_swap — dm-crypt PLAIN-mode swap with a RANDOM ephemeral key (fresh
-# each boot, discarded at shutdown, so on-disk swap is unrecoverable after a
-# reboot). Managed via /etc/crypttab (systemd-cryptsetup opens + mkswaps the
-# mapper at boot) + /etc/fstab. Bare-metal hosts only.
+# dm-crypt plain-mode swap with a random ephemeral key, wired through
+# /etc/crypttab and /etc/fstab. Bare-metal hosts only. See README.
 
 encrypted_swap_enabled: true
 
@@ -11,10 +9,8 @@ encrypted_swap_enabled: true
 encrypted_swap_source_device: /dev/pve/swap
 encrypted_swap_mapper_name: cryptswap
 
-# The role stats the backing device before writing crypttab/fstab. True fails
-# the deploy when it is not a block device; false self-skips loudly instead
-# (nothing written, boot finalize unit disabled) for a mixed fleet where only
-# some hosts carry it.
+# True fails the deploy when the backing device is not a block device; false
+# self-skips loudly instead, for a mixed fleet.
 encrypted_swap_require_source_device: true
 
 # aes-xts-plain64, size=512 => AES-256-XTS (two 256-bit keys). Random key from
@@ -23,10 +19,10 @@ encrypted_swap_cipher: aes-xts-plain64
 encrypted_swap_key_size: 512
 encrypted_swap_sector_size: 4096
 
-# Priority for the encrypted mapper's fstab swap line. Set ABOVE the plaintext
-# backing swap so that during the deferred-activation window (both lines present,
-# see README) the kernel prefers the encrypted mapper for new swap-outs the
-# moment it comes up at reboot — before the boot finalize unit drops the plaintext
-# device. `nofail` on the mapper line lets `swapon -a` silently skip the mapper
-# while it is still absent (pre-reboot defer window) instead of erroring.
+# fstab `pri=` for the mapper line; must sit above the plaintext swap line so
+# the kernel prefers the mapper during the defer window. See README.
 encrypted_swap_mapper_swap_priority: 100
+
+# Where the finalize unit drops encrypted_swap.prom. Skipped when the directory
+# is absent, so a host without node_exporter_host is unaffected.
+encrypted_swap_textfile_dir: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"

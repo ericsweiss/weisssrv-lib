@@ -7,6 +7,12 @@
 - name: Assert every ZFS-backed source is classified
   ansible.builtin.include_tasks: assert_zfs_classification.yml
 
+# The cap is a modprobe.d/sysfs concern on any ZFS host, so it runs whether or
+# not pool properties are declared or the pool work is skipped.
+- name: Cap the ZFS ARC
+  ansible.builtin.include_tasks: zfs_arc.yml
+  when: nas_storage_zfs_arc_max_bytes | default('') | string | length > 0
+
 - name: Include ZFS tasks
   ansible.builtin.include_tasks: zfs.yml
   when:
@@ -31,9 +37,36 @@
   ansible.builtin.include_tasks: media_mover.yml
   when: nas_storage_media_mover_enabled | default(false)
 
+- name: Remove a previously deployed media mover
+  ansible.builtin.include_tasks: deprovision_units.yml
+  vars:
+    nas_storage_deprovision_timers: [media-mover.timer]
+    nas_storage_deprovision_static_services: [media-mover.service]
+    nas_storage_deprovision_paths:
+      - /usr/local/sbin/media-mover.sh
+    nas_storage_deprovision_metrics:
+      - "{{ nas_storage_backup_artifact_metrics_dir }}/media_mover.prom"
+  when: not (nas_storage_media_mover_enabled | default(false))
+
 - name: Include swap-clean tasks
-  ansible.builtin.include_tasks: swap_clean.yml
   when: nas_storage_swap_clean_enabled
+  block:
+    - name: Assert the swap-clean stop-guest list is well formed
+      ansible.builtin.include_tasks: assert_swap_clean_guests.yml
+
+    - name: Deploy the swap-clean units
+      ansible.builtin.include_tasks: swap_clean.yml
+
+- name: Remove a previously deployed swap-clean
+  ansible.builtin.include_tasks: deprovision_units.yml
+  vars:
+    nas_storage_deprovision_timers: [swap-clean.timer]
+    nas_storage_deprovision_static_services: [swap-clean.service]
+    nas_storage_deprovision_paths:
+      - /usr/local/sbin/swap-clean.sh
+    nas_storage_deprovision_metrics:
+      - "{{ nas_storage_backup_artifact_metrics_dir }}/swap_clean.prom"
+  when: not nas_storage_swap_clean_enabled
 
 - name: Include SMART monitoring tasks
   ansible.builtin.include_tasks: smartd.yml
@@ -56,41 +89,61 @@
           properties this role rewrites) and nas_storage_archive_backup_sources
           (the datasets to replicate) are both required.
 
+    - name: Assert the archive exclusion list is well formed
+      ansible.builtin.include_tasks: assert_archive_exclude.yml
+
     - name: Include archive backup tasks
       ansible.builtin.include_tasks: archive_backup.yml
 
-# Opt-out converges instead of orphaning: see archive_backup_absent.yml.
+# Opt-out converges instead of orphaning: see deprovision_units.yml.
 - name: Remove a previously deployed archive backup
-  ansible.builtin.include_tasks: archive_backup_absent.yml
+  ansible.builtin.include_tasks: deprovision_units.yml
+  vars:
+    nas_storage_deprovision_timers: [archive-backup.timer]
+    nas_storage_deprovision_static_services: [archive-backup.service]
+    nas_storage_deprovision_paths:
+      - /usr/local/sbin/archive-backupctl
+    nas_storage_deprovision_metrics:
+      - "{{ nas_storage_backup_artifact_metrics_dir }}/archive_backup.prom"
+      - "{{ nas_storage_backup_artifact_metrics_dir }}/.archive_prune_failed"
   when: not (nas_storage_archive_backup_enabled | bool)
 
 - name: Include /etc/pve cluster-config backup tasks
   ansible.builtin.include_tasks: pve_cluster_backup.yml
   when: nas_storage_pve_cluster_backup_enabled | default(false)
 
-# Turning the feature off must also stand the timer down — an armed unit would
-# keep archiving /etc/pve key material indefinitely.
-- name: Reconcile the /etc/pve cluster-config backup away when disabled
+# An armed timer would keep archiving /etc/pve key material indefinitely.
+- name: Remove a previously deployed /etc/pve cluster-config backup
+  ansible.builtin.include_tasks: deprovision_units.yml
+  vars:
+    nas_storage_deprovision_timers: [pve-cluster-backup.timer]
+    nas_storage_deprovision_static_services: [pve-cluster-backup.service]
+    nas_storage_deprovision_paths:
+      - /usr/local/sbin/pve-cluster-backup.sh
+      - "{{ nas_storage_pve_cluster_backup_lib_path }}"
+    nas_storage_deprovision_metrics:
+      - "{{ nas_storage_backup_artifact_metrics_dir }}/pve_cluster_backup.prom"
   when: not (nas_storage_pve_cluster_backup_enabled | default(false))
-  block:
-    - name: Stop + disable the pve-cluster-backup timer if present
-      ansible.builtin.systemd:
-        name: pve-cluster-backup.timer
-        enabled: false
-        state: stopped
-      failed_when: false
-      when: not ansible_check_mode
-
-    - name: Remove the pve-cluster-backup units and script
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - /etc/systemd/system/pve-cluster-backup.timer
-        - /etc/systemd/system/pve-cluster-backup.service
-        - /usr/local/sbin/pve-cluster-backup.sh
-      notify: Reload systemd
 
 - name: Include backup-artifact metrics tasks
   ansible.builtin.include_tasks: backup_metrics.yml
   when: nas_storage_backup_artifact_metrics_enabled | default(false)
+
+- name: Remove a previously deployed backup-artifact collector
+  ansible.builtin.include_tasks: deprovision_units.yml
+  vars:
+    nas_storage_deprovision_timers: [backup-artifact-mtime-collector.timer]
+    nas_storage_deprovision_static_services: [backup-artifact-mtime-collector.service]
+    nas_storage_deprovision_paths:
+      - /usr/local/sbin/backup-artifact-mtime-collector.sh
+    nas_storage_deprovision_metrics:
+      - "{{ nas_storage_backup_artifact_metrics_dir }}/backup_artifact_mtime.prom"
+  when: not (nas_storage_backup_artifact_metrics_enabled | default(false))
+
+# The boot-time remount unit outlives the unions it remounts, so a host that
+# drops MergerFS keeps a oneshot mounting fstab entries the role no longer owns.
+- name: Remove a previously deployed MergerFS remount unit
+  ansible.builtin.include_tasks: deprovision_units.yml
+  vars:
+    nas_storage_deprovision_services: [mergerfs-remount.service]
+  when: nas_storage_mergerfs_mounts | default([]) | length == 0

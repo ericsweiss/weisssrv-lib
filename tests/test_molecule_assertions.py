@@ -1,28 +1,7 @@
 #!/usr/bin/env python3
-"""Guard against vacuous `assert: that:` conditions.
-
-Two shapes pass whatever the target looks like.
-
-1. An entry that does not parse as a STRING:
-
-       - (out.content | b64decode) is search('TZ: America/Los_Angeles')
-
-   parses as a MAPPING, not a string, because of the unquoted `': '` inside the
-   pattern. Ansible renders the mapping as a Jinja dict literal, which is
-   truthy. The fix is always the same: wrap the whole entry in double quotes.
-
-2. An EMPTY condition list (`that: []`, or a `that:` with nothing under it).
-   `assert` with no conditions succeeds unconditionally, so a task left in that
-   state — mid-edit, or after its last condition was deleted — reads as a
-   passing check forever.
-
-Neither ansible-lint nor molecule sees anything wrong with either; only a YAML
-type check does, which is what this gate is.
-
-Scope is every `that:` the collection ships, not only the molecule ones: a
-vacuous assertion in a role's own `tasks/` is a guardrail that never fires on a
-production host, which is worse than one that never fires in a test.
-"""
+"""Guard against vacuous `assert: that:` conditions across every `that:` the
+collection ships: an entry that parses as a mapping instead of a string, and an
+empty `that:` list."""
 
 from __future__ import annotations
 
@@ -62,11 +41,8 @@ def _audited_files() -> list[Path]:
 
 def _scan(text: str, label: str) -> tuple[list[str], int]:
     """Offending `that:` entries in `text` as `label:line`, and how many seen.
-
-    Walks the compose-level node tree rather than the constructed objects so
-    each offender can be reported at its own line, and so an entry's YAML TYPE
-    (string vs mapping) survives to be inspected.
-    """
+    Walks the compose-level node tree so each offender keeps its own line and
+    its YAML type."""
     offenders: list[str] = []
     seen = 0
 
@@ -151,19 +127,14 @@ def test_detector_accepts_quoted_and_plain_entries():
 
 
 def test_audited_files_are_discovered():
-    """A glob that silently matches nothing would make the gate always pass.
-
-    Three separate floors, because one glob going dark is invisible in a
-    combined total: the scenarios, the shared molecule tasks they include, and
-    the role `tasks/` trees each have to still be reaching the detector.
-    """
+    """Each glob has its own floor, so one going dark cannot hide in a combined
+    total and leave the gate always passing."""
     molecule = _molecule_files()
     assert len(molecule) >= 150, f"molecule glob matched only {len(molecule)} files"
 
     shared = COLLECTION / "molecule-shared"
     assert [p for p in molecule if shared in p.parents], (
-        "the molecule-shared glob contributed nothing — the scenarios' shared "
-        "tasks are where the vacuous-assert pattern was found"
+        "the molecule-shared glob matched nothing"
     )
 
     tasks = _task_files()

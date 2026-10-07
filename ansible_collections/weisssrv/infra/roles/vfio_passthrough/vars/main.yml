@@ -1,0 +1,14 @@
+---
+# The three drop-ins the role writes, shared by the write and removal arms.
+_vfio_passthrough_managed_paths:
+  - /etc/default/grub.d/vfio-iommu.cfg
+  - /etc/modprobe.d/vfio.conf
+  - /etc/modules-load.d/vfio-pci.conf
+
+# Ownership markers the removal arm accepts: the role-owned literal plus any
+# legacy marker. Empty entries are dropped so a blank marker cannot match every
+# file at the three conventional paths.
+_vfio_passthrough_markers: >-
+  {{ ([vfio_passthrough_managed_marker | default('')]
+      + (vfio_passthrough_legacy_markers | default([])))
+     | map('trim') | select('ne', '') | list }}

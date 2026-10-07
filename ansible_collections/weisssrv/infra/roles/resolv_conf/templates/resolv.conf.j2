@@ -12,6 +12,8 @@ domain {{ resolv_conf_search_domains[0] }}
 search {{ resolv_conf_search_domains | join(' ') }}
 {% endif %}
 
-# DNS options (one line — musl honors only the first `options` line, so a split
-# form would silently drop attempts:2 on musl consumers; glibc accepts both)
-options timeout:2 attempts:2
+{% if resolv_conf_options %}
+# One line: musl honors only the first `options` line, so a split form would
+# silently drop later options there (glibc accepts both).
+options {{ resolv_conf_options | join(' ') }}
+{% endif %}

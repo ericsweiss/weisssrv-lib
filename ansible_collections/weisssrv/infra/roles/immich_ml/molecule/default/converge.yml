@@ -8,3 +8,16 @@
     - role: weisssrv.infra.immich_ml
       vars:
         immich_ml_skip_install: true
+
+  post_tasks:
+    # Branch coverage for the two seams the default render leaves empty: the
+    # extra-env map and a pinned publish address.
+    - name: Render the compose file with the extra-env and bind seams set  # noqa: no-relative-paths
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/docker-compose.yml.j2"
+        dest: /tmp/immich-ml-compose-seams.yml
+        mode: "0640"
+      vars:
+        immich_ml_bind: 10.10.0.58
+        immich_ml_extra_env:
+          MACHINE_LEARNING_MAX_BATCH_SIZE__OCR: "3"

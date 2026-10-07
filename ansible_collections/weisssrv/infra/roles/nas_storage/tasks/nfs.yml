@@ -1,9 +1,6 @@
 ---
 - name: Ensure the shared media group exists
-  ansible.builtin.group:
-    name: "{{ nas_storage_media_group }}"
-    gid: "{{ nas_storage_media_gid }}"
-    state: present
+  ansible.builtin.include_tasks: media_group.yml
 
 - name: Install NFS server packages
   ansible.builtin.apt:
@@ -13,28 +10,28 @@
     state: present
   when: ansible_facts['os_family'] == "Debian"
 
-# Delegation kill-switch. A sysctl.d drop-in (not a live-only sysctl) because
-# only the drop-in survives a reboot, and the reboot is exactly when the leaked
-# slab this guards against gets reclaimed.
+- name: Remove the site-named NFSv4 delegation sysctl drop-in
+  ansible.builtin.file:
+    path: /etc/sysctl.d/99-z-weisssrv-nas-storage-nfs-leases.conf
+    state: absent
+
+# Delegation kill-switch. A sysctl.d drop-in rather than a live-only sysctl, so
+# the value survives a reboot.
 - name: Deploy sysctl drop-in disabling NFSv4 delegations
   ansible.builtin.copy:
-    dest: /etc/sysctl.d/99-z-weisssrv-nas-storage-nfs-leases.conf
+    dest: /etc/sysctl.d/99-z-nas-storage-nfs-leases.conf
     content: |
-      # Managed by Ansible (nas_storage). fs.leases-enable=0 stops nfsd from
-      # granting NFSv4 delegations: the running kernel leaks one unreclaimable
-      # file_lock per GETATTR delegation-conflict check on a write-delegated
-      # file. Existing delegations persist until returned or reboot.
-      # Rationale and removal criteria: nas_storage README.
+      # Managed by Ansible (nas_storage). fs.leases-enable=0 stops nfsd granting
+      # NEW NFSv4 delegations; existing ones persist until returned or reboot.
+      # Trade-off: nas_storage README.
       fs.leases-enable=0
     owner: root
     group: root
     mode: "0644"
   when: nas_storage_nfs_disable_delegations | bool
 
-# Reconcile the LIVE value on every enabled run, not only when the drop-in
-# changes: another sysctl pass (pve-firewall resets, an operator sysctl
-# --system with a stray file) can flip leases back on while the drop-in sits
-# unchanged on disk, and a handler would never fire.
+# Reconcile the LIVE value on every enabled run: another sysctl pass can flip
+# leases back on while the drop-in sits unchanged, and a handler never fires.
 - name: Read live fs.leases-enable
   ansible.builtin.command: sysctl -n fs.leases-enable
   register: nas_storage_leases_live
@@ -44,7 +41,7 @@
     - nas_storage_nfs_apply_delegation_sysctl_live | bool
 
 - name: Apply the delegation kill-switch when the live value drifts
-  ansible.builtin.command: sysctl -p /etc/sysctl.d/99-z-weisssrv-nas-storage-nfs-leases.conf
+  ansible.builtin.command: sysctl -p /etc/sysctl.d/99-z-nas-storage-nfs-leases.conf
   when:
     - nas_storage_nfs_disable_delegations | bool
     - nas_storage_nfs_apply_delegation_sysctl_live | bool
@@ -55,13 +52,13 @@
 # (1) returns at the next reboot, mirroring nic_tuning's ip_forward pattern.
 - name: Remove NFSv4 delegation sysctl drop-in when not requested
   ansible.builtin.file:
-    path: /etc/sysctl.d/99-z-weisssrv-nas-storage-nfs-leases.conf
+    path: /etc/sysctl.d/99-z-nas-storage-nfs-leases.conf
     state: absent
   when: not (nas_storage_nfs_disable_delegations | bool)
 
 - name: Create export root directory
   ansible.builtin.file:
-    path: /export
+    path: "{{ nas_storage_export_root }}"
     state: directory
     owner: root
     group: root
@@ -78,30 +75,21 @@
   loop_control:
     label: "{{ item.path }}"
 
-# Guard against capturing the still-empty mountpoint of an unmounted ZFS
-# dataset: with the pool exported or its key unloaded, the mountpoint is a bare
-# root-fs directory that the file task below would mkdir/chown, the bind fstab
-# task would then bind, and the NFS export would serve. Only ZFS-backed sources
-# are checked (nas_storage_zfs_bind_source_pattern, which the fstab task also
-# scopes its boot-ordering opts with, overridable per export with `zfs:`);
-# mergerfs sources are handled by mergerfs.yml.
-#
-# bind_source_check points the guard at the parent DATASET mountpoint for an
-# export whose bind_source is a SUBDIRECTORY of a dataset — the subdir is never
-# a mountpoint, so guarding it directly would always fail.
+# ZFS-backed bind sources must be mounted datasets first, or an unmounted pool's
+# bare mountpoint is captured and served empty. bind_source_check aims the guard
+# at the parent dataset when bind_source is a subdirectory.
 - name: Verify ZFS-backed bind sources are mounted datasets
-  ansible.builtin.command: "mountpoint -q {{ item.bind_source_check | default(item.bind_source) }}"
+  ansible.builtin.command:
+    argv: [mountpoint, -q, "{{ item.bind_source_check | default(item.bind_source) }}"]
   loop: "{{ nas_storage_exports }}"
   loop_control:
     label: "{{ item.bind_source_check | default(item.bind_source) | default('N/A') }}"
   register: nas_storage_nfs_bind_source_mounted
   changed_when: false
   check_mode: false
-  # Fail closed on an unmounted ZFS source in production. The bypass is gated on
-  # nas_storage_skip_zfs_operations — set ONLY in the molecule container (no real ZFS mounts)
-  # — NOT nas_storage_skip_nfs_reload: skipping the NFS reload must never silently disable
-  # this safety check (otherwise the tasks below would mkdir/chown + bind an
-  # empty root-fs dir that "Deploy NFS exports" would then serve).
+  # Fail closed on an unmounted ZFS source. The bypass is nas_storage_skip_zfs_operations
+  # (test containers have no real ZFS mounts), never nas_storage_skip_nfs_reload:
+  # skipping the reload must not disable the guard.
   failed_when:
     - nas_storage_nfs_bind_source_mounted.rc != 0
     - not (nas_storage_skip_zfs_operations | default(false))
@@ -110,6 +98,42 @@
     # An explicit `zfs:` on the export WINS over the derived classification —
     # it is the declaration the up-front assert accepts, in both directions.
     - item.zfs | default(item.bind_source is match(nas_storage_zfs_bind_source_pattern)) | bool
+
+# A MergerFS target is no ZFS mount root, so the guard above skips it. Its own
+# two arms: the union must be mounted, and every branch under a ZFS mount root
+# must be too - a union mounted over empty branch stubs exports nothing.
+- name: Verify MergerFS-backed bind sources are mounted unions
+  ansible.builtin.command:
+    argv: [mountpoint, -q, "{{ item }}"]
+  loop: "{{ nas_storage_exports | selectattr('bind_source', 'defined')
+            | map(attribute='bind_source')
+            | select('in', nas_storage_mergerfs_mounts | default([]) | map(attribute='target') | list)
+            | unique | list }}"
+  register: nas_storage_nfs_mergerfs_source_mounted
+  changed_when: false
+  check_mode: false
+  failed_when:
+    - nas_storage_nfs_mergerfs_source_mounted.rc != 0
+    - not (nas_storage_skip_zfs_operations | default(false))
+
+# findmnt --target, not mountpoint -q: a branch may legitimately be a
+# subdirectory of a dataset. What must not happen is a branch resolving to the
+# root filesystem, which is the unmounted-pool stub.
+- name: Verify the ZFS-backed branches of the exported MergerFS unions are on a mounted dataset
+  ansible.builtin.command:
+    argv: [findmnt, --noheadings, --first-only, --target, "{{ item }}", -o, TARGET]
+  loop: "{{ nas_storage_mergerfs_mounts | default([])
+            | selectattr('target', 'in', nas_storage_exports | selectattr('bind_source', 'defined')
+              | map(attribute='bind_source') | list)
+            | map(attribute='sources') | flatten | unique
+            | select('match', nas_storage_zfs_bind_source_pattern) | list }}"
+  register: nas_storage_nfs_mergerfs_branch_mounted
+  changed_when: false
+  check_mode: false
+  failed_when:
+    - nas_storage_nfs_mergerfs_branch_mounted.rc != 0
+      or (nas_storage_nfs_mergerfs_branch_mounted.stdout | trim) in ['', '/']
+    - not (nas_storage_skip_zfs_operations | default(false))
 
 - name: Set ownership on bind source directories
   ansible.builtin.file:
@@ -123,15 +147,12 @@
     label: "{{ item.bind_source | default('N/A') }}"
   when: item.bind_source is defined
 
-# Fail loud if a per-app appdata path is itself a mountpoint. A nested ZFS
-# dataset auto-created under ssd/appdata/<name> (e.g. proxmox_vm's
-# `zfs create -p -V ...mealie/postgres` materializes ssd/appdata/mealie) can
-# mount over the stub the task below chowns, while NFS clients read the
-# shadowed dir under the NON-recursive /export/appdata bind. Detect the
-# shadowing instead of silently chowning the wrong filesystem; the fix is
-# `canmount=off` on the nested dataset (codified in host_vars nas_storage_zfs_pools).
+# A nested ZFS dataset auto-created under the appdata base mounts over the stub
+# below and shadows it under the non-recursive bind. Remedy: canmount=off on
+# that dataset.
 - name: Guard against a per-app appdata path being a shadowing mountpoint
-  ansible.builtin.command: "mountpoint -q {{ nas_storage_appdata_base }}/{{ item }}"
+  ansible.builtin.command:
+    argv: [mountpoint, -q, "{{ nas_storage_appdata_base }}/{{ item }}"]
   loop: "{{ nas_storage_appdata_dirs | default([]) }}"
   loop_control:
     label: "{{ nas_storage_appdata_base }}/{{ item }}"
@@ -146,15 +167,9 @@
     - nas_storage_appdata_base in (nas_storage_exports | selectattr('bind_source', 'defined')
         | map(attribute='bind_source') | list)
 
-# Per-app subdirectories under the appdata NFS export. The apps that persist
-# config on this export (Grafana + the downloads/recipes clients) mount
-# /appdata/<name>; the directory must exist and be owned 1000:2000 (the export
-# all_squashes every client write to that uid/gid, so a container running as any
-# other UID still writes as 1000:2000) before the app's first write, or a
-# floating pod lands on an unwritable/absent path. Placed AFTER the
-# mounted-dataset guard above so a locked/unmounted ssd pool never gets these
-# mkdir'd onto its bare mountpoint — the same empty-mountpoint capture the guard
-# prevents for the binds. Skipped on any host that does not export appdata.
+# Per-app subdirs must exist and be owned by the export's squash uid/gid before
+# an app's first write. Runs after the mounted-dataset guard, so a locked pool
+# is never mkdir'd onto.
 - name: Create per-app appdata subdirectories
   ansible.builtin.file:
     path: "{{ nas_storage_appdata_base }}/{{ item }}"
@@ -170,25 +185,10 @@
     - nas_storage_appdata_base in (nas_storage_exports | selectattr('bind_source', 'defined')
         | map(attribute='bind_source') | list)
 
-# The per-app tank/backups/apps/<app> subdirs are now each their own scoped NFS
-# export (host_vars nas_storage_exports), so they are bind_sources — created + owned
-# (1000:2000 02775) by "Set ownership on bind source directories" above (which
-# runs AFTER the mounted-dataset guard, so a locked tank/backups can never have
-# them mkdir'd onto a bare root-fs mountpoint). No dedicated subdir-creation step
-# is needed.
-
-# A bind can keep serving the WRONG tree while looking converged: after a
-# dataset migration, a zfs rename or a staging-dir move, the live mount still
-# references the old filesystem while fstab already names the new path — and
-# the mount task below reads mounted + fstab-present as converged, because a
-# bind's live source is not part of what `state: mounted` compares (a remount
-# never re-points a bind either). Every client mount RPC against such an
-# export HANGS. Detect it by IDENTITY, not by name: a healthy bind's
-# mountpoint IS the source directory (same device:inode), so a mismatch —
-# including the unlinked-source case findmnt renders as `//deleted` — means a
-# stale layer. Lazy-detach every stacked layer (bounded), verify the
-# endpoint, and let the task below remount from fstab; the exports handler
-# then hands out fresh filehandles.
+# CRITICAL: `state: mounted` does not compare a bind's live source, so a bind
+# can serve the wrong tree while looking converged and client mount RPCs hang.
+# Detect by device:inode identity and lazy-detach every stacked layer, so the
+# remount below re-points it.
 - name: Detach export binds serving a stale source
   ansible.builtin.shell: |
     set -euo pipefail
@@ -243,21 +243,9 @@
     path: "{{ item.path }}"
     src: "{{ item.bind_source }}"
     fstype: none
-    # Order ZFS-backed export binds after the ZFS mounts, explicitly against the
-    # bulk mount unit (zfs-mount-generator is not enabled — no
-    # /etc/zfs/zfs-list.cache). Without it the fstab binds race the mount at
-    # boot and can capture the still-empty root-fs mountpoint, stacking a stale
-    # layer under the real bind so the export serves an empty directory.
-    # `nofail` keeps a not-yet-mounted source from blocking boot.
-    #
-    # ANCHOR CHOICE (_zfs_anchor below): ENCRYPTED sources order on the LATE
-    # zfs-mount-encrypted.service, because the early stock zfs-mount.service
-    # runs before keys load and SKIPS locked datasets — an encrypted bind
-    # ordered on it would capture the empty mountpoint. Plaintext ZFS sources
-    # keep the early anchor; non-ZFS sources keep a plain bind.
-    #
-    # Same classification as the mounted-dataset guard above: derived from the
-    # mount roots, overridden by an explicit `zfs:` on the export.
+    # ZFS-backed binds order on a ZFS mount unit or they race the mounts at boot
+    # and capture an empty mountpoint; nofail keeps boot unblocked. Encrypted
+    # sources anchor on zfs-mount-encrypted, which runs after keys load.
     opts: >-
       {{
         'bind,nofail,x-systemd.requires=' ~ _zfs_anchor
@@ -305,12 +293,9 @@
     mode: "0644"
   notify: Restart nfs-server for ordering
 
-# Flush now — BEFORE starting/probing nfsd — so the drop-in's daemon-reload and
-# the "Restart nfs-server for ordering" handler run first. Otherwise a stopped
-# nfsd is started once with the OLD unit config (the drop-in isn't loaded until
-# the handler's daemon_reload), and the readiness probe could check the
-# pre-restart listener. (meta: flush_handlers ignores `when`; the handlers
-# themselves are guarded by nas_storage_skip_nfs_reload, so this is a no-op under molecule.)
+# Flush before starting or probing nfsd, or a stopped nfsd starts once with the
+# OLD unit config and the readiness probe checks the pre-restart listener.
+# flush_handlers ignores `when`; the handlers themselves carry the skip gate.
 - name: Flush pending NFS handlers before starting/probing NFS
   ansible.builtin.meta: flush_handlers
 
@@ -321,10 +306,9 @@
     enabled: true
   when: not (nas_storage_skip_nfs_reload | default(false))
 
-# Real client-facing readiness signal. nfs-server.service is Type=oneshot
-# (active/exited) so its unit state does not prove nfsd is serving; the TCP
-# listener on 2049 does. Fails the play loudly if nfsd isn't accepting
-# connections (every NFS-over-TLS client would fail to mount).
+# nfs-server.service is Type=oneshot, so its unit state does not prove nfsd is
+# serving; the TCP listener on 2049 does. Fails the play loudly when nfsd is not
+# accepting connections.
 - name: Verify nfsd is serving on TCP 2049
   ansible.builtin.wait_for:
     host: 127.0.0.1

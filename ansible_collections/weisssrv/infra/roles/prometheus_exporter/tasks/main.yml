@@ -1,8 +1,7 @@
 ---
-# Standalone entrypoint (used by the molecule scenario and any caller that
-# templates its unit before invoking the role rather than between install and
-# service). Wrapper roles call install.yml and service.yml directly via
-# tasks_from: so they can slot their own unit template in between.
+# Standalone entrypoint for callers that template their unit before invoking
+# the role. Wrapper roles instead call install.yml and service.yml via
+# tasks_from:, so they can slot their own unit template in between.
 
 - name: Run exporter install pipeline
   ansible.builtin.import_tasks: install.yml

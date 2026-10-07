@@ -1,13 +1,7 @@
 #!/usr/bin/env bash
-# Liveness gate for prometheus-node-exporter.
-#
-# It exists because the exporter can become a ZOMBIE (/proc/<pid>/status
-# State: Z) with its listening socket still open and nothing accepting: systemd
-# sees a live main PID, reports "active (running)" indefinitely, and no Restart=
-# policy fires. A WatchdogSec cannot cover it either — the Debian unit is
-# Type=simple and node_exporter does not sd_notify — so the only reliable signal
-# is the one Prometheus itself uses: an HTTP GET of /metrics.
-#
+# Liveness gate for prometheus-node-exporter: GETs /metrics and restarts the
+# unit when the probe fails. See the role README for why systemd cannot.
+
 # Usage: node-exporter-healthcheck.sh [--probe-only] [PORT]
 #   --probe-only  exit 0/1 on the probe result and never restart (tests)
 set -uo pipefail
@@ -18,6 +12,10 @@ if [ "${1:-}" = "--probe-only" ]; then
     shift
 fi
 PORT="${1:-9101}"
+# The exporter follows node_exporter_host_bind_address, so probing loopback
+# unconditionally would restart a healthy exporter every interval.
+HOST="${NODE_EXPORTER_PROBE_HOST:-127.0.0.1}"
+case "$HOST" in *:*) HOST="[${HOST}]" ;; esac
 UNIT=prometheus-node-exporter
 TEXTFILE_DIR="${NODE_EXPORTER_TEXTFILE_DIR:-/var/lib/node_exporter}"
 
@@ -25,7 +23,7 @@ TEXTFILE_DIR="${NODE_EXPORTER_TEXTFILE_DIR:-/var/lib/node_exporter}"
 # allow a generous timeout and a second attempt: a slow scrape must not be read
 # as a dead exporter.
 probe() {
-    curl -fsS --max-time 20 -o /dev/null "http://127.0.0.1:${PORT}/metrics"
+    curl -fsS --max-time 20 -o /dev/null "http://${HOST}:${PORT}/metrics"
 }
 
 if probe; then

@@ -1,7 +1,5 @@
 ---
-# Floor, not a range: the roles are developed and CI-tested on the ansible-core
-# that ansible 11.6.0 ships (2.18), which is also what the molecule-ci image
-# pins. An upper bound here would hard-block consumers on a newer core instead
-# of letting them find out from a test run, so newer cores are allowed and
-# untested rather than forbidden.
+# Floor, not a range: 2.18 is the oldest core the roles are supported on; CI
+# otherwise runs the newer core the molecule-ci image pins. collection-floor-build
+# carries its own matching pin (.gitlab-ci.yml ANSIBLE_CORE_FLOOR); bump both.
 requires_ansible: ">=2.18.0"

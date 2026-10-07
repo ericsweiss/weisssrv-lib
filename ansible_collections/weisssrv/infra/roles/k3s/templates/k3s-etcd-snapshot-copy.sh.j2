@@ -1,13 +1,7 @@
 #!/usr/bin/env bash
 # {{ ansible_managed }}
-# Copies the newest local k3s etcd snapshot to the off-node NFS export and
-# emits etcd_snapshot_last_copy_timestamp_seconds for the EtcdSnapshotStale
-# alert. Invoked by k3s-etcd-snapshot-copy.timer on the server nodes.
-#
-# NOT `set -e`: the copy's outcome must be captured and the metric written
-# regardless, so the staleness alert can fire on a failed/absent off-node copy.
-# The prior success timestamp is preserved on failure so staleness measures
-# time-since-last-successful-copy, not time-since-last-attempt.
+# Copies the newest local etcd snapshot to the off-node NFS export and emits
+# etcd_snapshot_last_copy_timestamp_seconds even on failure, so no `set -e`.
 set -uo pipefail
 
 SNAP_DIR="{{ k3s_etcd_snapshot_dir }}"
@@ -35,42 +29,50 @@ write_prom_metrics() {
     if [ "$success" -eq 1 ]; then
       echo "etcd_snapshot_last_copy_timestamp_seconds ${ts}"
     else
-      # Preserve the last-known-good timestamp so the staleness alert measures
-      # time-since-last-successful-copy. If the mount stays down the timestamp
-      # ages past the threshold and the alert fires — the desired signal. A node
-      # whose copy has never succeeded has no prior value; emit epoch 0 so the
-      # per-instance staleness arm fires immediately instead of waiting on the
-      # cluster-wide absent() arm.
+      # Keep the last-known-good timestamp so staleness measures time since the
+      # last SUCCESSFUL copy. No prior success -> 0, so the per-instance
+      # staleness arm fires immediately.
       prev="$(awk '/^etcd_snapshot_last_copy_timestamp_seconds/ {print $2}' "$PROM_FILE" 2>/dev/null || true)"
       echo "etcd_snapshot_last_copy_timestamp_seconds ${prev:-0}"
     fi
-  } > "$tmp" 2>/dev/null || { rm -f "$tmp"; echo "cannot write metrics to ${tmp}" >&2; return 1; }
-  mv "$tmp" "$PROM_FILE" || rm -f "$tmp"
+  } > "$tmp" 2>/dev/null || {
+    logger -t etcd-snapshot-copy-metrics -p daemon.err "could not write ${PROM_FILE}"
+    rm -f "$tmp"
+    echo "could not write ${PROM_FILE}" >&2
+    return 0
+  }
+  # A failed rename leaves the previous run's success gauge on disk, so the
+  # timer-driven unit has to say so somewhere an operator reads.
+  mv "$tmp" "$PROM_FILE" || {
+    logger -t etcd-snapshot-copy-metrics -p daemon.err \
+      "could not rename ${tmp} -> ${PROM_FILE}"
+    rm -f "$tmp"
+  }
 }
 
 fail() { echo "$1" >&2; write_prom_metrics 0 0 0; exit 1; }
 
-mkdir -p "$PROM_DIR" || echo "cannot create ${PROM_DIR}" >&2
+mkdir -p "$PROM_DIR" || {
+  logger -t etcd-snapshot-copy-metrics -p daemon.err "cannot create ${PROM_DIR}"
+  echo "cannot create ${PROM_DIR}" >&2
+}
 
 # The NFS export must be mounted; a bare cp onto an unmounted mountpoint would
 # silently fill the server's local disk instead of the NAS.
 mountpoint -q "$DEST_ROOT" || fail "off-node export ${DEST_ROOT} is not mounted"
 
-# Newest regular file directly under the snapshot dir (k3s keeps snapshot
-# metadata in a .metadata subdir, excluded by -maxdepth 1 -type f). Exclude
-# *.part: etcd's SaveWithVersion writes `<name>.part` in this dir and renames
-# it into place, so a raw newest-file pick could grab a truncated in-progress
-# snapshot (mirrors the `.tmp.*` exclusion in the retention find below).
+# Newest regular file directly under the snapshot dir. *.part is excluded:
+# etcd writes `<name>.part` here and renames it into place, so picking it
+# would copy a truncated in-progress snapshot.
 newest="$(find "$SNAP_DIR" -maxdepth 1 -type f ! -name '*.part' -printf '%T@ %p\n' 2>/dev/null \
   | sort -rn | head -1 | cut -d' ' -f2-)"
 [ -n "$newest" ] && [ -f "$newest" ] || fail "no etcd snapshot found under ${SNAP_DIR}"
 
 mkdir -p "$DEST" || fail "cannot create ${DEST}"
 
-# Prune orphaned partial-copy temp files (an interrupted cp/mv leaves .tmp.*).
-# The retention pass below excludes .tmp.*, so nothing else reaps them. Age-gate
-# at 60min so a live copy's temp file is never removed (belt-and-braces: the
-# oneshot service serializes same-node runs and each node writes its own $DEST).
+# Prune orphaned partial-copy temp files; the retention pass below skips
+# .tmp.*, so nothing else reaps them. The 60min age gate keeps a live copy's
+# temp file.
 find "$DEST" -maxdepth 1 -type f -name '.tmp.*' -mmin +60 -delete 2>/dev/null
 
 base="$(basename "$newest")"

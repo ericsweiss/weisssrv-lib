@@ -1,11 +1,9 @@
 # {{ ansible_managed }}
 [Unit]
 Description=Archive /etc/pve (PVE cluster identity) into the offsite-eligible landing zone
-# Ordering ONLY. `Wants=` does not fail this unit when the mount job fails, and
-# the timer's Persistent=true fires a missed run on boot. The fail-closed check
-# is a `mountpoint -q` in the script, deliberately NOT ConditionPathIsMountPoint=:
-# a failed Condition skips ExecStart, so no textfile metric is written and the
-# success gauge never flips to 0. The script guard exits non-zero AND records it.
+# Ordering only; `Wants=` does not fail this unit when the mount job fails. The
+# fail-closed check is a `mountpoint -q` in the script, not
+# ConditionPathIsMountPoint=, which would skip ExecStart and write no metric.
 After=zfs.target zfs-mount.service zfs-mount-encrypted.service
 Wants=zfs-mount-encrypted.service
 

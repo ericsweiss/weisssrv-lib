@@ -1,67 +1,8 @@
 #!/usr/bin/env python3
-"""generate-molecule-pipeline.py - Emit a targeted molecule child pipeline.
+"""Emit a GitLab child pipeline running only the molecule scenarios an MR affects.
 
-On a merge-request pipeline the full molecule matrix is wasteful: an MR usually
-touches a handful of roles. This computes the set of molecule scenarios +
-integration tests actually *affected* by the MR's changed files and emits a
-GitLab child-pipeline YAML that runs only those. On the default branch the parent
-pipeline still runs the full static matrix (that wiring lives in the CI file).
-
-Defaults to the conventional Ansible layout: roles under `ansible/roles/<role>/`,
-integration stacks under `ansible/integration-tests/<stack>/`, and the two
-parallel:matrix blocks (`molecule-tests`, `integration-tests`) in `.gitlab-ci.yml`.
-$ROLES_DIR / $INTEGRATION_DIR / $CI_FILE (repo-relative, same names as
-check-molecule-matrix-coverage.sh) retarget those for a collection layout, e.g.
-ROLES_DIR=ansible_collections/<ns>/<name>/roles. A repo with no integration
-suite simply omits the `integration-tests` job.
-
-Inputs (how the changed-file list is obtained, first match wins):
-  1. --changed-files-from FILE   read newline-separated paths (FILE may be "-" = stdin)
-  2. a base SHA (positional, or --diff-base): run
-        git diff --name-only <base>...HEAD
-     — matches CI_MERGE_REQUEST_DIFF_BASE_SHA semantics; three-dot compares
-     HEAD against the merge-base.
-  3. stdin, when it is not a TTY: read newline-separated paths.
-
-  generate-molecule-pipeline.py "$CI_MERGE_REQUEST_DIFF_BASE_SHA" -o molecule-child.yml
-  printf '%s\n' ansible/roles/foo/tasks/main.yml | generate-molecule-pipeline.py
-  generate-molecule-pipeline.py --print-graph   # inspect the derived deps
-
-Single source of truth:
-  * The scenario universe is the molecule-tests / integration-tests
-    parallel:matrix in the CI file (read-only) — the SAME matrix
-    check-molecule-matrix-coverage.sh enforces. It is never re-hardcoded here.
-  * The role dependency map is DERIVED from the repo, not guessed:
-      - meta/main.yml `dependencies:` (consumer depends on each dep)
-      - include_role / import_role in a role's PRODUCTION dirs (everything under
-        the role except molecule/) — i.e. the wrapping relationships.
-    A change to a depended-on (provider) role selects EVERY dependent (consumer)
-    role's scenarios, transitively.
-  * The integration-test -> roles map is DERIVED by scanning each stack's
-    molecule/ tree for include_role/import_role names. A stack is selected when a
-    changed role is one it exercises directly OR via that role's providers.
-
-Determinism + safety (a coverage bug must fail loud, never silently under-select):
-  * A changed path under <roles-dir>/<name>/ where <name> is not in the matrix
-    raises CoverageError (same philosophy as the matrix-coverage gate).
-  * An unparseable / empty molecule matrix raises. So does an `integration-tests`
-    job whose matrix is empty or malformed — only its complete ABSENCE is read
-    as "this repo has no integration suite".
-  * A selected role with no matrix scenarios raises.
-  * When in doubt we select MORE, never fewer: any global-trigger file selects
-    EVERYTHING; the direct role->scenario mapping is always a floor.
-
-Inventory / non-role ansible paths: the inventory-consumer map is derived by
-scanning scenarios for inventory-file references, so a group_vars file selects
-only the scenarios that actually load it. The root of the tree holding the roles
-($ROLES_DIR's parent — galaxy.yml, requirements.yml, meta/, plugins/,
-molecule-shared/) is a global trigger, derived rather than configured, so a
-collection-wide change can never emit the green no-op child. The helper scripts,
-maintenance playbooks and image build contexts that also force a full matrix are
-the CONVENTIONAL layout, not derived: $MOLECULE_GLOBAL_TRIGGERS adds to them
-(space-separated; a trailing "/" makes it a prefix), and
-$MOLECULE_GLOBAL_TRIGGERS_MODE=replace makes it stand in for them, for a repo
-that keeps those trees elsewhere.
+Derives the scenario universe from the CI file's parallel:matrix and the role
+dependency map from the repo, failing loudly rather than under-selecting.
 """
 from __future__ import annotations
 
@@ -77,7 +18,12 @@ from pathlib import Path, PurePosixPath
 try:
     import yaml
 except ImportError:  # pragma: no cover - dependency guard mirrors sibling scripts
-    sys.exit("PyYAML required: pip install pyyaml (or brew install python && pip3 install pyyaml)")
+    print("ERROR: PyYAML required: pip install pyyaml (or brew install python && pip3 install pyyaml)", file=sys.stderr)
+    raise SystemExit(2) from None
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from ci_yaml import CILoader  # noqa: E402  (resolved from this script's directory)
 
 # --- Configuration ---
 
@@ -100,33 +46,28 @@ INTEGRATION_DIR = REPO / INTEGRATION_PREFIX
 MOLECULE_JOBS_INCLUDE = (
     os.environ.get("MOLECULE_JOBS_INCLUDE") or ".gitlab/ci/molecule-jobs.gitlab-ci.yml"
 )
-# Hidden-template job names the child extends (provided by the include file).
-# They carry the script + `extends: .molecule-base` (+ integration timeout) but
-# NO parallel:matrix and NO rules, so the child supplies the narrowed matrix and
-# runs unconditionally in the child pipeline.
+# Hidden-template job names the child extends, from the include file. They carry
+# the script but no parallel:matrix and no rules, so the child supplies the
+# narrowed matrix and runs unconditionally.
 MOLECULE_JOB_EXTENDS = ".molecule-test-job"
 INTEGRATION_JOB_EXTENDS = ".integration-test-job"
 
 # The no-op job emitted when nothing is affected (a GitLab trigger job fails on
 # an empty child pipeline, so we always emit at least one trivially-green job).
 NOOP_JOB_NAME = "molecule-none-affected"
-# Pinned image for the no-op job (matches test-aggregate's alpine pin).
+# Trivially-green no-op job image (any tiny pinned base works).
 NOOP_IMAGE = "alpine:3.23"
 
 # Consumer-supplied extra global triggers: space-separated; a trailing "/"
 # makes it a prefix.
 _EXTRA_TRIGGERS = os.environ.get("MOLECULE_GLOBAL_TRIGGERS", "").split()
-# How $MOLECULE_GLOBAL_TRIGGERS combines with the conventional-layout set below:
+# How $MOLECULE_GLOBAL_TRIGGERS combines with the conventional set below:
 # "extend" (default) adds to it, "replace" stands in for it. Only the layout
-# conventions are replaceable — the entries derived from $ROLES_DIR, the CI file
-# and the jobs include stay triggers either way, because they are what keeps a
-# collection-wide change from emitting a green no-op child.
+# conventions are replaceable; the derived entries stay triggers either way.
 _TRIGGER_MODE = os.environ.get("MOLECULE_GLOBAL_TRIGGERS_MODE") or "extend"
-# The conventional layout's non-derivable triggers: this repo family's helper
-# scripts, the playbooks a verify can include, and the two image build contexts.
-# A repo that keeps those elsewhere sets MOLECULE_GLOBAL_TRIGGERS_MODE=replace
-# and lists its own paths — including its own copy of THIS script, or a change
-# to the selection logic stops re-running everything.
+# Conventional-layout triggers, non-derivable: helper scripts, the playbooks a
+# verify can include, and the image build contexts. A consumer laid out
+# otherwise sets MOLECULE_GLOBAL_TRIGGERS_MODE=replace and lists its own paths.
 _CONVENTIONAL_TRIGGER_FILES = (
     "scripts/molecule-retry.sh",
     "scripts/generate-molecule-pipeline.py",
@@ -144,15 +85,13 @@ _CONVENTIONAL_TRIGGER_PREFIXES = (
 
 @functools.lru_cache(maxsize=None)
 def _global_triggers(roles_prefix: str) -> tuple[frozenset[str], tuple[str, ...]]:
-    """Files/prefixes that force the FULL matrix, derived from `roles_prefix`.
+    """CRITICAL: files and prefixes that force the FULL matrix.
 
-    The root of the tree holding the roles (collection root, or `ansible/` in
-    the classic layout) is neither a role path nor a scenario path, so without
-    these a change to e.g. galaxy.yml would select nothing at all.
-
-    A trigger only bites when the plan job was CREATED, so a consumer adding an
-    entry to $MOLECULE_GLOBAL_TRIGGERS must add the same path to the plan job's
-    `changes` list (ci/internal/molecule-matrix) — see docs/SCRIPTS.md.
+    The roles tree root is neither a role path nor a scenario path, so without
+    these a change to galaxy.yml selects nothing at all and the MR ships
+    untested. A trigger only bites when the plan job was CREATED, so a consumer
+    adding an entry to $MOLECULE_GLOBAL_TRIGGERS must add the same path to the
+    plan job's `changes` list (ci/internal/molecule-matrix). docs/SCRIPTS.md.
     """
     if _TRIGGER_MODE not in ("extend", "replace"):
         raise ValueError(
@@ -197,48 +136,21 @@ class CoverageError(RuntimeError):
     """A changed role/test has no matrix entry — a coverage bug, fail loud."""
 
 
-# --- YAML loading (tolerant of GitLab custom tags such as !reference) ---
-
-class _TagTolerantLoader(yaml.SafeLoader):
-    """SafeLoader that survives GitLab's custom tags (e.g. `!reference`).
-
-    Subclassed rather than patched onto yaml.SafeLoader, so importing this
-    module cannot change YAML parsing for anything else in the process.
-    """
-
-
-def _tag_passthrough(loader, tag_suffix, node):
-    """Preserve a custom-tagged node structurally so a !reference near the
-    matrix does not collapse the parse. Returns only scalars/sequences/mappings
-    — never an arbitrary Python type. !reference semantics are not resolved."""
-    if isinstance(node, yaml.ScalarNode):
-        return loader.construct_scalar(node)
-    if isinstance(node, yaml.SequenceNode):
-        return loader.construct_sequence(node)
-    if isinstance(node, yaml.MappingNode):
-        return loader.construct_mapping(node)
-    return None
-
-
-# Empty suffix catches every '!<anything>' tag. !!python/object and other
-# arbitrary-type tags are still refused (SafeLoader's own constructor set).
-_TagTolerantLoader.add_multi_constructor("!", _tag_passthrough)
-
-
 def _load_yaml(path: Path):
-    """Parse a YAML file (SafeLoader semantics); None when absent/unreadable.
+    """Parse a YAML file (SafeLoader semantics); None when the path is absent.
 
-    Malformed YAML RAISES (fail-loud): silently skipping a parse error could
-    drop include_role/dependency edges from the derived graph and under-select
-    tests — the exact silent-coverage-loss this script's safety rules forbid.
+    Malformed or unreadable present files raise: skipping one could drop edges
+    from the derived graph and under-select tests.
     """
     try:
         with path.open() as f:
-            return yaml.load(f, Loader=_TagTolerantLoader)
+            return yaml.load(f, Loader=CILoader)
     except yaml.YAMLError as e:
         raise CoverageError(f"{path}: YAML parse failed: {e}") from e
-    except OSError:
+    except FileNotFoundError:
         return None
+    except OSError as e:
+        raise CoverageError(f"{path}: unreadable: {e}") from e
 
 
 # --- Matrix parsing (single source of truth = the CI file) ---
@@ -246,12 +158,8 @@ def _load_yaml(path: Path):
 def parse_molecule_matrix(ci_path: Path = CI_FILE) -> tuple[dict[str, list[str]], list[str]]:
     """Parse the molecule-tests / integration-tests parallel:matrix from the CI file.
 
-    Returns (role_scenarios, integration_tests) where role_scenarios maps a role
-    to its list of scenarios (sorted, unique) and integration_tests is the sorted
-    list of stack names. Raises RuntimeError if a matrix is missing or malformed —
-    a matrix we cannot parse must fail loudly, not silently emit an under-selected
-    pipeline. An `integration-tests` job that is absent ENTIRELY is the one benign
-    case (a repo with no integration suite) and yields an empty list.
+    Returns (role -> sorted scenarios, sorted stack names). A missing or
+    malformed matrix raises; an absent `integration-tests` job yields [].
     """
     ci = _load_yaml(ci_path)
     if not isinstance(ci, dict):
@@ -310,10 +218,8 @@ def _yaml_files(root: Path):
 def _collect_include_role_names(node, out: set[str]) -> None:
     """Recursively collect literal include_role/import_role `name:` values.
 
-    Walks the parsed YAML structure so a task's own `name:` (a sibling key, not
-    the include's) is never mistaken for the included role — a plain grep -A
-    conflates them. Templated names ({{ ... }}) are skipped: they are not a
-    static role reference we can resolve.
+    Walking the parsed structure keeps a task's own sibling `name:` from being
+    read as the included role. Templated names are skipped.
     """
     if isinstance(node, dict):
         for key, value in node.items():
@@ -334,11 +240,8 @@ def _collect_include_role_names(node, out: set[str]) -> None:
 def collection_role_prefix(roles_dir: Path) -> str:
     """The own-collection FQCN prefix (``"<ns>.<name>."``) for a roles dir, else "".
 
-    A collection lays its roles out at ``ansible_collections/<ns>/<name>/roles/``
-    and its roles reference each other by FQCN (`weisssrv.infra.base`), while the
-    on-disk dir names are bare. Deriving the prefix from that layout keeps the
-    classic `ansible/roles` layout (bare names) working and never hardcodes a
-    namespace.
+    Derived from the ``ansible_collections/<ns>/<name>/roles/`` layout, so the
+    classic ``ansible/roles`` layout still works and no namespace is hardcoded.
     """
     parts = roles_dir.resolve().parts
     if len(parts) >= 4 and parts[-1] == "roles" and parts[-4] == "ansible_collections":
@@ -349,9 +252,8 @@ def collection_role_prefix(roles_dir: Path) -> str:
 def _strip_collection_prefix(names: set[str], prefix: str) -> set[str]:
     """Reduce own-collection FQCN references to bare role names.
 
-    Bare names pass through untouched, and a FOREIGN namespace
-    (`community.general.foo`) is left intact so the known-roles filter still
-    rejects it rather than aliasing it onto a local role.
+    Bare names pass through, and a foreign namespace is left intact so the
+    known-roles filter rejects it instead of aliasing it onto a local role.
     """
     if not prefix:
         return set(names)
@@ -378,15 +280,13 @@ def build_role_graph(
     roles_dir: Path = ROLES_DIR,
     known_roles: set[str] | None = None,
     collection_prefix: str | None = None,
+    *,
+    unknown_out: dict[str, list[str]] | None = None,
 ) -> dict[str, set[str]]:
     """Map consumer_role -> set(provider roles it depends on).
 
-    Scans each role's meta dependencies + include_role/import_role usages in its
-    PRODUCTION dirs (everything under the role except molecule/, which is test
-    scaffolding). References to the roles' own collection are FQCN
-    (`<ns>.<name>.base`) while the on-disk dirs are bare, so they are normalized
-    before filtering to known on-disk roles (which drops templated / non-role /
-    foreign-collection includes). Self-edges are dropped.
+    Scans meta dependencies and include_role usages outside molecule/, filtered
+    to on-disk roles. `unknown_out` collects pruned unqualified references.
     """
     if known_roles is None:
         known_roles = {p.name for p in roles_dir.iterdir() if p.is_dir()}
@@ -406,6 +306,13 @@ def build_role_graph(
                 continue
             _collect_include_role_names(_load_yaml(yml), providers)
         providers = _strip_collection_prefix(providers, collection_prefix)
+        if unknown_out is not None:
+            unknown = sorted(
+                p for p in providers
+                if "." not in p and p not in known_roles and p != role
+            )
+            if unknown:
+                unknown_out[role] = unknown
         providers = {p for p in providers if p in known_roles and p != role}
         if providers:
             graph[role] = providers
@@ -419,10 +326,8 @@ def build_integration_map(
 ) -> dict[str, set[str]]:
     """Map integration-test stack -> set(roles it exercises directly).
 
-    Derived by scanning every YAML under the stack's molecule/ tree for
-    include_role/import_role names (the converge applies them), normalized out of
-    own-collection FQCN form and filtered to known roles. The shared `_shared/`
-    dir is not a stack.
+    Scans every YAML under the stack's molecule/ tree for include_role names,
+    filtered to known roles. `_shared/` is not a stack.
     """
     if known_roles is None and ROLES_DIR.is_dir():
         known_roles = {p.name for p in ROLES_DIR.iterdir() if p.is_dir()}
@@ -458,20 +363,18 @@ def build_inventory_consumers(
 ) -> dict[str, set[tuple[str, str]]]:
     """Map repo-relative inventory file -> set of selectors that consume it.
 
-    A selector is ("role", <role>) or ("integration", <stack>). Derived by
-    scanning every molecule scenario file (role + integration) for references to
-    files under inventories/, resolved relative to the referencing file. Today
-    only the integration converges reference inventories/prod/group_vars/all.yml;
-    role scenarios reference none (verified) — so this map is what makes a
-    group_vars/all.yml change select the integration tests and nothing else.
+    A selector is ("role", <role>) or ("integration", <stack>), derived by
+    scanning every molecule scenario file for references under inventories/.
     """
     consumers: dict[str, set[tuple[str, str]]] = defaultdict(set)
 
     def _scan(scenario_file: Path, selector: tuple[str, str]) -> None:
         try:
             text = scenario_file.read_text()
-        except OSError:
+        except FileNotFoundError:
             return
+        except OSError as e:
+            raise CoverageError(f"{scenario_file}: unreadable: {e}") from e
         base = scenario_file.parent
         for token in _INVENTORY_REF_RE.findall(text):
             if token.startswith("ansible/") or token.startswith("/"):
@@ -551,10 +454,8 @@ def classify_integration_path(
 ):
     """Classify a change under the integration-tests dir.
 
-    Returns the _ALL_INTEGRATION sentinel for a change under _shared/ (the shared
-    prepare every stack references), the stack name for a change under a known
-    stack, or None if the path isn't under integration-tests. Raises CoverageError
-    for an unknown stack dir.
+    _ALL_INTEGRATION for a change under _shared/, the stack name for a known
+    stack, None when the path is elsewhere; an unknown stack dir raises.
     """
     rest = _under(path, integration_prefix)
     if rest is None:
@@ -666,10 +567,9 @@ def compute_affected(
         for scenario in scen:
             scenarios.add((role, scenario))
 
-    # Integration tests: a stack runs when a changed role is one it exercises
-    # directly OR via that role's providers (its converge applies the role, which
-    # pulls in its dependencies). Closing each stack's role set under the provider
-    # graph captures the transitive coupling.
+    # A stack runs when a changed role is one it exercises directly or via that
+    # role's providers, so each stack's role set is closed under the provider
+    # graph.
     for stack in integration_set:
         exercised = _closure(integration_map.get(stack, set()), role_deps)
         if exercised & changed_roles:
@@ -722,11 +622,9 @@ _HEADER = (
 )
 
 
-# Every emitted job carries explicit `rules: [when: always]`. Without any
-# rules/only/except GitLab applies the legacy implicit `only: branches, tags`,
-# and a child of a merge-request pipeline runs on the MR ref (neither), so every
-# rule-less job would be filtered out and the trigger would fail on an empty
-# pipeline.
+# Every emitted job carries explicit `rules: [when: always]`. A rule-less job
+# inherits the legacy implicit `only: branches, tags`, which no MR-ref child job
+# matches, so the child pipeline would be empty and the trigger would fail.
 _ALWAYS_RULES = [{"when": "always"}]
 
 
@@ -786,6 +684,38 @@ def _git_changed_files(base: str, repo: Path = REPO) -> list[str]:
     return [line.strip() for line in out.stdout.splitlines() if line.strip()]
 
 
+def galaxy_change_is_version_only(diff_text: str) -> bool:
+    """Whether a unified galaxy.yml diff touches nothing but `version:`.
+
+    Every release MR bumps that key, and a full 43-job matrix for a version
+    lineage edit is pure cost.
+    """
+    touched = []
+    for line in diff_text.splitlines():
+        if line.startswith(("+++", "---", "@@", "diff ", "index ")):
+            continue
+        if not line.startswith(("+", "-")):
+            continue
+        body = line[1:].strip()
+        if not body or body.startswith("#"):
+            continue
+        key = body.split(":", 1)[0].strip() if ":" in body else body
+        touched.append(key)
+    return bool(touched) and set(touched) == {"version"}
+
+
+def _galaxy_diff(base: str, path: str, repo: Path = REPO) -> str:
+    """`git diff -U0 <base>...HEAD -- <path>`, or "" when git cannot answer."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo), "diff", "-U0", f"{base}...HEAD", "--", path],
+            check=True, capture_output=True, text=True,
+        )
+    except (subprocess.CalledProcessError, OSError):
+        return ""
+    return out.stdout
+
+
 def _read_paths(stream) -> list[str]:
     return [line.strip() for line in stream if line.strip()]
 
@@ -825,7 +755,16 @@ def _print_graph(repo: Path = REPO) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=(
+            "examples:\n"
+            '  generate-molecule-pipeline.py "$CI_MERGE_REQUEST_DIFF_BASE_SHA" -o molecule-child.yml\n'
+            "  printf '%s\\n' ansible/roles/foo/tasks/main.yml | generate-molecule-pipeline.py\n"
+            "  generate-molecule-pipeline.py --print-graph\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("base", nargs="?", help="base SHA/ref; runs `git diff --name-only <base>...HEAD`")
     parser.add_argument("--diff-base", help="base SHA/ref (alternative to the positional arg)")
     parser.add_argument(
@@ -858,6 +797,16 @@ def main(argv: list[str] | None = None) -> int:
         changed = _read_paths(sys.stdin)
     else:
         parser.error("no changed files: pass a base SHA, --changed-files-from, or pipe paths on stdin")
+
+    galaxy = str(PurePosixPath(ROLES_PREFIX).parent / "galaxy.yml")
+    if base and galaxy in changed:
+        if galaxy_change_is_version_only(_galaxy_diff(base, galaxy, args.repo)):
+            changed = [c for c in changed if c != galaxy]
+            print(
+                f"note: {galaxy} changed only its `version:`; not treating it as a "
+                "full-matrix trigger",
+                file=sys.stderr,
+            )
 
     try:
         selection = select(changed, repo=args.repo)

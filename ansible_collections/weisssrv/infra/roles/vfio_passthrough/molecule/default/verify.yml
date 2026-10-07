@@ -52,3 +52,119 @@
           - "'vfio-pci.ids=10de:2182,10de:1aeb,10de:1aec,10de:1aed' in (grub_vfio.content | b64decode)"
         fail_msg: "grub.d drop-in missing the IOMMU params or the vfio-pci.ids= cmdline bind"
         success_msg: "grub.d drop-in appends intel_iommu=on iommu=pt and vfio-pci.ids= for all four functions"
+
+    - name: Read the disabled-run result
+      ansible.builtin.slurp:
+        src: /tmp/molecule-results/disable.json
+      register: vfio_passthrough_disable_artifact
+
+    - name: Assert a disabled run removed every VFIO file
+      vars:
+        still_present: "{{ (vfio_passthrough_disable_artifact.content | b64decode | from_json).still_present }}"
+      ansible.builtin.assert:
+        that:
+          - still_present | length == 0
+        fail_msg: >-
+          vfio_passthrough_enabled: false left {{ still_present | join(', ') }}
+          in place — the GPU stays bound to vfio-pci and nouveau blacklisted.
+        success_msg: "a disabled run removes the grub drop-in, vfio.conf and the force-load file"
+
+    - name: Read the opted-out removal result
+      ansible.builtin.slurp:
+        src: /tmp/molecule-results/manage-absent.json
+      register: vfio_passthrough_manage_absent_artifact
+
+    - name: Assert vfio_passthrough_manage_absent false keeps a hand-written file
+      vars:
+        kept: "{{ (vfio_passthrough_manage_absent_artifact.content | b64decode | from_json).kept }}"
+      ansible.builtin.assert:
+        that:
+          - kept | bool
+        fail_msg: >-
+          vfio_passthrough_manage_absent: false still removed
+          /etc/modprobe.d/vfio.conf, so a host with hand-written VFIO config
+          loses it on the next converge.
+        success_msg: "vfio_passthrough_manage_absent: false leaves a hand-written vfio.conf alone"
+
+    - name: Read the ownership-scoped removal result
+      ansible.builtin.slurp:
+        src: /tmp/molecule-results/unowned.json
+      register: vfio_passthrough_unowned_artifact
+
+    - name: Assert the removal arm leaves a file the role never wrote
+      vars:
+        kept: "{{ (vfio_passthrough_unowned_artifact.content | b64decode | from_json).kept }}"
+      ansible.builtin.assert:
+        that:
+          - kept | bool
+        fail_msg: >-
+          The disabled arm deleted a hand-written /etc/modprobe.d/vfio.conf; it
+          owns only files carrying one of its ownership markers.
+        success_msg: "the removal arm removes only role-written drop-ins"
+
+    - name: Read the cmdline-method reject result
+      ansible.builtin.slurp:
+        src: /tmp/molecule-results/cmdline-method.json
+      register: vfio_passthrough_method_artifact
+
+    - name: Assert an unimplemented cmdline method fails the role
+      vars:
+        rejected: "{{ (vfio_passthrough_method_artifact.content | b64decode | from_json).rejected }}"
+      ansible.builtin.assert:
+        that:
+          - rejected | bool
+        fail_msg: >-
+          vfio_passthrough accepted an unimplemented cmdline method, so it would
+          stage the drop-in and never capture the card.
+        success_msg: "an unimplemented vfio_passthrough_cmdline_method fails the role"
+
+    - name: Read the empty-marker reject result
+      ansible.builtin.slurp:
+        src: /tmp/molecule-results/empty-marker.json
+      register: vfio_passthrough_empty_marker_artifact
+
+    - name: Assert no usable marker fails the disabled arm and keeps the file
+      vars:
+        result: "{{ vfio_passthrough_empty_marker_artifact.content | b64decode | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - result.rejected | bool
+          - result.kept | bool
+        fail_msg: >-
+          Emptying every vfio_passthrough marker did not fail the disabled arm,
+          so no file at the three VFIO paths can be told apart from the role's.
+        success_msg: "the disabled arm fails when no vfio_passthrough marker is usable"
+
+    - name: Read the marker-skew removal result
+      ansible.builtin.slurp:
+        src: /tmp/molecule-results/marker-skew.json
+      register: vfio_passthrough_marker_skew_artifact
+
+    - name: Assert the removal arm ignores a changed ansible_managed
+      vars:
+        still_present: "{{ (vfio_passthrough_marker_skew_artifact.content | b64decode | from_json).still_present }}"
+      ansible.builtin.assert:
+        that:
+          - still_present | length == 0
+        fail_msg: >-
+          A different ansible_managed left {{ still_present | join(', ') }} in
+          place, so the role no longer recognises its own drop-ins and the GPU
+          stays captured.
+        success_msg: "the removal arm keys on the role-owned marker, not ansible_managed"
+
+    - name: Read the legacy-marker removal result
+      ansible.builtin.slurp:
+        src: /tmp/molecule-results/legacy-marker.json
+      register: vfio_passthrough_legacy_artifact
+
+    - name: Assert the removal arm also owns a drop-in carrying only ansible_managed
+      vars:
+        kept: "{{ (vfio_passthrough_legacy_artifact.content | b64decode | from_json).kept }}"
+      ansible.builtin.assert:
+        that:
+          - not (kept | bool)
+        fail_msg: >-
+          A drop-in carrying only the ansible_managed header survived the
+          disabled arm, so a host converged before the role-owned marker shipped
+          keeps its GPU bound to vfio-pci.
+        success_msg: "the removal arm accepts the legacy ansible_managed marker"

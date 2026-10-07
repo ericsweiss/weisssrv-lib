@@ -1,8 +1,6 @@
 ---
-# Restart, then gate on the API actually coming back. k3s can exit once during
-# startup (etcd rejoin) and be recovered by Restart=always seconds later, which
-# a plain restart reports as failure. failed_when:false tolerates that; the
-# config tasks also notify "Wait for k3s API healthy", which is the real gate.
+# Restart, then gate on the API coming back. failed_when:false tolerates k3s
+# exiting once during etcd rejoin; "Wait for k3s API healthy" is the real gate.
 - name: Restart k3s
   ansible.builtin.systemd:
     name: k3s
@@ -12,11 +10,9 @@
   when: not (k3s_skip_install | default(false))
 
 - name: Wait for k3s API healthy
-  # /readyz (stricter than /healthz) gates on the apiserver being fully ready to
-  # serve, not merely up — reduces flaky follow-up ops right after a restart.
-  # kubectl --raw returns rc 0 only on HTTP 200 (readyz "ok"), non-zero otherwise.
-  # --request-timeout bounds each probe so a hung API call fails fast and the
-  # retry budget (30 x 10s) stays predictable instead of stalling on one call.
+  # /readyz gates on the apiserver being ready to serve, not merely up. kubectl
+  # --raw returns rc 0 only on HTTP 200; --request-timeout bounds each probe so
+  # the 30 x 10s retry budget stays predictable.
   ansible.builtin.command: k3s kubectl --request-timeout=5s get --raw=/readyz
   register: k3s_api_readyz
   changed_when: false
@@ -36,17 +32,9 @@
   failed_when: false
   when: not (k3s_skip_install | default(false))
 
-# A restarted agent must come back node-Ready, not merely have systemd accept
-# the restart: the restart above is fire-and-forget, the agents play is not
-# serial, and the play-level Ready assert targets the first server so it is
-# skipped under `--limit k3s_agents` — a bad agent config would otherwise roll
-# out fleet-wide behind a green run.
-#
-# Check the agent itself BEFORE the delegated Ready poll: a dead kubelet's node
-# object stays Ready=True for the ~40s node-monitor grace period, so the poll
-# can pass on stale status. Requiring k3s-agent active AND NRestarts stable
-# across a recheck catches the Type=exec exec-then-die race a bad config
-# produces. Mirrors "Wait for k3s API healthy" on servers.
+# systemd accepting the restart is not proof: require k3s-agent active with a
+# stable NRestarts before the delegated Ready poll, because a dead kubelet keeps
+# the node Ready for the node-monitor grace period.
 - name: Confirm the restarted k3s-agent is up and stable
   ansible.builtin.shell: |
     set -e
@@ -75,11 +63,8 @@
     - not (k3s_skip_install | default(false))
     - groups[k3s_server_group] | default([]) | length > 0
 
-# Defensive end-of-play daemon-reload after the snapshot copy service/timer units
-# change. Handlers flush at end of play, AFTER the enable+start task in
-# etcd-snapshot-offnode.yml has already run — that task carries its own
-# daemon_reload: true and is the real mechanism that picks up unit changes during
-# a run. This handler only covers runs where that task is skipped (check mode).
+# Covers check-mode runs only; the enable+start task carries its own
+# daemon_reload.
 - name: Reload systemd for etcd snapshot copy
   ansible.builtin.systemd:
     daemon_reload: true

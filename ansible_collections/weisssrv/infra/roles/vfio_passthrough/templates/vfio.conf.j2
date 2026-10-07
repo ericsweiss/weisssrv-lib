@@ -1,12 +1,7 @@
-{# Deployed content (/etc/modprobe.d/vfio.conf) behind the same
-   update-grub / rebuild-initramfs / reboot-required handler chain as
-   grub-vfio.cfg.j2 — keep byte-stable, narrative in README.md. #}
+{# Byte-stable: a reword rebuilds boot artifacts on every consumer - see README. #}
 # {{ ansible_managed }}
-# Managed by the vfio_passthrough Ansible role (host-side GPU passthrough).
-#
-# Bind the listed PCI functions to vfio-pci and keep host drivers off them. The
-# primary bind is the vfio-pci.ids= kernel cmdline; this is its modprobe.d twin,
-# baked into the initramfs. The role never reboots — the operator does.
+# managed by weisssrv.infra.vfio_passthrough
+# Binds the listed PCI functions to vfio-pci; the initramfs twin of vfio-pci.ids=.
 options vfio-pci ids={{ vfio_passthrough_pci_ids | join(',') }}
 {% for mod in vfio_passthrough_blacklist_modules %}
 # {{ mod }}: hard-blacklisted (never loads) — vfio-pci claims its function via ids=.

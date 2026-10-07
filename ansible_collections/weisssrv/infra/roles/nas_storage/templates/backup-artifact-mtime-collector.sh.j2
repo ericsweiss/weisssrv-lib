@@ -1,21 +1,10 @@
 #!/bin/sh
 # {{ ansible_managed }}
-# NAS-side backup-artifact collector: for each declared app, stats the newest
-# RESTORABLE artefact under <base>/<app> and emits
-#
-#   backup_artifact_last_mtime_seconds{app}          mtime of that artefact (0 = none)
-#   backup_artifact_last_size_bytes{app}             its size in bytes (0 = none)
-#   backup_artifact_companion_present{app,file}      1/0 per declared companion glob
-#   backup_artifact_companion_size_bytes{app,file}   size of that companion (0 = absent)
-#   backup_artifact_collector_last_success_seconds   collector sentinel
-#
-# This is the signal that stays honest when an app's OWN backup metrics go green
-# without the dump ever reaching the landing zone (broken mount, wrong path).
-# RESTORABLE is the operative word: only files matching the app's declared
-# pattern count, so an app's nightly config/sidecar copies can never satisfy
-# "a restorable dump landed".
-#
-# Atomic write (.tmp + rename) so node_exporter never reads a half-written file.
+
+# NAS-side collector: per declared app, stats the newest RESTORABLE artefact
+# under <base>/<app>. Series and semantics: nas_storage role README.
+# Atomic write (.tmp + rename) so node_exporter never reads a partial file.
+
 set -eu
 export LC_ALL=C
 
@@ -35,7 +24,7 @@ APP_PATTERNS_EOF
 )"
 
 # app<TAB>companion-glob, one line per companion (files required to RESTORE the
-# artefact but deliberately excluded from the artefact pattern).
+# artefact but excluded from the artefact pattern).
 APP_COMPANIONS="$(cat <<'APP_COMPANIONS_EOF'
 {% for app in nas_storage_backup_artifact_apps %}
 {% for companion in app.companions | default([]) %}
@@ -45,12 +34,10 @@ APP_COMPANIONS="$(cat <<'APP_COMPANIONS_EOF'
 APP_COMPANIONS_EOF
 )"
 
-# The independence this collector advertises only holds while the landing zone
-# is a real mounted dataset. With it unmounted, $BASE is a plain directory on
-# the root filesystem where a NAS-local producer would have shadow-written its
-# artefacts, which this collector would then read as fresh. Emit NO per-app
-# series in that state, so every per-app absent() alert arm fires: nothing
-# offsite-eligible is reachable, which is the truth.
+# CRITICAL: an unmounted landing zone leaves $BASE a plain root-filesystem
+# directory holding shadow-written artefacts that read as fresh. With
+# nas_storage_backup_require_mounted_dataset set, emit NO per-app series while
+# it is unmounted, so every per-app absent() alert arm fires.
 BACKUPS_MOUNT="{{ nas_storage_backup_apps_base | dirname }}"
 REQUIRE_MOUNT={{ '1' if (nas_storage_backup_require_mounted_dataset | default(true) | bool) else '0' }}
 backups_mounted=1
@@ -70,9 +57,8 @@ collect_apps() {
     # arms key on (a present-but-empty dir emits 0 and trips freshness instead).
     [ -d "$dir" ] || continue
     # GNU find %T@ = epoch.frac, %s = bytes; newest wins. `set +e` per app so a
-    # vanished dir cannot kill the run. Partial/temp files are excluded on top
-    # of the pattern: a dump written as "$out.tmp" and renamed leaves a fresh
-    # .tmp behind on failure, which would otherwise mask staleness.
+    # vanished dir cannot kill the run. Partial/temp names are excluded on top
+    # of the pattern so a failed dump's leftover cannot mask staleness.
     set +e
     newest="$(find "$dir" -type f -name "$pattern" \
       ! -name '*.tmp' ! -name '*.partial' ! -name '*.part' \

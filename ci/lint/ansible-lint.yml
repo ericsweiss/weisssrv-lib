@@ -16,22 +16,21 @@ spec:
         Runner tag(s). Default targets weisssrv's privileged runner; pass `[]`
         for the shared tag-less tenant runner.
     ansible_lint_version:
-      default: "25.12.2"
+      default: "26.8.0"
       description: >-
         ansible-lint pip pin (pulls its matching ansible-core). Held equal to
         docker/molecule-ci/requirements.txt by
         tests/test_lint_version_parity.py so lint and molecule agree on the
         version under test.
     pip_extra:
-      default: "black<26.5.0"
+      default: "black==26.3.1"
       description: >-
         Extra space-separated pip pins installed alongside ansible-lint. The
-        default guards the broken black 26.5.x mypyc wheels (ansible-lint's
-        jinja rule imports black) and is held equal to the molecule image's
-        black pin by tests/test_lint_version_parity.py; lift once 26.5.x is
-        fixed. Routed through a
-        job variable, so a version-ceiling pin (`<`) is safe here — see the
-        PIP_EXTRA note below.
+        default holds black below 26.5.x, whose broken mypyc wheels make
+        ansible-lint's jinja rule fail to import, and is held equal to the
+        molecule image's black pin by tests/test_lint_version_parity.py.
+        Routed through a job variable, so a version-ceiling pin (`<`) is also
+        safe here — see the PIP_EXTRA note below.
     config:
       default: ""
       description: >-
@@ -56,10 +55,8 @@ spec:
       default: "main"
       description: >-
         Consumer's default branch as a LITERAL name (`main`, `master`, `trunk`)
-        for the post-merge rule. NOT `$CI_DEFAULT_BRANCH`: the value lands
-        inside a quoted `rules:if` string, which GitLab does not expand, so the
-        comparison would never match and the job would silently stop running
-        post-merge.
+        for the post-merge rule. NOT `$CI_DEFAULT_BRANCH` —
+        docs/INCLUDE-CONTRACT.md § default_branch.
     changes:
       type: array
       default:
@@ -72,22 +69,16 @@ spec:
     job_memory_limit:
       default: "1500Mi"
       description: >-
-        KUBERNETES_MEMORY_LIMIT for the job pod. Right-sized per job class so
-        concurrent pipelines pack into the runner namespace's limits.memory
-        quota instead of every job costing the runner default; raise it per
-        consumer only when the job really needs more (the runner's
-        memory_limit_overwrite_max_allowed is the hard ceiling).
+        KUBERNETES_MEMORY_LIMIT for the job pod. Sizing policy:
+        docs/INCLUDE-CONTRACT.md § Resource inputs.
     job_memory_request:
       default: "512Mi"
       description: KUBERNETES_MEMORY_REQUEST for the job pod (scheduler reservation).
     job_cpu_request:
       default: "300m"
       description: >-
-        KUBERNETES_CPU_REQUEST for the job pod — the scheduler reservation,
-        right-sized per job class so a full concurrency burst packs into the
-        runner nodes' allocatable CPU instead of every job costing the runner
-        default (no CPU limit, repo-wide: CPU is compressible and a limit
-        only buys CFS throttling).
+        KUBERNETES_CPU_REQUEST for the job pod (scheduler reservation). Sizing
+        policy: docs/INCLUDE-CONTRACT.md § Resource inputs.
 ---
 "$[[ inputs.job_name ]]":
   needs: []
@@ -106,17 +97,14 @@ spec:
     # Keep ansible's caches/tmp inside the build dir — the shared tenant
     # runner is non-root and $HOME may not be writable.
     ANSIBLE_HOME: "$CI_PROJECT_DIR/.ansible-home"
-    # pip_extra reaches the shell as a VARIABLE, never as interpolated text:
-    # $[[ inputs.* ]] is textual substitution into the YAML scalar, so a
-    # version-ceiling pin (`black<26.5.0` — the default) would render a literal
-    # `<` that the shell parses as an input redirection before any expansion
-    # happens. The result of a parameter expansion is word-split but never
-    # re-scanned for redirection operators, so this form is safe.
+    # pip_extra reaches the shell as a VARIABLE, never as interpolated text: a
+    # ceiling pin like `black<26.5.0` would otherwise render a literal `<` the
+    # shell parses as a redirection before any expansion happens.
     PIP_EXTRA: "$[[ inputs.pip_extra ]]"
   before_script:
     # `--user` + absolute user-base path: same non-root rationale as
     # python-lint (~/.local/bin is off PATH on python:*-slim).
-    # shellcheck disable=SC2086  # word-split PIP_EXTRA
+    # PIP_EXTRA is word-split on purpose: it may carry several packages.
     - pip install --user --quiet "ansible-lint==$[[ inputs.ansible_lint_version ]]" $PIP_EXTRA
     - ANSIBLE_LINT_BIN="$(python -m site --user-base)/bin/ansible-lint"
     - ANSIBLE_GALAXY_BIN="$(python -m site --user-base)/bin/ansible-galaxy"

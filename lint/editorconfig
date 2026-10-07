@@ -1,7 +1,6 @@
 # EditorConfig — https://editorconfig.org
-# Shared editor conventions matching what the linters enforce (2-space YAML,
-# 4-space shell/Python, 2-space terraform). Copy into a consumer repo as
-# `.editorconfig`.
+# Shared editor conventions matching what the linters enforce. Copy into a
+# consumer repo as `.editorconfig`.
 root = true
 
 [*]

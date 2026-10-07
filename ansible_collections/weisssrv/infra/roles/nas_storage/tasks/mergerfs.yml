@@ -1,15 +1,14 @@
 ---
-# MergerFS configuration for tiered storage.
-#
-# MergerFS options are NOT verifiable at runtime (FUSE exposes only generic
-# options; inodecalc/noforget/use_ino/cache.files are invisible once mounted),
-# so fstab is the authoritative source: correct fstab + a live mount means the
-# options are applied, and any option change needs a full remount cycle. See
-# the role README for the remount sequence.
+# MergerFS unions for tiered storage. Mount-time-only options are invisible once
+# mounted, so fstab is authoritative and any option change needs a full remount
+# cycle. Sequence and idle gate: the role README.
 
 - name: Install MergerFS
   ansible.builtin.apt:
-    name: mergerfs
+    name:
+      - mergerfs
+      # psmisc ships fuser, which the idle probe needs before a remount.
+      - psmisc
     state: present
   when: ansible_facts['os_family'] == "Debian"
 
@@ -31,7 +30,7 @@
 - name: Verify MergerFS mount status and fstab options
   ansible.builtin.shell: |
     set -o pipefail
-    MOUNTPOINT="{{ item.target }}"
+    MOUNTPOINT={{ item.target | quote }}
     CONTROL_FILE="${MOUNTPOINT}/.mergerfs"
 
     if ! mountpoint -q "$MOUNTPOINT" 2>/dev/null; then
@@ -95,35 +94,7 @@
     - item.stdout is defined
 
 - name: Check for active NFS clients on MergerFS-backed exports
-  ansible.builtin.shell: |
-    set -o pipefail
-    MOUNTPOINT="{{ item.target }}"
-
-    bind_exports=$(findmnt --list --noheadings -o TARGET | grep "^/export" | while IFS= read -r exp; do
-      src=$(findmnt --noheadings -o SOURCE "$exp" 2>/dev/null)
-      if [ "$src" = "$MOUNTPOINT" ]; then
-        echo "$exp"
-      fi
-    done)
-
-    if [ -z "$bind_exports" ]; then
-      echo "NO_NFS_BIND_EXPORTS"
-      exit 0
-    fi
-
-    echo "BIND_EXPORTS: $bind_exports"
-
-    nfs_connections=$(ss -tn state established '( sport = :2049 )' 2>/dev/null | grep -v "^State" | head -5)
-    if [ -n "$nfs_connections" ]; then
-      echo "ACTIVE_NFS_CLIENTS:"
-      echo "$nfs_connections"
-      exit 1
-    fi
-
-    echo "NFS_IDLE"
-    exit 0
-  args:
-    executable: /bin/bash
+  ansible.builtin.script: "mergerfs-bind-probe.sh check {{ item.target | quote }}"
   loop: "{{ nas_storage_mergerfs_mounts }}"
   loop_control:
     label: "{{ item.name }}"
@@ -137,7 +108,14 @@
 - name: Check for processes using MergerFS mount
   ansible.builtin.shell: |
     set -o pipefail
-    MOUNTPOINT="{{ item.target }}"
+    MOUNTPOINT={{ item.target | quote }}
+
+    # Without fuser the probe cannot tell "nothing holds it" from "I could not
+    # look"; a missing binary would read as an idle union and unmount it.
+    command -v fuser >/dev/null 2>&1 || {
+      echo "NO_FUSER: cannot determine whether $MOUNTPOINT is in use"
+      exit 3
+    }
 
     if fuser -m "$MOUNTPOINT" 2>/dev/null | grep -q .; then
       echo "IN_USE:"
@@ -208,76 +186,9 @@
   ansible.builtin.include_tasks: mergerfs_remount_gate.yml
   when: not ansible_check_mode
 
-- name: Temporarily unexport the MergerFS-backed NFS paths
-  ansible.builtin.command:
-    argv:
-      - exportfs
-      - -u
-      - "{{ item.1.spec }}:{{ item.0.path }}"
-  loop: "{{ nas_storage_mergerfs_export_bindings | default([]) }}"
-  loop_control:
-    label: "{{ item.1.spec }}:{{ item.0.path }}"
-  when:
-    - not ansible_check_mode
-    - nas_storage_mergerfs_safe_to_remount | default(false)
-  register: nas_storage_nfs_unexport
-  changed_when: true
-
-- name: Identify and unmount bind mounts sourced from MergerFS
-  # findmnt-driven rather than inventory-driven: any bind still sourced from the
-  # target would keep it busy and fail the unmount below, including one the
-  # inventory does not declare.
-  ansible.builtin.shell: |
-    set -o pipefail
-    MOUNTPOINT="{{ item.target }}"
-
-    findmnt --list --noheadings -o TARGET,SOURCE -t none | while read -r target source; do
-      if [ "$source" = "$MOUNTPOINT" ]; then
-        echo "Unmounting: $target (bind from $source)"
-        umount "$target" || echo "Warning: failed to unmount $target"
-      fi
-    done
-  args:
-    executable: /bin/bash
-  loop: "{{ nas_storage_mergerfs_mounts }}"
-  loop_control:
-    label: "{{ item.name }}"
-  when:
-    - not ansible_check_mode
-    - nas_storage_mergerfs_safe_to_remount | default(false)
-  # Part of one remount cycle whose change is reported by the mount tasks below;
-  # a per-item result is not addressable in changed_when on ansible-core 2.19+.
-  changed_when: false
-
-# Gate on nas_storage_mergerfs_safe_to_remount: with zero bind mounts sourcing
-# from the target there is nothing to unbind, but the remount must still proceed
-# or new fstab options are silently never applied.
-- name: Unmount MergerFS
-  ansible.posix.mount:
-    path: "{{ item.target }}"
-    state: unmounted
-  loop: "{{ nas_storage_mergerfs_mounts }}"
-  loop_control:
-    label: "{{ item.name }}"
-  when:
-    - not ansible_check_mode
-    - nas_storage_mergerfs_safe_to_remount | default(false)
-  register: nas_storage_mergerfs_unmount
-
-- name: Mount MergerFS with fstab options
-  ansible.posix.mount:
-    path: "{{ item.target }}"
-    state: mounted
-  loop: "{{ nas_storage_mergerfs_mounts }}"
-  loop_control:
-    label: "{{ item.name }}"
-  when:
-    - not ansible_check_mode
-    - nas_storage_mergerfs_unmount is defined
-    - nas_storage_mergerfs_unmount.changed | default(false)
-  register: nas_storage_mergerfs_mount
-
-- name: Identify bind mounts to remount
+# The exports this cycle unbinds and rebinds: those whose bind_source is a
+# MergerFS union target.
+- name: Identify the MergerFS-backed bind mount paths
   ansible.builtin.set_fact:
     nas_storage_mergerfs_bind_paths: >-
       {{ nas_storage_exports | default([])
@@ -285,40 +196,96 @@
          | selectattr('bind_source', 'in', nas_storage_mergerfs_mounts | map(attribute='target') | list)
          | map(attribute='path')
          | list }}
+  when: not ansible_check_mode
+
+# One cycle: unexport, unbind, remount the union, rebind. `always:` remounts the
+# union and the binds and re-exports, so a failure mid-cycle never leaves the
+# exports pointing at empty mountpoints.
+- name: Run the MergerFS remount cycle
   when:
     - not ansible_check_mode
-    - nas_storage_mergerfs_mount is defined
-    - nas_storage_mergerfs_mount.changed | default(false)
+    - nas_storage_mergerfs_safe_to_remount | default(false)
+  block:
+    - name: Temporarily unexport the MergerFS-backed NFS paths
+      ansible.builtin.command:
+        argv:
+          - exportfs
+          - -u
+          - "{{ item.1.spec }}:{{ item.0.path }}"
+      loop: "{{ nas_storage_mergerfs_export_bindings | default([]) }}"
+      loop_control:
+        label: "{{ item.1.spec }}:{{ item.0.path }}"
+      register: nas_storage_nfs_unexport
+      changed_when: true
 
-- name: Remount bind mounts for NFS exports
-  ansible.posix.mount:
-    path: "{{ item }}"
-    state: mounted
-  loop: "{{ nas_storage_mergerfs_bind_paths | default([]) }}"
-  loop_control:
-    label: "{{ item }}"
-  when:
-    - not ansible_check_mode
-    - nas_storage_mergerfs_mount is defined
-    - nas_storage_mergerfs_mount.changed | default(false)
-    - nas_storage_mergerfs_bind_paths | default([]) | length > 0
-  register: nas_storage_bind_remount
+    - name: Unmount the MergerFS-backed bind mounts
+      ansible.posix.mount:
+        path: "{{ item }}"
+        state: unmounted
+      loop: "{{ nas_storage_mergerfs_bind_paths | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
 
-# -a re-exports everything in /etc/exports; the untouched exports are already
-# active, so this only restores the ones unexported above.
-- name: Re-export NFS paths
-  ansible.builtin.command: exportfs -a
-  when:
-    - not ansible_check_mode
-    - nas_storage_nfs_unexport is defined
-    - nas_storage_nfs_unexport.changed | default(false)
-  register: nas_storage_nfs_reexport
-  changed_when: nas_storage_nfs_reexport.rc == 0
+    # Any remaining mount of the union keeps it busy and would fail the unmount
+    # below with no explanation. Matched by mount device id, so an undeclared
+    # bind is named instead of silently blocking the cycle.
+    - name: Assert no undeclared mount still holds a MergerFS union
+      ansible.builtin.script: "mergerfs-bind-probe.sh list {{ item.target | quote }}"
+      loop: "{{ nas_storage_mergerfs_mounts }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: nas_storage_mergerfs_leftover_binds
+      changed_when: false
+      failed_when: >-
+        nas_storage_mergerfs_leftover_binds.rc != 0
+        or (nas_storage_mergerfs_leftover_binds.stdout | trim | length > 0)
 
+    - name: Unmount MergerFS
+      ansible.posix.mount:
+        path: "{{ item.target }}"
+        state: unmounted
+      loop: "{{ nas_storage_mergerfs_mounts }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+  always:
+    # In `always:` and ungated: `state: mounted` is idempotent, so a failure
+    # anywhere in the cycle still restores the union and the binds instead of
+    # re-exporting empty mountpoints.
+    - name: Mount MergerFS with fstab options
+      ansible.posix.mount:
+        path: "{{ item.target }}"
+        state: mounted
+      loop: "{{ nas_storage_mergerfs_mounts }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: nas_storage_mergerfs_mount
+
+    - name: Remount bind mounts for NFS exports
+      ansible.posix.mount:
+        path: "{{ item }}"
+        state: mounted
+      loop: "{{ nas_storage_mergerfs_bind_paths | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+
+    # -a re-exports everything in /etc/exports; the untouched exports are
+    # already active, so this only restores the ones unexported above.
+    - name: Re-export NFS paths
+      ansible.builtin.command: exportfs -a
+      when:
+        - nas_storage_nfs_unexport is defined
+        - nas_storage_nfs_unexport.changed | default(false)
+      register: nas_storage_nfs_reexport
+      changed_when: nas_storage_nfs_reexport.rc == 0
+
+# Fails the run rather than reporting a cycle that left the union stale: the
+# mount must be live, carry the required fstab options, and every bind must be
+# back on the same device as its union.
 - name: Verify MergerFS mount after remount cycle
   ansible.builtin.shell: |
     set -o pipefail
-    MOUNTPOINT="{{ item.target }}"
+    MOUNTPOINT={{ item.target | quote }}
     CONTROL_FILE="${MOUNTPOINT}/.mergerfs"
 
     if ! mountpoint -q "$MOUNTPOINT"; then
@@ -339,14 +306,26 @@
         missing_opts="${missing_opts}${opt} "
       fi
     done
-    if [ -z "$missing_opts" ]; then
-      echo "SUCCESS: MergerFS mounted, fstab has correct options"
-      echo "FSTAB: $fstab_opts"
-      exit 0
-    else
-      echo "WARNING: Fstab options may be incomplete ($missing_opts): $fstab_opts"
+    if [ -n "$missing_opts" ]; then
+      echo "FAILED: fstab is missing options ($missing_opts): $fstab_opts"
       exit 1
     fi
+
+    union_dev=$(findmnt --noheadings --first-only -o MAJ:MIN --mountpoint "$MOUNTPOINT")
+    binds=({{ nas_storage_exports | default([]) | selectattr('bind_source', 'defined')
+              | selectattr('bind_source', 'equalto', item.target)
+              | map(attribute='path') | map('quote') | join(' ') }})
+    for bind in "${binds[@]}"; do
+      bind_dev=$(findmnt --noheadings --first-only -o MAJ:MIN --mountpoint "$bind" 2>/dev/null || true)
+      if [ "$bind_dev" != "$union_dev" ]; then
+        echo "FAILED: export bind $bind is not on ${MOUNTPOINT} after the cycle (${bind_dev:-unmounted})"
+        exit 1
+      fi
+    done
+
+    echo "SUCCESS: MergerFS mounted, fstab has correct options"
+    echo "FSTAB: $fstab_opts"
+    exit 0
   args:
     executable: /bin/bash
   loop: "{{ nas_storage_mergerfs_mounts }}"
@@ -354,7 +333,6 @@
     label: "{{ item.name }}"
   register: nas_storage_mergerfs_final_verify
   changed_when: false
-  failed_when: false
   when:
     - not ansible_check_mode
     - nas_storage_mergerfs_mount is defined

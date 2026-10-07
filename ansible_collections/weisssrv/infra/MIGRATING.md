@@ -1,33 +1,507 @@
-# Migrating to weisssrv.infra
+# Migrating weisssrv.infra
 
-Every role variable in this collection carries its role's name as a prefix. That
-is consumer-visible API, so the rename from an un-prefixed in-tree role is a
-breaking change — and a **silent** one: each alias and each default is
-`| default(...)`, so a name you miss does not raise `AnsibleUndefinedVariable`,
-it quietly takes the role default. `adguard_tls_server_name` left behind in
-`group_vars` renders an empty DoT SNI on both resolvers, on every deploy, with a
-green play.
+Per-release upgrade notes for the collection, newest first. Every released tag
+has a section, even when there is nothing to do.
 
-This file is the complete old -> new map, role by role: every renamed variable,
-every externalized default (same name, site value now empty) and every required
-input. It is mechanical on purpose: work through it once per adopted role rather
-than trusting a grep.
+Role variables are consumer-visible API, so every rename, removal and changed
+default is listed here. Most of them are **silent**: each alias and each default
+is `| default(...)`, so a name you miss does not raise
+`AnsibleUndefinedVariable`, it quietly takes the role default. Land the
+inventory change and the pin bump in the **same merge request**.
 
-Six roles — `gitlab`, `home_assistant`, `immich`, `immich_ml`, `nextcloud`,
-`plex` — are **new to the collection**. For those, "migrating" means deleting the
-in-tree role, pointing the playbook at `weisssrv.infra.<role>`, and supplying the
-site values that used to be role defaults. Their sections carry both.
+Adopting the collection for the first time, from un-prefixed in-tree roles? The
+one-time rename map is
+[MIGRATING-from-in-tree-roles.md](MIGRATING-from-in-tree-roles.md).
 
-**Land the inventory changes and the collection adoption in the SAME merge
-request.** Most renames have no back-compat shim, and several roles now assert
-inputs that used to be defaults — a half-migrated inventory does not fail
-cleanly, it provisions with a role default.
+> **Lifecycle.** The collection ships no changelog file
+> ([VERSIONING.md](../../../docs/VERSIONING.md) § No changelog file), so this is
+> its only per-release migration record. At tag time the release MR retitles
+> `# Unreleased (next release)` to the tag being cut and opens a fresh empty one
+> above it; `tests/test_migrating_sections.py` fails a bump whose newest titled
+> section is not `galaxy.yml`'s version, or a released tag with no section.
+> Sections are kept in full, newest first, so a consumer jumping several
+> releases works through each delta in order. Prune a section only when no
+> supported consumer can still be on the release below it.
 
 ---
 
 # Unreleased (next release)
 
 Nothing yet.
+
+# v0.18.0
+
+A review pass over the whole library. Most of it is additive, but four roles
+change a default under you and `proxmox_firewall` hands two security groups back
+to site data. Work the sections in order: what fails the play first comes first.
+
+## Breaking — act in the same MR as the bump
+
+| Role | What to do |
+|---|---|
+| `proxmox_firewall` | `sg-host-egress` no longer builds in TCP 2222 or TCP 31100. A site running egress filtering re-declares them through `proxmox_firewall_host_egress_extra_ports` (cluster scope, so `group_vars/all`). `sg-smtp-relay` stays library-owned, but its Loki NodePort egress rule is gone — a relay guest that pushes logs re-declares it through `proxmox_firewall_smtp_relay_extra_egress_ports`. |
+| `proxmox_firewall` | `proxmox_firewall_smtp_relay_sources` is a new input defaulting to `[]`, which renders NO inbound rule in `sg-smtp-relay`, so the relay's `:25`/`:587` close at the bump. The old hard-coded `core-cluster` scope was removed because that IPSet is inventory-derived and failed `pve-firewall compile` on a site that does not define it. Every site running the relay MUST name its client sets in the same MR as the bump: `proxmox_firewall_smtp_relay_sources: [core-cluster]` (cluster scope, so `group_vars/all`). |
+| `proxmox_firewall` | `proxmox_firewall_nftables` is new and defaults to `false`. It selects the nftables `proxmox-firewall` implementation on a node by rendering `nftables: 1` into that node's `host.fw`, instead of the iptables `pve-firewall`. It is per node, so set it in `host_vars`. `false` omits the option, so a node switched by hand reverts on the next converge. Install the `proxmox-firewall` package first (the role installs none) and validate one node before the fleet. |
+| `proxmox_ha` | The rules/resources/datacenter reconcile is now `run_once` inside the role, delegated to the first node that answers a reachability probe. Drop the `serial: 1` / `max_fail_percentage` / `_ha_config_applied` / localhost-verify scaffolding from the calling play and run a plain `hosts: <proxmox group>`. The role no longer sets `become` on its own probe, so the play must set `become: true`. |
+| `vfio_passthrough` | The gate is reconciled both ways: `vfio_passthrough_enabled: false` now REMOVES the grub, modprobe and modules-load drop-ins and notifies the boot-artifact handlers. Compose the role unconditionally — drop any play-level `when: vfio_passthrough_enabled`, or a host turned off is never reconciled off. Composing it on a host that configured VFIO by hand removes `/etc/default/grub.d/vfio-iommu.cfg`, `/etc/modprobe.d/vfio.conf` and `/etc/modules-load.d/vfio-pci.conf` and rebuilds the boot artefacts. Audit those paths across the group first, and set `vfio_passthrough_manage_absent: false` on the exceptions. |
+| `nextcloud` | `nextcloud_oidc_allow_local_remote_servers` now defaults to `false`. A site whose OIDC provider resolves to a private address (split-horizon DNS) MUST set it to `true` in the same MR as the bump, or OIDC discovery breaks on the next converge. The value is reconciled in both directions, so the guard is restored automatically. |
+| `gitlab` | `gitlab_nginx_real_ip_trusted_addresses` must resolve non-empty; it used to be accepted empty and nginx attributed every request to the fronting proxy. Set it, or set `gitlab_nginx_trust_no_proxy: true` for an nginx reached directly. |
+| `zfs_encryption` | `zfs_encryption_connect_vault` no longer defaults to a vault name. It is `""` and asserted non-empty on any host with `zfs_encryption_pools` and no `zfs_encryption_key_command`. Name the vault holding the pool passphrases in inventory. |
+| `restic_offsite` | The repo password is rendered to `<config_dir>/repo-password` (0600) and passed as `RESTIC_PASSWORD_FILE`; `RESTIC_PASSWORD` is gone from the env file. Converge before the next nightly run. |
+| `k3s` | `k3s_metrics_server_override_enabled`, `k3s_metrics_server_replicas` and `k3s_metrics_server_resources` are removed — see Removed below. |
+| `nas_storage` | `nas_storage_archive_backup_on_success_units` now defaults to `[]` and `nas_storage_swap_clean_conflicting_units` to `[archive-backup.service, media-mover.service]`. Both used to name `restic-offsite.service`, a unit a different, independently opt-in role ships, so a site without `restic_offsite` logged "Unit restic-offsite.service not found" after every successful replication. A site handing off to restic re-declares `nas_storage_archive_backup_on_success_units: [restic-offsite.service]` and adds `restic-offsite.service` back to `nas_storage_swap_clean_conflicting_units`. That second list is a safety interlock, not tidiness: without it swap-clean shrinks the ARC, runs `swapoff` and gracefully stops the guests in `nas_storage_swap_clean_stop_guests` while an offsite upload is still reading clones of their zvols. |
+| `nas_storage` | Adding a `nas_storage_archive_backup_exclude` entry for a child that is ALREADY replicated destroys its archive-side copy and its whole snapshot history on the next run, because the recursive receive uses `-F`. Save the archived copy first, then set `nas_storage_archive_backup_exclude_destroy_ok: true` in the same MR — without it the run refuses and records a failed run. |
+
+```yaml
+# A site handing off to restic re-declares the hand-off and both halves of
+# the swap-clean interlock.
+nas_storage_archive_backup_on_success_units: [restic-offsite.service]
+nas_storage_swap_clean_conflicting_units:
+  [archive-backup.service, media-mover.service, restic-offsite.service]
+restic_offsite_conflicting_units: [swap-clean.service]
+
+# Keeps the relay's :25/:587 on the narrow, inventory-derived scope.
+proxmox_firewall_smtp_relay_sources: [core-cluster]
+
+proxmox_firewall_smtp_relay_extra_egress_ports:
+  - {port: 31100, proto: tcp, comment: Loki push NodePort}
+
+proxmox_firewall_host_egress_extra_ports:
+  - {port: 2222, proto: tcp, comment: forge SSH}
+  - {port: 31100, proto: tcp, comment: Loki push NodePort}
+```
+
+## Removed
+
+| Role | Variable | Replacement |
+|---|---|---|
+| `k3s` | `k3s_metrics_server_override_enabled`, `k3s_metrics_server_replicas`, `k3s_metrics_server_resources` | None. The feature wrote a `HelmChartConfig` for metrics-server, which k3s ships as a static manifest set, so it could never apply. Add `metrics-server` to `k3s_disable` and ship metrics-server as a cluster-managed release. The role removes a `metrics-server-config.yaml` an earlier version left in the server manifests dir. Setting any of the three is now a no-op. |
+
+Internal fact renames in `proxmox_ha`, listed for anyone reading the role's
+output: `proxmox_ha_source_drifted_job_ids` -> `proxmox_ha_stale_source_job_ids`,
+`proxmox_ha_source_drift_jobs` -> `proxmox_ha_misplaced_guest_jobs`. Neither is
+an inventory input.
+
+## Changed defaults and behaviour
+
+| Role | Change |
+|---|---|
+| `nfs_tls` | `nfs_tls_scrub_client_cert` now defaults to `false`. The role no longer deletes `nfs_tls_cert_path` / `_key_path` on a client-only host unless a site opts in. Set it `true` on hosts that relied on the scrub. |
+| `immich` | `immich_metrics_bind` now defaults to `127.0.0.1` (was `0.0.0.0`). The three unauthenticated metrics ports are closed unless a site widens it. A site scraping Immich from off-host must set it explicitly. |
+| `nextcloud` | The host nginx front end emits `Strict-Transport-Security`, gated on `nextcloud_nginx_hsts_enabled` (default `true`). Turn it off where TLS terminates upstream and that hop sets the header. |
+| `postfix_null_client` / `smtp_relay` | `main.cf` renders the whole merged key map instead of a fixed key list, so a parameter a site adds through `postfix_null_client_config_extra` or `smtp_relay_config` now reaches the file. The default render is the same parameter set, reordered alphabetically. A site forking the template to work around the fixed list can drop the fork. |
+| `postfix_null_client` | The `mynetworks` default now includes `[::1]/128`. `inet_interfaces = loopback-only` binds the IPv6 loopback too, so a client reaching `localhost:25` over `::1` was outside `mynetworks`. Override `postfix_null_client_config_extra.mynetworks` for IPv4-only. |
+| `smtp_relay` | `smtp_relay_default_config` gains `smtp_tls_mandatory_protocols`. A site overriding `smtp_relay_config` need do nothing. |
+| `restic_offsite` | The three oneshot units now carry `TimeoutStartSec=`. `restic_offsite_timeout_start_sec` (default `6h`) is a shared floor the backup and restore-drill units take; each unit also has its own override, `restic_offsite_backup_timeout_start_sec`, `restic_offsite_verify_timeout_start_sec` and `restic_offsite_drill_timeout_start_sec`. The deep verify carries its own `12h` default and does NOT follow the shared floor, so size it with `restic_offsite_verify_timeout_start_sec` against the measured `restic check --read-data-subset` wall time (role README § Tunables). systemd leaves `Type=oneshot` with no start timeout, so before this release the backup, verify and restore-drill runs were unbounded. A run past the timeout is killed, recorded as a failed run and alerted on. |
+| `k3s` | kube-vip authenticates with its ServiceAccount token (`--inCluster`) instead of the node's cluster-admin kubeconfig, so the shipped ClusterRole is now its real privilege. Set `k3s_kube_vip_host_kubeconfig: true` to restore the `/etc/rancher/k3s/k3s.yaml` hostPath mount. |
+| `gitlab` | The role no longer saves the live iptables ruleset. The `netfilter-persistent save` handler and the `iptables-persistent` install are gone; the role installs `iptables` and re-applies its own REDIRECT rules at boot through `gitlab-ssh-redirect.service`. On a host converged by an earlier version, clear the frozen chains once: `iptables -F f2b-gitlab-ssh; systemctl restart fail2ban`, then remove the `f2b-` chains from `/etc/iptables/rules.v4`. |
+| `gitlab` | The Web IDE Application Settings pass now runs under `gitlab_skip_install`. It is API-only and still gated on `gitlab_web_ide_extension_host_domain`, so a site leaving the domain empty is unaffected. A config-only converge with the domain set now also needs `gitlab_api_token`. |
+| `base` | `base` no longer removes the legacy `atlantic-gro-fix` / `e1000e-tso-fix` oneshot units — NIC offloads are owned by `nic_tuning`. A host still carrying one needs a one-off removal: `ansible <host> -b -m file -a 'path=/etc/systemd/system/e1000e-tso-fix.service state=absent'`, and the matching `/usr/local/sbin/*.sh`. |
+| `base` | `openipmi.service` is masked with an `/etc/systemd/system/openipmi.service -> /dev/null` symlink instead of the `systemd` module. No action; `systemctl unmask openipmi.service` still reverses it. |
+| `base` | The unattended-upgrades stop/disable task no longer swallows failures. It is skipped when the unit is not installed, and a real systemd failure now fails the run. |
+| `proxmox_lxc` | Every task delegated to the Proxmox node declares `become: true` itself, the same change as `proxmox_vm`, so a play driving Proxmox over `ansible_connection: local` can set `ansible_become: false`. |
+| `nic_tuning` | Clearing `nic_tuning_overrides` now REMOVES the `/etc/network/interfaces.d/99-nic-<iface>-tuning.cfg` drop-ins the role wrote. A host that must keep one the role no longer declares should have it renamed out of that glob. |
+| `nic_tuning` | Left `null`, `nic_tuning_bond_primary` now REMOVES both `bond-primary` and `bond-primary_reselect` lines from `/etc/network/interfaces` and clears `bonding/primary` live on every active-backup bond. A host whose preferred leg was pinned by hand outside Ansible must name that leg in `nic_tuning_bond_primary` in the same MR as the bump, or the pin is dropped and the bond parks on the leg it existed to avoid after the next failover. |
+| `resolv_conf` | The resolver `options` line is now the list `resolv_conf_options` (default `[timeout:2, attempts:2]`, rendering byte-identically). Add `rotate` to spread host DNS load; an empty list omits the line. |
+| `unbound` | Both `unbound.conf.d` writes run `/usr/sbin/unbound-checkconf` on the candidate file, so an invalid render fails the play instead of being restarted into a dead resolver. `unbound_skip_validate` (default `false`) is the escape hatch for a host without the binary. |
+| `nas_storage` | The ARC cap is now included from `main.yml`, so it applies on a host that declares no `nas_storage_zfs_pools` and on one that sets `nas_storage_skip_zfs_operations`. |
+| `nas_storage` | Turning `nas_storage_media_mover_enabled`, `nas_storage_swap_clean_enabled` or `nas_storage_backup_artifact_metrics_enabled` off now removes that component's units and script, the way the archive backup already did. A host that drops MergerFS loses `mergerfs-remount.service` the same way. Set `nas_storage_manage_absent: false` to leave every existing file alone. |
+| `nas_storage` | The MergerFS remount cycle detects binds by mount device id and FAILS the play when a mount the inventory does not declare still holds a union, instead of force-unmounting it. The NFS exports it unexported are restored either way. |
+| `proxmox_backup` | The vzdump hookscript no longer publishes `vzdump_backup_last_success_timestamp_seconds 0` for a failed run with no recorded history. The series is ABSENT until the first success, so a staleness rule needs an absence arm. The hookscript also emits `vzdump_backup_guests`. |
+| `proxmox_firewall` | `proxmox_firewall_enabled: false` now also suppresses the guest `<vmid>.fw` writes and the `/etc/pve` directory creation. It still does not cover the `monitoring@pve` user and token, which stay on `proxmox_firewall_skip_pveum`. |
+| `proxmox_firewall` | Emptying a guest's `guest_security_groups` now REMOVES `/etc/pve/firewall/<vmid>.fw`. Deleting the key entirely still leaves the file alone. |
+| `proxmox_vm` | Every delegated task declares `become: true` instead of inheriting it from the play. A caller driving Proxmox over `ansible_connection: local` can now set `ansible_become: false` on the group, so no non-delegated task escalates on the operator's workstation or the CI runner. `tasks/guest-nic-firewall.yml` and `tasks/guest-startup.yml`, which `proxmox_lxc` shares, change the same way. |
+| `proxmox_lxc` | The network-input assert (gateway, nameserver, searchdomain, netmask bits) fires when the container does NOT exist, instead of when `proxmox_lxc_skip_create` is false. A reconcile-only run no longer needs those values; a create run under `skip_create` now gets them checked. |
+| `restic_offsite` | The retention gauges are ABSENT until a retention pass has run, instead of defaulting to `last_prune_success 1`. |
+| `restic_offsite` | `restic` exit code 3 is now INCOMPLETE, not failed. The snapshot landed, so the run keeps it, publishes the new `restic_offsite_last_run_incomplete` gauge and exits 0. Retention is skipped on such a night, because an incomplete snapshot counts toward `--keep-last`/`--keep-daily` and would expire a complete one. A site alerting on `restic_offsite_last_run_success == 0` stops paging for it and should add a warning arm on the new gauge (role README § Metrics). |
+| `restic_offsite` | `restic_offsite_zvol_sources[].mount_opts` defaults to `ro` instead of `ro,noload`. A clone is writable, so ext4 replays its journal and a crash-consistent snapshot walks without the `lstat … bad message` errors that produced rc=3. A site that set `mount_opts` explicitly is unaffected. |
+| `alloy_host` | The journal `job` label is pinned by a relabel rule. `loki.source.journal` stamps its own component id over the `labels` block, so `{job="journal"}` selectors stopped matching after the Alloy 1.19.2 bump. Consumer dashboards and rules need no change. |
+| `compose_app` | `write_prom_metrics` logs a `daemon.err` line (tag `<prefix>-metrics`) when the `.prom` write or rename fails. Still non-fatal and still returns 0; the failure used to be silent while the previous run's `_last_run_success 1` stayed published. |
+| `nas_storage` / `acme_certs` / `gitlab` / `restic_offsite` | Every textfile-collector writer logs the same `daemon.err` line (tag `<unit>-metrics`) when its `.prom` write or rename fails. Still non-fatal, so a metrics failure never aborts a backup. |
+| `acme_certs` | `cert_renewal_last_run_success` now covers the local certificate only: the renewal and the local reload. A failed distribution target (exit 2) leaves it at 1 and is reported by the new `cert_distribution_last_run_failed_targets` count in `cert_distribution_targets.prom`. A site whose only certificate alert reads `cert_renewal_last_run_success == 0` stops paging for a dead target and must add an arm on `cert_distribution_last_run_failed_targets > 0` (role README § Metrics). |
+| `nas_storage` | Turning a component off now removes its `.prom` as well as its units and script. A frozen `*_last_success_seconds` left behind kept its staleness alert firing with no timer that could ever clear it. Set `nas_storage_manage_absent: false` to leave every existing file alone. |
+| `encrypted_swap` | The self-skip arm (backing device absent) now removes `encrypted_swap.prom` along with the crypttab entry, the fstab line and the finalize unit, so a frozen `encrypted_swap_mapper_active 1` cannot keep reading healthy on a host that no longer has encrypted swap. Each plaintext-fallback branch also logs `daemon.err` under the tag `encrypted-swap`. |
+| `apt_signed_repo` | `tasks_from: enable-components.yml` now FAILS when the deb822 sources file is missing, and when it carries no `Components:` line for the rewrite to land on (checked before the write, so a dry run — `--check` or an enclosing `check_mode: true` block — asserts the same precondition). Both were silent skips, and the caller then failed much later on a package living in a component nothing enabled. A host still on the one-line sources format needs `apt_repository` instead. |
+| `adguard_home` | The role's API calls follow `adguard_home_web_bind` instead of always dialling `127.0.0.1`. A site that restricted the bind (as the role README recommends) no longer breaks the role's own reconcile. |
+| `node_exporter_host` | The role's liveness probe and `node-exporter-healthcheck.timer` follow `node_exporter_host_bind_address` instead of always dialling loopback. A non-empty bind used to fail the play's own probe and then restart a healthy exporter every interval. |
+| `nextcloud` | `nextcloud_nginx_hsts_enabled` is read through `| bool`, so the string spellings an inventory or `-e` supplies (`"false"`, `"no"`, `"0"`, `""`) turn the header off. Plain Jinja truthiness pinned a year-long `includeSubDomains` regardless. |
+| `swap-clean` (`nas_storage`) | A pre-flight skip now emits `swap_clean_last_run_skipped 1` and `swap_clean_skip_reason_info{reason}`. A skip keeps `swap_clean_last_run_success 1` and advances the success timestamp, so a permanently-active conflicting unit was previously indistinguishable from a healthy nightly reset. Alert on the new gauge sustained over several days. |
+| `swap-clean` (`nas_storage`) | The guest-stop escalation refuses a goal it cannot reach: unless stopping every running candidate could cover the target it stops nothing and records `swap_clean_last_run_skipped 1` with `swap_clean_skip_reason_info{reason="escalation unreachable"}` (`swap_clean_last_run_success` stays 0, as on any unsafe abort). The target is re-read as each guest stops, so a run whose stopped guests released their swap completes instead of stopping every candidate and aborting. No metric or variable is added or renamed. |
+| `k3s` | `k3s-etcd-snapshot-copy.sh` logs a `daemon.err` line (tag `etcd-snapshot-copy-metrics`) when its `.prom` write, rename or directory creation fails, matching the other textfile writers. |
+| `node_exporter_host` | The slabinfo collector publishes `node_slab_cache_present{cache}`, so a cache name the kernel renamed or merged away is distinguishable from a leak that stopped. `node_slabinfo_collector_last_success_seconds` is now emitted only on a successful run, matching its name; `node_slabinfo_collector_success` stays unconditional. |
+| `node_exporter_host` | `zfs_pool_status_errors_total` is the MAXIMUM counter on any `zpool status` config row, not the sum over rows, so it is no longer additive. Zero-vs-non-zero rules are unaffected; a `delta()`/`increase()` detector or a magnitude panel must be re-expressed. |
+| `node_exporter_host` | The vzdump hookscript reads its output directory from `/etc/default/vzdump-metrics-hook`, rendered from `node_exporter_host_textfile_dir`. It used to hard-code `/var/lib/node_exporter`, so a relocated textfile directory silently lost the series. |
+| `restic_offsite` | The nightly `restic backup` output is streamed to the journal instead of being buffered to a temp file and replayed at the end. A multi-hour upload now shows progress, and a run killed at `TimeoutStartSec` keeps its log. |
+| `restic_offsite` | `restic_offsite_timer_calendar` now defaults to `*-*-* 08:00:00`. The timer is the nightly trigger, and 08:00 keeps it clear of the `nas_storage` swap-clean window, which stops the guests whose zvols a run clones. A site that wires the `OnSuccess=` handoff from its archive job, or runs swap-clean on another schedule, sets its own value to keep tonight's time. |
+| `immich` / `immich_ml` / `nextcloud` / `gitlab` / `home_assistant` / `plex` | Secret-presence asserts lost `no_log`. They test length only, so nothing is rendered; a missing credential now fails with the fail_msg naming the variable instead of "output has been hidden". Every task that renders a secret keeps `no_log`. |
+
+### Behaviour changes worth a deploy window
+
+- `k3s`: the rendered `/etc/rancher/k3s/config.yaml` changes, so the next k3s
+  deploy bounces the control plane one node at a time.
+- `proxmox_firewall`: every changed publish runs `pve-firewall compile` on the
+  writing node and fails the play when it is refused, so the first run after the
+  bump can fail loudly on pre-existing drift.
+- `nas_storage`: the rendered `/etc/exports` header changes, so the first
+  converge after the bump rewrites the file and fires `exportfs -ra`. The export
+  lines themselves are unchanged. Run it where NFS clients can be restarted if a
+  mount goes stale.
+- `nas_storage`: the rendered
+  `/etc/systemd/system/nfs-server.service.d/zfs-encrypted.conf` header changes,
+  so the first converge after the bump RESTARTS `nfs-server`. Established NFS
+  client mounts get stale file handles — delete the pods holding them to
+  remount, and run it in a window where nfsd can be bounced.
+- `tailscale`: route-advertising hosts gain
+  `tailscale-bridge-masq-fix.{service,timer}`, which re-asserts the bridge-local
+  masquerade ACCEPT rule every minute instead of only on a `tailscaled` restart.
+- `immich_ml`: the deployed compose file loses its commented-out
+  `MACHINE_LEARNING_MAX_BATCH_SIZE__OCR` example and the published port gains an
+  explicit `0.0.0.0:` prefix, so the stack is recreated.
+- `immich`: the metrics ports move from `0.0.0.0:` to `127.0.0.1:`, which
+  recreates the two immich-server containers.
+- `k3s`: the kube-vip DaemonSet manifest changes, so k3s re-applies it and the
+  pod that owns the API VIP restarts on every server. Run it in a supervised
+  control-plane window and follow the role README § Signing off a kube-vip change. The rollback is
+  `k3s_kube_vip_host_kubeconfig: true` — an inventory edit, no role change, but
+  it re-renders the DaemonSet and restarts the kube-vip pod on every server, so
+  it needs the same supervised window.
+- `nas_storage`: the first archive replication after an exclusion is added
+  destroys the excluded child on the archive pool. Run it attended, with the
+  archived copy saved if it still has value.
+
+## Newly asserted — loud where it used to be silent
+
+| Role | Assertion | When |
+|---|---|---|
+| `adguard_home` / `adguard_sync` | `ansible_architecture` maps to a release architecture (x86_64, aarch64, armv7l, armv6l, i386/i686, riscv64) | always |
+| `gitlab` | `gitlab_nginx_real_ip_trusted_addresses` resolves non-empty (a mistyped inventory group resolves empty) | unless `gitlab_nginx_trust_no_proxy` is true |
+| `immich` | `immich_server_image` and `immich_machine_learning_image` each end in a tag or digest, and never in `:@` | always |
+| `node_exporter_host` | `node_exporter_host_slabinfo_collector` is only true where `node_exporter_host_proxmox` is, since the collector ships inside the Proxmox-host textfile collectors, and `node_exporter_host_slab_caches` is non-empty when the collector is enabled | always |
+| `nic_tuning` | `/etc/network/interfaces` holds exactly one `bond-mode active-backup` stanza, and `nic_tuning_bond_primary` is one of its `bond-slaves` and a live slave of an active-backup bond where the host has bonding, checked before either `bond-primary` line is written | when `nic_tuning_bond_primary` is set |
+| `nas_storage` | every `nas_storage_swap_clean_stop_guests` entry is `vmid:name:timeout-seconds` | when swap-clean is enabled |
+| `nas_storage` | every `nas_storage_archive_backup_exclude` entry is a descendant of a declared source, and `zfs send -X` exists | when the exclude list is non-empty |
+| `k3s` | a first server with no local etcd data has evidence a cluster does or does not exist: the API VIP or a peer answered, or `k3s_bootstrap_new_cluster` is set | on a multi-server group |
+| `apt_signed_repo` | `apt_signed_repo_components` is non-empty, and the sources file carries a `Components:` line for the rewrite to land on | `tasks_from: enable-components.yml` |
+| `nas_storage` | every MergerFS busy-mount probe produced an `rc`, so a probe that never ran refuses the remount cycle instead of reading as clean | when a MergerFS remount is needed |
+| `vfio_passthrough` | `vfio_passthrough_cmdline_method` is a method the role implements | when passthrough is enabled |
+| `postfix_null_client` | the host is Debian-family, at role entry rather than part-way through `postmap` | always |
+| `proxmox_firewall` | cluster-scope `proxmox_firewall_*` inputs are scoped to the delegate, naming the variable that is set on the Proxmox group instead of `group_vars/all` | always |
+| `proxmox_lxc` | `proxmox_lxc_disk_size` is a GiB value (`8` or `8G`) | on a create run |
+| `zfs_exporter` | the host is x86_64, matching `unbound_exporter` | always |
+| `zvol_mount` | a disk with no filesystem does not carry a partition table (`lsblk -d` FSTYPE + PTTYPE). `wipefs -a <device>` is the deliberate override. | always |
+| `proxmox_firewall` | a guest naming `sg-smtp-relay` has a non-empty `proxmox_firewall_smtp_relay_sources`, instead of rendering a group with no `IN` rule and closing the relay | at cluster scope when any inventory guest carries the group, before `cluster.fw` is published, and again in the guest play |
+| `restic_offsite` | both halves of the swap-clean interlock are declared: `nas_storage_swap_clean_conflicting_units` names `restic-offsite.service`, so swap-clean cannot shrink the ARC, `swapoff` and stop the guests whose zvol clones restic is reading, and `restic_offsite_conflicting_units` names `swap-clean.service`, so an offsite run already holding the lock is not undercut by a swap-clean night that starts after it | when `nas_storage_swap_clean_enabled` is true on the same host |
+| `nas_storage` | `fuser` is installed before the MergerFS idle probe runs; a missing binary exits 3 rather than reading as an idle union. `psmisc` is installed alongside `mergerfs`. | when a MergerFS remount is needed |
+| `proxmox_vm` / `proxmox_lxc` | the guest NIC firewall repair FAILS on a guest whose config has no `net0:`, instead of reporting ok. An adopted guest whose NIC is `net1` must be renumbered or excluded. | always |
+| `nas_storage` | a failed `zfs set readonly=on` during archive lockdown demotes the run to `archive_backup_last_run_success 0` and logs the dataset, instead of being swallowed | on every archive replication |
+| `proxmox_firewall` | a host in `proxmox_firewall_host_group` answers the reachability probe, or `proxmox_firewall_delegate_host` pins one; the cluster-scope writes no longer fall back to the group's first member | always |
+| `proxmox_firewall` | every per-application security group name starts with a letter and runs 2 to 18 characters, `pve-firewall`'s own grammar (a leading digit previously passed the role and failed `pve-firewall compile`) | always |
+
+## New variables (defaults preserve today's behaviour)
+
+| Role | Variable | Default | What it unlocks |
+|---|---|---|---|
+| `nas_storage` | `nas_storage_manage_absent` | `true` | Lets a disabled component's units, scripts and `.prom` be converged away. Set `false` on a host adopted with hand-rolled units of the same conventional names. |
+| `nas_storage` | `nas_storage_managed_marker` | `Ansible managed` | Substring identifying a role-written file — the literal every template's `# {{ ansible_managed }}` header renders. A file without it is reported and kept, never stopped or removed. Asserted non-empty on the de-provisioning path; set it when a site's `ansible_managed` no longer contains this string. |
+| `nas_storage` | `nas_storage_pve_cluster_backup_lib_path` | `/usr/local/lib/nas-storage-backup-lib.sh` | Where the shared `write_prom_metrics` helper lands for the `/etc/pve` wrapper, which now sources it instead of carrying its own copy. Same series and values; the logger tag becomes `pve_cluster_backup-metrics`. |
+| `proxmox_firewall` | `proxmox_firewall_compile_error_patterns`, `proxmox_firewall_compile_fail_on_line_errors` | `error`, `unable to`, `skip line`, `no such `, `invalid `, `unknown ` / `true` | What counts as a `pve-firewall compile` parse error when the command exits 0. The wider set catches PVE's own wording, such as `cluster.fw (line 12) : no such ipset 'x'`, which the two old substrings missed. |
+| `acme_certs` | `acme_certs_ca_server` | `letsencrypt` | The ACME CA, replacing the hard-coded `--server letsencrypt`. |
+| `adguard_home` | `adguard_home_stage_dir` | `/root/adguard-home-install` | Where the release tarball is downloaded and unpacked, instead of world-writable `/tmp`. On disk, not a tmpfs: the tarball and the extracted tree are ~55 MB together. Removed after the install. |
+| `acme_certs` | `acme_certs_stage_dir` | `/run/acme-certs-install` | Where the acme.sh tarball is staged and extracted, instead of `/tmp`. Removed after the install. |
+| `acme_certs` | `acme_certs_distribution_check_enabled`, `_schedule`, `_random_delay`, `_nice`, `_timeout`, `_retries`, `_retry_delay` | `true`, `*-*-* 05:40:00`, `30m`, `10`, `10m`, `2`, `10` | A new `homelab-cert-check.timer` runs `homelab-cert-reload.sh --check` daily: it probes every distribution target, writes the per-target and summary distribution gauges, and pushes nothing. `cert_renewal.prom` is untouched by the check. A failed probe is retried `_retries` times, `_retry_delay` seconds apart, before the target's gauge is written 0. The per-target gauge is now evaluated DAILY, not only at renewal, so a rule reading `cert_distribution_target_last_run_success == 0` needs a `for:` at least one check interval wide (the schedule plus its random delay), or a transient SSH failure pages until the next check. Set `_enabled: false` to remove both units. |
+| `apt_signed_repo` | `apt_signed_repo_sources_path`, `apt_signed_repo_components` | `/etc/apt/sources.list.d/debian.sources`, `main contrib non-free non-free-firmware` | Inputs to the new `tasks_from: enable-components.yml`, which rewrites every `Components:` line in a deb822 sources file and then refreshes the apt cache (unless `apt_signed_repo_update_cache` is false). `k3s`'s GPU path now includes it instead of carrying its own copy. |
+| `base` | `base_kernel_cmdline_args`, `base_skip_boot_update` | `[]`, `false` | Extra kernel boot parameters appended to `GRUB_CMDLINE_LINUX_DEFAULT` through `/etc/default/grub.d/99-base-kernel-cmdline.cfg`; one bare token per entry. Empty reconciles the drop-in away. Takes effect on the next reboot: the role runs `update-grub` (and `proxmox-boot-tool refresh`) and warns, never reboots. A host carrying `/etc/kernel/cmdline` is refused. `base_skip_boot_update: true` skips the GRUB regeneration. |
+| `encrypted_swap` | `encrypted_swap_textfile_dir` | `node_exporter_host_textfile_dir`, else `/var/lib/node_exporter` | Where the finalize unit writes `encrypted_swap.prom`. Every failure branch exits 0 to keep the host swapped, so `encrypted_swap_mapper_active` is the only gauge that says a host fell back to plaintext swap; each fallback branch also logs `daemon.err` under the tag `encrypted-swap`, for a host with no textfile collector. |
+| `gitlab` | `gitlab_nginx_trust_no_proxy` | `false` | Opting out of the real-IP assert, for an nginx reached directly with no proxy in front. |
+| `gitlab` | `gitlab_ssh_redirect_chains` | `PREROUTING` plus `OUTPUT` on `lo` | The NAT chains carrying the managed Git SSH REDIRECT rule, which the role used to hard-code. |
+| `gitlab` | `gitlab_bundled_prometheus_enabled`, `gitlab_bundled_alertmanager_enabled` | `""` | Empty omits the gitlab.rb lines and keeps Omnibus's own Prometheus and Alertmanager running. Set both false where the site already scrapes `/-/metrics`; `/var/opt/gitlab/prometheus` is left on disk to reclaim by hand. |
+| `immich` | `immich_server_digest`, `immich_machine_learning_digest` | `""` | Appends `@sha256:…` to the two Immich images, so all four stack images can be digest-pinned the way postgres and valkey already are. |
+| `immich` | `immich_server_mem_limit`, `immich_machine_learning_mem_limit` | `""`, `""` | Docker `mem_limit` on the two Immich containers. Empty is unlimited, today's behaviour; a server limit below the guest's RAM keeps a burst from taking the whole VM to the OOM killer. |
+| `immich_ml` | `immich_ml_bind` | `0.0.0.0` | Publishes the AUTHLESS inference port on one address instead of every interface. The `/ping` health wait follows the bind. |
+| `immich_ml` | `immich_ml_extra_env` | `{}` | Extra environment keys merged into the ML container, e.g. `MACHINE_LEARNING_MAX_BATCH_SIZE__OCR` (README § VRAM). |
+| `k3s` | `k3s_gpu_apt_components` | `main contrib non-free non-free-firmware` | The component set the GPU path writes into the deb822 sources file. Pinned at the call site, so a site setting `apt_signed_repo_components` for another repo cannot drop the non-free components the NVIDIA packages live in. |
+| `k3s` | `k3s_bootstrap_new_cluster` | `false` | Opt-in for a greenfield HA bootstrap. A first server with no etcd data now FAILS when neither the API VIP nor any peer in `k3s_server_group` answers, instead of rendering `cluster-init: true` against a quorum that may still be up. Single-server groups are unaffected. |
+| `k3s` | `k3s_kube_vip_host_kubeconfig` | `false` | Restores the `/etc/rancher/k3s/k3s.yaml` hostPath mount for a kube-vip build that needs it. |
+| `nas_storage` | `nas_storage_archive_backup_exclude`, `nas_storage_archive_backup_exclude_destroy_ok` | `[]`, `false` | Children left out of the recursive archive send, via `zfs send -X` (OpenZFS 2.3+), and the opt-in for destroying an excluded child that is already on the archive pool. See Breaking above before adding an entry. |
+| `nas_storage` | `nas_storage_export_root` | `/export` | The NFS export root. |
+| `nas_storage` | `nas_storage_archive_backup_on_success_units` | `[]` | Units started after a successful archive replication. Empty renders no `OnSuccess=` line. |
+| `nas_storage` | `nas_storage_swap_clean_stop_timeout`, `nas_storage_swap_clean_conflicting_units` | `300`, `[archive-backup.service, media-mover.service]` | The swap-clean stop budget and the units it must not overlap. |
+| `nas_storage` | `nas_storage_samba_workgroup`, `nas_storage_samba_server_role`, `nas_storage_samba_interfaces` | `WORKGROUP`, `standalone server`, `[]` | Samba identity that was literal in `smb.conf.j2`. |
+| `nas_storage` | `nas_storage_smartd_disk_groups[].extra_flags` | unset | Appended to the smartd directive, e.g. `-n standby,q`. |
+| `nextcloud` | `nextcloud_nginx_hsts_enabled`, `nextcloud_nginx_hsts_value` | `true`, `max-age=31536000; includeSubDomains` | HSTS from the terminating proxy; off where an upstream hop sets it. |
+| `nic_tuning` | `nic_tuning_bond_primary_reselect` | `failure` | How the kernel reselects the preferred leg of an active-backup bond once it is named. |
+| `nic_tuning` | `nic_tuning_bond_primary_manage_absent` | `true` | Lets an undeclared bond-leg pin be converged away: the `bond-primary` lines in `/etc/network/interfaces` and the live `bonding/primary`. Set `false` on a host whose preferred leg is pinned by hand outside Ansible. |
+| `node_exporter_host` | `node_exporter_host_bind_address` | `""` | Empty keeps today's all-interfaces listener; set the scrape-facing address on a host with no firewall in front of the exporter port. The role's own liveness probe and the healthcheck timer follow it, and an IPv6 literal is bracketed. |
+| `node_exporter_host` | `node_exporter_host_processes_collector` | `false` | Populates the node-exporter-full dashboard's System Processes rows for the host job. |
+| `node_exporter_host` | `node_exporter_host_slabinfo_collector`, `node_exporter_host_slab_caches` | `false`, `[]` | An opt-in per-cache `/proc/slabinfo` collector for attributing a kernel slab leak. Adds scrape series per named cache. The cache list is per host and must be named when the collector is on — the role asserts it non-empty (and rejects a duplicate). |
+| `plex` | `plex_gpu_driver_packages` | the Intel VA-API set | The driver packages installed for hardware transcode. Override for AMD (`mesa-va-drivers`) or NVIDIA, or set `[]` to install none. |
+| `plex` | `plex_gpu_nonfree_repos` | `true` | Enables Debian's non-free components. Set false when the driver packages come from main or a vendor repo. |
+| `postfix_null_client` | `postfix_null_client_config_extra` | `{}` | Parameters merged into the rendered `main.cf`. |
+| `proxmox_firewall` | `proxmox_firewall_host_egress_extra_ports` | `[]` | Ports added to `sg-host-egress` — see Breaking above. |
+| `proxmox_firewall` | `proxmox_firewall_smtp_relay_sources` | `[]` | The IPSets allowed at the relay's `:25` and `:587` in `sg-smtp-relay`; the scope was hard-coded to `core-cluster` before. Empty renders no rule, so the relay is unreachable until the site names its client sets — see Breaking above. |
+| `proxmox_ha` | `proxmox_ha_delegate_host` | unset | Pins the node the reconcile is delegated to instead of taking the first that answers. |
+| `proxmox_vm` | `proxmox_vm_additional_disk_backend` | `zfs` | Selects `tasks/disks-<backend>.yml`. The disk entry schema is unchanged. |
+| `resolv_conf` | `resolv_conf_options` | `[timeout:2, attempts:2]` | The resolver `options` line as a list. |
+| `restic_offsite` | `restic_offsite_conflicting_units` | `[]` | Units a run must not overlap; an active one makes the run a deliberate skip that retries on the next timer. Name `swap-clean.service` on a host that also runs `nas_storage` swap-clean. The role asserts it when `nas_storage_swap_clean_enabled` is true. |
+| `restic_offsite` | `restic_offsite_rclone_deb_name` | derived from `restic_offsite_rclone_version` | rclone's amd64 artefact filename; override only for a differently-named artefact. |
+| `tailscale` | `tailscale_require_authkey` | `false` | `true` fails the play when a node still has to join and `TAILSCALE_AUTH_KEY` is unset, instead of skipping the join silently. |
+| `unbound` | `unbound_skip_validate` | `false` | Skips `unbound-checkconf` on a host without the binary. |
+| `vfio_passthrough` | `vfio_passthrough_manage_absent` | `true` | Lets the disabled arm remove the three VFIO drop-ins. Set `false` to leave every drop-in alone. |
+| `vfio_passthrough` | `vfio_passthrough_managed_marker` | first line of `ansible_managed` | Substring identifying a role-written drop-in. The disabled arm removes only files carrying it; a hand-written file is reported and kept. |
+| `vfio_passthrough` | `vfio_passthrough_cmdline_method` | `grub` | The only method implemented. A host carrying `/etc/kernel/cmdline` is now refused instead of silently staging parameters the kernel never reads. |
+| `unbound_exporter` | `unbound_exporter_listen_address` | `""` | Empty is all interfaces, today's behaviour; the endpoint is unauthenticated, so the host firewall is the only other control. |
+| `zfs_exporter` | `zfs_exporter_listen_address` | `""` | Empty is all interfaces, today's behaviour. |
+
+`proxmox_vm` also shares `tasks/guest-nic-firewall.yml` and
+`tasks/guest-startup.yml` with `proxmox_lxc` through `tasks_from:`; edit them in
+`proxmox_vm`.
+
+## Scheduled removals
+
+These `gitlab` tasks exist only to undo states earlier versions of the role
+produced, and are kept for hosts converged before v0.7.0. They are removed in
+v1.0.0, together with `molecule/default/verify.yml`'s assertions for them:
+
+- `Remove the legacy GitLab backup root cron job`
+- `Remove obsolete gitlab-shell filter` (`/etc/fail2ban/filter.d/gitlab-shell.conf`)
+- the `-m comment` drift path in `tasks/ssh-redirect.yml`
+
+`Remove old GitLab keyring files` stays permanently: it guards the upstream
+install-script layout, not only this role's own past.
+
+## Terraform modules
+
+Two modules gained guards that refuse a configuration `v0.17.1` accepted, so a
+`terraform plan` that passed before can now fail at validate time.
+
+| Module | What changed | Remedy |
+|---|---|---|
+| `authentik-sso` | A negate-only policy binding no longer counts as protection: `bound_application_slugs` now takes `b.enabled && !b.negate`, so an application whose only binding is a negate binding trips the unbound-application precondition. | Pair the negate binding with an allow binding, or set `allow_unbound = true` on that application. |
+| `authentik-sso` | Every `proxy_providers` entry must appear in `embedded_outpost.proxy_provider_keys` or carry `detached = true`, and an `oauth2_client_secrets` or `group_secret_attributes` key naming no provider or group now fails plan. | Add the key to the outpost, mark the provider `detached`, or drop the stale secret key. |
+| `unifi-network` | New `networks` validations: a duplicate `subnet` (compared as the normalised network address, so two gateway forms of one range collide), `dhcp.start` above `dhcp.stop`, and a `dhcp.leasetime` that is not a Go duration. | Config edit. |
+| `unifi-network` | New `wlans[*].passphrase` rule (8-63 printable ASCII) and `port_forwards[*].wan_interface` enum. | Config edit; both fail an existing config that breaks them. |
+
+## Library surfaces outside the collection
+
+**`scripts/gate_common.py` is a new required vendored file.** Every
+manifest-corpus gate on `scripts/vendorable-paths.yml` imports it from its own
+directory, as does `check-live-cpu-limits.py`. Vendor it alongside whichever ones
+you take and register it in your vendored manifest, or each exits 2 with a
+message naming the missing file.
+
+**`scripts/ci_yaml.py` is a new required vendored file.** Every CI-reading
+gate on the offer list imports it from its own directory, so vendor it alongside
+whichever ones you take and register it in your vendored manifest, or each exits
+2 with a message naming the missing file. `scripts/vendorable-paths.yml`'s own
+comments mark each pair. `check-helm-repo-parity.py` loads `check-versions.py`
+from its own directory the same way, so those two are vendored as a pair.
+
+**`check-vendored-copies.py` gained `--scan CONSUMER_DIR=LIB_PREFIX`.** It
+reports a file under that tree whose offered library twin at
+`LIB_PREFIX/<relpath>` no manifest entry registers, so a consumer can drop its
+own hand-rolled unregistered-twin scan. A `--scan` naming a directory that does
+not exist is an operator error, never a silent skip.
+
+**`check-version-checksums.py` now loads `check-versions.py` from its own
+directory** for the registry loader, so the two are vendored as a pair. It also
+honours `$CHECK_VERSIONS_CONFIG`, refuses a plaintext `http://` `checksum_url`,
+and exits 2 when the registry declares no checksum pin at all unless
+`--allow-empty` is passed.
+
+**The offer list roughly doubled this release, from 43 paths to 108, and lost
+one entry (`lint/yamllint-strict.yml`).** `scripts/vendorable-paths.yml` is the
+list, with a comment on every path whose twin must be vendored with it; the pairs
+are called out above. A consumer that keeps its own roles tree declares what it
+takes in `scripts/vendored-manifest.yml`.
+
+**Gates that used to pass on an empty scan now exit 2.**
+`check-molecule-matrix-coverage.sh` refuses a run where both enabled halves hold
+no `molecule.yml` and both matrices are empty (declare a half off with
+`ROLES_DIR=""` / `INTEGRATION_DIR=""` instead),
+`check-cluster-invariants.py` refuses a missing cluster config
+(`--allow-missing-cluster-config` opts out) and a config declaring no
+`cluster_lan_cidr` (`--allow-missing-lan-cidr`),
+`check-backup-artifact-apps.py` refuses a run that pairs nothing
+(`--allow-empty`), `check-helm-repo-parity.py` refuses
+a corpus that declares no helm repo (`--allow-empty`), and
+`check-role-readme-literals.py` refuses a run with no `--site-domain`
+(`--no-site-domains`). `check-secretstore-scope.py` exits 2 on a
+`namespaceRegexes` entry that does not compile, and `validate-helm-values.py`
+on a `--sources-dir` file that does not parse as YAML.
+
+**`scripts/check-comment-length.py` and `ci/lint/comment-length.yml` are new.**
+The gate fails a comment block over three content lines, or eight when the block
+opens `CRITICAL:`, over the whole tree including extension-less config files
+(`Dockerfile`, `.gitattributes`, `.editorconfig`, `.ansible-lint`). Adopt it
+after a sweep: run it locally first, because a repo with a backlog reds every
+pipeline from the first run. Stdlib-only unless a YAML `--config` is passed;
+offered on `scripts/vendorable-paths.yml`.
+
+**`ci/validate/flux-lint.yml`'s `cluster_dir` no longer carries a usable
+default.** It defaults to the empty string, and in substitute mode the job FAILS
+at run time when it is empty (a cluster name is site data). An include that
+omitted the input now reds flux-lint instead of validating a tree it does not
+own; pass the consumer's own cluster directory.
+
+**`ci/validate/flux-lint.yml`'s simple arm now gates on skip count.**
+`allowed_skips` (default `"0"`) fails the job when kubeconform validated more
+resources than that against no schema, and also when the summary carries no
+`Skipped:` field — the signature of an unreachable or rate-limited CRD catalog.
+A repo rendering a kind the pinned `crd_catalog_ref` does not carry raises
+`allowed_skips` per kind or adds a `-schema-location` for it; a run that used to
+pass green on a catalog fetch failure now reds and needs a retry.
+
+**`ci/maintenance/version-check.yml` replaces `schedule_allow_failure` and
+`default_branch_allow_failure` with `soft_fail_exit_codes`** (array, default
+`[1]`). `[1]` soft-fails "updates available" while a checker error (rc 2) reds
+the job; `[1, 2]` restores the old blanket behaviour, and `false` on either old
+input maps to `[]`.
+
+**`check-hpa-vpa-invariant.py` allowlists need a reason.** `cpu_limit_allowlist`,
+`vpa_cap_allowlist` and the new `memory_ratio_allowlist` in `--policy-config`
+are mappings of `"namespace/Kind/name": reason` — one accepted shape, so a list
+of `{target, reason}` mappings is refused along with a bare string entry. Empty
+mappings still load. Operator errors exit 2 rather than 1.
+
+**`check-lib-pins.py` fails a requirements.yml whose git collection matches
+nothing.** It used to pass silently. The collection is matched on the repository
+name as well as the full project path, and on `source:` as well as `name:`, so a
+mirror or a fork on another host is gated too. A requirements.yml with no git
+collection at all stays a no-op. Repoint `--project` if your requirements.yml
+names the collection by a path this does not reach.
+
+**`observability/dashboards/` is not a library asset.** Shared Grafana dashboard
+JSON stays in the consumer repos. A repo that wants the shared rows held against
+a sibling registers them as `forked:` entries in its own
+`scripts/vendored-manifest.yml` with a reason and a `reconciled_sha256`.
+
+**`check-netpol-except-parity.py` `load_config` returns a `Policy`.** It no
+longer mutates module globals, and `classify` / `unfenced_reach` / `scan_paths` /
+`check_paths` take an optional `policy=`. Only importers of the module are
+affected; the CLI is unchanged.
+
+**`taskfiles/` removed.** The two go-task include fragments (`lint.yml`,
+`flux.yml`) and their README are gone. No consumer included them — each repo
+hand-writes the equivalent task bodies in its own Taskfile — and the fragments
+claimed to mirror `ci/lint/*.yml` with nothing holding them in step. A repo that
+wants them back takes the bodies from the tag that last shipped them.
+`scripts/check-taskfile.sh` still follows `includes:`, so a consumer's own
+fragments stay gated.
+
+**`lint/yamllint-strict.yml` removed.** Offered but applied nowhere and vendored
+by no consumer, and it diverged from ansible-lint's bundled yamllint config on
+both `truthy` and `document-start`. For stricter YAML rules, run ansible-lint or
+vendor `lint/yamllint-relaxed.yml` and tighten it.
+
+**`lint/ruff.toml`, `lint/yamllint-relaxed.yml`, `lint/gitleaks.toml` and
+`lint/secret-detection-ruleset.toml` changed.** Comment-only in the first two;
+`gitleaks.toml` additionally anchors the `op://` and `[your-…]` allowlist regexes
+at the start of the token. Finding counts over all four repos are unchanged.
+Re-vendor the byte-identical copies and reconcile the forks.
+
+**`molecule-shared/` is offered for vendoring.** `prepare-common.yml` and
+`tasks/{container-warmup,prepare-apt-disable,prepare-base}.yml` are on
+`scripts/vendorable-paths.yml`, so a consumer that keeps its own copies can hold
+them byte-identical. The apt-lock wait in `container-warmup.yml` is bounded and
+no longer needs `fuser`, and a failed `dpkg --configure -a` now says so.
+
+**`version-bump-bot` is pinned to one branch.**
+`ci/maintenance/version-bump-bot.yml` gains `run_branch` (default `main`) and
+`gate` (default `$VERSION_BUMP_BOT_TOKEN`), and both rules require the pipeline
+to be on `run_branch`. `check_command` is the ref's own shell running beside a
+write-capable PAT, so the ref restriction is the control. Two consequences: the
+token variable must be **Protected** as well as Masked, and a consumer whose
+default branch is not `main` passes `run_branch` — otherwise the job is silently
+not created, with no failing job to notice.
+
+**CI toolchain defaults moved.** `ci/validate/flux-lint.yml`: kubeconform
+0.6.7 → 0.8.0, kustomize 5.4.3 → 5.8.1, helm 3.18.4 → 3.22.0, each with a new
+sha256. `ci/lint/ansible-lint.yml`: ansible-lint 25.12.2 → 26.8.0, held equal to
+`docker/molecule-ci/requirements.txt` by `tests/test_lint_version_parity.py`.
+
+**`ci/deploy/deploy-base.yml` `ansible_version` moves 11.6.0 → 14.4.0**
+(ansible-core 2.18 → 2.21), and the published `ansible-deploy` image moves with
+it (`tests/test_ansible_deploy_image.py` holds the pair equal). A consumer
+taking the default gets a two-major interpreter change on the job that runs its
+production playbooks: pass your own `ansible_version` input to stay on the 2.18
+line, or schedule the move in a deploy window. `meta/runtime.yml` keeps its
+`>=2.18.0` floor, but CI exercises only 2.21.4.
+
+**`check-versions.py` drops the `plex` and `gitlab` registry categories.** Both
+are now expressed with the generic `apt_repo` fetcher, and `--category
+plex|gitlab` fails argparse (exit 2). Rewrite the registry entries:
+
+```python
+# before
+{"var_name": "plex_version", "category": "plex"}
+# after
+{"var_name": "plex_version", "category": "apt_repo",
+ "apt_url": "https://repo.plex.tv/deb/dists/public/main/binary-amd64/Packages",
+ "apt_package": "plexmediaserver"}
+```
+
+the same for `gitlab-ee` against its own `Packages` index, adding
+`apt_exclude_regex` where a suite carries release-candidate versions. Update any
+CI job or task passing `--category plex|gitlab`.
+
+**`check-role-inputs.py` gains `--allow-empty`.** Both arms still exit 2 when
+they find nothing to examine, but the messages now name the legitimate third
+case: a consumer that composes no opt-in role, or whose roles default every
+asserted input. That consumer runs `--allow-empty` (or `--skip`) instead of
+being told the collection dropped a convention.
+
+**`flux-child-kustomizations.py` exits 2 on a `dependsOn` cycle.** The ordering
+still prints, for diagnosis, but it cannot satisfy the declared dependencies, so
+the status says so instead of a warning on stderr with exit 0.
+
+**`check-dashboards.py` reads `generatorOptions`.** The Grafana sidecar label
+and the folder annotation may come from the kustomization's file-level
+`generatorOptions` or from an entry's own `options`, with the entry winning per
+key. A directory using the standard shared-label idiom passes instead of
+failing every dashboard.
+A consumer that overrides any of these passes its own value and its own sha.
+
+**The CRD catalog is pinned.** `ci/validate/flux-lint.yml` gains
+`crd_catalog_ref`, defaulting to a `datreeio/CRDs-catalog` commit sha instead of
+`main`, so a catalog rewrite cannot change what the gate accepts. Point it at an
+internal mirror ref to self-host, and pair it with `expected_skipped_file` so an
+unreachable catalog reds the gate instead of degrading the run to core kinds.
+
+**Two release watch items.** `scripts/version-bump-mr.py` now passes its token
+through `GIT_ASKPASS` so it never reaches git's argv; `--remote-url` is the
+escape hatch if the shim misbehaves. `scripts/version-check-ci.py` makes one
+`GET /user` call per run to learn the bot's user id and only edits a note it
+authored, so a token without `read_user` posts a new note each pipeline instead
+of refreshing one.
+
+**`validate-helm-values.py` release entries no longer require `repo_name` /
+`repo_url`.** They are optional overrides; the chart repo resolves from the
+manifest's own `sourceRef`. Existing release files keep working unchanged.
+
+**`ci/deploy/deploy-base.yml` gains an `image` input**, defaulting to
+`python:3.13-slim` — what both cluster pipelines already set as their
+pipeline-level default, so nothing changes until you pass something else. Point
+it at the published `ansible-deploy` image to skip the apt and pip installs, or
+at a digest-bearing name to pin the supply chain.
+
+**`ci/deploy/kubectl-setup.yml` now installs jq.** Everything that reads
+`kubectl -o json` needs it, and the fragment is the one step every kubectl
+consumer passes through. The step is skipped when the image already ships jq,
+handles apt and apk, and fails loudly on an image with neither, so a consumer
+can drop its own jq install on the next bump.
+
+**`ci/deploy/cluster-verify-base.yml` is a new fragment**: the kubectl-only base
+for in-cluster verification, with no Ansible, SSH key or `hosts.env`. A cluster
+that hand-rolls a verify base on top of `.install-1password` can extend this
+instead. It references `.install-1password` and `.kubectl-setup` by their
+default names, so both fragments must be included too.
+
+**The molecule test image moves to `ansible==14.4.0`** (ansible-core ~=2.21.4).
+`meta/runtime.yml` keeps its `>=2.18.0` floor, so nothing in the collection's
+contract changes. `ANSIBLE_ALLOW_BROKEN_CONDITIONALS` is gone from the shared
+molecule provisioner env: it was a no-op on the old core and, on the new one,
+would have downgraded a non-boolean `when:` in a ROLE task from an error to a
+warning.
 
 # v0.17.1
 
@@ -141,7 +615,7 @@ consumer that adopts this release without editing anything.
 **Nothing to migrate.** No role or variable changed; all three fixes are in the
 `terraform/modules/unifi-network` module, absorbing controller behaviours that
 UniFi Network 10.5 forces (details and the operator-facing consequences:
-that module's README § supervised apply):
+that module's README § Apply is supervised):
 
 - Clients reserved on the `default`-keyed network are written WITHOUT a
   virtual-network override — the controller rejects the override for the
@@ -274,9 +748,8 @@ No migration steps. Additive only:
 
 - `nas_storage` gains `nas_storage_nfs_disable_delegations` (default `false`,
   no behaviour change unless set). Set `true` to stop nfsd granting NFSv4
-  delegations via a persisted `fs.leases-enable=0` drop-in — the mitigation
-  for the kernel `file_lock` slab leak in the GETATTR delegation-conflict
-  path (2026-08-18 incident; role README documents the removal criteria).
+  delegations via a persisted `fs.leases-enable=0` drop-in (the role README
+  documents the trade-off).
 - The scrape gate's label regexes now use `fullmatch()`, closing the
   trailing-newline acceptance (`"app\n"`) the `$` anchor allowed.
 
@@ -460,21 +933,6 @@ run for artefacts only the original site ever had. They are removed at the next
 breaking release, together with the molecule assertions that check for their
 absence; a consumer that adopted the collection after v0.7.0 never had them.
 
-> **Lifecycle.** There is no changelog file for the collection
-> ([VERSIONING.md](../../../docs/VERSIONING.md) § No changelog file), so this is
-> the only per-release migration record. At tag time the release MR **retitles
-> this heading to the tag being cut** and opens a fresh empty
-> `# Unreleased (next release)` above it — a checklist bullet in VERSIONING
-> covers it, and `tests/test_migrating_sections.py::TestMigratingSections` fails a
-> bump whose newest titled section is not `galaxy.yml`'s version, or a released
-> tag with no section at all. A release with nothing to
-> migrate still gets a section saying so; "no section" and "nothing to do" must
-> not look the same. Released sections are kept **in full, newest first**, so a
-> consumer jumping several releases works through each delta in order instead of
-> reading two releases' breaking changes as one pending set. Nothing here is ever
-> squashed or replaced; prune a section only when no supported consumer can
-> still be on the release below it.
-
 ---
 
 # v0.7.4
@@ -509,10 +967,11 @@ config-deficient canonical lists).
 
 # v0.7.0
 
-Everything from [How to check a migration](#how-to-check-a-migration) down is
-the one-time **v0.6.0 adoption map** — the un-prefixed -> prefixed rename a repo
-works through once. This section is the delta for a consumer already on the
-collection: what this release breaks, what it asserts, and what it adds.
+The one-time v0.6.0 adoption map (the un-prefixed -> prefixed rename a repo
+works through once) is
+[MIGRATING-from-in-tree-roles.md](MIGRATING-from-in-tree-roles.md). This section
+is the delta for a consumer already on the collection: what this release breaks,
+what it asserts, and what it adds.
 
 Work it in this order. The four subsections are ordered by what fails you
 first: a pipeline that will not create, a play that fails at role entry, a
@@ -740,7 +1199,8 @@ carrying attributes no longer plans as a wipe).
 | `ci/review/pr-agent.yml` | `op_openai_key_ref` and `op_gitlab_token_ref` no longer default to `op://Homelab/...`; they default to `""` and are REQUIRED when `secrets_source: 1password` (the job exits 1 naming the missing input). Consumers on `secrets_source: env` are unaffected. **Security note for the release: the GitLab credential on EITHER path must be a project access token with Developer + `api` on the reviewed project, never an instance or admin PAT.** |
 | `ci/templates/terraform-http-backend.yml` | `api_url` default moves from a literal instance URL to `${CI_API_V4_URL}`. Same value on that instance, so no consumer's rendered `TF_HTTP_*` changes; a consumer that was overriding it can drop the override. |
 | `ci/templates/dep-cache.yml` | Now a `spec:inputs` template (was a plain fragment). NEW `key_files` and `cache_paths`, both defaulting to today's hard-coded values, so the render is byte-identical. A consumer whose pin files are not `requirements.txt` / `ansible/requirements.yml` passes its own `key_files`. |
-| `ci/build/docker-build.yml` | NEW `login_registry` / `login_user` / `login_password`, defaulting to the `$CI_REGISTRY` trio the job used to hard-code. NEW `schedule_when` (`on_success` \| `never`, default `on_success`) makes the scheduled rebuild opt-out-able. Every build now applies OCI provenance labels (`org.opencontainers.image.{source,revision,version,title}`) with `--label`, which overrides a same-key `LABEL` in a consumer's Dockerfile. |
+| `ci/build/docker-build.yml` | NEW `login_registry` / `login_user` / `login_password`, defaulting to the `$CI_REGISTRY` trio the job used to hard-code. NEW `schedule_when` (`on_success` \| `never`, default `on_success`) makes the scheduled rebuild opt-out-able. Every build now applies OCI provenance labels (`org.opencontainers.image.{source,revision,version,title}`) with `--label`, which overrides a same-key `LABEL` in a consumer's Dockerfile. **`cpu_selector` no longer defaults (a node label is site data) and is now REQUIRED.** Every include must pass it in the same MR as the bump, or pipeline creation fails with "required input not provided". |
+| `ci/security/secret-detection.yml` | `cpu_selector` no longer defaults (a node label is site data) and is now REQUIRED. Every include must pass it in the same MR as the bump, or pipeline creation fails with "required input not provided". |
 | `ci/validate/terraform.yml` | `terraform-validate` now FAILS when `module_glob` matches no directory containing a `versions.tf` (previously a green no-op). A consumer whose glob was wrong goes red — point it at the level that holds the modules. |
 | `ci/lint/shellcheck.yml` | A failure in one of the three script blocks no longer exits immediately; all three run and the final accounting block exits. Pass/fail is unchanged, output is more complete. |
 
@@ -832,1091 +1292,3 @@ one-set example silently retired `reserved-full` for anyone who copied it.
   for an empty required export changed from `(<target> renamed/removed?)` to one
   of three distinct causes; a consumer asserting on the old string must update.
 
-## How to check a migration
-
-```bash
-# 1. Every old name still set anywhere in your inventory:
-grep -rnE '^\s*(adguard_|fail2ban_|lxc_|vm_|pve_|ha_|smtp_|nas_|acme_|dns01_|omz_|nvim_|media_|smartd_|zfs_scrub_|restic_|rclone_|b2_|storage_replication_|cloudinit_|cloud_image_|virtio_win_|skip_)' \
-  ansible/inventories/
-
-# 2. Nothing in the collection reads it — prove the rename landed:
-ANSIBLE_COLLECTIONS_PATH=$PWD:~/.ansible/collections \
-  ansible-playbook site.yml --check --diff --limit <one-host>
-```
-
-A `--check` run exercises every **required-input assert** (see the last section),
-which is the loud half of the contract. The silent half — a renamed *tunable*
-that falls back to a role default — is only caught by diffing rendered config,
-so diff one host's rendered files (or `pve-firewall compile`, `sshd -T`,
-`unbound-checkconf`) before and after adoption.
-
-Neither step finds the third class: a variable whose **name is unchanged** but
-whose weisssrv-specific default is now empty. The grep has no old prefix to match
-and a defaults diff shows the key on both sides. Those are enumerated in
-[Externalized defaults](#externalized-defaults-name-unchanged-value-now-empty)
-below — work that table on its own.
-
-## Names that do NOT need renaming
-
-Values that are conventionally inventory-wide keep their bare names; the roles
-alias them with a `default()`. Setting either the bare or the prefixed form
-works. The table lives in [README.md](README.md#use) — currently `admin_user`,
-`admin_email`, the `ssh_*` quintet, `timezone`, `dns_servers`, `internal_domain`,
-`external_domain`, `zfs_arc_max_bytes`, `host_dns_servers`,
-`vm_additional_disks`, `redis_version`, `immich_version`, the `kube_vip_*` pair
-and the four `nvidia_*` GPU pins.
-
-Two consequences worth stating explicitly:
-
-- `admin_user`, `timezone`, `ssh_port`, `ssh_permit_root_login`,
-  `ssh_password_authentication`, `ssh_pubkey_authentication`,
-  `zfs_arc_max_bytes` and `internal_domain` appear in the per-role tables below
-  **because the role-owned name changed**, but the bare name still works through
-  the alias. They are the only rows you may skip.
-- `vm_additional_disks` is read by both `proxmox_vm` (creates and attaches the
-  zvols) and `k3s` (mounts them), so one `host_vars` block drives both.
-
-## Externalized defaults (name unchanged, value now empty)
-
-The per-role tables below only record **renames**. This section records the other
-half: variables that kept their name while their *value* changed from a
-weisssrv-specific default to an empty one the site must now supply. Nothing looks
-renamed, so the grep recipe above returns nothing and a defaults diff shows the
-key on both sides — and most of these are not asserted, so the play stays green
-while the behaviour degrades quietly (an offsite backup with no paths, a
-root-equivalent key with no source pin, a `/etc/hosts` pin that never lands).
-
-The table is generated mechanically: for every role, each key present in **both**
-defaults files whose weisssrv value was non-empty and whose collection default is
-`""` or `[]`.
-
-A second, nastier variant is **renamed _and_ emptied**: the rename tables below
-tell you the new name, so the grep recipe finds it, but they say nothing about
-the value that disappeared with it. Both halves are required.
-
-| Role | Old (inventory) | New | weisssrv value to restore |
-|---|---|---|---|
-| `acme_certs` | `acme_email` | `acme_certs_email` | the ACME account address |
-| `acme_certs` | `internal_domain` | `acme_certs_domain` | the internal zone |
-| `adguard_home` | `adguard_tls_server_name` | `adguard_home_tls_server_name` | the DoT server name |
-| `nas_storage` | `nas_appdata_dirs` | `nas_storage_appdata_dirs` | the 11 per-app appdata subdirs |
-| `nas_storage` | `nas_backup_artifact_apps` | `nas_storage_backup_artifact_apps` | the 6 apps whose dumps are freshness-tracked |
-| `restic_offsite` | `restic_version` | `restic_offsite_restic_version` | the pinned restic version (empty in weisssrv's `all.yml` today, meaning "track the distro" — either pin it or delete the key rather than shipping an empty pin into `cluster-versions`) |
-| `restic_offsite` | `rclone_version` | `restic_offsite_rclone_version` | the pinned rclone version (paired with `restic_offsite_rclone_deb_sha256`) |
-
-| Role | Variable | New default | Asserted | Effect if left empty |
-|---|---|---|---|---|
-| `acme_certs` | `acme_certs_key_from` | `""` | no | no `from="…"` clause on the distribution key in each target's `authorized_keys` — the root-equivalent key becomes usable from any source address |
-| `alloy_host` | `alloy_host_loki_url` | `""` | yes | role fails at entry |
-| `alloy_host` | `alloy_host_loki_user` | `""` | `https://` only | push runs unauthenticated |
-| `alloy_host` | `alloy_host_loki_password` | `""` | `https://` only | push runs unauthenticated |
-| `compose_app` | `compose_app_nginx_self_signed_san` | `""` | no | the placeholder cert is generated with no `subjectAltName` |
-| `k3s` | `k3s_api_vip` | `""` | yes | role fails at entry |
-| `k3s` | `k3s_etcd_snapshot_nfs_server` | `""` | no | the off-node snapshot mount has no server half (read only when `k3s_etcd_snapshot_offnode_enabled`) |
-| `k3s` | `k3s_registry_host_pins` | `[]` | no | no `/etc/hosts` pin for the registry — image pulls fall back to cluster DNS |
-| `k3s` | `k3s_storage_host_pins` | `[]` | no | no `/etc/hosts` pin for the NFS server — PV mounts fall back to cluster DNS |
-| `restic_offsite` | `restic_offsite_repo` | `""` | yes | role fails at entry |
-| `restic_offsite` | `restic_offsite_sources` | `[]` | no | the nightly `restic backup` runs with an empty path set |
-| `restic_offsite` | `restic_offsite_zvol_sources` | `[]` | no | zvol-backed data (Immich, Nextcloud) is never clone-mounted, so it is never offsited |
-| `restic_offsite` | `restic_offsite_excludes` | `[]` | no | churn/cache paths (Prometheus, Loki, the Plex cache) ride into the repo |
-
-The weisssrv values, ready to move into inventory:
-
-```yaml
-# acme_certs — the dns-01 resolver the distribution key is pinned to
-acme_certs_key_from: 192.168.0.150
-
-# alloy_host — the credentials were env lookups in the role's defaults
-alloy_host_loki_url: https://loki.esweiss.com/loki/api/v1/push
-alloy_host_loki_user: "{{ lookup('ansible.builtin.env', 'LOKI_PUSH_USER') | default('', true) }}"
-alloy_host_loki_password: "{{ lookup('ansible.builtin.env', 'LOKI_PUSH_PASSWORD') | default('', true) }}"
-
-# compose_app
-compose_app_nginx_self_signed_san: DNS:*.esweiss.com
-
-# k3s
-k3s_api_vip: 192.168.0.161
-k3s_etcd_snapshot_nfs_server: "pve-nas-01.{{ internal_domain | default('esweiss.com') }}"
-k3s_registry_host_pins:
-  - name: "registry.git.{{ external_domain | default('ericsweiss.com') }}"
-    ip: 192.168.0.101
-k3s_storage_host_pins:
-  - name: "pve-nas-01.{{ internal_domain | default('esweiss.com') }}"
-    ip: 192.168.0.102
-
-# restic_offsite
-restic_offsite_repo: rclone:b2:weisssrv-backup/restic
-restic_offsite_sources:
-  - name: backups
-    mountpoint: /mnt/tank/backups
-  - name: share
-    mountpoint: /mnt/tank/share
-  - name: appdata
-    mountpoint: /mnt/ssd/appdata
-  - name: databases
-    mountpoint: /mnt/ssd/databases
-  - name: k3s-etcd
-    mountpoint: /mnt/ssd/k3s-etcd
-restic_offsite_zvol_sources:
-  - name: immich-data
-    zvol: tank/immich-data/disk
-    fstype: ext4
-    mount_opts: ro,noload
-  - name: nextcloud-data
-    zvol: tank/nextcloud-data/disk
-    fstype: ext4
-    mount_opts: ro,noload
-restic_offsite_excludes:
-  - /mnt/restic-src/appdata/prometheus/**
-  - /mnt/restic-src/appdata/loki/**
-  - /mnt/restic-src/appdata/authentik/postgres/**
-  - /mnt/restic-src/appdata/mealie/postgres/**
-  - /mnt/restic-src/appdata/gitlab/**
-  - /mnt/restic-src/appdata/immich/**
-  - /mnt/restic-src/appdata/nextcloud/**
-  - "/mnt/restic-src/appdata/plex/Library/Application Support/Plex Media Server/Cache/**"
-  - "/mnt/restic-src/appdata/plex/Library/Application Support/Plex Media Server/Metadata/**"
-  - "/mnt/restic-src/appdata/plex/Library/Application Support/Plex Media Server/Media/**"
-```
-
-### Same class, different name
-
-Four more values were externalized *and* renamed (or promoted out of a template),
-so they do appear in the tables below — they are listed here too because the
-migration step is identical: supply the value or lose the behaviour.
-
-- `nas_storage` **archive backup**: the dataset inventory was literal in
-  `archive-backupctl.sh.j2` (`SRC_LIST`, `POOL_DST`, `VZDUMP_TARGET`) and is now
-  `nas_storage_archive_backup_pool: archive`,
-  `nas_storage_archive_backup_vzdump_target: tank/proxmox` and
-  `nas_storage_archive_backup_sources: [tank/share, tank/backups,
-  tank/nextcloud-data, tank/proxmox, tank/immich-data, ssd/appdata,
-  ssd/databases, ssd/k3s-etcd]`, behind `nas_storage_archive_backup_enabled`
-  (default false). Pool and sources are asserted when the opt-in is on; leaving
-  the opt-in off on a host that already runs the timer **removes** the units and
-  the script rather than orphaning them.
-- `restic_offsite_cache_dir`: same name, but no longer a default at all — it is a
-  required input, asserted alongside `restic_offsite_repo`. weisssrv's value was
-  `/mnt/ssd/appdata/.restic-cache`.
-- `k3s_tls_sans`: the apiserver SAN list was hardcoded as
-  `k3s.{{ internal_domain }}`; it is now an input that defaults to
-  `['k3s.' ~ k3s_internal_domain]` and collapses to `[]` when neither
-  `k3s_internal_domain` nor the inventory-wide `internal_domain` is set. The VIP,
-  `inventory_hostname` and `ansible_host` are still added by the template.
-- `proxmox_firewall` address data: the CIDR lists and the seven per-application
-  `[group ...]` blocks were literal in the template and are now empty-by-default
-  inputs — see [proxmox_firewall](#proxmox_firewall) below for the full list.
-
-## Per-role renames
-
-Rows marked (inv) were never role defaults — they are names a site set directly
-in `group_vars`/`host_vars`, so they will not show up in a defaults diff.
-
-### acme_certs
-
-| Old | New |
-|---|---|
-| `acme_email` | `acme_certs_email` |
-| `acme_local_cert_group` | `acme_certs_local_cert_group` |
-| `acme_sh_tarball_sha256` | `acme_certs_sh_tarball_sha256` |
-| `acme_sh_version` | `acme_certs_sh_version` |
-| `internal_domain` | `acme_certs_domain` (the cert's base domain — a dedicated required input, no longer the shared global) |
-| `local_cert_dir` | `acme_certs_local_cert_dir` |
-| `cert_distribution_targets` (inv) | `acme_certs_distribution_targets` |
-| `dns01_ssh_private_key` (inv) | `acme_certs_ssh_private_key` (asserted) |
-| `dns01_ssh_public_key` (inv) | `acme_certs_ssh_public_key` (asserted) |
-
-`acme_certs_key_from` keeps its name but is now empty by default — see
-[Externalized defaults](#externalized-defaults-name-unchanged-value-now-empty).
-`skip_cert_distribution` → `acme_certs_skip_distribution`.
-
-The role no longer gates itself on a hostname, so **`acme_certs_enabled: true`
-replaces the `inventory_hostname == 'dns-01'` check**. Five more defaults are
-generic where the in-tree role's were site values, and each silently changes
-behaviour if left alone: `acme_certs_ssh_user` (default `root`, which also
-relocates the key under `acme_certs_ssh_key_dir`),
-`acme_certs_local_cert_dir` (`/etc/ssl/private`), `acme_certs_local_cert_group`
-(`root`), and `acme_certs_local_reload_command` (**empty, which omits the local
-service-restart block entirely**).
-
-Two behaviour changes: the receiver now **rejects** an oversized bundle instead
-of truncating it (a truncated PEM was reported as "certificate does not parse"),
-and the per-target textfile keeps the name `cert_distribution_targets.prom` —
-renaming it to match the variable prefix would leave the old file in place and
-node_exporter would serve one metric family from two textfiles.
-
-### adguard_home
-
-| Old | New |
-|---|---|
-| `adguard_admin_user` | `adguard_home_admin_user` |
-| `adguard_cache_enabled` | `adguard_home_cache_enabled` |
-| `adguard_cache_optimistic` | `adguard_home_cache_optimistic` |
-| `adguard_cache_size` | `adguard_home_cache_size` |
-| `adguard_cache_ttl_max` | `adguard_home_cache_ttl_max` |
-| `adguard_cache_ttl_min` | `adguard_home_cache_ttl_min` |
-| `adguard_cert_path` | `adguard_home_cert_path` |
-| `adguard_dhcp_enabled` | `adguard_home_dhcp_enabled` |
-| `adguard_disable_ipv6` | `adguard_home_disable_ipv6` |
-| `adguard_dns_port` | `adguard_home_dns_port` |
-| `adguard_doq_port` | `adguard_home_doq_port` |
-| `adguard_dot_port` | `adguard_home_dot_port` |
-| `adguard_enable_dnssec` | `adguard_home_enable_dnssec` |
-| `adguard_fallback_dns` | `adguard_home_fallback_dns` |
-| `adguard_group` | `adguard_home_group` |
-| `adguard_http_port` | `adguard_home_http_port` |
-| `adguard_https_port` | `adguard_home_https_port` |
-| `adguard_install_path` | `adguard_home_install_path` |
-| `adguard_protection_enabled` | `adguard_home_protection_enabled` |
-| `adguard_ratelimit` | `adguard_home_ratelimit` |
-| `adguard_ratelimit_whitelist` | `adguard_home_ratelimit_whitelist` |
-| `adguard_resolve_clients` | `adguard_home_resolve_clients` |
-| `adguard_tls_enabled` | `adguard_home_tls_enabled` |
-| `adguard_tls_server_name` | `adguard_home_tls_server_name` |
-| `adguard_upstream_dns` | `adguard_home_upstream_dns` |
-| `adguard_upstream_mode` | `adguard_home_upstream_mode` |
-| `adguard_use_private_ptr_resolvers` | `adguard_home_use_private_ptr_resolvers` |
-| `adguard_use_private_tmp` | `adguard_home_use_private_tmp` |
-| `adguard_use_protect_system` | `adguard_home_use_protect_system` |
-| `adguard_user` | `adguard_home_user` |
-| `skip_adguard_api_config` | `adguard_home_skip_api_config` |
-| `adguard_admin_password` (inv) | `adguard_home_admin_password` |
-| `adguard_rewrites` (inv) | `adguard_home_rewrites` |
-| `adguard_user_rules` (inv) | `adguard_home_user_rules` |
-
-New gates with no predecessor: `adguard_home_is_primary` (the rewrite/filtering
-API pass runs on the primary only) and `adguard_home_skip_resolv_conf_update`.
-Also new: `adguard_home_hash_helper_path`
-(`/usr/local/sbin/adguard-admin-hash.py`) and `adguard_home_settle_seconds` (0).
-
-Three things to plan for:
-
-- **`adguard_home_tls_server_name` is now ASSERTED** when
-  `adguard_home_tls_enabled`. It was previously possible to post an empty
-  DoT/DoH/DoQ SNI on every deploy with a green play. This is the one row in the
-  table above that is more than a rename.
-- **`adguard_home_admin_user` defaults to `admin`.** A site whose admin is named
-  otherwise gets a loud failure (`no user named 'admin' in …AdGuardHome.yaml`),
-  not a silent one — but it stops the deploy.
-- **A new file lands on each resolver**: the admin-password helper at
-  `adguard_home_hash_helper_path` (root:root 0755). The password now reaches it
-  on **stdin** rather than through `environment:`, which Ansible prefixes onto
-  the remote command string — so the plaintext no longer appears in
-  `/proc/<pid>/cmdline`. The first converge should print `UNCHANGED` and restart
-  nothing; a `CHANGED` means the stored password and the vault have diverged,
-  and the handler serializes the restarts one resolver at a time.
-
-### adguard_sync
-
-| Old | New |
-|---|---|
-| `adguardhome_sync_features` | `adguard_sync_features` |
-| `adguardhome_sync_schedule` | `adguard_sync_schedule` |
-| `adguardhome_sync_origin` (inv) | `adguard_sync_origin` |
-| `adguardhome_sync_replica` (inv) | `adguard_sync_replica` |
-| `adguardhome_sync_version` (inv) | `adguard_sync_version` |
-| `adguard_admin_user` (inv) | `adguard_sync_admin_user` |
-| `adguard_admin_password` (inv) | `adguard_sync_admin_password` |
-
-The role is now gated on `adguard_sync_enabled` (default false) — set it true on
-the primary only.
-
-### alloy_host
-
-No renames. Four values that used to default to site data are now **required
-inputs** with an empty default: `alloy_host_version`, `alloy_host_loki_url`,
-`alloy_host_loki_user`, `alloy_host_loki_password` (the last two only for an
-`https://` endpoint). The env lookups that used to sit in the role's defaults
-(`LOKI_PUSH_USER` / `LOKI_PUSH_PASSWORD`) move to the caller. The three that were
-role defaults are listed with their weisssrv values under
-[Externalized defaults](#externalized-defaults-name-unchanged-value-now-empty);
-`alloy_host_version` was always inventory-supplied.
-
-### base
-
-| Old | New |
-|---|---|
-| `admin_user` | `base_admin_user` (alias: `admin_user`) |
-| `common_packages` | `base_common_packages` |
-| `fail2ban_default_bantime` | `base_fail2ban_default_bantime` |
-| `fail2ban_default_findtime` | `base_fail2ban_default_findtime` |
-| `fail2ban_default_maxretry` | `base_fail2ban_default_maxretry` |
-| `fail2ban_email_action` | `base_fail2ban_email_action` |
-| `fail2ban_email_dest` | `base_fail2ban_email_dest` |
-| `fail2ban_email_enabled` | `base_fail2ban_email_enabled` |
-| `fail2ban_email_sender` | `base_fail2ban_email_sender` |
-| `fail2ban_enabled` | `base_fail2ban_enabled` |
-| `fail2ban_ignoreip` | `base_fail2ban_ignoreip` |
-| `fail2ban_pveproxy_bantime` | `base_fail2ban_pveproxy_bantime` |
-| `fail2ban_pveproxy_enabled` | `base_fail2ban_pveproxy_enabled` |
-| `fail2ban_pveproxy_findtime` | `base_fail2ban_pveproxy_findtime` |
-| `fail2ban_pveproxy_maxretry` | `base_fail2ban_pveproxy_maxretry` |
-| `fail2ban_pveproxy_port` | `base_fail2ban_pveproxy_port` |
-| `fail2ban_recidive_bantime` | `base_fail2ban_recidive_bantime` |
-| `fail2ban_recidive_enabled` | `base_fail2ban_recidive_enabled` |
-| `fail2ban_recidive_findtime` | `base_fail2ban_recidive_findtime` |
-| `fail2ban_recidive_maxretry` | `base_fail2ban_recidive_maxretry` |
-| `fail2ban_sshd_bantime` | `base_fail2ban_sshd_bantime` |
-| `fail2ban_sshd_enabled` | `base_fail2ban_sshd_enabled` |
-| `fail2ban_sshd_findtime` | `base_fail2ban_sshd_findtime` |
-| `fail2ban_sshd_maxretry` | `base_fail2ban_sshd_maxretry` |
-| `fail2ban_sshd_port` | `base_fail2ban_sshd_port` |
-| `ssh_password_authentication` | `base_ssh_password_authentication` (alias) |
-| `ssh_permit_root_login` | `base_ssh_permit_root_login` (alias) |
-| `ssh_port` | `base_ssh_port` (alias) |
-| `ssh_pubkey_authentication` | `base_ssh_pubkey_authentication` (alias) |
-| `ssh_service_name` | `base_ssh_service_name` |
-| `timezone` | `base_timezone` (alias: `timezone`) |
-| `vm_packages` | `base_vm_packages` |
-
-New: `base_ssh_authorized_keys` (alias `ssh_authorized_keys`), the
-`base_skip_{ssh,dns,timezone}_config` / `base_skip_sudoers_validation` gates, and
-the resolver-host knobs `base_is_resolver_host` / `base_resolver_probe_name` /
-`base_bootstrap_dns_servers`. `base_is_resolver_host` replaces the role's
-`inventory_hostname in groups['dns']` check — set it `true` in the resolver
-group. The `is_container` / `is_virtual_machine` set_facts are now
-`base_is_container` / `base_is_virtual_machine`; nothing outside `base` reads
-them.
-
-Three behaviour changes to plan for:
-
-- **`base` no longer installs the e1000e TSO workaround, and actively REMOVES
-  it.** The in-tree role auto-detected I219/I218/I217 on any bare-metal host and
-  installed `/usr/local/sbin/e1000e-tso-fix.sh` plus a oneshot unit; this role
-  disables and deletes that pair (and the older `atlantic-gro-fix` pair).
-  `nic_tuning` is the single owner of NIC offload state now. **Audit before
-  deploying**: run `lspci | grep -iE 'I219|I218|I217'` on every bare-metal host
-  and make sure each match is covered by `nic_tuning_overrides`. A host that is
-  not covered keeps its current runtime offload state until the next reboot or
-  link event and then silently loses the workaround — which is the failure mode
-  the workaround exists for.
-- **`base_fail2ban_ignoreip` defaults to loopback only.** The in-tree default
-  trusted the LAN and the tailnet. Re-add those CIDRs or an admin source can be
-  banned out of its own hosts.
-- **Unattended-upgrades config is written unconditionally** on VMs and
-  containers, rather than only when `/etc/apt/apt.conf.d/20auto-upgrades`
-  already exists. A fresh image (or a later `apt install unattended-upgrades`)
-  previously came up with automatic updates ON. APT ignores the file when the
-  package is absent, so the only effect is a new file on hosts that lacked one.
-
-### docker_engine
-
-| Old | New |
-|---|---|
-| `docker_ce_version` (inv) | `docker_engine_ce_version` |
-| `containerd_version` (inv) | `docker_engine_containerd_version` |
-| `docker_buildx_plugin_version` (inv) | `docker_engine_buildx_plugin_version` |
-| `docker_compose_plugin_version` (inv) | `docker_engine_compose_plugin_version` |
-
-No alias shims: with the old names only, the role's entry assert fails the play
-with a named message. That is deliberate — a stale version default silently
-**downgrades** an engine, so a loud failure is the safer default. Everything that
-reads the old names on the consumer side (version-check registry entries, the
-version-pin gates, the `nextcloud`/`immich` deploy paths) needs the same rename.
-
-### gitlab
-
-New role. It was not previously in the collection, so "migration" means moving
-`ansible/roles/gitlab` out of the consumer tree, switching the playbook to
-`weisssrv.infra.gitlab`, and supplying the site values that were role defaults.
-
-| Old | New | Note |
-|---|---|---|
-| `skip_gitlab_install` | `gitlab_skip_install` | molecule / `-e` only |
-| `ssh_service_name` (shared) | `gitlab_ssh_service_name` | role-owned now; default `ssh` |
-| `vm_additional_disks` | `gitlab_additional_disks` | **aliased** — no inventory change |
-
-**Every optional feature now defaults OFF, and the endpoints default empty.**
-Registry, Pages, SMTP, SAML and the sshd `AllowUsers` drop-in must be switched
-on explicitly; `gitlab_external_url`, the NFS backup landing, the cert paths and
-the CIDR lists are all empty by default. Each enabled block asserts its own
-inputs, so nothing degrades quietly — but nothing works until it is set.
-
-Behaviour that changes on first converge, in rough order of blast radius:
-
-- **`gitlab.rb` renders differently** (Ruby-literal quoting via an `rb()` macro,
-  `gitlab_timezone` in place of a hardcoded zone, omitted-when-empty lines), so
-  the template reports changed once and `gitlab-ctl reconfigure` runs. That is a
-  real production event — schedule it alone.
-- An empty `gitlab_saml_required_groups` now **requires**
-  `gitlab_saml_allow_all_users: true` rather than silently auto-provisioning
-  every IdP user.
-- `gitlab_backup_path` must equal `gitlab_backup_mountpoint` when the backup is
-  NFS-backed (both the wrapper and the unit test that exact path for
-  mountedness); asserted.
-- The Web IDE Application-Settings pass is gated on a non-empty
-  `gitlab_web_ide_extension_host_domain` (it previously ran on every deploy).
-- New metrics file `gitlab_backup_secrets.prom`
-  (`gitlab_backup_secrets_present`, `gitlab_backup_secrets_size_bytes`) — a
-  tarball without `gitlab-secrets.json` restores to unreadable encrypted
-  columns, and that was previously unalertable. The secrets copy no longer
-  preserves timestamps, so its mtime is a freshness signal.
-- The backup wrapper sources `compose_app`'s shared metrics library instead of
-  defining its own. **Metric names are unchanged**, but a consumer's
-  `deploy-gitlab` `changes:` list must now cover the `compose_app` role path too,
-  or a library change stops redeploying gitlab.
-
-New optional inputs (both default `""`, which omits the `gitlab.rb` line and
-leaves the Omnibus defaults — the exporter on, bound to `localhost:9187`):
-
-| Variable | Meaning | Default |
-|---|---|---|
-| `gitlab_postgres_exporter_enabled` | `postgres_exporter['enable']`; set `true`/`false` only to override Omnibus | `""` (line omitted) |
-| `gitlab_postgres_exporter_listen_address` | `postgres_exporter['listen_address']`; set e.g. `0.0.0.0:9187` to scrape from off-host | `""` (line omitted) |
-
-Publishing it exposes **unauthenticated** database metrics: scope the port at
-the firewall.
-
-### home_assistant
-
-New role. Consumer API is unchanged — every `home_assistant_*` input keeps its
-name. Three values that were role defaults are now required and asserted:
-`home_assistant_host`, `home_assistant_trusted_proxies`,
-`home_assistant_oidc_configure_url` (the OIDC discovery URL — the issuer host is
-the EXTERNAL one).
-
-New optional inputs: `home_assistant_ssh_user`, `_ssh_connect_timeout`,
-`_ssl_certificate`, `_ssl_key`, `_oidc_scope`, `_oidc_username_field`,
-`_oidc_block_login`, `_extra_config`.
-
-**The deploy is now idempotent.** The role checksums the deployed
-`configuration.yaml` + `secrets.yaml` over one ssh round trip; identical means
-the stage, backup, install, `ha core check` and cleanup are all skipped. A
-converged run reports `changed=0`. The **first** run after adoption still
-deploys — the rendered header text differs — so expect one `.bak` cycle and one
-config check.
-
-The idempotency check assumes `sha256sum` exists in the HAOS SSH add-on shell
-(busybox provides it). If it is ever missing, the run fails before anything is
-staged, which is a safe failure.
-
-### immich
-
-New role. It replaces an in-tree role of the same name.
-
-| Old | New | Note |
-|---|---|---|
-| `immich_ml_image` | `immich_machine_learning_image` | the in-guest CPU ML image; the old name collided with the `immich_ml` role's prefix. Not set in inventory → no action |
-| `immich_internal_url` | *(removed)* | dead variable, referenced nowhere |
-| `vm_additional_disks` | `immich_additional_disks` | **aliased** |
-| `timezone` | `immich_timezone` | **aliased** |
-| handler `Reload systemd` | `Reload systemd for immich-backup` | internal; handler names are play-global and the old one collided with base/nas_storage |
-
-Seven inputs are now asserted: `immich_version`, `immich_postgres_version`,
-`immich_postgres_digest`, `immich_valkey_version`, `immich_valkey_digest`,
-`immich_external_url`, `immich_oauth_issuer_url` — plus
-`immich_backup_nfs_server`/`_export` when the NFS backup is enabled.
-
-Values that must be supplied, with a note each:
-
-- `immich_ml_urls` — the default is the in-guest CPU container **alone**. The
-  site's list puts the GPU endpoint first and the CPU container second, and
-  **the order is the failover contract**.
-- `immich_nginx_self_signed_subj` / `_san` — generic placeholders now
-  (`/CN={{ inventory_hostname }}`, no SAN). Set them to keep the current
-  placeholder identity until acme_certs pushes the real wildcard.
-- `immich_oauth_button_text` — default changed to `Sign in with SSO`. Cosmetic
-  but user-visible.
-- `immich_nginx_real_ip_from` — **do not hand-copy node IPs.** It now derives
-  from `immich_nginx_real_ip_groups` (default `[k3s_servers, k3s_agents]`) via
-  `map('extract', groups)` → `ansible_host`, so it tracks a node being added or
-  renumbered. A group name that does not exist yields `[]` rather than an error.
-
-New optional inputs — a `postgres-exporter` compose sidecar for database-level
-metrics, off by default (nothing is added to the stack until it is switched on):
-
-| Variable | Meaning | Default |
-|---|---|---|
-| `immich_postgres_exporter_enabled` | Add the sidecar | `false` |
-| `immich_postgres_exporter_version` / `_digest` | Image pin; asserted (as a resolved tag/digest) when enabled | `""` / `""` |
-| `immich_postgres_exporter_image` | Full reference, derived from the two above; override for another registry or build | `quay.io/prometheuscommunity/postgres-exporter:<version>` |
-| `immich_postgres_exporter_port` | Host port | `9187` |
-
-It reuses the stack's own `DB_USERNAME`/`DB_PASSWORD` from `.env` (no new
-secret) and the endpoint is **unauthenticated**: scope the port at the firewall.
-
-### immich_ml
-
-New role.
-
-| Old | New | Note |
-|---|---|---|
-| `skip_immich_ml_deploy` | `immich_ml_skip_install` | **alias kept** |
-| `immich_version` | `immich_ml_version` | **alias kept**, so one pin drives both halves |
-| `timezone` | `immich_ml_timezone` | **alias kept** |
-
-New: `immich_ml_render_device`, `_card_device`, `_device_dir` (the passthrough
-device node paths) and `_health_retries` / `_health_delay` (the `/ping` wait
-budget) — all defaulting to the values that were hardcoded. `immich_ml_version`
-is asserted. No inventory action beyond the docker_engine pin rename.
-
-### k3s
-
-| Old | New |
-|---|---|
-| `kube_vip_interface` | `k3s_kube_vip_interface` |
-| `kube_vip_version` | `k3s_kube_vip_version` |
-| `skip_k3s_gpu_install` | `k3s_skip_gpu_install` |
-
-`k3s_api_vip`, `k3s_registry_host_pins`, `k3s_storage_host_pins` and
-`k3s_etcd_snapshot_nfs_server` keep their names but are now empty by default —
-see [Externalized defaults](#externalized-defaults-name-unchanged-value-now-empty).
-
-New: `k3s_internal_domain` / `k3s_tls_sans` (the apiserver SAN list is now an
-input rather than a hardcoded `k3s.<internal_domain>`), `k3s_additional_disks`
-(aliases `vm_additional_disks`), `k3s_server_group`, `k3s_skip_install`, and the
-four GPU pins `k3s_gpu_driver_version`, `k3s_gpu_container_toolkit_version`,
-`k3s_gpu_cuda_keyring_version`, `k3s_gpu_cuda_keyring_sha256` (each aliases the
-inventory-wide `nvidia_*` name of the same suffix).
-
-**The role carries no version pins of its own any more.** `k3s_version` and
-`k3s_kube_vip_version` had role defaults that had already drifted behind the
-inventory's; both are now asserted instead, so a dropped group_var fails the
-play rather than silently installing a stale k3s or kube-vip.
-`k3s_kube_vip_resources` is new (defaults byte-equal to what is deployed today),
-and the kube-vip manifest regains `priorityClassName: system-node-critical`.
-
-New opt-in: `k3s_metrics_server_override_enabled` (default **false**, so nothing
-changes until a site sets it). It is gated on a live probe — the role checks
-that this k3s packages metrics-server as a `HelmChart` and **fails with the
-alternative** if it does not, rather than writing an inert `HelmChartConfig`. So
-enabling it is safe to try: it either works or fails loudly at deploy time.
-
-### nas_storage
-
-| Old | New |
-|---|---|
-| `media_mover_bwlimit` | `nas_storage_media_mover_bwlimit` |
-| `media_mover_cpu_weight` | `nas_storage_media_mover_cpu_weight` |
-| `media_mover_io_class` | `nas_storage_media_mover_io_class` |
-| `media_mover_io_priority` | `nas_storage_media_mover_io_priority` |
-| `media_mover_io_weight` | `nas_storage_media_mover_io_weight` |
-| `media_mover_nice` | `nas_storage_media_mover_nice` |
-| `nas_appdata_base` | `nas_storage_appdata_base` |
-| `nas_appdata_dirs` | `nas_storage_appdata_dirs` |
-| `nas_appdata_group` | `nas_storage_appdata_group` |
-| `nas_appdata_mode` | `nas_storage_appdata_mode` |
-| `nas_appdata_owner` | `nas_storage_appdata_owner` |
-| `nas_backup_apps_base` | `nas_storage_backup_apps_base` |
-| `nas_backup_artifact_apps` | `nas_storage_backup_artifact_apps` |
-| `nas_backup_artifact_metrics_enabled` | `nas_storage_backup_artifact_metrics_enabled` |
-| `zfs_arc_max_bytes` | `nas_storage_zfs_arc_max_bytes` (alias: `zfs_arc_max_bytes`) |
-| `media_mover_enabled` (inv) | `nas_storage_media_mover_enabled` |
-| `media_mover_src` (inv) | `nas_storage_media_mover_src` |
-| `media_mover_dst` (inv) | `nas_storage_media_mover_dst` |
-| `media_mover_schedule` (inv) | `nas_storage_media_mover_schedule` |
-| `mergerfs_mounts` (inv) | `nas_storage_mergerfs_mounts` |
-| `nfs_exports` (inv) | `nas_storage_exports` |
-| `samba_shares` (inv) | `nas_storage_samba_shares` |
-| `zfs_pools` (inv) | `nas_storage_zfs_pools` |
-| `zfs_scrub_enabled` (inv) | `nas_storage_zfs_scrub_enabled` |
-| `zfs_scrub_schedule` (inv) | `nas_storage_zfs_scrub_schedule` |
-| `smartd_enabled` (inv) | `nas_storage_smartd_enabled` |
-| `smartd_archive_disks` (inv) | `nas_storage_smartd_archive_disks` |
-| `smartd_nvme_disks` (inv) | `nas_storage_smartd_nvme_disks` |
-| `smartd_ssd_disks` (inv) | `nas_storage_smartd_ssd_disks` |
-| `smartd_tank_disks` (inv) | `nas_storage_smartd_tank_disks` |
-| `nas_encrypted_bind_sources` (inv) | `nas_storage_encrypted_bind_sources` |
-| `nas_swap_clean_enabled` (inv) | `nas_storage_swap_clean_enabled` |
-| `nas_swap_clean_schedule` (inv) | `nas_storage_swap_clean_schedule` |
-| `nas_swap_clean_stop_guests` (inv) | `nas_storage_swap_clean_stop_guests` |
-
-The archive backup is now **opt-in and site-supplied**: it was an in-role dataset
-inventory, and is now `nas_storage_archive_backup_enabled` (default false) plus
-the required `_pool` / `_sources` (and optional `_vzdump_target`). Leaving the
-opt-in unset on a host that already runs the timer **removes** the units and the
-script rather than orphaning them. weisssrv's literal values are under
-[Externalized defaults](#externalized-defaults-name-unchanged-value-now-empty).
-
-`samba_nas_password` is no longer a variable — the role reads the
-`SAMBA_NAS_PASSWORD` environment variable, and warns (does not fail) when unset.
-
-### nextcloud
-
-New role. It replaces an in-tree role of the same name; every rename keeps an
-alias shim, so the inventory needs no mechanical rename here.
-
-| Old | New | Shim |
-|---|---|---|
-| `skip_nextcloud_deploy` | `nextcloud_skip_install` | yes |
-| `vm_additional_disks` | `nextcloud_additional_disks` | yes |
-| `redis_version` | `nextcloud_redis_version` | yes |
-| `node_exporter_host_textfile_dir` (read in the template) | `nextcloud_backup_metrics_dir` | yes |
-| `external_domain` / `internal_domain` | `nextcloud_external_domain` / `_internal_domain` | yes |
-
-What does need supplying:
-
-- **OIDC is opt-in now** (`nextcloud_oidc_enabled` defaults `false`, was
-  `true`). Leaving it off is not an outage — the deployed Nextcloud keeps its
-  config — but the SSO wiring stops being reconciled, so it drifts. Set it true
-  and supply `nextcloud_oidc_discovery_uri`.
-- **Outgoing SMTP is opt-in**: `nextcloud_smtp_host` defaults to `""` and the
-  `occ` mail pass is skipped when empty (it was unconditional, against a relay
-  hardcoded in the role).
-- `nextcloud_nginx_real_ip_trusted_addresses` defaults to `[]`. Derive it from
-  the k3s groups rather than pasting node IPs — the README carries the
-  expression.
-- `nextcloud_backup_nfs_server` / `_export` when the NFS backup is enabled.
-
-New optional inputs — a `nextcloud-postgres-exporter` compose sidecar for
-database-level metrics (the existing `nextcloud-exporter` is application-level),
-off by default:
-
-| Variable | Meaning | Default |
-|---|---|---|
-| `nextcloud_postgres_exporter_enabled` | Add the sidecar | `false` |
-| `nextcloud_postgres_exporter_version` | Image pin; asserted (as a resolved tag) when enabled | `""` |
-| `nextcloud_postgres_exporter_image` | Full reference, derived from the version; override for another registry or build | `quay.io/prometheuscommunity/postgres-exporter:<version>` |
-| `nextcloud_postgres_exporter_port` | Host port | `9187` |
-
-It reuses the stack's own DB user and `NEXTCLOUD_POSTGRES_PASSWORD` (no new
-secret) and the endpoint is **unauthenticated**: scope the port at the firewall.
-
-New fail-fast asserts: the four image pins non-empty; at least one of
-`nextcloud_external_host`/`_internal_host`; the NFS pair; `nextcloud_mail_domain`
-when SMTP is on; and `nextcloud_oidc_discovery_uri` alongside the other OIDC
-inputs. The role fails closed, so a missing value is a failed play rather than a
-partial converge — but land the `group_vars` change in the SAME MR that switches
-the playbook to the FQCN.
-
-### node_exporter_host
-
-No renames. New: `node_exporter_host_proxmox` gates the Proxmox-only textfile
-collectors — smartmontools, drivetemp, and all four collectors
-(corosync/zpool/smartmon/vzdump). It defaults **false**, and the role previously
-derived the same thing from `groups['proxmox']` membership, so **a Proxmox host
-that does not set it silently gets the exporter and nothing else**. Set it in
-the Proxmox group.
-
-Also new: `node_exporter_host_healthcheck_interval` (5min) and the liveness gate
-it drives — a timer that probes the exporter's own port and restarts the unit
-when it stops answering, emitting a restart metric. `curl` joins the package
-list because the probe needs it.
-
-One behaviour change to expect on a wedged host: the corosync collector now
-**fails** rather than publishing `cpu=0` when corosync is running but produced
-no usable sample. The old normalisation reported the healthy value for exactly
-the wedged-at-100% condition the collector exists to catch, and refreshed the
-success sentinel while doing it. Now the textfile is left untouched and the
-staleness alert fires.
-
-### plex
-
-New role. It replaces an in-tree role of the same name.
-
-| Old | New | Where the consumer sets it |
-|---|---|---|
-| `media_group` | `plex_media_group` | `host_vars` |
-| `media_gid` | `plex_media_gid` | `host_vars` |
-| `skip_gpu_drivers` | `plex_skip_gpu_drivers` | molecule / test docs |
-| `skip_plex_service` | `plex_skip_service` | molecule / test docs |
-
-`plex_media_group` deliberately does **not** alias the bare `media_group`,
-because `nas_storage_media_group` does not either — an alias on one side only
-would let a bare `media_group` drift the two apart silently.
-
-Also required: `plex_cert_domain` and `plex_pfx_passphrase` (the passphrase
-assert is `no_log`), with `plex_claim` optional. New:
-`plex_custom_cert_enabled` (default **true** = today's behaviour) gates the
-whole certificate hook, so a consumer with no pushed certificate is not forced
-to invent a passphrase; `plex_cert_dir` and `plex_port` replace the literals the
-reload script used.
-
-The render-group membership is now gated on `getent group render` instead of a
-blanket `failed_when: false`, so a genuine failure (a missing plex user) fails
-the play rather than being swallowed.
-
-The bind-mount preflight is stricter than the in-tree role's: `plex_config_dir`,
-`plex_transcode_dir` **and** `plex_media_dir` must each pass `mountpoint -q`, not
-merely exist (a stale mountpoint directory sends the library to the guest's root
-filesystem). A consumer whose media path is a plain directory by design, or a
-test container with no bind mounts, sets `plex_skip_service: true` — the single
-escape, which also skips the enable/start/readiness steps.
-
-### postfix_null_client
-
-| Old | New |
-|---|---|
-| `mail_aliases` | `postfix_null_client_aliases` |
-| `postfix_config` | `postfix_null_client_config` |
-| `smtp_relay_host` | `postfix_null_client_relay_host` |
-| `smtp_relay_port` | `postfix_null_client_relay_port` |
-| `postfix_sasl_user` (inv) | `postfix_null_client_sasl_user` |
-| `postfix_sasl_password` (inv) | `postfix_null_client_sasl_password` |
-| `root_email_alias` (inv) | `postfix_null_client_root_alias` |
-
-New required input: `postfix_null_client_mail_domain` (appended to
-`inventory_hostname` to form `myhostname`).
-
-### prometheus_exporter / textfile_collector / apt_signed_repo / compose_app / encrypted_swap / nfs_tls / nic_tuning / vfio_passthrough / zfs_arc_cap
-
-No renames — these roles were already prefixed or are new.
-`compose_app_nginx_self_signed_san` keeps its name but is now empty by default —
-see [Externalized defaults](#externalized-defaults-name-unchanged-value-now-empty).
-
-Three additive inputs in this group are worth knowing:
-
-- `apt_signed_repo_stage_dir` (`/run/apt-signed-repo`, root-only `0700`) — key
-  material is staged there instead of `/tmp` and the whole directory is removed
-  on cleanup, closing the verify→dearmor TOCTOU.
-- `nic_tuning_verify_offloads` (default **true**) + `nic_tuning_feature_names` —
-  after applying an override the role reads the feature back with `ethtool` and
-  **fails the play** if it did not take. The apply itself no longer fails the
-  play; the read-back is the single owner of the diagnosis, and it is the only
-  thing that catches an exit-0 no-op.
-- `zfs_arc_cap_max_bytes` now defaults to the alias
-  `{{ zfs_arc_max_bytes | default('') }}` (it was `""`, which made the README's
-  alias table false). No effect where the two roles are gated apart; a host that
-  ran both would get the same value written to the same file twice.
-
-### proxmox_backup
-
-| Old | New |
-|---|---|
-| `pve_storage` | `proxmox_backup_storage` |
-| `pve_vzdump_jobs` | `proxmox_backup_vzdump_jobs` |
-
-### proxmox_firewall
-
-| Old | New |
-|---|---|
-| `pve_firewall_aliases` | `proxmox_firewall_extra_aliases` (host-backed aliases now derive from a per-host `firewall_alias` / `firewall_alias_comment`; this list is for addresses that are not inventory hosts) |
-| `pve_firewall_config_dir` | `proxmox_firewall_config_dir` |
-| `pve_firewall_enabled` | `proxmox_firewall_enabled` |
-| `pve_firewall_log_level_in` | `proxmox_firewall_log_level_in` |
-| `pve_firewall_node_dir` | `proxmox_firewall_node_dir` |
-| `pve_firewall_skip_pveum` | `proxmox_firewall_skip_pveum` |
-| `pve_firewall_staging_dir` | `proxmox_firewall_staging_dir` |
-
-Address data that used to be literal in the template is now input, and **empty by
-default** — a missed value silently drops rules:
-`proxmox_firewall_admin_lan_cidrs` (required, asserted),
-`proxmox_firewall_admin_ts_cidrs`, `proxmox_firewall_smb_client_cidrs`,
-`proxmox_firewall_wan_wireguard_vips`.
-
-`proxmox_firewall_security_groups` replaces the seven literal per-application
-`[group ...]` blocks and defaults to **`[]`** — it ships no example set. A
-worked example lives in the role's own README; the site owns the list. **This is
-blocking for the migration**: without it `cluster.fw` renders with no
-application groups, and Proxmox refuses or ignores any guest `.fw` referencing
-an undefined group. Land the groups in the same MR as the collection adoption,
-and diff the rendered `/etc/pve/firewall/cluster.fw` against the live file
-before merging — only comment lines and one new `sg-dns` rule
-(`+dc/k3s_nodes -p tcp -dport 3000`, making the adguard-exporter scrape explicit
-rather than relying on `admin_lan` being the whole /24) should differ.
-
-`proxmox_firewall_immich_ml_clients` is **removed**. It existed only to feed the
-shipped immich-ml example group; with the groups now site data, the consumer
-keeps the concept under a name of its own and interpolates it into its own
-group definition.
-
-### proxmox_ha
-
-| Old | New |
-|---|---|
-| `ha_resources` | `proxmox_ha_resources` |
-| `ha_rules` | `proxmox_ha_rules` |
-| `storage_replication_jobs` | `proxmox_ha_replication_jobs` |
-
-### proxmox_lxc
-
-| Old | New |
-|---|---|
-| `lxc_admin_user` | `proxmox_lxc_admin_user` |
-| `lxc_bridge` | `proxmox_lxc_bridge` |
-| `lxc_cores` | `proxmox_lxc_cores` |
-| `lxc_disk_size` | `proxmox_lxc_disk_size` |
-| `lxc_gateway` | `proxmox_lxc_gateway` (required on the create path; no default) |
-| `lxc_keyctl` | `proxmox_lxc_keyctl` |
-| `lxc_memory` | `proxmox_lxc_memory` |
-| `lxc_nameserver` | `proxmox_lxc_nameserver` |
-| `lxc_nesting` | `proxmox_lxc_nesting` |
-| `lxc_onboot` | `proxmox_lxc_onboot` |
-| `lxc_searchdomain` | `proxmox_lxc_searchdomain` |
-| `lxc_ssh_public_keys` | `proxmox_lxc_ssh_public_keys` |
-| `lxc_startup_delay` | `proxmox_lxc_startup_delay` |
-| `lxc_startup_order` | `proxmox_lxc_startup_order` |
-| `lxc_swap` | `proxmox_lxc_swap` |
-| `lxc_template` | `proxmox_lxc_template` |
-| `lxc_template_storage` | `proxmox_lxc_template_storage` |
-| `lxc_unprivileged` | `proxmox_lxc_unprivileged` |
-| `lxc_bind_mounts` (inv) | `proxmox_lxc_bind_mounts` |
-| `lxc_storage` (inv) | `proxmox_lxc_storage` |
-| `lxc_gpu_passthrough` (inv) | `proxmox_lxc_gpu_passthrough` |
-
-New: `proxmox_lxc_internal_domain` (aliases `internal_domain`; feeds
-`proxmox_lxc_searchdomain`), `proxmox_lxc_bootstrap_fallback_dns`, and the
-`proxmox_lxc_idmap_*` quartet.
-
-### proxmox_vm
-
-| Old | New |
-|---|---|
-| `cloud_image_name` | `proxmox_vm_cloud_image_name` |
-| `cloud_image_url` | `proxmox_vm_cloud_image_url` |
-| `cloudinit_dns` | `proxmox_vm_cloudinit_dns` (alias: `dns_servers`) |
-| `cloudinit_gateway` | `proxmox_vm_cloudinit_gateway` (required on the Linux create path; no default) |
-| `cloudinit_user` | `proxmox_vm_cloudinit_user` (alias: `admin_user`) |
-| `virtio_win_url` | `proxmox_vm_virtio_win_url` |
-| `vm_agent_enabled` | `proxmox_vm_agent_enabled` |
-| `vm_bridge` | `proxmox_vm_bridge` |
-| `vm_cores` | `proxmox_vm_cores` |
-| `vm_cpu_type` | `proxmox_vm_cpu_type` |
-| `vm_disk_size` | `proxmox_vm_disk_size` |
-| `vm_guest_type` | `proxmox_vm_guest_type` |
-| `vm_hostpci` | `proxmox_vm_hostpci` |
-| `vm_install_iso` | `proxmox_vm_install_iso` |
-| `vm_iso_storage` | `proxmox_vm_iso_storage` |
-| `vm_iso_storage_path` | `proxmox_vm_iso_storage_path` |
-| `vm_memory` | `proxmox_vm_memory` |
-| `vm_ostype` | `proxmox_vm_ostype` |
-| `vm_virtio_iso` | `proxmox_vm_virtio_iso` |
-| `vm_windows_machine` | `proxmox_vm_windows_machine` |
-| `vm_windows_ostype` | `proxmox_vm_windows_ostype` |
-| `vm_windows_vga` | `proxmox_vm_windows_vga` |
-| `vm_balloon` (inv) | `proxmox_vm_balloon` |
-| `virtio_win_version` (inv) | `proxmox_vm_virtio_win_version` |
-| `virtio_win_checksum` (inv) | `proxmox_vm_virtio_win_checksum` |
-| `vm_storage` (inv) | `proxmox_storage` (kept neutral — it is the role's inventory contract, not a role tunable) |
-
-`vm_additional_disks` is **not** renamed: `proxmox_vm_additional_disks` aliases
-it, exactly as `k3s_additional_disks` does, so one `host_vars` block still feeds
-both zvol creation and zvol mounting. New: `proxmox_vm_cloud_image_checksum`,
-`proxmox_vm_cloud_image_dir`, `proxmox_vm_cloudinit_prefix_len`.
-
-### qol
-
-| Old | New |
-|---|---|
-| `admin_user` | `qol_admin_user` (alias: `admin_user`) |
-| `nvim_colorscheme` | `qol_nvim_colorscheme` |
-| `nvim_plugins` | `qol_nvim_plugins` |
-| `omz_commit` | `qol_omz_commit` |
-| `omz_plugins` | `qol_omz_plugins` |
-| `omz_theme` | `qol_omz_theme` |
-
-### resolv_conf
-
-No renames. New: `resolv_conf_internal_domain` (aliases `internal_domain`) drives
-`resolv_conf_search_domains`; `resolv_conf_nameservers` is a required input;
-`resolv_conf_unsafe_writes` covers the bind-mounted-file case.
-
-### restic_offsite
-
-| Old | New |
-|---|---|
-| `rclone_deb_sha256` | `restic_offsite_rclone_deb_sha256` |
-| `rclone_version` | `restic_offsite_rclone_version` |
-| `restic_version` | `restic_offsite_restic_version` |
-| `restic_repo_password` (inv) | `restic_offsite_repo_password` |
-| `b2_key_id` / `restic_key_id` (inv) | `restic_offsite_b2_key_id` |
-| `b2_application_key` / `restic_application_key` (inv) | `restic_offsite_b2_application_key` |
-
-`restic_offsite_cache_dir` keeps its name but is no longer a default: it is a
-required input, asserted alongside `restic_offsite_repo`. `restic_offsite_repo`,
-`_sources`, `_zvol_sources` and `_excludes` also keep their names and are now
-empty — the weisssrv values are under
-[Externalized defaults](#externalized-defaults-name-unchanged-value-now-empty).
-
-New, all with defaults: `restic_offsite_retry_lock` (`15m`; empty disables),
-`restic_offsite_stale_lock_min_age_h` (6), `restic_offsite_verify_groups` (12).
-`restic_offsite_keep_daily` moves 3 → 7 (a `--keep-last` floor counts
-*snapshots*, so multiple runs in a day collapsed it onto few calendar days).
-
-**The metrics split, and it needs an alerting change in the same window.**
-`restic_offsite_last_run_success` / `_last_success_timestamp_seconds` are kept
-and now mean "the whole run completed without error". Four gauges are new:
-
-| Metric | Meaning |
-|---|---|
-| `restic_offsite_last_backup_success` / `_last_backup_timestamp_seconds` | flushed immediately after `restic backup` returns 0, so the upload fact survives whatever retention does next |
-| `restic_offsite_last_prune_success` | the prune stage alone |
-| `restic_offsite_retention_blocked` | 1 when the retention ceiling refused to prune |
-| `restic_offsite_retention_pending_removals` | how many snapshots that refusal is holding |
-
-Retention-ceiling overflow is now **non-fatal**: the run exits 0 and records
-blocked/pending instead of failing. That is the point — a ceiling refusal is a
-guard working, not a backup failing — but it means the wedge is invisible unless
-something alerts on `restic_offsite_retention_blocked == 1`. Point the existing
-failure/staleness alerts at `_last_backup_success` /
-`_last_backup_timestamp_seconds` and add the retention alert **before** adopting,
-or a stuck retention runs silent.
-
-Two more operator notes: `restic-offsitectl unlock` is a new subcommand that
-reaps a stale lock left by this host (a dead PID, older than
-`_stale_lock_min_age_h`), and the first run after adoption restarts the rotating
-deep verify at group 1 because the persisted cursor does not exist yet.
-
-### smtp_relay
-
-| Old | New |
-|---|---|
-| `mail_aliases` | `smtp_relay_aliases` |
-| `smtp_tls_cert_dir` | `smtp_relay_tls_cert_dir` |
-| `smtp_relay_host` (inv) | `smtp_relay_upstream` (the smarthost `[host]:port` the relay forwards to) |
-| `smtp_gmail_user` (inv) | `smtp_relay_upstream_user` |
-| `smtp_gmail_password` (inv) | `smtp_relay_upstream_password` |
-| `smtp_relay_user` (inv) | `smtp_relay_sasl_user` |
-| `smtp_relay_password` (inv) | `smtp_relay_sasl_password` |
-| `smtp_submission_config` (inv) | `smtp_relay_submission_config` |
-| `smtp_submission_enabled` (inv) | `smtp_relay_submission_enabled` |
-
-`smtp_relay_hostname` and `smtp_relay_origin` derive from
-`smtp_relay_internal_domain` (alias: `internal_domain`); both stay empty when it
-is unset, and the effective-config assert names them rather than rendering an
-empty `relayhost`.
-
-**`smtp_relay_config` keeps its name and changes meaning: it is now a merge
-layer, not a replacement.** The role's own defaults moved to
-`smtp_relay_default_config`, and what the tasks and templates read is
-`smtp_relay_effective_config = smtp_relay_default_config | combine(smtp_relay_config)`
-(read-only, from `vars/`). A site that restates every key today renders a
-byte-identical `main.cf`, so adoption is a no-op — but from now on a default
-added to the role actually reaches the relay, which it could not before. Trim
-the site value to the real deltas (`myorigin`, `mydestination`, `mynetworks`,
-`smtpd_relay_restrictions`, cert paths if they differ, `smtpd_sasl_local_domain`)
-and delete the rest.
-
-While trimming, note the security default: the role now ships loopback-only
-`mynetworks` with `permit_mynetworks` dropped from `smtpd_relay_restrictions`. A
-site that overrides both to trust a whole LAN on port 25 is re-opening that
-deliberately; narrow it to the hosts that actually relay.
-
-### tailscale
-
-No renames. `tailscale_auth_key` is gone: the key is read from the
-`TAILSCALE_AUTH_KEY` **environment variable** so it never reaches argv or a fact.
-New: `tailscale_version` and `tailscale_gpg_fingerprint` are now role defaults
-(pinned) rather than site values.
-
-### unbound
-
-No renames. The managed drop-in moved from `<site>.conf` to
-`unbound_dropin_name` (default `managed.conf`); `unbound_legacy_dropins` lists
-names removed on convergence, so a site that used a differently named drop-in
-adds it there. New: `unbound_use_caps_for_id`, `unbound_interfaces`.
-
-Two things to plan for:
-
-- **Adopting this role is not a no-op on a live resolver.** The old drop-in is
-  deleted and the new one written in the same run (removal first, so there is no
-  window with both), and the handler restarts unbound. Leaving the old file
-  behind would be the dangerous case — it sorts after `managed.conf` in
-  unbound's include glob and would win every duplicated `server:` scalar. Do the
-  resolvers **one at a time**, and keep `unbound_legacy_dropins` at its default
-  until both have converged and the directory is confirmed clean.
-- `unbound_access_control` no longer ships `::1 allow`. Nothing listened on
-  `::1` behind a v4-only `interface:`, and unbound's built-in default already
-  allows loopback, so resolution is unchanged. To actually serve IPv6 loopback,
-  add `::1` to `unbound_interfaces` **and** put the ACL line back — one without
-  the other is the dead config this removed.
-
-### unbound_exporter / zfs_exporter
-
-No renames. Each now carries its own `*_version` + `*_checksum` defaults instead
-of reading a shared inventory pin.
-
-### zfs_encryption
-
-No renames. New: `zfs_encryption_internal_domain` (aliases `internal_domain`)
-derives `zfs_encryption_connect_url`; set the URL directly to decouple.
-`zfs_encryption_install_zfsutils` is now a declared default (`true`) rather than
-an undeclared `| default(true)` lookup — same effective value.
-
-**Do one check before cutting over.** The role has retired the migration sweep
-that removed stale `zfs-mount.service.requires/zfs-load-key@*.service` symlinks
-and ran an unconditional `daemon-reload` on every host, every run. Confirm it
-has nothing left to do, on every Proxmox host:
-
-```bash
-ls -l /etc/systemd/system/zfs-mount.service.requires/ 2>/dev/null
-```
-
-Expect "No such file or directory" or an empty listing. A surviving
-`zfs-load-key@*.service` symlink must be deleted by hand followed by
-`systemctl daemon-reload` — `systemctl disable` will not remove it, and it fails
-`zfs-mount.service` (`Before=local-fs.target`) at the next boot.
-
-Also: `zfs-mount-encrypted.service` is now rendered **only** where
-`zfs_encryption_pools` is non-empty, and is removed where the list is empty. On
-hosts with no encrypted pools that unit file disappears on first converge;
-nothing references it there. Keep `zfs_encryption_pools` and
-`nas_storage_encrypted_bind_sources` consistent — a host declaring encrypted
-bind sources with an empty pool list would have those binds fail rather than
-hang, because the ordering anchor they require no longer exists.
-
-### zvol_mount
-
-No renames. New: `zvol_mount_device_id_prefix`.
-
-## Required inputs (asserted at role entry)
-
-A value with no safe generic default is asserted by name rather than failing
-inside a template or shell command. These are the loud failures — everything else
-falls back silently, which is why the tables above matter.
-
-| Role | Asserted | Condition |
-|---|---|---|
-| `acme_certs` | `acme_certs_domain`, `acme_certs_email`, `acme_certs_ssh_private_key`, `acme_certs_ssh_public_key`, plus the dnsapi hook | always |
-| `adguard_home` | `adguard_home_admin_password` | always (and again before the API pass) |
-| `adguard_sync` | `adguard_sync_version`, `_origin`, `_replica`, `_admin_user`, `_admin_password` | when `adguard_sync_enabled` |
-| `alloy_host` | `alloy_host_version`, `alloy_host_loki_url`; `_loki_user`/`_loki_password` | credentials only for an `https://` endpoint |
-| `base` | a surviving SSH login path (`base_admin_user` + `base_ssh_authorized_keys`, or `base_ssh_permit_root_login`, or `base_ssh_password_authentication`) | when SSH config is not skipped |
-| `adguard_home` | `adguard_home_tls_server_name` | when `adguard_home_tls_enabled` |
-| `docker_engine` | `docker_engine_ce_version`, `_containerd_version`, `_buildx_plugin_version`, `_compose_plugin_version` | unless `docker_engine_skip_install` |
-| `gitlab` | `gitlab_external_url`, `gitlab_version`, `gitlab_root_password` | always |
-| `gitlab` | each enabled feature's own inputs (registry / pages / SMTP / SAML URLs and credentials) | per enabled block |
-| `gitlab` | `gitlab_backup_path == gitlab_backup_mountpoint` | when `gitlab_backup_nfs_enabled` |
-| `gitlab` | `gitlab_saml_allow_all_users: true` | when `gitlab_saml_required_groups` is empty |
-| `home_assistant` | `home_assistant_host`, `_trusted_proxies`, `_oidc_configure_url`, OIDC credentials | always |
-| `immich` | `immich_version`, `_postgres_version`, `_postgres_digest`, `_valkey_version`, `_valkey_digest`, `_external_url`, `_oauth_issuer_url` | always |
-| `immich` | `immich_backup_nfs_server`, `_export` | when `immich_backup_nfs_enabled` |
-| `immich_ml` | `immich_ml_version` | always (aliases `immich_version`) |
-| `nextcloud` | the four image pins; one of `nextcloud_external_host` / `_internal_host` | always |
-| `nextcloud` | `nextcloud_oidc_discovery_uri` + OIDC credentials | when `nextcloud_oidc_enabled` |
-| `nextcloud` | `nextcloud_mail_domain` | when SMTP is on (`nextcloud_smtp_host` non-empty) |
-| `nextcloud` | `nextcloud_backup_nfs_server`, `_export` | when `nextcloud_backup_nfs_enabled` |
-| `plex` | `plex_pfx_passphrase` (`no_log`), `plex_cert_domain` | when `plex_custom_cert_enabled` |
-| `k3s` | `k3s_version`, `k3s_api_vip`, `k3s_token` (servers) / `k3s_agent_token` (agents) | always |
-| `k3s` | `k3s_gpu_driver_version`, `_container_toolkit_version`, `_cuda_keyring_version`, `_cuda_keyring_sha256` | when `k3s_gpu_node` and not `k3s_skip_gpu_install` |
-| `nas_storage` | `nas_storage_archive_backup_pool`, `_sources` | when `nas_storage_archive_backup_enabled` |
-| `nas_storage` | `nas_storage_media_mover_src`, `_dst` | when `nas_storage_media_mover_enabled` |
-| `postfix_null_client` | `postfix_null_client_mail_domain`, `_relay_host`, `_sasl_user`, `_sasl_password` | always |
-| `proxmox_firewall` | `proxmox_firewall_admin_lan_cidrs` | always (an empty set locks :22 and :8006 out on every node) |
-| `proxmox_lxc` | `proxmox_lxc_gateway`, `proxmox_lxc_nameserver`, `SSH_PUBLIC_KEY` (env) | unless `proxmox_lxc_skip_create` |
-| `proxmox_vm` | `proxmox_vm_cloudinit_gateway`, `proxmox_vm_cloudinit_dns`, `SSH_PUBLIC_KEY` (env) | Linux guests, unless `proxmox_vm_skip_create` |
-| `proxmox_vm` | `proxmox_vm_install_iso` | Windows guests |
-| `resolv_conf` | `resolv_conf_nameservers` | always |
-| `restic_offsite` | `restic_offsite_repo`, `restic_offsite_cache_dir`, `restic_offsite_repo_password`, the rclone pin pair | when enabled |
-| `smtp_relay` | `smtp_relay_config` identity (`relayhost`/`myhostname`/`myorigin`), `_upstream_user`, `_upstream_password`, `_sasl_user`, `_sasl_password` | always |
-| `vfio_passthrough` | `vfio_passthrough_pci_ids` | when passthrough is enabled |
-| `zfs_encryption` | `zfs_encryption_connect_url`, Connect token | when `zfs_encryption_pools` is non-empty |
-| `zvol_mount` | `zvol_mount_disks` (shape: `name` / `mount_point` / `fstype` / `scsi_slot`; conventionally the same list as the guest's `proxmox_vm_additional_disks`) | always |
-
-Added in v0.7.0. The escape hatch for each is in
-[Newly asserted](#newly-asserted--loud-where-it-used-to-be-silent), except the
-`nas_storage` and `proxmox_firewall` rows — those break a consumer that bumps
-without changing anything else, so they are in
-[Breaking](#breaking--act-in-the-same-mr-as-the-bump) instead:
-
-| Role | Asserted | Condition |
-|---|---|---|
-| `adguard_home` | `adguard_home_dhcp_enabled` is false | always |
-| `compose_app` | `compose_app_nginx_site_template` is a non-empty absolute path | when the nginx front end is configured |
-| `encrypted_swap` | `encrypted_swap_source_device` exists as a block device | when `encrypted_swap_require_source_device` |
-| `immich` | `immich_nginx_real_ip_from` resolves non-empty | unless `immich_nginx_trust_no_proxy` |
-| `k3s` | every `k3s_server_group` member names the same `k3s_kube_vip_interface` | on every server |
-| `nas_storage` | every export `bind_source` is under a ZFS mount root, a declared MergerFS target, or carries an explicit BOOLEAN `zfs:` | always |
-| `nas_storage` | every MergerFS union has a branch INSIDE a ZFS mount root, or carries an explicit BOOLEAN `zfs:` | always |
-| `nas_storage` | a declared `zfs:` on any export or union is a boolean, whichever branch classified it | when `zfs:` is present |
-| `proxmox_firewall` | every `_dns_admin_ports` / `_metrics_scrape_ports` entry has a valued `port` and a non-empty `sources` LIST | always |
-| `proxmox_vm` | the requested memory does not shrink a live guest | unless `proxmox_vm_memory_shrink_ok` |
-| `proxmox_vm` | `proxmox_vm_disk_size` is a bare GiB count | Windows guests |
-| `restic_offsite` | `restic_offsite_repo_password` non-empty (`no_log`) | when enabled |
-| `restic_offsite` | `restic_offsite_b2_key_id`, `_b2_application_key` non-empty (`no_log`) | when `restic_offsite_rclone_remote_type == 'b2'` |
-| `restic_offsite` | `restic_offsite_zvol_sources` repeats no `zvol` and no `name` | when enabled |
-
-Values read from the environment rather than a variable, because they must not
-reach argv or a fact: `SSH_PUBLIC_KEY` (proxmox_vm, proxmox_lxc),
-`TAILSCALE_AUTH_KEY` (tailscale), `SAMBA_NAS_PASSWORD` (nas_storage — now
-reachable as `nas_storage_samba_password` for a non-env secret backend).

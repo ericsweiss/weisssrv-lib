@@ -89,10 +89,40 @@
         fail_msg: "unbound remote-control is not configured for the local Unix socket"
         success_msg: "unbound remote-control uses the local Unix socket (no control certs)"
 
-    # Tolerant probe: containers may lack outbound DoT, so this never fails the
-    # run — the dns-stack integration scenario hard-asserts real resolution.
-    - name: Test DNS resolution via Unbound
-      ansible.builtin.command: dig @127.0.0.1 -p 5335 google.com +short
-      register: dns_test
-      changed_when: false
-      ignore_errors: true
+    # The pre-write unbound-checkconf is what keeps a bad drop-in off disk and
+    # the resolver serving; drive it with a value the config grammar rejects.
+    - name: Validate | read the converged drop-in
+      ansible.builtin.slurp:
+        src: /etc/unbound/unbound.conf.d/managed.conf
+      register: unbound_dropin_before
+
+    - name: Validate | re-run the role with an unparsable num-threads
+      block:
+        - name: Include unbound with an unparsable num-threads
+          ansible.builtin.include_role:
+            name: weisssrv.infra.unbound
+          vars:
+            unbound_num_threads: not-a-number
+
+        - name: Validate | checkconf accepted the bad drop-in
+          ansible.builtin.set_fact:
+            unbound_validate_rejected: false
+      rescue:
+        - name: Validate | checkconf rejected the bad drop-in
+          ansible.builtin.set_fact:
+            unbound_validate_rejected: true
+
+    - name: Validate | read the drop-in after the rejected write
+      ansible.builtin.slurp:
+        src: /etc/unbound/unbound.conf.d/managed.conf
+      register: unbound_dropin_after
+
+    - name: Validate | an invalid drop-in never reaches disk
+      ansible.builtin.assert:
+        that:
+          - unbound_validate_rejected
+          - >-
+            (unbound_dropin_after.content | b64decode)
+            == (unbound_dropin_before.content | b64decode)
+        fail_msg: "unbound-checkconf did not reject an invalid drop-in, or the bad render reached disk"
+        success_msg: "unbound-checkconf rejects an invalid drop-in and leaves the live config untouched"

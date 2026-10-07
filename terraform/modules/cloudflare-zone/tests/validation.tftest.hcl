@@ -1,7 +1,6 @@
 # `terraform validate` evaluates no caller values, so nothing else exercises the
-# variable validations, the record routing or the lifecycle split. Every run is
-# `command = plan`: a plan creates no state, so the file needs no teardown —
-# which the module's `prevent_destroy` resources would refuse anyway.
+# variable validations, the record routing or the lifecycle split. Runs are
+# plan-only except the seeded pair at the end, which needs state.
 mock_provider "cloudflare" {}
 
 variables {
@@ -234,8 +233,7 @@ run "rejects_an_mx_record_without_priority" {
   expect_failures = [var.records]
 }
 
-# The two flags select one of four resource addresses, and getting that routing
-# wrong silently drops a record's prevent_destroy or its ignore_changes.
+# Wrong routing silently drops a record's prevent_destroy or its ignore_changes.
 run "flags_route_each_record_to_its_lifecycle_class" {
   command = plan
 
@@ -293,5 +291,112 @@ run "flags_route_each_record_to_its_lifecycle_class" {
   assert {
     condition     = one(cloudflare_record.protected["caa"].data).value == "letsencrypt.org"
     error_message = "record_data must populate the record's dynamic data block."
+  }
+}
+
+# The four classes differ only in their lifecycle block, and `lifecycle` takes no
+# variables, so the argument sets are copies. This run fails when one copy gains
+# or loses an argument the others keep.
+run "every_lifecycle_class_renders_the_same_argument_set" {
+  command = plan
+
+  variables {
+    records = {
+      a = { name = "parity", type = "MX", content = "mx.example.com", priority = 10, ttl = 300, comment = "parity" }
+      b = { name = "parity", type = "MX", content = "mx.example.com", priority = 10, ttl = 300, comment = "parity", protected = true }
+      c = { name = "parity", type = "MX", content = "mx.example.com", priority = 10, ttl = 300, comment = "parity", content_managed_externally = true }
+      d = { name = "parity", type = "MX", content = "mx.example.com", priority = 10, ttl = 300, comment = "parity", protected = true, content_managed_externally = true }
+    }
+  }
+
+  assert {
+    condition = alltrue([
+      for r in [
+        cloudflare_record.protected["b"],
+        cloudflare_record.external_content["c"],
+        cloudflare_record.protected_external_content["d"],
+      ] :
+      r.name == cloudflare_record.this["a"].name &&
+      r.type == cloudflare_record.this["a"].type &&
+      r.content == cloudflare_record.this["a"].content &&
+      r.priority == cloudflare_record.this["a"].priority &&
+      r.proxied == cloudflare_record.this["a"].proxied &&
+      r.ttl == cloudflare_record.this["a"].ttl &&
+      r.comment == cloudflare_record.this["a"].comment
+    ])
+    error_message = "The four lifecycle classes must render an identical argument set."
+  }
+}
+
+# A lower-case type clears the case-insensitive validation, so the module has to
+# normalise it rather than hand the provider a value its own enum rejects.
+run "a_lower_case_record_type_is_normalised" {
+  command = plan
+
+  variables {
+    records = {
+      plain = { name = "plain", type = "a", content = "203.0.113.10" }
+    }
+  }
+
+  assert {
+    condition     = cloudflare_record.this["plain"].type == "A"
+    error_message = "records[*].type must reach the provider upper-cased."
+  }
+}
+
+# ignore_changes is invisible to a create plan, so this pair seeds state first.
+# `content` on these two classes belongs to the external updater.
+run "seed_externally_managed_content" {
+  command = apply
+
+  variables {
+    records = {
+      ddns = {
+        name                       = "ddns"
+        type                       = "A"
+        content                    = "192.0.2.1"
+        content_managed_externally = true
+      }
+      root = {
+        name                       = "@"
+        type                       = "A"
+        content                    = "192.0.2.1"
+        protected                  = true
+        content_managed_externally = true
+      }
+    }
+  }
+}
+
+run "externally_managed_content_ignores_a_content_change" {
+  command = plan
+
+  variables {
+    records = {
+      ddns = {
+        name                       = "ddns"
+        type                       = "A"
+        content                    = "203.0.113.9"
+        content_managed_externally = true
+      }
+      root = {
+        name                       = "@"
+        type                       = "A"
+        content                    = "203.0.113.9"
+        protected                  = true
+        content_managed_externally = true
+      }
+    }
+  }
+
+  assert {
+    condition     = cloudflare_record.external_content["ddns"].content == "192.0.2.1"
+    error_message = "ignore_changes = [content] must keep the seeded value; the external updater owns it."
+  }
+
+  assert {
+    condition     = cloudflare_record.protected_external_content["root"].content == "192.0.2.1"
+    error_message = "ignore_changes = [content] must keep the seeded value on the protected class too."
   }
 }

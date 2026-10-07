@@ -6,20 +6,14 @@ biff = no
 # Append .domain is the MUA's job
 append_dot_mydomain = no
 
-myhostname = {{ postfix_null_client_config.myhostname }}
-myorigin = {{ postfix_null_client_config.myorigin }}
-mydestination = {{ postfix_null_client_config.mydestination }}
-relayhost = {{ postfix_null_client_config.relayhost }}
-mynetworks = {{ postfix_null_client_config.mynetworks }}
-inet_interfaces = {{ postfix_null_client_config.inet_interfaces }}
 recipient_delimiter = +
 
-smtp_tls_security_level = {{ postfix_null_client_config.smtp_tls_security_level }}
-smtp_tls_CAfile = {{ postfix_null_client_config.smtp_tls_CAfile }}
-
-smtp_sasl_auth_enable = {{ postfix_null_client_config.smtp_sasl_auth_enable }}
-smtp_sasl_security_options = {{ postfix_null_client_config.smtp_sasl_security_options }}
-smtp_sasl_password_maps = {{ postfix_null_client_config.smtp_sasl_password_maps }}
+{# Every key of the merged map is rendered, so a site can add any postfix
+   parameter through postfix_null_client_config_extra. #}
+{% for key, value in (postfix_null_client_config
+     | combine(postfix_null_client_config_extra | default({}, true))) | dictsort %}
+{{ key }} = {{ value }}
+{% endfor %}
 
 alias_maps = hash:/etc/aliases
 alias_database = hash:/etc/aliases

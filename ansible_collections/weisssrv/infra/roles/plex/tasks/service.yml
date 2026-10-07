@@ -1,8 +1,7 @@
 ---
-# Version bumps (install.yml) and override/group changes (configure.yml) notify
-# "Restart plex"; flushing here means the readiness check below validates the
-# restarted daemon rather than the still-running old one. This also flushes the
-# notified "Reload systemd", so no separate daemon-reload task is needed.
+# Version bumps and override/group changes notify "Restart plex"; flushing here
+# means the readiness check validates the restarted daemon. It also flushes
+# "Reload systemd", so no separate daemon-reload task is needed.
 - name: Apply pending restarts before health check
   ansible.builtin.meta: flush_handlers
 

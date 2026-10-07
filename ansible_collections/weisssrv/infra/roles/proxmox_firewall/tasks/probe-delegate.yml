@@ -1,8 +1,11 @@
 ---
-# Probe ONE Proxmox host and record it in _proxmox_firewall_reachable when it
-# answers. Must stay a looped INCLUDE around a SINGLE delegated ping, never a
-# looped ping: an unreachable looped delegate ends the play with rc 0 despite
-# ignore_unreachable, turning the whole fleet's deploy into a green no-op.
+# CRITICAL: this must stay a looped INCLUDE around a SINGLE delegated ping,
+# never a looped ping. An unreachable looped delegate ends the play with rc 0
+# despite ignore_unreachable, turning the fleet's deploy into a green no-op.
+
+# It probes one Proxmox host and records it in _proxmox_firewall_reachable.
+# Twin of proxmox_ha/tasks/probe-delegate.yml — each role stays
+# standalone; tests/test_probe_delegate_parity.py holds the two equal.
 - name: Probe for reachability — {{ _proxmox_firewall_probe_host }}
   ansible.builtin.ping:
   delegate_to: "{{ _proxmox_firewall_probe_host }}"

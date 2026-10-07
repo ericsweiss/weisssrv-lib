@@ -1,8 +1,6 @@
 ---
-# Verify the rendered Immich stack (render/contract scenario).
-#
-# The image-tag/digest literals below are an intentional contract test: they
-# MUST be bumped in lockstep with this scenario's molecule.yml inventory, so a
+# Verify the rendered Immich stack. The image-tag and digest literals below are
+# a contract test: bump them in lockstep with this scenario's molecule.yml, so a
 # template that stops honouring a pin fails here.
 - name: Verify
   hosts: all
@@ -30,8 +28,9 @@
           - "(immich_compose.content | b64decode) is search('IMMICH_TELEMETRY_INCLUDE: all')"
           - "(immich_compose.content | b64decode) is search('IMMICH_TRUSTED_PROXIES: 172.28.0.1')"
           - (immich_compose.content | b64decode) is search('127.0.0.1:2283:2283')
-          - (immich_compose.content | b64decode) is search('"0.0.0.0:8081:8081"')
-          - (immich_compose.content | b64decode) is search('"0.0.0.0:8082:8082"')
+          # Unauthenticated metrics ports stay closed by default.
+          - (immich_compose.content | b64decode) is search('"127.0.0.1:8081:8081"')
+          - (immich_compose.content | b64decode) is search('"127.0.0.1:8082:8082"')
           - "(immich_compose.content | b64decode) is search('subnet: 172.28.0.0/16')"
         fail_msg: "docker-compose.yml missing expected image pins / telemetry / network config"
         success_msg: "docker-compose.yml pins images and wires metrics, config, trusted proxy, network"
@@ -43,6 +42,31 @@
           - (immich_compose.content | b64decode) is not search('9187')
         fail_msg: "the opt-in postgres exporter leaked into the default compose file"
         success_msg: "docker-compose.yml carries no postgres exporter by default"
+
+    - name: Verify the container memory limits are absent by default
+      ansible.builtin.assert:
+        that:
+          - (immich_compose.content | b64decode) is not search('mem_limit')
+        fail_msg: "the opt-in memory limits leaked into the default compose file"
+        success_msg: "docker-compose.yml carries no mem_limit by default"
+
+    - name: Slurp the memory-limit compose render
+      ansible.builtin.slurp:
+        src: /tmp/immich-compose-memlimits.yml
+      register: immich_memlimits_raw
+
+    - name: Parse the memory-limit render as YAML (structural validity)
+      ansible.builtin.set_fact:
+        immich_memlimits_doc: "{{ immich_memlimits_raw.content | b64decode | from_yaml }}"
+
+    - name: Verify the memory limits land on both Immich containers
+      ansible.builtin.assert:
+        that:
+          - immich_memlimits_doc.services['immich-server'].mem_limit == '8g'
+          - immich_memlimits_doc.services['immich-machine-learning'].mem_limit == '3g'
+          - "'mem_limit' not in immich_memlimits_doc.services['database']"
+        fail_msg: "immich_server_mem_limit / immich_machine_learning_mem_limit did not render mem_limit"
+        success_msg: "the memory-limit seam renders mem_limit on the two Immich containers only"
 
     # Enabled branch (side-rendered in converge).
     - name: Slurp the postgres-exporter compose render
@@ -61,7 +85,7 @@
           - >-
             immich_pgexporter_doc.services['postgres-exporter'].image
             == 'quay.io/prometheuscommunity/postgres-exporter:0.19.0'
-          - "'0.0.0.0:9187:9187' in immich_pgexporter_doc.services['postgres-exporter'].ports"
+          - "'127.0.0.1:9187:9187' in immich_pgexporter_doc.services['postgres-exporter'].ports"
           # Credentials reuse the stack's .env, split across URI/USER/PASS.
           - >-
             immich_pgexporter_doc.services['postgres-exporter'].environment.DATA_SOURCE_URI
@@ -108,7 +132,7 @@
           # parser; the test secret has no special chars so it round-trips as-is.
           - (immich_env.content | b64decode) is search('DB_PASSWORD="testdbpassword123"')
           # Image tags are pinned in docker-compose.yml, so IMMICH_VERSION is
-          # intentionally NOT set in .env — assert it stays absent.
+          # NOT set in .env — assert it stays absent.
           - (immich_env.content | b64decode) is not search('IMMICH_VERSION=')
         fail_msg: ".env missing expected storage/timezone/database keys"
         success_msg: ".env carries storage, timezone and database configuration"
@@ -256,16 +280,15 @@
     - name: Assert the wrapper carries the fail-closed NFS mountpoint guard
       ansible.builtin.assert:
         that:
-          - "'mountpoint -q' in (immich_backup_raw.content | b64decode)"
-          - "'NFS-backed but not mounted' in (immich_backup_raw.content | b64decode)"
+          - >-
+            'require_mounted_landing_zone immich_backup'
+            in (immich_backup_raw.content | b64decode)
         fail_msg: "immich-backup-run.sh missing the fail-closed NFS mountpoint guard"
         success_msg: "immich-backup-run.sh carries the fail-closed NFS guard"
 
-    # …and the guard must also report an EMPTY landing zone. A shadow dump left
-    # under an unmounted mountpoint sits on the root disk and is not offsite:
-    # sizing it would report a healthy artefact for a landing zone nothing can
-    # reach and suppress BackupArtifactEmpty. Rendered copy with NFS_ENABLED=1
-    # over a plain (non-mountpoint) directory holding exactly such a dump.
+    # The guard must also report an EMPTY landing zone: a shadow dump under an
+    # unmounted mountpoint sits on the root disk, and sizing it would suppress
+    # BackupArtifactEmpty for a landing zone nothing can reach.
     - name: Seed a shadow dump under a non-mountpoint landing zone
       ansible.builtin.shell: |
         set -eo pipefail
@@ -329,10 +352,9 @@
       register: immich_ts_ok
       changed_when: false
 
-    # A failed dump must NOT report 0 bytes while good dumps sit in the landing
-    # zone: 0 means "no artefact exists at all", whose runbook is a landing-path
-    # fault, not "tonight's dump failed". Seeded at a known size (and newest by
-    # mtime) so the fallback is asserted on an exact number.
+    # A failed dump must not report 0 bytes while good dumps sit in the landing
+    # zone: 0 means no artefact exists at all, a different runbook. Seeded at a
+    # known size and newest by mtime, so the fallback asserts an exact number.
     - name: Seed a known-size prior dump for the failure path
       ansible.builtin.command:
         cmd: dd if=/dev/zero of=/mnt/immich-app/backups/immich-20200101-000000.sql.gz bs=4096 count=1
@@ -375,11 +397,10 @@
         path: /tmp/immich-backup-fail
         state: absent
 
-    # Atomic publication. The NAS artefact collector and the offsite file walk
-    # key on the FINAL `immich-*.sql.gz` name, so a dump must never appear under
-    # it before it is complete and validated. Run against a dedicated landing
-    # zone (the assertions above pin the real one's contents) with the mock
-    # docker snapshotting that directory mid-stream.
+    # CRITICAL: the NAS artefact collector and the offsite walk key on the final
+    # `immich-*.sql.gz` name, so a dump must never appear under it before it is
+    # complete and validated. Run against a dedicated landing zone, with the
+    # mock docker snapshotting that directory mid-stream.
     - name: Stage a dedicated landing zone for the atomic-publish test
       ansible.builtin.shell: |
         set -eo pipefail
@@ -473,3 +494,58 @@
       ansible.builtin.file:
         path: /tmp/immich-backup-tiny
         state: absent
+
+    # Optional digest pinning for the two Immich images (side-rendered in
+    # converge; the default render leaves them tag-only).
+    - name: Slurp the digest-pinned compose render
+      ansible.builtin.slurp:
+        src: /tmp/immich-compose-digests.yml
+      register: immich_compose_digests
+
+    - name: Verify the digest seam appends @sha256 to both Immich images
+      ansible.builtin.assert:
+        that:
+          - >-
+            (immich_compose_digests.content | b64decode)
+            is search('immich-server:v3.0.3@sha256:1111111111')
+          - >-
+            (immich_compose_digests.content | b64decode)
+            is search('immich-machine-learning:v3.0.3@sha256:2222222222')
+          # The default render stays tag-only.
+          - (immich_compose.content | b64decode) is search('immich-server:v3.0.3\n')
+        fail_msg: "immich_server_digest / immich_machine_learning_digest did not reach the compose file"
+        success_msg: "the optional digest seam pins both Immich images by content"
+
+    # Negative tests recorded by converge: the two asserts that guard Immich's
+    # silent-misconfiguration paths must actually fail the role.
+    - name: Read the real-IP negative-assert result
+      ansible.builtin.slurp:
+        src: /tmp/immich-realip-assert.json
+      register: immich_realip_assert
+
+    - name: Assert an empty real-IP trust list fails the role
+      ansible.builtin.assert:
+        that:
+          - (immich_realip_assert.content | b64decode | from_json).failed
+          - >-
+            'immich_nginx_real_ip_from resolved empty'
+            in (immich_realip_assert.content | b64decode | from_json).msg
+        fail_msg: >-
+          The real-IP assert accepted an empty trust list — nginx would
+          attribute every request to the fronting proxy. Check tasks/main.yml.
+
+    - name: Read the exporter-pin negative-assert result
+      ansible.builtin.slurp:
+        src: /tmp/immich-pgexporter-assert.json
+      register: immich_pgexporter_assert
+
+    - name: Assert an unpinned postgres exporter image fails the role
+      ansible.builtin.assert:
+        that:
+          - (immich_pgexporter_assert.content | b64decode | from_json).failed
+          - >-
+            'immich_postgres_exporter_enabled needs a pinned exporter image'
+            in (immich_pgexporter_assert.content | b64decode | from_json).msg
+        fail_msg: >-
+          The exporter pin assert accepted a ":@" image — an unpinned exporter
+          would be deployed. Check tasks/main.yml.

@@ -38,6 +38,10 @@
           - "'mydestination = $myhostname, localhost.localdomain, localhost' in (main_cf_content.content | b64decode)"
           - "'smtp_sasl_auth_enable = yes' in (main_cf_content.content | b64decode)"
           - "'smtp_tls_security_level = secure' in (main_cf_content.content | b64decode)"
+          # loopback-only binds ::1 too, so the IPv6 loopback must be trusted.
+          - "'mynetworks = 127.0.0.0/8 [::1]/128' in (main_cf_content.content | b64decode)"
+          # A key supplied only through postfix_null_client_config_extra.
+          - "'message_size_limit = 52428800' in (main_cf_content.content | b64decode)"
         fail_msg: "main.cf missing expected settings"
         success_msg: "main.cf contains all expected settings"
 
@@ -105,12 +109,9 @@
           be delivered locally instead of relayed
         success_msg: "compiled alias database resolves root"
 
-    # A converge always reports the two map sources changed, so their notify
-    # handlers rebuild both .db files and the assertion above passes even with
-    # the repair deleted. The shape that bites production is the opposite one —
-    # source already correct, .db holding a RETIRED value, handler never
-    # notified — which no converge produces. Build it and drive the repair
-    # against it, checking the pre-state so the fixture cannot rot into a no-op.
+    # A converge rebuilds both .db files through notify, so it never produces
+    # the shape that bites production: source correct, .db holding a retired
+    # value, handler never notified. Build that shape and drive the repair.
     - name: Stale db | compile aliases.db from a retired target, then restore the source
       ansible.builtin.shell: |
         set -eo pipefail

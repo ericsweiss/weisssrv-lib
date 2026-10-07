@@ -1,11 +1,9 @@
 // {{ ansible_managed }}
 
 loki.source.journal "system" {
-  // Forward STRAIGHT to loki.write, passing the rules by reference. The
-  // __journal_* metadata only exists inside the source's own relabel pass, so
-  // routing entries through loki.relabel as well applies the rules a second
-  // time against absent source labels, which sets each target_label to ""
-  // (i.e. deletes it).
+  // Forward straight to loki.write with the rules by reference: __journal_*
+  // metadata exists only in the source's own relabel pass, so routing entries
+  // through loki.relabel as well re-applies them and empties every target_label.
   forward_to    = [loki.write.default.receiver]
   relabel_rules = loki.relabel.journal.rules
   // Loki only accepts out-of-order writes within max_chunk_age/2 of a stream's
@@ -18,13 +16,18 @@ loki.source.journal "system" {
   }
 }
 
-// Rules holder only — nothing pushes INTO this component, hence forward_to = [].
-// `unit` only: every rule here becomes a Loki STREAM label, so each one
-// multiplies the chunks the ingester holds open for up to max_chunk_age. Adding
-// one (priority, hostname, ...) is a cardinality decision — re-check
+// Rules holder only; nothing pushes in, hence forward_to = []. Every rule here
+// becomes a Loki stream label, so adding one is a cardinality decision: re-check
 // max_global_streams_per_user and the ingester memory limit first.
 loki.relabel "journal" {
   forward_to = []
+
+  // The job label is set here, after loki.source.journal, so the labels-block
+  // value holds whatever the source component writes.
+  rule {
+    target_label = "job"
+    replacement  = "journal"
+  }
 
   rule {
     source_labels = ["__journal__systemd_unit"]
@@ -34,7 +37,7 @@ loki.relabel "journal" {
 
 loki.write "default" {
   endpoint {
-    url = "{{ alloy_host_loki_url }}"
+    url = {{ alloy_host_loki_url | to_json }}
 {% if alloy_host_loki_user | length > 0 %}
     basic_auth {
       username = {{ alloy_host_loki_user | to_json }}

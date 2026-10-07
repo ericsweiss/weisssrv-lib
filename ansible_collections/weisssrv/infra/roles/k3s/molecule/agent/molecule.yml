@@ -33,14 +33,12 @@ provisioner:
   env:
     ANSIBLE_ROLES_PATH: ../../..
     ANSIBLE_COLLECTIONS_PATH: ../../../../../../..:~/.ansible/collections:/usr/share/ansible/collections
-    # Required for molecule_docker plugin (upstream broken conditional in destroy.yml)
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
   config_options:
     defaults:
       callbacks_enabled: profile_tasks, timer
       stdout_callback: ansible.builtin.default
       result_format: yaml
-    # Self-contained scenario (no -c base.yml): mirror the base's [connection]
+    # Self-contained so the scenario runs without -c: mirror the base's [connection]
     # pipelining — one docker exec per task instead of put-file + exec.
     connection:
       pipelining: true
@@ -72,16 +70,19 @@ provisioner:
         base_skip_dns_config: true
         k3s_skip_install: true  # Skip actual k3s install in container
         # Exercise the GPU-node include path (tasks/gpu.yml). k3s_skip_gpu_install
-        # skips the driver/toolkit apt installs + nvidia-smi probe (no GPU or
-        # NVIDIA packages in CI); the non-free component-enable still runs against
-        # a SCRATCH sources file (prepare.yml stages it) so the container's real
-        # apt sources — and `apt update` — stay untouched. verify asserts it.
+        # skips the driver/toolkit installs; the non-free component-enable runs
+        # against a scratch sources file so the container's apt sources stay intact.
         k3s_gpu_node: true
         k3s_skip_gpu_install: true
         k3s_gpu_debian_sources_path: /tmp/gpu-test-debian.sources
+        # Site-level value for an unrelated repo. verify.yml still expects the
+        # full component set, which proves the GPU path pins its own.
+        apt_signed_repo_components: main
 verifier:
   name: ansible
 scenario:
+  # The negative case in converge.yml carries molecule-idempotence-notest, so
+  # the idempotence replay skips it and it records one junit failure per host.
   test_sequence:
     - dependency
     - cleanup

@@ -44,19 +44,17 @@
     label: "{{ item.item }}"
   when:
     - nfs_tls_enabled | default(false)
-    # xprtsec=tls clients present no cert, so they need only the truststore.
-    # The cert AND key (which tlshd.conf.j2 emits together) are required only on
-    # an NFS server or an mTLS client — otherwise a least-privilege client where
-    # neither is distributed would fail this preflight.
+    # xprtsec=tls clients present no cert and need only the truststore. The
+    # cert and key are required on an NFS server or an mTLS client, so a
+    # least-privilege client is not failed by this preflight.
     - >-
       item.item == nfs_tls_truststore
       or (item.item in [nfs_tls_cert_path, nfs_tls_key_path]
           and ((nfs_tls_is_server | default(false)) or (nfs_tls_client_cert | default(false))))
 
-# tlshd loads a loose-permission key silently, so the mode is verified here
-# (README "Private-key least privilege"). Require 0600 or 0400: this rejects
-# group/other-readable modes AND owner-unreadable ones (0000/0200) that would
-# silently break tlshd's key load.
+# tlshd loads a loose-permission key silently, so the mode is verified here.
+# 0600 or 0400 only: this rejects group/other-readable modes and the
+# owner-unreadable ones that break tlshd's key load.
 - name: Assert private key is owner-readable + not group/other-readable (0600/0400)
   ansible.builtin.assert:
     that:
@@ -96,10 +94,9 @@
     daemon_reload: true
   when: nfs_tls_enabled | default(false)
 
-# Client-only hosts need neither PEM under xprtsec=tls, and a wildcard key must
-# not linger from an earlier rollout. Skipped on the NFS server and on an mTLS
-# client, which legitimately keep it. nfs_tls_scrub_client_cert exists because
-# these paths are also acme_certs' local install path (see README).
+# Opt-in: a client-only host needs neither PEM under xprtsec=tls, so a site that
+# distributes them everywhere can have a leftover wildcard key removed here.
+# Off by default because these paths are also acme_certs' install path.
 - name: Remove cert + key on client-only hosts (least privilege)
   ansible.builtin.file:
     path: "{{ item }}"
@@ -109,23 +106,30 @@
     - "{{ nfs_tls_key_path }}"
   when:
     - nfs_tls_enabled | default(false)
-    - nfs_tls_scrub_client_cert | default(true)
+    - nfs_tls_scrub_client_cert | default(false)
     - not (nfs_tls_is_server | default(false))
     - not (nfs_tls_client_cert | default(false))
 
 # Opt-out reconciliation: flipping nfs_tls_enabled back to false must not leave
-# tlshd enabled with a stale /etc/tlshd.conf. Tolerate ONLY the missing-unit
-# case — a blanket failed_when: false would mask a typo'd unit name.
+# tlshd enabled with a stale /etc/tlshd.conf. systemd is asked whether the unit
+# exists, because it searches more paths than the role can enumerate.
+- name: Check whether systemd knows the tlshd unit  # noqa: command-instead-of-module
+  ansible.builtin.command: systemctl list-unit-files tlshd.service
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  register: nfs_tls_tlshd_unit
+  when: not (nfs_tls_enabled | default(false))
+
 - name: Stop and disable tlshd when NFS-TLS is opted out
   ansible.builtin.systemd:
     name: tlshd.service
     enabled: false
     state: stopped
-  register: nfs_tls_tlshd_optout
-  failed_when:
-    - nfs_tls_tlshd_optout is failed
-    - "'Could not find the requested service' not in (nfs_tls_tlshd_optout.msg | default(''))"
-  when: not (nfs_tls_enabled | default(false))
+  when:
+    - not (nfs_tls_enabled | default(false))
+    - nfs_tls_tlshd_unit.rc | default(1) == 0
+    - "'tlshd.service' in (nfs_tls_tlshd_unit.stdout | default(''))"
 
 - name: Remove tlshd configuration when NFS-TLS is opted out
   ansible.builtin.file:

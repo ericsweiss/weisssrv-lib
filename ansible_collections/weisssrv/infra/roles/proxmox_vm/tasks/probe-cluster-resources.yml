@@ -1,0 +1,24 @@
+---
+# Asks any reachable Proxmox host for the cluster-wide guest list, so a caller
+# finds a guest's current node after a migration or an HA failover. Input:
+# _proxmox_vm_probe_hosts. Result: _proxmox_vm_cluster_json, _proxmox_vm_probe_results.
+- name: Reset the cluster-resource probe state
+  ansible.builtin.set_fact:
+    _proxmox_vm_cluster_json: ""
+    _proxmox_vm_probe_results: []
+
+- name: Probe each Proxmox host in turn
+  ansible.builtin.include_tasks: probe-cluster-resources-one.yml
+  loop: "{{ _proxmox_vm_probe_hosts }}"
+  loop_control:
+    loop_var: _proxmox_vm_probe_host
+
+# Terminal: an empty answer means no guest's node can be determined, and a
+# green run here is exactly how a guest ends up unreconciled.
+- name: Fail when no Proxmox host answered the cluster-resource query
+  ansible.builtin.fail:
+    msg: >-
+      No Proxmox host answered `pvesh get /cluster/resources`, so no guest's
+      node could be determined and nothing was reconciled.
+      Probes: {{ _proxmox_vm_probe_results | join('; ') }}
+  when: _proxmox_vm_cluster_json | length == 0

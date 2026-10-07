@@ -1,19 +1,15 @@
 #!/usr/bin/env bash
-# Behavioral check for the rendered zfs-load-key.sh: the verify.yml greps prove
-# the code EXISTS, this executes it. The script is run against a stub 1Password
-# Connect endpoint plus stub zpool/zfs binaries on PATH, asserting the exit-code
-# taxonomy zfs-load-key@.service's RestartPreventExitStatus depends on, and that
-# the fetched passphrase reaches `zfs load-key` on stdin.
+# Behavioral check for the rendered zfs-load-key.sh, run against a stub
+# 1Password Connect endpoint and stub zpool/zfs binaries. Asserts the exit-code
+# taxonomy RestartPreventExitStatus depends on, and the passphrase on stdin.
 set -euo pipefail
 
 SRC="${1:-/usr/local/sbin/zfs-load-key.sh}"
 PORT="${2:-18099}"
 [ -x "$SRC" ] || { echo >&2 "zfs-load-key.sh not rendered at $SRC"; exit 1; }
 
-# The work dir holds the copy of the script under test and the stub binaries it
-# execs, so it has to live on a filesystem that permits exec. `mktemp -d` would
-# land in /tmp, which this scenario mounts as a Docker tmpfs — noexec by
-# default, so a 0755 copy there still fails with rc 126. Probe the candidates
+# The work dir holds the script copy and the stub binaries it execs, so it must
+# permit exec; /tmp is a noexec tmpfs in this scenario. Probe the candidates
 # instead of hardcoding one, and say so loudly if none can exec.
 work_root() {
     local candidate probe

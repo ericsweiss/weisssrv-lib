@@ -1,10 +1,7 @@
 ---
-# Deploy the write_prom_metrics helper library that a caller's backup wrapper
-# sources. This is the single home for backup-freshness metric emission — any
-# role with a backup wrapper includes it, not only compose guests. The prefix,
-# .prom path and artefact glob are call args; only the size-gauge HELP noun
-# (compose_app_backup_size_help_object) is set at render time. Sourced, not
-# executed, so 0644 is sufficient. Ungated so render-only runs can exercise it.
+# Deploy the write_prom_metrics helper library a caller's backup wrapper sources.
+# Prefix, .prom path and artefact glob are call args; only the size-gauge HELP
+# noun is rendered. Sourced not executed, so 0644; ungated for render-only runs.
 - name: Deploy the shared backup-metrics helper library
   ansible.builtin.template:
     src: write_prom_metrics.sh.j2

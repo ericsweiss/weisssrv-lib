@@ -8,7 +8,6 @@
 
 - name: Check if Proxmox cluster is configured
   ansible.builtin.command: pvecm status
-  become: true
   register: proxmox_ha_cluster_status
   changed_when: false
   failed_when: false
@@ -17,10 +16,9 @@
 
 - name: Parse quorum status from cluster output
   ansible.builtin.set_fact:
-    # Extract the quorum status from "Quorate:          Yes" (whitespace varies).
-    # Ansible's templating round-trips "Yes" through YAML 1.1, so proxmox_ha_cluster_quorate
-    # ends up as Python bool True at this point — the assert below uses `| bool`
-    # to coerce either the bool or a preserved string back to a real boolean.
+    # Extracts the quorum status from "Quorate:          Yes". YAML 1.1
+    # round-trips "Yes" to a bool, so the assert below uses `| bool` to coerce
+    # either form back to a real boolean.
     proxmox_ha_cluster_quorate: >-
       {{
         (proxmox_ha_cluster_status.stdout_lines
@@ -47,27 +45,47 @@
       Check cluster health with: pvecm status
   tags: [proxmox_ha]
 
-# run_once: /etc/pve is clustered, so this is ONE reconcile for the whole
-# cluster. Without it a play targeting the whole proxmox group has every host
-# issue the same `pvesh set /cluster/options` concurrently against pmxcfs, and
-# lock contention surfaces as a task failure rather than a retry.
+# CRITICAL: /etc/pve and the HA config are clustered, so everything below is
+# ONE reconcile for the whole cluster, delegated to a node proved reachable.
+# Concurrent writes surface as pmxcfs lock failures. run_once + delegate_to is
+# the seam, not a done-fact: a per-guest play would skip all but the first.
+# Every reconcile below delegates to the result, so each of their tags selects
+# this too — `apply` is what carries them onto the included tasks.
+- name: Resolve a reachable node for the cluster-wide reconcile
+  ansible.builtin.include_tasks:
+    file: delegate.yml
+    apply:
+      tags: [proxmox_ha, proxmox_ha_datacenter, proxmox_ha_rules, proxmox_ha_resources]
+  tags: [proxmox_ha, proxmox_ha_datacenter, proxmox_ha_rules, proxmox_ha_resources]
+
 - name: Pin cluster-wide migration options
-  ansible.builtin.include_tasks: datacenter.yml
+  ansible.builtin.include_tasks:
+    file: datacenter.yml
+    apply:
+      delegate_to: "{{ _proxmox_ha_delegate }}"
+      tags: [proxmox_ha, proxmox_ha_datacenter]
   run_once: true
   when: proxmox_ha_migration_type | default('') | length > 0
   tags: [proxmox_ha, proxmox_ha_datacenter]
 
 - name: Manage HA rules (node-affinity)
-  ansible.builtin.include_tasks: rules.yml
+  ansible.builtin.include_tasks:
+    file: rules.yml
+    apply:
+      delegate_to: "{{ _proxmox_ha_delegate }}"
+      tags: [proxmox_ha, proxmox_ha_rules]
+  run_once: true
   when: proxmox_ha_rules is defined and proxmox_ha_rules | length > 0
   tags: [proxmox_ha, proxmox_ha_rules]
 
 - name: Manage HA resources
-  ansible.builtin.include_tasks: resources.yml
+  ansible.builtin.include_tasks:
+    file: resources.yml
+    apply:
+      delegate_to: "{{ _proxmox_ha_delegate }}"
+      tags: [proxmox_ha, proxmox_ha_resources]
+  run_once: true
   when: proxmox_ha_resources is defined and proxmox_ha_resources | length > 0
   tags: [proxmox_ha, proxmox_ha_resources]
 
-# Note: Storage replication is NOT included here.
-# The playbook (playbooks/proxmox-ha.yml) has a dedicated second play that
-# runs replication on source nodes directly via tasks_from: replication.
-# Including replication.yml here would cause duplicate execution.
+# Replication is not included here - it must run per source node (tasks_from: replication); see README.

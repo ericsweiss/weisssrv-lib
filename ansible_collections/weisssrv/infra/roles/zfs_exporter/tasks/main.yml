@@ -3,6 +3,19 @@
 # Thin wrapper over the shared prometheus_exporter role (tarball install).
 # Runs as root because ZFS introspection needs /dev/zfs ioctls.
 
+# The pinned checksum covers ONE artefact, so the role can only install the
+# x86_64 tarball; fail here rather than as an exec-format error inside the unit.
+- name: Assert the host architecture matches the pinned artefact
+  ansible.builtin.assert:
+    that:
+      - ansible_architecture == 'x86_64'
+    fail_msg: >-
+      zfs_exporter installs the upstream linux-amd64 tarball pinned by
+      zfs_exporter_checksum; this host reports {{ ansible_architecture }}.
+      Supply a per-architecture artefact and checksum before enabling the role
+      here.
+    success_msg: "Host architecture matches the pinned zfs_exporter artefact"
+
 - name: Install zfs_exporter via shared pipeline
   ansible.builtin.include_role:
     name: weisssrv.infra.prometheus_exporter
@@ -17,12 +30,9 @@
     prometheus_exporter_checksum: "{{ zfs_exporter_checksum }}"
     prometheus_exporter_binary_path: /usr/local/bin/zfs_exporter
     prometheus_exporter_archive_member: "zfs_exporter-{{ zfs_exporter_version }}.linux-amd64/zfs_exporter"
-    # zfs_exporter --version writes to stderr (kingpin behavior), and the
-    # output line is `zfs_exporter, version X.Y.Z (branch: ..., revision: ...)`.
-    # Extract just the version token with awk so the equality check is
-    # exact-equal — substring matching against the whole output would be
-    # fooled by unrelated text containing the desired version (e.g. a build
-    # timestamp or revision hash that happens to contain it).
+    # zfs_exporter --version writes to stderr as
+    # `zfs_exporter, version X.Y.Z (branch: ..., revision: ...)`. awk extracts
+    # the version token so the check is exact-equal, not a substring match.
     prometheus_exporter_version_check_cmd: |
       set -o pipefail
       /usr/local/bin/zfs_exporter --version 2>&1 | awk '/^zfs_exporter, version/ { print $3; exit }'

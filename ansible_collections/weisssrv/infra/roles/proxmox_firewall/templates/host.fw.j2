@@ -5,6 +5,9 @@
 enable: 1
 log_level_in: {{ proxmox_firewall_log_level_in }}
 log_level_out: nolog
+{% if proxmox_firewall_nftables | default(false) | bool %}
+nftables: 1
+{% endif %}
 
 [RULES]
 
@@ -16,20 +19,21 @@ GROUP sg-pve-cluster
 GROUP sg-host-admin
 GROUP sg-metrics
 {% if proxmox_firewall_egress_filtering | default(false) %}
-# Host-originated egress default-deny: the sg-host-egress allowlist (OUT ACCEPT)
-# followed by an explicit OUT DROP. pve-firewall honors OUT *rules* in host.fw but
-# IGNORES the host-level policy_out option, so this trailing DROP — not a policy
-# setting — is what enforces default-deny. Drops log at info for allowlist tuning;
-# conntrack auto-allows replies. ENABLE PER HOST AND VERIFY (pve-firewall compile).
+# Host-originated egress default-deny: the sg-host-egress allowlist then an
+# explicit OUT DROP. pve-firewall ignores the host-level policy_out option, so
+# this trailing DROP is what enforces it. Enable per host and verify.
 GROUP sg-host-egress
 OUT DROP -log info
 {% endif %}
 
-{# Exact match (not substring): only proxmox_role == 'nas' inherits the NFS/SMB
-   server groups, so a future role string that merely contains 'nas' (e.g.
-   'nas-backup') does not erroneously expose those server ports. #}
-{% if (proxmox_role | default('')) == 'nas' %}
-# NAS-specific rules
+{# Exact match (not substring) against proxmox_firewall_storage_role_name, so a
+   role string that merely contains it ('nas-backup') does not inherit the
+   file-server groups and expose those server ports. #}
+{% if (proxmox_role | default('')) == proxmox_firewall_storage_role_name %}
+# File-server rules
 GROUP sg-nfs-server
 GROUP sg-smb-server
 {% endif %}
+{% for group in proxmox_firewall_host_extra_groups | default([]) %}
+GROUP {{ group }}
+{% endfor %}

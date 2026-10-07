@@ -30,7 +30,10 @@ provisioner:
         # smtp_relay_default_config, so the scenario exercises the merge and the
         # shipped hardening defaults rather than a scenario-local copy of them.
         smtp_relay_config:
-          mynetworks: 127.0.0.0/8, 192.168.0.0/24
+          mynetworks: 127.0.0.0/8, 192.0.2.0/24
+          # Not in smtp_relay_default_config: proves the template renders every
+          # key of the merged map rather than a fixed list.
+          message_size_limit: "52428800"
           smtpd_relay_restrictions: permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination
           smtpd_tls_cert_file: /etc/postfix/tls/smtp-relay.test.local_ecc/fullchain.cer
           smtpd_tls_key_file: /etc/postfix/tls/smtp-relay.test.local_ecc/smtp-relay.test.local.key

@@ -83,8 +83,6 @@
         that:
           # set -euo pipefail must be in place
           - (script_content.content | b64decode) is search('set -euo pipefail')
-          # exit-code taxonomy from the role README
-          - (script_content.content | b64decode) is search('Exit codes:')
           # token-via-stdin (-H @-) — never on argv (avoids /proc/<pid>/cmdline leak)
           - (script_content.content | b64decode) is search('-H @-')
           # the access point is templated from zfs_encryption_connect_url
@@ -123,7 +121,6 @@
           - (keycmd_script_content.content | b64decode) is not search('-H @-')
           # Shared scaffolding survives the swap.
           - (keycmd_script_content.content | b64decode) is search('set -euo pipefail')
-          - (keycmd_script_content.content | b64decode) is search('Exit codes:')
           - (keycmd_script_content.content | b64decode) is search('zfs load-key')
         fail_msg: "the key-command branch did not fully replace the Connect fetch"
         success_msg: "zfs_encryption_key_command renders a Connect-free unlock script"
@@ -131,6 +128,43 @@
     - name: Assert the key-command render is syntactically valid bash
       ansible.builtin.command: bash -n /tmp/zfs-load-key-keycmd.sh
       changed_when: false
+
+    # Both renders in one pass, so the two parses cannot drift: `documented`
+    # reads the header's `#   <code> — ...` lines, `reachable` the `exit <code>`
+    # statements with comment lines rejected first.
+    - name: Collect the documented and reachable exit codes of each rendered script
+      ansible.builtin.set_fact:
+        exit_code_sets: >-
+          {{ exit_code_sets | default({}) | combine({item.name: {
+               'documented': item.text | regex_findall('(?m)^#\s+(\d+) ') | unique | sort,
+               'reachable': item.text.splitlines() | reject('match', '\s*#')
+                 | map('regex_findall', '\bexit (\d+)\b') | flatten | unique | sort}}) }}
+      loop:
+        - name: connect
+          text: "{{ script_content.content | b64decode }}"
+        - name: keycmd
+          text: "{{ keycmd_script_content.content | b64decode }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # The taxonomy is a contract, not prose: zfs-load-key@.service names codes
+    # by number in RestartPreventExitStatus, so each render must document
+    # exactly the codes it can exit with.
+    - name: Assert each render documents exactly the exit codes it can produce
+      ansible.builtin.assert:
+        that:
+          - exit_code_sets.connect.documented == ['0', '1', '2', '3', '4', '5', '7']
+          - exit_code_sets.connect.reachable == exit_code_sets.connect.documented
+          # The key-command branch drops Connect's 7 (401/403) and nothing else.
+          - exit_code_sets.keycmd.documented == ['0', '1', '2', '3', '4', '5']
+          - exit_code_sets.keycmd.reachable == exit_code_sets.keycmd.documented
+        fail_msg: >-
+          zfs-load-key.sh's exit-code taxonomy drifted from the `exit` statements
+          it renders: connect documented={{ exit_code_sets.connect.documented }}
+          reachable={{ exit_code_sets.connect.reachable }}, keycmd
+          documented={{ exit_code_sets.keycmd.documented }}
+          reachable={{ exit_code_sets.keycmd.reachable }}.
+        success_msg: "both renders document exactly the exit codes they produce"
 
     - name: Stat /etc/systemd/system/zfs-load-key@.service
       ansible.builtin.stat:
@@ -149,13 +183,12 @@
       register: unit_content
 
     # Strip comment lines before matching so the template's explanatory header
-    # (which names the dangerous "Before=zfs-mount" / "RequiredBy=" edges it
-    # deliberately omits) can't satisfy the directive asserts below.
+    # (which names the dangerous "Before=zfs-mount" / "RequiredBy=" edges the
+    # unit omits) can't satisfy the directive asserts below.
     - name: Build a comment-free view of the unit body
-      # Double-quoted (not a >- block): YAML must interpret the `\n` in
-      # join('\n') as a real newline. In a folded/literal block scalar the `\n`
-      # stays a literal backslash-n, splitlines/join silently no-op, and the
-      # body collapses to empty (every directive search below then false-passes).
+      # Double-quoted (not a block scalar): YAML must interpret the `\n` in
+      # join('\n') as a real newline, or splitlines/join no-op and the body
+      # collapses to empty, false-passing every directive search below.
       ansible.builtin.set_fact:
         unit_body_no_comments: "{{ (unit_content.content | b64decode).splitlines() | reject('match', '\\s*#') | join('\n') }}"
 
@@ -180,6 +213,11 @@
           # (token/item missing, auth failure, zfs load-key failed/rotated
           # passphrase = exit 4) as `failed` instead of retrying for hours.
           - unit_body_no_comments is search('RestartPreventExitStatus=1 3 4 7')
+          # Every code that list names is one the script documents.
+          - >-
+            unit_body_no_comments
+            | regex_findall('(?m)^RestartPreventExitStatus=(.*)$')
+            | first | split | difference(exit_code_sets.connect.documented) == []
 
     # `command`, not systemd_service: a read-only state check with a message
     # that names the missing unit.
@@ -285,6 +323,33 @@
         that:
           - (guest_script_content.content | b64decode) is search('VMIDS=\(999\)')
         fail_msg: "zfs-start-encrypted-guests.sh does not render zfs_encryption_guest_vmids (expected VMIDS=(999))"
+
+    # "Not provisioned" must be the missing config file, not a failed
+    # `qm config`, which is also non-zero when pmxcfs is unreadable.
+    - name: Assert the guest-start script keys provisioning off the config path
+      ansible.builtin.assert:
+        that:
+          - (guest_script_content.content | b64decode) is search('mountpoint -q /etc/pve')
+          - (guest_script_content.content | b64decode) is search('/etc/pve/qemu-server/\$\{vm\}.conf')
+          - (guest_script_content.content | b64decode) is search('/etc/pve/lxc/\$\{ct\}.conf')
+          - (guest_script_content.content | b64decode) is not search('qm config')
+          - (guest_script_content.content | b64decode) is not search('pct config')
+        fail_msg: >-
+          zfs-start-encrypted-guests.sh must gate on `mountpoint -q /etc/pve` and
+          test the guest config path; a `qm config`/`pct config` probe reports a
+          pmxcfs failure as "not provisioned" and exits 0 having started nothing.
+
+    # Executed, not grepped: an inverted guard or a flipped exit code renders
+    # the same text, so each arm runs against stub systemctl/mountpoint/qm.
+    - name: Assert zfs-start-encrypted-guests.sh behavior against stub binaries
+      ansible.builtin.script: files/zfs-start-guests-behavior.sh
+      changed_when: false
+
+    # The 0/1/2 taxonomy is what keeps zfs-mount-encrypted.service activating.
+    - name: Assert zfs-mount-encrypted.sh honours its exit-code taxonomy
+      ansible.builtin.script: >-
+        files/zfs-mount-behavior.sh /usr/local/sbin/zfs-mount-encrypted.sh testpool
+      changed_when: false
 
     - name: Check pve-start-encrypted-guests.service enabled state  # noqa command-instead-of-module
       ansible.builtin.command:

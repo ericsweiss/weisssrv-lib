@@ -2,11 +2,9 @@
 # SMTP relay server configuration
 # Central postfix relay that forwards to the configured smarthost.
 
-# Assert the EFFECTIVE config (defaults + smtp_relay_config merged), so a site
-# override is checked too. An empty relayhost renders `relayhost = ` (postfix
-# falls back to direct MX delivery from this host) and makes sasl_passwd.j2 emit
-# a leading-whitespace line, which postmap reads as a continuation rather than a
-# smarthost entry — both silent.
+# Assert the effective config (defaults plus smtp_relay_config), so a site
+# override is checked too. An empty relayhost silently falls back to direct MX
+# delivery and emits a sasl_passwd line postmap reads as a continuation.
 - name: Validate the relay identity and smarthost are set
   ansible.builtin.assert:
     that:
@@ -20,6 +18,8 @@
       alias: internal_domain); a site can also set them in smtp_relay_config.
     success_msg: "SMTP relay identity and smarthost are set"
 
+# Presence-only assert: no_log would censor the fail_msg, and the expression
+# prints variable names, not values.
 - name: Validate the upstream smarthost credentials are set
   ansible.builtin.assert:
     that:
@@ -30,7 +30,6 @@
       they authenticate this relay to smtp_relay_upstream. Inject them from the
       caller's secret store.
     success_msg: "Upstream smarthost credentials are present"
-  no_log: true
 
 # default('') guards the undef()-hinted lookups in all.yml so a missing env
 # var fails the assert with fail_msg instead of an undefined-variable error.
@@ -44,7 +43,6 @@
       clients authenticate to this relay with them. Inject them from the
       caller's secret store.
     success_msg: "SMTP relay auth credentials are present"
-  no_log: true
 
 # Cert-distribution pubkey deployment is owned by acme_certs, for every target.
 
@@ -142,12 +140,9 @@
   # something else.
   no_log: true
 
-# sasldb stores no recoverable plaintext to compare against, so rotation is
-# detected via this fingerprint: it changes exactly when the credentials do,
-# which makes the always-rerun saslpasswd2 below report changed (and reload
-# postfix) on rotation instead of silently claiming ok. The sentinel is
-# read here but only (re)written AFTER saslpasswd2 succeeds, so a failed
-# rotation leaves the old fingerprint and the next run still retries.
+# sasldb holds no recoverable plaintext, so rotation is detected by this
+# fingerprint. It is written only after saslpasswd2 succeeds, so a failed
+# rotation leaves the old value and the next run retries.
 - name: Read existing SASL relay credential fingerprint
   ansible.builtin.slurp:
     src: /etc/postfix/.sasl_relay_user.sha256
@@ -206,12 +201,9 @@
     mode: "0644"
   notify: Newaliases
 
-# Both map sources are notify-only, so a lost handler leaves a correct source
-# next to a stale compiled .db that postfix keeps reading. Placed before the
-# service start so a first converge has a usable sasl_passwd.db without waiting
-# for the handler flush. The task file is shared with postfix_null_client (same
-# two maps, same hazard); that role's identically-named handlers come along with
-# the include and are inert duplicates of this role's.
+# Both map sources are notify-only, so a lost handler leaves a stale compiled
+# .db that postfix keeps reading. Runs before the service start so a first
+# converge has a usable sasl_passwd.db. Task file shared with postfix_null_client.
 - name: Repair stale compiled postfix maps
   ansible.builtin.include_role:
     name: weisssrv.infra.postfix_null_client
@@ -225,15 +217,9 @@
     state: started
     enabled: true
 
-# Postfix queue depth collector
-# A wedged upstream hop (expired credential, rate-limit) queues mail silently:
-# postfix stays active and the LXC gauges stay green while the deferred queue
-# grows. The collector feeds postfix_queue_depth / postfix_up to the
-# node_exporter textfile collector already scraped on :9101 so
-# PrometheusRules can fire on queue growth and collector staleness.
-# Same attributes as node_exporter_host's textfile-dir task so the two roles
-# never fight over ownership/mode; makes this role self-sufficient regardless
-# of ordering and gives the sandboxed unit's ReadWritePaths an existing target.
+# Postfix queue depth collector. A wedged upstream hop queues mail while the
+# service stays active, so postfix_queue_depth and postfix_up reach the
+# node_exporter textfile collector. Attributes match node_exporter_host's.
 - name: Create node_exporter textfile collector directory
   ansible.builtin.file:
     path: "{{ smtp_relay_textfile_dir }}"

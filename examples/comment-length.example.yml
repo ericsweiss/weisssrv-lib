@@ -1,0 +1,36 @@
+---
+# Config for scripts/check-comment-length.py (--config). Flags win over every
+# key here. A YAML config needs PyYAML; the same keys in JSON do not.
+
+# paths: roots to scan when the command line names none. A file or a directory.
+paths:
+  - ansible
+  - kubernetes
+  - scripts
+  - terraform
+
+# include: when set, only matching files are scanned. A pattern also matches as
+# `*/<pattern>`, so `*.py` reaches every depth.
+include:
+  - "*.py"
+  - "*.sh"
+  - "*.tf"
+  - "*.yml"
+
+# exclude: files to skip. Tool caches and vendored trees are excluded already.
+exclude:
+  - "vendor/*"
+  - "*.generated.yml"
+
+# max_lines: content lines allowed in a comment block. Blank lines and the
+# markers themselves do not count.
+max_lines: 3
+
+# critical_max_lines: ceiling for a block whose first line opens `CRITICAL:`,
+# for the traps that cause an outage.
+critical_max_lines: 8
+
+# scan_fenced_code: also hold Markdown fenced code blocks to the limit, for
+# snippets people copy into real files. A fence whose language tag is not in
+# the fence-language table is skipped.
+scan_fenced_code: true

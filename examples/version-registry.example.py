@@ -1,23 +1,7 @@
 """Consumer config for scripts/check-versions.py.
 
-Copy to `scripts/version-registry.py` (the default lookup path) and edit. A
-`.json` file with the same keys works too; the Python form exists so each entry
-can carry the inline rationale a JSON registry would lose — the "why is this
-pinned / held / not auto-bumped" notes are the most valuable part of a registry.
-
-Entry fields:
-  name            display name (unique)
-  var_name        the pin's key in vars_file; `helm_chart_versions.<chart>` for
-                  a nested helm pin; any key for a version_file pin
-  category        github | dockerhub | ghcr | lsio | helm | apt_repo | manual
-  deploy_command  how to roll the bump out; falls back to default_deploy_command
-  version_file    the pin lives OUTSIDE vars_file: a version_file_aliases key,
-                  a repo-relative path, or a list of paths that must agree
-  held            reported but never written (a documented upstream block);
-                  say why in `notes`
-  tag_filter      (github) regex the upstream tag must match
-  tag_regex       (dockerhub/ghcr/lsio) regex the image tag must match
-  strip_prefix    (github) drop version_prefix from the recorded version
+Copy to scripts/version-registry.py and edit; the .py form exists so each entry
+can carry its own why-pinned note. Field reference: docs/SCRIPTS.md.
 """
 
 CONFIG = {
@@ -44,6 +28,13 @@ CONFIG = {
             "strip_prefix": False,
             "tag_filter": r"^v\d+\.\d+\.\d+\+k3s\d+$",
             "deploy_command": "task maintenance:update-k3s-nodes",
+            # Couples the installer hash to the pinned version, checked by
+            # scripts/check-version-checksums.py. coupled_vars makes --update-all
+            # emit a PAIRED-EDIT-REQUIRED block instead of bumping alone.
+            "checksum_var": "k3s_install_script_checksum",
+            "checksum_url": "https://raw.githubusercontent.com/k3s-io/k3s/{version}/install.sh",
+            "coupled_vars": ["k3s_install_script_checksum"],
+            "notes": "on bump re-download get.k3s.io and recompute k3s_install_script_checksum",
         },
         {
             "name": "Traefik Chart",
@@ -74,7 +65,12 @@ CONFIG = {
             "name": "Tailscale",
             "var_name": "tailscale_version",
             "category": "apt_repo",
-            "apt_url": "https://pkgs.tailscale.com/stable/debian/dists/trixie/main/binary-amd64/Packages.gz",
+            # A list is tried in order, so a suite rename does not break the
+            # lookup before the hosts move.
+            "apt_url": [
+                "https://pkgs.tailscale.com/stable/debian/dists/trixie/main/binary-amd64/Packages.gz",
+                "https://pkgs.tailscale.com/stable/debian/dists/bookworm/main/binary-amd64/Packages.gz",
+            ],
             "apt_package": "tailscale",
             "deploy_command": "task maintenance:update-applications",
         },
@@ -84,11 +80,39 @@ CONFIG = {
             "name": "PR Agent",
             "var_name": "pr_agent_version",
             "category": "dockerhub",
-            "docker_image": "codiumai/pr-agent",
+            "docker_image": "pragent/pr-agent",
             "version_file": "ci",
         },
+        # CI tooling: pinned in the pipeline rather than in vars_file, which is
+        # what version_file_aliases maps.
         {
-            # Held: an update exists but is deliberately not taken. Reported
+            "name": "kustomize",
+            "var_name": "KUSTOMIZE_VERSION",
+            "version_file": "ci",
+            "category": "github",
+            "github_repo": "kubernetes-sigs/kustomize",
+            "tag_filter": r"^kustomize/v\d+\.\d+\.\d+$",
+        },
+        {
+            "name": "kubeconform",
+            "var_name": "KUBECONFORM_VERSION",
+            "version_file": "ci",
+            "category": "github",
+            "github_repo": "yannh/kubeconform",
+            "version_prefix": "v",
+            "strip_prefix": True,
+        },
+        {
+            "name": "helm",
+            "var_name": "HELM_VERSION",
+            "version_file": "ci",
+            "category": "github",
+            "github_repo": "helm/helm",
+            # The 3.x line only, so the bot never proposes helm 4.
+            "tag_filter": r"^v3\.\d+\.\d+$",
+        },
+        {
+            # Held: an update exists but is not taken. Reported
             # without flipping the exit code or re-posting an MR comment.
             "name": "MetalLB Chart",
             "var_name": "helm_chart_versions.metallb",

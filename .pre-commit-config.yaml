@@ -1,9 +1,7 @@
 ---
 # Local guardrails: run `pre-commit install` once, then these run on every
-# commit. They mirror the fast CI lint-stage checks (secret scan, yamllint,
-# whitespace/EOF, doc links); heavier tool-dependent jobs stay CI-only. This is
-# lint/pre-commit-config.yaml, the copy consumers vendor, plus the doc-link
-# hook — keep the two in step. Revs are pinned; bump them deliberately.
+# commit. This is lint/pre-commit-config.yaml, the copy consumers vendor, with
+# this repo's own local hooks; tests/test_lint_profiles.py holds the revs equal.
 repos:
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1
@@ -14,7 +12,9 @@ repos:
     rev: v1.38.0
     hooks:
       - id: yamllint
-        args: [-c, .yamllint]
+        # The library's own profile. It cannot live at the repo root:
+        # ansible-lint would discover it and lose its yaml[*] rules.
+        args: [-c, lint/yamllint-self.yml]
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0

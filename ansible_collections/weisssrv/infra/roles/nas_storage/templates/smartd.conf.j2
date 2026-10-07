@@ -1,18 +1,13 @@
 # {{ ansible_managed }}
-# All drives explicitly listed — no DEVICESCAN (it aborts long self-tests on
-# drives that enter standby). A drive missing from every group is therefore
-# UNMONITORED; smartd.yml fails the deploy when an imported pool has such a
-# member.
+# All drives explicitly listed - no DEVICESCAN, which aborts long self-tests on
+# standby drives. smartd.yml fails the deploy on an unmonitored pool member.
 
 {% for group in nas_storage_smartd_disk_groups | default([]) %}
 {% if group.disks | default([]) | length > 0 %}
 # {{ group.name }}
 {% for disk in group.disks %}
-{{ disk }} -a{% if group.ata | default(true) %} -o on -S on{% endif %} -s {{ group.schedule }} -m root
+{{ disk }} -a{% if group.ata | default(true) %} -o on -S on{% endif %} -s {{ group.schedule }}{% if group.extra_flags is defined %} {{ group.extra_flags }}{% endif %} -m root
 {% endfor %}
 
 {% endif %}
 {% endfor %}
-# -s is the group's own schedule regex (nas_storage_smartd_disk_groups);
-# -a monitor all attributes; -o/-S are ATA-only (they log warnings on NVMe, so
-# an NVMe group sets ata: false); -m root mails alerts via postfix.

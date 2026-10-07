@@ -1,8 +1,7 @@
 ---
-# Render/contract scenario: gitlab_skip_install skips the Omnibus package (far
-# too heavy for CI), so gitlab.rb (both nginx branches), the backup wrapper and
-# its metrics, the NAT redirect cleanup, the sshd drop-in and the fail2ban jail
-# are converged and asserted against a mocked GitLab tree.
+# Render/contract scenario: gitlab_skip_install skips the Omnibus package, so
+# gitlab.rb (both nginx branches), the backup wrapper and its metrics, the NAT
+# cleanup, the sshd drop-in and the fail2ban jail assert against a mocked tree.
 provisioner:
   playbooks:
     prepare: prepare.yml
@@ -64,6 +63,8 @@ provisioner:
         # is absent in the container, so the stop/mv relocation correctly skips.
         gitlab_registry_data_dir: /mnt/gitlab-repos/registry
         gitlab_kernel_tuning_enabled: false
+        # The settings pass needs a live instance; there is no API in the container.
+        gitlab_web_ide_settings_enabled: false
 platforms:
   - name: gitlab-test
     image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}

@@ -1,0 +1,9 @@
+---
+# The occ entrypoint every task in this role calls; one spelling so a change to
+# the service name or uid lands once.
+_nextcloud_occ: "docker compose exec -T -u www-data nextcloud php occ"
+
+# Prefix for the two secret-on-stdin calls that need a shell inside the
+# container; the `php occ ...` script is appended as the `sh -c` argument.
+_nextcloud_occ_sh_argv:
+  ["docker", "compose", "exec", "-T", "-u", "www-data", "nextcloud", "sh", "-c"]

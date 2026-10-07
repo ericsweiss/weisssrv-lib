@@ -1,24 +1,11 @@
-# The JOB image molecule CI jobs run the script in (not the MOLECULE image the
-# scenarios spin up): docker-cli, molecule, ansible and the pinned pip deps are
-# baked in, so a job's before_script is a docker login rather than ~2 min of
-# apt + pip + galaxy.
-#
-# The build context is THIS directory — requirements.txt + requirements.yml sit
-# next to the Dockerfile, so the image is self-contained (docker/README.md).
-#
-#   docker build -t <registry>/molecule-ci:latest docker/molecule-ci/
-# Pinned by manifest-list digest (multi-arch index — this image builds for
-# amd64 + arm64) so the rolling `3.11` tag can't silently change the base.
-# Bump deliberately: resolve the new digest with
-#   docker buildx imagetools inspect python:3.11
-FROM python:3.11@sha256:9139edd4aa848a1aa1c63865cd5d11b3a6aaaf3fb410a3ac7b3914e44092fe4c
+# The job image molecule CI jobs run their script in, not the image the
+# scenarios spin up: docker CLI, molecule, ansible and the pinned pip deps.
+# Build context is THIS directory. Digest bump: docker buildx imagetools inspect python:3.13
+FROM python:3.13@sha256:9d72651cf7018c1f6a1dd6fd02bd68286631c33620bc0f37b0675b21aab915d5
 
-# docker CLI for talking to the DinD sidecar. Install the static binary
-# directly — the Debian docker.io package on Trixie doesn't include the
-# CLI (only the daemon), and docker-ce-cli isn't in the default repos.
-# Detect arch for multi-platform builds; verify the pinned sha256 before extract.
-# Version and both shas are held equal to ci/build/docker-build.yml's input
-# defaults by tests/test_pin_parity.py — bump them together.
+# Static docker CLI for the DinD sidecar: Debian's docker.io ships the daemon
+# only, and docker-ce-cli is not in the default repos. Version and both shas are
+# held equal to ci/build/docker-build.yml's defaults by tests/test_pin_parity.py.
 RUN ARCH=$(dpkg --print-architecture) \
     && case "$ARCH" in \
          amd64) DOCKER_ARCH=x86_64; DOCKER_SHA256=4f798b3ee1e0140eab5bf30b0edc4e84f4cdb53255a429dc3bbae9524845d640;; \

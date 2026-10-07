@@ -1,13 +1,7 @@
 """Linter pins are held equal across the molecule image and the ci/lint templates.
 
-docker/molecule-ci/requirements.txt and the ci/lint spec:inputs defaults pin the
-same three tools. If they drift, the lint stage and the molecule run evaluate the
-same roles under different linter versions with no signal. The library's own
-.gitlab-ci.yml carries a fourth copy (an explicit yamllint_version override), so
-it is held to the same value here.
-
-ansible-core is deliberately outside the contract: no template input pins it,
-ansible-lint pulls its own.
+docker/molecule-ci/requirements.txt, the ci/lint defaults and this repo's
+yamllint override pin the same tools. Contract: docs/VERSIONING.md.
 """
 from __future__ import annotations
 
@@ -16,6 +10,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from _helpers import template_input_default
 
 REPO = Path(__file__).resolve().parent.parent
 REQUIREMENTS = REPO / "docker" / "molecule-ci" / "requirements.txt"
@@ -32,14 +27,6 @@ def image_pin(package: str) -> str:
         if match:
             return f"{package}{match.group(1).strip()}"
     raise AssertionError(f"{REQUIREMENTS} has no pin for {package}")
-
-
-def template_input_default(template: Path, name: str) -> str:
-    """The `default:` of one spec:inputs entry (the first YAML document)."""
-    spec = next(yaml.safe_load_all(template.read_text()))
-    inputs = (spec or {}).get("spec", {}).get("inputs", {})
-    assert name in inputs, f"{template} has no input {name!r}"
-    return str(inputs[name]["default"])
 
 
 def lib_include_input(local: str, name: str) -> str:

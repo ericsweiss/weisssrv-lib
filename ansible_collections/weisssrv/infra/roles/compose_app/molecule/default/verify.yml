@@ -60,6 +60,7 @@
         that:
           - compose_app_lib_stat.stat.exists
           - (compose_app_lib.content | b64decode) is search('write_prom_metrics\(\)')
+          - (compose_app_lib.content | b64decode) is search('require_mounted_landing_zone\(\)')
           # Metric names are runtime-prefixed (${prefix}) so the logic is shared.
           - (compose_app_lib.content | b64decode) is search('\$\{prefix\}_last_run_success')
           - (compose_app_lib.content | b64decode) is search('\$\{prefix\}_last_success_timestamp_seconds')
@@ -123,10 +124,9 @@
         fail_msg: "failure path did not record success=0 or lost the prior success timestamp"
         success_msg: "failure path records success=0 and preserves the last success timestamp"
 
-    # Newest-artefact fallback: *_last_size_bytes 0 must mean "no artefact exists
-    # at all", never "this run failed" — that is already carried by
-    # *_last_run_success 0, and an empty-artefact alert reads as a landing-path
-    # fault. Exercised both ways from one call site.
+    # Newest-artefact fallback: *_last_size_bytes 0 must mean "no artefact
+    # exists", never "this run failed" — that is carried by *_last_run_success.
+    # Exercised both ways from one call site.
     - name: Exercise the newest-artefact fallback (failure with a prior artefact)
       ansible.builtin.shell: |
         set -euo pipefail
@@ -155,19 +155,88 @@
           for (artefact present, artefact absent); expected ['4096', '0'].
         success_msg: "size falls back to the newest existing artefact, and is 0 only when there is none"
 
+    # A .prom the helper cannot write must not fail the backup and must leave no
+    # temp file behind.
+    - name: Exercise an unwritable metrics path
+      ansible.builtin.shell: |
+        set -uo pipefail
+        rm -rf /tmp/compose-app-nodir
+        source /usr/local/lib/testapp-backup-lib.sh
+        write_prom_metrics test_backup 1 1 999 /tmp/compose-app-nodir/x.prom
+        echo "rc=$?"
+        ls -A /tmp/compose-app-nodir 2>/dev/null || echo "no-prom-dir"
+      args:
+        executable: /bin/bash
+      register: compose_app_prom_nodir
+      changed_when: false
+
+    - name: Assert an unwritable metrics path does not fail the caller
+      ansible.builtin.assert:
+        that:
+          - "'rc=0' in compose_app_prom_nodir.stdout"
+          - "'no-prom-dir' in compose_app_prom_nodir.stdout"
+        fail_msg: >-
+          write_prom_metrics must return 0 and leave nothing behind when the
+          textfile path cannot be written.
+        success_msg: "an unwritable metrics path is non-fatal and leaves no temp file"
+
+    # The shared fail-closed landing-zone guard: pass-through when the zone is
+    # not NFS-backed or is mounted, refusal with success=0 when it is not.
+    - name: Exercise require_mounted_landing_zone on all three arms
+      ansible.builtin.shell: |
+        set -uo pipefail
+        rm -rf /tmp/compose-app-lz && mkdir -p /tmp/compose-app-lz
+        source /usr/local/lib/testapp-backup-lib.sh
+        require_mounted_landing_zone test_backup /tmp/compose-app-lz 0 /tmp/compose-app-lz/x.prom
+        echo "not-nfs-rc=$?"
+        require_mounted_landing_zone test_backup /tmp/compose-app-lz 1 /tmp/compose-app-lz/x.prom
+        echo "unmounted-rc=$?"
+        require_mounted_landing_zone test_backup / 1 /tmp/compose-app-lz/root.prom
+        echo "mounted-rc=$?"
+        cat /tmp/compose-app-lz/x.prom
+        ls /tmp/compose-app-lz/root.prom 2>/dev/null || echo "no-root-prom"
+      args:
+        executable: /bin/bash
+      register: compose_app_landing_zone
+      changed_when: false
+
+    - name: Assert the landing-zone guard fails closed only on an unmounted NFS zone
+      ansible.builtin.assert:
+        that:
+          - "'not-nfs-rc=0' in compose_app_landing_zone.stdout"
+          - "'unmounted-rc=1' in compose_app_landing_zone.stdout"
+          - "'mounted-rc=0' in compose_app_landing_zone.stdout"
+          - "'test_backup_last_run_success 0' in compose_app_landing_zone.stdout"
+          - "'no-root-prom' in compose_app_landing_zone.stdout"
+        fail_msg: >-
+          require_mounted_landing_zone must return 1 and publish
+          <prefix>_last_run_success 0 for an unmounted NFS landing zone, and
+          return 0 without writing metrics otherwise — got
+          {{ compose_app_landing_zone.stdout_lines }}
+        success_msg: "require_mounted_landing_zone fails closed only on an unmounted NFS landing zone"
+
     # Host-nginx task flow (Case C) — cert untouched via creates:, site deployed,
     # packaged default vhost removed.
-    - name: Read the pre-seeded cert after the nginx flow
-      ansible.builtin.slurp:
-        src: /etc/nginx/ssl/fullchain.pem
+    - name: Read the pre-seeded cert's subject after the nginx flow
+      ansible.builtin.command: openssl x509 -noout -subject -in /etc/nginx/ssl/fullchain.pem
       register: compose_app_nginx_cert
+      changed_when: false
+
+    - name: Stat the pre-seeded key after the nginx flow
+      ansible.builtin.stat:
+        path: /etc/nginx/ssl/privkey.pem
+      register: compose_app_nginx_key
 
     - name: Assert the openssl placeholder left the pre-seeded cert untouched (creates guard)
       ansible.builtin.assert:
         that:
-          - "'SENTINEL-PRESEEDED-fullchain.pem' in (compose_app_nginx_cert.content | b64decode)"
-        fail_msg: "the openssl self-signed seed clobbered the existing cert — the creates: guard failed"
-        success_msg: "the creates: guard left the pre-seeded cert untouched"
+          - "'sentinel-preseeded.invalid' in compose_app_nginx_cert.stdout"
+          - compose_app_nginx_key.stat.mode == '0600'
+        fail_msg: >-
+          the openssl self-signed seed clobbered the pre-seeded cert (subject
+          "{{ compose_app_nginx_cert.stdout }}") or the key was left at
+          {{ compose_app_nginx_key.stat.mode }} instead of 0600.
+        success_msg: "the creates: guard left the pre-seeded cert untouched and the key is 0600"
 
     - name: Stat the deployed nginx site
       ansible.builtin.stat:
@@ -192,3 +261,79 @@
     - name: Report the nginx-flow result
       ansible.builtin.debug:
         msg: "host-nginx flow: cert untouched (creates:), site deployed + enabled, default vhost removed"
+
+    # Host-nginx flow with validation ON (case D) and the broken-candidate
+    # rejection (case E) — the property compose_app_skip_install gates off.
+    - name: Slurp nginx.conf after the fixture patch
+      ansible.builtin.slurp:
+        src: /etc/nginx/nginx.conf
+      register: compose_app_nginx_conf
+
+    - name: Assert the http opener carries the trailing comment the awk must tolerate
+      ansible.builtin.assert:
+        # The ` #` needs the scalar quoted or YAML takes the rest of the line as
+        # a comment; `[{]` keeps the brace out of Jinja's string-escape path.
+        that:
+          - "(compose_app_nginx_conf.content | b64decode) is search('http [{]  # trailing comment')"
+        fail_msg: >-
+          The converge fixture did not patch nginx.conf's http opener, so the
+          trailing-comment regression is not being covered.
+
+    - name: Slurp the validated site
+      ansible.builtin.slurp:
+        src: /etc/nginx/sites-available/testapp-live.conf
+      register: compose_app_nginx_live
+
+    - name: Assert the validated site is installed and the broken one never replaced it
+      ansible.builtin.assert:
+        that:
+          - (compose_app_nginx_live.content | b64decode) is search('server_name testapp-live.local;')
+          - (compose_app_nginx_live.content | b64decode) is not search('this_directive_does_not_exist')
+        fail_msg: >-
+          sites-available/testapp-live.conf must hold the validated site; a
+          rejected candidate must never reach it.
+        success_msg: "the validated site is installed and survived the broken candidate"
+
+    - name: Stat the validated site's enabled symlink
+      ansible.builtin.stat:
+        path: /etc/nginx/sites-enabled/testapp-live.conf
+      register: compose_app_nginx_live_link
+      failed_when: >-
+        not compose_app_nginx_live_link.stat.exists
+        or not compose_app_nginx_live_link.stat.islnk
+
+    - name: Read the broken-candidate negative-test result
+      ansible.builtin.slurp:
+        src: /tmp/compose-app-nginx-validate.json
+      register: compose_app_nginx_validate
+
+    - name: Assert a broken candidate fails the flow
+      ansible.builtin.assert:
+        that:
+          - (compose_app_nginx_validate.content | b64decode | from_json).failed
+        fail_msg: >-
+          Candidate validation accepted a site with an unknown directive — a
+          broken .conf would be installed and enabled, and the next nginx start
+          would fail. Check tasks/nginx.yml.
+        success_msg: "a broken candidate fails the flow before it is installed"
+
+    - name: Read the partial-merge negative marker
+      ansible.builtin.slurp:
+        src: /tmp/compose-app-nginx-merge.json
+      register: compose_app_nginx_merge
+
+    - name: Assert a sites-enabled set that cannot be staged fails the flow
+      ansible.builtin.assert:
+        that:
+          - (compose_app_nginx_merge.content | b64decode | from_json).failed
+        fail_msg: >-
+          Candidate validation ran over a partial copy of sites-enabled, so a
+          server_name or listen collision with the site that failed to copy
+          would be missed and surface at the next nginx start.
+        success_msg: "a sites-enabled set that cannot be staged fails the flow"
+
+    # Also covers the seeded TLS material: nginx loads the cert and key named by
+    # the sites, so an unloadable pair fails here and in candidate validation.
+    - name: Assert the merged nginx configuration is valid
+      ansible.builtin.command: nginx -t
+      changed_when: false

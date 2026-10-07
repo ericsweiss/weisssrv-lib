@@ -115,14 +115,9 @@ spec:
         full fan-out; moving the matrix to a small dedicated file and pointing
         `ci_file` at it is what buys that back.
 ---
-# MR-targeted molecule child pipeline: instead of the full role matrix, run only
-# the scenarios the diff affects (role dirs -> their scenarios, provider roles ->
-# dependent roles transitively, integration stacks by exercised role, global
-# inputs -> everything; an unknown role dir fails loudly). The default branch
-# still runs the full static matrix from `ci_file`, so a cross-role regression a
-# targeted MR run missed is caught before any deploy.
-#
-# MR-only by design: on main the static matrix job is the one that runs.
+# MR-targeted molecule child pipeline: runs only the scenarios the diff affects
+# (role dirs, transitive dependents, integration stacks; an unknown role dir
+# fails loudly). MR-only; on main the static matrix from `ci_file` runs instead.
 "$[[ inputs.plan_job_name ]]":
   stage: $[[ inputs.stage ]]
   image: $[[ inputs.image ]]
@@ -169,10 +164,9 @@ spec:
     - job: $[[ inputs.test_image_job ]]
       optional: true
   variables:
-    # Re-declare the image-job's dotenv value as a YAML variable: a dotenv
-    # reaches THIS bridge through needs:artifacts, but only yaml_variables are
-    # forwarded downstream, so without this the child falls back to :latest
-    # and ignores the digest this pipeline just built.
+    # Re-declare the image-job's dotenv value as a YAML variable: only
+    # yaml_variables forward downstream, so without this the child falls back
+    # to :latest and ignores the digest this pipeline built.
     $[[ inputs.digest_var ]]: $$[[ inputs.digest_var ]]
   trigger:
     include:

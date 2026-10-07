@@ -19,9 +19,8 @@
   [../scripts/vendorable-paths.yml](../scripts/vendorable-paths.yml).
 
 Vendored surfaces document themselves next to the files:
-[../lint/README.md](../lint/README.md) (linter configs) and
-[../taskfiles/README.md](../taskfiles/README.md) (go-task fragments) both state
-the copy-into-consumer contract.
+[../lint/README.md](../lint/README.md) states the copy-into-consumer contract
+for the linter configs.
 
 The Ansible collection has its own front door —
 [../ansible_collections/weisssrv/infra/README.md](../ansible_collections/weisssrv/infra/README.md)
@@ -31,7 +30,11 @@ The Ansible collection has its own front door —
 Each Terraform module documents its own inputs, outputs and consumption pattern:
 [cloudflare-zone](../terraform/modules/cloudflare-zone/README.md),
 [tailscale-acl](../terraform/modules/tailscale-acl/README.md),
-[authentik-sso](../terraform/modules/authentik-sso/README.md).
+[authentik-sso](../terraform/modules/authentik-sso/README.md),
+[unifi-network](../terraform/modules/unifi-network/README.md). The policies all
+four share — the `required_version` floor, pre-1.0 provider pinning, the
+repeated validation regexes — are in
+[../terraform/modules/README.md](../terraform/modules/README.md).
 
 The top-level [../README.md](../README.md) is the overview + repo map, and names
 the current release. The CLI has its own [../cli/README.md](../cli/README.md);

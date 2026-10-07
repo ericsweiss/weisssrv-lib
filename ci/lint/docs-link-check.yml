@@ -28,41 +28,31 @@ spec:
       default: "main"
       description: >-
         Consumer's default branch as a LITERAL name (`main`, `master`, `trunk`)
-        for the post-merge rule. NOT `$CI_DEFAULT_BRANCH`: the value lands
-        inside a quoted `rules:if` string, which GitLab does not expand, so the
-        comparison would never match and the job would silently stop running
-        post-merge.
+        for the post-merge rule. NOT `$CI_DEFAULT_BRANCH` —
+        docs/INCLUDE-CONTRACT.md § default_branch.
     changes:
       type: array
       default:
-        - "docs/**/*"
-        - "README.md"
-        - "CLAUDE.md"
+        - "**/*.md"
         - "scripts/check-doc-links.py"
-        - "scripts/test_check_doc_links.py"
       description: >-
-        Path list for the MR / default-branch `changes:` rules. A consumer whose
-        markdown lives outside these paths passes its own list — the checker
-        scans `roots`, and a path missing here just means no run on that edit.
+        Path list for the MR / default-branch `changes:` rules. The default
+        mirrors the checker's own roots (every git-tracked *.md). Narrow it only
+        to trade coverage for pipeline time: a path missing here means no run on
+        that edit.
     job_memory_limit:
       default: "512Mi"
       description: >-
-        KUBERNETES_MEMORY_LIMIT for the job pod. Right-sized per job class so
-        concurrent pipelines pack into the runner namespace's limits.memory
-        quota instead of every job costing the runner default; raise it per
-        consumer only when the job really needs more (the runner's
-        memory_limit_overwrite_max_allowed is the hard ceiling).
+        KUBERNETES_MEMORY_LIMIT for the job pod. Sizing policy:
+        docs/INCLUDE-CONTRACT.md § Resource inputs.
     job_memory_request:
       default: "128Mi"
       description: KUBERNETES_MEMORY_REQUEST for the job pod (scheduler reservation).
     job_cpu_request:
       default: "100m"
       description: >-
-        KUBERNETES_CPU_REQUEST for the job pod — the scheduler reservation,
-        right-sized per job class so a full concurrency burst packs into the
-        runner nodes' allocatable CPU instead of every job costing the runner
-        default (no CPU limit, repo-wide: CPU is compressible and a limit
-        only buys CFS throttling).
+        KUBERNETES_CPU_REQUEST for the job pod (scheduler reservation). Sizing
+        policy: docs/INCLUDE-CONTRACT.md § Resource inputs.
 ---
 "$[[ inputs.job_name ]]":
   needs: []
@@ -79,7 +69,7 @@ spec:
       - runner_system_failure
       - scheduler_failure
   script:
-    # shellcheck disable=SC2086  # intentional word-split of the roots input
+    # roots is word-split on purpose: it may name several directories.
     - python3 "$[[ inputs.script_path ]]" $[[ inputs.roots ]]
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'

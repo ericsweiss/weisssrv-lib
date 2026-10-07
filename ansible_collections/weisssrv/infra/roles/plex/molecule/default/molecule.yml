@@ -1,9 +1,10 @@
 ---
-# Full-install scenario: the Plex package really is installed from the v2 repo,
-# but GPU drivers and the service lifecycle are skipped (no render node, no
-# usable plexmediaserver in a container). The cert-reload hook is exercised end
-# to end against a stub systemctl and a stub TLS server.
+# Full-install scenario: the package is installed from the v2 repo; the driver
+# packages and the service lifecycle are skipped. The components rewrite runs
+# against a scratch sources file, and the cert hook against stubs.
 provisioner:
+  playbooks:
+    prepare: prepare.yml
   inventory:
     group_vars:
       all:
@@ -17,7 +18,11 @@ provisioner:
         plex_media_dir: /tmp/plex-media
         plex_service_after:
           - network-online.target
-        plex_skip_gpu_drivers: true
+        # The components rewrite runs; only the driver packages are skipped,
+        # which keeps the branch covered without a render node.
+        plex_skip_gpu_drivers: false
+        plex_gpu_driver_packages: []
+        plex_debian_sources_path: /tmp/plex-test-debian.sources
         plex_skip_service: true
         plex_custom_cert_enabled: true
         plex_pfx_passphrase: molecule-mock-pfx-passphrase

@@ -30,12 +30,9 @@
         state: directory
         mode: "0755"
 
-    # Mock `docker` so the wrapper's pg_dump pipe can be exercised on both the
-    # success and failure paths. /tmp/nextcloud-backup-fail arms the failure;
-    # /tmp/nextcloud-backup-tiny arms a truncated (too-small) dump.
-    # NEXTCLOUD_INFLIGHT_PROBE snapshots the landing zone WHILE the dump
-    # streams, which is the only way to prove the in-progress file is not
-    # visible under the final dump name.
+    # Mock `docker` so the wrapper's pg_dump pipe runs on success and failure.
+    # /tmp/nextcloud-backup-fail arms the failure, /tmp/nextcloud-backup-tiny a
+    # truncated dump; NEXTCLOUD_INFLIGHT_PROBE snapshots the zone mid-dump.
     - name: Install mock docker for the backup-wrapper test
       ansible.builtin.copy:
         dest: /usr/local/bin/docker

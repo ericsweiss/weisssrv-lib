@@ -72,6 +72,8 @@
           - "'9167' in (service_content.content | b64decode)"
           - "'unbound.ctl' in (service_content.content | b64decode)"
           - "'SupplementaryGroups=unbound' in (service_content.content | b64decode)"
+          # Default listen address is empty and the port 9167, so this renders ':9167'.
+          - "'--web.listen-address=:9167' in (service_content.content | b64decode)"
         fail_msg: "Service file missing expected configuration"
         success_msg: "Service file has correct configuration"
 

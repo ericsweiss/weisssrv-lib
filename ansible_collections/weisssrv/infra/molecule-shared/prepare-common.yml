@@ -1,8 +1,6 @@
 ---
-# Shared Molecule prepare playbook: initialize the container for reliable
-# testing. Wired as the default `provisioner.playbooks.prepare` in base.yml, so
-# every default scenario inherits it; a role needing extra prep ships its own
-# molecule/default/prepare.yml and re-points playbooks.prepare at it.
+# Molecule prepare playbook: the shared container initialization every
+# scenario needs before its role runs.
 - name: Prepare
   hosts: all
   gather_facts: false

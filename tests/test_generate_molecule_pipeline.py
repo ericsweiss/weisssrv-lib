@@ -1,26 +1,9 @@
 #!/usr/bin/env python3
-"""Unit tests for scripts/generate-molecule-pipeline.py.
+"""Unit tests for scripts/generate-molecule-pipeline.py: affected-set
+computation, coverage-bug failure modes, and child-pipeline rendering. Each runs
+against a synthetic fixture repo, so the suite is consumer-tree independent."""
 
-Covers the affected-set computation (direct role selection, transitive role
-dependencies, integration-test selection, global triggers, inventory/playbook
-handling), the coverage-bug failure modes, and the child-pipeline rendering
-(including the empty -> no-op child).
-
-Everything runs against a synthetic fixture repo built in a tmpdir (roles
-alpha/beta/gamma/leaf with meta + include_role edges, two integration stacks), a
-collection-layout variant (bare and FQCN role references), or through the pure
-compute_affected(), so the suite is consumer-tree independent.
-
-Fixture dependency graph (consumer -> providers):
-    beta  -> {alpha}          (include_role in tasks/)
-    gamma -> {beta, alpha}    (meta dependency + include_role)
-    leaf  -> {}
-so a change to `alpha` fans out to alpha, beta, gamma.
-"""
-
-import importlib.util
 import os
-import shutil
 import subprocess
 import sys
 import textwrap
@@ -29,11 +12,11 @@ from pathlib import Path
 import pytest
 import yaml
 
+from _helpers import require_tool
+from script_loader import load_script
+
 _script_path = Path(__file__).resolve().parent.parent / "scripts" / "generate-molecule-pipeline.py"
-_spec = importlib.util.spec_from_file_location("generate_molecule_pipeline", _script_path)
-gmp = importlib.util.module_from_spec(_spec)
-sys.modules["generate_molecule_pipeline"] = gmp
-_spec.loader.exec_module(gmp)
+gmp = load_script("generate-molecule-pipeline.py", register=True)
 
 FIXTURE_CI = textwrap.dedent(
     """\
@@ -245,10 +228,8 @@ class TestGlobalTriggers:
             assert sel([prefix + "x.yml"]).full, f"{prefix} must trigger the full matrix"
 
     def test_the_ci_images_pip_pins_trigger_the_full_matrix(self, sel):
-        """The pins both suites run on live in the image build context, which is
-        also in the template's `changes` default — so the trigger can actually
-        fire. A bare repo-root `requirements.txt` is NOT one: `changes` does not
-        list it, so molecule-plan would never be created to act on it."""
+        """The image build context pins trigger the full matrix; a bare
+        repo-root requirements.txt does not."""
         assert sel(["docker/molecule-ci/requirements.txt"]).full
         assert not gmp.is_global_trigger("requirements.txt")
 
@@ -465,13 +446,8 @@ FQCN_CI = textwrap.dedent(
 
 
 def _build_fqcn_collection_repo(root: Path) -> Path:
-    """Collection layout whose roles reference each other by FQCN.
-
-    Edges (consumer -> providers): beta -> {alpha} via a FQCN meta dependency,
-    gamma -> {alpha} via a FQCN include_role, delta -> {alpha, beta} via a mixed
-    bare + FQCN pair. `foreign` references community.general.alpha and must get
-    no edge at all.
-    """
+    """Collection layout whose roles reference each other by FQCN, plus a
+    `foreign` role referencing community.general.alpha that must get no edge."""
     _write(root / ".gitlab-ci.yml", FQCN_CI)
     roles = root / COLLECTION / "roles"
     _write(roles / "alpha/tasks/main.yml", "---\n- name: noop\n  ansible.builtin.debug: {}\n")
@@ -585,6 +561,20 @@ class TestCollectionFqcnReferences:
     def test_foreign_namespace_does_not_match(self, graph):
         assert "foreign" not in graph, "community.general.alpha must not alias onto alpha"
 
+    def test_unknown_out_collects_a_typoed_own_collection_reference(self, tmp_path):
+        repo = _build_fqcn_collection_repo(tmp_path / "typo-repo")
+        _write(
+            repo / COLLECTION / "roles/gamma/tasks/main.yml",
+            f"---\n- name: wrap a typo\n  ansible.builtin.include_role:\n    name: {FQCN_NS}alphaa\n",
+        )
+        unknown: dict[str, list[str]] = {}
+        graph = gmp.build_role_graph(repo / COLLECTION / "roles", unknown_out=unknown)
+        assert unknown == {"gamma": ["alphaa"]}
+        assert "gamma" not in graph, "the typo'd edge is still pruned from the graph"
+
+    def test_unknown_out_is_optional(self, repo):
+        gmp.build_role_graph(repo / COLLECTION / "roles")
+
     def test_provider_fans_out_transitively(self, repo):
         s = self._sel(repo, [f"{COLLECTION}/roles/alpha/tasks/main.yml"])
         assert {r for r, _ in s.scenarios} == {"alpha", "beta", "gamma", "delta"}
@@ -696,12 +686,16 @@ class TestCli:
         out = capsys.readouterr().out
         assert "molecule matrix" in out and "stack-a" in out
 
-    @pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
     def test_diff_base_reads_git(self, tmp_path):
+        require_tool("git", "molecule pipeline generator",
+                     "git ships in the full python image.")
         r = _build_repo(tmp_path / "gitrepo")
         env = {
             "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
+            # A global commit.gpgsign, init.templateDir hook or pre-commit hook
+            # would otherwise error this fixture.
+            "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
         }
 
         def git(*args):
@@ -710,11 +704,11 @@ class TestCli:
 
         git("init", "-q", "-b", "main")
         git("add", "-A")
-        git("commit", "-q", "-m", "base")
+        git("-c", "commit.gpgsign=false", "commit", "--no-verify", "-q", "-m", "base")
         base = subprocess.run(["git", "-C", str(r), "rev-parse", "HEAD"],
                               check=True, capture_output=True, text=True).stdout.strip()
         _write(r / "ansible/roles/leaf/tasks/main.yml", "---\n- name: changed\n  ansible.builtin.debug: {}\n")
-        git("commit", "-q", "-am", "edit leaf")
+        git("-c", "commit.gpgsign=false", "commit", "--no-verify", "-q", "-am", "edit leaf")
 
         out = tmp_path / "child.yml"
         assert gmp.main([base, "-o", str(out), "--repo", str(r)]) == 0
@@ -722,6 +716,79 @@ class TestCli:
         assert doc["molecule-tests"]["parallel"]["matrix"] == [
             {"ROLE": "leaf", "SCENARIO": "default"}
         ]
+
+
+class TestGalaxyVersionOnlyDiff:
+    """A release MR's version lineage must not fan out the whole matrix."""
+
+    VERSION_ONLY = (
+        "diff --git a/galaxy.yml b/galaxy.yml\n"
+        "--- a/galaxy.yml\n"
+        "+++ b/galaxy.yml\n"
+        "@@ -3 +3 @@\n"
+        '-version: 0.17.1\n'
+        '+version: 0.18.0\n'
+    )
+
+    def test_a_version_only_diff_is_recognised(self):
+        assert gmp.galaxy_change_is_version_only(self.VERSION_ONLY)
+
+    def test_a_dependency_change_is_not(self):
+        diff = self.VERSION_ONLY + "-  community.general: 10.0.0\n+  community.general: 11.0.0\n"
+        assert not gmp.galaxy_change_is_version_only(diff)
+
+    def test_an_added_key_beside_the_version_is_not(self):
+        diff = self.VERSION_ONLY + "+build_ignore:\n"
+        assert not gmp.galaxy_change_is_version_only(diff)
+
+    def test_an_unreadable_diff_keeps_the_full_trigger(self):
+        assert not gmp.galaxy_change_is_version_only("")
+
+    def test_a_version_only_galaxy_diff_selects_no_scenarios(self, tmp_path, capsys):
+        require_tool("git", "molecule pipeline generator",
+                     "git ships in the full python image.")
+        r = _build_repo(tmp_path / "gitrepo")
+        galaxy = r / "ansible" / "galaxy.yml"
+        galaxy.parent.mkdir(parents=True, exist_ok=True)
+        galaxy.write_text("namespace: ns\nname: coll\nversion: 0.17.1\n")
+        env = {
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
+            "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
+        }
+
+        def git(*args):
+            subprocess.run(["git", "-C", str(r), *args], check=True,
+                           capture_output=True, env={**os.environ, **env})
+
+        git("init", "-q", "-b", "main")
+        git("add", "-A")
+        git("-c", "commit.gpgsign=false", "commit", "--no-verify", "-q", "-m", "base")
+        base = subprocess.run(["git", "-C", str(r), "rev-parse", "HEAD"],
+                              check=True, capture_output=True, text=True).stdout.strip()
+        galaxy.write_text("namespace: ns\nname: coll\nversion: 0.18.0\n")
+        git("-c", "commit.gpgsign=false", "commit", "--no-verify", "-q", "-am", "release")
+
+        out = tmp_path / "child.yml"
+        assert gmp.main([base, "-o", str(out), "--repo", str(r)]) == 0
+        doc = yaml.safe_load(out.read_text())
+        assert "molecule-tests" not in doc
+        assert "only its `version:`" in capsys.readouterr().err
+
+
+class TestLoadYaml:
+    """An unreadable file must fail loudly: a silently dropped file drops the
+    dependency edges it declared."""
+
+    def test_absent_path_is_none(self, tmp_path):
+        assert gmp._load_yaml(tmp_path / "nope.yml") is None
+
+    def test_unreadable_path_raises(self, tmp_path):
+        # A directory in a file's place: EISDIR on every platform, where a
+        # chmod-based test is a no-op for root in CI.
+        (tmp_path / "meta.yml").mkdir()
+        with pytest.raises(gmp.CoverageError, match="unreadable"):
+            gmp._load_yaml(tmp_path / "meta.yml")
 
 
 class TestRealCollection:
@@ -751,22 +818,6 @@ class TestRealCollection:
     def test_no_own_collection_reference_is_pruned_as_unknown(self):
         """build_role_graph drops providers that aren't on disk, so a typo'd
         `weisssrv.infra.apt_signed_repos` would vanish with no error."""
-        known = {p.name for p in self.REAL_ROLES.iterdir() if p.is_dir()}
-        unknown = {}
-        for role_dir in sorted(p for p in self.REAL_ROLES.iterdir() if p.is_dir()):
-            referenced: set[str] = set()
-            meta = role_dir / "meta" / "main.yml"
-            if meta.is_file():
-                referenced |= gmp._meta_dependencies(meta)
-            for yml in gmp._yaml_files(role_dir):
-                if "/molecule/" in yml.as_posix():
-                    continue
-                gmp._collect_include_role_names(gmp._load_yaml(yml), referenced)
-            missing = sorted(
-                name[len(FQCN_NS):]
-                for name in referenced
-                if name.startswith(FQCN_NS) and name[len(FQCN_NS):] not in known
-            )
-            if missing:
-                unknown[role_dir.name] = missing
+        unknown: dict[str, list[str]] = {}
+        gmp.build_role_graph(self.REAL_ROLES, unknown_out=unknown)
         assert unknown == {}

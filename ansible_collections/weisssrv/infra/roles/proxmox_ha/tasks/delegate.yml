@@ -1,0 +1,42 @@
+---
+# Picks the node the cluster-wide reconcile is delegated to: probes every host
+# in proxmox_ha_host_group and fails when none answers. Result:
+# _proxmox_ha_delegate. Also an entry point (tasks_from: delegate) — see README.
+- name: Reset the reachability probe results for this play
+  ansible.builtin.set_fact:
+    _proxmox_ha_reachable: []
+  run_once: true
+  tags: [proxmox_ha]
+
+- name: Probe Proxmox hosts for reachability (delegate selection)
+  ansible.builtin.include_tasks: probe-delegate.yml
+  loop: "{{ groups[proxmox_ha_host_group] | default([]) }}"
+  loop_control:
+    loop_var: _proxmox_ha_probe_host
+    label: "{{ _proxmox_ha_probe_host }}"
+  run_once: true
+  tags: [proxmox_ha]
+
+- name: Resolve the reconcile delegate
+  vars:
+    # run_once fires once per serial batch, so the probe results live on the
+    # first host of the CURRENT batch — read them from there so every host
+    # derives the same delegate, serial play or not.
+    _proxmox_ha_reachable_hosts: >-
+      {{ hostvars[ansible_play_batch | first]['_proxmox_ha_reachable'] | default([]) }}
+  ansible.builtin.set_fact:
+    _proxmox_ha_delegate: >-
+      {{ proxmox_ha_delegate_host
+         | default((_proxmox_ha_reachable_hosts | first) | default('')) }}
+  tags: [proxmox_ha]
+
+- name: Assert a reachable Proxmox node was found for the reconcile
+  ansible.builtin.assert:
+    that:
+      - _proxmox_ha_delegate | length > 0
+    fail_msg: >-
+      No host in '{{ proxmox_ha_host_group }}' answered the reachability probe,
+      so the cluster-wide HA reconcile has nowhere to run. Bring one node back or
+      set proxmox_ha_delegate_host to name one.
+  run_once: true
+  tags: [proxmox_ha]

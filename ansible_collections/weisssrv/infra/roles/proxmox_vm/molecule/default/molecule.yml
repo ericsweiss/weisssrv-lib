@@ -41,10 +41,9 @@ provisioner:
     defaults:
       remote_tmp: /tmp/ansible-tmp
 scenario:
-  # No `idempotence` step: converge drives negative-path cases to failure via
-  # block/rescue and rewrites the qm/pvesh stub state between cases, so a second
-  # converge would not replay the same inputs. Per-task idempotence is asserted
-  # directly instead (verify.yml counts the qm calls each reconcile makes).
+  # No `idempotence` step: converge drives negative-path cases through
+  # block/rescue and rewrites the stub state between them, so a second converge
+  # replays different inputs. verify.yml counts qm calls per reconcile instead.
   test_sequence:
     - dependency
     - cleanup

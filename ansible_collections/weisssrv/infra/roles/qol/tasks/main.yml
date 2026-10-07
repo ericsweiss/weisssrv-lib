@@ -39,9 +39,8 @@
       when: qol_admin_user != 'root'
 
     # Cloning the framework directly, rather than running upstream's
-    # tools/install.sh (which clones master HEAD), is what pins Oh My Zsh to
-    # qol_omz_commit. The installer's other steps are done by this role: .zshrc
-    # and the login shell.
+    # tools/install.sh, is what pins Oh My Zsh to qol_omz_commit. This role
+    # does the installer's other steps: .zshrc and the login shell.
     - name: Check for a legacy shallow Oh My Zsh clone
       ansible.builtin.stat:
         path: "{{ qol_admin_home_resolved }}/.oh-my-zsh/.git/shallow"
@@ -79,12 +78,12 @@
       when:
         - qol_admin_user != 'root'
         - (qol_omz_head.stdout | default('')) != qol_omz_commit
-      # GitHub git fetches intermittently reset from CI runners — retry before
-      # failing.
+      # GitHub resets git fetches from CI runners for a short window; retry
+      # across it before failing.
       register: qol_omz_clone
       until: qol_omz_clone is succeeded
-      retries: 3
-      delay: 5
+      retries: 6
+      delay: 20
 
     - name: Deploy .zshrc configuration
       ansible.builtin.template:

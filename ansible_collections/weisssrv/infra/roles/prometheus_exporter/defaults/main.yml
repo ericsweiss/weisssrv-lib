@@ -1,8 +1,7 @@
 ---
-# prometheus_exporter — shared install pipeline for download-based exporters.
-# Callers (zfs_exporter, unbound_exporter) set these via include_role vars.
-# Sentinels keep ansible-lint / syntax-check happy when the role is parsed
-# without a caller; an actual run always overrides them.
+# prometheus_exporter: shared install pipeline for download-based exporters.
+# Callers set these via include_role vars. The sentinel values only keep the
+# role parseable without a caller; a real run always overrides them.
 
 # Logical name, used only in task titles.
 prometheus_exporter_name: ""

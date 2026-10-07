@@ -1,24 +1,22 @@
 # {{ ansible_managed }}
 [Unit]
 Description=Quarterly offsite restore drill (restore a sample and byte-compare it)
-# The comparands are files inside the source pools' ZFS snapshots, so the mount
-# passes must have completed; the control script's shared flock keeps it from
-# interleaving with a mid-run nightly backup (it fails fast and Persistent=true
-# catches up).
+# The comparands live in the source pools' ZFS snapshots, so the mount passes
+# must have completed. The shared flock keeps it out of a mid-run nightly backup
+# (it skips and Persistent=true catches up).
 After=zfs-mount.service zfs-mount-encrypted.service network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 EnvironmentFile={{ restic_offsite_config_dir }}/env
-# Fails the unit on mismatch by design: the metric answers "when did a drill
-# last PASS", and a failed unit is what puts the failure in the journal next to
-# the mismatching path.
+# Fails the unit on mismatch by design: that is what puts the mismatching path
+# in the journal next to the failure.
 ExecStart=/usr/local/sbin/restic-offsitectl drill
-# journald tags stdout with the ExecStart BASENAME by default, i.e.
-# `restic-offsitectl` — the same tag the nightly run and the weekly verify get.
-# Pinning the tag keeps the drill's journal separable from theirs and makes the
-# `journalctl -t backup-restore-drill` the alert annotation points at work.
+TimeoutStartSec={{ restic_offsite_drill_timeout_start_sec }}
+TimeoutStopSec={{ restic_offsite_timeout_stop_sec }}
+# Without this the journal tag is the ExecStart basename, the same one the
+# nightly run and the weekly verify get; the alert points at this tag.
 SyslogIdentifier=backup-restore-drill
 Nice={{ restic_offsite_nice }}
 IOSchedulingClass={{ restic_offsite_io_class }}

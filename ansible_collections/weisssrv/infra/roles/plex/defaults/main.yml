@@ -38,18 +38,26 @@ plex_cert_dir: /etc/ssl/plex
 # set by an operator under Plex Settings -> Network -> "Custom certificate
 # encryption key"; the hook refuses to run without it.
 plex_pfx_passphrase: ""
-# FALLBACK only for the cert-reload probe's SNI. Plex serves the custom
-# certificate exclusively to handshakes whose SNI matches its
-# customCertificateDomain preference — everything else gets the *.plex.direct
-# fallback — so the probe must send that name to verify the swap took effect.
-# The script reads the live value from Preferences.xml and only falls back to
-# this when Plex has not written the key yet; an empty value there makes the
-# script refuse to verify blind rather than guess.
+# Fallback SNI for the cert-reload probe, used only until Plex writes its
+# customCertificateDomain preference. Empty makes the hook refuse to verify
+# blind rather than guess (README, Custom certificate).
 plex_cert_domain: ""
 
-# Skip the non-free apt components and the VA-API driver packages (no GPU
-# passed through, or a test container).
+# Skip the non-free apt components and the GPU driver packages (no GPU passed
+# through, or a test container).
 plex_skip_gpu_drivers: false
+
+# GPU driver packages for hardware transcoding. The default is the Intel VA-API
+# set; override for AMD (mesa-va-drivers) or NVIDIA. An empty list installs
+# none and still enables the components below.
+plex_gpu_driver_packages:
+  - intel-media-va-driver-non-free
+  - vainfo
+  - intel-gpu-tools
+
+# Enable Debian's non-free components, where the Intel media driver lives. Set
+# false when the driver packages come from main or a vendor repo.
+plex_gpu_nonfree_repos: true
 
 # deb822 sources file whose Components line carries non-free (where the Intel
 # media driver lives). A host without it falls back to one-line entries.

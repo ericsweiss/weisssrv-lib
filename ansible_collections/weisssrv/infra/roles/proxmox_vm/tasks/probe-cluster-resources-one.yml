@@ -1,0 +1,33 @@
+---
+# CRITICAL: this must stay a looped INCLUDE around a SINGLE delegated query,
+# never a looped delegate_to. An unreachable looped delegate ends the host's
+# task sequence with rc 0 despite ignore_unreachable, and the caller reports
+# green having reconciled nothing.
+
+# One host per include, recorded in _proxmox_vm_cluster_json. Same shape as
+# proxmox_ha/tasks/probe-delegate.yml and proxmox_firewall/tasks/probe-delegate.yml;
+# tests/test_probe_delegate_parity.py holds the three in step.
+- name: Query the Proxmox cluster resource list — {{ _proxmox_vm_probe_host }}
+  ansible.builtin.command: pvesh get /cluster/resources --type vm --output-format json
+  delegate_to: "{{ _proxmox_vm_probe_host }}"
+  become: true
+  ignore_unreachable: true
+  # A module-level failure (reachable host, pvesh refusing) must not abort the
+  # caller either — only a real answer is recorded.
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  register: _proxmox_vm_probe
+  when: _proxmox_vm_cluster_json | default('') | length == 0
+
+- name: Record the probe outcome — {{ _proxmox_vm_probe_host }}
+  ansible.builtin.set_fact:
+    _proxmox_vm_cluster_json: >-
+      {{ _proxmox_vm_probe.stdout if (_proxmox_vm_probe.rc | default(1)) == 0
+         else (_proxmox_vm_cluster_json | default('')) }}
+    _proxmox_vm_probe_results: >-
+      {{ (_proxmox_vm_probe_results | default([]))
+         + [_proxmox_vm_probe_host ~ ': '
+            ~ ('unreachable' if (_proxmox_vm_probe.unreachable | default(false))
+               else 'rc=' ~ (_proxmox_vm_probe.rc | default('?') | string))] }}
+  when: not (_proxmox_vm_probe.skipped | default(false))

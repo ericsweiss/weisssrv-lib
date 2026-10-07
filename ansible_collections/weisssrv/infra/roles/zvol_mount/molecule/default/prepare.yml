@@ -14,35 +14,37 @@
     - name: Gather facts
       ansible.builtin.setup:
 
+    # sfdisk ships in fdisk, not util-linux, on Debian 13.
     - name: Install required packages
       ansible.builtin.apt:
         name:
           - e2fsprogs
+          - fdisk
           - util-linux
         state: present
         update_cache: true
 
-    - name: Create test disk image (64MB)
-      ansible.builtin.command: dd if=/dev/zero of=/tmp/test-disk.img bs=1M count=64
+    # Two images: the disk the role manages, and a blank-but-partitioned one
+    # that the partition-table guard must refuse.
+    - name: Create test disk images (64MB)
+      ansible.builtin.command: "dd if=/dev/zero of={{ item }} bs=1M count=64"
       args:
-        creates: /tmp/test-disk.img
+        creates: "{{ item }}"
+      loop:
+        - /tmp/test-disk.img
+        - /tmp/test-disk-pt.img
 
     # Loop devices are kernel-global but their /dev nodes are per-container; the
     # script below mknods the node itself and retries on contention (see inline).
-    - name: Attach loopback device (dynamic allocation, mknod recovery, race-safe)
+    - name: Attach loopback devices (dynamic allocation, mknod recovery, race-safe)
       ansible.builtin.shell: |
         set -euo pipefail
-        # NOTE: keep these comments apostrophe-free. ansible split_args tokenizes
-        # the shell free-form value, so a stray single quote in a comment (a
-        # contraction or possessive) trips "unbalanced quotes" at PARSE time.
-        #
-        # Loop devices are KERNEL-GLOBAL, but the /dev/loopN NODES live in a
-        # per-container private /dev with no udev to materialize them, so a
-        # kernel-allocated device has no node and losetup reports it "lost".
-        # losetup can also print the path with a trailing " (lost)" annotation,
-        # so trust ONLY the loop-index digits, rebuild a clean /dev/loopN path,
-        # and recreate the node unconditionally (major 7 / minor N) -- which also
-        # covers a missing, stale, or wrong node.
+        # CRITICAL: keep these comments apostrophe-free. ansible split_args
+        # tokenizes the shell free-form value, so a stray single quote trips
+        # "unbalanced quotes" at parse time.
+
+        # losetup can report a device "lost" because /dev/loopN has no udev
+        # here, so trust only the loop-index digits and recreate the node.
         loop_num() { n=${1##*loop}; printf '%s' "${n%%[!0-9]*}"; }
         node_for() {
           n=$(loop_num "$1"); [ -n "$n" ] || return 1
@@ -53,7 +55,7 @@
           printf '%s' "$d"
         }
         # Reuse an existing attachment (idempotent re-run); its node may be gone too.
-        existing=$(losetup -j /tmp/test-disk.img 2>/dev/null | cut -d: -f1 | head -1 || true)
+        existing=$(losetup -j {{ item.img }} 2>/dev/null | cut -d: -f1 | head -1 || true)
         if [ -n "$existing" ]; then
           d=$(node_for "$existing") && { printf '%s' "$d"; exit 0; }
         fi
@@ -64,17 +66,24 @@
           raw=$(losetup -f 2>/dev/null || true)
           [ -n "$raw" ] || { sleep 1; continue; }
           d=$(node_for "$raw") || { sleep 1; continue; }
-          if losetup "$d" /tmp/test-disk.img 2>/dev/null; then
+          if losetup "$d" {{ item.img }} 2>/dev/null; then
             printf '%s' "$d"
             exit 0
           fi
           sleep 1
         done
-        echo "could not attach a loop device for /tmp/test-disk.img after 10 attempts" >&2
+        echo "could not attach a loop device for {{ item.img }} after 10 attempts" >&2
         exit 1
       args:
         executable: /bin/bash
-      register: zvol_loop_device
+      loop:
+        - img: /tmp/test-disk.img
+          link: scsi-0QEMU_QEMU_HARDDISK_drive-scsi1
+        - img: /tmp/test-disk-pt.img
+          link: scsi-0QEMU_QEMU_HARDDISK_drive-scsi9
+      loop_control:
+        label: "{{ item.img }}"
+      register: zvol_loop_devices
       changed_when: false
 
     - name: Create /dev/disk/by-id directory
@@ -83,9 +92,49 @@
         state: directory
         mode: "0755"
 
-    - name: Create symlink simulating SCSI device path
+    - name: Create symlinks simulating SCSI device paths
       ansible.builtin.file:
-        src: "{{ zvol_loop_device.stdout | trim }}"
-        dest: /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi1
+        src: "{{ item.stdout | trim }}"
+        dest: "/dev/disk/by-id/{{ item.item.link }}"
         state: link
         force: true
+      loop: "{{ zvol_loop_devices.results }}"
+      loop_control:
+        label: "{{ item.item.link }}"
+
+    # Blank disk carrying only a GPT label: FSTYPE is empty, PTTYPE is not.
+    - name: Write a partition table with no filesystem on the guard disk
+      ansible.builtin.shell: |
+        set -euo pipefail
+        dev=/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi9
+        if [ -n "$(lsblk -dno PTTYPE "$dev")" ]; then
+          printf 'already-labelled'
+          exit 0
+        fi
+        printf 'label: gpt\n' | sfdisk --no-reread --no-tell-kernel "$dev" >/dev/null
+        # lsblk reads PTTYPE from the udev db, so the new label has to be
+        # processed before the role probes the disk.
+        udevadm trigger --settle --action=change "$dev"
+        printf 'labelled'
+      args:
+        executable: /bin/bash
+      register: zvol_mount_pt_guard_label
+      changed_when: zvol_mount_pt_guard_label.stdout | trim == 'labelled'
+
+    - name: Read the staged guard disk
+      ansible.builtin.command: lsblk -dno FSTYPE,PTTYPE /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi9
+      register: zvol_mount_pt_guard_probe
+      changed_when: false
+
+    # The converge negative case is only negative while this holds, so stage
+    # failures fail here instead of reading as a regressed guard.
+    - name: Assert the guard disk carries a partition table and no filesystem
+      ansible.builtin.assert:
+        that:
+          - zvol_mount_pt_guard_probe.stdout | trim == 'gpt'
+        fail_msg: >-
+          The guard disk reads FSTYPE/PTTYPE
+          '{{ zvol_mount_pt_guard_probe.stdout | trim }}' instead of an empty
+          FSTYPE with a gpt PTTYPE, so the role would not meet a
+          blank-but-partitioned disk.
+        quiet: true

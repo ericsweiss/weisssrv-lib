@@ -2,6 +2,10 @@
 # Listen port for --web.listen-address; must match the Prometheus target.
 zfs_exporter_port: 9134
 
+# Bind address for --web.listen-address. Empty = all interfaces, so the host
+# firewall is the only access control; set a management address to narrow it.
+zfs_exporter_listen_address: ""
+
 # Upstream release pin + checksum of the linux-amd64 tarball. The binary runs
 # as root with /dev/zfs access, so a compromised release or MITM must not
 # silently land — bump the pair together.

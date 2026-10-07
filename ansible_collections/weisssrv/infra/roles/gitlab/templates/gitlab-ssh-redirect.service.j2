@@ -1,0 +1,13 @@
+# Managed by Ansible gitlab role.
+[Unit]
+Description=GitLab Git SSH redirect ({{ gitlab_ssh_port }} -> 22)
+Wants=network-pre.target
+Before=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/gitlab-ssh-redirect.sh
+
+[Install]
+WantedBy=multi-user.target

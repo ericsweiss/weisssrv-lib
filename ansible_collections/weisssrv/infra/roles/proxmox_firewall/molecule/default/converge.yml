@@ -3,22 +3,17 @@
   hosts: all
   become: true
   pre_tasks:
-    # Docker platform only, for the same reason prepare.yml restricts its hosts:
-    # the rest of this scenario's inventory is `ansible_connection: local`
-    # pseudo-hosts that exist to feed the render with realistic hostvars. They
-    # all resolve to the one molecule-ci pod, so warming them up runs five apt
-    # transactions at once against a single dpkg lock and probes for a systemd
-    # that pod does not run.
+    # Docker platform only: the rest of the inventory is local pseudo-hosts that
+    # only feed the render with hostvars, and warming them up would contend on
+    # one dpkg lock.
     - name: Container warm-up (apt locks, dpkg state, cache, systemd)
       ansible.builtin.include_tasks: ../../../../molecule-shared/tasks/container-warmup.yml
       when: ansible_connection | default('ssh') != 'local'
   roles:
     - role: weisssrv.infra.proxmox_firewall
 
-# Second play in the SAME invocation, proving the cross-play run-once guard: the
-# first play must have set _proxmox_firewall_cluster_done on the delegate (the
-# docker platform here, which is also what lets verify slurp cluster.fw), so this
-# play captures the fact's pre-include value before re-including the role.
+# Second play in the same invocation, proving the cross-play run-once guard: it
+# captures _proxmox_firewall_cluster_done before re-including the role.
 - name: Cross-play guard — second include must see the run-once fact already set
   hosts: proxmox-firewall-test
   become: true
@@ -43,3 +38,446 @@
     - name: Re-include proxmox_firewall in a second play (guard should skip cluster.fw)
       ansible.builtin.include_role:
         name: weisssrv.infra.proxmox_firewall
+
+    # Emptying a guest's group list is how inventory says "no rules any more":
+    # the stale <vmid>.fw must go, or it keeps filtering with the old GROUPs.
+    # The seed/removal pair is replayed outside the idempotence run.
+    - name: Seed a stale guest .fw for a drained guest
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.copy:
+        dest: /tmp/pve-firewall-test/firewall/152.fw
+        content: |
+          [OPTIONS]
+          enable: 1
+        mode: "0640"
+
+    # The file-server groups follow proxmox_firewall_storage_role_name, not the
+    # literal 'nas', and extra references render after the built-ins. Its own
+    # node dir keeps the primary host.fw under test.
+    - name: Re-include proxmox_firewall for a storage node the variable names
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_firewall
+      vars:
+        proxmox_firewall_node_dir: /tmp/pve-firewall-test/nodes-seam
+        # Its own staging dir: the staging filename is keyed by inventory_hostname,
+        # so sharing one would make both renders rewrite the same file every run.
+        proxmox_firewall_staging_dir: /var/lib/pve-firewall-ansible-seam
+        proxmox_role: filer
+        proxmox_firewall_storage_role_name: filer
+        proxmox_firewall_host_extra_groups:
+          - sg-example-web
+
+    - name: Re-include proxmox_firewall for a guest whose group list is empty
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_firewall
+      vars:
+        vmid: 152
+        guest_security_groups: []
+
+# Third play: proxmox_firewall_enabled false must deploy nothing. Play vars
+# outrank the scenario group_vars, so the render is redirected to a path
+# nothing else writes and verify can assert it was never created.
+- name: Disabled render must not touch pmxcfs
+  hosts: proxmox-firewall-test
+  become: true
+  vars:
+    proxmox_firewall_enabled: false
+    proxmox_firewall_config_dir: /tmp/pve-firewall-disabled/firewall
+    proxmox_firewall_node_dir: /tmp/pve-firewall-disabled/nodes
+  tasks:
+    - name: Re-include proxmox_firewall with the role disabled
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_firewall
+
+# Fourth play: delegate selection. The probe decides which Proxmox host the
+# cluster-scope tasks run on, so an unreachable host must be skipped rather than
+# ending the play rc 0. Renders to a scratch path so nothing else is disturbed.
+- name: Converge — delegate selection
+  hosts: proxmox-firewall-test
+  become: true
+  vars:
+    proxmox_firewall_config_dir: /tmp/pve-firewall-delegate/firewall
+    proxmox_firewall_node_dir: /tmp/pve-firewall-delegate/nodes
+  pre_tasks:
+    # add_host runs after `hosts:` is resolved, so neither group re-enters a
+    # play. 192.0.2.1 is TEST-NET-1 and never answers.
+    - name: Register a mixed reachable/unreachable probe group
+      ansible.builtin.add_host:
+        name: "{{ item.name }}"
+        groups: "{{ item.groups }}"
+        ansible_host: "{{ item.host | default(omit) }}"
+        ansible_connection: "{{ item.connection | default(omit) }}"
+        ansible_ssh_common_args: >-
+          -o ConnectTimeout=2 -o StrictHostKeyChecking=no
+      loop:
+        - {name: proxmox-fw-unreachable, groups: "fw_probe_mixed,fw_probe_dead",
+           host: 192.0.2.1, connection: ssh}
+        - {name: proxmox-firewall-test, groups: fw_probe_mixed}
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: false
+
+  tasks:
+    - name: Mixed group — the unreachable host is skipped
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_firewall
+      vars:
+        proxmox_firewall_host_group: fw_probe_mixed
+
+    - name: Record the delegate chosen from the mixed group
+      ansible.builtin.set_fact:
+        proxmox_firewall_scenario_delegate_mixed: "{{ _proxmox_firewall_delegate | trim }}"
+
+    - name: Assume the dead group resolved a delegate
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.set_fact:
+        proxmox_firewall_scenario_dead_group_failed: false
+
+    # A delegate taken from a group where nothing answered dies UNREACHABLE on
+    # the first pmxcfs write, so the role refuses before it deploys. Tagged so
+    # the idempotence replay does not re-fire the guard the declaration counts.
+    - name: Dead group — a group where nothing answered must fail loudly
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Re-include proxmox_firewall for a group that never answers
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_firewall
+          vars:
+            proxmox_firewall_host_group: fw_probe_dead
+
+        - name: The dead group resolved a delegate anyway
+          ansible.builtin.fail:
+            msg: >-
+              The role resolved a cluster-task delegate with no host answering
+              the probe, so cluster.fw deploys to a node known to be down.
+      rescue:
+        # Pinned to the guard's own name: any other failure here would
+        # otherwise read as the guard firing.
+        - name: Record that the dead group failed
+          ansible.builtin.set_fact:
+            proxmox_firewall_scenario_dead_group_failed: true
+          when: >-
+            ansible_failed_task.name ==
+            'Assert a reachable Proxmox node was found for the cluster-scope tasks'
+
+    - name: Dead group — an explicit delegate pin wins
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_firewall
+      vars:
+        proxmox_firewall_host_group: fw_probe_dead
+        proxmox_firewall_delegate_host: proxmox-firewall-test
+
+    - name: Record the pinned delegate
+      ansible.builtin.set_fact:
+        proxmox_firewall_scenario_delegate_pinned: "{{ _proxmox_firewall_delegate | trim }}"
+
+    - name: Result directory
+      ansible.builtin.file:
+        path: /tmp/molecule-results
+        state: directory
+        mode: "0755"
+
+    # Tagged with the case above: the guard result it reads is set only on the
+    # run that drives the guard, and verify reads this artifact after the replay.
+    - name: Capture the delegate-selection results
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/fw-delegate.json
+        mode: "0644"
+        content: |
+          {"delegate_mixed": {{ proxmox_firewall_scenario_delegate_mixed | to_json }},
+           "dead_group_failed":
+            {{ proxmox_firewall_scenario_dead_group_failed | to_json }},
+           "delegate_pinned": {{ proxmox_firewall_scenario_delegate_pinned | to_json }}}
+
+# Fifth play: an empty relay client scope must render sg-smtp-relay with no IN
+# rule. Scoped to the docker platform, which carries the cluster-task delegate,
+# so the render and the capture land on the filesystem verify reads.
+- name: Converge — empty smtp-relay client scope
+  hosts: proxmox-firewall-test
+  become: true
+  vars:
+    proxmox_firewall_config_dir: /tmp/pve-firewall-smtp-empty/firewall
+    proxmox_firewall_node_dir: /tmp/pve-firewall-smtp-empty/nodes
+    # Its own staging dir: the staging filename is the config label, so sharing
+    # one with the first play would make the two cluster.fw renders overwrite
+    # each other's content every run and neither could report no change.
+    proxmox_firewall_staging_dir: /var/lib/pve-firewall-ansible-smtp-empty
+  tasks:
+    # The empty relay scope is a fact, not a play var: assert_cluster_scope.yml
+    # compares it with hostvars[delegate], which never carries play vars, so a
+    # play var fails that guard instead of the relay guard below.
+    - name: Clear the cluster run-once fact and empty the relay client scope
+      ansible.builtin.set_fact:
+        _proxmox_firewall_cluster_done: false
+        proxmox_firewall_smtp_relay_sources: []
+
+    - name: Result directory
+      ansible.builtin.file:
+        path: /tmp/molecule-results
+        state: directory
+        mode: "0755"
+
+    - name: Re-include proxmox_firewall with no relay client scope
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_firewall
+
+    # A guest naming sg-smtp-relay with no client scope would get a group with
+    # no IN rule at all, so the relay's :25 and :587 stay closed. Tagged so the
+    # idempotence replay does not re-fire the guard the declaration counts.
+    - name: Drive the relay-scope guard with a guest that names the group
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Run the guest tasks for a relay guest with no client scope
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_firewall
+            tasks_from: guest
+          vars:
+            vmid: 9151
+            guest_security_groups: [sg-smtp-relay]
+
+        - name: Record that the relay-scope guard did not fire
+          ansible.builtin.set_fact:
+            proxmox_firewall_scenario_relay_guard: false
+      rescue:
+        - name: Record that the relay-scope guard fired
+          ansible.builtin.set_fact:
+            proxmox_firewall_scenario_relay_guard: true
+
+    # Tagged with the case above: the fact it reads is set only on the run that
+    # drives the guard, and verify reads this artifact after the replay.
+    - name: Capture the relay-scope guard result
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/fw-relay-scope.json
+        mode: "0644"
+        content: |
+          {"guard_fired": {{ proxmox_firewall_scenario_relay_guard | to_json }}}
+
+# Sixth play: an inventory guest naming sg-smtp-relay with an empty client scope
+# must fail at cluster scope, before cluster.fw publishes the empty group.
+# Renders to a scratch path whose cluster.fw verify asserts was never written.
+- name: Converge — relay guest with no client scope fails before cluster.fw
+  hosts: proxmox-firewall-test
+  become: true
+  vars:
+    proxmox_firewall_config_dir: /tmp/pve-firewall-smtp-guard/firewall
+    proxmox_firewall_node_dir: /tmp/pve-firewall-smtp-guard/nodes
+  pre_tasks:
+    # No later play matches fw_relay_guests, so the added guest drives this
+    # play's guard alone.
+    - name: Register an inventory guest that names sg-smtp-relay
+      ansible.builtin.add_host:
+        name: proxmox-fw-relay-guest
+        groups: fw_relay_guests
+        ansible_connection: local
+        vmid: 9152
+        guest_security_groups: [sg-smtp-relay]
+      changed_when: false
+
+  tasks:
+    # The empty relay scope is a fact, not a play var: a play var is invisible
+    # in hostvars[delegate], so it fails the cluster-scope guard rather than
+    # the relay guard this play drives.
+    - name: Clear the cluster run-once fact and empty the relay client scope
+      ansible.builtin.set_fact:
+        _proxmox_firewall_cluster_done: false
+        proxmox_firewall_smtp_relay_sources: []
+
+    - name: Result directory
+      ansible.builtin.file:
+        path: /tmp/molecule-results
+        state: directory
+        mode: "0755"
+
+    # Tagged, with the capture below: the guard is run_once, so the idempotence
+    # replay would record a second firing the declaration does not allow.
+    - name: Drive the cluster-scope relay guard
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Re-include proxmox_firewall with a relay guest and no client scope
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_firewall
+
+        - name: Record that the cluster-scope relay guard did not fire
+          ansible.builtin.set_fact:
+            proxmox_firewall_scenario_relay_cluster_guard: false
+      rescue:
+        - name: Record that the cluster-scope relay guard fired
+          ansible.builtin.set_fact:
+            proxmox_firewall_scenario_relay_cluster_guard: true
+
+    - name: Capture the cluster-scope relay guard result
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/fw-relay-cluster-scope.json
+        mode: "0644"
+        content: |
+          {"guard_fired":
+           {{ proxmox_firewall_scenario_relay_cluster_guard | to_json }}}
+
+# Seventh play: the compile gate, as its predicate and then end to end through
+# the role's own publish task. Each case STAGES its input as a fact: the role's
+# compile tasks register that name, and a register outranks task vars.
+- name: Converge — pve-firewall compile predicate
+  hosts: proxmox-firewall-test
+  become: true
+  tasks:
+    - name: Load the role defaults holding the compile predicate
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../defaults/main.yml"
+
+    - name: Stage the compile result — a line-numbered parse error that exited 0
+      ansible.builtin.set_fact:
+        proxmox_firewall_compile:
+          rc: 0
+          stderr: "cluster.fw (line 12) : no such ipset 'core-cluster'"
+
+    - name: Assert the predicate fails a parse error that exited 0
+      ansible.builtin.assert:
+        that:
+          - proxmox_firewall_compile_failed | bool
+        fail_msg: >-
+          A line-numbered pve-firewall parse error that exited 0 reads as a
+          successful compile, so a broken ruleset deploys green.
+
+    - name: Stage the compile result — parse-error wording with no error word
+      ansible.builtin.set_fact:
+        proxmox_firewall_compile:
+          rc: 0
+          stderr: "cluster.fw (line 3) : unknown security group 'sg-x'"
+
+    - name: Assert the predicate fails wording carrying no error word
+      ansible.builtin.assert:
+        that:
+          - proxmox_firewall_compile_failed | bool
+        fail_msg: "pve-firewall's own parse-error wording is not matched"
+
+    - name: Stage the compile result — a non-zero exit with empty stderr
+      ansible.builtin.set_fact:
+        proxmox_firewall_compile:
+          rc: 2
+          stderr: ""
+
+    - name: Assert a non-zero exit fails whatever stderr says
+      ansible.builtin.assert:
+        that:
+          - proxmox_firewall_compile_failed | bool
+        fail_msg: "a non-zero pve-firewall exit is not a failure"
+
+    - name: Stage the compile result — a healthy compile and its notices
+      ansible.builtin.set_fact:
+        proxmox_firewall_compile:
+          rc: 0
+          stderr: "pve-firewall: enabling firewall\n"
+
+    - name: Assert a healthy compile and its notices pass
+      ansible.builtin.assert:
+        that:
+          - not (proxmox_firewall_compile_failed | bool)
+        fail_msg: >-
+          A healthy compile fails the gate, so every run of the role reds on a
+          benign pve-firewall notice.
+
+    # Mutation pair for the line-error arm: the same wording with and without
+    # the (line N) prefix, which is the only thing either case can match on.
+    - name: Stage the compile result — an unworded (line N) complaint
+      ansible.builtin.set_fact:
+        proxmox_firewall_compile:
+          rc: 0
+          stderr: "cluster.fw (line 12) : bad"
+
+    - name: Assert the line-error arm catches an unworded parse error
+      ansible.builtin.assert:
+        that:
+          - proxmox_firewall_compile_failed | bool
+        fail_msg: "a (line N) complaint pve-firewall did not word as an error passes"
+
+    - name: Stage the compile result — the same wording with no line number
+      ansible.builtin.set_fact:
+        proxmox_firewall_compile:
+          rc: 0
+          stderr: "cluster.fw : bad"
+
+    - name: Assert the same wording without a line number is not a failure
+      ansible.builtin.assert:
+        that:
+          - not (proxmox_firewall_compile_failed | bool)
+        fail_msg: >-
+          Something other than the (line N) arm matched, so the line-error arm
+          cannot be shown to be what widens the gate.
+
+    - name: Assume the compile gate passed the parse error
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.set_fact:
+        proxmox_firewall_scenario_compile_gate_fired: false
+
+    - name: Result directory
+      ansible.builtin.file:
+        path: /tmp/molecule-results
+        state: directory
+        mode: "0755"
+
+    - name: Compile-gate destination directory
+      ansible.builtin.file:
+        path: /tmp/pve-firewall-compile
+        state: directory
+        mode: "0755"
+
+    # CRITICAL: the asserts above prove the expression, not the wiring. This
+    # publishes through the role's own task against a stub that prints a
+    # line-numbered parse error and exits 0, so failed_when has to catch it.
+    # Tagged so the idempotence replay does not re-fire the guard.
+    - name: Compile gate — a parse error that exits 0 must fail the publish
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Install a pve-firewall stub that exits 0 on a parse error
+          ansible.builtin.copy:
+            dest: /usr/local/bin/pve-firewall
+            mode: "0755"
+            content: |
+              #!/bin/sh
+              echo "cluster.fw (line 12) : no such ipset 'core-cluster'" >&2
+              exit 0
+
+        - name: Publish through the role's own task with the compile gate live
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_firewall
+            tasks_from: deploy-pmxcfs-config
+          vars:
+            proxmox_firewall_skip_pveum: false
+            proxmox_firewall_staging_dir: /var/lib/pve-firewall-ansible-compile
+            pmxcfs_config_src: cluster.fw.j2
+            pmxcfs_config_dest: /tmp/pve-firewall-compile/cluster.fw
+            pmxcfs_config_label: compile-gate.fw
+
+        - name: The compile gate passed a parse error
+          ansible.builtin.fail:
+            msg: >-
+              pve-firewall printed a line-numbered parse error and exited 0, and
+              the publish still succeeded, so a ruleset the node will not compile
+              deploys green.
+      rescue:
+        # Pinned to the role's own compile task: a failure anywhere else in the
+        # publish would otherwise read as the gate firing.
+        - name: Record that the compile gate failed the publish
+          ansible.builtin.set_fact:
+            proxmox_firewall_scenario_compile_gate_fired: true
+          when: >-
+            'Validate the compiled ruleset after publishing'
+            in ansible_failed_task.name
+      always:
+        - name: Remove the pve-firewall stub
+          ansible.builtin.file:
+            path: /usr/local/bin/pve-firewall
+            state: absent
+
+    - name: Capture the compile-gate result
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/fw-compile-gate.json
+        mode: "0644"
+        content: |
+          {"gate_fired":
+           {{ proxmox_firewall_scenario_compile_gate_fired | to_json }}}

@@ -1,8 +1,7 @@
 ---
-# Render/contract scenario: compose_app_skip_install skips the service-touching
-# steps, so the compose unit (both RequiresMountsFor shapes), the
-# write_prom_metrics library (exercised end to end) and the host-nginx task flow
-# are rendered + asserted without a container runtime or the nginx binary.
+# Contract scenario. Under compose_app_skip_install the compose unit, the
+# write_prom_metrics library and the host-nginx flow are asserted with no
+# container runtime; converge then re-runs the nginx flow with validation on.
 provisioner:
   playbooks:
     prepare: prepare.yml

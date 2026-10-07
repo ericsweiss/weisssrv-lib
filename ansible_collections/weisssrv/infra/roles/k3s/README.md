@@ -4,19 +4,17 @@ Installs and configures a k3s cluster: embedded etcd, a kube-vip API VIP,
 passthrough-disk persistent storage, and node labels/taints for workload
 placement.
 
-## What This Role Manages
+## What this role manages
 
 ### Prerequisites
 - Package installation (curl, open-iscsi, nfs-common)
 - iscsid service enablement
 - Config directory creation
 - Kernel inotify ceilings (`/etc/sysctl.d/90-k3s-inotify.conf`): raises
-  `fs.inotify.max_user_instances` (128 → 8192) and `max_user_watches` so a
-  container-dense node never exhausts the host-global, per-UID inotify-instance
-  pool. Without it, a fresh molecule CI container's systemd PID 1 intermittently
-  dies at boot with *"Failed to allocate manager object: Too many open files"*
-  and the job fails at molecule's *"Wait for systemd to be ready"* prepare step.
-  Toggle with `k3s_inotify_tuning`.
+  `fs.inotify.max_user_instances` and `max_user_watches` so a container-dense
+  node cannot exhaust the host-global, per-UID inotify pool (pods share the host
+  user namespace, so every uid-0 container draws from it). Toggle with
+  `k3s_inotify_tuning`.
 
 ### Persistent Storage
 - Additional disk formatting (passthrough block devices, e.g. ZFS zvols)
@@ -34,7 +32,6 @@ placement.
 - Kube-vip manifest deployment (first server only), pinned
   `system-node-critical` with a memory limit so the pod owning the API VIP is
   neither preemptible nor BestEffort
-- metrics-server override (first server only, opt-in — see below)
 - /etc/hosts pins: container-registry hostname → internal Traefik VIP
   (`k3s_registry_host_pins`) and NAS storage hostname for NFS-over-TLS PVs
   (`k3s_storage_host_pins`)
@@ -44,16 +41,35 @@ placement.
 - Off-node etcd snapshot copy (opt-in, servers only): a systemd timer that
   copies the newest local etcd snapshot to an NFS export (by hostname, over
   TLS) and emits an `etcd_snapshot_last_copy_timestamp_seconds`
-  textfile metric for the `EtcdSnapshotStale` alert — off by default via
+  textfile metric for the `EtcdSnapshotStale` alert (the copy script keeps its
+  own metric writer: these names predate the `compose_app` helper's prefix
+  convention and the alert rules select on them) — off by default via
   `k3s_etcd_snapshot_offnode_enabled` (see defaults for the companion NFS export
   + `node_exporter_host` + `nfs_tls`/tlshd on the servers it needs — the
-  `xprtsec=tls` mount hangs without the TLS handshake daemon)
+  `xprtsec=tls` mount hangs without the TLS handshake daemon). The copy script
+  runs without `set -e` so the metric is published even when the copy fails,
+  preserving the previous success timestamp rather than resetting it.
 
-Each of those three opt-in features **converges on opt-out**: setting the flag
-back to `false` stops and disables the snapshot timer, drops its NFS mount and
-removes its units and script; removes the metrics-server override from the
-manifests dir (k3s auto-applies whatever is left there); and removes the audit
-policy file. Otherwise a flag flip would leave the feature running.
+Both opt-in features **converge on opt-out**: setting the flag back to `false`
+stops and disables the snapshot timer, drops its NFS mount and removes its units
+and script, and removes the audit policy file. Otherwise a flag flip would leave
+the feature running.
+
+## Firewall expectations
+
+The role opens two unauthenticated listeners on every interface and expects the
+site to scope them:
+
+- `6443` — the apiserver (`bind-address: 0.0.0.0`). Restrict it to the cluster
+  nodes and the admin ranges. A firewall relaxation, or a new interface nobody
+  planned for, widens API exposure silently.
+- `2381` — etcd's Prometheus metrics, plaintext and unauthenticated, on the
+  server nodes. Restrict it to the scrapers and the cluster nodes.
+
+On the Proxmox-based deployment this collection targets, both are host-firewall
+IP sets; on any other platform it is whatever fences the node.
+
+kube-vip's own metrics listener is off by design, so there is no third port.
 
 ## Required variables
 
@@ -79,7 +95,11 @@ the NIC exists per host and that the servers agree — the agreement check runs 
 EVERY server, because role defaults are absent from `hostvars` and the first
 server alone cannot see that its peers resolved a different default,
 `k3s_registry_host_pins` / `k3s_storage_host_pins` (both `[]`),
-`k3s_etcd_snapshot_nfs_server` (empty; required once the off-node copy is on),
+`k3s_kube_vip_host_kubeconfig` (`false`: kube-vip authenticates with its
+ServiceAccount token and the shipped ClusterRole; `true` mounts the node's
+cluster-admin kubeconfig instead, for a kube-vip build that needs it),
+`k3s_etcd_snapshot_nfs_server` (empty; asserted once the off-node copy is on,
+and it must be a hostname — the TLS mount verifies a cert with no IP SAN),
 `k3s_disable`, `k3s_labels`, `k3s_taints`.
 
 The agreement check also asserts the host is a MEMBER of `k3s_server_group`,
@@ -100,17 +120,15 @@ k3s_version: "v1.36.3+k3s1"
 k3s_kube_vip_version: "v1.2.2"     # required on servers
 k3s_server_group: k3s_servers      # inventory group holding the servers
 
-# Extra apiserver-certificate SANs, on top of k3s_api_vip, inventory_hostname
-# and ansible_host. Defaults to ["k3s.<k3s_internal_domain>"], and
-# k3s_internal_domain defaults to the inventory-wide `internal_domain` (unset =
-# no extra SAN). Changing this needs the existing serving cert removed so k3s
-# regenerates it.
+# Extra apiserver-certificate SANs on top of k3s_api_vip, inventory_hostname
+# and ansible_host.
 k3s_internal_domain: example.com
 k3s_tls_sans: ["k3s.example.com"]
 
 # Server-specific
 k3s_role: server
 k3s_is_first_server: true          # exactly one
+k3s_bootstrap_new_cluster: false   # true only for a greenfield HA bootstrap
 
 # Agent-specific
 k3s_role: agent
@@ -141,6 +159,33 @@ vm_additional_disks:
     mount_point: /mnt/postgres-data
     fstype: ext4
 ```
+
+### Apiserver certificate SANs
+
+`k3s_tls_sans` defaults to `["k3s.<k3s_internal_domain>"]`, and
+`k3s_internal_domain` defaults to the inventory-wide `internal_domain`. Leave
+both unset for no extra SAN. Changing either needs the existing serving
+certificate removed so k3s regenerates it.
+
+### Other variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `k3s_skip_install` | `false` | Render the config without installing k3s (molecule and check mode). |
+| `k3s_install_script_url` | upstream `install.sh` for `k3s_version` | Where the installer is fetched from. Downloaded to a file and executed separately, never `curl \| sh`; pin its bytes with `k3s_install_script_checksum`. |
+| `k3s_api_port` | `6443` | Port the apiserver and the kube-vip VIP listen on. |
+| `k3s_cluster_cidr` | `10.42.0.0/16` | Pod CIDR. |
+| `k3s_service_cidr` | `10.43.0.0/16` | Service CIDR. |
+| `k3s_kube_vip_resources` | `25m` CPU / `96Mi`-`192Mi` memory | Requests and limits for the kube-vip pod, so the pod owning the API VIP is not BestEffort under node memory pressure. Memory limit only. |
+| `k3s_inotify_max_user_instances` | `8192` | `fs.inotify.max_user_instances` sysctl; a busy node exhausts the kernel default. |
+| `k3s_inotify_max_user_watches` | `1048576` | `fs.inotify.max_user_watches` sysctl. |
+| `k3s_etcd_snapshot_dir` | `/var/lib/rancher/k3s/server/db/snapshots` | Where k3s writes its etcd snapshots. |
+| `k3s_etcd_snapshot_nfs_export` | `/k3s-etcd` | Export the snapshots are copied off-node to. |
+| `k3s_etcd_snapshot_mountpoint` | `/mnt/etcd-snapshots` | Where that export mounts. |
+| `k3s_etcd_snapshot_nfs_options` | `vers=4.2,xprtsec=tls,_netdev,noauto,nofail` | Mount options. `noauto,nofail` keep this backup-only mount off the boot path, so a NAS-down boot never degrades `remote-fs.target`. |
+| `k3s_etcd_snapshot_textfile_dir` | `node_exporter_host_textfile_dir` | node_exporter textfile dir the copy metric lands in; `node_exporter_host` must run on the servers for it to be scraped. |
+| `k3s_etcd_snapshot_copy_oncalendar` | `hourly` | Copy-timer cadence. |
+| `k3s_etcd_snapshot_retention` | `5` | Snapshots kept per server on the export. |
 
 ### CNI backend
 
@@ -188,32 +233,17 @@ nvidia_cuda_keyring_sha256: "d0d4ef98…"
 `k3s_skip_gpu_install: true` renders the repo/component config but skips every
 network/package task (and the assert above) — the escape hatch molecule and
 check-mode runs use. `k3s_gpu_debian_sources_path` retargets the deb822 sources
-file whose `Components:` line is normalized.
+file whose `Components:` line is normalized, and `k3s_gpu_apt_components` is the
+set written into it. The component set is pinned at the call site, so a site
+that sets `apt_signed_repo_components` for another repo cannot drop the
+non-free components the NVIDIA driver and firmware packages live in.
 
-## metrics-server override (`k3s_metrics_server_override_enabled`)
+## metrics-server
 
-k3s packages metrics-server as a single replica with no memory limit, and it is
-the only metric source every HPA and the VPA recommender read: if that one pod
-OOMs, HPAs freeze on their last replica count and look healthy. Enabling this
-writes a `HelmChartConfig` into the first server's manifests dir raising the
-replica count and bounding memory:
-
-```yaml
-k3s_metrics_server_override_enabled: true
-k3s_metrics_server_replicas: 2                 # default
-k3s_metrics_server_resources:                  # default
-  requests: {cpu: 25m, memory: 128Mi}
-  limits: {memory: 256Mi}
-```
-
-A `HelmChartConfig` only reaches the component where k3s packages it as a
-HelmChart. Where k3s ships metrics-server as a static wrangler AddOn, the
-override applies cleanly and changes nothing — so the role probes for
-`HelmChart/metrics-server` in `kube-system` first and fails with that diagnosis
-rather than leaving an inert file behind. On such a k3s the alternative is to
-disable the packaged component (`k3s_disable`) and ship a full replacement
-manifest. The same trap applies to CoreDNS, which is why a replica pin for it is
-an in-cluster HPA rather than a `HelmChartConfig`.
+k3s ships metrics-server as a static manifest set, so a `HelmChartConfig` cannot
+reach it. To raise its replica count or bound its memory, add `metrics-server` to
+`k3s_disable` and ship it as a cluster-managed release instead. The role removes
+a stale `metrics-server-config.yaml` from the server manifests dir.
 
 ## kube-apiserver audit logging (`k3s_audit_enabled`)
 
@@ -285,25 +315,11 @@ control plane into a crash loop.
 Turning it back off removes the args from the config (another restart) and
 leaves the now-unreferenced policy file behind, inert.
 
-## Task Flow
-
-```
-1. Install prerequisites
-2. Enable iscsid service
-3. Create k3s config directory
-3b. Raise kernel inotify ceilings (sysctl.d drop-in; live-applied on real nodes)
-4. Mount additional persistent disks (if defined)
-   ├─ Check if formatted
-   ├─ Format if needed (ext4)
-   ├─ Get filesystem UUID
-   ├─ Create mount points
-   └─ Add to /etc/fstab and mount
-5. Include server or agent tasks based on k3s_role
-6. Apply node labels
-7. Apply node taints
-```
-
 ## Files
+
+`main.yml` runs the prerequisites, the inotify sysctl, the /etc/hosts pins and
+the extra-disk mounts, then includes `server.yml` or `agent.yml` by `k3s_role`;
+node labels and taints are applied at the end of those.
 
 - `tasks/main.yml` - Main orchestration (prerequisites, inotify sysctl, /etc/hosts pins, disks)
 - `tasks/server.yml` - Server installation
@@ -313,15 +329,16 @@ leaves the now-unreferenced policy file behind, inert.
 - `tasks/audit.yml` - kube-apiserver audit policy (opt-in, servers only)
 - `tasks/etcd-snapshot-offnode.yml` - Off-node etcd snapshot copy (opt-in)
 - `tasks/etcd-snapshot-offnode-absent.yml` - Its de-provisioning path
-- `tasks/metrics-server-override.yml` - metrics-server replicas/resources (opt-in)
 - `templates/k3s-server-config.yaml.j2` - Server configuration
 - `templates/k3s-agent-config.yaml.j2` - Agent configuration
 - `templates/k3s-audit-policy.yaml.j2` - kube-apiserver audit policy
 - `templates/kube-vip-manifest.yaml.j2` - Kube-vip DaemonSet
-- `templates/metrics-server-helmchartconfig.yaml.j2` - metrics-server override
 - `templates/k3s-etcd-snapshot-copy.{sh,service,timer}.j2` - Off-node snapshot copy
 - `defaults/main.yml` - Default values
-- `handlers/main.yml` - Service restart + Ready-gate handlers
+- `handlers/main.yml` - Service restart + Ready-gate handlers. A restarted agent
+  is confirmed active with a stable restart count before the delegated node-Ready
+  poll, because a node object keeps reporting Ready for the node-monitor grace
+  period after its kubelet dies.
 - `molecule/default/` - Server scenario (bootstrap + join branches)
 - `molecule/agent/` - Agent scenario (config, token migration)
 
@@ -352,3 +369,39 @@ kubectl get pods -A --field-selector spec.nodeName=<node>
 Scaling out is: add the node to the inventory, provision the VM, run the
 playbook limited to it. Upgrading is: bump `k3s_version` and re-run, node by
 node.
+
+### Signing off a kube-vip change
+
+kube-vip owns the API VIP, so a change to its manifest is verified in a
+supervised control-plane window: converge one server, watch the DaemonSet pod
+come Ready, then stop `k3s` on the VIP holder and confirm another server takes
+the address and `kubectl` keeps answering. `k3s_kube_vip_host_kubeconfig: true`
+is the rollback — it mounts the node's cluster-admin kubeconfig instead of the
+ServiceAccount token, and needs no role change, but it re-renders the DaemonSet
+and restarts the kube-vip pod on every server.
+
+### Rebuilt-server guards
+
+`k3s_is_first_server` is pinned in inventory, so a wiped and rebuilt first
+server would render `cluster-init: true` and bootstrap a new single-node etcd
+cluster with a fresh CA while the surviving servers still hold the old quorum,
+with both sides contending for the API VIP. When this node has no local etcd
+data the role probes the API VIP and then every other member of
+`k3s_server_group`. Any answer means render the join stanza instead. A healthy
+first server skips the probe, and the VIP probe retries so one transient blip
+cannot mis-select `cluster-init`.
+
+When nothing at all answers on a multi-server group, the role fails rather than
+initializing: a dead VIP and silent peers is an inability to determine, not
+proof that no cluster exists. Set `k3s_bootstrap_new_cluster: true` for a
+genuine greenfield bootstrap; a single-server group needs no opt-in.
+
+That guard reads the peer list, so the role first asserts the host is a member
+of `k3s_server_group`. A misnamed group resolves to an empty peer list, which
+would otherwise look like a single-server group and skip the guard.
+
+A rebuilt or rejoined etcd server's on-disk `cred/passwd` diverges from the
+datastore bootstrap entry, so k3s fatals with "cred/passwd newer than
+datastore" on every restart and cannot self-heal (k3s-io/k3s#4910). The role
+installs an `ExecStartPre` drop-in that reconciles the file from the datastore
+before each start. It is a no-op on an in-sync server.

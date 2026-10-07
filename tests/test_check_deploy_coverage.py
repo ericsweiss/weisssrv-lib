@@ -1,25 +1,8 @@
 #!/usr/bin/env python3
+"""Unit tests for check-deploy-coverage.sh, the MR gate that fails when an
+Ansible role/playbook/inventory change is picked up by no deploy-* CI job.
+Driven via subprocess inside a throwaway git repo.
 """
-Unit tests for check-deploy-coverage.sh.
-
-check-deploy-coverage.sh is the MR gate that fails when an Ansible
-role/playbook/inventory file is changed but no deploy-* CI job will pick the
-change up. It had zero coverage. These tests pin the contract by driving the
-script via subprocess inside a throwaway git repo (the script reads
-.gitlab-ci.yml from CWD and diffs against a base ref), exercising the four
-behaviors the gate hinges on:
-
-  (a) a role mapped to a deploy-* job's `changes:` list passes
-  (b) a changed role mapped to NO deploy job fails (nonzero exit)
-  (c) a role listed in the coverage config's [roles] section is honored
-      (passes despite no deploy mapping)
-  (d) a DELETED role is not flagged (the `--diff-filter=d` exclusion)
-
-The script's deploy-path extraction parses .gitlab-ci.yml as YAML and only
-credits jobs whose name starts with "deploy-" AND whose stage is "deploy", so
-the fixture .gitlab-ci.yml below mirrors that shape minimally.
-"""
-
 from __future__ import annotations
 
 import os
@@ -63,12 +46,6 @@ FIXTURE_CI = textwrap.dedent(
 )
 
 
-def _run(cmd, cwd, **kw):
-    return subprocess.run(
-        cmd, cwd=cwd, capture_output=True, text=True, **kw
-    )
-
-
 def _git(args, cwd):
     env = dict(os.environ)
     # Deterministic, no-config-dependent commits.
@@ -104,6 +81,7 @@ def repo(tmp_path: Path) -> Path:
     # references and the script's own self-reference both resolve.
     (r / "scripts").mkdir()
     shutil.copy(SCRIPT, r / "scripts" / "check-deploy-coverage.sh")
+    shutil.copy(SCRIPT.parent / "ci_yaml.py", r / "scripts" / "ci_yaml.py")
     (r / ".gitlab-ci.yml").write_text(FIXTURE_CI)
     # Seed a role dir so the base commit has the tree the tests mutate.
     _write(r, "ansible/roles/base/tasks/main.yml")
@@ -233,10 +211,7 @@ def test_changes_paths_dict_form_credited(repo: Path):
 
 
 def test_deleted_plus_added_unmapped_role_still_flags_addition(repo: Path):
-    """Renames/replacements surface via their ADDED path: deleting widget while
-    adding a different unmapped role (gadget) must still flag gadget — proves
-    --diff-filter=d only suppresses the deletion side, not real new coverage
-    obligations."""
+    """A deleted role plus a different added unmapped role still flags the addition."""
     _write(repo, "ansible/roles/widget/tasks/main.yml", "doomed\n")
     _git(["add", "-A"], repo)
     _git(["commit", "-q", "-m", "add widget"], repo)
@@ -330,6 +305,66 @@ def test_playbook_path_with_space_stays_one_entry(repo: Path):
     res = _run_check(repo, base)
     assert res.returncode == 1
     assert "ansible/playbooks/my play.yml" in res.stderr
+
+
+def test_stale_literal_changes_path_fails(repo: Path):
+    """A literal changes: entry that no longer exists stops triggering its job."""
+    ci = (repo / ".gitlab-ci.yml").read_text() + textwrap.dedent(
+        """\
+
+        deploy-ansible-gadget:
+          stage: deploy
+          script:
+            - echo deploy
+          rules:
+            - changes:
+                - ansible/playbooks/renamed-away.yml
+        """
+    )
+    (repo / ".gitlab-ci.yml").write_text(ci)
+    _git(["commit", "-q", "-am", "list a path that does not exist"], repo)
+    base = _base_sha(repo)
+    _write(repo, "ansible/roles/base/tasks/main.yml", "changed\n")
+    _git(["commit", "-q", "-am", "edit base"], repo)
+    res = _run_check(repo, base)
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "deploy-ansible-gadget" in res.stderr
+    assert "ansible/playbooks/renamed-away.yml" in res.stderr
+
+
+def test_stale_path_is_reported_with_no_ansible_changes(repo: Path):
+    """The stale arm does not depend on the diff touching Ansible at all."""
+    ci = (repo / ".gitlab-ci.yml").read_text() + textwrap.dedent(
+        """\
+
+        deploy-ansible-gadget:
+          stage: deploy
+          script:
+            - echo deploy
+          rules:
+            - changes:
+                - ansible/playbooks/renamed-away.yml
+        """
+    )
+    (repo / ".gitlab-ci.yml").write_text(ci)
+    _git(["commit", "-q", "-am", "list a path that does not exist"], repo)
+    base = _base_sha(repo)
+    _write(repo, "README.md", "unrelated\n")
+    _git(["add", "-A"], repo)
+    _git(["commit", "-q", "-m", "unrelated change"], repo)
+    res = _run_check(repo, base)
+    assert res.returncode == 1
+    assert "ansible/playbooks/renamed-away.yml" in res.stderr
+
+
+def test_a_glob_changes_path_is_not_read_as_stale(repo: Path):
+    """`**/*` and friends match a tree, not a file: only literals are checked."""
+    base = _base_sha(repo)
+    _write(repo, "README.md", "unrelated\n")
+    _git(["add", "-A"], repo)
+    _git(["commit", "-q", "-m", "unrelated change"], repo)
+    res = _run_check(repo, base)
+    assert res.returncode == 0, res.stdout + res.stderr
 
 
 if __name__ == "__main__":

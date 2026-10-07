@@ -39,3 +39,14 @@ provisioner:
         # Exercise the bare-metal path: without it the collectors self-skip and
         # nothing below the package install would be covered.
         node_exporter_host_proxmox: true
+        # Off by default, so it is set scenario-wide rather than per include:
+        # any include_role that left it unset would reconcile it away.
+        node_exporter_host_slabinfo_collector: true
+        # The default list is empty and the role rejects that with the collector
+        # on, so the scenario names caches to cover the allowlist render.
+        node_exporter_host_slab_caches:
+          - skbuff_ext_cache
+          - dentry
+        # Pinned at the default so verify.yml, which loads no role defaults,
+        # can assert the rendered files carry the configured directory.
+        node_exporter_host_textfile_dir: /var/lib/node_exporter

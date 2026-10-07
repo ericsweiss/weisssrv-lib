@@ -1,33 +1,23 @@
 ---
-# /etc/hosts pins on every node, as [{name, ip}]. Two uses:
-#
-#   k3s_registry_host_pins — a registry whose PUBLIC name resolves through an
-#   upstream path that flakes; pinning it to the internal ingress VIP skips the
-#   DNS query entirely. TLS is unaffected: the pin overrides only the A record,
-#   SNI and validation still use the hostname.
-#
-#   k3s_storage_host_pins — the NFS server name the PVs mount by (a wildcard
-#   cert has no IP SAN, so the mount MUST use a name). Pinning keeps the
-#   cluster's own DNS off the storage-mount critical path: a remount or pod
-#   reschedule during a DNS outage would otherwise fail to resolve the server.
-#
-# Verify per node after a change: `getent hosts <name>` -> the pinned IP.
+# /etc/hosts pins for a registry whose public name resolves through a flaky
+# upstream, as [{name, ip}]. The pin overrides only the A record, so SNI and
+# TLS validation still use the hostname.
 k3s_registry_host_pins: []
+# /etc/hosts pins for the NFS server name the PVs mount by, as [{name, ip}].
+# A wildcard cert has no IP SAN, so the mount must use a name; the pin keeps
+# cluster DNS off the storage-mount critical path.
 k3s_storage_host_pins: []
 
-# Raise the per-UID inotify ceilings on every k3s node. fs.inotify.max_user_instances
-# defaults to 128 per-UID and, because pods share the host user namespace, is
-# drawn HOST-GLOBAL by every uid-0 container (kubelet, containerd, Flux,
-# Prometheus, Alloy). A container-dense node exhausts the pool and the next
-# systemd-in-container PID 1 dies at boot with "Too many open files".
-# Set k3s_inotify_tuning false to remove the drop-in entirely.
+# Raise the per-UID inotify ceilings on every k3s node. Pods share the host user
+# namespace, so every uid-0 container draws on one 128-instance pool; exhausting
+# it kills the next systemd-in-container PID 1 with "Too many open files".
 k3s_inotify_tuning: true
 k3s_inotify_max_user_instances: 8192
 k3s_inotify_max_user_watches: 1048576
 
-# k3s_version is REQUIRED and deliberately has no default here: a role-local
-# pin duplicates the site's version block and silently deploys the stale value
-# when the group_var is dropped. server.yml/agent.yml assert it instead.
+# k3s_version is required and has no default here: a role-local pin duplicates
+# the site's version block and deploys the stale value when the group_var is
+# dropped. server.yml and agent.yml assert it instead.
 
 # Molecule/check-mode escape hatch: render the config without installing k3s.
 k3s_skip_install: false
@@ -37,16 +27,13 @@ k3s_skip_install: false
 # override with a dedicated lower-privilege token in production.
 k3s_agent_token: "{{ k3s_token }}"
 
-# Pin to a specific k3s release tag instead of the mutable get.k3s.io redirect.
-# This fixes the installer URL path (not the bytes) per version. The script is
-# downloaded to a local file and executed separately (no `curl | sh`), so its
-# integrity can optionally be pinned via k3s_install_script_checksum below.
+# Pin the installer URL path to a k3s release tag instead of the mutable
+# get.k3s.io redirect. The script is downloaded and run separately, not
+# `curl | sh`, so its bytes can be pinned by the checksum below.
 k3s_install_script_url: "https://raw.githubusercontent.com/k3s-io/k3s/{{ k3s_version }}/install.sh"
-# Optional sha256 pin for the install.sh fetched above. Empty by default => the
-# get_url checksum: param is omitted. Set in all.yml alongside k3s_version
-# (e.g. "sha256:<hex>") to verify the root-run installer script before exec,
-# mirroring zfs_exporter_checksum. install.sh itself already verifies the k3s
-# binary's sha256 against the GitHub release; this closes the gap on the script.
+# Optional sha256 pin for install.sh; empty omits get_url's checksum: param.
+# Set it as "sha256:<hex>" alongside k3s_version. install.sh already verifies
+# the k3s binary, so this closes the gap on the script itself.
 k3s_install_script_checksum: ""
 
 # Inventory group holding the server (control-plane) nodes. Agents delegate
@@ -56,23 +43,25 @@ k3s_server_group: k3s_servers
 k3s_role: agent  # or 'server'
 k3s_is_first_server: false
 
+# Opt-in for a greenfield HA bootstrap. The first server refuses cluster-init
+# when it has no etcd data and neither the API VIP nor any peer answers, because
+# that is an inability to determine, not proof no cluster exists.
+k3s_bootstrap_new_cluster: false
+
 # Network configuration. k3s_api_vip is the kube-vip API address every node
-# joins through — required (asserted in server.yml/agent.yml), no default.
+# joins through — required, asserted in server.yml/agent.yml; empty default.
 k3s_api_vip: ""
 k3s_api_port: 6443
 
-# Extra SANs baked into the apiserver certificate, on top of the three the
-# server config always emits (k3s_api_vip, inventory_hostname, ansible_host).
-# The default is the conventional `k3s.<internal_domain>` name, dropped when
-# k3s_internal_domain (alias: the inventory-wide `internal_domain`) is unset.
-# Changing this needs the existing serving cert removed so k3s regenerates it.
+# Extra SANs baked into the apiserver certificate, on top of k3s_api_vip,
+# inventory_hostname and ansible_host. Changing this needs the existing serving
+# cert removed so k3s regenerates it.
 k3s_internal_domain: "{{ internal_domain | default('') }}"
 k3s_tls_sans: "{{ ['k3s.' ~ k3s_internal_domain] if k3s_internal_domain else [] }}"
 
-# Persistent disks attached to the node's VM (by weisssrv.infra.proxmox_vm),
-# handed to weisssrv.infra.zvol_mount. Aliases the conventional inventory-wide
-# `vm_additional_disks`, which weisssrv.infra.proxmox_vm aliases identically to
-# create and attach the same zvols.
+# Persistent disks attached to the node's VM, handed to
+# weisssrv.infra.zvol_mount. Aliases the inventory-wide `vm_additional_disks`,
+# which weisssrv.infra.proxmox_vm aliases identically.
 k3s_additional_disks: "{{ vm_additional_disks | default([]) }}"
 k3s_cluster_cidr: "10.42.0.0/16"
 k3s_service_cidr: "10.43.0.0/16"
@@ -81,10 +70,8 @@ k3s_disable:
   - servicelb
   - traefik
 
-# Flannel CNI backend. Default to wireguard-native so cross-node pod traffic
-# is encrypted out of the box; a standalone consumer of this role (or a dropped
-# group_var) gets the secure backend rather than plaintext vxlan. Set to vxlan
-# to roll back (see README.md for the full rationale and caveats).
+# Flannel CNI backend. wireguard-native encrypts cross-node pod traffic out of
+# the box; vxlan is plaintext. README.md carries the caveats.
 k3s_flannel_backend: "wireguard-native"
 
 k3s_labels: {}
@@ -109,23 +96,29 @@ k3s_skip_gpu_install: false
 # (leaving the container's real apt sources — and thus `apt update` — untouched).
 k3s_gpu_debian_sources_path: /etc/apt/sources.list.d/debian.sources
 
-# GPU artifact pins. All four are REQUIRED on the GPU install path (gpu.yml
-# asserts them) and deliberately have no default: the driver/toolkit pair is
-# card- and workload-specific, and the keyring sha256 must be the operator's own
-# verified value, not one this collection could rot. They alias the conventional
-# inventory-wide `nvidia_*` names so one site-wide version block feeds every GPU
-# agent; set the prefixed form to decouple a single node.
+# Components gpu.yml writes into that file. Pinned at the call site so a site
+# setting apt_signed_repo_components for an unrelated repo cannot drop the
+# non-free components the NVIDIA driver and firmware packages live in.
+k3s_gpu_apt_components: main contrib non-free non-free-firmware
+
+# GPU artifact pins, all four required on the GPU install path and asserted
+# there: the driver/toolkit pair is card-specific and the keyring sha256 must be
+# the operator's own. They alias the inventory-wide `nvidia_*` names.
 k3s_gpu_cuda_keyring_version: "{{ nvidia_cuda_keyring_version | default('') }}"
 k3s_gpu_cuda_keyring_sha256: "{{ nvidia_cuda_keyring_sha256 | default('') }}"
 k3s_gpu_driver_version: "{{ nvidia_driver_version | default('') }}"
 k3s_gpu_container_toolkit_version: "{{ nvidia_container_toolkit_version | default('') }}"
 
-# kube-vip. The version is REQUIRED on servers (asserted in server.yml) and has
-# no role-local pin — one would duplicate the site's version block and regress
-# the API VIP the moment the two drift. Both alias the conventional
-# inventory-wide `kube_vip_*` names.
+# kube-vip. The version is required on servers and has no role-local pin, which
+# would duplicate the site's version block. Both alias the inventory-wide
+# `kube_vip_*` names.
 k3s_kube_vip_version: "{{ kube_vip_version | default('') }}"
 k3s_kube_vip_interface: "{{ kube_vip_interface | default('eth0') }}"
+
+# true mounts the node's cluster-admin kubeconfig into the kube-vip pod instead
+# of running it on its ServiceAccount token. Only for a kube-vip build that
+# cannot use the in-cluster token; it makes the pod cluster-admin.
+k3s_kube_vip_host_kubeconfig: false
 
 # kube-vip pod resources. Upstream ships none, which makes the pod that owns the
 # API VIP BestEffort and the first eviction victim under node memory pressure.
@@ -136,19 +129,6 @@ k3s_kube_vip_resources:
     memory: 96Mi
   limits:
     memory: 192Mi
-
-# metrics-server durability override (first server only, opt-in). Writes a
-# HelmChartConfig into the server manifests dir, asserting first that this k3s
-# packages metrics-server as a HelmChart — against a static wrangler AddOn a
-# HelmChartConfig is silently inert.
-k3s_metrics_server_override_enabled: false
-k3s_metrics_server_replicas: 2
-k3s_metrics_server_resources:
-  requests:
-    cpu: 25m
-    memory: 128Mi
-  limits:
-    memory: 256Mi
 
 # kube-apiserver audit logging (servers only, opt-in; README.md). Enabling is a
 # server config change, so it costs a rolling control-plane restart. OFF BY
@@ -168,11 +148,9 @@ k3s_audit_maxage: 30
 k3s_audit_maxbackup: 10
 k3s_audit_maxsize: 100
 
-# Rendered verbatim to k3s_audit_policy_path and overridable wholesale; the role
-# asserts it is an audit.k8s.io/v1 Policy with rules first, because the
-# apiserver EXITS on an unparseable policy and would crash-loop the control
-# plane. Rules are FIRST MATCH WINS with no catch-all, so the two `None` rules
-# must stay first — they become load-bearing the moment one is appended.
+# Rendered verbatim to k3s_audit_policy_path. The role asserts an
+# audit.k8s.io/v1 Policy with rules, because the apiserver exits on an
+# unparseable policy. First match wins, so the two `None` rules stay first.
 k3s_audit_policy:
   apiVersion: audit.k8s.io/v1
   kind: Policy
@@ -233,19 +211,17 @@ k3s_audit_policy:
             - configmaps
             - serviceaccounts
 
-# Off-node etcd snapshot copy (README.md). OFF BY DEFAULT: it needs companion
-# changes outside this role — the NFS export, weisssrv.infra.node_exporter_host
-# on the servers, the firewall path for :2049, and weisssrv.infra.nfs_tls (an
-# xprtsec=tls mount hangs without the kernel TLS handshake daemon).
+# Off-node etcd snapshot copy (README.md). Off by default: it needs companion
+# changes outside this role — the NFS export, node_exporter_host on the servers,
+# the firewall path for :2049, and weisssrv.infra.nfs_tls.
 k3s_etcd_snapshot_offnode_enabled: false
 
 # Local directory k3s writes its scheduled/on-demand etcd snapshots to.
 k3s_etcd_snapshot_dir: /var/lib/rancher/k3s/server/db/snapshots
 
-# NFS mount for the off-node copies. Mount BY HOSTNAME so the server cert
-# verifies under xprtsec=tls (a wildcard cert has no IP SAN). The client dirpath
-# is PSEUDO-ROOT-RELATIVE: with an fsid=0 export at /export on the server,
-# NFSv4 clients resolve '/k3s-etcd', not '/export/k3s-etcd'.
+# NFS mount for the off-node copies. Mount by hostname so the server cert
+# verifies under xprtsec=tls. The client dirpath is pseudo-root-relative: with
+# an fsid=0 export at /export, NFSv4 clients resolve '/k3s-etcd'.
 k3s_etcd_snapshot_nfs_server: ""
 k3s_etcd_snapshot_nfs_export: /k3s-etcd
 k3s_etcd_snapshot_mountpoint: /mnt/etcd-snapshots

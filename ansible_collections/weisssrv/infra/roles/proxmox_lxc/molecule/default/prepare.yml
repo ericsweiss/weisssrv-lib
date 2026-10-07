@@ -71,11 +71,8 @@
           #!/bin/bash
           STATE=/tmp/molecule-stub-state
           echo "pct $*" >> "$STATE/pct.log"
-          # The role's reconcile tasks parse `pct config` for the net0 /
-          # onboot / startup lines. Defaults match the role defaults so the
-          # reconciles see NO drift and stay no-op (the existence-guard's
-          # zero-mutation invariant). Override files let converge inject
-          # drifted variants per case.
+          # Defaults match the role defaults, so every reconcile is a no-op;
+          # the override files inject drift per case.
           if [ "$1" = "config" ]; then
             if [ -f "$STATE/ct_net0_override" ]; then
               echo "net0: $(cat "$STATE/ct_net0_override")"
@@ -87,21 +84,15 @@
             else
               echo "onboot: 1"
             fi
-            # NOTE the default startup is "order=100" (NO up=0): mirrors
-            # Proxmox dropping the up=0 default from the stored string, so
-            # the startup reconcile's normalize-both-sides must treat it as
-            # equal to the desired "order=100,up=0" — else it churns every run.
+            # Default startup omits up=0, as Proxmox does: the reconcile must
+            # normalize both sides and treat it as equal to "order=100,up=0".
             if [ -f "$STATE/ct_startup_override" ]; then
               echo "startup: $(cat "$STATE/ct_startup_override")"
             else
               echo "startup: order=100"
             fi
-            # nameserver/searchdomain default to the values the scenario's
-            # group_vars produce (dns_servers join + internal_domain), so the DNS
-            # reconcile — which fires on EVERY existing container (nameserver is
-            # non-empty, and unlike the VM it has no skip_create gate) — sees no
-            # drift and stays a no-op, preserving the existence-guard's
-            # zero-mutation invariant. The override files inject a drifted variant.
+            # nameserver/searchdomain default to what the scenario group_vars
+            # produce, so the DNS reconcile sees no drift.
             if [ -f "$STATE/ct_nameserver_override" ]; then
               echo "nameserver: $(cat "$STATE/ct_nameserver_override")"
             else
@@ -116,10 +107,9 @@
           exit 0
       become: true
 
-    # Deterministic GPU group GIDs for the idmap contract cases — the role
-    # getent's video/render on the "Proxmox host" (this container). groupmod/
-    # groupadd -o permits a duplicate GID if a system group already sits on
-    # 44/104, so the pin always lands.
+    # Deterministic GPU group GIDs for the idmap contract cases: the role
+    # getent's video/render on this container. The -o flag permits a duplicate
+    # GID when a system group already sits on 44/104, so the pin always lands.
     - name: Pin video/render group GIDs for the GPU idmap cases
       ansible.builtin.shell: |
         set -e -o pipefail

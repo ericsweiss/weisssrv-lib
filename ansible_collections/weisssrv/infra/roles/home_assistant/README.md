@@ -36,23 +36,23 @@ not restart it.
 | `home_assistant_host_key` | Pinned SSH host key — algorithm + base64, no host prefix | yes (deploy) |
 | `home_assistant_trusted_proxies` | CIDRs allowed to set `X-Forwarded-For` | yes |
 | `home_assistant_oidc_configure_url` | Identity provider's OIDC discovery URL | yes |
-| `home_assistant_oidc_client_id` / `_client_secret` | OIDC client credentials | yes (env defaults) |
+| `home_assistant_oidc_client_id`, `home_assistant_oidc_client_secret` | OIDC client credentials | yes (env defaults) |
 | `home_assistant_oidc_scope` | OIDC scopes | no (`openid profile email`) |
 | `home_assistant_oidc_username_field` | Claim mapped to the HA username | no (`preferred_username`) |
 | `home_assistant_oidc_block_login` | Disable HA's own password login | no (`true`) |
 | `home_assistant_ssl_enabled` | Terminate TLS on HAOS itself | no (`false`) |
-| `home_assistant_ssl_certificate` / `_ssl_key` | Cert paths on HAOS | no (`/ssl/fullchain.pem`, `/ssl/privkey.pem`) |
-| `home_assistant_ssh_user` / `_ssh_port` | HAOS SSH login | no (`root`, `22222`) |
+| `home_assistant_ssl_certificate`, `home_assistant_ssl_key` | Cert paths on HAOS | no (`/ssl/fullchain.pem`, `/ssl/privkey.pem`) |
+| `home_assistant_ssh_user`, `home_assistant_ssh_port` | HAOS SSH login | no (`root`, `22222`) |
 | `home_assistant_ssh_connect_timeout` | `ConnectTimeout` for every call | no (`10`) |
 | `home_assistant_config_path` | Config dir on HAOS | no (`/config`) |
 | `home_assistant_extra_config` | Extra YAML appended verbatim to `configuration.yaml` | no (`""`) |
-| `home_assistant_enable_prometheus` / `_enable_default_config` | Emit the `prometheus:` / `default_config:` block | no (`true`) |
+| `home_assistant_enable_prometheus`, `home_assistant_enable_default_config` | Emit the `prometheus:` / `default_config:` block | no (`true`) |
 | `home_assistant_tts_platforms` | TTS platforms; empty omits the `tts:` block | no (`[google_translate]`) |
 | `home_assistant_includes` | `<key>: !include <file>` map; empty omits them | no (`automation`/`script`/`scene`) |
 | `home_assistant_staging_dir` | Pin the staging dir; empty uses a private per-run tempdir | no (`""`) |
 | `home_assistant_render_only` | Render and stop — no ssh/scp/check | no (`false`) |
 
-`home_assistant_oidc_client_id` / `_client_secret` default to the
+`home_assistant_oidc_client_id` and `home_assistant_oidc_client_secret` default to the
 `HA_OIDC_CLIENT_ID` / `HA_OIDC_CLIENT_SECRET` environment variables, which is
 how a secret manager (`op run -- ansible-playbook ...`) supplies them without
 putting them in inventory. Set the variables directly to bypass that.
@@ -64,10 +64,10 @@ yet. Turn it on once the cert has been distributed to `/ssl`.
 ### Worked example
 
 ```yaml
-home_assistant_host: 192.168.0.154
+home_assistant_host: 10.0.0.154
 home_assistant_host_key: "ssh-ed25519 AAAAC3Nza...example..."
 home_assistant_trusted_proxies:
-  - 192.168.0.0/24     # LAN — the ingress node handling traffic can change
+  - 10.0.0.0/24     # LAN — the ingress node handling traffic can change
   - 10.42.0.0/16       # k3s pod network
   - 10.43.0.0/16       # k3s service network
 home_assistant_oidc_configure_url: >-
@@ -90,7 +90,7 @@ every call with `StrictHostKeyChecking=yes`.
 Capture it once:
 
 ```bash
-ssh-keyscan -t ed25519 -p 22222 192.168.0.154
+ssh-keyscan -t ed25519 -p 22222 10.0.0.154
 ```
 
 Set the algorithm + base64 portion (everything **after** `[host]:port`) as
@@ -100,8 +100,8 @@ After a HAOS rebuild the pre-flight fails with a host-key mismatch. Recover by
 dropping the stale local entry, re-capturing, and updating the pin:
 
 ```bash
-ssh-keygen -R "[192.168.0.154]:22222"
-ssh-keyscan -t ed25519 -p 22222 192.168.0.154
+ssh-keygen -R "[10.0.0.154]:22222"
+ssh-keyscan -t ed25519 -p 22222 10.0.0.154
 ```
 
 Committing the new pin is the point: a HAOS re-key is a real event that should
@@ -151,8 +151,6 @@ roles/home_assistant/
 
 ## Testing
 
-The molecule scenario converges with `home_assistant_render_only: true` and
-asserts on the rendered files, then drives the stateful path with local
-`ssh`/`scp`/`ha` shims against a fake `/config`: successful install, an
-unchanged re-run that must skip the install chain, a rollback on a failed
-`ha core check`, and cleanup of a failed first deploy.
+Converges render-only, then drives deploy, no-op, rollback and first-deploy
+cleanup through local `ssh`/`scp`/`ha` shims against a fake `/config`. Run it
+with the standard scenario invocation in the collection README § Testing.

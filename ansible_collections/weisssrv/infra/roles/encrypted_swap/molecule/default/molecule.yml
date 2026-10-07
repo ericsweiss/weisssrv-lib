@@ -22,9 +22,8 @@ platforms:
       - /run
       - /tmp
   # Backing device absent + encrypted_swap_require_source_device false: the
-  # self-skip arm. Prepare seeds the crypttab/fstab entries an earlier converge
-  # would have left behind; the role must reconcile them away instead of
-  # carrying the every-boot systemd-cryptsetup@ failure forward.
+  # self-skip arm. Prepare seeds crypttab/fstab entries the role must reconcile
+  # away instead of carrying the every-boot systemd-cryptsetup@ failure forward.
   - name: encrypted-swap-skip-test
     image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}
     pre_build_image: true

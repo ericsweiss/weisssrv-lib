@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+# Molecule fixture: an INVALID site. Candidate validation must reject it before
+# it can replace the installed testapp-live.conf.
+server {
+    listen 8081;
+    server_name testapp-broken.local;
+    this_directive_does_not_exist on;
+}

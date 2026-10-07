@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # {{ ansible_managed }}
-# Finalizes a deferred encrypted-swap activation after reboot, including
-# recovery from the boot race between the retained plaintext fstab line and
-# systemd-cryptsetup@ (README). Must run after swap.target, so both contenders
-# have been attempted. Invariants: never exit swapless (any failure restores the
-# plaintext fallback and exits green), and no-op once the plaintext line is
-# commented.
+
+# Finalizes a deferred encrypted-swap activation after reboot, including boot-race
+# recovery (role README). Runs after swap.target. Invariants: never exit swapless,
+# and no-op once the plaintext fstab line is commented.
 set -uo pipefail
 
 dev="{{ encrypted_swap_source_device }}"
@@ -15,13 +13,12 @@ dev="{{ encrypted_swap_source_device }}"
 dev_re="{{ encrypted_swap_source_device | regex_escape }}"
 mapper_name="{{ encrypted_swap_mapper_name }}"
 mapper="/dev/mapper/${mapper_name}"
+PROM_DIR="{{ encrypted_swap_textfile_dir }}"
+PROM_FILE="${PROM_DIR}/encrypted_swap.prom"
 
-# /proc/swaps lists a dm device by its RESOLVED kernel name (/dev/dm-N), NOT the
-# /dev/mapper/<name> symlink — so match on both the symlink and its readlink -f
-# target. Matching only the /dev/mapper path silently never sees an active mapper
-# (it always reads as "not active"), which would make this script wrongly enter
-# its boot-race recovery arm on every boot. If the mapper node does not exist yet,
-# readlink yields nothing and the mapper is (correctly) reported inactive.
+# CRITICAL: /proc/swaps lists a dm device by its resolved kernel name
+# (/dev/dm-N), not the /dev/mapper symlink, so match both. Matching only the
+# symlink reads as "not active" always, entering boot-race recovery every boot.
 mapper_active() {
   local real
   real="$(readlink -f "$mapper" 2>/dev/null)"
@@ -29,15 +26,59 @@ mapper_active() {
     '$1 == m || (r != "" && $1 == r) { found=1 } END { exit !found }' /proc/swaps
 }
 
-# Restore the plaintext fallback AFTER cryptsetup has opened the mapping.
-# The crypttab `swap` option mkswaps through the dm-crypt layer, so the backing
-# device's plaintext swap signature is destroyed the moment the mapper opens —
-# a bare `swapon -a` then finds no valid signature and the host ends up
-# swapless. Recreate the signature first; the device holds nothing but swap.
+# Opening the mapper destroys the backing device's plaintext swap signature, so
+# a bare `swapon -a` would leave the host swapless. Recreate the signature
+# first; the device holds nothing but swap.
 restore_plaintext_swap() {
-  mkswap "$dev" >/dev/null 2>&1 || true
-  swapon -a || true
+  local rc
+  if ! mkswap "$dev" >/dev/null 2>&1; then
+    logger -t encrypted-swap -p daemon.err "mkswap ${dev} failed while restoring plaintext swap" || true
+  fi
+  swapon -a
+  rc=$?
+  [ "$rc" -eq 0 ] || logger -t encrypted-swap -p daemon.err "swapon -a failed (rc=${rc}) while restoring plaintext swap" || true
+  any_swap_active
 }
+
+# SwapTotal is the only reading that distinguishes a restored plaintext swap
+# from a host left with no swap at all.
+any_swap_active() {
+  awk '/^SwapTotal:/ { exit !($2 > 0) }' /proc/meminfo
+}
+
+# Every failure branch exits 0 to honour the never-exit-swapless invariant, so
+# the unit stays green while the host runs unencrypted swap. This gauge is the
+# only signal that says so.
+write_prom() {
+  local tmp
+  [ -d "$PROM_DIR" ] || {
+    logger -t encrypted-swap-metrics -p daemon.err "textfile dir ${PROM_DIR} absent; encrypted_swap_mapper_active not published" || true
+    return 0
+  }
+  tmp="${PROM_FILE}.$$"
+  {
+    echo "# HELP encrypted_swap_mapper_active 1 when the dm-crypt swap mapper is the active swap device."
+    echo "# TYPE encrypted_swap_mapper_active gauge"
+    if mapper_active; then echo "encrypted_swap_mapper_active 1"
+    else echo "encrypted_swap_mapper_active 0"; fi
+    echo "# HELP encrypted_swap_any_swap_active 1 when the host has any swap at all, encrypted or plaintext."
+    echo "# TYPE encrypted_swap_any_swap_active gauge"
+    if any_swap_active; then echo "encrypted_swap_any_swap_active 1"
+    else echo "encrypted_swap_any_swap_active 0"; fi
+    echo "# HELP encrypted_swap_finalize_last_run_seconds Unix time the finalize unit last ran."
+    echo "# TYPE encrypted_swap_finalize_last_run_seconds gauge"
+    echo "encrypted_swap_finalize_last_run_seconds $(date +%s)"
+  } > "$tmp" 2>/dev/null || {
+    logger -t encrypted-swap-metrics -p daemon.err "could not write ${PROM_FILE}"
+    rm -f "$tmp"
+    return 0
+  }
+  mv "$tmp" "$PROM_FILE" 2>/dev/null || {
+    logger -t encrypted-swap-metrics -p daemon.err "could not rename ${tmp} -> ${PROM_FILE}"
+    rm -f "$tmp"
+  }
+}
+trap write_prom EXIT
 
 if ! mapper_active; then
   # Recovery arm — only meaningful while the deferred plaintext line still
@@ -49,25 +90,38 @@ if ! mapper_active; then
   echo "encrypted-swap-finalize: ${mapper} not active (plaintext won the boot race) — attempting boot-time switch" >&2
   if ! swapoff "$dev" 2>/dev/null; then
     echo "encrypted-swap-finalize: swapoff ${dev} failed; keeping plaintext fallback" >&2
+    logger -t encrypted-swap -p daemon.err "swapoff ${dev} failed; this host is running plaintext swap" || true
     exit 0
   fi
   if ! systemctl start "systemd-cryptsetup@${mapper_name}.service"; then
     echo "encrypted-swap-finalize: cryptsetup open failed; restoring plaintext fallback" >&2
-    restore_plaintext_swap
+    if restore_plaintext_swap; then
+      logger -t encrypted-swap -p daemon.err "cryptsetup open failed; this host is running plaintext swap" || true
+    else
+      logger -t encrypted-swap -p daemon.err "cryptsetup open failed and plaintext swap could not be restored; this host has NO swap" || true
+    fi
     exit 0
   fi
   if ! swapon "$mapper"; then
     echo "encrypted-swap-finalize: swapon ${mapper} failed; restoring plaintext fallback" >&2
     swapoff "$mapper" >/dev/null 2>&1 || true
     systemctl stop "systemd-cryptsetup@${mapper_name}.service" >/dev/null 2>&1 || true
-    restore_plaintext_swap
+    if restore_plaintext_swap; then
+      logger -t encrypted-swap -p daemon.err "swapon ${mapper} failed; this host is running plaintext swap" || true
+    else
+      logger -t encrypted-swap -p daemon.err "swapon ${mapper} failed and plaintext swap could not be restored; this host has NO swap" || true
+    fi
     exit 0
   fi
   if ! mapper_active; then
     echo "encrypted-swap-finalize: ${mapper} still not active after switch; restoring plaintext fallback" >&2
     swapoff "$mapper" >/dev/null 2>&1 || true
     systemctl stop "systemd-cryptsetup@${mapper_name}.service" >/dev/null 2>&1 || true
-    restore_plaintext_swap
+    if restore_plaintext_swap; then
+      logger -t encrypted-swap -p daemon.err "${mapper} still not active after the switch; this host is running plaintext swap" || true
+    else
+      logger -t encrypted-swap -p daemon.err "${mapper} still not active after the switch and plaintext swap could not be restored; this host has NO swap" || true
+    fi
     exit 0
   fi
   echo "encrypted-swap-finalize: boot-time switch complete (${mapper} active)" >&2
@@ -78,8 +132,7 @@ fi
 # swapoff is a no-op; it only matters in exotic double-active states.
 swapoff "$dev" 2>/dev/null || true
 
-# Comment the plaintext swap fstab line exactly once. Matches only an UNcommented
-# "<dev> <mnt> swap ..." line (the commented form no longer starts with the
-# device), so re-runs are no-ops. The pattern uses the regex-escaped device path
-# and '#' as the sed delimiter (so the path's slashes are literal).
+# Comment the plaintext swap fstab line exactly once. Matching only an
+# uncommented "<dev> <mnt> swap ..." line makes re-runs no-ops. '#' is the sed
+# delimiter so the device path's slashes stay literal.
 sed -ri "s#^(${dev_re}[[:space:]]+[^[:space:]]+[[:space:]]+swap[[:space:]].*)#\# \1#" /etc/fstab

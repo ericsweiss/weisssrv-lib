@@ -10,12 +10,9 @@
     that:
       - _nic_state.rc == 0
       - _nic_feature | length > 0
-      # `ethtool --show-features` prints top-level features unindented and their
-      # sub-features tab-indented, so anchoring at the line start reads the
-      # aggregate. A driver-fixed feature reads "off [fixed]", which still
-      # matches when it is the value we asked for and fails when it is not.
-      # `\\s` (not `\s`): Jinja string literals process Python escapes, so a
-      # bare `\b` would become a backspace rather than a word boundary.
+      # `ethtool --show-features` prints top-level features unindented, so
+      # anchoring at the line start reads the aggregate ("off [fixed]" matches).
+      # `\\s` not `\s`: Jinja string literals process Python escapes.
       - _nic_state.stdout_lines | select('match', _nic_feature ~ ':\\s*' ~ item.1.value) | list | length > 0
     fail_msg: >-
       {{ item.0.interface }} {{ item.1.feature }} is NOT {{ item.1.value }} after apply

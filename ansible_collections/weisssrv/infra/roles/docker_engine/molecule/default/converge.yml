@@ -8,39 +8,41 @@
     - name: Container warm-up (apt locks, dpkg state, cache, systemd)
       ansible.builtin.include_tasks: ../../../../molecule-shared/tasks/container-warmup.yml
 
-    # Legacy-keyring fixture, seeded after the warm-up (a broken docker source
-    # wedges the warm-up's own apt update) and marker-guarded so the idempotence
-    # re-run does not re-seed.
-    - name: Check whether the legacy-repo fixture was already seeded
-      ansible.builtin.stat:
-        path: /var/tmp/molecule-docker-legacy-fixture-seeded
-      register: docker_engine_fixture_marker
-
-    - name: Seed a pre-standardization Docker repo line
-      ansible.builtin.copy:
-        dest: /etc/apt/sources.list.d/docker.list
-        content: >
-          deb [arch=amd64 signed-by=/usr/share/keyrings/docker.gpg]
-          https://download.docker.com/linux/debian trixie stable
-        mode: "0644"
-      when: not docker_engine_fixture_marker.stat.exists
-
-    - name: Seed a pre-standardization Docker keyring
-      ansible.builtin.copy:
-        dest: /usr/share/keyrings/docker.gpg
-        content: "legacy-keyring-fixture"
-        mode: "0644"
-      when: not docker_engine_fixture_marker.stat.exists
-
-    - name: Mark the legacy-repo fixture as seeded
-      ansible.builtin.file:
-        path: /var/tmp/molecule-docker-legacy-fixture-seeded
-        state: touch
-        mode: "0644"
-      when: not docker_engine_fixture_marker.stat.exists
-
+    # Render-only comes from the group var, so the daemon.json change can notify
+    # Restart docker and the handler still reads the skip flag at flush time.
     - name: Install docker_engine in render-only mode
       ansible.builtin.include_role:
         name: weisssrv.infra.docker_engine
-      vars:
-        docker_engine_skip_install: true
+
+# Its own play: the handler pending from the render-only include flushes before
+# this play's include param (docker_engine_skip_install: false) becomes the
+# scope it resolves in, which would restart a Docker this container lacks.
+- name: Drive the required-pin assert
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    # The required-pin assert is the guard that stops a consumer getting an
+    # unpinned engine; drive it with one pin empty and record that it fired.
+    - name: Drive the required-pin assert with an empty version pin
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Include docker_engine with an empty engine pin
+          ansible.builtin.include_role:
+            name: weisssrv.infra.docker_engine
+          vars:
+            docker_engine_skip_install: false
+            docker_engine_ce_version: ""
+
+        - name: Fail because the required-pin assert did not fire
+          ansible.builtin.fail:
+            msg: >-
+              docker_engine accepted an empty docker_engine_ce_version; the
+              required-pin assert no longer guards the install.
+      rescue:
+        - name: Record that the required-pin assert fired
+          ansible.builtin.copy:
+            dest: /var/tmp/molecule-docker-pin-assert
+            content: "fired\n"
+            mode: "0644"
+          when: ansible_failed_task.name == 'Validate the pinned Docker versions are supplied'

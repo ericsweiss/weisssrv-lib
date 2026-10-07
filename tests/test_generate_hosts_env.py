@@ -1,26 +1,21 @@
 """Tests for scripts/generate-hosts-env.py.
 
-The group -> variable mapping is consumer data (an export map), so the suite
-drives the engine with a synthetic inventory plus the shipped example map
-(examples/hosts-env-map.example.yml) — which therefore stays proven-loadable.
+The suite drives the engine with a synthetic inventory plus the shipped example
+map (examples/hosts-env-map.example.yml), which therefore stays proven-loadable.
 """
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
 import yaml
 
+from script_loader import load_script
+
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLE_MAP = REPO / "examples" / "hosts-env-map.example.yml"
 
-_SPEC = importlib.util.spec_from_file_location(
-    "gen_hosts_env",
-    REPO / "scripts" / "generate-hosts-env.py",
-)
-gen = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(gen)  # type: ignore[union-attr]
+gen = load_script("generate-hosts-env.py")
 
 
 def _minimal_inventory() -> dict:
@@ -33,7 +28,9 @@ def _minimal_inventory() -> dict:
                 "proxmox": {"hosts": {"pve-a": host("10.0.0.2"), "pve-b": host("10.0.0.3")}},
                 "dns": {"hosts": {"dns-01": host("10.0.0.150"), "dns-02": host("10.0.0.160")}},
                 "mail": {"hosts": {"smtp": host("10.0.0.151")}},
-                "plex_servers": {"hosts": {"plex": host("10.0.0.152")}},
+                "plex_servers": {
+                    "hosts": {"plex": dict(host("10.0.0.152"), vm_id=152)}
+                },
                 "gitlab_servers": {"hosts": {"gitlab": host("10.0.0.153")}},
                 "nextcloud_servers": {"hosts": {"nextcloud": host("10.0.0.156")}},
                 "immich_servers": {"hosts": {"immich": host("10.0.0.157")}},
@@ -70,7 +67,7 @@ class TestBuild:
     def test_combine_unions_in_order(self, exports):
         pairs = dict(gen.build(_minimal_inventory(), exports))
         combined = pairs["ALL_SSH_IPS"].split()
-        # WINDOWS_IP is deliberately not combined into the keyscan set.
+        # WINDOWS_IP is not combined into the keyscan set.
         assert "10.0.0.155" not in combined
         assert combined[:2] == ["10.0.0.2", "10.0.0.3"]
         for ip in ("10.0.0.153", "10.0.0.154", "10.0.0.157", "10.0.0.222"):
@@ -223,3 +220,115 @@ class TestMain:
         m = tmp_path / "map.yml"
         m.write_text(yaml.safe_dump({"exports": [{"key": "DNS_IPS", "group": "dns"}]}))
         assert gen.main(["--inventory", str(inv), "--map", str(m)]) == 1
+
+
+class TestHostVarKind:
+    """A per-guest inventory value (a Proxmox vmid) reaches the env file."""
+
+    @staticmethod
+    def _inventory() -> dict:
+        return {
+            "all": {
+                "children": {
+                    "guests": {
+                        "hosts": {
+                            "plex": {"ansible_host": "10.0.0.152", "vm_id": 152},
+                            "gitlab": {"ansible_host": "10.0.0.153", "vm_id": 153},
+                        }
+                    }
+                }
+            }
+        }
+
+    def test_resolves_one_hosts_variable(self):
+        pairs = dict(gen.build(self._inventory(), [
+            {"key": "PLEX_VMID", "group": "guests", "host": "plex",
+             "value": "hostvar", "var": "vm_id"},
+        ]))
+        assert pairs["PLEX_VMID"] == "152"
+
+    def test_resolves_the_variable_across_a_group(self):
+        pairs = dict(gen.build(self._inventory(), [
+            {"key": "GUEST_VMIDS", "group": "guests", "value": "hostvar", "var": "vm_id"},
+        ]))
+        assert pairs["GUEST_VMIDS"] == "152 153"
+
+    def test_a_missing_var_key_fails_rather_than_emitting_an_empty_value(self):
+        with pytest.raises(ValueError, match="hostvar with no `var:`"):
+            gen.build(self._inventory(), [
+                {"key": "X", "group": "guests", "value": "hostvar"},
+            ])
+
+    def test_a_variable_absent_from_the_host_fails_loudly(self):
+        inv = self._inventory()
+        del inv["all"]["children"]["guests"]["hosts"]["plex"]["vm_id"]
+        with pytest.raises(ValueError, match="has no 'vm_id'"):
+            gen.build(inv, [
+                {"key": "GUEST_VMIDS", "group": "guests", "value": "hostvar", "var": "vm_id"},
+            ])
+
+    def test_an_absent_host_is_the_same_loud_failure_as_any_other_kind(self):
+        with pytest.raises(ValueError, match="resolved to nothing"):
+            gen.build(self._inventory(), [
+                {"key": "X", "group": "guests", "host": "absent",
+                 "value": "hostvar", "var": "vm_id"},
+            ])
+
+
+class TestGroupVarKind:
+    """`groupvar` single-sources a group-level roster into the env file."""
+
+    @staticmethod
+    def _inventory() -> dict:
+        return {
+            "all": {
+                "children": {
+                    "nas": {
+                        "hosts": {"nas-01": {"ansible_host": "10.0.0.2"}},
+                        "vars": {"zfs_pools": ["tank", "archive"]},
+                    }
+                }
+            }
+        }
+
+    def test_a_group_list_variable_space_joins(self):
+        pairs = dict(gen.build(self._inventory(), [
+            {"key": "ZFS_POOLS", "group": "nas", "value": "groupvar", "var": "zfs_pools"},
+        ]))
+        assert pairs["ZFS_POOLS"] == "tank archive"
+
+    def test_a_group_vars_file_is_read_when_the_inventory_declares_nothing(self, tmp_path):
+        inv = self._inventory()
+        del inv["all"]["children"]["nas"]["vars"]
+        (tmp_path / "nas.yml").write_text("zfs_pools: [tank]\n", encoding="utf-8")
+        pairs = dict(gen.build(inv, [
+            {"key": "ZFS_POOLS", "group": "nas", "value": "groupvar", "var": "zfs_pools"},
+        ], tmp_path))
+        assert pairs["ZFS_POOLS"] == "tank"
+
+    def test_a_missing_group_var_fails_rather_than_emitting_an_empty_value(self):
+        with pytest.raises(ValueError, match="declares no 'absent_var'"):
+            gen.build(self._inventory(), [
+                {"key": "X", "group": "nas", "value": "groupvar", "var": "absent_var"},
+            ])
+
+    def test_an_empty_group_var_fails_loudly(self):
+        inv = self._inventory()
+        inv["all"]["children"]["nas"]["vars"]["zfs_pools"] = []
+        with pytest.raises(ValueError, match="empty 'zfs_pools'"):
+            gen.build(inv, [
+                {"key": "ZFS_POOLS", "group": "nas", "value": "groupvar",
+                 "var": "zfs_pools"},
+            ])
+
+    def test_a_groupvar_without_a_var_key_fails(self):
+        with pytest.raises(ValueError, match="groupvar with no `var:`"):
+            gen.build(self._inventory(), [
+                {"key": "X", "group": "nas", "value": "groupvar"},
+            ])
+
+    def test_an_undeclared_group_fails_loudly(self):
+        with pytest.raises(ValueError, match="not in the inventory"):
+            gen.build(self._inventory(), [
+                {"key": "X", "group": "absent", "value": "groupvar", "var": "zfs_pools"},
+            ])

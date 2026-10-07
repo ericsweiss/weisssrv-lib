@@ -1,8 +1,6 @@
 ---
-# Verify the crypttab + fstab rendering and the boot finalize wiring. Activation
-# is deferred to reboot, so converge produces the deferred shape: plaintext
-# backing line KEPT alongside the higher-priority nofail mapper line, and the
-# finalize unit deployed + enabled.
+# Verify the crypttab and fstab rendering and the boot finalize wiring, in the
+# deferred shape converge produces: both swap lines present, finalize enabled.
 - name: Verify the host with a backing device
   hosts: encrypted-swap-test
   become: true
@@ -120,19 +118,22 @@
         fail_msg: "finalize script missing the active-swap gate, the dm-device resolution, the boot-race recovery arm, or the mkswap restore"
         success_msg: "finalize gates on active swap (resolving the mapper device) and recovers a lost boot race safely"
 
-    # Behaviour, not strings: run the deployed script against a fixture
-    # /proc/swaps + /etc/fstab with stubbed swapon/swapoff/mkswap/systemctl, and
-    # assert the DECISIONS in each of the three arms. Inverted control flow
-    # passes every grep above; it fails here.
+    # Run the deployed script against fixture /proc/swaps and /etc/fstab with
+    # stubbed tools, asserting the decision each of the three arms makes.
     - name: Exercise the finalize script's decision arms
       ansible.builtin.shell: |
         set -euo pipefail
         root=/root/encrypted-swap-behaviour
         rm -rf "$root"; mkdir -p "$root/bin"
-        # Same script, reading fixtures instead of the live host state.
+        # Same script, reading fixtures instead of the live host state and
+        # writing its textfile metrics into the fixture tree.
+        mkdir -p "$root/textfile"
         sed -e "s#/proc/swaps#$root/swaps#g" -e "s#/etc/fstab#$root/fstab#g" \
+          -e "s#/proc/meminfo#$root/meminfo#g" \
+          -e "s#^PROM_DIR=.*#PROM_DIR=\"$root/textfile\"#" \
           /usr/local/sbin/encrypted-swap-finalize.sh > "$root/finalize.sh"
         chmod 0755 "$root/finalize.sh"
+        printf 'SwapTotal:       1048572 kB\n' > "$root/meminfo"
 
         # Stubs log their invocation; swapon of the mapper models the kernel by
         # appending it to the fixture /proc/swaps, and FAULT names the command
@@ -187,6 +188,32 @@
         grep -q 'mkswap /dev/pve/swap' "$root/log" || fail "arm3: restore did not mkswap the backing device"
         grep -q 'swapon -a' "$root/log" || fail "arm3: restore did not swapon -a"
         grep -q "^$fstab_line" "$root/fstab" || fail "arm3: plaintext fallback line was commented despite a failed switch"
+        # Arm 3 exits 0, so the gauge is the only signal that the host is on
+        # unencrypted swap. It must say 0, not be absent.
+        grep -q '^encrypted_swap_mapper_active 0$' "$root/textfile/encrypted_swap.prom" \
+          || fail "arm3: no encrypted_swap_mapper_active 0 published on the degraded path"
+        grep -q '^encrypted_swap_any_swap_active 1$' "$root/textfile/encrypted_swap.prom" \
+          || fail "arm3: restored plaintext swap was not published as any_swap_active 1"
+
+        # Arm 4: the restore itself fails -> the host has NO swap, which must
+        # read differently from the healthy-plaintext case above.
+        : > "$root/log"
+        printf 'SwapTotal:             0 kB\n' > "$root/meminfo"
+        printf 'Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/dev/pve/swap partition 1048572 0 -2\n' > "$root/swaps"
+        printf '%s\n' "$fstab_line" > "$root/fstab"
+        FAULT=systemctl "$root/finalize.sh" 2>/dev/null
+        grep -q '^encrypted_swap_any_swap_active 0$' "$root/textfile/encrypted_swap.prom" \
+          || fail "arm4: a failed restore did not publish any_swap_active 0"
+        printf 'SwapTotal:       1048572 kB\n' > "$root/meminfo"
+
+        # Arm 1 republishes a 1 on the healthy path.
+        printf 'Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/dev/mapper/cryptswap partition 1048572 0 -2\n' > "$root/swaps"
+        printf '%s\n' "$fstab_line" > "$root/fstab"
+        "$root/finalize.sh" 2>/dev/null
+        grep -q '^encrypted_swap_mapper_active 1$' "$root/textfile/encrypted_swap.prom" \
+          || fail "healthy path did not publish encrypted_swap_mapper_active 1"
+        grep -q '^encrypted_swap_finalize_last_run_seconds [0-9]' "$root/textfile/encrypted_swap.prom" \
+          || fail "no encrypted_swap_finalize_last_run_seconds published"
         echo BEHAVIOUR_OK
       args:
         executable: /bin/bash
@@ -194,11 +221,9 @@
       changed_when: false
       failed_when: "'BEHAVIOUR_OK' not in encrypted_swap_behaviour.stdout"
 
-# The self-skip arm (no backing device + encrypted_swap_require_source_device
-# false). Prepare left this host in the state an earlier successful converge
-# produced; the role must reconcile it away, because a crypttab entry naming a
-# device that is gone fails systemd-cryptsetup@<mapper> on every boot — the
-# exact failure the backing-device guard exists to prevent.
+# The self-skip arm: no backing device with encrypted_swap_require_source_device
+# false. Prepare stages a converged host, and the role must reconcile away a
+# crypttab entry naming a device that is gone.
 - name: Verify the self-skip host
   hosts: encrypted-swap-skip-test
   become: true

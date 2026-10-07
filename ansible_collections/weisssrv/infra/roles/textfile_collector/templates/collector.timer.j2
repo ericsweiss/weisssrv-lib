@@ -1,8 +1,6 @@
 # {{ ansible_managed }}
 # Fires {{ textfile_collector_name }}.service periodically. OnUnitInactiveSec
-# (not OnUnitActiveSec) is the standard Type=oneshot pairing: it measures from
-# when the previous run FINISHED, so the cadence survives a failed sample
-# (failed -> inactive transition still re-arms the timer).
+# measures from when the previous run finished, so a failed sample re-arms it.
 [Unit]
 Description={{ textfile_collector_timer_description }}
 

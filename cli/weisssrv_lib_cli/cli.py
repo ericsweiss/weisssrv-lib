@@ -112,12 +112,7 @@ def _render(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-
-    if args.command in _COMMANDS:
-        return _render(args)
-
-    return 2  # unreachable (subparsers required)
+    return _render(build_parser().parse_args(argv))
 
 
 if __name__ == "__main__":

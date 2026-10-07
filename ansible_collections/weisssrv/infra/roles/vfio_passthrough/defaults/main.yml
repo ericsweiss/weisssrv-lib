@@ -1,12 +1,31 @@
 ---
-# vfio_passthrough — host-side GPU VFIO codification (Proxmox host). Every task
-# self-gates on vfio_passthrough_enabled, so the role is a clean no-op unless
-# turned on. It only STAGES the config (IOMMU cmdline + vfio-pci binding) and
-# warns that a reboot is required; the operator applies it in a window.
-#
-# ASSUMES a GRUB-managed host. A systemd-boot / proxmox-boot-tool host carries
-# its cmdline in /etc/kernel/cmdline instead and is out of scope.
+# Host-side GPU VFIO gate, reconciled both ways: true stages the IOMMU cmdline
+# and vfio-pci binding, false removes them. A reboot applies either; the role
+# warns rather than rebooting.
 vfio_passthrough_enabled: false
+
+# Lets the disabled arm remove the three VFIO drop-ins. Only a file carrying
+# the marker below is removed; set false to leave every drop-in alone.
+vfio_passthrough_manage_absent: true
+
+# Substring that identifies a role-written drop-in. Role-owned literal the three
+# templates emit, so it is stable across re-installs and independent of the
+# consumer's `ansible_managed`. A hand-written file is reported and kept.
+vfio_passthrough_managed_marker: "managed by weisssrv.infra.vfio_passthrough"
+
+# Extra ownership markers accepted by the removal arm. A drop-in written before
+# the literal above shipped carries only the `ansible_managed` header, so the
+# defaults are its stable prefix. An empty entry is ignored, never matched.
+vfio_passthrough_legacy_markers:
+  - >-
+    {{ lookup('ansible.builtin.config', 'DEFAULT_MANAGED_STR', on_missing='skip')
+       | default('', true) | regex_replace('\\{.*$', '') | trim }}
+  - "{{ ansible_managed | default('') | regex_replace('\\{.*$', '') | trim }}"
+
+# How the kernel command line is written. 'grub' appends a /etc/default/grub.d
+# drop-in and is the only method implemented; a host that keeps its cmdline in
+# /etc/kernel/cmdline (systemd-boot) is refused by a preflight.
+vfio_passthrough_cmdline_method: grub
 
 # PCI IDs (vendor:device) bound to vfio-pci — one `ids=` list. REQUIRED when
 # enabled (a preflight asserts it is non-empty). For a multifunction GPU list
@@ -18,16 +37,14 @@ vfio_passthrough_pci_ids: []
 # would never fire. vfio-pci claims the function via `ids=` instead.
 vfio_passthrough_blacklist_modules:
   - nouveau
-  # i2c_nvidia_gpu drives the card's UCSI/USB-C function and auto-loads on PCI
-  # match, claiming it ahead of vfio-pci. It is NVIDIA-GPU-only (nothing else on
-  # a host uses it), so hard-blacklist rather than softdep; vfio-pci then claims
-  # the function via `ids=` at boot with no VM-start rebind.
+  # i2c_nvidia_gpu auto-loads on PCI match and claims the card's USB-C function
+  # ahead of vfio-pci. Nothing else on a host uses it, so it is blacklisted
+  # rather than softdep'd.
   - i2c_nvidia_gpu
 
-# Host drivers that DO load at boot (they also serve other host devices, so they
-# must NOT be blacklisted) but must let vfio-pci grab the passed-through function
-# first: each gets `softdep <mod> pre: vfio-pci`. On a multifunction NVIDIA GPU
-# these are the HD-audio and USB-C xHCI functions.
+# Host drivers that load at boot because they serve other devices, so they get
+# `softdep <mod> pre: vfio-pci` instead of a blacklist. On a multifunction
+# NVIDIA GPU these are the HD-audio and USB-C xHCI functions.
 vfio_passthrough_softdep_modules:
   - snd_hda_intel
   - xhci_hcd
@@ -37,11 +54,9 @@ vfio_passthrough_softdep_modules:
 # (README, "Binding mechanisms").
 vfio_passthrough_force_load: true
 
-# Kernel command-line parameters appended via the GRUB drop-in. iommu=pt improves
-# passthrough DMA/reset behavior; intel_iommu=on suits an Intel host (swap for
-# amd_iommu=on on AMD). The template ALSO appends
-# `vfio-pci.ids=<vfio_passthrough_pci_ids>` — do not duplicate an ids= entry
-# here.
+# Kernel command-line parameters appended via the GRUB drop-in. Swap
+# intel_iommu=on for amd_iommu=on on an AMD host. The template also appends
+# `vfio-pci.ids=`, so do not add an ids= entry here.
 vfio_passthrough_cmdline_params:
   - "intel_iommu=on"
   - "iommu=pt"

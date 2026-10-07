@@ -1,72 +1,169 @@
 ---
-# The library's OFFER list: every path a consumer may vendor or fork.
-#
-# This file says nothing about who copies what — the library does not know its
-# consumers. Each consumer records its own copies in a manifest
-# (scripts/vendored-manifest.yml by convention) and gates them with
-# scripts/check-vendored-copies.py against a library checkout at its pinned
-# ref. What THIS list buys:
-#
-#   * the engine fails a manifest entry whose `lib:` path is not offered here,
-#     so a consumer cannot quietly grow a dependency on a library internal that
-#     no release contract covers;
-#   * tests/test_vendorable_paths.py holds every offered path to a file that
-#     exists, so the offer cannot rot ahead of the tree.
-#
-# Offering a path is a statement of intent: renames and deletions below are
-# release-noted in MIGRATING.md like any other consumer-facing change. Adding a
-# path is cheap — prefer offering a file over a consumer copying it unoffered.
-#
-# Sorted, one path per line. Comments group by area, nothing else.
+# Paths a consumer may vendor or fork, as byte-identical copies so a consumer
+# can run its gates from a checkout alone. Removing or renaming one is a
+# consumer-facing change: release-note it in MIGRATING.md.
+
+# Sorted, one path per line; held to the tree by tests/test_vendorable_paths.py.
 
 vendorable:
+  # Shared molecule scaffolding (a consumer keeping its own copies vendors these)
+  - ansible_collections/weisssrv/infra/molecule-shared/prepare-common.yml
+  - ansible_collections/weisssrv/infra/molecule-shared/tasks/container-warmup.yml
+  - ansible_collections/weisssrv/infra/molecule-shared/tasks/prepare-apt-disable.yml
+  - ansible_collections/weisssrv/infra/molecule-shared/tasks/prepare-base.yml
   # CI example workflows (GitHub-shape consumers copy these as-is)
   - ci/github/build-image.example.yml
   - ci/github/ci.example.yml
   - ci/release/github-release-workflow.example.yml
+  # GitLab include templates a consumer may hold byte-identical instead of including
+  - ci/templates/docker-dind.yml
+  - ci/validate/terraform-drift-plan.yml
+  # Python toolchain pins (consumers usually FORK: their header differs)
+  - docker/molecule-ci/requirements.txt
+  # Policy and gate config data consumers vendor
+  - examples/helmrelease-crd-safety.example.yaml
+  - examples/netpol-except.example.yaml
+  - examples/render-gates.example.conf
+  - examples/unifi-settings.example.json
+  # Programs mounted into a CronJob beside their app script
+  - kubernetes/reapers/kube_reaper.py
   # Lint profiles — most consumers FORK these (per-repo allowlists/sections)
   - lint/editorconfig
+  - lint/gitattributes
   - lint/gitleaks.toml
   - lint/pre-commit-config.yaml
   - lint/ruff.toml
   - lint/secret-detection-ruleset.toml
-  # Both yamllint profiles are offered even though today's consumers copy
-  # them under untracked names: lint/README.md documents vendoring either as
-  # `.yamllint`, and an unoffered file cannot be listed in any manifest.
+  # Consumers vendor this at lint/yamllint-relaxed.yml, never as a root
+  # `.yamllint` (ansible-lint would discover one and lose its yaml[*] rules).
   - lint/yamllint-relaxed.yml
-  - lint/yamllint-strict.yml
   # Gate and helper scripts
   - scripts/b2-bucket-drift.py
   - scripts/check-alertmanager-behaviour.py
   - scripts/check-backup-artifact-apps.py
+  # check-ci-include-job-names.py imports scripts/ci_yaml.py from its own
+  # directory: vendor the pair, or the gate exits 2 on import.
+  - scripts/check-ci-include-job-names.py
+  # check-cluster-invariants.py imports scripts/inventory_tree.py from its own
+  # directory: vendor the pair, or the gate exits 2 on import.
+  - scripts/check-cluster-invariants.py
+  - scripts/check-comment-length.py
+  - scripts/check-dashboards.py
   - scripts/check-default-deny-coverage.py
+  # These three import scripts/ci_yaml.py from their own directory (and
+  # check-deploy-preflight.py also ci_playbook_invocations.py): vendor the
+  # imports too, or the gate exits 2 on import.
   - scripts/check-deploy-coverage.sh
+  - scripts/check-deploy-preflight.py
   - scripts/check-doc-links.py
+  - scripts/check-ephemeral-storage-cap.py
+  - scripts/check-flux-stage-timeouts.py
+  - scripts/check-flux-version-pin.py
+  # check-helm-repo-parity.py loads check-versions.py from its own directory
+  # for the registry loader: vendor the pair.
+  - scripts/check-helm-repo-parity.py
+  - scripts/check-helm-values-coverage.py
+  - scripts/check-helmrelease-crd-safety.py
   - scripts/check-hpa-vpa-invariant.py
+  # check-include-contract.py imports scripts/ci_yaml.py from its own
+  # directory: vendor the pair, or the gate exits 2 on import.
+  - scripts/check-include-contract.py
+  - scripts/check-ingressroute-backends.py
+  - scripts/check-issuer-refs.py
   - scripts/check-kubectl-version-pin.py
+  - scripts/check-kustomization.py
+  # check-lib-pins.py imports scripts/ci_yaml.py from its own directory:
+  # vendor the pair, or the gate exits 2 on import.
   - scripts/check-lib-pins.py
+  # check-live-cpu-limits.py imports gate_common.py from its own directory
+  # for the fail-closed live-input arm: vendor the pair.
+  - scripts/check-live-cpu-limits.py
+  # check-molecule-image-pin.py imports scripts/ci_yaml.py from its own
+  # directory: vendor the pair, or the gate exits 2 on import.
+  - scripts/check-molecule-image-pin.py
+  # check-molecule-matrix-coverage.sh imports scripts/ci_yaml.py from its own
+  # directory: vendor the pair, or the gate exits 2 on import.
+  - scripts/check-molecule-matrix-coverage.sh
   - scripts/check-netpol-except-parity.py
+  - scripts/check-nfs-tls.py
+  - scripts/check-prometheus-rule-coverage.py
   - scripts/check-pvc-storageclass.py
+  - scripts/check-role-defaults-documented.py
+  - scripts/check-role-inputs.py
+  - scripts/check-role-readme-literals.py
+  - scripts/check-rule-windows.py
+  - scripts/check-runbook-anchors.py
   - scripts/check-scrape-netpol.py
+  - scripts/check-scrape-wiring.py
+  - scripts/check-secret-rotation-coverage.py
   - scripts/check-secretstore-scope.py
   - scripts/check-taskfile.sh
+  # check-version-checksums.py loads check-versions.py from its own directory
+  # for the registry loader: vendor the pair.
+  - scripts/check-version-checksums.py
   - scripts/check-versions.py
+  # Vendored because the jobs that call it run before any library checkout
+  # exists, which is the download block it replaces.
+  - scripts/ci-fetch-tools.py
+  # Sourced by a consumer's consolidated gate jobs, so the driver is one copy
+  # under shellcheck instead of a paste per job.
+  - scripts/ci-run-check.sh
+  - scripts/ci_playbook_invocations.py
+  - scripts/ci_yaml.py
+  - scripts/cluster-config-value.sh
+  # Sourced by a consumer's own collect-state.sh, which stays consumer-owned
+  # (its section list is site data). Consumers usually FORK this to add their
+  # own redaction patterns and verdict signals.
+  - scripts/collect-state-lib.sh
+  # Sourced by a consumer's own deploy-verify.sh, which stays consumer-owned
+  # (its probe list is site data). Only the readiness classifiers are shared.
+  - scripts/deploy-verify-lib.sh
   - scripts/extract-prometheus-config.py
   - scripts/find-pve-host-for-vm.sh
   - scripts/find-reachable-host.sh
+  - scripts/flux-child-kustomizations.py
   - scripts/flux-env.sh
   - scripts/flux-render.sh
+  # gate_common.py is imported from its own directory by every corpus gate
+  # above and by the live-input gate (live-cpu-limits): vendor it with any of
+  # them. tests/test_gate_common_vendoring.py holds that list to the tree.
+  - scripts/gate_common.py
+  # generate-hosts-env.py imports scripts/inventory_tree.py from its own
+  # directory: vendor the pair, or the generator exits 2 on import.
   - scripts/generate-hosts-env.py
   - scripts/generate-versions-configmap.py
+  - scripts/inventory_tree.py
   - scripts/kubeconform-skipped.py
   - scripts/lint-prometheus-config.sh
+  - scripts/maintenance-run-with-verify.sh
   - scripts/molecule-retry.sh
   - scripts/resolve-tool.sh
+  - scripts/run-render-gates.sh
   - scripts/sanitize-junit-expected-failures.py
   - scripts/semantic-release.py
   - scripts/shell-lib.sh
+  # The probe half of a per-guest smoke script; the script itself stays
+  # consumer-owned, because its endpoint list is site data.
+  - scripts/smoke-lib.sh
+  - scripts/supervised-apply-guard.sh
+  - scripts/unifi-settings-drift.py
+  # validate-helm-values.py loads check-hpa-vpa-invariant.py by path and fails
+  # loudly when it is missing: vendor the pair.
   - scripts/validate-helm-values.py
   - scripts/version-bump-mr.py
   - scripts/version-check-ci.py
-  # Test suites that travel with their script (canonical here, smoke-tested there)
+  - scripts/wait-for-reloader-roll.sh
+  # Test helpers and suites that travel with their script, so a vendored gate
+  # arrives with the proof it can fail. Each suite below drives its gate
+  # through tests/script_loader.py and reads nothing else in this tree.
+  - tests/copier_render.py
+  - tests/script_loader.py
+  - tests/test_check_default_deny_coverage.py
+  - tests/test_check_hpa_vpa_invariant.py
+  - tests/test_check_include_contract.py
   - tests/test_check_lib_pins.py
+  - tests/test_check_netpol_except_parity.py
+  - tests/test_check_nfs_tls.py
+  - tests/test_check_pvc_storageclass.py
+  - tests/test_check_scrape_netpol.py
+  - tests/test_check_secretstore_scope.py

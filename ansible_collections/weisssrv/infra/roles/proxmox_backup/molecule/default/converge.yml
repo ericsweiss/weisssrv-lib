@@ -17,10 +17,9 @@
         path: /mnt/pve/tank-proxmox
         content: "snippets,backup,vztmpl,iso"
         options: "vers=4.2,xprtsec=tls"
-    # zfspool entry: `pool` is create-fixed and is the property whose drift
-    # silently relocates every new guest disk (e.g. onto a pool root with
-    # different encryption), so it is asserted, not reconciled. nodes/mountpoint
-    # /sparse are mutable and reconciled.
+    # zfspool entry: `pool` is create-fixed and its drift silently relocates
+    # every new guest disk, so it is asserted, not reconciled.
+    # nodes, mountpoint and sparse are mutable and reconciled.
     test_pve_storage_zfs:
       - id: ssd
         type: zfspool
@@ -251,11 +250,9 @@
       register: case_c2
       changed_when: false
 
-    # CASE C3 — live job carries a stale `exclude` (100) that the config no
-    # longer sets: the role must clear it with `--delete exclude`. pvesh set
-    # only updates the flags it is given, so a removed exclude/vmid must be
-    # explicitly deleted or it keeps silently skipping guests. Exactly one
-    # `pvesh set` carrying `--delete exclude` and no storage mutation.
+    # CASE C3 — a live job carrying a stale `exclude` the config no longer
+    # sets must be cleared with `--delete exclude`, since `pvesh set` only
+    # updates the flags it is given. Exactly one set, no storage mutation.
     - name: C3 — reset log, seed matching job WITH a stale exclude
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -358,6 +355,7 @@
         label: "{{ item.name }}"
 
     - name: E — run role expecting the fixed-property assert to fail
+      tags: [molecule-idempotence-notest]
       block:
         - name: E — include proxmox_backup (expected to fail)
           ansible.builtin.include_role:
@@ -383,10 +381,9 @@
       register: case_e
       changed_when: false
 
-    # CASE F — a job carrying `script` must land the hookscript on this node
-    # BEFORE the job is saved: pvesh rejects a --script path that does not
-    # exist. The file comes from weisssrv.infra.node_exporter_host, so this
-    # also proves the cross-role include resolves.
+    # CASE F — a job carrying `script` must land the hookscript before the job
+    # is saved, since pvesh rejects a missing --script path. Also proves the
+    # cross-role include of node_exporter_host resolves.
     - name: F — reset log and empty live state
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -399,10 +396,14 @@
       loop_control:
         label: "{{ item.name }}"
 
-    - name: F — remove any previously deployed hookscript
+    # Both paths go, so case F proves THIS include wrote them.
+    - name: F — remove any previously deployed hookscript files
       ansible.builtin.file:
-        path: /usr/local/bin/vzdump-metrics-hook.sh
+        path: "{{ item }}"
         state: absent
+      loop:
+        - /usr/local/bin/vzdump-metrics-hook.sh
+        - /etc/default/vzdump-metrics-hook
 
     - name: F — run role with a job that sets script
       ansible.builtin.include_role:
@@ -415,6 +416,19 @@
       ansible.builtin.stat:
         path: /usr/local/bin/vzdump-metrics-hook.sh
       register: case_f_hook
+
+    # The hook sources TEXTFILE_DIR from this file, so the include has to land
+    # both halves of node_exporter_host's vzdump_hook entry point.
+    - name: F — check the hookscript defaults file
+      ansible.builtin.shell: |
+        set -o pipefail
+        cfg=/etc/default/vzdump-metrics-hook
+        has_dir=$(grep -cE '^TEXTFILE_DIR=.+$' "$cfg" 2>/dev/null || true)
+        echo "{\"has_dir\": ${has_dir:-0}}"
+      args:
+        executable: /bin/bash
+      register: case_f_cfg
+      changed_when: false
 
     - name: F — count pvesh mutations
       ansible.builtin.shell: |
@@ -429,9 +443,7 @@
       changed_when: false
 
     # CASE G — zfspool entry absent: exactly one `pvesh create /storage`
-    # carrying --pool/--nodes/--mountpoint/--sparse. Without them the entry
-    # would be created without its dataset, its node restriction or its
-    # allocation mode.
+    # carrying --pool, --nodes, --mountpoint and --sparse.
     - name: G — reset log and empty live state
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -520,6 +532,7 @@
         label: "{{ item.name }}"
 
     - name: G3 — run role expecting the pool-drift assert to fail
+      tags: [molecule-idempotence-notest]
       block:
         - name: G3 — include proxmox_backup (expected to fail)
           ansible.builtin.include_role:
@@ -603,6 +616,7 @@
            "e_failed": {{ fixed_drift_failed | ternary('true', 'false') }},
            "e_total": {{ (case_e.stdout | from_json).total }},
            "f_hook": {{ case_f_hook.stat.exists | ternary('true', 'false') }},
+           "f_hook_cfg": {{ (case_f_cfg.stdout | from_json).has_dir }},
            "f_job_create": {{ (case_f.stdout | from_json).job_create }},
            "f_total": {{ (case_f.stdout | from_json).total }},
            "g_storage_create": {{ (case_g.stdout | from_json).storage_create }},

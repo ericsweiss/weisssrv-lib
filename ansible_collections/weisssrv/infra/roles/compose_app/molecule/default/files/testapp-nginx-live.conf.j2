@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+# Molecule fixture: a VALID site the shared flow must validate and install.
+server {
+    listen 8080;
+    server_name testapp-live.local;
+
+    location / {
+        return 200 "ok\n";
+    }
+}

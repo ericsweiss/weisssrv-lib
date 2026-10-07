@@ -21,8 +21,8 @@
     daemon_reload: true
   when: not (compose_app_skip_install | default(false))
 
-# Bring the stack up (and apply any pending compose/.env/config changes) before
-# the caller's post-start steps (health probes, backups) run.
+# Play-scoped: this flushes EVERY handler pending in the play, not just this
+# role's, so the caller's config tasks must already be complete (README).
 - name: Flush handlers so the compose stack starts with current config
   ansible.builtin.meta: flush_handlers
 

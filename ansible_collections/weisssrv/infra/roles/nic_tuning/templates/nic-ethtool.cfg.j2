@@ -1,12 +1,8 @@
 # {{ ansible_managed }}
-# Interface: {{ item.interface }}
-# Per-interface ethtool overrides applied at ifup.
-#
-# The iface header is REQUIRED: ifupdown2 hard-rejects a bare post-up line
-# ("error processing line"), leaving the whole drop-in inert at boot. Duplicate
-# iface stanzas merge with the declaration in /etc/network/interfaces.
-# `logger` makes a post-up failure greppable (`journalctl -t nic-tuning-ifup`);
-# without it the interface silently comes up without the feature change.
+# Per-interface ethtool overrides for {{ item.interface }}, applied at ifup.
+
+# The iface header is required: ifupdown2 rejects a bare post-up line and
+# leaves the whole drop-in inert. Failures log under tag nic-tuning-ifup.
 iface {{ item.interface }} inet manual
 {% for opt in item.options | default([]) %}
     post-up /sbin/ethtool -K {{ item.interface }} {{ opt.feature }} {{ opt.value }} || logger -t nic-tuning-ifup "FAILED ethtool -K {{ item.interface }} {{ opt.feature }}={{ opt.value }}"

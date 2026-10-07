@@ -1,9 +1,7 @@
 ---
-# Install ethtool + iproute2 in the test container so the role's Apply-ethtool
-# task has a binary to exec. `logger` comes from bsdutils, which is already
-# present on Debian base images (but installed defensively). ifupdown2 is the
-# parser Proxmox uses at boot — verify runs it against the rendered drop-in so
-# a stanza it rejects ("error processing line") fails the test.
+# Installs the binaries the role execs (ethtool, iproute2, logger from
+# bsdutils) plus ifupdown2, the parser Proxmox uses at boot: verify runs it
+# against the rendered drop-in so a stanza it rejects fails the test.
 - name: Prepare
   hosts: all
   gather_facts: false
@@ -26,10 +24,9 @@
         group: root
         mode: "0755"
 
-    # ifupdown2 only reads drop-ins reachable from /etc/network/interfaces via
-    # `source` — mirror the Proxmox default so ifquery sees the role's output.
-    # The bond0 stanza with `bond-all_slaves_active 1` seeds the MAC-flap guard
-    # test: verify.yml asserts the role rewrites it to 0 (surgical, in place).
+    # ifupdown2 reads only drop-ins sourced from /etc/network/interfaces, so
+    # mirror the Proxmox default. The bond0 `bond-all_slaves_active 1` stanza
+    # seeds the MAC-flap guard test; verify asserts the role rewrites it to 0.
     - name: Write /etc/network/interfaces sourcing interfaces.d
       ansible.builtin.copy:
         dest: /etc/network/interfaces

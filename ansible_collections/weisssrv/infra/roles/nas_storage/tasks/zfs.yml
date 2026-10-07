@@ -1,24 +1,20 @@
 ---
-# Pools can be legitimately absent at deploy time — the archive pool's
-# documented steady state is exported/unplugged. Probe each pool once and
-# skip its datasets/scrub timer when it is not imported, rather than
-# hard-failing the whole storage deploy on a `zfs list` miss.
+# A pool can be legitimately absent at deploy time (exported, unplugged).
+# Probe once and skip its datasets and scrub timer when it is not imported.
 - name: Probe imported ZFS pools
   ansible.builtin.command: zpool list -H -o name
   register: nas_storage_zfs_imported_pools
   changed_when: false
   check_mode: false
 
-# Only `zfs set`s on a mismatch, so `changed` means something actually changed.
-# Datasets in a non-imported pool are skipped, not failed. `set -e` goes AFTER
-# the existence probe so a failing `zfs set` (or a bad property name) fails the
-# task instead of falling through; failed_when must check rc explicitly because
+# CRITICAL: property values in nas_storage_zfs_pools[].properties must use the
+# human-readable form `zfs get -H -o value` prints (recordsize '1M', not
+# 1048576). Any other form never compares equal, so the task re-sets and
+# reports changed every run, masking real drift.
+
+# Only `zfs set`s on a mismatch. `set -e` goes after the existence probe so a
+# failing `zfs set` fails the task; failed_when checks rc explicitly because
 # setting it replaces Ansible's default rc!=0 handling.
-#
-# Property values in nas_storage_zfs_pools[].properties MUST be written in the
-# HUMAN-READABLE form `zfs get -H -o value` prints (the comparison runs without
-# -p, so recordsize is '1M', not 1048576). Any other form never compares equal,
-# so the task would `zfs set` and report changed every run, masking real drift.
 - name: Verify ZFS datasets exist and set properties
   ansible.builtin.shell: |
     if ! zfs list {{ item.1.name | quote }} >/dev/null 2>&1; then
@@ -40,17 +36,14 @@
     label: "{{ item.1.name }}"
   register: nas_storage_zfs_result
   changed_when: "'CHANGED' in nas_storage_zfs_result.stdout"
-  # The pool is imported (the when: gate guarantees it), so a missing dataset
-  # here is a real misconfiguration, not the exported-archive steady state —
-  # surface it. Datasets in an un-imported pool are skipped by the when: gate.
+  # The when: gate guarantees the pool is imported, so a missing dataset here
+  # is a real misconfiguration.
   failed_when: "nas_storage_zfs_result.rc != 0 or 'DATASET_MISSING' in nas_storage_zfs_result.stdout"
   when: item.0.name in nas_storage_zfs_imported_pools.stdout_lines
 
-# zfsutils-linux ships the zfs-scrub-<schedule>@.timer template units, so the
-# enable/start is expected to succeed for any imported pool. Deliberately NOT
-# failed_when:false — that would hide a bad nas_storage_zfs_scrub_schedule
-# (non-existent unit name) and leave scrubs silently unscheduled. The
-# imported-pool when: gate already covers the exported/absent-pool case.
+# zfsutils-linux ships the zfs-scrub-<schedule>@.timer template units, so this
+# succeeds for any imported pool. No failed_when:false: a bad
+# nas_storage_zfs_scrub_schedule must fail rather than skip scrubs silently.
 - name: Enable ZFS scrub timer
   ansible.builtin.systemd:
     name: "zfs-scrub-{{ nas_storage_zfs_scrub_schedule }}@{{ item.name }}.timer"
@@ -68,6 +61,3 @@
     name: zfs-auto-snapshot
     state: present
   when: ansible_facts['os_family'] == "Debian"
-
-- name: Cap the ZFS ARC
-  ansible.builtin.include_tasks: zfs_arc.yml

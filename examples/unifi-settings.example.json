@@ -1,0 +1,21 @@
+{
+  "site": "default",
+  "section": "ips",
+  "desired": {
+    "ips_mode": "ips",
+    "enabled_categories": [
+      "botcc",
+      "dshield",
+      "emerging-exploit",
+      "malicious-hosts"
+    ],
+    "enabled_networks": [
+      "REPLACE-WITH-YOUR-NETWORK-ID"
+    ],
+    "honeypot_enabled": false,
+    "restrict_torrents": false,
+    "memory_optimized": true,
+    "advanced_filtering_preference": "manual",
+    "endpoint_scanning": false
+  }
+}

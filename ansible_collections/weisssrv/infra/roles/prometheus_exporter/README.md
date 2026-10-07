@@ -25,33 +25,15 @@ daemon.
 
 ## Roles that stay standalone
 
-### `node_exporter_host`
+Two exporter-adjacent roles deliberately do not use this pipeline:
 
-`node_exporter_host` does not fit this abstraction and is intentionally left
-standalone:
-
-- It installs from the **Debian apt repo** (`prometheus-node-exporter`), not a
-  release download — none of the download/checksum/extract/version-probe
-  pipeline applies.
-- It writes a systemd **drop-in override** (pinning `:9101` and the collector
-  flag set), not a full unit file.
-- Most of its tasks are bespoke (drivetemp module, two textfile collectors and
-  their timers, proxmox-group gating) and have nothing to do with the other
-  exporters.
-
-Folding it in would mean an `install_method == 'apt_repo'` branch only one
-caller ever takes plus a passthrough for arbitrary post-install tasks — a worse
-abstraction than an honest standalone role.
-
-### `adguard_home`
-
-`adguard_home` also downloads a tarball with a `checksums.txt`, but stays
-standalone because the shared pipeline installs then starts in one pass. AdGuard
-Home must **stop the running service mid-pipeline** before swapping the binary
-on an upgrade, then run its own API-driven config and `wait_for` health probes —
-neither `service.yml`'s start-then-health-check flow nor the port health check
-fits. `adguard_sync`, by contrast, needs no mid-pipeline stop (its oneshot is
-not running during a deploy), so it can reuse the install half.
+- `node_exporter_host` installs from the Debian apt repo, not a release
+  download, so none of the download/checksum/extract/version-probe pipeline
+  applies.
+- `adguard_home` downloads a tarball but must stop the running service
+  mid-pipeline before swapping the binary, which this role's install-then-start
+  flow cannot express. `adguard_sync` has no such need and reuses the install
+  half.
 
 ## How wrappers invoke it
 
@@ -83,6 +65,14 @@ scenario), and the shared handler restarts `prometheus_exporter_service_name`.
 | `prometheus_exporter_service_name` | systemd unit (no `.service`) | `zfs-exporter` | `unbound-exporter` |
 | `prometheus_exporter_port` | Health-check port | `{{ zfs_exporter_port }}` | `{{ unbound_exporter_port }}` |
 | `prometheus_exporter_tmp_dir` | Scratch dir for download/extract | `/var/cache/prometheus_exporter` | `/var/cache/prometheus_exporter` |
+
+The install half asserts every parameter above except
+`prometheus_exporter_checksum`, `prometheus_exporter_archive_member` (tarball
+only), `prometheus_exporter_tmp_dir` and `prometheus_exporter_port`. The service
+half asserts `prometheus_exporter_port`, its only consumer. A mistyped var name
+therefore fails the play with the parameter named instead of an empty URL
+several tasks later. An empty `prometheus_exporter_checksum` means no
+verification; every caller in this collection pins a sha256.
 
 The version-check command is the source of truth for idempotence: empty stdout
 or a non-zero rc means "(re)install"; a stdout matching

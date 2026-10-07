@@ -23,8 +23,8 @@ provisioner:
         # to track the node_exporter_host alias (not the hardcoded default).
         node_exporter_host_textfile_dir: /tmp/adg-textfile
         adguard_sync_schedule: '*:0/5'
-        adguard_sync_origin: http://192.168.0.150:3000
-        adguard_sync_replica: http://192.168.0.160:3000
+        adguard_sync_origin: http://192.0.2.10:3000
+        adguard_sync_replica: http://192.0.2.11:3000
         adguard_sync_admin_user: admin
         adguard_sync_admin_password: test-password
         adguard_sync_features:

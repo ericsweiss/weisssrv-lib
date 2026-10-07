@@ -1,10 +1,7 @@
 ---
-# Contract test: four role invocations covering both branches of both gates.
-#   1-2. tarball / deb SKIP paths — version-check reports the pinned version.
-#   3.   tarball INSTALL path — get_url -> unarchive -> copy -> cleanup.
-#   4.   deb INSTALL path — get_url -> apt(deb:) -> cleanup.
-# Mock binaries + trivial units are pre-staged so the service half has something
-# real to enable/start; the health-check uri is molecule-notest.
+# Contract test: four role invocations covering the tarball and deb skip paths
+# and the tarball and deb install paths. Mock binaries and units are pre-staged
+# for the service half; the health-check uri is molecule-notest.
 - name: Converge
   hosts: all
   become: true
@@ -189,3 +186,79 @@
         prometheus_exporter_service_name: "pe-realdeb-mock"
         prometheus_exporter_port: 19996
         prometheus_exporter_tmp_dir: "/tmp/pe-deb-scratch"
+
+    # case 5 — the entry assert. A caller that mistypes one var name gets the
+    # empty sentinel, so the guard has to fail here or it guards nothing.
+    - name: Run shared pipeline with a missing required parameter
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Include the role without a service name
+          ansible.builtin.include_role:
+            name: weisssrv.infra.prometheus_exporter
+          vars:
+            prometheus_exporter_name: "pe-missing-param"
+            prometheus_exporter_version: "1.0.0"
+            prometheus_exporter_artifact_type: "tarball"
+            prometheus_exporter_download_url: "https://example.invalid/x.tar.gz"
+            prometheus_exporter_binary_path: "/usr/local/bin/pe-missing-param"
+            prometheus_exporter_archive_member: "x/pe-missing-param"
+            prometheus_exporter_version_check_cmd: "echo 1.0.0"
+            prometheus_exporter_port: 19995
+
+        - name: Fail because the entry assert let an empty parameter through
+          ansible.builtin.fail:
+            msg: >-
+              prometheus_exporter ran with an empty
+              prometheus_exporter_service_name instead of asserting.
+      rescue:
+        - name: Confirm the entry assert is what stopped the run
+          ansible.builtin.assert:
+            that:
+              - "'required parameters' in ansible_failed_result.msg | default('')"
+            fail_msg: >-
+              The role failed for some other reason than the entry assert:
+              {{ ansible_failed_result.msg | default('(no message)') }}
+
+    # case 6 — install half alone, no port. adguard_sync runs the role this way,
+    # so a port assert in the install half would break it.
+    - name: Run the install half without a port
+      ansible.builtin.include_role:
+        name: weisssrv.infra.prometheus_exporter
+        tasks_from: install
+      vars:
+        prometheus_exporter_name: "pe-noport-mock"
+        prometheus_exporter_version: "{{ _pe_tarball_version }}"
+        prometheus_exporter_artifact_type: "tarball"
+        prometheus_exporter_download_url: "https://example.invalid/pe-noport-mock.tar.gz"
+        prometheus_exporter_archive_member: "x/pe-noport-mock"
+        prometheus_exporter_version_check_cmd: "echo {{ _pe_tarball_version }}"
+        prometheus_exporter_service_name: "pe-tarball-mock"
+        prometheus_exporter_binary_path: "/usr/local/bin/pe-tarball-mock"
+
+    # case 7 — the service-half port assert. The health probe is the only
+    # consumer of the port, so the guard lives there and has to fail here.
+    - name: Run the service half with no port
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Include the service half without a port
+          ansible.builtin.include_role:
+            name: weisssrv.infra.prometheus_exporter
+            tasks_from: service
+          vars:
+            prometheus_exporter_name: "pe-tarball-mock"
+            prometheus_exporter_service_name: "pe-tarball-mock"
+            prometheus_exporter_port: 0
+
+        - name: Fail because the service half let an absent port through
+          ansible.builtin.fail:
+            msg: >-
+              prometheus_exporter service.yml ran with port 0 instead of
+              asserting.
+      rescue:
+        - name: Confirm the port assert is what stopped the run
+          ansible.builtin.assert:
+            that:
+              - "'required by the service half' in ansible_failed_result.msg | default('')"
+            fail_msg: >-
+              The service half failed for some other reason than the port
+              assert: {{ ansible_failed_result.msg | default('(no message)') }}

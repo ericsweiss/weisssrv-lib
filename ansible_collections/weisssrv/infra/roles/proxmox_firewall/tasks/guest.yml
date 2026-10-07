@@ -1,14 +1,35 @@
 ---
-# Guest .fw configs live on the shared pmxcfs (/etc/pve/firewall/<vmid>.fw), so
-# ANY reachable Proxmox node can write them: use the delegate main.yml probed
-# for reachability rather than pinning the host group's first member, whose
-# being down would fail every guest firewall deploy.
+# Guest .fw configs live on the shared pmxcfs, so any reachable node can write
+# them: use the delegate main.yml probed rather than pinning the group's first
+# member. Jinja evaluates filter arguments eagerly, so each fallback defaults.
+- name: Resolve the Proxmox node that writes this guest's .fw
+  ansible.builtin.set_fact:
+    _proxmox_firewall_guest_delegate: >-
+      {{ firewall_deploy_host
+         | default(_proxmox_firewall_delegate
+                   | default((groups[proxmox_firewall_host_group] | default([]) | first)
+                             | default(inventory_hostname))) }}
+
+# The group's IN rules are the only thing opening the relay: guest.fw sets no
+# policy_in, so Proxmox's guest default DROP closes :25 and :587 without them.
+- name: Assert a relay guest has a client scope for sg-smtp-relay
+  ansible.builtin.assert:
+    that:
+      - (proxmox_firewall_smtp_relay_sources | default([])) | length > 0
+    fail_msg: >-
+      {{ inventory_hostname }} carries sg-smtp-relay, but
+      proxmox_firewall_smtp_relay_sources is empty, so the group renders no IN
+      rule and the relay's :25/:587 stay closed. Name the client IPSets in
+      group_vars/all (cluster scope).
+    quiet: true
+  when: "'sg-smtp-relay' in (guest_security_groups | default([]))"
+
 - name: Deploy guest firewall configuration
   ansible.builtin.include_tasks:
     file: deploy-pmxcfs-config.yml
     apply:
       become: true
-      delegate_to: "{{ firewall_deploy_host | default(_proxmox_firewall_delegate | default(groups[proxmox_firewall_host_group][0])) }}"
+      delegate_to: "{{ _proxmox_firewall_guest_delegate }}"
   vars:
     pmxcfs_config_src: guest.fw.j2
     pmxcfs_config_dest: "{{ proxmox_firewall_config_dir }}/{{ vmid }}.fw"
@@ -17,3 +38,17 @@
     - guest_security_groups is defined
     - guest_security_groups | length > 0
     - vmid is defined
+
+# CRITICAL: an empty guest_security_groups must REMOVE the file. Rendering an
+# empty group list keeps `enable: 1` with PVE's DROP policy_in and cuts the
+# guest off; removal returns it to the unfiltered Proxmox default.
+- name: Remove the guest firewall configuration when no groups are configured
+  ansible.builtin.file:
+    path: "{{ proxmox_firewall_config_dir }}/{{ vmid }}.fw"
+    state: absent
+    unsafe_writes: true
+  become: true
+  delegate_to: "{{ _proxmox_firewall_guest_delegate }}"
+  when:
+    - vmid is defined
+    - (guest_security_groups | default([]) | length) == 0

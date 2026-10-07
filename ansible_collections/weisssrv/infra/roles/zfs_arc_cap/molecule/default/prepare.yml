@@ -3,12 +3,8 @@
   hosts: all
   gather_facts: false
   tasks:
-    # Render-only scenario: the role never installs apt packages, so import the
-    # shared prepare-base (systemd-wait + temp-dir) WITHOUT prepare-apt-disable
-    # (mirrors resolv_conf / home_assistant).
-    #
-    # No /etc/modprobe.d seed here on purpose: the role creates that directory
-    # itself, and seeding it would hide a regression from every consumer whose
-    # image lacks it (nas_storage includes this role into a container that does).
+    # Render-only scenario: the role installs no apt packages, so prepare-base
+    # is imported without prepare-apt-disable. /etc/modprobe.d is left unseeded
+    # so a regression in the role's own directory creation stays visible.
     - name: Apply the shared systemd-wait + temp-dir prep
       ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/prepare-base.yml

@@ -1,0 +1,23 @@
+---
+# Prepare: the shared container prep plus a scratch deb822 sources file, so the
+# non-free components rewrite runs without touching the container's own apt
+# sources.
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Apply the shared systemd-wait + temp-dir prep
+      ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/prepare-base.yml
+
+    - name: Disable apt background services
+      ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/prepare-apt-disable.yml
+
+    - name: Seed a partial deb822 Debian sources file
+      ansible.builtin.copy:
+        dest: /tmp/plex-test-debian.sources
+        mode: "0644"
+        content: |
+          Types: deb
+          URIs: http://deb.debian.org/debian
+          Suites: trixie
+          Components: main non-free-firmware

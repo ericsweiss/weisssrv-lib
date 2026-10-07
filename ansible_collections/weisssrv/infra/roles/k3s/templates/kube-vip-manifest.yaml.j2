@@ -72,12 +72,13 @@ spec:
       - name: kube-vip
         image: ghcr.io/kube-vip/kube-vip:{{ k3s_kube_vip_version }}
         imagePullPolicy: IfNotPresent
+{# kube-vip registers --inCluster on its `manifest` generator only; `manager`
+   rejects it. With no host kubeconfig mount the pod authenticates with its
+   ServiceAccount token, so the ClusterRole above is its real privilege. #}
         args:
         - manager
-        # Nothing scrapes kube-vip metrics (no ServiceMonitor, and the Proxmox
-        # VM firewall filters 2112), so disable the listener. Must be the flag:
-        # kube-vip ignores the equivalent env var when set empty and falls back
-        # to the :2112 flag default.
+        # Metrics listener off. It must be the flag: kube-vip ignores the empty
+        # env var and falls back to :2112.
         - --prometheusHTTPServer=
         env:
         - name: KUBERNETES_SERVICE_HOST
@@ -104,8 +105,8 @@ spec:
           value: "true"
         - name: vip_leasename
           value: plndr-cp-lock
-        # Conservative leader-election timing: ARP re-announce every 10s
-        # rather than every 1s, to avoid ARP storms.
+        # Conservative leader-election timing (lease 30s / renew 20s / retry 10s), so a
+        # brief API blip does not move the VIP.
         - name: vip_leaseduration
           value: "30"
         - name: vip_renewdeadline
@@ -124,14 +125,16 @@ spec:
             add:
             - NET_ADMIN
             - NET_RAW
+{% if k3s_kube_vip_host_kubeconfig | bool %}
+        # k3s.yaml is the cluster-admin credential, so this pod runs as
+        # cluster-admin and the ClusterRole above constrains nothing.
         volumeMounts:
         - name: kubeconfig
           mountPath: /etc/kubernetes/admin.conf
-          # The hostPath is the node's cluster-admin kubeconfig; kube-vip only
-          # reads it.
           readOnly: true
       volumes:
       - name: kubeconfig
         hostPath:
           path: /etc/rancher/k3s/k3s.yaml
-          type: FileOrCreate
+          type: File
+{% endif %}

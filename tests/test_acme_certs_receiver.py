@@ -1,21 +1,7 @@
 """Render-level tests for the acme_certs forced-command receiver.
 
-`templates/cert-receive.sh.j2` is the whole security boundary of cert
-distribution: it is what a leaked distribution key can run, and every
-operational parameter is baked in at render time. Molecule covers the reachable
-half (a real push into a real container), but the RELOAD branch is chosen by
-Jinja, so the three shapes a target can produce — `restart_command`,
-`restart_service`, and neither — only differ before bash ever runs.
-
-So this renders the template directly, with the role's own defaults as context,
-and asserts the three properties a review cannot check by eye:
-
-* every shape is still valid bash (`bash -n`) — a quoting slip in the RELOAD
-  assignment breaks the receiver on the target, not here;
-* the empty shape refuses rather than running `bash -c ''` and reporting
-  success (the `[ -n "$RELOAD" ]` belt);
-* the applied-hash marker is written only AFTER a clean reload, so a failed
-  reload re-fires on the next push instead of being masked by a stale hash.
+The RELOAD branch is chosen by Jinja, so the three target shapes differ before
+bash runs; molecule reaches only the push half.
 """
 
 from __future__ import annotations
@@ -28,6 +14,7 @@ from pathlib import Path
 import jinja2
 import pytest
 import yaml
+from _helpers import ansible_env
 
 REPO = Path(__file__).resolve().parent.parent
 ROLE = REPO / "ansible_collections" / "weisssrv" / "infra" / "roles" / "acme_certs"
@@ -59,13 +46,10 @@ SHAPES = {
 
 
 def _render(**overrides: object) -> str:
-    env = jinja2.Environment(
+    env = ansible_env(
         loader=jinja2.FileSystemLoader(str(TEMPLATE.parent)),
         keep_trailing_newline=True,
     )
-    # `quote` is an Ansible filter, not a stock Jinja one; Ansible's is
-    # shlex.quote, and the shell-safety of the RELOAD assignment depends on it.
-    env.filters["quote"] = shlex.quote
     context = {
         **{k: v for k, v in DEFAULTS.items() if isinstance(v, (str, int, bool))},
         # The two the role requires the site to supply (defaults/main.yml
@@ -178,3 +162,91 @@ def test_the_receiver_pins_the_expected_domain(rendered) -> None:
     stdin."""
     assert 'EXPECT_DOMAIN="example.test"' in rendered
     assert 'grep -Fxq "DNS:*.${EXPECT_DOMAIN}"' in rendered
+
+
+def test_the_applied_marker_read_redirects_stderr_before_the_input(rendered) -> None:
+    """Written `tr ... < file 2>/dev/null`, a missing marker prints a bash error
+    on the first delivery to every target."""
+    assert 'applied_hash="$(2>/dev/null tr -d ' in rendered
+
+
+# --- the distribution driver, which chooses each target's reload -------------
+
+RELOAD_TEMPLATE = ROLE / "templates" / "homelab-cert-reload.sh.j2"
+
+RELOAD_CONTEXT = {
+    "ansible_managed": "Ansible managed",
+    "acme_certs_domain": "example.test",
+    "inventory_hostname": "certs-01",
+}
+
+
+def _render_reload(targets: list) -> str:
+    env = ansible_env(
+        loader=jinja2.FileSystemLoader(str(RELOAD_TEMPLATE.parent)),
+        keep_trailing_newline=True,
+    )
+    context = {
+        **{k: v for k, v in DEFAULTS.items() if not isinstance(v, (dict, list))},
+        **RELOAD_CONTEXT,
+        "acme_certs_distribution_targets": targets,
+    }
+    return env.get_template(RELOAD_TEMPLATE.name).render(**context)
+
+
+def _legacy_reload_arg(rendered: str) -> str:
+    """The eleventh positional argument of the push_target_legacy call."""
+    call = rendered[rendered.index("push_target_legacy \\") :]
+    args = re.findall(r'"([^"]*)"', call[: call.index("\n\n")])
+    assert len(args) >= 11, args
+    return args[10]
+
+
+RELOAD_SHAPES = {
+    "empty restart_command falls back to the service": (
+        {"ssh_no_sudo": True, "restart_command": "", "restart_service": "X"},
+        "systemctl restart X",
+    ),
+    "whitespace-only restart_command falls back too": (
+        {"ssh_no_sudo": True, "restart_command": "   ", "restart_service": "X"},
+        "systemctl restart X",
+    ),
+    "restart_service alone": (
+        {"ssh_no_sudo": True, "restart_service": "X"},
+        "systemctl restart X",
+    ),
+    "restart_command alone renders verbatim, no injected sudo": (
+        {"ssh_no_sudo": True, "restart_command": "doas rc-service nginx reload"},
+        "doas rc-service nginx reload",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    list(RELOAD_SHAPES.values()),
+    ids=list(RELOAD_SHAPES),
+)
+def test_the_legacy_push_never_gets_an_empty_reload(overrides, expected) -> None:
+    """An empty eleventh argument silently skips the reload on an appliance."""
+    rendered = _render_reload([{**BASE_TARGET, "ip": "10.0.0.1", **overrides}])
+    assert _legacy_reload_arg(rendered) == expected
+
+
+def test_a_sudo_target_dispatches_the_receiver_with_no_reload_argument() -> None:
+    """cert_dir and the reload are baked into the receiver on a sudo target."""
+    rendered = _render_reload(
+        [{**BASE_TARGET, "ip": "10.0.0.1", "restart_service": "X"}]
+    )
+    assert "push_target_receiver" in rendered
+    assert "push_target_legacy \\" not in rendered
+
+
+@pytest.mark.parametrize("name", list(RELOAD_SHAPES), ids=list(RELOAD_SHAPES))
+def test_every_reload_shape_renders_valid_bash(tmp_path_factory, name) -> None:
+    overrides, _ = RELOAD_SHAPES[name]
+    rendered = _render_reload([{**BASE_TARGET, "ip": "10.0.0.1", **overrides}])
+    script = tmp_path_factory.mktemp("reload") / "homelab-cert-reload.sh"
+    script.write_text(rendered)
+    proc = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr

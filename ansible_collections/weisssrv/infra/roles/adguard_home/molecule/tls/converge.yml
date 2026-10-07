@@ -27,10 +27,9 @@
         system: true
         state: present
 
-    # acme_certs deploys fullchain.pem + privkey.pem here in production; deploy a
-    # self-signed pair before the role so api_base_config.yml sees the certs and
-    # runs the TLS configure POST. setgid dir + group adguard so the AdGuard
-    # process can read the key it loads via the API.
+    # acme_certs deploys fullchain.pem + privkey.pem here in production; a
+    # self-signed pair before the role makes api_base_config.yml run the TLS
+    # configure POST. setgid dir + group adguard so AdGuard can read the key.
     - name: Create certs directory for self-signed TLS cert
       ansible.builtin.file:
         path: "{{ adguard_home_cert_path }}"

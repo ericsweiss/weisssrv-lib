@@ -1,9 +1,7 @@
 ---
-# Installs the real .deb, not a mock binary: the role's install check is
-# `dpkg-query`, which a mock never satisfies, so converge would install over it
-# and the idempotence run would re-write the mock (changed) and fail.
-# There is no Unbound control socket in the container, so the shared pipeline's
-# /metrics health check is tagged `molecule-notest`.
+# Installs the real .deb, not a mock: the role's install check is `dpkg-query`,
+# which a mock never satisfies, so idempotence would fail. The container has no
+# Unbound control socket, so the /metrics health check is `molecule-notest`.
 - name: Converge
   hosts: all
   become: true

@@ -27,23 +27,22 @@ variable "networks" {
     is served by a relay or by another server, and the controller keeps whatever
     it already has.
 
-    Addresses are checked for SHAPE, never for containment: `dhcp.start`,
-    `dhcp.stop` and `clients[*].fixed_ip` are not cross-checked against the
-    subnet they belong to (README "What this module does not validate"). The
-    controller rejects an out-of-subnet value at apply time.
+    `dhcp.leasetime` is a Go duration string. Write the normalized `24h0m0s`
+    form: the controller reads that form back, and a shorthand such as `24h`
+    can round-trip as a standing diff.
+
+    `dhcp.start` and `dhcp.stop` must lie inside this network's own `subnet`,
+    and the pool must not cover the gateway address: a lease handing out the
+    gateway takes the router off the segment. Both are checked here.
   EOT
   type = map(object({
     name = string
     vlan = optional(number)
     # CIDR in gateway form (host part = gateway address).
     subnet = string
-    # `guest` purpose only sticks while the network is in the controller's
-    # guest/Hotspot zone; anywhere else the controller rewrites it to
-    # `corporate` and the apply fails with an inconsistent-result error. A guest
-    # VLAN in a CUSTOM zone is `corporate` plus policies (README).
-    # `vlan-only` is rejected below: this module's `subnet` is required and
-    # gateway-form validated, which is exactly what a vlan-only network has not
-    # got.
+    # `guest` sticks only inside the controller's own Hotspot zone; a guest VLAN
+    # in a custom zone is `corporate` plus policies. `vlan-only` is rejected
+    # below, because `subnet` is required here (README).
     purpose         = optional(string, "corporate")
     domain_name     = optional(string)
     internet_access = optional(bool, true)
@@ -68,8 +67,8 @@ variable "networks" {
     error_message = "networks[*].subnet must be an IPv4 CIDR, e.g. \"10.0.30.1/24\"."
   }
 
-  # The most expensive typo in this file: `10.0.30.0/24` applies cleanly and
-  # hands every DHCP client .0 as its gateway.
+  # `10.0.30.0/24` applies cleanly and hands every DHCP client .0 as its
+  # gateway.
   validation {
     condition = alltrue([
       for key, n in var.networks :
@@ -86,15 +85,8 @@ variable "networks" {
     error_message = "networks[*].vlan must be 1-4094 (omit it only for the controller's built-in Default network)."
   }
 
-  # The vlan-uniqueness check below skips nulls, so nothing else catches a
-  # forgotten `vlan`. An untagged entry does not fail: it lands on the same wire
-  # as the management network, sharing its broadcast domain while every zone,
-  # policy and WLAN keyed to it reads as a segment of its own.
-  #
-  # Reserving the KEY rather than counting untagged entries is what makes a lone
-  # forgotten `vlan` visible — a count of one is indistinguishable from the
-  # built-in. Map keys are unique, so this also bounds the untagged entries at
-  # one without a second rule.
+  # The vlan-uniqueness rule below skips nulls, so only the reserved `default`
+  # key may omit `vlan`.
   validation {
     condition = alltrue([
       for key, n in var.networks : n.vlan != null || key == "default"
@@ -110,10 +102,9 @@ variable "networks" {
     error_message = "networks[*].purpose must be corporate or guest. The provider's third value, vlan-only, is not modelled here: it is the shape with NO gateway (`third_party_gateway`), while this module makes `subnet` required and validates it in gateway form. Use corporate for a guest VLAN that lives in a custom firewall zone — the controller rewrites `guest` to `corporate` outside its own Hotspot zone and the apply then fails."
   }
 
-  # The map key is the resource address, so Terraform has no reason to object to
-  # two entries sharing a vlan id or a name: the collision surfaces as a
-  # controller error partway through the apply, or as two same-named networks
-  # that make every later lookup by name ambiguous.
+  # The map key is the resource address, so nothing else objects to two entries
+  # sharing a vlan id, a name or a range: the collision surfaces as a controller
+  # error partway through the apply.
   validation {
     condition     = length([for n in var.networks : n.vlan if n.vlan != null]) == length(distinct([for n in var.networks : n.vlan if n.vlan != null]))
     error_message = "networks[*].vlan must be unique — two networks on one VLAN id is a controller error partway through the apply."
@@ -124,6 +115,23 @@ variable "networks" {
     error_message = "networks[*].name must be unique — the name is what the controller UI and every `name=` import resolve against."
   }
 
+  # CIDRs are disjoint or nested, so masking both to the SHORTER prefix is an
+  # exact overlap test. An entry that failed the shape check above is skipped,
+  # and the `j > i` arm compares each pair once.
+  validation {
+    condition = length(flatten([
+      for i, a in values(var.networks) : [
+        for j, b in values(var.networks) : "${a.name}/${b.name}"
+        if j > i
+        && can(cidrhost(a.subnet, 0))
+        && can(cidrhost(b.subnet, 0))
+        && cidrhost("${cidrhost(a.subnet, 0)}/${min(tonumber(split("/", a.subnet)[1]), tonumber(split("/", b.subnet)[1]))}", 0)
+        == cidrhost("${cidrhost(b.subnet, 0)}/${min(tonumber(split("/", a.subnet)[1]), tonumber(split("/", b.subnet)[1]))}", 0)
+      ]
+    ])) == 0
+    error_message = "networks[*].subnet must not overlap another entry's — two networks sharing addresses apply cleanly and then route each other's traffic, and an exact duplicate is a controller error partway through the apply."
+  }
+
   validation {
     condition = alltrue([
       for key, n in var.networks :
@@ -132,12 +140,8 @@ variable "networks" {
     error_message = "networks[*].dhcp.dns_servers takes at most 4 addresses (controller limit)."
   }
 
-  # Both halves are needed and neither is redundant. The regex fixes the SHAPE —
-  # four dotted decimal octets, so an IPv6 address or a CIDR is rejected here
-  # and not by a parser that would happily accept it. `cidrhost` fixes the
-  # RANGE, which no readable regex does: "10.0.30.999" is four dotted octets and
-  # is not an address, and a DHCP scope bound the controller rejects is found at
-  # apply time, partway through a supervised run.
+  # Regex fixes the shape, cidrhost the range: "10.0.30.999" is four octets and
+  # not an address.
   validation {
     condition = alltrue(flatten([
       for key, n in var.networks : n.dhcp == null ? [true] : [
@@ -146,6 +150,93 @@ variable "networks" {
       ]
     ]))
     error_message = "networks[*].dhcp start, stop and dns_servers must be bare IPv4 addresses with every octet in 0-255 — \"10.0.30.999\" has the right shape and is not an address."
+  }
+
+  # Ordering, as on the policy and port-forward ranges below. A pair that failed
+  # the shape check above is skipped so `tonumber` is never reached.
+  validation {
+    condition = alltrue([
+      for key, n in var.networks : n.dhcp == null ? true : (
+        !alltrue([
+          for address in [n.dhcp.start, n.dhcp.stop] :
+          can(regex("^[0-9]{1,3}(\\.[0-9]{1,3}){3}$", address)) && can(cidrhost("${address}/32", 0))
+          ]) ? true : (
+          sum([for i, octet in split(".", n.dhcp.start) : tonumber(octet) * pow(256, 3 - i)])
+          <= sum([for i, octet in split(".", n.dhcp.stop) : tonumber(octet) * pow(256, 3 - i)])
+        )
+      )
+    ])
+    error_message = "networks[*].dhcp.start must not be above .stop — a descending pool serves no leases."
+  }
+
+  # cidrhost masks an address to the prefix, so an address is inside a subnet
+  # exactly when both mask to one network address. Entries that failed a shape
+  # check above are skipped.
+  validation {
+    condition = alltrue(flatten([
+      for key, n in var.networks : n.dhcp == null || !can(cidrhost(n.subnet, 0)) ? [true] : [
+        for address in [n.dhcp.start, n.dhcp.stop] :
+        !can(cidrhost("${address}/32", 0)) ? true : (
+          cidrhost("${address}/${split("/", n.subnet)[1]}", 0) == cidrhost(n.subnet, 0)
+        )
+      ]
+    ]))
+    error_message = "networks[*].dhcp.start and .stop must lie inside that network's own `subnet` — the controller serves no lease from a pool outside the segment."
+  }
+
+  # The gateway is the host part of `subnet`. Inside the pool it goes out as a
+  # lease and the segment loses its router.
+  validation {
+    condition = alltrue([
+      for key, n in var.networks : n.dhcp == null ? true : (
+        !alltrue([
+          for address in [n.dhcp.start, n.dhcp.stop, split("/", n.subnet)[0]] :
+          can(regex("^[0-9]{1,3}(\\.[0-9]{1,3}){3}$", address)) && can(cidrhost("${address}/32", 0))
+          ]) ? true : (
+          sum([for i, octet in split(".", split("/", n.subnet)[0]) : tonumber(octet) * pow(256, 3 - i)])
+          < sum([for i, octet in split(".", n.dhcp.start) : tonumber(octet) * pow(256, 3 - i)])
+          ||
+          sum([for i, octet in split(".", split("/", n.subnet)[0]) : tonumber(octet) * pow(256, 3 - i)])
+          > sum([for i, octet in split(".", n.dhcp.stop) : tonumber(octet) * pow(256, 3 - i)])
+        )
+      )
+    ])
+    error_message = "networks[*].dhcp must not cover the gateway address — the host part of `subnet` is the gateway, and a pool spanning it hands the router's address to a client."
+  }
+
+  # Shape only: the provider parses the value, so "24h" and "86400s" are legal.
+  validation {
+    condition = alltrue([
+      for key, n in var.networks :
+      n.dhcp == null ? true : (
+        n.dhcp.leasetime != "" && can(regex("^([0-9]+h)?([0-9]+m)?([0-9]+s)?$", n.dhcp.leasetime))
+      )
+    ])
+    error_message = "networks[*].dhcp.leasetime must be a Go duration string (\"24h0m0s\", \"24h\", \"86400s\")."
+  }
+}
+
+variable "reserved_cidrs" {
+  description = <<-EOT
+    Ranges outside this controller's own networks that no managed network may
+    overlap: the k3s pod and service CIDRs, and any neighbouring site's range.
+    A VLAN overlapping one of them applies cleanly and then routes cluster
+    traffic onto the wrong wire. The LAN is itself a `networks` entry, so the
+    overlap rule on that variable already covers it.
+
+    Checked on `unifi_network`, not here, because a variable validation cannot
+    read another variable at this module's Terraform floor. Entries may be
+    written in any form — they are compared as network addresses.
+  EOT
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for cidr in var.reserved_cidrs :
+      can(regex("^[0-9]{1,3}(\\.[0-9]{1,3}){3}/[0-9]{1,2}$", cidr)) && can(cidrhost(cidr, 0))
+    ])
+    error_message = "reserved_cidrs entries must be IPv4 CIDRs, e.g. \"10.42.0.0/16\"."
   }
 }
 
@@ -202,9 +293,9 @@ variable "builtin_zone_names" {
     display name on the controller.
 
     They are read through `data.unifi_firewall_zone`, which is the only
-    supported path in v0.55.0: importing a built-in zone by name landed after
-    the tag (upstream PR #401), and managing one would fight the controller over
-    its membership list.
+    supported path in v0.55.0: importing a built-in zone by name is not in the
+    pinned release (upstream PR #401), and managing one would fight the
+    controller over its membership list.
 
     Display names are controller- and locale-dependent (`Internal`, `External`,
     `Gateway`, `Hotspot`, `Vpn`, `Dmz` on a UniFi OS 10.x console). Confirm them
@@ -293,10 +384,8 @@ variable "policies" {
     error_message = "policies[*].protocol must be one of all, tcp, udp, tcp_udp, icmp, icmpv6."
   }
 
-  # FirewallPolicyCreateRespondTrafficPolicyNotAllowed — an apply-time 400.
-  # Scoped to ALLOW to match the derivation in main.tf: a BLOCK/REJECT always
-  # writes false whatever the entry asked for, so the combination that can
-  # actually reach the controller is ALLOW + icmp/icmpv6 + true.
+  # FirewallPolicyCreateRespondTrafficPolicyNotAllowed, an apply-time 400.
+  # Scoped to ALLOW because main.tf derives the attribute to false elsewhere.
   validation {
     condition = alltrue([
       for p in var.policies :
@@ -305,12 +394,9 @@ variable "policies" {
     error_message = "policies[*].create_allow_respond must be false for an ALLOW on protocol icmp/icmpv6 — the controller rejects the auto-created return rule. Write an explicit reverse policy instead."
   }
 
-  # An EMPTY list is rejected alongside two populated ones, because
-  # `matching_target` is derived from which list is non-null, not from what is
-  # in it: `ips = []` derives IP with nothing to match, and the controller
-  # stores a rule that matches no host — an allowance that silently does
-  # nothing, or a BLOCK that silently blocks nothing. Omitting the key is how
-  # "any host in that zone" is written.
+  # `matching_target` derives from which list is non-null, not from what is in
+  # it, so an empty list stores a rule matching no host. Omitting both keys is
+  # how "any host in that zone" is written.
   validation {
     condition = alltrue(flatten([
       for p in var.policies : [
@@ -349,15 +435,8 @@ variable "policies" {
     error_message = "policies[*].source/destination.port must be a port, a range (\"32410-32414\") or a comma-separated list."
   }
 
-  # The shape check says nothing about VALUE: "0", "70000" and the descending
-  # "443-80" all parse as digits and separators. Each one reaches the controller
-  # as a rule that can never match — a silent hole in an allowance, or a deny
-  # that denies nothing — so the bounds are checked here.
-  #
-  # A value that failed the shape check above is skipped rather than re-reported,
-  # so a non-numeric port gets the shape message and only that one. That skip is
-  # also what keeps `tonumber` from erroring on a value the regex already
-  # rejected.
+  # Bounds and ordering; a value that failed the shape check above is skipped so
+  # `tonumber` is never reached and the shape message stands alone.
   validation {
     condition = alltrue(flatten([
       for p in var.policies : [
@@ -413,9 +492,11 @@ variable "wlans" {
     default; set it true on an IoT SSID.
   EOT
   type = map(object({
-    ssid       = string
-    network    = string
-    passphrase = string
+    ssid    = string
+    network = string
+    # Optional in the TYPE only, so a later non-PSK `security` input is an
+    # additive change; the validation below still requires it.
+    passphrase = optional(string)
     wpa3       = optional(bool, true)
     # Client isolation: guests can reach the gateway and the internet, not each
     # other.
@@ -433,9 +514,10 @@ variable "wlans" {
   # for a sensitive variable.
   validation {
     condition = alltrue([
-      for key, w in var.wlans : can(regex("^[\\x20-\\x7e]{8,63}$", w.passphrase))
+      for key, w in var.wlans :
+      w.passphrase == null ? false : can(regex("^[\\x20-\\x7e]{8,63}$", w.passphrase))
     ])
-    error_message = "wlans[*].passphrase must be 8-63 printable ASCII characters, which is the WPA-PSK rule (a smart quote or an accented letter pasted from a password manager is not one). An 1Password field that was renamed resolves to an empty string, and a sensitive value's diff hides it — the apply would silently reset the SSID's key."
+    error_message = "wlans[*].passphrase is required and must be 8-63 printable ASCII characters, which is the WPA-PSK rule (a smart quote or an accented letter pasted from a password manager is not one). An 1Password field that was renamed resolves to an empty string, and a sensitive value's diff hides it — the apply would silently reset the SSID's key."
   }
 
   # Same rule as above: the message names the field, never a value.
@@ -472,10 +554,9 @@ variable "clients" {
     the existing client (`allow_existing`) rather than creating one.
 
     `fixed_ip` needs the `network` it belongs to (validated below). It must lie
-    inside that network's SUBNET, which is not checked here (README "What this
-    module does not validate"); it does NOT have to lie inside the DHCP pool,
-    and normally should not — reserving outside the pool is the standard way to
-    keep a reservation from colliding with a dynamic lease.
+    inside that network's SUBNET and OUTSIDE its `dhcp` pool, both checked on
+    `unifi_client`: a reservation inside the pool races the dynamic leases the
+    controller hands out of the same range.
 
     Upstream #428: an in-place UPDATE of a client fails with "inconsistent
     result after apply: .last_ip". Change a name or an address with
@@ -550,20 +631,21 @@ variable "port_forwards" {
     in the UI. Ports are strings, so ranges and lists work ("32400",
     "32410-32414").
 
-    Every forward is on the primary `wan` interface and accepts any source
-    address: source restriction belongs in the firewall policies (and in the
-    host's own firewall), not in a per-forward allowlist that nothing else can
-    see.
+    `wan_interface` picks the WAN a forward lands on (`wan`, `wan2` or `both`)
+    and defaults to the primary. Every forward accepts any source address:
+    source restriction belongs in the firewall policies (and in the host's own
+    firewall), not in a per-forward allowlist that nothing else can see.
 
     `logging` (default false) toggles the UniFi gateway's per-forward hit
     logging; enable it where the WAN-side connection log is wanted.
   EOT
   type = map(object({
-    protocol = optional(string, "tcp")
-    wan_port = string
-    ip       = string
-    port     = string
-    logging  = optional(bool, false)
+    protocol      = optional(string, "tcp")
+    wan_interface = optional(string, "wan")
+    wan_port      = string
+    ip            = string
+    port          = string
+    logging       = optional(bool, false)
   }))
   default = {}
 
@@ -572,6 +654,13 @@ variable "port_forwards" {
       for key, f in var.port_forwards : contains(["tcp", "udp", "tcp_udp"], f.protocol)
     ])
     error_message = "port_forwards[*].protocol must be tcp, udp or tcp_udp."
+  }
+
+  validation {
+    condition = alltrue([
+      for key, f in var.port_forwards : contains(["wan", "wan2", "both"], f.wan_interface)
+    ])
+    error_message = "port_forwards[*].wan_interface must be wan, wan2 or both — those are the interface names the provider accepts."
   }
 
   # Shape then range, as on the DHCP bounds and the client reservations: a
@@ -625,7 +714,14 @@ variable "site_settings" {
     gateway that reboots itself takes the whole site with it), no "network
     optimization" (it re-enables features behind your back), UPnP and NAT-PMP
     off (port forwards are declared, not requested by whatever is on the LAN),
-    and IDS in detection-only mode.
+    and IDS in detection-only mode (create-time intent only, see below).
+
+    `ips_mode` is CREATE-TIME INTENT only: the resource `ignore_changes`es the
+    whole `ips` block, because UniFi Network accepts the API write and then
+    keeps its own value. It is asserted only on a site this module CREATES, so
+    an adopted (imported) site never receives it, and changing it after the
+    first apply plans nothing. Set day-2 IPS mode in the console (README,
+    "Apply is supervised").
 
     `igmp_snooping_networks` lists `networks` keys; a non-empty list enables
     site IGMP snooping for exactly those networks. On Network 10.3+ this

@@ -1,17 +1,14 @@
 # {{ ansible_managed }}
 [Unit]
 Description=Replicate ZFS datasets to archive pool
-# Ordered after both ZFS mount passes — the early zfs-mount.service and the
-# late zfs-mount-encrypted.service (every SRC_LIST source is encrypted and
-# mounts only after its key loads). Best-effort tidiness, not correctness:
-# raw `zfs send -w` needs neither key nor mount, and archive-backupctl probes
-# each source dataset for presence before replicating.
+# Ordered after both ZFS mount passes. Best-effort tidiness, not correctness:
+# raw `zfs send -w` needs neither key nor mount, and the script probes each
+# source for presence before replicating.
 After=zfs-mount.service zfs-mount-encrypted.service
-# On a SUCCESSFUL archive replication, immediately trigger the offsite B2 backup
-# (restic_offsite role) so it uploads the consistent point-in-time this run just
-# produced. OnSuccess needs systemd >= 249. restic-offsite has its own freshness
-# guard + fallback timer, so a skipped OnSuccess is safe.
-OnSuccess=restic-offsite.service
+{% if nas_storage_archive_backup_on_success_units | default([]) | length > 0 %}
+# Hands off to the offsite backup on a successful run (systemd >= 249).
+OnSuccess={{ nas_storage_archive_backup_on_success_units | join(' ') }}
+{% endif %}
 
 [Service]
 Type=oneshot

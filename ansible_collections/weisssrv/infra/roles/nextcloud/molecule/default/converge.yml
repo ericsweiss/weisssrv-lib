@@ -6,17 +6,16 @@
   become: true
   tasks:
     # public: the side render below reads role defaults the scenario's
-    # group_vars deliberately does not repeat.
+    # group_vars does not repeat.
     - name: Apply the nextcloud role
       ansible.builtin.include_role:
         name: weisssrv.infra.nextcloud
         public: true
 
   post_tasks:
-    # Branch coverage for the opt-in postgres exporter. The default (off) state
-    # is asserted on the converged compose file; this render covers the enabled
-    # one without adding a service to it. The role template lives outside the
-    # scenario dir, so the relative src is deliberate.
+    # Branch coverage for the opt-in postgres exporter: the converged compose
+    # file asserts the off state, this render covers the on state. The role
+    # template lives outside the scenario dir, hence the relative src.
     - name: Render the compose file with the postgres exporter on  # noqa: no-relative-paths
       ansible.builtin.template:
         src: "{{ playbook_dir }}/../../templates/docker-compose.yml.j2"

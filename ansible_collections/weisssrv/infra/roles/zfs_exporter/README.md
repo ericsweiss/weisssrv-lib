@@ -11,11 +11,18 @@ the service; this role owns the pin and the systemd unit.
 The service runs as **root** — ZFS introspection needs `/dev/zfs` ioctls — with
 namespace-safe hardening only (`PrivateDevices` must stay off).
 
+The role installs the upstream **linux-amd64** tarball and asserts the host is
+x86_64, because `zfs_exporter_checksum` pins that one artefact.
+
+The endpoint is unauthenticated, and with the default bind address (all
+interfaces) the host firewall is the only access control.
+
 ## Variables
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `zfs_exporter_port` | `9134` | Listen port (`--web.listen-address`). Must match the scrape target and any host firewall rule. |
+| `zfs_exporter_listen_address` | `""` | Bind address. Empty means all interfaces. |
 | `zfs_exporter_version` | `2.3.12` | Upstream release tag (without the `v`). |
 | `zfs_exporter_checksum` | `sha256:…` | Checksum of `zfs_exporter-<version>.linux-amd64.tar.gz` from the release's checksums file. Bump together with the version. |
 

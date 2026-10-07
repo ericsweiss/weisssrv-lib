@@ -9,12 +9,9 @@
     - name: Disable apt background services
       ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/prepare-apt-disable.yml
 
-    # Contract-test harness, modelled on proxmox_vm/molecule/default. The
-    # Proxmox CLIs (ha-manager, pvesr, qm, pct, pvecm) are stubbed in
-    # /usr/local/bin. Mutating subcommands LOG every invocation to a log file
-    # under /tmp/molecule-stub-state; read-only subcommands answer from
-    # configurable state files in the same directory so converge can simulate
-    # "absent" / "already correct" / "drifted" without real Proxmox state.
+    # Contract-test harness: the Proxmox CLIs are stubbed in /usr/local/bin.
+    # Mutating subcommands log to /tmp/molecule-stub-state; read-only ones
+    # answer from state files there, so converge can simulate any state.
     - name: Stub state directory
       ansible.builtin.file:
         path: /tmp/molecule-stub-state
@@ -22,10 +19,9 @@
         mode: "0755"
       become: true
 
-    # Configurable current state (defaults: nothing present)
     # Full `ha-manager config` index: a "<type>:<vmid>" line per resource plus
-    # that resource's indented properties. Empty => every resource is absent
-    # and `ha-manager add` is expected. Converge overwrites this per case.
+    # its indented properties. Empty means every resource is absent. Converge
+    # overwrites this per case.
     - name: Default HA resource index to empty
       ansible.builtin.copy:
         dest: /tmp/molecule-stub-state/ha_config_list
@@ -121,6 +117,12 @@
           STATE=/tmp/molecule-stub-state
           LOG="$STATE/pvesr.log"
           if [ "$1" = "list" ]; then
+            # A read failure (non-quorate cluster, API error) must abort the
+            # reconcile, never read as "no jobs exist".
+            if [ -f "$STATE/pvesr_list_fail" ]; then
+              echo "cluster not ready - no quorum?" >&2
+              exit 2
+            fi
             cat "$STATE/pvesr_list" 2>/dev/null || echo "[]"
             exit 0
           fi

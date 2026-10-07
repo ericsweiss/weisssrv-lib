@@ -1,0 +1,43 @@
+---
+# The cluster-init-vs-join decision, split out so the negative case is drivable
+# from fabricated probe results in test. The caller owns the probes and the
+# k3s_is_first_server / no-etcd-data / not-skip_install conditions.
+
+- name: Assert the server group resolved before deciding the bootstrap mode
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname in (groups[k3s_server_group] | default([]))
+    fail_msg: >-
+      k3s_server_group '{{ k3s_server_group }}' does not contain
+      {{ inventory_hostname }} (members:
+      {{ groups[k3s_server_group] | default([]) | join(', ') or '<none — the group does not exist>' }}),
+      so k3s_bootstrap_peers resolved empty and the greenfield guard below
+      cannot fire. Point k3s_server_group at the control-plane group.
+    quiet: true
+
+- name: Force join mode when the cluster already exists elsewhere
+  ansible.builtin.set_fact:
+    k3s_join_existing: >-
+      {{ (k3s_vip_probe.status | default(-1)) != -1
+         or ((k3s_peer_probe.results | default([]))
+             | map(attribute='status') | select('ne', -1) | list | length > 0) }}
+
+# CRITICAL: cluster-init here creates a SECOND etcd cluster with a fresh CA,
+# contending for the API VIP with a quorum that may still be up. Nothing
+# answered, which is an inability to determine, not evidence of a greenfield.
+- name: Assert a greenfield bootstrap was asked for before cluster-init
+  ansible.builtin.assert:
+    that:
+      - k3s_bootstrap_new_cluster | default(false)
+    fail_msg: >-
+      {{ inventory_hostname }} is k3s_is_first_server with no local etcd data,
+      and neither the API VIP ({{ k3s_api_vip }}:{{ k3s_api_port }}) nor any
+      peer in {{ k3s_server_group }}
+      ({{ k3s_bootstrap_peers | default([]) | join(', ') }})
+      answered. Rendering cluster-init here would bootstrap a second etcd
+      cluster against a surviving quorum. Set k3s_bootstrap_new_cluster: true
+      for a genuine first bootstrap.
+    quiet: true
+  when:
+    - not (k3s_join_existing | default(false))
+    - (k3s_bootstrap_peers | default([]) | length) > 0

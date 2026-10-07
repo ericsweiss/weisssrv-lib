@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for scripts/find-reachable-host.sh — the entry-point picker every
-delegated deploy runs first. It decides WHICH host a subsequent command targets,
-so a regression here mis-selects silently rather than failing.
+"""Tests for scripts/find-reachable-host.sh, the delegated-deploy entry picker.
 
 An `ssh` stub on PATH decides which targets answer; $UP lists them.
 """
@@ -47,10 +45,9 @@ def run(tmp_path):
     trace.write_text("")
 
     def _run(*args, up=""):
-        # A CLOSED env, like the sibling shell suites: nothing the script or its
-        # stub reads may arrive from the ambient environment, or the suite passes
-        # and fails by where it runs. Only the real PATH tail is kept so the stub
-        # can still reach bash.
+        # A closed env, like the sibling shell suites: nothing reaches the
+        # script from the ambient environment. Only the real PATH tail is kept,
+        # so the stub can still reach bash.
         proc = subprocess.run(
             [BASH, str(SCRIPT), *args],
             capture_output=True,

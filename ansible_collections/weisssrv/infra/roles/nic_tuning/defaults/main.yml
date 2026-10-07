@@ -1,21 +1,18 @@
 ---
 # Per-NIC ethtool feature overrides via drop-ins in /etc/network/interfaces.d/
-# (schema: README), plus an optional ip_forward sysctl drop-in — needed on
-# Proxmox hosts for overlay-VPN subnet routing, because pve_firewall otherwise
-# resets the live sysctl and only a /etc/sysctl.d/ drop-in survives a reboot.
+# (schema: README), plus an optional ip_forward sysctl drop-in for hosts that
+# route an overlay VPN.
 nic_tuning_overrides: []
 nic_tuning_ip_forward: false
 
 # Read the applied overrides back out of the kernel and fail the play when they
-# are not live. Leave true on every real host: with it false a refused or
-# silently-ignored `ethtool -K` is invisible. Only the molecule scenario sets it
-# false, because a container's lo/veth may expose no ethtool feature ioctls.
+# are not live. Leave true on every real host; only a container without ethtool
+# feature ioctls needs it false.
 nic_tuning_verify_offloads: true
 
-# `ethtool -K` takes short feature names, `ethtool --show-features` reports long
-# ones, so the read-back needs the mapping: every short name used in
-# nic_tuning_overrides needs an entry here or the assert fails saying so. Names
-# per ethtool(8) "feature names" / netdev_features.h.
+# `ethtool -K` takes short feature names and `--show-features` reports long
+# ones, so the read-back needs this mapping. Every short name used in
+# nic_tuning_overrides needs an entry here. Names per ethtool(8).
 nic_tuning_feature_names:
   gro: generic-receive-offload
   gso: generic-segmentation-offload
@@ -30,22 +27,30 @@ nic_tuning_feature_names:
   txvlan: tx-vlan-offload
   ufo: udp-fragmentation-offload
 
-# Lower vm.swappiness on memory-committed hosts. Set to an integer (0-100) per
-# host/group to write a /etc/sysctl.d/ drop-in and apply it live; leave null (the
-# default) to leave swappiness unmanaged (kernel default 60). A host running
-# guests plus ZFS ARC typically wants 1, paired with an ARC cap.
+# Lower vm.swappiness on memory-committed hosts. An integer 0-100 writes a
+# /etc/sysctl.d/ drop-in and applies it live; null leaves swappiness unmanaged.
+# A host running guests plus ZFS ARC typically wants 1, paired with an ARC cap.
 nic_tuning_vm_swappiness: null
 
-# Force all_slaves_active=0 on active-backup bonds, which stops the inactive
-# leg's reflected frames from poisoning the bridge FDB into an intermittent
-# MAC-flap black-hole (README). Set false only if a bond legitimately needs =1,
-# e.g. multicast RX across multiple switches.
+# Force all_slaves_active=0 on active-backup bonds, keeping the inactive leg's
+# reflected frames out of the bridge FDB (README). Set false only for a bond
+# that needs =1, such as multicast RX across multiple switches.
 nic_tuning_bond_asa_guard: true
 
-# Fully disable IPv6 on specific interfaces, removing their link-local fe80::
-# address. Use on an IPv4-only segment where an interface's UNTAGGED link-local
-# is an unfiltered L2 path the IPv4 VLAN firewall never sees (README). List of
-# interface names; [] leaves IPv6 untouched. Strictly per-interface — the role
-# never writes net.ipv6.conf.ALL, so sibling interfaces (VLAN subifs, the mgmt
-# bridge, tailscale) keep their IPv6.
+# Preferred leg of an active-backup bond. miimon only watches carrier, so a NIC
+# whose TX unit wedges with the link up keeps transmitting; naming the healthy
+# leg here makes the defect-prone one backup-only (README). null leaves it free.
+nic_tuning_bond_primary: null
+
+# Lets an undeclared pin be converged away: the bond-primary lines in
+# /etc/network/interfaces and the live bonding/primary. Set false on a host
+# whose preferred leg is pinned by hand outside Ansible.
+nic_tuning_bond_primary_manage_absent: true
+# `failure` keeps the active leg until it actually fails, so applying a primary
+# never blips a live uplink. `always` and `better` are the kernel's alternatives.
+nic_tuning_bond_primary_reselect: failure
+
+# Fully disable IPv6 on the listed interfaces, removing their link-local
+# address; [] leaves IPv6 untouched. Strictly per-interface, so siblings keep
+# their IPv6. See the README.
 nic_tuning_disable_ipv6: []

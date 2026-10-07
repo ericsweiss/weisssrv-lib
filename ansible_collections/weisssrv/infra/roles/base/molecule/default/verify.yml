@@ -179,25 +179,23 @@
         fail_msg: "20auto-upgrades does not disable the periodic knobs"
         success_msg: "unattended-upgrades disabled regardless of package state"
 
-    # NIC offloads belong to nic_tuning; base must leave no oneshot of its own.
-    - name: Stat the NIC offload fix units and scripts base used to install
+    # prepare seeds /etc/init.d/openipmi with no /dev/ipmi0, so the role must
+    # mask the unit — the mask is the symlink to /dev/null.
+    - name: Stat the openipmi mask
       ansible.builtin.stat:
-        path: "{{ item }}"
-      register: nic_offload_orphans
-      loop:
-        - /etc/systemd/system/e1000e-tso-fix.service
-        - /usr/local/sbin/e1000e-tso-fix.sh
-        - /etc/systemd/system/atlantic-gro-fix.service
-        - /usr/local/sbin/atlantic-gro-fix.sh
+        path: /etc/systemd/system/openipmi.service
+      register: openipmi_mask
 
-    - name: Assert no NIC offload fix unit or script is left behind
+    - name: Assert openipmi.service is masked
       ansible.builtin.assert:
         that:
-          - nic_offload_orphans.results | selectattr('stat.exists') | list | length == 0
+          - openipmi_mask.stat.exists
+          - openipmi_mask.stat.islnk
+          - openipmi_mask.stat.lnk_target == '/dev/null'
         fail_msg: >-
-          base still installs (or fails to remove) a NIC offload oneshot —
-          weisssrv.infra.nic_tuning is the single owner of offload settings.
-        success_msg: "No NIC offload fix unit or script present"
+          openipmi.service is not masked, so its init script would fail at boot
+          and leave systemd degraded.
+        success_msg: "openipmi.service is masked"
 
     - name: Check testuser home directory exists
       ansible.builtin.stat:
@@ -290,11 +288,9 @@
         fail_msg: "jail.local does not render the expected container-mode fail2ban configuration"
         success_msg: "jail.local renders the container branch (banaction = route, no recidive)"
 
-    # Physical/VM branch coverage. The container above renders banaction=route;
-    # the branch all 6 bare-metal Proxmox hosts use (iptables banaction,
-    # recidive jail, pveproxy jail + proxmox.conf filter) is never rendered in a
-    # container, so render jail.local.j2 + proxmox.conf.j2 with base_is_container=false
-    # and the recidive/pveproxy jails on, then assert the physical branch.
+    # Physical/VM branch coverage: a container renders banaction=route, so the
+    # bare-metal branch is never exercised above. Render jail.local.j2 and
+    # proxmox.conf.j2 with base_is_container=false and assert that branch.
     - name: Render the physical/VM branch of jail.local
       vars:
         # Role templates dir, derived without '../' (playbook_dir is
@@ -388,17 +384,58 @@
         msg: "{{ sshd_jail_status.stdout_lines | default(['sshd jail status not available']) }}"
       when: sshd_jail_status.rc == 0
 
-# Accept/reject matrix for the lockout guard tasks/ssh.yml asserts. The converge
-# only ever exercises the one combination the scenario sets, so the surviving
-# login paths (managed non-root account with a key / root login permitted /
-# password authentication left on) and the true lockout set are covered here.
-#
-# The verdict comes from base_ssh_login_path_survives — the SAME expression the
-# role asserts, loaded from the role's defaults rather than restated here, so
-# dropping or inverting a clause in defaults/main.yml fails this matrix instead
-# of leaving it green. Each case overrides the four inputs as TASK vars, which
-# outrank vars_files, and it is a separate play so the loaded defaults cannot
-# shadow the inventory values the first play verifies against.
+    # Negative test: on a systemd-boot host the drop-in is never read, so the
+    # role must refuse. Driven here, not from converge: staging and removing
+    # /etc/kernel/cmdline is a change on every run, which reds idempotence.
+    - name: Stage a systemd-boot kernel command line
+      ansible.builtin.copy:
+        dest: /etc/kernel/cmdline
+        content: "root=ZFS=rpool/ROOT/pve-1 boot=zfs\n"
+        mode: "0644"
+
+    - name: Re-apply with a systemd-boot kernel command line (expect failure)
+      block:
+        - name: Include base while /etc/kernel/cmdline exists
+          ansible.builtin.include_role:
+            name: weisssrv.infra.base
+
+        - name: Systemd-boot assert failed to trigger
+          ansible.builtin.copy:
+            dest: /tmp/base-kernel-cmdline-grub-assert.json
+            content: '{"failed": false}'
+            mode: "0644"
+      rescue:
+        - name: Systemd-boot assert correctly refused the host
+          ansible.builtin.copy:
+            dest: /tmp/base-kernel-cmdline-grub-assert.json
+            mode: "0644"
+            content: |
+              {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
+      always:
+        - name: Remove the staged systemd-boot kernel command line
+          ansible.builtin.file:
+            path: /etc/kernel/cmdline
+            state: absent
+
+    - name: Stat the staged systemd-boot kernel command line after cleanup
+      ansible.builtin.stat:
+        path: /etc/kernel/cmdline
+      register: base_staged_cmdline
+
+    # Residue would refuse every later run on this host, the role's own
+    # positive path included.
+    - name: Assert the negative case left no systemd-boot cmdline behind
+      ansible.builtin.assert:
+        that:
+          - not base_staged_cmdline.stat.exists
+        fail_msg: >-
+          /etc/kernel/cmdline survived the systemd-boot negative case, so the
+          role would refuse a host it is meant to configure.
+        quiet: true
+
+# Accept/reject matrix for the lockout guard tasks/ssh.yml asserts, which
+# converge exercises in only one combination. The verdict comes from the role's
+# own base_ssh_login_path_survives, loaded from defaults rather than restated.
 - name: Verify the SSH lockout guard against the role's own expression
   hosts: all
   gather_facts: false
@@ -440,3 +477,52 @@
       loop: "{{ lockout_matrix }}"
       loop_control:
         label: "{{ item.admin_user }}/{{ item.permit_root }}/pw={{ item.password_auth }}"
+
+    - name: Read the kernel cmdline GRUB drop-in
+      ansible.builtin.slurp:
+        src: /etc/default/grub.d/99-base-kernel-cmdline.cfg
+      register: base_kernel_cmdline_dropin
+
+    # The drop-in APPENDS to $GRUB_CMDLINE_LINUX_DEFAULT; an assignment would
+    # drop root=/boot= and leave the host unbootable.
+    - name: Assert the drop-in appends the configured kernel parameters
+      ansible.builtin.assert:
+        that:
+          - "'GRUB_CMDLINE_LINUX_DEFAULT=\"$GRUB_CMDLINE_LINUX_DEFAULT slub_nomerge\"'
+             in (base_kernel_cmdline_dropin.content | b64decode)"
+        fail_msg: >-
+          99-base-kernel-cmdline.cfg does not append base_kernel_cmdline_args to
+          the existing GRUB_CMDLINE_LINUX_DEFAULT.
+        quiet: true
+
+    - name: Read the kernel cmdline negative-test results
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      register: base_kernel_cmdline_asserts
+      loop:
+        - /tmp/base-kernel-cmdline-token-assert.json
+        - /tmp/base-kernel-cmdline-grub-assert.json
+
+    - name: Assert both kernel cmdline guards rejected their input
+      vars:
+        # Keyed by marker path, so the message checks do not ride on the slurp
+        # loop's order. Each rescue recorded its own guard's msg.
+        base_cmdline_verdicts: >-
+          {{ dict(base_kernel_cmdline_asserts.results | map(attribute='item')
+             | zip(base_kernel_cmdline_asserts.results | map(attribute='content')
+                   | map('b64decode') | map('from_json'))) }}
+      ansible.builtin.assert:
+        that:
+          - base_cmdline_verdicts.values()
+            | map(attribute='failed') | reject | list | length == 0
+          # The guard's own message, not merely a failure: a run that broke for
+          # any other reason would otherwise read as a rejection.
+          - (base_cmdline_verdicts['/tmp/base-kernel-cmdline-token-assert.json'].msg
+             | default('')) is search('is not a single bare token')
+          - (base_cmdline_verdicts['/tmp/base-kernel-cmdline-grub-assert.json'].msg
+             | default('')) is search('/etc/kernel/cmdline')
+        fail_msg: >-
+          The role accepted a multi-token base_kernel_cmdline_args entry, or
+          staged the drop-in on a host carrying /etc/kernel/cmdline, so a
+          parameter the alerting depends on would never reach the kernel.
+        success_msg: "Both kernel cmdline guards rejected their input"

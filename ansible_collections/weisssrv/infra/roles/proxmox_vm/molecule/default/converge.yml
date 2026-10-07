@@ -2,22 +2,17 @@
 - name: Converge — exercise storage selection + pool validation
   hosts: all
   become: true
-  # gather_facts deferred: under become + the molecule docker connector, the
-  # implicit fact-gathering task fails to create Ansible's remote_tmp. A raw
-  # `mkdir -p` (which bypasses that path) followed by an explicit
-  # ansible.builtin.setup avoids it. Same pattern in the proxmox_lxc/ha
-  # scenarios.
+  # gather_facts deferred: under become + the molecule docker connector the
+  # implicit gathering task fails to create remote_tmp. A raw `mkdir -p` then an
+  # explicit ansible.builtin.setup avoids it.
   gather_facts: false
   vars:
     proxmox_host: "{{ inventory_hostname }}"
     proxmox_role: nas
     vmid: 999
-    # NOTE: do not override ansible_host here — molecule's docker connection
-    # plugin reads ansible_host as the container name/ID. Overriding it to
-    # an IP makes `docker exec` fail with "No such container: 192.168.0.99".
-    # The role consumes the IP via proxmox_vm_target_ip (defaults to
-    # ansible_host in prod inventory; pinned to a stub IP here so the cloud-
-    # init render still sees a realistic value).
+    # Do not override ansible_host: molecule's docker connection plugin reads it
+    # as the container name, and an IP makes `docker exec` fail. The role takes
+    # the IP from proxmox_vm_target_ip, pinned to a stub value here.
     proxmox_vm_target_ip: "192.168.0.99"
   pre_tasks:
     - name: Pre-create Ansible remote_tmp (raw bypasses tmpdir setup)
@@ -37,12 +32,9 @@
         mode: "0755"
 
   tasks:
-    # 1. NAS host with no override → expect _proxmox_vm_effective_storage == "ssd"
-    # NOTE: no `vars:` block — leaving proxmox_storage undefined lets the
-    # role's `default(proxmox_storage_defaults[_proxmox_vm_host_role])` lookup
-    # resolve to 'ssd' for the nas role. Setting `proxmox_storage: null`
-    # would render as literal "None" because Jinja's default() only
-    # substitutes for undefined, not explicit null.
+    # 1. NAS host with no override -> _proxmox_vm_effective_storage == "ssd".
+    # No `vars:` block: leaving proxmox_storage undefined lets the role's
+    # default() lookup resolve it, where an explicit null would render "None".
     - name: NAS-default run
       ansible.builtin.include_role:
         name: weisssrv.infra.proxmox_vm
@@ -69,12 +61,9 @@
         content: |
           {"effective_storage": "{{ _proxmox_vm_effective_storage | trim }}"}
 
-    # 2w. Windows guest — proxmox_vm_guest_type: windows must assemble a Win11-capable
-    # VM (q35 + OVMF + EFI vars + TPM 2.0 + win11 ostype + empty boot disk +
-    # install/VirtIO CDROMs + std VGA, boot order install-CD-first) and issue
-    # NONE of the Linux cloud-init path (no cloud-image importdisk, no
-    # `--ide2 …cloudinit`, no `--ciuser`) and NOT start the VM (created stopped).
-    # Runs in the "missing" state (before case 5 flips the stub to "exists").
+    # 2w. Windows guest must assemble a Win11-capable VM (q35, OVMF, EFI vars,
+    # TPM 2.0, win11 ostype, empty boot disk, install/VirtIO CDROMs, std VGA),
+    # issue none of the Linux cloud-init path, and leave the VM stopped.
     - name: Reset qm.log for the Windows-guest case
       ansible.builtin.copy:
         dest: /tmp/molecule-stub-state/qm.log
@@ -92,12 +81,9 @@
         proxmox_vm_iso_storage: isostore
         proxmox_vm_install_iso: Win11_Test.iso
         proxmox_vm_virtio_win_version: "0.1.285"
-        # Explicit (the scenario group_vars also sets it): this run only
-        # validates the assembled qm commands, so skip the real preflight —
-        # the install-ISO stat/assert against a store that doesn't exist in
-        # the container and the large external VirtIO ISO get_url. The qm
-        # create/EFI/TPM/CDROM/boot tasks are NOT skip_create-gated, so the
-        # command-assembly assertions below still exercise the full path.
+        # This run only validates the assembled qm commands, so the preflight
+        # ISO stat and the external VirtIO get_url are skipped. The qm
+        # create/EFI/TPM/CDROM/boot tasks are not skip_create-gated.
         proxmox_vm_skip_create: true
 
     - name: Scan the Windows-guest qm.log for the expected assembly
@@ -135,11 +121,9 @@
         mode: "0644"
         content: "{{ win_scan.stdout }}"
 
-    # 2wi. Same Windows path with the UNQUOTED-INT disk size the GiB assert's own
-    # fail_msg recommends ("e.g. 64 or 64G"). YAML makes it an int, and the
-    # `match` test hands the value straight to re.match — so without the assert's
-    # `| string` coercion this run dies with an opaque templating TypeError
-    # instead of assembling `scsi0 ssd:250`.
+    # 2wi. Same Windows path with the unquoted-int disk size the GiB assert's
+    # fail_msg recommends. Without the assert's `| string` coercion the `match`
+    # test dies with a templating TypeError instead of assembling `scsi0 ssd:250`.
     - name: Reset qm.log for the Windows-guest bare-int disk-size case
       ansible.builtin.copy:
         dest: /tmp/molecule-stub-state/qm.log
@@ -192,13 +176,16 @@
         proxmox_storage: ssd
         proxmox_vm_hostpci:
           - "0000:01:00"
+          - "0000:01:00.1"
 
     - name: Scan the hostpci qm.log
       ansible.builtin.shell: |
         set -o pipefail
         log=/tmp/molecule-stub-state/qm.log
-        hostpci0=$(grep -c -- '^qm set 999 --hostpci0 0000:01:00$' "$log" || true)
-        printf '{"hostpci0": %s}\n' "$hostpci0"
+        # One `qm set` carries both flags, indexed by list position.
+        both=$(grep -c -- '^qm set 999 --hostpci0 0000:01:00 --hostpci1 0000:01:00.1$' "$log" || true)
+        any=$(grep -c -- '^qm set 999 --hostpci' "$log" || true)
+        printf '{"indexed_pair": %s, "any_hostpci": %s}\n' "$both" "$any"
       args:
         executable: /bin/bash
       register: hostpci_scan
@@ -212,6 +199,7 @@
 
     # 3. Pool-validation failure path
     - name: Pool-validation failure (expect failure)
+      tags: [molecule-idempotence-notest]
       block:
         - name: Run with nonexistent storage
           ansible.builtin.include_role:
@@ -233,6 +221,7 @@
 
     # 4. Resource-pool list rejection
     - name: Resource-pool list rejection (expect failure)
+      tags: [molecule-idempotence-notest]
       block:
         - name: Run with non-standard resource pool
           ansible.builtin.include_role:
@@ -253,10 +242,9 @@
             content: |
               {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
 
-    # 5. Existence guard — when the VM exists and its NIC already has
-    # firewall=1 (and agent/onboot/startup already match inventory), the only
-    # qm activity allowed is read-only `qm config` probes from the firewall,
-    # agent, and startup reconciles. No mutations.
+    # 5. Existence guard — when the VM exists and its NIC, agent, onboot and
+    # startup already match inventory, the only qm activity allowed is read-only
+    # `qm config` probes. No mutations.
     - name: Reset qm.log
       ansible.builtin.copy:
         dest: /tmp/molecule-stub-state/qm.log
@@ -275,10 +263,9 @@
       vars:
         proxmox_storage: ssd
 
-    # HA-aware reconcile: the existence check returns the VM's CURRENT node
-    # (the stub places it on this molecule host), so reconcile tasks must
-    # delegate there rather than the inventory proxmox_host. A regression
-    # that assumed proxmox_host would break deploys for any HA-migrated VM.
+    # HA-aware reconcile: the existence check returns the VM's current node (the
+    # stub places it on this molecule host), so reconcile tasks delegate there
+    # rather than to the inventory proxmox_host.
     - name: Assert reconcile host resolved to the VM's actual node
       ansible.builtin.assert:
         that:
@@ -402,6 +389,51 @@
            "stale_key_in_set": {{ (qm_fwzero_lines.stdout | from_json).stale_key_in_set }},
            "reconcile_changed": {{ proxmox_vm_net0_firewall.changed | to_json }}}
 
+    # 7a. A guest whose config carries no net0 cannot have the flag
+    # reconciled; reporting ok would leave every security group inert.
+    - name: Stub a guest config with no net0 line
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/vm_net0_absent
+        content: ""
+        mode: "0644"
+
+    # A rescue, not `ignore_errors`: that keyword on a dynamic include_role
+    # never reaches the role's own tasks, so the repair's failure escapes it.
+    - name: No-net0 repair (expect failure)
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Run the NIC firewall repair against a guest with no net0
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_vm
+            tasks_from: guest-nic-firewall
+          vars:
+            _pmx_cli: qm
+            _pmx_id: 999
+            _pmx_delegate: "{{ inventory_hostname }}"
+
+        - name: Should not reach here
+          ansible.builtin.copy:
+            dest: /tmp/molecule-results/07a-no-net0.json
+            mode: "0644"
+            content: |
+              {"failed": false,
+               "stdout": {{ proxmox_vm_guest_nic_firewall_result.stdout | default('') | to_json }},
+               "rc": {{ proxmox_vm_guest_nic_firewall_result.rc | default(0) | to_json }}}
+      rescue:
+        - name: Capture the no-net0 result
+          ansible.builtin.copy:
+            dest: /tmp/molecule-results/07a-no-net0.json
+            mode: "0644"
+            content: |
+              {"failed": true,
+               "stdout": {{ proxmox_vm_guest_nic_firewall_result.stdout | default('') | to_json }},
+               "rc": {{ proxmox_vm_guest_nic_firewall_result.rc | default(0) | to_json }}}
+      always:
+        - name: Remove the no-net0 stub
+          ansible.builtin.file:
+            path: /tmp/molecule-stub-state/vm_net0_absent
+            state: absent
+
     # 7b. Agent flag drift — existing VM whose `qm config` reports agent
     # enabled=0 must get exactly one `qm set 999 --agent 1` reconcile call.
     - name: Stub agent disabled (enabled=0)
@@ -468,10 +500,9 @@
       register: memory_drift
       changed_when: false
 
-    # 7b-iii. shrink guard — a desired value BELOW the live one must fail the
-    # task unless proxmox_vm_memory_shrink_ok names it. Without the guard a
-    # guest that lost its inventory memory key would be resized down to the
-    # role default on the next converge.
+    # 7b-iii. shrink guard — a desired value below the live one must fail the
+    # task unless proxmox_vm_memory_shrink_ok names it, or a guest that lost its
+    # inventory memory key would be resized down to the role default.
     - name: Stub memory drifted high (8192 against the role default 2048)
       ansible.builtin.copy:
         dest: /tmp/molecule-stub-state/vm_memory_override
@@ -485,6 +516,7 @@
         mode: "0644"
 
     - name: Run role against a VM with MORE memory than desired
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include the role with an unnamed shrink pending
           ansible.builtin.include_role:
@@ -608,10 +640,10 @@
            "startup_set": {{ (startup_drift.stdout | from_json).startup_set }},
            "any_onboot_set": {{ (startup_drift.stdout | from_json).any_onboot_set }}}
 
-    # 8. Additional-disk vzdump_backup idempotency. The attach task (loop slot
-    # scsi1) must set backup=0 exactly when a vzdump_backup:false disk's current
-    # state lacks it, be a no-op when it already matches, and never add backup=0
-    # to a default disk. EXPECTED_PATH is /dev/zvol/ssd/appdata/test/data.
+    # 8. Additional-disk vzdump_backup idempotency. The attach task must set
+    # backup=0 exactly when a vzdump_backup:false disk lacks it, no-op when it
+    # already matches, and never add it to a default disk.
+
     # 8a. Not attached + vzdump_backup:false -> one `qm set --scsi1 ...,backup=0`.
     - name: Remove scsi1 override (slot not attached)
       ansible.builtin.file:
@@ -762,10 +794,9 @@
       register: disk_default
       changed_when: false
 
-    # 8e. Slot occupied by a DIFFERENT live zvol (.../data-old vs expected
-    # .../data) -> the role must REFUSE to remap without allow_remap (the
-    # data-loss guard) and issue NO qm set. Also exercises exact-path detection:
-    # data-old must register as different, not a substring match for data.
+    # 8e. Slot occupied by a different live zvol (data-old vs expected data) ->
+    # the role must refuse to remap without allow_remap and issue no qm set.
+    # Also exercises exact-path detection rather than a substring match.
     - name: Stub scsi1 attached to a different live zvol
       ansible.builtin.copy:
         dest: /tmp/molecule-stub-state/vm_scsi1_override
@@ -779,6 +810,7 @@
         mode: "0644"
 
     - name: Run role — remap without allow_remap must be refused
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include proxmox_vm (expected to fail on the remap guard)
           ansible.builtin.include_role:
@@ -853,6 +885,7 @@
     # it must REJECT duplicate slots and missing slots. Both run the role
     # expecting the assert to fail (caught via rescue).
     - name: Run role — duplicate scsi_slot must be rejected
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include proxmox_vm with duplicate scsi_slots (expected to fail)
           ansible.builtin.include_role:
@@ -871,6 +904,7 @@
             slot_dup_rejected: true
 
     - name: Run role — missing scsi_slot must be rejected
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include proxmox_vm with a missing scsi_slot (expected to fail)
           ansible.builtin.include_role:
@@ -888,6 +922,7 @@
             slot_missing_rejected: true
 
     - name: Run role — scsi_slot 0 (boot-disk slot) must be rejected
+      tags: [molecule-idempotence-notest]
       block:
         - name: Include proxmox_vm with scsi_slot 0 (expected to fail)
           ansible.builtin.include_role:
@@ -928,15 +963,11 @@
            "remap_any_set": {{ (disk_remap.stdout | from_json).any_scsi1_set }},
            "allow_remap_reset_to_correct": {{ (disk_allow_remap.stdout | from_json).reset_to_correct_path }}}
 
-    # 14. Cloud-init network reconcile on an EXISTING VM. The create-path only
-    # writes ipconfig0/nameserver at first create (proxmox_vm_exists.rc != 0), so
-    # a renumber that moved the guest to a new subnet leaves the cloud-init net
-    # config stale. The reconcile is gated on `not skip_create`, so these cases
-    # override the scenario-wide skip_create:true; the VM already exists (case 5
-    # flipped the stub), so no create-path task fires — the ONLY qm set possible
-    # is this reconcile's. Desired = ip=192.168.0.99/24,gw=192.168.0.1 +
-    # nameserver "192.168.0.150 192.168.0.160" (target_ip/prefix/gateway/dns).
-    # 14a. DRIFT — stub reports an old-subnet ipconfig0/nameserver -> exactly one
+    # 14. Cloud-init network reconcile on an existing VM, gated on `not
+    # skip_create`, so these cases override the scenario default. Desired =
+    # ip=192.168.0.99/24,gw=192.168.0.1 + nameserver "192.168.0.150 192.168.0.160".
+
+    # 14a. Drift — stub reports an old-subnet ipconfig0/nameserver -> exactly one
     # `qm set … --ipconfig0 <desired> --nameserver <desired>`, task changed.
     - name: Stub cloud-init net on an old subnet (drift)
       ansible.builtin.copy:
@@ -1040,3 +1071,157 @@
            "nodrift_any_set": {{ (ci_net_nodrift.stdout | from_json).any_ipconfig0_set }},
            "nodrift_changed": {{ ci_net_nodrift_changed | to_json }},
            "nodrift_skipped": {{ ci_net_nodrift_skipped | to_json }}}
+
+    # 15. zvol creation — the create branch. A sparse disk must carry `-s`, a
+    # plain one must not, and a second run must create nothing.
+    - name: Reset the zfs log and zvol state
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: zfs.log, content: ""}
+        - {name: zvols, content: ""}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Create two additional disks, one sparse and one thick
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_vm
+      vars:
+        proxmox_storage: ssd
+        proxmox_vm_additional_disks:
+          - name: test-data
+            size: 10G
+            zvol: ssd/appdata/test/data
+            mount_point: /mnt/test
+            fstype: ext4
+            scsi_slot: 1
+            sparse: true
+          - name: test-logs
+            size: 1G
+            zvol: ssd/appdata/test/logs
+            mount_point: /mnt/logs
+            fstype: ext4
+            scsi_slot: 2
+
+    - name: Count first-run zfs creates
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/zfs.log
+        sparse=$(grep -cxF 'zfs create -p -s -V 10G ssd/appdata/test/data' "$log" || true)
+        thick=$(grep -cxF 'zfs create -p -V 1G ssd/appdata/test/logs' "$log" || true)
+        echo "{\"sparse\": ${sparse}, \"thick\": ${thick}}"
+      args:
+        executable: /bin/bash
+      register: zvol_first
+      changed_when: false
+
+    - name: Reset the zfs log, keeping the created zvols
+      ansible.builtin.copy:
+        dest: /tmp/molecule-stub-state/zfs.log
+        content: ""
+        mode: "0644"
+
+    - name: Re-run against the zvols that now exist
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_vm
+      vars:
+        proxmox_storage: ssd
+        proxmox_vm_additional_disks:
+          - name: test-data
+            size: 10G
+            zvol: ssd/appdata/test/data
+            mount_point: /mnt/test
+            fstype: ext4
+            scsi_slot: 1
+            sparse: true
+          - name: test-logs
+            size: 1G
+            zvol: ssd/appdata/test/logs
+            mount_point: /mnt/logs
+            fstype: ext4
+            scsi_slot: 2
+
+    - name: Count second-run zfs creates
+      ansible.builtin.shell: |
+        set -o pipefail
+        made=$(grep -c '^zfs create ' /tmp/molecule-stub-state/zfs.log || true)
+        echo "{\"creates\": ${made}}"
+      args:
+        executable: /bin/bash
+      register: zvol_second
+      changed_when: false
+
+    - name: Capture zvol-creation result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/15-zvol-create.json
+        mode: "0644"
+        content: |
+          {"sparse_creates": {{ (zvol_first.stdout | from_json).sparse }},
+           "thick_creates": {{ (zvol_first.stdout | from_json).thick }},
+           "second_run_creates": {{ (zvol_second.stdout | from_json).creates }}}
+
+    # The backend seam: an unimplemented backend must be a named error, not a
+    # file-not-found out of the dynamic include.
+    - name: Drive the additional-disk backend guard with a backend that has no file
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Include the role with an unimplemented disk backend
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_vm
+          vars:
+            proxmox_storage: ssd
+            proxmox_vm_additional_disk_backend: lvm
+            proxmox_vm_additional_disks:
+              - name: test-data
+                size: 10G
+                zvol: ssd/appdata/test/data
+                mount_point: /mnt/test
+                fstype: ext4
+                scsi_slot: 1
+
+        - name: Record that the unimplemented backend was accepted
+          ansible.builtin.set_fact:
+            proxmox_vm_backend_rejected: false
+      rescue:
+        - name: Record that the unimplemented backend was rejected by name
+          ansible.builtin.set_fact:
+            proxmox_vm_backend_rejected: >-
+              {{ 'has no tasks/disks-' in (ansible_failed_result.msg | default('')) }}
+
+    - name: Capture the backend-guard result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/16-disk-backend.json
+        mode: "0644"
+        content: |
+          {"rejected_by_name": {{ (proxmox_vm_backend_rejected | bool) | lower }}}
+
+    # The cluster probe's negative arm: no host answers, so the entry point must
+    # fail by name rather than hand the caller an empty answer.
+    - name: Drive the cluster-resource probe with every delegate unreachable
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Probe a Proxmox host that does not exist
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_vm
+            tasks_from: probe-cluster-resources
+          vars:
+            _proxmox_vm_probe_hosts: [proxmox-vm-no-such-host]
+
+        - name: Record that the empty probe was accepted
+          ansible.builtin.set_fact:
+            proxmox_vm_probe_rejected: false
+      rescue:
+        - name: Record that the empty probe failed by name
+          ansible.builtin.set_fact:
+            proxmox_vm_probe_rejected: >-
+              {{ 'No Proxmox host answered' in (ansible_failed_result.msg | default('')) }}
+
+    - name: Capture the cluster-probe result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/17-cluster-probe.json
+        mode: "0644"
+        content: |
+          {"rejected_by_name": {{ (proxmox_vm_probe_rejected | bool) | lower }},
+           "hosts_probed": {{ _proxmox_vm_probe_results | default([]) | length }}}

@@ -1,10 +1,7 @@
 ---
-# Verify: the control script + secret files + timers render correctly; a real
-# run against the LOCAL restic file repo produces a snapshot and the split
-# backup/retention metrics; a second run short-circuits (and --force overrides);
-# restore round-trips; the deep-verify cursor advances; the freshness guard
-# aborts (success=0) on a stale source; and the static subcommand / metric /
-# zvol-clone contract holds.
+# Verify the rendered control script, secret files and timers, then a real run
+# against a local restic file repo: snapshot and metrics, short-circuit and
+# --force, restore, deep-verify cursor, freshness guard and the static contract.
 - name: Verify
   hosts: all
   become: true
@@ -18,16 +15,102 @@
         not ctl.stat.exists or ctl.stat.mode != '0755'
         or ctl.stat.pw_name != 'root' or ctl.stat.gr_name != 'root'
 
-    - name: Stat the secret files (env + rclone.conf must be 0600)
+    - name: Stat the secret files (env + rclone.conf + repo password must be 0600)
       ansible.builtin.stat:
         path: "{{ item }}"
       register: secret_files
       loop:
         - /etc/restic-offsite/env
         - /etc/restic-offsite/rclone.conf
+        - /etc/restic-offsite/repo-password
       failed_when: >-
         not secret_files.stat.exists or secret_files.stat.mode != '0600'
         or secret_files.stat.pw_name != 'root'
+
+    # The password must reach restic through a FILE: its rclone child inherits
+    # the environment for the whole run.
+    - name: Assert the env file points at the password file instead of exporting it
+      ansible.builtin.command: grep -q "^RESTIC_PASSWORD_FILE=" /etc/restic-offsite/env
+      changed_when: false
+
+    - name: Assert the env file does not export RESTIC_PASSWORD
+      ansible.builtin.command: grep -q "^RESTIC_PASSWORD=" /etc/restic-offsite/env
+      register: restic_offsite_env_password
+      changed_when: false
+      failed_when: restic_offsite_env_password.rc == 0
+
+    # systemd gives Type=oneshot no start timeout, so a wedged run would hold
+    # the repository lock indefinitely.
+    - name: Assert the oneshot units carry a non-empty start timeout (restic_offsite_timeout_start_sec)
+      ansible.builtin.command: >-
+        grep -Eq '^TimeoutStartSec=([0-9]+(us|ms|s|sec|m|min|h|d|w)?|infinity)$'
+        "/etc/systemd/system/{{ item }}"
+      changed_when: false
+      loop:
+        - restic-offsite.service
+        - restic-offsite-verify.service
+        - backup-restore-drill.service
+
+    - name: Slurp the three rendered oneshot units
+      ansible.builtin.slurp:
+        src: "/etc/systemd/system/{{ item }}"
+      register: restic_offsite_unit_files
+      loop:
+        - restic-offsite.service
+        - restic-offsite-verify.service
+        - backup-restore-drill.service
+
+    # The deep verify re-reads a fraction of the whole repository, so one shared
+    # timeout cannot bound all three units. TimeoutStopSec bounds the teardown
+    # after a kill, which is when the failure metric has to land.
+    - name: Assert each unit carries its own start timeout and the stop timeout
+      ansible.builtin.assert:
+        that:
+          - "('TimeoutStartSec=' ~ restic_offsite_expected_start[item.item]) in (item.content | b64decode)"
+          - "'TimeoutStopSec=5m' in (item.content | b64decode)"
+        fail_msg: >-
+          /etc/systemd/system/{{ item.item }} does not carry
+          TimeoutStartSec={{ restic_offsite_expected_start[item.item] }} and
+          TimeoutStopSec=5m.
+        success_msg: "{{ item.item }} carries its own start timeout and the stop timeout"
+      vars:
+        restic_offsite_expected_start:
+          restic-offsite.service: 4h
+          restic-offsite-verify.service: 9h
+          backup-restore-drill.service: 3h
+      loop: "{{ restic_offsite_unit_files.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # A kill at TimeoutStartSec leaves only the stop budget, so the failure
+    # verdict has to be on disk before the umounts and the zfs destroy loop.
+    - name: Locate the cleanup trap's metrics flush and its first teardown loop
+      ansible.builtin.shell: |
+        set -o pipefail
+        awk '/^cleanup\(\) \{/,/^\}/' /usr/local/sbin/restic-offsitectl \
+          | grep -n -e 'flush_run_metrics' -e '_ZVOL_MOUNTS_TO_UMOUNT\[@\]' \
+          | cut -d: -f1 | tr '\n' ' '
+      register: restic_offsite_cleanup_order
+      changed_when: false
+
+    - name: Assert the EXIT trap writes the run metrics before any teardown
+      ansible.builtin.assert:
+        that:
+          - restic_offsite_cleanup_order.stdout.split() | length == 2
+          - (restic_offsite_cleanup_order.stdout.split()[0] | int)
+            < (restic_offsite_cleanup_order.stdout.split()[1] | int)
+        fail_msg: >-
+          cleanup() runs the teardown before flush_run_metrics, so a run killed
+          at TimeoutStartSec keeps the previous run's success gauge published.
+        success_msg: "cleanup() writes the run metrics before any teardown"
+
+    - name: Assert the verify and drill paths publish a failure gauge on a kill
+      ansible.builtin.command: >-
+        grep -qF {{ item | quote }} /usr/local/sbin/restic-offsitectl
+      changed_when: false
+      loop:
+        - 'write_verify_metrics 0 ""; exit 143'
+        - 'write_drill_metrics 0 0; rm -rf'
 
     - name: Stat the exclude file
       ansible.builtin.stat:
@@ -118,11 +201,9 @@
           retention result — a refused prune would read as a failed upload.
         success_msg: "restic_offsite.prom reports backup and retention outcomes separately"
 
-    # ALREADY-UPLOADED short-circuit: the primary trigger (the archive job's
-    # OnSuccess=) and the fallback timer both fire every night, so a second run
-    # against the SAME source generation must skip rather than repeat a full
-    # backup + forget --prune. Asserted behaviourally: re-run now, expect rc=0,
-    # the already-uploaded log line, and NO additional restic snapshot.
+    # Already-uploaded short-circuit: both triggers fire every night, so a
+    # second run against the same source generation skips rather than repeating
+    # a backup and forget --prune. Expect rc=0 and no additional snapshot.
     - name: Count restic snapshots before the duplicate run
       ansible.builtin.shell: |
         set -o pipefail
@@ -175,6 +256,53 @@
       failed_when: >-
         restic_offsite_forced_run.rc != 0
         or restic_offsite_forced_run.stdout is search('already-uploaded')
+
+    # An overnight job that would move the ground under a running upload (a
+    # guest stop under a mounted zvol clone) makes the run a deliberate skip.
+    - name: Deploy a stand-in for a conflicting overnight job
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/restic-molecule-conflict.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Stand-in for an overnight job a backup must not overlap
+          [Service]
+          ExecStart=/bin/sleep 300
+
+    - name: Start the conflicting unit
+      ansible.builtin.systemd:
+        name: restic-molecule-conflict.service
+        state: started
+        daemon_reload: true
+
+    - name: Run restic-offsitectl run while the conflicting unit is active
+      ansible.builtin.shell: |
+        set -a; . /etc/restic-offsite/env; set +a
+        restic-offsitectl run
+      args:
+        executable: /bin/bash
+      register: restic_offsite_conflict_run
+      changed_when: false
+
+    - name: Stop and remove the conflicting unit
+      ansible.builtin.systemd:
+        name: restic-molecule-conflict.service
+        state: stopped
+
+    - name: Delete the conflicting unit file
+      ansible.builtin.file:
+        path: /etc/systemd/system/restic-molecule-conflict.service
+        state: absent
+
+    - name: Assert an active conflicting unit makes the run a deliberate skip
+      ansible.builtin.assert:
+        that:
+          - restic_offsite_conflict_run.rc == 0
+          - restic_offsite_conflict_run.stdout is search('deliberate-skip')
+        fail_msg: >-
+          A run overlapping restic-molecule-conflict.service did not skip, so a
+          swap-clean night could stop guests underneath a running upload.
+        success_msg: "an active conflicting unit makes the run a deliberate skip"
 
     # RESTORE round-trip: restore the appdata source (bind mode backs it up at
     # BIND_ROOT/appdata, which cmd_restore's --include prefix matches) into a temp
@@ -248,11 +376,9 @@
           a failed week would be skipped for a full cycle.
         success_msg: "The rotating deep verify advances a persisted group cursor"
 
-    # RESTORE DRILL: `restic check` proves the repository is self-consistent; it
-    # does NOT prove this host can decrypt and restore it. The drill restores the
-    # smallest few files of the newest snapshot and byte-compares them against
-    # the ZFS snapshot subtree they came from. Runs BEFORE the staleness block
-    # below, which renames the appdata snapshot out from under the comparand.
+    # Restore drill: `restic check` proves self-consistency, not that this host
+    # can decrypt and restore. The drill byte-compares a few restored files
+    # against their ZFS subtree, before the staleness block renames it.
     - name: Check the quarterly restore-drill timer is enabled  # noqa command-instead-of-module
       ansible.builtin.command: systemctl is-enabled backup-restore-drill.timer
       register: restic_offsite_drill_timer_enabled
@@ -263,19 +389,16 @@
       ansible.builtin.command: grep -q 'restic-offsitectl drill' /etc/systemd/system/backup-restore-drill.service
       changed_when: false
 
-    # journald tags stdout with the ExecStart basename unless told otherwise, so
-    # without this the drill's journal is filed under `restic-offsitectl` with
-    # the nightly run's and the alert/runbook command
-    # `journalctl -t backup-restore-drill` returns NOTHING during the incident
-    # it is prescribed for.
+    # journald tags stdout with the ExecStart basename, so without this the
+    # drill's journal files under `restic-offsitectl` alongside the nightly run
+    # and `journalctl -t backup-restore-drill` returns nothing.
     - name: Assert the drill service pins its journal identifier
       ansible.builtin.command: grep -q '^SyslogIdentifier=backup-restore-drill$' /etc/systemd/system/backup-restore-drill.service
       changed_when: false
 
-    # A sampled path with a glob metacharacter would be passed to restic as an
-    # --include PATTERN (filepath.Match semantics), never match the literal
-    # file, and surface as a MISSING -> a FALSE critical drill failure. The
-    # container's seeded tree has no such name, so pin the guard statically.
+    # A sampled path with a glob metacharacter reaches restic as an --include
+    # pattern, never matches the literal file, and surfaces as a false critical
+    # failure. The seeded tree has no such name, so the guard is pinned here.
     - name: Assert the drill skips glob-metacharacter paths instead of failing on them
       ansible.builtin.command: grep -q 'contains a glob metacharacter' /usr/local/sbin/restic-offsitectl
       changed_when: false
@@ -287,11 +410,9 @@
       ansible.builtin.command: grep -q 'the churn filter cannot be applied' /usr/local/sbin/restic-offsitectl
       changed_when: false
 
-    # ...and the EMPTY time must trip the same guard. It does not reach the
-    # epoch arm on its own: GNU `date -d ''` is not an error, it resolves to
-    # today at 00:00:00, so a parse miss that yields an empty time produces a
-    # plausible-looking but WRONG cutoff that is comfortably > 0. Pinned
-    # statically because the container cannot make restic emit malformed JSON.
+    # An empty time trips the same guard. GNU `date -d ''` is not an error: it
+    # resolves to today at 00:00:00, so a parse miss yields a plausible but
+    # wrong cutoff comfortably above 0.
     - name: Assert an EMPTY snapshot time trips the same guard as an unparseable one
       ansible.builtin.command: grep -Fq '[[ -z "${snap_time//[[:space:]]/}" || "$snap_epoch" -le 0 ]]' /usr/local/sbin/restic-offsitectl
       changed_when: false
@@ -325,11 +446,9 @@
           by an rc=11 hint cannot tell "nothing to do" from "it did nothing".
         success_msg: "unlock reports a verdict on a repository with no locks"
 
-    # ...and an UNREADABLE repository must not be reported as "no locks". A
-    # lock count that swallowed restic's rc would count zero locks for a
-    # repository it cannot read at all and exit 0 — the worst possible verdict:
-    # the operator is here because something is stuck, and the command would
-    # tell them the lock cleared while hiding a total outage.
+    # An unreadable repository must not be reported as "no locks". A lock count
+    # that swallowed restic's rc would exit 0 on a repository it cannot read,
+    # telling the operator the lock cleared while hiding an outage.
     - name: Run restic-offsitectl unlock against an unreadable repository
       ansible.builtin.shell: |
         set -a; . /etc/restic-offsite/env; set +a
@@ -443,13 +562,9 @@
         executable: /bin/bash
       changed_when: false
 
-    # A repository with NO SNAPSHOT YET is the one legitimate seed failure the
-    # role documents (set restic_offsite_restore_drill_seed false for that first
-    # converge). Both it and a genuine outage make `restic ls latest` fail, so
-    # the verdicts must stay split — a shared "is the repository reachable?"
-    # message sends the operator to check B2 credentials that are fine. The two
-    # repos below pin the split. Run AFTER the success/mismatch asserts: each
-    # failing drill rewrites backup_restore_drill.prom.
+    # A repository with no snapshot yet is the one legitimate seed failure the
+    # role documents, and it fails `restic ls latest` just as an outage does, so
+    # the two verdicts stay split. The repos below pin that split.
     - name: Run the drill against a reachable repository holding no snapshot
       ansible.builtin.shell: |
         set -a; . /etc/restic-offsite/env; set +a

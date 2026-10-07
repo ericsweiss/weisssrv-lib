@@ -1,0 +1,4 @@
+# {{ ansible_managed }}
+# Allowlist for slabinfo-collector.sh. The timer passes no arguments, so this
+# file is the only input naming which caches get published.
+SLAB_CACHES="{{ node_exporter_host_slab_caches | join(' ') }}"

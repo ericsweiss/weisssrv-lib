@@ -77,3 +77,62 @@
           The signing key was staged at a world-writable path, left behind on
           the accept path, or the staging directory is not a root-owned 0700
           directory — either reopens the verify->dearmor TOCTOU window.
+
+    - name: Read the enable-components reject outcomes
+      ansible.builtin.slurp:
+        src: /tmp/molecule-enable-components.json
+      register: apt_signed_repo_components_outcomes
+
+    - name: Every enable-components guard fired
+      vars:
+        outcomes: >-
+          {{ apt_signed_repo_components_outcomes.content | b64decode | from_json }}
+      ansible.builtin.assert:
+        that:
+          - outcomes.missing_sources_failed
+          - outcomes.no_components_failed
+          - outcomes.empty_components_failed
+        fail_msg: >-
+          An enable-components guard did not fire: the entry point would rewrite
+          nothing and the caller would fail later on "Unable to locate package".
+        success_msg: "enable-components fails loudly on all three bad inputs"
+
+    - name: The check-mode dry run of the component rewrite is clean
+      vars:
+        outcomes: >-
+          {{ apt_signed_repo_components_outcomes.content | b64decode | from_json }}
+      ansible.builtin.assert:
+        that:
+          - not outcomes.checkmode_failed
+        fail_msg: >-
+          enable-components FAILED in check mode on a host whose Components line
+          still needs the rewrite — `--check` would be red on every such host.
+        success_msg: "check mode is clean on a sources file awaiting the rewrite"
+
+    - name: Read the sources files the accept and check-mode rewrites targeted
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      register: apt_signed_repo_component_files
+      loop:
+        - /tmp/accept-components.sources
+        - /tmp/stock-components.sources
+
+    # The check-mode file proves the dry run is a dry run: the entry point ran
+    # its guards against it and wrote nothing.
+    - name: The real rewrite landed and the check-mode rewrite wrote nothing
+      vars:
+        accepted: >-
+          {{ apt_signed_repo_component_files.results[0].content | b64decode }}
+        dry_run: >-
+          {{ apt_signed_repo_component_files.results[1].content | b64decode }}
+      ansible.builtin.assert:
+        that:
+          - "'Components: main contrib non-free-firmware' in accepted"
+          - "'Components: main contrib non-free' not in dry_run"
+          - "dry_run is search('^Components: main$', multiline=True)"
+        fail_msg: >-
+          Either the real component rewrite never landed on
+          /tmp/accept-components.sources, or the check-mode run rewrote
+          /tmp/stock-components.sources — check mode is writing.
+        success_msg: >-
+          the component rewrite lands for real and writes nothing in check mode

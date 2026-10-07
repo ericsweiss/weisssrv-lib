@@ -1,7 +1,7 @@
 ---
-# Required inputs (no default — asserted in tasks/main.yml):
-#   alloy_host_version    — the pinned `alloy=<version>` apt package version
-#   alloy_host_loki_url   — the Loki push endpoint
+# Required, asserted in tasks/main.yml: alloy_host_version (the pinned
+#   `alloy=<version>` apt version, undeclared here) and alloy_host_loki_url (the
+#   Loki push endpoint, empty default below).
 alloy_host_loki_url: ""
 
 # Basic-auth credentials, asserted non-empty whenever the endpoint is https://
@@ -10,17 +10,15 @@ alloy_host_loki_url: ""
 alloy_host_loki_user: ""
 alloy_host_loki_password: ""
 
-# On-disk write-ahead log for loki.write. Loki typically runs inside the very
-# cluster these hosts carry, so an outage is when host journald matters most;
-# the WAL buffers to disk and backfills instead of dropping once the in-memory
-# queue fills. max_segment_age bounds replay lag and disk use.
+# On-disk write-ahead log for loki.write: buffers and backfills instead of
+# dropping once the in-memory queue fills, which matters most during a Loki
+# outage. max_segment_age bounds replay lag and disk use.
 alloy_host_wal_enabled: true
 alloy_host_wal_max_segment_age: "1h"
 
-# How far back a restarted Alloy re-reads the journal (Alloy's own default is
-# 7h). Must stay <= Loki's out-of-order accept window (ingester.max_chunk_age /
-# 2); re-read entries older than that are pushed and then rejected
-# `too_far_behind`. Raise both together or not at all — see README.
+# How far back a restarted Alloy re-reads the journal. Must stay <= Loki's
+# out-of-order accept window (ingester.max_chunk_age / 2), or re-read entries
+# are pushed and rejected `too_far_behind`. Raise both together; see README.
 alloy_host_journal_max_age: "3h"
 
 # Alloy's HTTP listen port, used by the post-deploy /-/ready probe. Change it

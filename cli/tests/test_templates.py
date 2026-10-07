@@ -1,8 +1,6 @@
 """Tests for the `new-cluster` / `new-app` copier wrapper.
 
-Rendering runs against tests/fixtures/copier-template (a miniature local copier
-template) so the suite stays offline. Everything that does not need copier
-installed is tested unconditionally.
+Rendering runs against tests/fixtures/copier-template so the suite stays offline.
 """
 from __future__ import annotations
 

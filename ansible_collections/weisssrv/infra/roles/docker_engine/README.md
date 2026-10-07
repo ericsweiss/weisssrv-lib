@@ -58,9 +58,21 @@ caller does not need to carry one.
 
 ## Molecule
 
-`molecule/default` runs render-only (`docker_engine_skip_install: true`): it
-asserts the journald `daemon.json` and, from a seeded pre-standardization repo
-line + keyring, that the legacy-keyring cleanup removes both.
+`molecule/default` runs render-only (`docker_engine_skip_install: true`, set as
+a group var so the `Restart docker` handler still reads it when the play flushes
+handlers): it asserts the journald `daemon.json`, then — from a second play, so
+that handler is already flushed — includes the role with one version pin empty
+and asserts the required-pin assert fails the play. That block carries
+`molecule-idempotence-notest`, so the replay does not re-fire it and
+`expected-junit-failures.txt` declares the one junit failure. The apt install
+and the `dpkg` hold need a real repo, so they are not covered.
+
+## Key rotation
+
+The signing key is fail-closed: a keyring whose fingerprint stops matching the
+pin fails the run rather than being replaced. Rotate by deleting
+`docker_engine_keyring_path` on the affected hosts, then bumping the key URL and
+fingerprint — see `apt_signed_repo`'s README § Key rotation.
 
 ## See also
 

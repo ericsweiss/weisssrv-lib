@@ -35,7 +35,10 @@
           - "'smtp_sasl_auth_enable = yes' in (main_cf_content.content | b64decode)"
           # Merge: the scenario's smtp_relay_config override wins on mynetworks,
           # while myhostname and the SASL map still come from the defaults.
-          - "'mynetworks = 127.0.0.0/8, 192.168.0.0/24' in (main_cf_content.content | b64decode)"
+          - "'mynetworks = 127.0.0.0/8, 192.0.2.0/24' in (main_cf_content.content | b64decode)"
+          # A key that exists only in smtp_relay_config: the template renders
+          # every key of the merged map, not a fixed list.
+          - "'message_size_limit = 52428800' in (main_cf_content.content | b64decode)"
           - "'myhostname = smtp-relay.test.local' in (main_cf_content.content | b64decode)"
           - "'smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd' in (main_cf_content.content | b64decode)"
           # Prod hardening pins: outbound TLS verifies Gmail's cert, port-25
@@ -44,6 +47,10 @@
           - "'smtpd_tls_auth_only = yes' in (main_cf_content.content | b64decode)"
           - "'smtpd_tls_security_level = may' in (main_cf_content.content | b64decode)"
           - "'smtp_tls_security_level = secure' in (main_cf_content.content | b64decode)"
+          # Under `secure`, postfix reads the mandatory list, not smtp_tls_protocols.
+          - >-
+            'smtp_tls_mandatory_protocols = !SSLv2, !SSLv3, !TLSv1, !TLSv1.1'
+            in (main_cf_content.content | b64decode)
         fail_msg: "main.cf missing expected relay settings"
         success_msg: "main.cf contains all expected relay settings"
 
@@ -52,6 +59,142 @@
         path: /etc/postfix/master.cf
       register: master_cf
       failed_when: not master_cf.stat.exists
+
+    - name: Read master.cf
+      ansible.builtin.slurp:
+        src: /etc/postfix/master.cf
+      register: master_cf_content
+
+    # Port 25 carries no AUTH; submission re-enables it behind mandatory TLS,
+    # so the -o overrides are the security posture, not decoration.
+    - name: Verify the submission service carries its overrides
+      ansible.builtin.assert:
+        that:
+          - "'submission inet n' in (master_cf_content.content | b64decode)"
+          - "'-o syslog_name=postfix/submission' in (master_cf_content.content | b64decode)"
+          - "'-o smtpd_tls_security_level=encrypt' in (master_cf_content.content | b64decode)"
+          - "'-o smtpd_sasl_auth_enable=yes' in (master_cf_content.content | b64decode)"
+          - "'-o smtpd_recipient_restrictions=permit_sasl_authenticated,reject' in (master_cf_content.content | b64decode)"
+          - "'-o milter_macro_daemon_name=ORIGINATING' in (master_cf_content.content | b64decode)"
+        fail_msg: "master.cf is missing the submission service or one of its -o overrides"
+        success_msg: "master.cf carries the submission service with its -o overrides"
+
+    # The disabled branch is rendered to a scratch path: flipping it on the live
+    # host would drop submission from the converged container.
+    - name: Render master.cf with submission disabled
+      ansible.builtin.copy:
+        content: >-
+          {{ lookup('ansible.builtin.template',
+                    playbook_dir ~ '/../../templates/master.cf.j2') }}
+        dest: /tmp/master.cf-submission-disabled
+        mode: "0644"
+      vars:
+        smtp_relay_submission_enabled: false
+
+    - name: Read the submission-disabled render
+      ansible.builtin.slurp:
+        src: /tmp/master.cf-submission-disabled
+      register: master_cf_no_submission
+
+    - name: Verify smtp_relay_submission_enabled false drops the whole stanza
+      ansible.builtin.assert:
+        that:
+          - "'submission inet' not in (master_cf_no_submission.content | b64decode)"
+          - "'-o syslog_name=postfix/submission' not in (master_cf_no_submission.content | b64decode)"
+          - "'-o milter_macro_daemon_name=ORIGINATING' not in (master_cf_no_submission.content | b64decode)"
+          - "'smtp      inet' in (master_cf_no_submission.content | b64decode)"
+        fail_msg: "Disabling smtp_relay_submission_enabled did not remove the submission stanza"
+        success_msg: "smtp_relay_submission_enabled false removes the submission stanza"
+
+    # The role replaces Debian's whole service table, so a service the package
+    # adds never reaches the relay unless templates/master.cf.j2 is re-synced.
+    - name: Compare the rendered service table against Debian's packaged one
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "-c"
+          - |
+            import os
+            import sys
+
+            def services(path):
+                if not os.path.exists(path):
+                    sys.exit("%s is missing; cannot check master.cf drift" % path)
+                names = set()
+                for line in open(path):
+                    if not line.strip() or line.startswith("#") or line[0].isspace():
+                        continue
+                    names.add(line.split()[0])
+                return names
+
+            missing = services("/usr/share/postfix/master.cf.dist") - services("/etc/postfix/master.cf")
+            if missing:
+                sys.exit("Debian's master.cf gained %s; re-sync templates/master.cf.j2"
+                         % ", ".join(sorted(missing)))
+      register: master_cf_drift
+      changed_when: false
+      failed_when: master_cf_drift.rc != 0
+
+    # Credential rotation: the sentinel is what makes an otherwise unchanged
+    # saslpasswd2 report changed, so drive it from a stale value.
+    - name: Rotation | check the SASL credential fingerprint sentinel
+      ansible.builtin.stat:
+        path: /etc/postfix/.sasl_relay_user.sha256
+      register: smtp_relay_fingerprint
+      failed_when: >-
+        not smtp_relay_fingerprint.stat.exists
+        or smtp_relay_fingerprint.stat.mode != '0600'
+
+    - name: Rotation | read the sentinel
+      ansible.builtin.slurp:
+        src: /etc/postfix/.sasl_relay_user.sha256
+      register: smtp_relay_fingerprint_before
+
+    - name: Rotation | replace the sentinel with a stale fingerprint
+      ansible.builtin.copy:
+        content: "{{ 'stale' | hash('sha256') }}\n"
+        dest: /etc/postfix/.sasl_relay_user.sha256
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Rotation | re-run the role against the stale sentinel
+      ansible.builtin.include_role:
+        name: weisssrv.infra.smtp_relay
+
+    - name: Rotation | read the sentinel after the re-run
+      ansible.builtin.slurp:
+        src: /etc/postfix/.sasl_relay_user.sha256
+      register: smtp_relay_fingerprint_repaired
+
+    - name: Rotation | a stale sentinel is re-recorded from the live credentials
+      ansible.builtin.assert:
+        that:
+          - >-
+            (smtp_relay_fingerprint_repaired.content | b64decode | trim)
+            == (smtp_relay_fingerprint_before.content | b64decode | trim)
+        fail_msg: "The SASL credential fingerprint was not re-recorded after saslpasswd2"
+        success_msg: "A stale SASL credential fingerprint is re-recorded"
+
+    - name: Rotation | re-run the role with a rotated relay password
+      ansible.builtin.include_role:
+        name: weisssrv.infra.smtp_relay
+      vars:
+        smtp_relay_sasl_password: rotated-testrelaypass
+
+    - name: Rotation | read the sentinel after the rotation
+      ansible.builtin.slurp:
+        src: /etc/postfix/.sasl_relay_user.sha256
+      register: smtp_relay_fingerprint_rotated
+
+    - name: Rotation | rotating the credential changes the fingerprint
+      ansible.builtin.assert:
+        that:
+          - >-
+            (smtp_relay_fingerprint_rotated.content | b64decode | trim)
+            != (smtp_relay_fingerprint_before.content | b64decode | trim)
+        fail_msg: "Rotating smtp_relay_sasl_password left the fingerprint unchanged"
+        success_msg: "Rotating the relay credential changes the recorded fingerprint"
 
     - name: Check if SASL password file has correct permissions
       ansible.builtin.stat:
@@ -144,12 +287,9 @@
         fail_msg: "queue collector did not emit expected metrics"
         success_msg: "queue collector emitted expected Prometheus metrics"
 
-    # Compiled-map repair (shared postfix_null_client/tasks/repair-compiled-maps.yml).
-    # A converge always reports both map sources changed, so their notify
-    # handlers rebuild the .db files and any assertion on them passes with the
-    # repair deleted. The shape that bites production is the opposite one —
-    # source already correct, .db holding a RETIRED value, handler never
-    # notified — which no converge produces. Build it and drive the repair.
+    # Compiled-map repair (postfix_null_client/tasks/repair-compiled-maps.yml).
+    # A converge rebuilds the .db files through notify, so build the opposite
+    # shape: source correct, .db holding a retired value, handler not notified.
     - name: Stale db | compile both maps from retired values, then restore the sources
       ansible.builtin.shell: |
         set -eo pipefail

@@ -1,2 +1,9 @@
 pr-agent-review:
   image: codiumai/pr-agent:0.34@sha256:1c1743e93bf6627cd14528cd4defe82465f17860e8f20e6c0ac6558971f61c61
+
+variables:
+  KUSTOMIZE_VERSION: "5.4.3"
+
+build:
+  services:
+    - name: docker:24.0-dind@sha256:2c1743e93bf6627cd14528cd4defe82465f17860e8f20e6c0ac6558971f61c62

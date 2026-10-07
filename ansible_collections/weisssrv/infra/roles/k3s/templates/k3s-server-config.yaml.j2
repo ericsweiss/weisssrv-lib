@@ -1,17 +1,13 @@
-{# Deployed content. The writing task notifies `Restart k3s` + `Wait for k3s API
-   healthy`, i.e. a rolling control-plane bounce per node — so keep this file
-   BYTE-STABLE, comments included, and gate any new content on a variable that
-   is OFF by default (see the kube-apiserver-arg block below). Role narrative
-   belongs in README.md. #}
+{# Byte-stable: any edit notifies `Restart k3s`, a rolling control-plane bounce
+   on every consumer node. Gate new content OFF by default. Narrative: README.md. #}
 # {{ ansible_managed }}
 # K3s server configuration
 
 cluster-cidr: "{{ k3s_cluster_cidr }}"
 service-cidr: "{{ k3s_service_cidr }}"
-# The apiserver listens on ALL interfaces (incl. any mgmt/Tailscale iface).
-# Access to 6443 is gated solely by the Proxmox firewall, which restricts it to
-# the k3s_nodes/admin IP sets (see docs/11-firewall.md). A firewall relaxation
-# or an unexpected new interface silently widens API exposure.
+# The apiserver listens on every interface, including any management or VPN
+# one. Restricting 6443 to the node and admin ranges is the site firewall's job
+# (see the weisssrv.infra.k3s README, "Firewall expectations").
 bind-address: "0.0.0.0"
 
 {% if k3s_disable | length > 0 %}
@@ -29,11 +25,8 @@ tls-san:
   - "{{ inventory_hostname }}"
   - "{{ ansible_host }}"
 
-# Node labels/taints applied declaratively at registration (k3s passes these to
-# the kubelet's register-with-taints). The control-plane NoSchedule taint is
-# therefore enforced the moment the server joins, closing the window where a
-# workload could land on an etcd node before the post-join kubectl step. server.yml
-# still re-asserts these via kubectl for already-registered nodes (agent path).
+# Labels and taints applied at registration, so a control-plane taint holds
+# from the moment the server joins. server.yml re-asserts them via kubectl.
 {% if k3s_labels | length > 0 %}
 node-label:
 {% for key, value in k3s_labels.items() %}
@@ -48,9 +41,8 @@ node-taint:
 {% endfor %}
 {% endif %}
 
-# CNI backend. wireguard-native enables WireGuard encryption on every
-# cross-node pod packet (UDP/51820); set to vxlan to roll back. See
-# group_vars/k3s.yml for the full rationale and rollout caveats.
+# CNI backend. wireguard-native encrypts every cross-node pod packet
+# (UDP/51820); set to vxlan to roll back. See README.
 flannel-backend: "{{ k3s_flannel_backend }}"
 
 {# k3s_join_existing is set by server.yml when a wiped/rebuilt first server   #}
@@ -66,10 +58,8 @@ server: "https://{{ k3s_api_vip }}:{{ k3s_api_port }}"
 
 write-kubeconfig-mode: "0600"
 
-# Lower-privilege token for agent (worker) joins. Agents authenticate with this
-# instead of the server token, so a compromised agent can't register a
-# control-plane node or pull the cluster CA. Defaults to the server token until a
-# dedicated K3S_AGENT_TOKEN is provisioned (see group_vars/k3s.yml).
+# Lower-privilege token for agent joins, so an agent cannot register a server
+# node. Falls back to the server token when unset. See README.
 agent-token: "{{ k3s_agent_token }}"
 
 # Encrypt secrets at rest in etcd
@@ -77,12 +67,9 @@ agent-token: "{{ k3s_agent_token }}"
 #   k3s secrets-encrypt reencrypt
 secrets-encryption: true
 
-# Serve etcd's Prometheus metrics on :2381 (0.0.0.0, unauthenticated HTTP) so
-# kube-prometheus-stack's kubeEtcd target can scrape the 3 server nodes. Exposure
-# is gated solely by the Proxmox firewall, which restricts :2381 to the
-# monitoring/k3s_nodes IP sets (see docs/11-firewall.md) — same trust model as the
-# apiserver bind above. Without this the kube-etcd targets stay down and
-# etcdMembersDown/TargetDown fire.
+# etcd metrics on :2381 are unauthenticated HTTP on every interface, for a
+# kubeEtcd scrape target. Scope :2381 at the site firewall (README). Without
+# this the kube-etcd targets stay down and etcdMembersDown/TargetDown fire.
 etcd-expose-metrics: true
 
 {% if k3s_kubelet_args | default([]) | length > 0 %}
@@ -93,11 +80,8 @@ kubelet-arg:
 {% endif %}
 {% if k3s_audit_enabled | default(false) | bool %}
 
-# kube-apiserver audit log. The policy file is written by tasks/audit.yml BEFORE
-# this config, because the apiserver exits at startup if --audit-policy-file is
-# missing or unparseable. The log stays on THIS node's local disk and is rotated
-# by the apiserver itself (maxsize MB x maxbackup files, discarded after maxage
-# days) — nothing ships it off-node.
+# kube-apiserver audit log, rotated by the apiserver on this node's local disk.
+# tasks/audit.yml writes the policy file before this config. See README.
 kube-apiserver-arg:
   - "audit-log-path={{ k3s_audit_log_path }}"
   - "audit-policy-file={{ k3s_audit_policy_path }}"

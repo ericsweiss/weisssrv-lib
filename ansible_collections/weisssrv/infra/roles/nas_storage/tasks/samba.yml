@@ -8,10 +8,7 @@
   when: ansible_facts['os_family'] == "Debian"
 
 - name: Ensure the shared media group exists
-  ansible.builtin.group:
-    name: "{{ nas_storage_media_group }}"
-    gid: "{{ nas_storage_media_gid }}"
-    state: present
+  ansible.builtin.include_tasks: media_group.yml
 
 - name: Ensure nas user exists
   ansible.builtin.user:
@@ -23,14 +20,9 @@
     create_home: false
     state: present
 
-# smbd must be configured and running BEFORE the password probe below. The probe
-# authenticates against the live smbd (smbclient -L) and only resets the stored
-# password on a confirmed auth failure; a transport error (smbd down) is treated
-# as "unreachable, skip". If smbd were still down at probe time, a first deploy
-# would skip the reset (password never set), and the next run — with smbd now up
-# and the password still unset — would set it and report changed (non-idempotent).
-# Deploying the config and starting smbd first fixes both the first-deploy gap and
-# idempotence.
+# smbd must be configured and running BEFORE the password probe below: the probe
+# authenticates against the live smbd, so a down smbd would skip the first
+# deploy's reset and make the next run report changed.
 - name: Deploy Samba configuration
   ansible.builtin.template:
     src: smb.conf.j2
@@ -59,12 +51,8 @@
   failed_when: false  # the unit may not exist on minimal installs
 
 # The secret never appears in argv: smbpasswd reads it on stdin, smbclient from
-# PASSWD in the environment. Idempotency comes from probing whether the supplied
-# password already authenticates, so rotations apply but steady state is ok.
-#
-# The probe resets the stored password ONLY on a confirmed auth failure
-# (NT_STATUS_LOGON_FAILURE/ACCESS_DENIED). A transport error (smbd mid-restart)
-# is ridden out by the retries and then left alone, never clobbered.
+# PASSWD in the environment. The probe resets the stored password only on a
+# confirmed auth failure, so a transport error never clobbers it.
 - name: Check whether the current Samba password already works
   ansible.builtin.shell: |
     set -uo pipefail
@@ -109,15 +97,11 @@
     - nas_storage_samba_password | length > 0
     - nas_storage_samba_password_check.rc | default(2) == 1
   no_log: true
-  register: nas_storage_samba_password_set
   changed_when: true
 
-# With nas_storage_samba_password empty (its default env lookup unset, i.e.
-# plain ansible-playbook instead of the `op run` Taskfile wrapper) the whole
-# password block above skips — on a first deploy the nas account is then left
-# with NO password. Warn instead of assert: molecule defines
-# nas_storage_samba_shares with no secret injected, and the account fails closed
-# until the password is set.
+# An empty nas_storage_samba_password skips the whole block above, leaving a
+# first-deploy account with no password. A warning, not an assert: the account
+# fails closed until the password is set.
 - name: Warn when the Samba password is empty (unmanaged this run)
   ansible.builtin.debug:
     msg: >-

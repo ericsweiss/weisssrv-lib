@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
-"""Tests for scripts/find-pve-host-for-vm.sh — the HA-resilient "which node runs
-this VM" lookup. Every branch of its three-step fallback returns a hostname a
-caller then SSHes to, so a wrong answer is acted on rather than reported.
+"""Tests for scripts/find-pve-host-for-vm.sh, the "which node runs this VM" lookup.
 
-The `ssh` stub EXECUTES the remote command string locally against stub
-`ha-manager` / `pvesh` / `qm` binaries, so the script's own grep boundary
-matching, sed extraction and `set -o pipefail` handling are the code under test
-rather than something the harness papers over.
+The `ssh` stub executes the remote command string locally against stub
+`ha-manager`, `pvesh` and `qm` binaries, so the script's own parsing is under test.
 """
 
 import os
@@ -72,10 +68,9 @@ def run(tmp_path):
         stub.chmod(0o755)
 
     def _run(*args, up=ALL_UP, **env):
-        # A CLOSED env, like the sibling shell suites: the script reads
-        # $PVE_NODE_PREFIX, so an ambient one would quietly change what the
-        # prefix-blind cases below assert. Only the real PATH tail is kept, so
-        # the stubs can still reach bash/sed/grep/python3.
+        # A closed env: the script reads $PVE_NODE_PREFIX, so an ambient one
+        # would change what the prefix-blind cases assert. Only the real PATH
+        # tail is kept, so the stubs can reach bash, sed, grep and python3.
         return subprocess.run(
             [BASH, str(SCRIPT), *args],
             capture_output=True,
@@ -118,10 +113,7 @@ def test_an_unparseable_ha_status_line_falls_through_instead_of_being_echoed(run
 
 
 def test_the_ha_manager_branch_applies_the_default_prefix(run):
-    """`ha-manager status` reports the same BARE node name `pvesh` does, so the
-    branch that runs FIRST needs the same rewrite — without it the caller SSHes
-    to `opt-01`, which does not resolve, and the failure surfaces a layer up with
-    no pointer back here."""
+    """The ha-manager branch rewrites a bare node name with the default prefix."""
     proc = run("154", *HOSTS, HA_STATUS="service vm:154 (opt-01, started)\n")
     assert proc.returncode == 0
     assert proc.stdout.strip() == "pve-opt-01"
@@ -141,9 +133,17 @@ def test_the_ha_manager_branch_normalizes_a_configured_prefix_too(run):
 
 
 def test_the_ha_manager_branch_does_not_double_the_prefix(run):
-    proc = run("154", *HOSTS, HA_STATUS="service vm:154 (pve-opt-01, started)\n")
+    """An already-prefixed node under an explicit prefix stays as it is."""
+    proc = run(
+        "154",
+        "node-a",
+        "node-b",
+        up="node-a node-b",
+        HA_STATUS="service vm:154 (node-b, started)\n",
+        PVE_NODE_PREFIX="node-",
+    )
     assert proc.returncode == 0
-    assert proc.stdout.strip() == "pve-opt-01"
+    assert proc.stdout.strip() == "node-b"
 
 
 def test_an_empty_prefix_leaves_the_ha_manager_node_verbatim(run):

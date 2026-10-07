@@ -1,8 +1,7 @@
 ---
-# Local guardrails: run `pre-commit install` once, then these run on every
-# commit. They mirror what CI enforces (secret scan + yamllint), so problems
-# surface before you push. Revs are pinned; bump them deliberately. Copy into a
-# consumer repo as `.pre-commit-config.yaml`.
+# Local guardrails mirroring CI (secret scan + yamllint): run `pre-commit
+# install` once and they run on every commit. Revs are pinned.
+# Copy into a consumer repo as `.pre-commit-config.yaml`.
 repos:
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1
@@ -13,7 +12,9 @@ repos:
     rev: v1.38.0
     hooks:
       - id: yamllint
-        args: [-c, .yamllint]
+        # The profile is vendored at this path, not as a root `.yamllint`:
+        # ansible-lint discovers a root one and loses its own yaml[*] rules.
+        args: [-c, lint/yamllint-relaxed.yml]
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -26,3 +27,15 @@ repos:
         # --unsafe: syntax-only parse (no tag construction), so GitLab's
         # `!reference` and Ansible's `!vault` custom tags do not false-fail.
         args: [--allow-multiple-documents, --unsafe]
+
+  - repo: local
+    hooks:
+      # The repo's own tool-free gates go here, one hook each. A consumer with
+      # no Taskfile drops this one. lint/README.md has the shape.
+      - id: check-taskfile
+        name: Taskfile-referenced scripts resolve
+        entry: bash scripts/check-taskfile.sh
+        language: system
+        # `includes:` means a change can touch only an included taskfile.
+        files: ^(Taskfile\.yml|taskfiles/.*\.ya?ml)$
+        pass_filenames: false

@@ -1,7 +1,6 @@
 # {{ ansible_managed }}
 # node_exporter textfile-collector oneshot: samples once, writes its .prom
-# atomically, and exits. Rendered by the textfile_collector role and fired by
-# the paired {{ textfile_collector_name }}.timer.
+# atomically, and exits. Paired with {{ textfile_collector_name }}.timer.
 [Unit]
 Description={{ textfile_collector_service_description }}
 {% if textfile_collector_after %}After={{ textfile_collector_after | join(' ') }}
@@ -12,7 +11,7 @@ ExecStart={{ textfile_collector_script }} {{ textfile_collector_textfile_dir }}
 User=root
 TimeoutStartSec={{ textfile_collector_timeout_start_sec }}
 Nice={{ textfile_collector_nice }}
-# Shared sandbox. PrivateDevices is deliberately NOT set — collectors that read
+# Shared sandbox. PrivateDevices is NOT set: collectors that read
 # raw devices (/dev/zfs for zpool, /dev/sd*//dev/nvme* for smartmon) need them.
 # ProtectSystem=strict keeps the fs read-only except ReadWritePaths.
 NoNewPrivileges=yes

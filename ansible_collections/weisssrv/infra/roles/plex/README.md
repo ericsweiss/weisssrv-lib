@@ -10,9 +10,11 @@ somebody else's object.
 ## What it manages
 
 - the Plex v2 apt repo with a fingerprint-verified signing key (via
-  `weisssrv.infra.apt_signed_repo`), the package, and its hold/unhold state
-- the non-free apt components and Intel VA-API driver packages for hardware
-  transcoding
+  `weisssrv.infra.apt_signed_repo`), the package, and its hold/unhold state.
+  A vendor key rotation is delete-the-keyring-first — see that role's README
+  § Key rotation
+- the non-free apt components and the GPU driver packages for hardware
+  transcoding (Intel VA-API by default)
 - the `media` group and the plex user's media / video / render memberships
 - a systemd override that fixes the primary-group and umask semantics the
   packaged unit gets wrong for a pooled media tree
@@ -36,7 +38,9 @@ Ordering is the playbook's job — run a base role first, and create the guest
 | `plex_cert_dir` | Where the distributor drops `fullchain.pem` / `privkey.pem` | no (`/etc/ssl/plex`) |
 | `plex_pfx_passphrase` | PKCS#12 passphrase (secret); asserted when the hook is on | yes, with the hook |
 | `plex_cert_domain` | Fallback SNI for the cert probe | no (`""`) |
-| `plex_skip_gpu_drivers` | Skip non-free repos + VA-API drivers | no (`false`) |
+| `plex_skip_gpu_drivers` | Skip the non-free components and the driver packages | no (`false`) |
+| `plex_gpu_driver_packages` | Driver packages installed for hardware transcode; override for AMD or NVIDIA, or set `[]` to install none | no (Intel VA-API set) |
+| `plex_gpu_nonfree_repos` | Enable Debian's non-free components; false when the drivers come from main or a vendor repo | no (`true`) |
 | `plex_debian_sources_path` | deb822 sources file whose `Components:` line gets non-free (`/etc/apt/sources.list.d/debian.sources`); a host without it falls back to one-line entries | no |
 | `plex_skip_service` | Skip enable/start/readiness **and the bind-mount check** (test containers) | no (`false`) |
 | `plex_service_after` | Units the service is ordered after and pulls in | no (`[network-online.target]`) |
@@ -97,6 +101,11 @@ in the UI cannot break the probe; `plex_cert_domain` is only the fallback for a
 Plex that has not written the preference yet, and an empty value there makes the
 hook refuse to verify blind rather than guess.
 
+The bundle is written in OpenSSL 3.x's default PKCS#12 format
+(PBES2/PBKDF2/AES-256-CBC). Current Plex builds cannot parse the legacy v1
+RC2-40-CBC form and fall back to their `plex.direct` certificate instead, so the
+hook does not pass `-legacy`.
+
 ## Worked example
 
 ```yaml
@@ -132,11 +141,10 @@ proxmox_lxc_gpu_passthrough: true
 
 ## Testing
 
-```bash
-cd roles/plex
-molecule -c ../../molecule-shared/base.yml test
-```
+Run the scenario as described in the collection README § Testing.
 
-The scenario installs the real package but skips the GPU drivers and the service
-lifecycle, and exercises the cert hook end to end (build, verify, and revert on a
-served-certificate mismatch) against a stub `systemctl` and a stub TLS server.
+The scenario installs the real package but skips the driver packages and the
+service lifecycle. It runs the non-free components rewrite against a seeded
+scratch sources file, and exercises the cert hook end to end (build, verify, and
+revert on a served-certificate mismatch) against a stub `systemctl` and a stub
+TLS server.

@@ -1,6 +1,6 @@
 # EditorConfig — https://editorconfig.org
-# Conventions the linters already enforce. Kept in step with lint/editorconfig,
-# the copy consumers vendor.
+# Conventions the linters already enforce. lint/editorconfig is the copy
+# consumers vendor; tests/test_lint_profiles.py holds the settings equal.
 root = true
 
 [*]

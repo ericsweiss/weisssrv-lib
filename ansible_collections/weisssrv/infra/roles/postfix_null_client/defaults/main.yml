@@ -1,9 +1,6 @@
 ---
-# Required site inputs (no default — asserted in tasks/main.yml):
-#   postfix_null_client_relay_host     — central relay hostname
-#   postfix_null_client_mail_domain    — domain appended to inventory_hostname
-#   postfix_null_client_sasl_user      — SASL user for the relay
-#   postfix_null_client_sasl_password  — SASL password for the relay
+# Required site inputs with no default, asserted in tasks/main.yml:
+# postfix_null_client_relay_host, _mail_domain, _sasl_user, _sasl_password.
 
 postfix_null_client_relay_port: 587
 
@@ -14,23 +11,27 @@ postfix_null_client_root_alias: root@localhost
 postfix_null_client_config:
   myhostname: "{{ inventory_hostname }}.{{ postfix_null_client_mail_domain }}"
   myorigin: "/etc/mailname"
-  # $myhostname must stay listed: the /etc/aliases root->admin rewrite only
-  # applies to locally delivered mail. The bare domain must NOT be listed, or
-  # every null client would deliver/bounce *@<domain> locally instead of
-  # relaying it.
+  # CRITICAL: keep $myhostname listed, so the /etc/aliases root rewrite applies
+  # to locally delivered mail. Never list the bare domain, or every null client
+  # delivers or bounces *@<domain> locally instead of relaying it.
   mydestination: "$myhostname, localhost.localdomain, localhost"
   relayhost: "[{{ postfix_null_client_relay_host }}]:{{ postfix_null_client_relay_port }}"
-  mynetworks: "127.0.0.0/8"
+  # inet_interfaces = loopback-only binds ::1 as well as 127.0.0.1, so a
+  # client resolving localhost to ::1 must also be trusted.
+  mynetworks: "127.0.0.0/8 [::1]/128"
   inet_interfaces: "loopback-only"
-  # "secure" = encrypt AND verify the relay's certificate against CAfile;
-  # "encrypt" alone would let a LAN MITM capture the SASL credentials inside
-  # STARTTLS. Requires the relay to present a cert covering
-  # postfix_null_client_relay_host that chains to the system CA bundle.
+  # CRITICAL: "secure" encrypts and verifies the relay certificate against
+  # CAfile; "encrypt" alone lets a LAN MITM capture the SASL credentials. The
+  # relay must present a cert for the relay host chaining to the system bundle.
   smtp_tls_security_level: "secure"
   smtp_tls_CAfile: "/etc/ssl/certs/ca-certificates.crt"
   smtp_sasl_auth_enable: "yes"
   smtp_sasl_security_options: "noanonymous"
   smtp_sasl_password_maps: "hash:/etc/postfix/sasl_passwd"
+
+# Added to (and overriding) postfix_null_client_config at render time, so a site
+# can set one main.cf parameter without restating the whole map.
+postfix_null_client_config_extra: {}
 
 postfix_null_client_aliases:
   postmaster: root

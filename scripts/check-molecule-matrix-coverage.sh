@@ -1,21 +1,7 @@
 #!/usr/bin/env bash
-# Guard against the molecule / integration-test CI matrix silently drifting
-# from the scenario directories on disk.
-#
-# Two parallel:matrix blocks in the CI file enumerate which tests run:
-#   molecule-tests    — ROLE/SCENARIO pairs, one per <roles>/*/molecule/*/
-#   integration-tests — a TEST list, one per <integration-tests>/*/
-#
-# Fails when a scenario/test exists on disk with no matrix entry, when a role
-# has no molecule scenario at all (unless allowlisted in $UNTESTED_ROLES), or
-# when the molecule matrix exceeds $MAX_MATRIX_ENTRIES (an aggregate job that
-# `needs:` every entry hits GitLab's 50-needs limit). Contract + rationale:
-# docs/SCRIPTS.md.
-#
-# Environment overrides (all optional):
-#   CI_FILE, ROLES_DIR, INTEGRATION_DIR, MOLECULE_JOB, INTEGRATION_JOB
-#   UNTESTED_ROLES      space-separated roles allowed to ship with no scenario
-#   MAX_MATRIX_ENTRIES  cap on molecule-matrix size (default 45)
+# Fail when the CI molecule/integration matrix and the scenario dirs on disk
+# disagree, a role has no scenario, or the matrix exceeds MAX_MATRIX_ENTRIES.
+# Contract + env: weisssrv-lib docs/SCRIPTS.md - check-molecule-matrix-coverage.sh.
 
 set -euo pipefail
 
@@ -27,14 +13,16 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 cd "$REPO_ROOT"
 
 CI_FILE="${CI_FILE:-.gitlab-ci.yml}"
-ROLES_DIR="${ROLES_DIR:-ansible/roles}"
-INTEGRATION_DIR="${INTEGRATION_DIR:-ansible/integration-tests}"
+# `-` not `:-`: an explicitly empty ROLES_DIR is the roles-less declaration and
+# must survive, while an unset one still takes the default.
+ROLES_DIR="${ROLES_DIR-ansible/roles}"
+INTEGRATION_DIR="${INTEGRATION_DIR-ansible/integration-tests}"
 MOLECULE_JOB="${MOLECULE_JOB:-molecule-tests}"
 INTEGRATION_JOB="${INTEGRATION_JOB:-integration-tests}"
 MAX_MATRIX_ENTRIES="${MAX_MATRIX_ENTRIES:-45}"
 UNTESTED_ROLES="${UNTESTED_ROLES:-}"
 
-export CI_FILE ROLES_DIR INTEGRATION_DIR MOLECULE_JOB INTEGRATION_JOB \
+export SCRIPT_DIR CI_FILE ROLES_DIR INTEGRATION_DIR MOLECULE_JOB INTEGRATION_JOB \
        MAX_MATRIX_ENTRIES UNTESTED_ROLES
 
 python3 - <<'PYEOF'
@@ -43,6 +31,18 @@ import sys
 from pathlib import Path
 
 import yaml
+
+sys.path.insert(0, os.environ["SCRIPT_DIR"])
+
+try:
+    from ci_yaml import CILoader  # noqa: E402
+except ImportError:
+    print(
+        "ERROR: ci_yaml.py must sit next to this script — vendor both "
+        "(see weisssrv-lib scripts/vendorable-paths.yml).",
+        file=sys.stderr,
+    )
+    raise SystemExit(2) from None
 
 CI_FILE = os.environ["CI_FILE"]
 ROLES_DIR = os.environ["ROLES_DIR"]
@@ -54,28 +54,14 @@ MAX_MATRIX_ENTRIES = int(os.environ["MAX_MATRIX_ENTRIES"])
 # consumer names a role here only with a rationale in its CI/taskfile call.
 UNTESTED_ROLES = set(os.environ["UNTESTED_ROLES"].split())
 
-
-def tag_passthrough(loader, tag_suffix, node):
-    # Custom YAML tags (e.g. !reference) appear in .gitlab-ci.yml. Preserve the
-    # underlying scalar/sequence/mapping so a tagged node inside (or near) a
-    # matrix block keeps its structure instead of collapsing to None and
-    # producing a false "missing scenario" failure. We don't resolve GitLab's
-    # !reference semantics — only keep the parse structurally intact.
-    if isinstance(node, yaml.ScalarNode):
-        return loader.construct_scalar(node)
-    if isinstance(node, yaml.SequenceNode):
-        return loader.construct_sequence(node)
-    if isinstance(node, yaml.MappingNode):
-        return loader.construct_mapping(node)
-    return None
-
-
-yaml.SafeLoader.add_multi_constructor("!", tag_passthrough)
-
 repo = Path(".")
 ci_path = repo / CI_FILE
 with ci_path.open() as f:
-    ci = yaml.safe_load(f)
+    ci = yaml.load(f, Loader=CILoader)
+
+if not isinstance(ci, dict):
+    sys.stderr.write(f"ERROR: {CI_FILE} is not a YAML mapping\n")
+    sys.exit(2)
 
 
 def matrix_entries(job_name):
@@ -101,30 +87,32 @@ for entry in matrix_entries(MOLECULE_JOB):
     if isinstance(role, str) and isinstance(scenario, str):
         ci_molecule.add((role, scenario))
 
-# On disk: ansible/roles/<role>/molecule/<scenario>/ (a dir containing a
-# molecule.yml is the authoritative marker of a runnable scenario).
-disk_molecule = set()
-roles_dir = repo / ROLES_DIR
-# Fail closed: a mistyped ROLES_DIR yields an empty on-disk set, which every
-# coverage comparison below then passes trivially — silently disabling the
-# gate. An absent roles dir is a configuration error, not "nothing to check".
-if not roles_dir.is_dir():
-    sys.stderr.write(f"ERROR: roles directory {ROLES_DIR!r} does not exist\n")
-    sys.exit(2)
-for scenario_dir in sorted(roles_dir.glob("*/molecule/*")):
-    if not scenario_dir.is_dir():
-        continue
-    if not (scenario_dir / "molecule.yml").is_file():
-        continue
-    role = scenario_dir.parent.parent.name
-    scenario = scenario_dir.name
-    disk_molecule.add((role, scenario))
+# An explicitly empty ROLES_DIR declares "no in-repo roles": the molecule half
+# is off, the integration half still runs. A NON-EMPTY path that does not
+# resolve is a typo, so it still exits 2 rather than passing trivially.
+ROLES_LESS = ROLES_DIR == ""
 
-# Roles with NO runnable molecule scenario at all: a new role committed without
-# molecule/ would never appear in disk_molecule, so the matrix diff alone can't
-# catch it.
+# On disk: <roles>/<role>/molecule/<scenario>/ — a dir holding a molecule.yml is
+# the authoritative marker of a runnable scenario.
+disk_molecule = set()
 untested_roles = []
-if roles_dir.is_dir():
+if not ROLES_LESS:
+    roles_dir = repo / ROLES_DIR
+    if not roles_dir.is_dir():
+        sys.stderr.write(f"ERROR: roles directory {ROLES_DIR!r} does not exist\n")
+        sys.exit(2)
+    for scenario_dir in sorted(roles_dir.glob("*/molecule/*")):
+        if not scenario_dir.is_dir():
+            continue
+        if not (scenario_dir / "molecule.yml").is_file():
+            continue
+        role = scenario_dir.parent.parent.name
+        scenario = scenario_dir.name
+        disk_molecule.add((role, scenario))
+
+    # Roles with NO runnable molecule scenario at all: a new role committed
+    # without molecule/ never appears in disk_molecule, so the matrix diff
+    # alone cannot catch it.
     tested_roles = {role for role, _scenario in disk_molecule}
     for role_dir in sorted(roles_dir.iterdir()):
         if not role_dir.is_dir():
@@ -146,16 +134,49 @@ for entry in matrix_entries(INTEGRATION_JOB):
     elif isinstance(tests, str):
         ci_integration.add(tests)
 
-# On disk: ansible/integration-tests/<name>/ where <name> contains a
-# molecule/ subdir with at least one scenario molecule.yml. The CI job does
-# `cd ansible/integration-tests/$TEST && molecule test` (default scenario), so
-# the test identifier is the directory name <name>, not the scenario.
+# An explicitly empty INTEGRATION_DIR declares "no integration suite"; a
+# NON-EMPTY path that does not resolve is a typo, so it exits 2.
+INTEGRATION_LESS = INTEGRATION_DIR == ""
+
+if ROLES_LESS and INTEGRATION_LESS:
+    sys.stderr.write(
+        'ERROR: ROLES_DIR="" and INTEGRATION_DIR="" disable both halves — '
+        "the gate would check nothing\n"
+    )
+    sys.exit(2)
+
+# On disk: <integration-tests>/<name>/ holding molecule/*/molecule.yml. The CI
+# job runs `cd <integration-tests>/$TEST && molecule test`, so the identifier is
+# the directory name.
 disk_integration = set()
-it_dir = repo / INTEGRATION_DIR
-if it_dir.is_dir():
+if not INTEGRATION_LESS:
+    it_dir = repo / INTEGRATION_DIR
+    if not it_dir.is_dir():
+        sys.stderr.write(
+            f"ERROR: integration directory {INTEGRATION_DIR!r} does not exist\n"
+        )
+        sys.exit(2)
     for d in sorted(it_dir.iterdir()):
         if d.is_dir() and any((d / "molecule").glob("*/molecule.yml")):
             disk_integration.add(d.name)
+
+# Both halves can be enabled and still hold nothing: directories present but
+# empty of molecule.yml, and both matrices empty. Every set comparison below is
+# then trivially clean, so the gate would pass having inspected no subject.
+if not (disk_molecule or ci_molecule or disk_integration or ci_integration):
+    enabled = []
+    if not ROLES_LESS:
+        enabled.append(f"{ROLES_DIR}/")
+    if not INTEGRATION_LESS:
+        enabled.append(f"{INTEGRATION_DIR}/")
+    sys.stderr.write(
+        "ERROR: the gate inspected nothing — no molecule.yml under "
+        + " or ".join(enabled)
+        + f" and no {MOLECULE_JOB}/{INTEGRATION_JOB} matrix entry in {CI_FILE}.\n"
+        "  Point the gate at the real trees and job names, or declare a half off "
+        'with ROLES_DIR="" / INTEGRATION_DIR="".\n'
+    )
+    sys.exit(2)
 
 failed = False
 
@@ -172,7 +193,7 @@ if untested_roles:
         "  the UNTESTED_ROLES environment allowlist.\n\n"
     )
 
-missing_molecule = sorted(disk_molecule - ci_molecule)
+missing_molecule = [] if ROLES_LESS else sorted(disk_molecule - ci_molecule)
 if missing_molecule:
     failed = True
     sys.stderr.write(
@@ -187,7 +208,23 @@ if missing_molecule:
         "        SCENARIO: <scenario>\n\n"
     )
 
-missing_integration = sorted(disk_integration - ci_integration)
+stale_molecule = [] if ROLES_LESS else sorted(ci_molecule - disk_molecule)
+if stale_molecule:
+    failed = True
+    sys.stderr.write(
+        f"ERROR: {MOLECULE_JOB} matrix entr(ies) with no scenario on disk "
+        "(the job would fail at runtime):\n\n"
+    )
+    for role, scenario in stale_molecule:
+        sys.stderr.write(
+            f"  - ROLE: {role} / SCENARIO: {scenario} "
+            f"(no {ROLES_DIR}/{role}/molecule/{scenario}/)\n"
+        )
+    sys.stderr.write(
+        f"\n  Drop the entry from {CI_FILE} or restore the scenario.\n\n"
+    )
+
+missing_integration = [] if INTEGRATION_LESS else sorted(disk_integration - ci_integration)
 if missing_integration:
     failed = True
     sys.stderr.write(
@@ -200,7 +237,20 @@ if missing_integration:
         f"  in {CI_FILE}.\n\n"
     )
 
-if len(ci_molecule) > MAX_MATRIX_ENTRIES:
+stale_integration = [] if INTEGRATION_LESS else sorted(ci_integration - disk_integration)
+if stale_integration:
+    failed = True
+    sys.stderr.write(
+        f"ERROR: {INTEGRATION_JOB} matrix entr(ies) with no test dir on disk "
+        "(the job would fail at runtime):\n\n"
+    )
+    for name in stale_integration:
+        sys.stderr.write(f"  - TEST: {name} (no {INTEGRATION_DIR}/{name}/)\n")
+    sys.stderr.write(
+        f"\n  Drop the name from {CI_FILE} or restore the test dir.\n\n"
+    )
+
+if not ROLES_LESS and len(ci_molecule) > MAX_MATRIX_ENTRIES:
     failed = True
     sys.stderr.write(
         f"ERROR: the {MOLECULE_JOB} matrix has {len(ci_molecule)} entries, over the\n"
@@ -213,10 +263,21 @@ if len(ci_molecule) > MAX_MATRIX_ENTRIES:
 if failed:
     sys.exit(1)
 
-print(
-    f"Molecule matrix covers all {len(disk_molecule)} scenario dir(s); "
-    f"integration matrix covers all {len(disk_integration)} test dir(s); "
-    f"every role has at least one scenario; matrix size "
-    f"{len(ci_molecule)}/{MAX_MATRIX_ENTRIES}."
-)
+if ROLES_LESS:
+    molecule_half = 'ROLES_DIR="": no in-repo roles, molecule half disabled'
+else:
+    molecule_half = (
+        f"Molecule matrix and the {len(disk_molecule)} scenario dir(s) agree; "
+        f"every role has at least one scenario; matrix size "
+        f"{len(ci_molecule)}/{MAX_MATRIX_ENTRIES}"
+    )
+if INTEGRATION_LESS:
+    integration_half = (
+        'INTEGRATION_DIR="": no integration suite declared, integration half disabled'
+    )
+else:
+    integration_half = (
+        f"integration matrix and the {len(disk_integration)} test dir(s) agree"
+    )
+print(f"{molecule_half}; {integration_half}.")
 PYEOF

@@ -1,0 +1,12 @@
+---
+# The exporter's own address, as a listen address and as a probe target. An
+# empty bind listens everywhere and is probed on loopback. Go's
+# net.SplitHostPort and URL parsing both need an IPv6 literal bracketed.
+_node_exporter_host_bind: "{{ node_exporter_host_bind_address | default('', true) | trim }}"
+_node_exporter_host_listen: >-
+  {{ ('[' ~ _node_exporter_host_bind ~ ']')
+     if ':' in _node_exporter_host_bind else _node_exporter_host_bind }}
+_node_exporter_host_probe_host: "{{ _node_exporter_host_bind or '127.0.0.1' }}"
+_node_exporter_host_probe_url_host: >-
+  {{ ('[' ~ _node_exporter_host_probe_host ~ ']')
+     if ':' in _node_exporter_host_probe_host else _node_exporter_host_probe_host }}

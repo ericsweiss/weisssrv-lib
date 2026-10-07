@@ -81,6 +81,10 @@ node_exporter textfile on every run (`ExecStopPost=+…-metrics.sh`, under
 (The metric names keep the upstream tool's `adguardhome_sync_` prefix; only the
 role variables are `adguard_sync_`.)
 
+The role creates that directory itself, so the metric is published on a host
+where `node_exporter_host` has not run. If the directory is missing anyway, the
+writer logs to `daemon.err` under the tag `adguardhome-sync-metrics`.
+
 Wire a `Failed`/`Stale` alert pair to those, or a silently broken sync (revoked
 password, unreachable replica, schema change) leaves the replica serving stale
 rewrites and blocklists indefinitely.

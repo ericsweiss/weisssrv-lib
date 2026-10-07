@@ -1,10 +1,9 @@
 ---
-# Immich machine-learning (OpenVINO) compose stack in a GPU guest: a
-# single-service compose project whose lifecycle is a systemd unit, mirroring
-# the immich role's pattern. No secrets.
-#
-# The endpoint is AUTHLESS by upstream design — a firewall rule scoping who may
-# reach immich_ml_listen_port IS the security boundary.
+# CRITICAL: the inference endpoint is authless by upstream design. A firewall
+# rule scoping who may reach immich_ml_listen_port is the security boundary.
+
+# Single-service compose project run by a systemd unit, mirroring the immich
+# role's pattern. No secrets.
 
 # Render-only escape hatch: gates the GPU guard, the Docker install and all
 # service management. Aliases the pre-collection name.
@@ -15,17 +14,22 @@ immich_ml_skip_install: "{{ skip_immich_ml_deploy | default(false) }}"
 # cache, not state, so no attached volume and no backup enrollment.
 immich_ml_compose_dir: /opt/immich-ml/compose
 
-# Upstream immich-machine-learning default. Published on the LAN; reachability
-# is scoped by the site firewall, not by the bind address.
+# Upstream immich-machine-learning default.
 immich_ml_listen_port: 3003
+# Publish address for the AUTHLESS inference port. The site firewall is the
+# security boundary; pin this to the address the Immich guest reaches for
+# defence in depth.
+immich_ml_bind: "0.0.0.0"
+
+# Extra environment keys merged into the ML container, e.g.
+# MACHINE_LEARNING_MAX_BATCH_SIZE__OCR to cap OCR batches (README § VRAM).
+immich_ml_extra_env: {}
 
 immich_ml_timezone: "{{ timezone | default('UTC') }}"
 
-# Required: the Immich release tag. It defaults to the inventory-wide
-# immich_version, so pinning that once keeps this guest in lockstep with the
-# Immich guest's containers. `-openvino` is upstream's Intel GPU variant and
-# bundles its own compute-runtime — the host supplies only the kernel driver;
-# override immich_ml_image whole for a different accelerator variant.
+# Required: the Immich release tag, defaulting to the inventory-wide
+# immich_version so this guest stays in lockstep. `-openvino` is upstream's
+# Intel variant; override immich_ml_image whole for another accelerator.
 immich_ml_version: "{{ immich_version | default('') }}"
 immich_ml_image: "ghcr.io/immich-app/immich-machine-learning:{{ immich_ml_version }}-openvino"
 
@@ -35,11 +39,9 @@ immich_ml_render_device: /dev/dri/renderD128
 immich_ml_card_device: /dev/dri/card0
 immich_ml_device_dir: /dev/dri
 
-# GIDs granted to the container (compose group_add) so it can open the device
-# nodes: in an unprivileged container root is not host root, so CAP_DAC_OVERRIDE
-# cannot bypass the 0660 root:video/render perms — the group match is the only
-# access path. These are the Debian defaults and are overwritten at deploy time
-# by the GIDs discovered on the actual device nodes.
+# GIDs granted to the container via group_add so it can open the device nodes;
+# the group match is the only access path in an unprivileged container. Debian
+# defaults, overwritten at deploy time by the GIDs on the actual nodes.
 immich_ml_video_gid: 44
 immich_ml_render_gid: 104
 

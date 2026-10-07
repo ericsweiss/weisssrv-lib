@@ -36,6 +36,13 @@ All five are asserted at role entry.
 `textfile_collector_on_unit_inactive_sec` (`1min`),
 `textfile_collector_accuracy_sec` (`10s`).
 
+Every entry in `textfile_collector_extra_read_write_paths` must exist when the
+unit starts. The service runs with `ProtectSystem=strict`, and systemd fails
+mount-namespace setup (`status=226/NAMESPACE`) for a `ReadWritePaths` entry that
+is not there. Create the path in the calling role, or pass it with a leading `-`
+(systemd's tolerate-missing prefix) when it only appears later. The role does not
+add that prefix for you, because it would also hide a typo.
+
 ## What it does NOT do
 
 - Install the collector script (the caller owns it — per-collector metric logic).

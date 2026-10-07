@@ -1,19 +1,8 @@
 #!/usr/bin/env python3
-"""
-Unit tests for check-molecule-matrix-coverage.sh.
+"""Unit tests for check-molecule-matrix-coverage.sh, both drift directions.
 
-The script fails when a molecule scenario dir (ansible/roles/*/molecule/*/) or
-an integration-test dir (ansible/integration-tests/*/) exists with no matching
-entry in the molecule-tests / integration-tests parallel:matrix in
-.gitlab-ci.yml. These tests drive it via subprocess inside a throwaway repo
-layout, covering:
-
-  - a molecule scenario dir missing from the matrix fails + names it
-  - an integration-test dir missing from the matrix fails + names it
-  - a matrix entry with no on-disk scenario does NOT fail (one-way check)
-
-The script resolves the repo root from its own location, so each fixture test
-runs against a copy of the script placed inside the fixture tree.
+Each test drives the script by subprocess in a throwaway repo layout holding
+its own copy of the script, which resolves the repo root from its location.
 """
 
 from __future__ import annotations
@@ -21,13 +10,15 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "check-molecule-matrix-coverage.sh"
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent
+SCRIPTS_DIR = REPO / "scripts"
+SCRIPT = SCRIPTS_DIR / "check-molecule-matrix-coverage.sh"
 
 # Minimal matrix: one molecule scenario (alpha/default) and one integration
 # test (stack-a). A fixture that adds an on-disk scenario beyond these must
@@ -70,6 +61,7 @@ def repo(tmp_path: Path) -> Path:
     r = tmp_path / "repo"
     (r / "scripts").mkdir(parents=True)
     shutil.copy(SCRIPT, r / "scripts" / "check-molecule-matrix-coverage.sh")
+    shutil.copy(SCRIPTS_DIR / "ci_yaml.py", r / "scripts" / "ci_yaml.py")
     (r / ".gitlab-ci.yml").write_text(FIXTURE_CI)
     # Baseline in-sync tree.
     _scenario(r, "alpha", "default")
@@ -114,15 +106,47 @@ def test_unlisted_integration_test_fails(repo: Path):
     assert "ansible/integration-tests/stack-b/" in res.stderr
 
 
-def test_matrix_entry_without_disk_scenario_does_not_fail(repo: Path):
-    """One-way check: a matrix entry pointing at a non-existent scenario is the
-    runtime-caught case (molecule errors), so this script must NOT fail on it."""
+def test_stale_molecule_matrix_entry_fails(repo: Path):
+    """A matrix entry whose scenario was renamed or deleted would fail the job at
+    runtime, so the gate reports it here."""
     ci = (repo / ".gitlab-ci.yml").read_text().replace(
         "      - ROLE: alpha\n        SCENARIO: default\n",
         "      - ROLE: alpha\n        SCENARIO: default\n"
         "      - ROLE: ghost\n        SCENARIO: default\n",
     )
     assert "ghost" in ci
+    (repo / ".gitlab-ci.yml").write_text(ci)
+    res = _run(repo)
+    assert res.returncode == 1
+    assert "ROLE: ghost" in res.stderr
+    assert "ansible/roles/ghost/molecule/default/" in res.stderr
+
+
+def test_stale_integration_matrix_entry_fails(repo: Path):
+    ci = (repo / ".gitlab-ci.yml").read_text().replace(
+        "          - stack-a\n", "          - stack-a\n          - stack-gone\n"
+    )
+    assert "stack-gone" in ci
+    (repo / ".gitlab-ci.yml").write_text(ci)
+    res = _run(repo)
+    assert res.returncode == 1
+    assert "TEST: stack-gone" in res.stderr
+
+
+def test_empty_ci_file_exits_2(repo: Path):
+    """An empty or non-mapping CI file is an operator error, not a coverage
+    finding, and must not surface as a traceback."""
+    (repo / ".gitlab-ci.yml").write_text("# only a comment\n")
+    res = _run(repo)
+    assert res.returncode == 2
+    assert "is not a YAML mapping" in res.stderr
+    assert "Traceback" not in res.stderr
+
+
+def test_gitlab_reference_tags_do_not_break_the_parse(repo: Path):
+    ci = (repo / ".gitlab-ci.yml").read_text() + (
+        "\nother-job:\n  stage: test\n  script: !reference [.base, script]\n"
+    )
     (repo / ".gitlab-ci.yml").write_text(ci)
     res = _run(repo)
     assert res.returncode == 0, f"{res.stdout}\n{res.stderr}"
@@ -208,7 +232,82 @@ def test_relocated_dirs_and_job_names(repo: Path, tmp_path: Path):
     assert res.returncode == 0, f"{res.stdout}\n{res.stderr}"
 
 
-if __name__ == "__main__":
-    import sys
+def test_roles_less_consumer_still_checks_the_integration_matrix(repo: Path):
+    """ROLES_DIR="" turns the molecule half off; the integration half runs."""
+    shutil.rmtree(repo / "ansible" / "roles")
+    _integration(repo, "stack-b")
+    res = _run(repo, {"ROLES_DIR": ""})
+    assert res.returncode == 1
+    assert "stack-b" in res.stderr
 
+
+def test_roles_less_consumer_passes_when_the_integration_matrix_agrees(repo: Path):
+    """No roles on disk and a matching integration matrix is a clean run."""
+    shutil.rmtree(repo / "ansible" / "roles")
+    res = _run(repo, {"ROLES_DIR": ""})
+    assert res.returncode == 0, f"{res.stdout}\n{res.stderr}"
+    assert "molecule half disabled" in res.stdout
+
+
+def test_integration_less_consumer_passes_and_names_the_skipped_half(repo: Path):
+    """INTEGRATION_DIR="" is the no-integration-suite declaration."""
+    shutil.rmtree(repo / "ansible" / "integration-tests")
+    (repo / ".gitlab-ci.yml").write_text(
+        FIXTURE_CI.split("\nintegration-tests:")[0] + "\n"
+    )
+    res = _run(repo, {"INTEGRATION_DIR": ""})
+    assert res.returncode == 0, f"{res.stdout}\n{res.stderr}"
+    assert "integration half disabled" in res.stdout
+
+
+def test_non_empty_but_missing_integration_dir_exits_2(repo: Path):
+    """A renamed integration tree must not silently disable half the gate."""
+    res = _run(repo, {"INTEGRATION_DIR": "collection-integration-tests"})
+    assert res.returncode == 2
+    assert "collection-integration-tests" in res.stderr
+    assert "does not exist" in res.stderr
+
+
+def test_disabling_both_halves_exits_2(repo: Path):
+    res = _run(repo, {"ROLES_DIR": "", "INTEGRATION_DIR": ""})
+    assert res.returncode == 2
+    assert "check nothing" in res.stderr
+
+
+def test_empty_subject_exits_2(repo: Path):
+    """Both halves enabled, both trees empty of molecule.yml and both matrices
+    empty: every comparison is trivially clean, so the gate must refuse."""
+    shutil.rmtree(repo / "ansible" / "roles")
+    shutil.rmtree(repo / "ansible" / "integration-tests")
+    (repo / "ansible" / "roles").mkdir(parents=True)
+    (repo / "ansible" / "integration-tests").mkdir(parents=True)
+    (repo / ".gitlab-ci.yml").write_text(
+        "molecule-tests:\n  stage: test\n\nintegration-tests:\n  stage: test\n"
+    )
+    res = _run(repo)
+    assert res.returncode == 2, f"{res.stdout}\n{res.stderr}"
+    assert "inspected nothing" in res.stderr
+
+
+def test_empty_roles_tree_alone_is_not_vacuous(repo: Path):
+    """An empty roles tree with a live integration half still has a subject."""
+    shutil.rmtree(repo / "ansible" / "roles")
+    (repo / "ansible" / "roles").mkdir(parents=True)
+    (repo / ".gitlab-ci.yml").write_text(
+        FIXTURE_CI.replace(
+            "      - ROLE: alpha\n        SCENARIO: default\n", ""
+        ).replace("  parallel:\n    matrix:\n\n", "")
+    )
+    res = _run(repo)
+    assert res.returncode == 0, f"{res.stdout}\n{res.stderr}"
+
+
+def test_non_empty_but_missing_roles_dir_still_exits_2(repo: Path):
+    """A typo is not a declaration: a path that does not resolve is an error."""
+    res = _run(repo, {"ROLES_DIR": "collection-roles"})
+    assert res.returncode == 2
+    assert "does not exist" in res.stderr
+
+
+if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
