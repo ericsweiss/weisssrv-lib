@@ -6,6 +6,7 @@ collection-checks job sets, so env or path drift reds a test, not the pipeline.
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,8 @@ import yaml
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "check-molecule-matrix-coverage.sh"
+# The gate shells out to `python3`: the interpreter running pytest comes first.
+PATH = f"{Path(sys.executable).parent}:/usr/bin:/bin:/usr/local/bin"
 CI_FILE = REPO / ".gitlab-ci.yml"
 GATE = "bash scripts/check-molecule-matrix-coverage.sh"
 
@@ -38,7 +41,7 @@ def _run(env: dict[str, str]) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["bash", str(SCRIPT)],
         cwd=REPO,
-        env={"PATH": "/usr/bin:/bin:/usr/local/bin", **env},
+        env={"PATH": PATH, **env},
         capture_output=True,
         text=True,
     )

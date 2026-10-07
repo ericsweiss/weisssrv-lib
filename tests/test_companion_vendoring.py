@@ -16,6 +16,10 @@ import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parent.parent
+# The deploy-coverage gate prefers the pipeline's base SHA over its argument;
+# the throwaway repo under test must not inherit the runner's.
+_env = {k: v for k, v in os.environ.items()
+        if k not in ("CI_MERGE_REQUEST_DIFF_BASE_SHA", "CI_COMMIT_BEFORE_SHA")}
 SCRIPTS = REPO / "scripts"
 
 PAIRS = (
@@ -140,7 +144,7 @@ def _run(script: Path, cwd: Path, argv_tail: list = ()) -> subprocess.CompletedP
     ]
     return subprocess.run(
         [*argv, *argv_tail], input="", capture_output=True, text=True, cwd=str(cwd),
-        env={**os.environ, "PYTHONPATH": "", "SCRIPT_DIR": str(cwd)},
+        env={**_env, "PYTHONPATH": "", "SCRIPT_DIR": str(cwd)},
     )
 
 

@@ -1,7 +1,7 @@
 # The job image molecule CI jobs run their script in, not the image the
 # scenarios spin up: docker CLI, molecule, ansible and the pinned pip deps.
-# Build context is THIS directory. Digest bump: docker buildx imagetools inspect python:3.11
-FROM python:3.11@sha256:9139edd4aa848a1aa1c63865cd5d11b3a6aaaf3fb410a3ac7b3914e44092fe4c
+# Build context is THIS directory. Digest bump: docker buildx imagetools inspect python:3.13
+FROM python:3.13@sha256:9d72651cf7018c1f6a1dd6fd02bd68286631c33620bc0f37b0675b21aab915d5
 
 # Static docker CLI for the DinD sidecar: Debian's docker.io ships the daemon
 # only, and docker-ce-cli is not in the default repos. Version and both shas are

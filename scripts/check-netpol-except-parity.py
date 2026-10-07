@@ -356,22 +356,23 @@ def scan_paths(paths, policy=None):
                             f"unparseable CIDR {value!r} — the API would reject this "
                             f"policy, so it says nothing about the fence."
                         )
+                    # The canonical lists are the egress /0 contract; an ingress
+                    # peer or a narrower egress block keeps whatever it excludes.
+                    if direction != "egress" or not zero_prefix(cidr):
+                        continue
                     if not except_list:
-                        # Only egress /0 is required to be fenced; everything
-                        # else legitimately has no except-list.
-                        if direction == "egress" and zero_prefix(cidr):
-                            violations.append(
-                                f"{path}: NetworkPolicy {name} has an EGRESS "
-                                f"ipBlock {cidr} with no except-list — that is "
-                                f"unrestricted egress to the LAN, loopback and "
-                                f"cloud-metadata ranges. Add the canonical "
-                                f"lan-fence (or reserved-full) list."
-                            )
+                        violations.append(
+                            f"{path}: NetworkPolicy {name} has an EGRESS "
+                            f"ipBlock {cidr} with no except-list — that is "
+                            f"unrestricted egress to the LAN, loopback and "
+                            f"cloud-metadata ranges. Add the canonical "
+                            f"lan-fence (or reserved-full) list."
+                        )
                         continue
                     if classify(except_list, policy):
                         continue
                     violations.append(
-                        f"{path}: NetworkPolicy {name} ({direction} ipBlock {cidr}) "
+                        f"{path}: NetworkPolicy {name} (egress ipBlock {cidr}) "
                         f"has a non-canonical except-list: {except_list}"
                     )
     return violations, scanned, errors

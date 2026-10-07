@@ -304,6 +304,32 @@ def test_an_egress_only_policy_does_not_admit_the_scrape(tmp_path):
     assert gate.main(argv) == 1
 
 
+def test_a_matchnames_entry_is_refused_without_the_namespace_option(tmp_path, capsys):
+    scoped = SERVICE_MONITOR.replace(
+        "spec:\n", "spec:\n  namespaceSelector:\n    matchNames: [app]\n", 1
+    )
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, scoped, policy())
+    assert gate.main(argv) == 2
+    assert "without --namespace" in capsys.readouterr().err
+
+
+def test_a_matchnames_entry_equal_to_the_namespace_passes(tmp_path):
+    scoped = SERVICE_MONITOR.replace(
+        "spec:\n", "spec:\n  namespaceSelector:\n    matchNames: [app]\n", 1
+    )
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, scoped, policy())
+    assert gate.main([*argv, "--namespace", "app"]) == 0
+
+
+def test_a_matchnames_entry_for_another_namespace_is_refused(tmp_path, capsys):
+    scoped = SERVICE_MONITOR.replace(
+        "spec:\n", "spec:\n  namespaceSelector:\n    matchNames: [elsewhere]\n", 1
+    )
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, scoped, policy())
+    assert gate.main([*argv, "--namespace", "app"]) == 2
+    assert "against --namespace app" in capsys.readouterr().err
+
+
 def test_the_scrape_namespace_is_an_option(tmp_path):
     renamed = policy().replace(
         "kubernetes.io/metadata.name: observability",

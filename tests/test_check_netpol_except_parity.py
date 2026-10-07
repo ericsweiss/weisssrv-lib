@@ -78,6 +78,29 @@ def test_a_narrow_egress_ipblock_needs_no_except(tmp_path):
     assert mod.check_paths([path]) == []
 
 
+def test_an_ingress_except_list_is_not_held_to_the_canon(tmp_path):
+    """Ingress is exempt whatever it excludes: the lists fence egress only."""
+    doc = {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {"name": "allow-wan-ingress"},
+        "spec": {
+            "podSelector": {},
+            "policyTypes": ["Ingress"],
+            "ingress": [{"from": [{"ipBlock": {"cidr": "0.0.0.0/0", "except": ["10.0.0.0/8"]}}]}],
+        },
+    }
+    path = _write(tmp_path, doc)
+    assert mod.check_paths([path]) == []
+
+
+def test_a_narrow_egress_except_list_is_not_held_to_the_canon(tmp_path):
+    doc = _policy(["10.0.10.5/32"])
+    doc["spec"]["egress"][0]["to"][0]["ipBlock"]["cidr"] = "10.0.10.0/24"
+    path = _write(tmp_path, doc)
+    assert mod.check_paths([path]) == []
+
+
 def test_an_unfenced_ingress_default_route_is_allowed(tmp_path):
     """wg-easy's WAN endpoint: ingress from anywhere is the intended shape."""
     doc = {

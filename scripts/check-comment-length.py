@@ -117,6 +117,7 @@ FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)")
 # machine-readable config, so they neither count as content nor join the header
 # block beneath them. The format allows them only at the top of the file.
 PARSER_DIRECTIVE = re.compile(r"^#\s*(?:syntax|escape)\s*=", re.IGNORECASE)
+JINJA_TAG_LINE = re.compile(r"^\{[%#].*[%#]\}$")
 
 
 def _rendered_name(path: Path) -> Path:
@@ -227,6 +228,7 @@ def line_comment_findings(
     run: list = []
     start = 0
     preamble = directives
+    before_body = True
     for number, raw in enumerate(text.splitlines(), start=1):
         stripped = raw.strip()
         if preamble:
@@ -234,8 +236,12 @@ def line_comment_findings(
                 continue
             preamble = False
         is_comment = bool(stripped) and stripped.startswith(markers)
-        if number == 1 and stripped.startswith("#!"):
+        # A shebang is a shebang while only blank lines or jinja statements
+        # (`{% %}`, the secrets seam a *.sh.jinja opens with) precede it.
+        if before_body and stripped.startswith("#!"):
             is_comment = False
+        if stripped and not JINJA_TAG_LINE.match(stripped):
+            before_body = False
         if is_comment:
             if not run:
                 start = number

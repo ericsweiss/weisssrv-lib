@@ -9,7 +9,7 @@ half.
 
 | Baked | Pin |
 | --- | --- |
-| base | `python:3.11-slim`, manifest-list digest |
+| base | `python:3.13-slim`, manifest-list digest |
 | 1Password CLI (`op`) | version + per-arch sha256 in the Dockerfile (only the amd64 one is exercised — see Architecture) |
 | `ansible` | `requirements.txt` (exact `==` pin) |
 | `git`, `openssh-client`, `jq`, `curl`, `ca-certificates`, `unzip` | apt, unpinned (Debian stable) |
@@ -65,7 +65,7 @@ change, and the templates are unchanged by this image.
 
 Each pin is bumped by hand — nothing tracks upstream for this image.
 
-- **Base image**: `docker buildx imagetools inspect python:3.11-slim`, and
+- **Base image**: `docker buildx imagetools inspect python:3.13-slim`, and
   replace the digest on the `FROM` line. Use the INDEX digest, not a
   platform-specific one, or the Dockerfile stops building on the other arch.
 - **`op`**: pick the version, then take both shas —

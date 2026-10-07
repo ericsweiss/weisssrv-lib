@@ -59,6 +59,7 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`check-vendored-copies.py`](#check-vendored-copiespy-pyyaml) | a consumer's vendored and forked copies against a library checkout | the consumer's manifest | neutral |
 | [`check-version-checksums.py`](#check-version-checksumspy-pyyaml) | every checksum pin the version registry declares (network) | the version registry | neutral |
 | [`check-versions.py`](#check-versionspy-pyyaml-not-required) | multi-source version discovery against a repo's pins | `version-registry.example.py` | neutral |
+| [`ci-fetch-tools.py`](#ci-fetch-toolspy) | installs the pinned CI tool binaries into a workspace bin, sha256-verified (network) | env | neutral |
 | `ci_yaml.py` | importable loader for a CI file using GitLab's `!` tags | n/a | gitlab-only |
 | `cluster-config-value.sh` | prints values from the cluster-config ConfigMap | env | neutral |
 | [`extract-prometheus-config.py`](#extract-prometheus-configpy-lint-prometheus-configsh-pyyaml) | extracts rules and Alertmanager config for promtool/amtool | flags | neutral |
@@ -1089,7 +1090,7 @@ namespace-granularity gate for a whole cluster corpus; this one is the port
 granularity for one namespace.
 
 ```
-scripts/check-scrape-wiring.py [--observability-namespace NS] [DIRECTORY]
+scripts/check-scrape-wiring.py [--observability-namespace NS] [--namespace NS] [DIRECTORY]
 ```
 
 - A ServiceMonitor resolves through **every** Service its labels select, then
@@ -1105,7 +1106,9 @@ scripts/check-scrape-wiring.py [--observability-namespace NS] [DIRECTORY]
   named in the failure so the reader can tell "wired wrong" from "not modelled".
 - A monitor whose `spec.namespaceSelector` reaches outside the tree is an
   operator error: the policies here cover one namespace, so a wider scrape must
-  be checked where those policies live.
+  be checked where those policies live. A `matchNames` entry is verified
+  against `--namespace` (the namespace the tree deploys into) and refused
+  without it, so a stale name never certifies against the wrong policies.
 - **Exit codes:** 0 clean, 1 on an unadmitted port, 2 on an operator error — a
   directory that does not exist, a manifest that does not parse, a corpus with
   no kinded document, a monitor with no endpoints or a selector matching every
@@ -1290,8 +1293,9 @@ scripts/check-netpol-except-parity.py [--config FILE] [path ...]
   `policy=`), so an importing caller never mutates module state. An unparseable
   ipBlock CIDR, or a malformed egress/ingress rule, is an exit-2 operator error
   naming the file — not a fence finding.
-- Ingress is exempt: an unfenced `0.0.0.0/0` ingress peer is a deliberate shape
-  (a WAN endpoint).
+- Ingress is exempt, whatever it excludes: an unfenced `0.0.0.0/0` ingress
+  peer is a deliberate shape (a WAN endpoint). A narrower egress block keeps
+  its own except-list too; the canonical lists are the egress /0 contract.
 - **Exit codes:** 0 clean, 1 on a policy violation, 2 on an operator error — a
   path that does not exist, a scanned manifest that does not parse, a run that
   inspected **zero** NetworkPolicy documents, and a `--config` that is missing,
@@ -1597,6 +1601,9 @@ scripts/check-comment-length.py [PATH ...] [--config FILE]
 - **Where a block ends:** a blank line. A bare `#` line keeps the same block
   going, so two paragraphs separated only by a `#` are counted as one block.
   Split them with an empty line to have them counted separately.
+- A `#!` line is the shebang, not a comment, while only blank lines or jinja
+  tag lines precede it, so a `*.sh.jinja` that opens with a `{% if %}` seam
+  keeps its shebang exempt.
 - A Dockerfile's leading `# syntax=` and `# escape=` lines are parser
   directives, not prose: they neither count toward the limit nor join the
   header block below them. Only the preamble is read that way, so the same
@@ -2018,6 +2025,42 @@ check-version-checksums.py [--config scripts/version-registry.py]
   registry that declares none is an operator error, because the gate then
   verified nothing.
 - **Exit codes:** 0 clean, 1 on a stale pin, 2 on an operator error.
+
+### `ci-fetch-tools.py`
+
+Installs pinned CI tool binaries into a workspace bin, with no root and no
+package manager, for the jobs that run as an unprivileged user on an image
+where `apt` is unavailable. Each tool carries a version, a linux-amd64 asset URL
+and the sha256 of that exact asset. The download is verified before anything is
+extracted, only the one named member comes out of an archive, and the binary is
+renamed into place once it is complete. Stdlib only; needs network egress.
+
+```
+ci-fetch-tools.py [--dir DIR] [--list] [--force] TOOL...
+```
+
+Tools: `amtool`, `jq`, `kubeconform`, `kustomize`, `promtool`, `shellcheck`,
+`terraform`. Each prints one line on success, `jq 1.8.2 -> /path/.bin/jq`.
+
+- **`DIR` defaults to `$CI_PROJECT_DIR/.bin`**, else `./.bin`, and is created if
+  missing. **The caller adds `DIR` to `PATH`**: the script installs binaries and
+  deliberately changes nothing about the environment of the job that ran it.
+- A tool already present in `DIR` is skipped, printing `jq: present`, unless
+  `--force` re-installs it. A job can therefore call the script repeatedly.
+- **The pinned versions are this script's own**, not a consumer's, and they are
+  not site data — the same pins serve every consumer. A consumer re-pins one
+  tool with `TOOL_<NAME>_VERSION` and `TOOL_<NAME>_SHA256` (the name
+  upper-cased, so `TOOL_JQ_VERSION` and `TOOL_JQ_SHA256`) rather than forking
+  the file.
+- **An overridden version needs its own checksum.** Setting the version alone
+  is an operator error, because the table's sha256 belongs to the version the
+  table names and would reject the asset that arrives.
+- `--list` prints the table — name, version, sha256 prefix — with any env
+  override already applied, and exits 0. It takes no tool argument.
+- **Exit codes:** 0 on success, 2 on an unknown tool name (the message lists the
+  known ones), a download failure naming the URL, a sha256 mismatch, an archive
+  whose named member is missing or escapes the archive, or a half-made
+  override. A mismatch leaves no file in `DIR`.
 
 ### `check-molecule-matrix-coverage.sh` (PyYAML)
 

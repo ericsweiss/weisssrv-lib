@@ -195,6 +195,9 @@ include:
       # apt package is required and the job stays non-root safe.
       image: python:3.13
       apt_packages: ""
+      # The binary-driven gates fail, not skip, under $CI: jq for the
+      # collect-state and deploy-verify suites, amtool for the Alertmanager one.
+      setup_command: "python3 scripts/ci-fetch-tools.py jq amtool"
       test_dir: "tests cli/tests"
       pytest_version: "9.1.1"
       pyyaml_version: "6.0.2"

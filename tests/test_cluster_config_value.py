@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "cluster-config-value.sh"
+# The script shells out to `python3`: resolve the interpreter running pytest
+# (which has pyyaml), ahead of a system python without it.
+PATH = f"{Path(sys.executable).parent}:/usr/bin:/bin:/usr/sbin:/sbin"
 
 CONFIG = """---
 apiVersion: v1
@@ -26,7 +30,7 @@ def _run(tmp_path: Path, *keys: str, config: str = CONFIG):
     path.write_text(config, encoding="utf-8")
     return subprocess.run(
         ["bash", str(SCRIPT), *keys],
-        env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "CLUSTER_CONFIG": str(path)},
+        env={"PATH": PATH, "CLUSTER_CONFIG": str(path)},
         capture_output=True, text=True,
     )
 
@@ -70,7 +74,7 @@ def test_no_key_at_all_is_a_usage_error(tmp_path):
 def test_a_missing_config_file_is_an_operator_error(tmp_path):
     proc = subprocess.run(
         ["bash", str(SCRIPT), "cluster_api_vip"],
-        env={"PATH": "/usr/bin:/bin", "CLUSTER_CONFIG": str(tmp_path / "absent.yaml")},
+        env={"PATH": PATH, "CLUSTER_CONFIG": str(tmp_path / "absent.yaml")},
         capture_output=True, text=True,
     )
     assert proc.returncode == 2

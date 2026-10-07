@@ -102,6 +102,9 @@ vendorable:
   # for the registry loader: vendor the pair.
   - scripts/check-version-checksums.py
   - scripts/check-versions.py
+  # Vendored because the jobs that call it run before any library checkout
+  # exists, which is the download block it replaces.
+  - scripts/ci-fetch-tools.py
   # Sourced by a consumer's consolidated gate jobs, so the driver is one copy
   # under shellcheck instead of a paste per job.
   - scripts/ci-run-check.sh

@@ -53,3 +53,5 @@ Thumbs.db
 # ansible-galaxy collection build writes these into the source dir.
 ansible_collections/**/MANIFEST.json
 ansible_collections/**/FILES.json
+# Static binaries ci-fetch-tools.py drops for a CI job.
+.bin/

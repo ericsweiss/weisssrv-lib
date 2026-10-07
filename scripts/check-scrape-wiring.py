@@ -313,7 +313,11 @@ def admits(policy: dict, pods: dict, accepted: set[int | str], scrape_ns: str) -
     return False
 
 
-def check(documents: list[dict], scrape_ns: str = DEFAULT_OBSERVABILITY_NS) -> int:
+def check(
+    documents: list[dict],
+    scrape_ns: str = DEFAULT_OBSERVABILITY_NS,
+    namespace: str | None = None,
+) -> int:
     """Every monitor's scraped port, against the policies beside it."""
     UNMODELLED.clear()
     monitors = [d for d in documents if d.get("kind") in ENDPOINT_KEYS]
@@ -338,14 +342,23 @@ def check(documents: list[dict], scrape_ns: str = DEFAULT_OBSERVABILITY_NS) -> i
         spec = mapping(monitor.get("spec"), describe(monitor), "spec")
         scope = mapping(spec.get("namespaceSelector"), describe(monitor), "spec.namespaceSelector")
         names = scope.get("matchNames") or []
-        # NamespaceSelector carries `any` and `matchNames` only, and the tree names
-        # no namespace, so one matchNames entry reads as this directory's own.
+        # The tree names no namespace, so a matchNames entry is verified against
+        # --namespace or refused; an unverified name would certify another namespace.
         if set(scope) - {"any", "matchNames"} or scope.get("any") or len(names) > 1:
             raise GateError(
                 f"{name}: spec.namespaceSelector scopes the scrape outside this directory, "
                 "whose NetworkPolicies cover one namespace only. Leave it out, or scope it "
-                "to this namespace with `any: false` or a single `matchNames` entry; a wider "
-                "scrape must be checked where those policies live."
+                "to this namespace with `any: false` or `matchNames: [<namespace>]` and "
+                "`--namespace`; a wider scrape must be checked where those policies live."
+            )
+        if names and names != [namespace]:
+            raise GateError(
+                f"{name}: spec.namespaceSelector.matchNames {names} cannot be verified "
+                + (
+                    f"against --namespace {namespace}: the policies here cover that namespace only."
+                    if namespace
+                    else "without --namespace: pass the namespace this tree deploys into."
+                )
             )
         selector = mapping(
             mapping(spec.get("selector"), describe(monitor), "spec.selector").get("matchLabels"),
@@ -388,6 +401,10 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_OBSERVABILITY_NS,
         help="namespace Prometheus scrapes from (default: %(default)s)",
     )
+    parser.add_argument(
+        "--namespace",
+        help="namespace this tree deploys into; a monitor's matchNames must equal it",
+    )
     arguments = parser.parse_args(argv)
 
     base = pathlib.Path(arguments.directory)
@@ -413,7 +430,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        return check(documents, arguments.observability_namespace)
+        return check(documents, arguments.observability_namespace, arguments.namespace)
     except GateError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2

@@ -39,7 +39,9 @@ spec:
         BEFORE the pip install (default no-op), so it may use anything
         `apt_packages` provides. For setup the package inputs cannot express —
         e.g. cloning a sibling repo that a cross-repo contract test asserts
-        against, which needs the default `git`.
+        against, which needs the default `git`, or
+        `python3 scripts/ci-fetch-tools.py jq amtool`, which drops verified
+        static binaries into `$CI_PROJECT_DIR/.bin` (already on PATH here).
     default_branch:
       default: "main"
       description: >-
@@ -89,6 +91,9 @@ spec:
     APT_PACKAGES: "$[[ inputs.apt_packages ]]"
     PIP_PACKAGES: "$[[ inputs.pip_packages ]]"
   before_script:
+    # `pip install --user` CLIs (ansible-playbook, copier) and the binaries a
+    # setup_command drops into the workspace .bin resolve by name in the suite.
+    - mkdir -p "$CI_PROJECT_DIR/.bin" && export PATH="$CI_PROJECT_DIR/.bin:$(python -m site --user-base)/bin:$PATH"
     - |
       if [ -n "$APT_PACKAGES" ]; then
         # shellcheck disable=SC2086  # intentional word-split of the package list

@@ -944,12 +944,16 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `pyyaml_version` | `6.0.2` |  |
 | `apt_packages` | `git jq` | the one root-only default in the library; a tenant clears it |
 | `pip_packages` | `""` | extra pinned pip specs; routed through a job variable, so ceilings are safe |
-| `setup_command` | `true` | one command, run after the apt install and before the pip install |
+| `setup_command` | `true` | one command, run after the apt install and before the pip install; `python3 scripts/ci-fetch-tools.py jq amtool` drops verified static binaries into `$CI_PROJECT_DIR/.bin` |
 | `default_branch` | `main` |  |
 | `changes` | `["scripts/**/*", ".gitlab-ci.yml"]` |  |
 
 - **Parity:** the junit report, the before_script (apt + pinned pip) and the
-  rules are verbatim. The default `changes` is the generic subset only.
+  rules are verbatim. The before_script puts `$CI_PROJECT_DIR/.bin` and the
+  pip `--user` bin directory on PATH, so a CLI from `pip_packages`
+  (`ansible-playbook`, `copier`) and a binary from `setup_command` resolve by
+  name; a suite that fails rather than skips without its tool under `$CI`
+  relies on both. The default `changes` is the generic subset only.
   **weisssrv's suite is mostly drift guards that read files outside
   `scripts/`**, so with the default list a guard could not fire on its own
   subject; weisssrv passes a ~28-entry `changes` covering the ansible,

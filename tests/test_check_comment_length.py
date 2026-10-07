@@ -67,6 +67,15 @@ class TestHashRuns:
         write(tmp_path, "a.sh", "#!/usr/bin/env bash\n# one\n# two\n# three\necho hi\n")
         assert run(str(tmp_path)).returncode == 0
 
+    def test_shebang_after_a_jinja_preamble_does_not_open_a_run(self, tmp_path):
+        body = "{% if seam %}\n{% endif %}\n\n#!/usr/bin/env bash\n# one\n# two\n# three\necho hi\n"
+        write(tmp_path, "a.sh.jinja", body)
+        assert run(str(tmp_path)).returncode == 0
+
+    def test_a_shebang_below_the_body_is_a_comment(self, tmp_path):
+        write(tmp_path, "a.sh", "echo hi\n#!/x\n# one\n# two\n# three\n")
+        assert run(str(tmp_path)).returncode == 1
+
     def test_yaml_banner_is_checked(self, tmp_path):
         write(tmp_path, "a.yml", "---\n# a\n# b\n# c\n# d\nkey: value\n")
         assert run(str(tmp_path)).returncode == 1
