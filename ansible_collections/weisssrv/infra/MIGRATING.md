@@ -177,7 +177,7 @@ an inventory input.
 | `gitlab` | `gitlab_nginx_real_ip_trusted_addresses` resolves non-empty (a mistyped inventory group resolves empty) | unless `gitlab_nginx_trust_no_proxy` is true |
 | `immich` | `immich_server_image` and `immich_machine_learning_image` each end in a tag or digest, and never in `:@` | always |
 | `node_exporter_host` | `node_exporter_host_slabinfo_collector` is only true where `node_exporter_host_proxmox` is, since the collector ships inside the Proxmox-host textfile collectors, and `node_exporter_host_slab_caches` is non-empty when the collector is enabled | always |
-| `nic_tuning` | `/etc/network/interfaces` holds exactly one `bond-mode active-backup` stanza | when `nic_tuning_bond_primary` is set |
+| `nic_tuning` | `/etc/network/interfaces` holds exactly one `bond-mode active-backup` stanza, and `nic_tuning_bond_primary` is one of its `bond-slaves` and a live slave of an active-backup bond where the host has bonding, checked before either `bond-primary` line is written | when `nic_tuning_bond_primary` is set |
 | `nas_storage` | every `nas_storage_swap_clean_stop_guests` entry is `vmid:name:timeout-seconds` | when swap-clean is enabled |
 | `nas_storage` | every `nas_storage_archive_backup_exclude` entry is a descendant of a declared source, and `zfs send -X` exists | when the exclude list is non-empty |
 | `k3s` | a first server with no local etcd data has evidence a cluster does or does not exist: the API VIP or a peer answered, or `k3s_bootstrap_new_cluster` is set | on a multi-server group |

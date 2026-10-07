@@ -150,47 +150,69 @@ def check_routes(am_config: Path, route_cases) -> list[str]:
     return problems
 
 
-def _parse_matchers(matchers, index: int, side: str, problems: list[str]) -> dict:
-    out = {}
+def _parse_matchers(
+    matchers, index: int, side: str, problems: list[str]
+) -> list[tuple[str, str, str]]:
+    """Every matcher as (label, op, value), in the order written.
+
+    A label can carry several matchers and Alertmanager ANDs them, so a
+    positive regex narrowed by a negative one must keep both.
+    """
+    out = []
     for raw in matchers or []:
         m = MATCHER_RE.match(raw)
         if not m:
             problems.append(f"rule {index}: unparseable {side} matcher {raw!r}")
             continue
-        out[m.group(1)] = (m.group(2), m.group(3))
+        out.append((m.group(1), m.group(2), m.group(3)))
     return out
 
 
-def _exact_alertnames(parsed: dict) -> tuple[list[str], str | None]:
+def _matchers_for(parsed, label: str) -> list[tuple[str, str]]:
+    """Every (op, value) the matcher set carries for `label`, in order."""
+    return [(op, value) for name, op, value in parsed if name == label]
+
+
+def _exact_alertnames(parsed) -> tuple[list[str], str | None]:
     """Return (alertnames the matcher set pins, why it could not be validated).
 
     Exactly one of the two is meaningful. A regex that is not a plain
     alternation returns a reason, never an empty list. See docs/SCRIPTS.md.
     """
-    op, val = parsed.get("alertname", (None, None))
-    if op == "=":
-        return [val], None
-    if op == "=~":
-        if re.fullmatch(r"[A-Za-z0-9_|]+", val or ""):
-            return val.split("|"), None
-        return [], _not_an_alternation("=~", val)
-    return [], None
+    names: list[str] | None = None
+    for op, val in _matchers_for(parsed, "alertname"):
+        if op == "=":
+            members = [val]
+        elif op == "=~":
+            if not re.fullmatch(r"[A-Za-z0-9_|]+", val or ""):
+                return [], _not_an_alternation("=~", val)
+            members = (val or "").split("|")
+        else:
+            continue
+        # Matchers are ANDed, so each positive one narrows the pinned set.
+        names = members if names is None else [n for n in names if n in members]
+    return names or [], None
 
 
-def _negated_alertnames(parsed: dict) -> tuple[list[str], str | None]:
+def _negated_alertnames(parsed) -> tuple[list[str], str | None]:
     """Return (alertnames the matcher set exempts, why they could not be checked).
 
     The negated mirror of _exact_alertnames: `alertname!=` and `alertname!~`
     name alerts to exclude, and a name that matches nothing exempts nothing.
     """
-    op, val = parsed.get("alertname", (None, None))
-    if op == "!=":
-        return [val], None
-    if op == "!~":
-        if re.fullmatch(r"[A-Za-z0-9_|]+", val or ""):
-            return val.split("|"), None
-        return [], _not_an_alternation("!~", val)
-    return [], None
+    names: list[str] = []
+    for op, val in _matchers_for(parsed, "alertname"):
+        if op == "!=":
+            members = [val]
+        elif op == "!~":
+            if not re.fullmatch(r"[A-Za-z0-9_|]+", val or ""):
+                return [], _not_an_alternation("!~", val)
+            members = (val or "").split("|")
+        else:
+            continue
+        # Each negated matcher excludes more, so the exemptions union.
+        names += [n for n in members if n not in names]
+    return names, None
 
 
 def _not_an_alternation(op: str, val) -> str:
@@ -361,21 +383,21 @@ def check_matcher_value_parity(am_doc: dict, rules_doc: dict, labels) -> list[st
             if not names:
                 continue
             for label in labels:
-                op, value = parsed.get(label, (None, None))
-                if op not in ("=~", "!~") or not value:
-                    continue
-                collapsed = " ".join(str(value).split())
-                for name in names:
-                    declared = set()
-                    for expr in exprs[name]:
-                        declared |= _expr_selector_values(expr, label)
-                    if collapsed not in declared:
-                        problems.append(
-                            f"rule {i}: {side} {label}{op}\"{value}\" is not a selector "
-                            f"the expr of {name} declares ({sorted(declared) or 'none'}), "
-                            f"and the matcher is written to mirror it — one of the two has "
-                            f"drifted. Rule expr: {exprs[name][0]!r}"
-                        )
+                for op, value in _matchers_for(parsed, label):
+                    if op not in ("=~", "!~") or not value:
+                        continue
+                    collapsed = " ".join(str(value).split())
+                    for name in names:
+                        declared = set()
+                        for expr in exprs[name]:
+                            declared |= _expr_selector_values(expr, label)
+                        if collapsed not in declared:
+                            problems.append(
+                                f"rule {i}: {side} {label}{op}\"{value}\" is not a selector "
+                                f"the expr of {name} declares ({sorted(declared) or 'none'}), "
+                                f"and the matcher is written to mirror it — one of the two has "
+                                f"drifted. Rule expr: {exprs[name][0]!r}"
+                            )
     return problems
 
 
@@ -413,11 +435,14 @@ def check_inhibits(am_doc: dict, known: set[str], upstream: set[str]) -> list[st
             problems.append(f"rule {i}: both source_matchers and target_matchers are required")
             continue
         for label in rule.get("equal") or []:
-            s, t = src.get(label), tgt.get(label)
-            if s and t and s[0] == "=" and t[0] == "=" and s[1] == t[1]:
+            shared = sorted(
+                {v for op, v in _matchers_for(src, label) if op == "="}
+                & {v for op, v in _matchers_for(tgt, label) if op == "="}
+            )
+            if shared:
                 problems.append(
                     f"rule {i}: equal:[{label}] is redundant — both matcher sets already "
-                    f'pin it to "{s[1]}", so the pair dedups nothing'
+                    f'pin it to "{shared[0]}", so the pair dedups nothing'
                 )
         # Every alertname a matcher pins must resolve, to one of ours or to a
         # declared upstream alert. Checked per alternation member so a stale
@@ -474,15 +499,15 @@ def aggregates_away(expr: str, label: str) -> bool:
     return bool(groups) and not any(label in _members(g) for g in groups)
 
 
-def _excluded_names(parsed: dict) -> set[str]:
+def _excluded_names(parsed) -> set[str]:
     """Alertnames a matcher set excludes, from `alertname!~` or `alertname!=`."""
     return set(_negated_alertnames(parsed)[0])
 
 
-def _matches_labels(rule: dict, parsed: dict) -> bool:
+def _matches_labels(rule: dict, parsed) -> bool:
     """Whether a rule's own labels satisfy every non-alertname matcher."""
     labels = rule.get("labels") or {}
-    for key, (op, want) in parsed.items():
+    for key, op, want in parsed:
         if key == "alertname":
             continue
         got = str(labels.get(key, ""))
@@ -564,10 +589,8 @@ def check_inhibit_target_scope(am_doc: dict, rules_doc: dict) -> list[str]:
             continue
         excluded = set(_NEGATIVE_SELECTOR_RE.findall(exprs[names[0]]))
         for label in sorted(excluded):
-            op = tgt.get(label, (None, None))[0]
-            if op in ("=", "=~") and label not in {
-                key for key, (o, _v) in tgt.items() if o in ("!=", "!~")
-            }:
+            ops = {op for op, _v in _matchers_for(tgt, label)}
+            if ops & {"=", "=~"} and not ops & {"!=", "!~"}:
                 problems.append(
                     f"rule {index}: source {names[0]} excludes some {label} values "
                     f"with a negative selector, but the target scopes {label} "

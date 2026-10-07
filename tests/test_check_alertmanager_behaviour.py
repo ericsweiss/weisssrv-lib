@@ -177,11 +177,83 @@ class TestInhibits:
         problems = mod.check_inhibits(doc, {"A"}, set())
         assert any("plain alternation" in p for p in problems)
 
+    def test_a_dead_name_in_a_first_negated_matcher_is_reported(self):
+        """Keyed by label only the last alertname matcher survived, so a stale
+        name written before another one exempted nothing and said nothing."""
+        doc = self._am(
+            [
+                {
+                    "source_matchers": ['alertname="A"'],
+                    "target_matchers": [
+                        'severity="warning"',
+                        'alertname!~"Typoed"',
+                        'alertname!="B"',
+                    ],
+                }
+            ],
+        )
+        problems = mod.check_inhibits(doc, {"A", "B"}, set())
+        assert any("exempts alertname(s) ['Typoed']" in p for p in problems)
+
+    def test_a_redundant_equal_label_is_reported_beside_a_narrowing_matcher(self):
+        doc = self._am(
+            [
+                {
+                    "source_matchers": ['alertname="A"', 'namespace="ns"'],
+                    "target_matchers": [
+                        'alertname="B"',
+                        'namespace="ns"',
+                        'namespace!~"other"',
+                    ],
+                    "equal": ["namespace"],
+                }
+            ],
+        )
+        problems = mod.check_inhibits(doc, {"A", "B"}, set())
+        assert any("dedups nothing" in p for p in problems)
+
     def test_a_declared_upstream_alert_satisfies_the_matcher(self):
         doc = self._am(
             [{"source_matchers": ['alertname="A"'], "target_matchers": ['alertname="InfoInhibitor"']}],
         )
         assert mod.check_inhibits(doc, {"A"}, {"InfoInhibitor"}) == []
+
+
+class TestRepeatedMatchers:
+    """A label can carry several matchers and Alertmanager ANDs every one."""
+
+    def _parse(self, *matchers):
+        problems: list[str] = []
+        parsed = mod._parse_matchers(list(matchers), 0, "target", problems)
+        assert problems == []
+        return parsed
+
+    def test_both_matchers_on_a_label_survive_parsing(self):
+        parsed = self._parse('instance=~"a|b"', 'instance!~"c"')
+        assert mod._matchers_for(parsed, "instance") == [("=~", "a|b"), ("!~", "c")]
+
+    def test_a_positive_and_a_negative_alertname_are_both_read(self):
+        parsed = self._parse('alertname=~"A|B"', 'alertname!~"B"')
+        assert mod._exact_alertnames(parsed) == (["A", "B"], None)
+        assert mod._negated_alertnames(parsed) == (["B"], None)
+
+    def test_two_positive_alertname_matchers_intersect(self):
+        parsed = self._parse('alertname=~"A|B"', 'alertname=~"B|C"')
+        assert mod._exact_alertnames(parsed)[0] == ["B"]
+
+    def test_every_negated_matcher_contributes_an_exemption(self):
+        parsed = self._parse('alertname!~"A|B"', 'alertname!="Typoed"')
+        assert mod._negated_alertnames(parsed)[0] == ["A", "B", "Typoed"]
+
+    def test_duplicate_identical_matchers_are_harmless(self):
+        parsed = self._parse('alertname="A"', 'alertname="A"', 'severity="warning"')
+        assert mod._exact_alertnames(parsed) == (["A"], None)
+        assert mod._matches_labels({"labels": {"severity": "warning"}}, parsed) is True
+
+    def test_a_non_alternation_regex_beside_a_readable_one_is_still_reported(self):
+        parsed = self._parse('alertname=~"A|B"', 'alertname!~"^Kube.*"')
+        assert mod._negated_alertnames(parsed)[1]
+        assert "plain alternation" in mod._negated_alertnames(parsed)[1]
 
 
 class TestEscalationInhibits:
@@ -688,6 +760,29 @@ class TestInhibitTargetScope:
         )
         assert mod.check_inhibit_target_scope(inhibit, SCOPE_RULES) == []
 
+    def test_the_negative_matcher_clears_it_written_first(self):
+        """The remediation the finding asks for must be seen in either order."""
+        inhibit = _scope_inhibit(
+            'alertname="EndpointDown"',
+            'instance!~"https://(git|auth)"',
+            'instance=~"https://.*"',
+        )
+        assert mod.check_inhibit_target_scope(inhibit, SCOPE_RULES) == []
+
+    def test_a_negative_only_target_is_left_alone(self):
+        inhibit = _scope_inhibit(
+            'alertname="EndpointDown"', 'instance!~"https://(git|auth)"'
+        )
+        assert mod.check_inhibit_target_scope(inhibit, SCOPE_RULES) == []
+
+    def test_a_duplicated_positive_matcher_is_reported_once(self):
+        inhibit = _scope_inhibit(
+            'alertname="EndpointDown"',
+            'instance=~"https://.*"',
+            'instance=~"https://.*"',
+        )
+        assert len(mod.check_inhibit_target_scope(inhibit, SCOPE_RULES)) == 1
+
     def test_a_target_not_scoping_the_label_is_left_alone(self):
         inhibit = _scope_inhibit('alertname="EndpointDown"')
         assert mod.check_inhibit_target_scope(inhibit, SCOPE_RULES) == []
@@ -757,6 +852,13 @@ class TestMatcherValueParity:
         """`=` pins one instance; only a mirrored regex claims to reproduce a set."""
         am = self._am('instance="a.example"')
         assert mod.check_matcher_value_parity(am, self.RULES, ("instance",)) == []
+
+    def test_a_second_regex_matcher_on_the_label_is_checked_too(self):
+        """Keyed by label only one of the pair was compared with the expr."""
+        am = self._am('instance=~"a.example|b.example"')
+        am["inhibit_rules"][0]["target_matchers"].append('instance!~"drifted"')
+        (problem,) = mod.check_matcher_value_parity(am, self.RULES, ("instance",))
+        assert 'instance!~"drifted"' in problem
 
     def test_the_arm_is_off_when_no_label_is_declared(self):
         am = self._am('instance=~"nowhere"')

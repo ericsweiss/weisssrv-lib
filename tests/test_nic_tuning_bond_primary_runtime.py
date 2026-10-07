@@ -20,6 +20,9 @@ ABSENT_TASKS = ROLE / "tasks" / "bond-primary-absent.yml"
 SET_TASK = "Set the bond primary at runtime (no reboot)"
 ABSENT_TASK = "Clear the bond primary at runtime (no reboot)"
 SYSFS = "/sys/class/net"
+PROBE_TASK = "Read the bond membership of the requested primary"
+GUARD = "Assert the bond primary is a slave of the active-backup bond"
+INTERFACES = "/etc/network/interfaces"
 
 
 def _body(tasks_file: Path, task_name: str) -> str:
@@ -59,6 +62,26 @@ def _bond(
     (bonding / "primary").write_text("%s\n" % primary, encoding="utf-8")
     (bonding / "primary_reselect").write_text("%s 0\n" % reselect, encoding="utf-8")
     return bonding
+
+
+def _interfaces(path: Path, stanzas: str) -> Path:
+    path.write_text(stanzas, encoding="utf-8")
+    return path
+
+
+SEEDED = """auto bond0
+iface bond0 inet manual
+    bond-slaves eth0 eth1
+    bond-mode active-backup
+"""
+
+
+def _probe_script(sysfs_root: Path, interfaces: Path, iface: str = "eth1") -> str:
+    """The membership probe's real shell body, on a fixture tree and file."""
+    template = ansible_env().from_string(_body(SET_TASKS, PROBE_TASK))
+    body = template.render(nic_tuning_bond_primary=iface)
+    assert "{{" not in body, "the probe body still carries Jinja"
+    return body.replace(SYSFS, str(sysfs_root)).replace(INTERFACES, str(interfaces))
 
 
 def _run(script: str) -> subprocess.CompletedProcess:
@@ -151,3 +174,83 @@ def test_the_absent_arm_fails_loudly_on_an_unwritable_primary(tmp_path):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_the_probe_accepts_a_slave_the_file_and_the_kernel_agree_on(tmp_path):
+    _bond(tmp_path / "net")
+    interfaces = _interfaces(tmp_path / "interfaces", SEEDED)
+    proc = _run(_probe_script(tmp_path / "net", interfaces))
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.startswith("OK")
+
+
+def test_the_probe_rejects_a_leg_the_interfaces_file_never_declares(tmp_path):
+    """The typo case on a host with no bonding: the runtime task reports NOBOND
+    and goes green, so only this read keeps the bad name out of the file."""
+    root = tmp_path / "net"
+    root.mkdir()
+    interfaces = _interfaces(tmp_path / "interfaces", SEEDED)
+    proc = _run(_probe_script(root, interfaces, iface="eth9"))
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.startswith("MISMATCH")
+    assert "eth0 eth1" in proc.stdout
+
+
+def test_the_probe_rejects_a_leg_no_live_bond_enslaves(tmp_path):
+    _bond(tmp_path / "net", slaves="eth0 eth2")
+    interfaces = _interfaces(
+        tmp_path / "interfaces", SEEDED.replace("eth0 eth1", "eth0 eth1 eth2")
+    )
+    proc = _run(_probe_script(tmp_path / "net", interfaces))
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.startswith("MISMATCH")
+    assert "bond0=[eth0 eth2" in proc.stdout, proc.stdout
+
+
+def test_the_probe_ignores_a_live_bond_in_another_mode(tmp_path):
+    """The pin only reaches active-backup bonds, so a slave of a balance-rr bond
+    is not a slave this variable can pin."""
+    _bond(tmp_path / "net", mode="balance-rr")
+    interfaces = _interfaces(tmp_path / "interfaces", SEEDED)
+    proc = _run(_probe_script(tmp_path / "net", interfaces))
+    assert proc.stdout.startswith("MISMATCH")
+
+
+def test_the_probe_accepts_a_file_that_declares_no_slaves(tmp_path):
+    """Slaves declared on the legs with `bond-master` leave nothing to compare;
+    an unknown membership is not a contradiction."""
+    root = tmp_path / "net"
+    root.mkdir()
+    interfaces = _interfaces(
+        tmp_path / "interfaces",
+        "auto bond0\niface bond0 inet manual\n    bond-mode active-backup\n",
+    )
+    proc = _run(_probe_script(root, interfaces, iface="eth9"))
+    assert proc.stdout.startswith("OK")
+
+
+def test_the_probe_reads_the_slaves_of_the_active_backup_stanza_only(tmp_path):
+    """Mutation: a neighbouring bond's `bond-slaves` must not satisfy the check,
+    or a leg of the wrong bond would be persisted as this bond's primary."""
+    root = tmp_path / "net"
+    root.mkdir()
+    interfaces = _interfaces(
+        tmp_path / "interfaces",
+        "auto bond1\niface bond1 inet manual\n"
+        "    bond-slaves eth8 eth9\n    bond-mode balance-rr\n\n" + SEEDED,
+    )
+    assert _run(_probe_script(root, interfaces, iface="eth9")).stdout.startswith("MISMATCH")
+    assert _run(_probe_script(root, interfaces, iface="eth1")).stdout.startswith("OK")
+
+
+def test_the_membership_guard_precedes_every_persistent_write():
+    """The finding: a guard after the writes leaves an unusable bond-primary line
+    in /etc/network/interfaces for the next boot."""
+    tasks = yaml.safe_load(SET_TASKS.read_text(encoding="utf-8"))
+    names = [task.get("name") for task in tasks]
+    writes = [
+        index for index, task in enumerate(tasks)
+        if "ansible.builtin.lineinfile" in task
+    ]
+    assert writes, "bond-primary.yml persists nothing any more"
+    assert names.index(GUARD) < min(writes), names

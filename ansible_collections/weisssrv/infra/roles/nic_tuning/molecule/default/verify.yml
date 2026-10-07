@@ -673,3 +673,45 @@
           which writes a valueless bond-primary attribute and clears the live
           pin on every active-backup bond.
         success_msg: "a whitespace-only bond-primary value fails the play"
+
+    # The seeded bond0 stanza enslaves nic0 and nic1, so nic9 is the typo case:
+    # the pin must fail before either line reaches the file, not after.
+    - name: Bond primary | a primary the bond does not enslave must fail
+      block:
+        - name: Bond primary | drive the pin with a leg the bond has no slave for
+          ansible.builtin.include_role:
+            name: weisssrv.infra.nic_tuning
+            tasks_from: bond-primary.yml
+          vars:
+            nic_tuning_bond_primary: nic9
+
+        - name: Bond primary | the unenslaved primary did NOT fail
+          ansible.builtin.set_fact:
+            nic_tuning_bond_unenslaved_rejected: false
+      rescue:
+        - name: Bond primary | record that the unenslaved primary failed
+          ansible.builtin.set_fact:
+            nic_tuning_bond_unenslaved_rejected: true
+          when: >-
+            ansible_failed_task.name ==
+            'Assert the bond primary is a slave of the active-backup bond'
+
+    - name: Bond primary | read the interfaces file after the unenslaved pin
+      ansible.builtin.slurp:
+        src: /etc/network/interfaces
+      register: nic_tuning_bond_unenslaved_file
+
+    - name: Verify an unenslaved primary is refused with the file untouched
+      ansible.builtin.assert:
+        that:
+          - nic_tuning_bond_unenslaved_rejected | default(false)
+          - "'bond-primary nic9' not in nic_tuning_bond_unenslaved_text"
+          - "'bond-primary_reselect' not in nic_tuning_bond_unenslaved_text"
+        fail_msg: >-
+          bond-primary.yml accepted nic9, which the bond0 stanza does not
+          enslave, or wrote a line before checking: /etc/network/interfaces
+          would carry an unusable pin into the next boot.
+        success_msg: "a primary the bond does not enslave fails before any write"
+      vars:
+        nic_tuning_bond_unenslaved_text: >-
+          {{ nic_tuning_bond_unenslaved_file.content | b64decode }}

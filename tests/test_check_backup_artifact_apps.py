@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from script_loader import load_script
 
 mod = load_script("check-backup-artifact-apps.py")
@@ -82,6 +83,11 @@ ARMLESS_RULES = """
                   severity: warning
 """
 
+UNRELATED_RULES = """
+              - alert: Unrelated
+                expr: up == 0
+"""
+
 
 def test_an_empty_pairing_is_an_operator_error(tmp_path, capsys):
     """Nothing declared on either side certifies a contract never inspected."""
@@ -89,16 +95,18 @@ def test_an_empty_pairing_is_an_operator_error(tmp_path, capsys):
     assert "paired nothing" in capsys.readouterr().err
 
 
-def test_an_empty_pairing_passes_when_the_flag_allows_it(tmp_path, capsys):
+def test_an_armless_alert_fails_even_with_the_flag(tmp_path, capsys):
+    """The flag covers a consumer with no rule, not a rule guarding nothing."""
     argv = _files(tmp_path, "nas_storage_other: []\n", ARMLESS_RULES)
-    assert mod.main(argv + ["--allow-empty"]) == 0
-    assert "--allow-empty" in capsys.readouterr().out
+    assert mod.main(argv + ["--allow-empty"]) == 2
+    assert "guards nothing" in capsys.readouterr().err
 
 
-UNRELATED_RULES = """
-              - alert: Unrelated
-                expr: up == 0
-"""
+def test_the_arms_lookup_separates_an_absent_alert_from_an_armless_one():
+    """An empty arm set is not evidence that the alert is missing."""
+    assert mod.alert_arm_apps(ARMLESS_RULES) == set()
+    with pytest.raises(LookupError):
+        mod.alert_arm_apps(UNRELATED_RULES)
 
 
 def test_no_alert_at_all_passes_with_the_flag(tmp_path, capsys):
@@ -106,6 +114,10 @@ def test_no_alert_at_all_passes_with_the_flag(tmp_path, capsys):
     argv = _files(tmp_path, "nas_storage_other: []\n", UNRELATED_RULES)
     assert mod.main(argv + ["--allow-empty"]) == 0
     assert "--allow-empty" in capsys.readouterr().out
+
+
+def test_a_paired_run_is_unaffected_by_the_flag(tmp_path):
+    assert mod.main(_files(tmp_path, HOST_VARS, RULES) + ["--allow-empty"]) == 0
 
 
 def test_no_alert_at_all_without_the_flag_is_an_operator_error(tmp_path):

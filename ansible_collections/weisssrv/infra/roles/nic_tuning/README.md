@@ -115,8 +115,9 @@ active-backup bond MAC-flap guard is needed.
   - `/etc/network/interfaces` must exist, and hold exactly one
     `bond-mode active-backup` stanza to anchor on. A host configured through
     netplan, systemd-networkd or NetworkManager pins the leg there instead.
-  - The named interface must be enslaved by an active-backup bond on a host
-    that has bonding at all. A host with no bonding module is a clean no-op.
+  - The named interface must be a slave of the active-backup bond: the stanza's
+    `bond-slaves` list, and the live bond where the host has bonding. Both are
+    read before either line is written, so a bad name persists nothing.
 
 - `nic_tuning_disable_ipv6` (default `[]`) — list of interfaces to fully disable
   IPv6 on, removing their `fe80::` link-local. Use where an interface's UNTAGGED

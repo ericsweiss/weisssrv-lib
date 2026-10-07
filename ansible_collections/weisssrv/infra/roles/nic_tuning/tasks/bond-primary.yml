@@ -70,6 +70,64 @@
       the leg in the stanza by hand.
     success_msg: "one active-backup bond stanza found for the bond-primary pin"
 
+# CRITICAL: ordered ahead of the writes below. A primary the bond does not
+# enslave has to fail with the file untouched, or /etc/network/interfaces
+# carries an unusable bond-primary line into the next boot.
+- name: Read the bond membership of the requested primary
+  ansible.builtin.shell: |
+    set -euo pipefail
+    want={{ nic_tuning_bond_primary | quote }}
+    # Declared membership: the slave list of the one active-backup stanza.
+    declared=$(awk '
+      /^[^[:space:]]/ { if (ab) exit; slaves = ""; next }
+      $1 ~ /^bond[-_](slaves|ports)$/ {
+        slaves = ""
+        for (i = 2; i <= NF; i++) slaves = slaves $i " "
+        next
+      }
+      $1 ~ /^bond[-_]mode$/ && ($2 == "active-backup" || $2 == "1") { ab = 1 }
+      END { if (ab) print slaves }
+    ' /etc/network/interfaces)
+    case " $declared " in
+      *" $want "*) decl=yes ;;
+      *) if [ -n "$declared" ]; then decl=no; else decl=unknown; fi ;;
+    esac
+    # Live membership, where the host has bonding at all.
+    live=unknown
+    bonds=
+    if [ -r /sys/class/net/bonding_masters ]; then
+      live=no
+      for b in $(cat /sys/class/net/bonding_masters); do
+        d="/sys/class/net/$b/bonding"
+        [ -d "$d" ] || continue
+        mode=$(awk '{print $1}' "$d/mode" 2>/dev/null || true)
+        [ "$mode" = "active-backup" ] || continue
+        s=$(tr '\n' ' ' < "$d/slaves" 2>/dev/null || true)
+        bonds="$bonds $b=[$s]"
+        case " $s " in *" $want "*) live=yes ;; esac
+      done
+    fi
+    if [ "$decl" = no ] || [ "$live" = no ]; then
+      echo "MISMATCH primary=$want interfaces-slaves=[$declared] active-backup-bonds=[$bonds]"
+    else
+      echo "OK primary=$want"
+    fi
+  args:
+    executable: /bin/bash
+  register: nic_tuning_bond_primary_members
+  changed_when: false
+
+- name: Assert the bond primary is a slave of the active-backup bond
+  ansible.builtin.assert:
+    that:
+      - nic_tuning_bond_primary_members.stdout is match('^OK')
+    fail_msg: >-
+      {{ nic_tuning_bond_primary_members.stdout }}. nic_tuning_bond_primary
+      must name a slave of the active-backup bond, in /etc/network/interfaces
+      and in the kernel where the host has bonding. Nothing is written yet:
+      correct the name, or leave nic_tuning_bond_primary null.
+    success_msg: "the bond primary is a slave of the active-backup bond"
+
 - name: Persist bond-primary_reselect in /etc/network/interfaces
   # Inserted after the active-backup mode line, which is what makes the stanza a
   # bond this variable applies to.

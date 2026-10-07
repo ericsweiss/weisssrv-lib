@@ -1364,6 +1364,10 @@ scripts/check-alertmanager-behaviour.py --config FILE [--repo-root DIR]
 - **Every member of a regex alternation is checked**, not just "at least one
   survives", and a regex that is not a plain alternation is REPORTED rather than
   skipped — an empty name set would otherwise pass silently.
+- **A label may carry several matchers and every one is read.** Alertmanager ANDs
+  them, so a positive regex narrowed by a second negative matcher on the same
+  label is honoured whichever order the two are written in. That second negative
+  matcher is also the remediation the target-scope finding asks for.
 - **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error (no amtool, no
   extractor, unreadable or invalid config). The extracted config and rules are
   parsed ONCE up front and a body that is empty, scalar or unparseable is the
@@ -1393,11 +1397,15 @@ scripts/check-backup-artifact-apps.py --host-vars FILE --rules FILE [--allow-emp
   opt-out for a consumer that collects no backup artefacts; it also accepts a
   rules corpus that defines no `BackupArtifactStale` rule at all, which is the
   state such a consumer is actually in. Declared apps with no alert still fail.
+- A `BackupArtifactStale` rule that exists with no `absent()` arm fails even
+  under `--allow-empty`. The flag covers the consumer that ships no such rule,
+  not a rule that guards nothing, so the two states are told apart rather than
+  both reading as an empty arm set.
 - The rule is read as TEXT, scoped to the alert's own block: it lives inside a
   HelmRelease `values:` blob several levels deep, carrying Go-template
   `{{ $labels }}` strings, so a structural walk buys nothing.
-- **Exit codes:** 0 in sync, 1 on drift, 2 when either file is missing or the
-  pairing is empty without `--allow-empty`.
+- **Exit codes:** 0 in sync, 1 on drift, 2 when either file is missing, the
+  pairing is empty without `--allow-empty`, or the rule is present with no arm.
 
 ### `check-nfs-tls.py` (PyYAML)
 
