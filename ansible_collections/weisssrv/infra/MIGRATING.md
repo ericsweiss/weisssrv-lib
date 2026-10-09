@@ -25,7 +25,7 @@ one-time rename map is
 
 ---
 
-# Unreleased (next release)
+# v0.18.1
 
 ## Fixed
 
