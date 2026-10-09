@@ -76,6 +76,15 @@
         target_node: pve-opt-02
         schedule: "*/15"
         enabled: true
+    # Matches the live 150-0 of the real-shape index exactly (target, schedule
+    # and comment), so parsing that index must mutate nothing.
+    test_replication_jobs_shape:
+      - id: "150-0"
+        source_node: "{{ inventory_hostname }}"
+        target_node: pve-opt-02
+        schedule: "*/15"
+        comment: "guest-150 -> pve-opt-02"
+        enabled: true
     # Two jobs for the same VMID — used by the permuted-ID case (L), where the
     # live jobs carry the same TARGET SET but swapped job-ID assignments (what
     # Proxmox does after a guest migration round-trip).
@@ -351,16 +360,16 @@
       changed_when: false
 
     # CASE D — an absent replication job triggers `pvesr create-local-job`.
-    # Stub state: empty pvesr list, VMID 150 local. Replication tasks are not
+    # Stub state: an empty API index, VMID 150 local. Replication tasks are not
     # in main.yml, so they are included directly as the playbook does.
-    - name: D — reset log, empty replication list, VMID local
+    - name: D — reset log, empty replication index, VMID local
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
         content: "{{ item.content }}"
         mode: "0644"
       loop:
         - {name: pvesr.log, content: ""}
-        - {name: pvesr_list, content: "[]\n"}
+        - {name: pvesh_replication, content: "[]\n"}
         - {name: qm_vmids, content: "150\n"}
       loop_control:
         label: "{{ item.name }}"
@@ -384,6 +393,55 @@
       register: case_d
       changed_when: false
 
+    # CASE D2 — the live index parses in the shape the API returns: the extra
+    # keys (guest, jobnum, type, rate) and a `disable` flag are carried without
+    # churn, and a job sourced elsewhere is neither an orphan nor a mutation.
+    - name: D2 — reset log, seed the API-shape index, VMID local
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - {name: qm_vmids, content: "150\n"}
+        - name: pvesh_replication
+          content: |
+            [{"id": "150-0", "guest": 150, "jobnum": 0, "type": "local",
+              "source": "{{ inventory_hostname }}", "target": "pve-opt-02",
+              "schedule": "*/15", "comment": "guest-150 -> pve-opt-02"},
+             {"id": "150-1", "guest": 150, "jobnum": 1, "type": "local",
+              "source": "{{ inventory_hostname }}", "target": "pve-opt-03",
+              "schedule": "*/30", "rate": 10, "disable": 1},
+             {"id": "160-0", "guest": 160, "jobnum": 0, "type": "local",
+              "source": "pve-opt-09", "target": "pve-opt-02",
+              "schedule": "*/15"}]
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: D2 — run replication tasks against the API-shape index
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+        tasks_from: replication
+      vars:
+        proxmox_ha_replication_jobs: "{{ test_replication_jobs_shape }}"
+
+    - name: D2 — record the parsed index
+      ansible.builtin.set_fact:
+        shape_ids: "{{ proxmox_ha_current_replication_job_ids | default([]) }}"
+        shape_detail: "{{ proxmox_ha_current_jobs_detail | default({}) }}"
+        shape_drifted: "{{ proxmox_ha_drifted_job_ids | default([]) }}"
+        shape_orphans: "{{ proxmox_ha_orphaned_job_ids | default([]) }}"
+
+    - name: D2 — count pvesr calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        total=$(grep -c '^pvesr ' /tmp/molecule-stub-state/pvesr.log || true)
+        echo "{\"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_d2
+      changed_when: false
+
     # CASE J — REAL target drift (desired target set differs) with the VM
     # local: exactly one `pvesr delete` + one `pvesr create-local-job`.
     - name: J — reset log, seed a job on the wrong target, VMID local
@@ -394,10 +452,11 @@
       loop:
         - {name: pvesr.log, content: ""}
         - {name: qm_vmids, content: "150\n"}
-        - name: pvesr_list
+        - name: pvesh_replication
           content: |
-            [{"id": "150-0", "source": "{{ inventory_hostname }}",
-              "target": "pve-opt-99", "schedule": "*/15"}]
+            [{"id": "150-0", "guest": 150, "jobnum": 0, "type": "local",
+              "source": "{{ inventory_hostname }}", "target": "pve-opt-99",
+              "schedule": "*/15"}]
       loop_control:
         label: "{{ item.name }}"
 
@@ -407,6 +466,10 @@
         tasks_from: replication
       vars:
         proxmox_ha_replication_jobs: "{{ test_replication_jobs }}"
+
+    - name: J — record the detected drift
+      ansible.builtin.set_fact:
+        j_drifted: "{{ proxmox_ha_drifted_job_ids | default([]) }}"
 
     - name: J — count pvesr calls
       ansible.builtin.shell: |
@@ -431,10 +494,11 @@
       loop:
         - {name: pvesr.log, content: ""}
         - {name: qm_vmids, content: ""}
-        - name: pvesr_list
+        - name: pvesh_replication
           content: |
-            [{"id": "150-0", "source": "{{ inventory_hostname }}",
-              "target": "pve-opt-99", "schedule": "*/15"}]
+            [{"id": "150-0", "guest": 150, "jobnum": 0, "type": "local",
+              "source": "{{ inventory_hostname }}", "target": "pve-opt-99",
+              "schedule": "*/15"}]
       loop_control:
         label: "{{ item.name }}"
 
@@ -468,12 +532,14 @@
       loop:
         - {name: pvesr.log, content: ""}
         - {name: qm_vmids, content: "150\n"}
-        - name: pvesr_list
+        - name: pvesh_replication
           content: |
-            [{"id": "150-0", "source": "{{ inventory_hostname }}",
-              "target": "pve-opt-03", "schedule": "*/15"},
-             {"id": "150-1", "source": "{{ inventory_hostname }}",
-              "target": "pve-opt-02", "schedule": "*/15"}]
+            [{"id": "150-0", "guest": 150, "jobnum": 0, "type": "local",
+              "source": "{{ inventory_hostname }}", "target": "pve-opt-03",
+              "schedule": "*/15"},
+             {"id": "150-1", "guest": 150, "jobnum": 1, "type": "local",
+              "source": "{{ inventory_hostname }}", "target": "pve-opt-02",
+              "schedule": "*/15"}]
       loop_control:
         label: "{{ item.name }}"
 
@@ -483,6 +549,10 @@
         tasks_from: replication
       vars:
         proxmox_ha_replication_jobs: "{{ test_replication_jobs_multi }}"
+
+    - name: L — record the detected drift
+      ansible.builtin.set_fact:
+        l_drifted: "{{ proxmox_ha_drifted_job_ids | default([]) }}"
 
     - name: L — count pvesr calls
       ansible.builtin.shell: |
@@ -508,12 +578,14 @@
       loop:
         - {name: pvesr.log, content: ""}
         - {name: qm_vmids, content: "150\n"}
-        - name: pvesr_list
+        - name: pvesh_replication
           content: |
-            [{"id": "150-0", "source": "{{ inventory_hostname }}",
-              "target": "pve-opt-02", "schedule": "*/15"},
-             {"id": "151-0", "source": "{{ inventory_hostname }}",
-              "target": "pve-opt-03", "schedule": "*/15"}]
+            [{"id": "150-0", "guest": 150, "jobnum": 0, "type": "local",
+              "source": "{{ inventory_hostname }}", "target": "pve-opt-02",
+              "schedule": "*/15"},
+             {"id": "151-0", "guest": 151, "jobnum": 0, "type": "local",
+              "source": "{{ inventory_hostname }}", "target": "pve-opt-03",
+              "schedule": "*/15"}]
       loop_control:
         label: "{{ item.name }}"
 
@@ -944,10 +1016,11 @@
         mode: "0644"
       loop:
         - {name: pvesr.log, content: ""}
-        - name: pvesr_list
+        - name: pvesh_replication
           content: |
-            [{"id": "150-0", "source": "{{ inventory_hostname }}",
-              "target": "local/pve-opt-02", "schedule": "*/15"}]
+            [{"id": "150-0", "guest": 150, "jobnum": 0, "type": "local",
+              "source": "{{ inventory_hostname }}", "target": "pve-opt-02",
+              "schedule": "*/15"}]
         - {name: qm_vmids, content: "150\n"}
       loop_control:
         label: "{{ item.name }}"
@@ -978,10 +1051,11 @@
         mode: "0644"
       loop:
         - {name: pvesr.log, content: ""}
-        - name: pvesr_list
+        - name: pvesh_replication
           content: |
-            [{"id": "150-0", "source": "pve-opt-09",
-              "target": "local/pve-opt-02", "schedule": "*/15"}]
+            [{"id": "150-0", "guest": 150, "jobnum": 0, "type": "local",
+              "source": "pve-opt-09", "target": "pve-opt-02",
+              "schedule": "*/15"}]
         - {name: qm_vmids, content: "150\n"}
       loop_control:
         label: "{{ item.name }}"
@@ -1106,7 +1180,7 @@
         mode: "0644"
       loop:
         - {name: pvesr.log, content: ""}
-        - {name: pvesr_list_fail, content: "1\n"}
+        - {name: pvesh_replication_fail, content: "1\n"}
       loop_control:
         label: "{{ item.name }}"
 
@@ -1131,7 +1205,7 @@
       ansible.builtin.shell: |
         set -o pipefail
         total=$(grep -c '^pvesr ' /tmp/molecule-stub-state/pvesr.log || true)
-        rm -f /tmp/molecule-stub-state/pvesr_list_fail
+        rm -f /tmp/molecule-stub-state/pvesh_replication_fail
         echo "{\"total\": ${total}}"
       args:
         executable: /bin/bash
@@ -1157,10 +1231,17 @@
            "n_add": {{ (case_n.stdout | from_json).add_calls }},
            "d_create": {{ (case_d.stdout | from_json).create_calls }},
            "d_update": {{ (case_d.stdout | from_json).update_calls }},
+           "d2_total": {{ (case_d2.stdout | from_json).total }},
+           "d2_ids": {{ shape_ids | sort | to_json }},
+           "d2_detail": {{ shape_detail | to_json }},
+           "d2_drifted": {{ shape_drifted | to_json }},
+           "d2_orphans": {{ shape_orphans | to_json }},
+           "j_drifted": {{ j_drifted | to_json }},
            "j_delete": {{ (case_j.stdout | from_json).delete_calls }},
            "j_create": {{ (case_j.stdout | from_json).create_calls }},
            "k_delete": {{ (case_k.stdout | from_json).delete_calls }},
            "k_create": {{ (case_k.stdout | from_json).create_calls }},
+           "l_drifted": {{ l_drifted | to_json }},
            "l_delete": {{ (case_l.stdout | from_json).delete_calls }},
            "l_create": {{ (case_l.stdout | from_json).create_calls }},
            "l_update": {{ (case_l.stdout | from_json).update_calls }},

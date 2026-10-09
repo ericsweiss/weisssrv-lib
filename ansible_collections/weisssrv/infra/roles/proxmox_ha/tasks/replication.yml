@@ -2,10 +2,11 @@
 # ZFS storage replication jobs for Proxmox HA failover, with IDs of the form
 # <VMID>-<job_number>. Drift handling and the orphan policy are in the README.
 
-# A failed read must abort — an empty index would fire create for every job and
+# `pvesr list` takes no --output-format, so the index comes from the API. A
+# failed read must abort — an empty index would fire create for every job and
 # the tolerated "already exists" would hide it behind a green play.
 - name: Get current storage replication jobs
-  ansible.builtin.command: pvesr list --output-format json
+  ansible.builtin.command: pvesh get /cluster/replication --output-format json
   register: proxmox_ha_current_replication_jobs_raw
   changed_when: false
   failed_when: proxmox_ha_current_replication_jobs_raw.rc != 0
@@ -26,6 +27,8 @@
   when: proxmox_ha_current_replication_jobs_raw.stdout | trim | length == 0
   tags: [proxmox_ha_replication]
 
+# The API index also carries guest, jobnum, type, and rate/disable when set;
+# only these four keys are reconciled, so the rest are dropped here.
 - name: Build detailed current jobs lookup
   ansible.builtin.set_fact:
     proxmox_ha_current_jobs_detail: >-
@@ -109,7 +112,6 @@
         | selectattr('id', 'match', _vmid ~ '-')
         | selectattr('target', 'defined')
         | map(attribute='target')
-        | map('regex_replace', '^.+/', '')
         | sort | list
       }}
   ansible.builtin.set_fact:
@@ -123,7 +125,7 @@
             item.id.split('-')[0] in proxmox_ha_local_vmids and
             proxmox_ha_current_jobs_detail[item.id] is defined and
             proxmox_ha_current_jobs_detail[item.id].target is defined and
-            proxmox_ha_current_jobs_detail[item.id].target | regex_replace('^.+/', '') != item.target_node and
+            proxmox_ha_current_jobs_detail[item.id].target != item.target_node and
             _desired_vmid_targets != _current_vmid_targets
           ) else []
         )
@@ -279,7 +281,7 @@
     - "'does not exist' not in proxmox_ha_replication_job_remove_result.stderr | default('')"
   tags: [proxmox_ha_replication]
 
-# `pvesr list` is cluster-wide; orphan detection considers only jobs this node sources.
+# The API index is cluster-wide; orphan detection considers only jobs this node sources.
 - name: Build list of current job IDs originating from this node
   ansible.builtin.set_fact:
     proxmox_ha_current_local_job_ids: >-

@@ -1,7 +1,7 @@
 ---
 # Contract verify: assert the role issued exactly the right Proxmox CLI
-# mutations for absent / already-correct / drifted HA resources and for an
-# absent ZFS replication job, using the logged stub invocations from converge.
+# mutations for absent / already-correct / drifted HA resources and for the ZFS
+# replication index, using the logged stub invocations from converge.
 - name: Verify
   hosts: all
   become: true
@@ -89,14 +89,49 @@
           - ha.d_update == 0
         fail_msg: "Expected create=1/update=0 for absent job, got create={{ ha.d_create }}/update={{ ha.d_update }}"
 
+    # (d2) The index comes from `pvesh get /cluster/replication`, whose jobs
+    #      carry guest/jobnum/type and rate/disable: the parse must keep every
+    #      job, read the bare `target` node, and mutate nothing.
+    - name: D2 — the API-shape index parses whole and triggers no mutation
+      ansible.builtin.assert:
+        that:
+          - ha.d2_ids == ['150-0', '150-1', '160-0']
+          - ha.d2_total == 0
+          - ha.d2_drifted == []
+          - ha.d2_orphans == ['150-1']
+        fail_msg: >-
+          Expected the three stubbed jobs parsed with no drift, orphan 150-1 and
+          zero mutations, got ids={{ ha.d2_ids }}, drifted={{ ha.d2_drifted }},
+          orphans={{ ha.d2_orphans }}, mutations={{ ha.d2_total }}
+
+    - name: D2 — each job's reconciled fields come through unchanged
+      ansible.builtin.assert:
+        that:
+          - "ha.d2_detail['150-0'].source == inventory_hostname"
+          - "ha.d2_detail['150-0'].target == 'pve-opt-02'"
+          - "ha.d2_detail['150-0'].schedule == '*/15'"
+          - "ha.d2_detail['150-0'].comment == 'guest-150 -> pve-opt-02'"
+          - "ha.d2_detail['150-1'].target == 'pve-opt-03'"
+          - "ha.d2_detail['150-1'].schedule == '*/30'"
+          - "ha.d2_detail['160-0'].source == 'pve-opt-09'"
+          - "'rate' not in ha.d2_detail['150-1']"
+          - "'disable' not in ha.d2_detail['150-1']"
+        fail_msg: >-
+          The parsed job detail does not match the stubbed index:
+          {{ ha.d2_detail }}
+
     # (j) REAL target drift (desired target set differs) with the VM local:
     #     the stale job is deleted and recreated on the correct target.
     - name: J — target drift with VM local triggers exactly one delete + one create
       ansible.builtin.assert:
         that:
+          - ha.j_drifted == ['150-0']
           - ha.j_delete == 1
           - ha.j_create == 1
-        fail_msg: "Expected delete=1/create=1 for target drift (VM local), got delete={{ ha.j_delete }}/create={{ ha.j_create }}"
+        fail_msg: >-
+          Expected 150-0 detected as drifted and delete=1/create=1 for target
+          drift (VM local), got drifted={{ ha.j_drifted }},
+          delete={{ ha.j_delete }}/create={{ ha.j_create }}
 
     # (k) Target drift with the VM NOT local: the live job must never be
     #     deleted (recreation is impossible here — deleting would silently
@@ -114,10 +149,14 @@
     - name: L — permuted IDs with matching target set trigger NO mutations
       ansible.builtin.assert:
         that:
+          - ha.l_drifted == []
           - ha.l_delete == 0
           - ha.l_create == 0
           - ha.l_update == 0
-        fail_msg: "Expected delete=0/create=0/update=0 for permuted target set, got delete={{ ha.l_delete }}/create={{ ha.l_create }}/update={{ ha.l_update }}"
+        fail_msg: >-
+          Expected no job detected as drifted and delete=0/create=0/update=0 for
+          a permuted target set, got drifted={{ ha.l_drifted }},
+          delete={{ ha.l_delete }}/create={{ ha.l_create }}/update={{ ha.l_update }}
 
     # (m) An orphaned job, on this node but absent from config, is warned
     #     about and never deleted. Orphan cleanup is manual.
@@ -252,14 +291,15 @@
           legacy-affinity / ct:900, got {{ ha.u_total }} mutations,
           rules={{ ha.u_rules }}, resources={{ ha.u_resources }}
 
-    - name: V — a failed `pvesr list` aborts instead of creating every job
+    - name: V — a failed replication read aborts instead of creating every job
       ansible.builtin.assert:
         that:
           - ha.v_aborted
           - ha.v_total == 0
         fail_msg: >-
-          A failing `pvesr list` must abort the reconcile with no pvesr
-          mutations, got aborted={{ ha.v_aborted }}, mutations={{ ha.v_total }}
+          A failing `pvesh get /cluster/replication` must abort the reconcile
+          with no pvesr mutations, got aborted={{ ha.v_aborted }},
+          mutations={{ ha.v_total }}
 
 # The delegate seam the role took over from the calling play. Without it, a
 # consumer that drops serial: 1 (as MIGRATING instructs) fans the cluster-wide

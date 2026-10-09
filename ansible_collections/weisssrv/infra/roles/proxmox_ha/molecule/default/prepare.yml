@@ -29,11 +29,11 @@
         mode: "0644"
       become: true
 
-    # `pvesr list --output-format json` payload. Empty array => no jobs exist
+    # `pvesh get /cluster/replication` payload. Empty array => no jobs exist
     # so a desired job triggers `pvesr create-local-job`.
-    - name: Default replication job list to empty JSON array
+    - name: Default replication job index to empty JSON array
       ansible.builtin.copy:
-        dest: /tmp/molecule-stub-state/pvesr_list
+        dest: /tmp/molecule-stub-state/pvesh_replication
         content: "[]\n"
         mode: "0644"
       become: true
@@ -107,8 +107,8 @@
           exit 0
       become: true
 
-    # pvesr: logs every mutating call; answers `list` from state.
-    - name: Pvesr stub (logs mutations, answers list from state)
+    # pvesr: logs every mutating call; `list` models the real CLI's options.
+    - name: Pvesr stub (logs mutations, rejects --output-format on list)
       ansible.builtin.copy:
         dest: /usr/local/bin/pvesr
         mode: "0755"
@@ -117,13 +117,18 @@
           STATE=/tmp/molecule-stub-state
           LOG="$STATE/pvesr.log"
           if [ "$1" = "list" ]; then
-            # A read failure (non-quorate cluster, API error) must abort the
-            # reconcile, never read as "no jobs exist".
-            if [ -f "$STATE/pvesr_list_fail" ]; then
-              echo "cluster not ready - no quorum?" >&2
-              exit 2
-            fi
-            cat "$STATE/pvesr_list" 2>/dev/null || echo "[]"
+            # Real `pvesr list` has NO --output-format on any PVE release, so a
+            # role asking it for JSON fails the contract instead of reading an
+            # empty index out of a text table.
+            for arg in "$@"; do
+              case "$arg" in
+                --output-format*)
+                  echo "Unknown option: output-format" >&2
+                  exit 255
+                  ;;
+              esac
+            done
+            echo "JobID            Target            Schedule"
             exit 0
           fi
           echo "pvesr $*" >> "$LOG"
@@ -149,8 +154,9 @@
           exit 0
       become: true
 
-    # pvesh: answers `get /cluster/options` from state; logs every mutation.
-    - name: Pvesh stub (logs mutations, answers cluster options from state)
+    # pvesh: answers the cluster-options and replication reads from state;
+    # logs every mutation.
+    - name: Pvesh stub (logs mutations, answers reads from state)
       ansible.builtin.copy:
         dest: /usr/local/bin/pvesh
         mode: "0755"
@@ -159,6 +165,16 @@
           STATE=/tmp/molecule-stub-state
           if [ "$1" = "get" ] && [ "$2" = "/cluster/options" ]; then
             cat "$STATE/pvesh_cluster_options" 2>/dev/null || echo "{}"
+            exit 0
+          fi
+          if [ "$1" = "get" ] && [ "$2" = "/cluster/replication" ]; then
+            # A read failure (non-quorate cluster, API error) must abort the
+            # reconcile, never read as "no jobs exist".
+            if [ -f "$STATE/pvesh_replication_fail" ]; then
+              echo "cluster not ready - no quorum?" >&2
+              exit 2
+            fi
+            cat "$STATE/pvesh_replication" 2>/dev/null || echo "[]"
             exit 0
           fi
           echo "pvesh $*" >> "$STATE/pvesh.log"
