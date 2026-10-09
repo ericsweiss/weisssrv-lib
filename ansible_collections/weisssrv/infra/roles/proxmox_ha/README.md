@@ -93,9 +93,16 @@ proxmox_ha_replication_jobs:
   migrates. Only a differing target *set* is treated as drift (delete +
   recreate); permuted ids with an equal set are left alone, because churning
   them forces a full ZFS resync per target. A job's `--comment` may therefore
-  name a stale target — read the live target from `pvesr list`.
+  name a stale target — read the live target from
+  `pvesh get /cluster/replication`.
 - **Deletes only where they can be repaired.** Jobs are deleted only while the
   guest is local, so a job that could not be recreated here is never removed.
+- **The live index is read from the API, not `pvesr`.** `pvesr list` takes no
+  `--output-format` on any PVE release, so the role reads
+  `pvesh get /cluster/replication --output-format json`, whose jobs carry a bare
+  `target` node name and a `disable` key only when disabled. A failed read
+  aborts the reconcile: an empty index would fire `create-local-job` for every
+  job and the tolerated "already exists" would hide that behind a green play.
 - **Orphans are reported, never deleted** — for replication jobs, HA rules and
   HA resources alike. An incomplete config would otherwise destroy state that is
   simply not codified yet, and a stale node-affinity rule silently constrains
@@ -131,14 +138,17 @@ ha-manager rules list      # current node-affinity rules
 ha-manager config          # the resource index this role parses
 ha-manager migrate ct:150 <node>
 pvesr status               # replication job health
+pvesh get /cluster/replication  # the job index this role parses
 ```
 
 ## Molecule
 
 `molecule test -s default` from the role directory (CI runs the same scenario).
-`ha-manager`, `pvesr`, `qm` and `pct` are stubbed and every mutation is logged,
-so each case asserts the exact commands issued: add, update, removal
+`ha-manager`, `pvesh`, `pvesr`, `qm` and `pct` are stubbed and every mutation is
+logged, so each case asserts the exact commands issued: add, update, removal
 (`enabled: false`), the permuted-target no-op, the unsupported-rule-type
-failure, and orphan reporting with zero mutations. Delegate selection is driven
+failure, and orphan reporting with zero mutations. The replication cases drive
+the API index in the shape the API returns, and the `pvesr` stub rejects
+`--output-format` the way the real CLI does. Delegate selection is driven
 in its own play: a mixed probe group, a non-member host, and — through
 `tasks_from: delegate` — a group where nothing answers.

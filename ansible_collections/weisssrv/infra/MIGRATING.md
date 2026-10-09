@@ -29,6 +29,14 @@ one-time rename map is
 
 Nothing yet.
 
+# v0.18.1
+
+## Fixed
+
+| Role | What changed |
+|---|---|
+| `proxmox_ha` | The live replication index is read with `pvesh get /cluster/replication --output-format json`. `pvesr list` accepts no `--output-format` on any PVE release, so the v0.17.1 read (which tolerated a failing read) always parsed an EMPTY index, and v0.18.0's fail-closed read turned that into a failed play on every source node. Expect the first real reconcile of jobs that already exist: a job whose target, schedule and comment match the desired entry is left alone, one absent cluster-wide is created, one marked `enabled: false` is deleted, and target-set drift is corrected by delete + recreate only while the guest is local. Orphans and source drift stay reported, never touched. No consumer input change. |
+
 # v0.18.0
 
 A review pass over the whole library. Most of it is additive, but four roles
