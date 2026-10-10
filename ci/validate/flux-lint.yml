@@ -25,17 +25,34 @@ spec:
         stdlib-only tool download.
     kubeconform_version:
       default: "0.8.0"
+      description: >-
+        Held equal to scripts/ci-fetch-tools.py's pin by
+        tests/test_pin_parity.py, so one bump moves every path that installs
+        the binary. This job keeps its own version/sha inputs rather than
+        calling that script: dropping them is a MAJOR input change.
     kubeconform_sha256:
       default: "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883"
     kustomize_version:
-      default: "5.8.1"
+      default: "5.8.2"
+      description: >-
+        Held equal to scripts/ci-fetch-tools.py's pin by
+        tests/test_pin_parity.py, like kubeconform_version above.
     kustomize_sha256:
-      default: "029a7f0f4e1932c52a0476cf02a0fd855c0bb85694b82c338fc648dcb53a819d"
+      default: "06af0a202c2b831207d0173f9c9cdb1b30abceca0747cb3fbb72792d26055c95"
     helm_version:
       default: "3.22.0"
       description: Only installed in substitute mode (schema-validating HelmRelease values).
     helm_sha256:
       default: "1e4ab49e429626cf6c6958d914248b78c9730803c2751b87627e171dc800e7bb"
+    flux_version:
+      default: "2.9.0"
+      description: >-
+        (substitute=true) flux CLI whose `envsubst --strict` is the authority on
+        what kustomize-controller's post-build accepts. Keep it on the Flux
+        release the cluster runs: the parser is the component's own.
+    flux_sha256:
+      default: "7aa9779fc7ec6d030e609dab7dbed8c6fc9e3a7f4670834ad02369268aaf341f"
+      description: sha256 of the flux_version linux-amd64 tarball; moves with it.
     pyyaml_version:
       default: "6.0.2"
       description: >-
@@ -172,6 +189,8 @@ spec:
     KUSTOMIZE_SHA256: "$[[ inputs.kustomize_sha256 ]]"
     HELM_VERSION: "$[[ inputs.helm_version ]]"
     HELM_SHA256: "$[[ inputs.helm_sha256 ]]"
+    FLUX_VERSION: "$[[ inputs.flux_version ]]"
+    FLUX_SHA256: "$[[ inputs.flux_sha256 ]]"
     PYYAML_VERSION: "$[[ inputs.pyyaml_version ]]"
     K8S_VERSION_INPUT: "$[[ inputs.k8s_version ]]"
     KUSTOMIZE_PATH: "$[[ inputs.kustomize_path ]]"
@@ -211,7 +230,11 @@ spec:
         tar xzf "$TOOLS_CACHE/kustomize.tar.gz" -C "$TOOLS_BIN" kustomize
         fetch_verified helm.tar.gz "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz" "$HELM_SHA256"
         tar xzf "$TOOLS_CACHE/helm.tar.gz" -C "$TOOLS_BIN" --strip-components=1 linux-amd64/helm
-        kubeconform -v && kustomize version && helm version --short && envsubst --version | head -1
+        FLUX_URL="https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_linux_amd64.tar.gz"
+        fetch_verified flux.tar.gz "$FLUX_URL" "$FLUX_SHA256"
+        tar xzf "$TOOLS_CACHE/flux.tar.gz" -C "$TOOLS_BIN" flux
+        kubeconform -v && kustomize version && helm version --short && flux --version \
+          && envsubst --version | head -1
       else
         # --- NON-ROOT path (shared tenant runner). No apt, no /usr/local/bin:
         # download with Python stdlib, verify sha256, extract into a workspace
@@ -380,6 +403,15 @@ spec:
         if [ -n "$MISSING" ]; then
           echo "ERROR: placeholders in $SRCPATH reference keys not in versions-configmap:"
           printf '%s\n' "$MISSING" | sed 's/^/  - /'
+          FAILED=1
+          continue
+        fi
+        # CRITICAL: GNU envsubst below reads only `${NAME}`, while Flux's Go
+        # envsubst also reads bash modifiers (`${conf%/*}`) as variables. Its
+        # own --strict is the authority, or the post-build fails in-cluster and
+        # that Kustomization stops reconciling.
+        if ! STRICT_ERR=$(printf '%s\n' "$RAW" | flux envsubst --strict 2>&1 >/dev/null); then
+          echo "ERROR: $SRCPATH fails Flux's strict substitution: $STRICT_ERR"
           FAILED=1
           continue
         fi
