@@ -182,7 +182,10 @@ jobs:
           else
             run_gate check-netpol-except-parity.py "$MANIFEST_ROOT"
           fi
-          run_gate check-scrape-wiring.py "$MANIFEST_ROOT"
+          # --namespace-from-tree, not --namespace: a byte-identical copy cannot
+          # carry a tenant's namespace, and a monitor scoped with matchNames is
+          # refused without one.
+          run_gate check-scrape-wiring.py --namespace-from-tree "$MANIFEST_ROOT"
           run_gate check-kustomization.py "$MANIFEST_ROOT"
           if [ "$ran" -eq 0 ]; then
             echo "ERROR: no manifest gate ran — scripts/ ships none of them, so this job proves nothing"
@@ -249,6 +252,23 @@ jobs:
             exit 1
           fi
           ruff check --no-cache --output-format concise scripts
+
+  # --- comment-length: the comment convention, over the whole tree ----------
+  # The GitLab twin is ci/lint/comment-length.yml. Same vendored gate, same
+  # whole-tree scan, and no config, so the stdlib-only run needs no PyYAML.
+  comment-length:
+    name: comment-length
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          # This job executes PR-controlled repository content
+          # (scripts/check-comment-length.py), and nothing here pushes.
+          persist-credentials: false
+      - name: Check comment length
+        # The gate exits 2 when it found no scannable file, so a repo whose
+        # tree stopped resolving fails instead of reporting green.
+        run: python3 scripts/check-comment-length.py .
 
   # --- lint-docs-links: relative Markdown cross-links resolve ---------------
   lint-docs-links:

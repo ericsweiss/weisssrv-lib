@@ -1092,7 +1092,8 @@ namespace-granularity gate for a whole cluster corpus; this one is the port
 granularity for one namespace.
 
 ```
-scripts/check-scrape-wiring.py [--observability-namespace NS] [--namespace NS] [DIRECTORY]
+scripts/check-scrape-wiring.py [--observability-namespace NS]
+    [--namespace NS | --namespace-from-tree] [DIRECTORY]
 ```
 
 - A ServiceMonitor resolves through **every** Service its labels select, then
@@ -1111,6 +1112,13 @@ scripts/check-scrape-wiring.py [--observability-namespace NS] [--namespace NS] [
   be checked where those policies live. A `matchNames` entry is verified
   against `--namespace` (the namespace the tree deploys into) and refused
   without it, so a stale name never certifies against the wrong policies.
+- **`--namespace-from-tree`** reads that namespace from the one Namespace
+  manifest under the directory, for a pipeline vendored byte-identically that
+  cannot carry a tenant's value (`ci/github/ci.example.yml` passes it). It is
+  consulted only when a monitor declares `matchNames`, so a tree whose
+  Namespace the cluster operator owns is unaffected; when one is declared and
+  the tree names no namespace, or names several, that is the operator error.
+  Mutually exclusive with `--namespace`.
 - **Exit codes:** 0 clean, 1 on an unadmitted port, 2 on an operator error — a
   directory that does not exist, a manifest that does not parse, a corpus with
   no kinded document, a monitor with no endpoints or a selector matching every

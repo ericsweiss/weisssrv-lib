@@ -313,10 +313,40 @@ def admits(policy: dict, pods: dict, accepted: set[int | str], scrape_ns: str) -
     return False
 
 
+def tree_namespace(documents: list[dict]) -> tuple[str | None, str | None]:
+    """The namespace a Namespace manifest in the tree names, else why not.
+
+    Derivation is only consulted when a monitor declares matchNames, so a tree
+    that ships no Namespace (the operator owns it) is unaffected.
+    """
+    named = sorted(
+        {
+            (document.get("metadata") or {}).get("name")
+            for document in documents
+            if document.get("kind") == "Namespace"
+        }
+        - {None, ""}
+    )
+    if len(named) == 1:
+        return named[0], None
+    if not named:
+        return None, (
+            "without a namespace: --namespace-from-tree found no named Namespace "
+            "manifest here, so ship the Namespace this tree deploys into, or pass "
+            "--namespace."
+        )
+    return None, (
+        f"without a namespace: --namespace-from-tree found {len(named)} of them here "
+        f"({', '.join(named)}), and the policies here cover one namespace only. Split "
+        "the tree, or pass --namespace."
+    )
+
+
 def check(
     documents: list[dict],
     scrape_ns: str = DEFAULT_OBSERVABILITY_NS,
     namespace: str | None = None,
+    namespace_error: str | None = None,
 ) -> int:
     """Every monitor's scraped port, against the policies beside it."""
     UNMODELLED.clear()
@@ -352,13 +382,15 @@ def check(
                 "`--namespace`; a wider scrape must be checked where those policies live."
             )
         if names and names != [namespace]:
+            if namespace:
+                detail = (f"against --namespace {namespace}: the policies here cover "
+                          "that namespace only.")
+            else:
+                detail = namespace_error or (
+                    "without --namespace: pass the namespace this tree deploys into.")
             raise GateError(
                 f"{name}: spec.namespaceSelector.matchNames {names} cannot be verified "
-                + (
-                    f"against --namespace {namespace}: the policies here cover that namespace only."
-                    if namespace
-                    else "without --namespace: pass the namespace this tree deploys into."
-                )
+                + detail
             )
         selector = mapping(
             mapping(spec.get("selector"), describe(monitor), "spec.selector").get("matchLabels"),
@@ -401,9 +433,15 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_OBSERVABILITY_NS,
         help="namespace Prometheus scrapes from (default: %(default)s)",
     )
-    parser.add_argument(
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument(
         "--namespace",
         help="namespace this tree deploys into; a monitor's matchNames must equal it",
+    )
+    scope.add_argument(
+        "--namespace-from-tree",
+        action="store_true",
+        help="read that namespace from the one Namespace manifest under the directory",
     )
     arguments = parser.parse_args(argv)
 
@@ -429,8 +467,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    namespace, namespace_error = arguments.namespace, None
+    if arguments.namespace_from_tree:
+        namespace, namespace_error = tree_namespace(documents)
+
     try:
-        return check(documents, arguments.observability_namespace, arguments.namespace)
+        return check(
+            documents, arguments.observability_namespace, namespace, namespace_error
+        )
     except GateError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
