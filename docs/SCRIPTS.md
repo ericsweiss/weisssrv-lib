@@ -2508,7 +2508,7 @@ scripts/wait-for-reloader-roll.sh ns app "$gen" 60 provider
 | Path | What it is |
 |---|---|
 | `kubernetes/reapers/kube_reaper.py` | the shared half of a pod-reaper CronJob program (kube-apiserver client, paging, age arithmetic, uid-preconditioned deletes, config validation, entry point). Stdlib only; mounted beside the app script so `import kube_reaper` resolves from the same directory |
-| `tests/copier_render.py` | copier render harness for a template repo's own suite: `copy_source`, `copier_argv`, `render`, `cli_main`, `check_registered_copies`. Every per-repo value is a parameter |
+| `tests/copier_render.py` | copier render harness for a template repo's own suite: `copy_source`, `copier_argv`, `render`, `cli_main`, `check_registered_copies`. Every per-repo value is a parameter; pass `check_registered_copies(..., ref=...)` the consumer's own `WEISSSRV_LIB_REF` so the engine compares against the pinned release instead of the library working tree |
 | `lint/gitattributes` | the line-ending policy, vendored as a consumer's `.gitattributes` |
 
 ---

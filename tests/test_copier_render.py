@@ -1,6 +1,7 @@
 """tests/copier_render.py — the shared copier render harness."""
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -90,6 +91,39 @@ def test_a_passing_engine_reports_no_problem(tmp_path):
         "vendored: []\n", encoding="utf-8"
     )
     assert copier_render.check_registered_copies(tmp_path / "lib", tmp_path) == []
+
+
+def _recording_engine(tmp_path: Path) -> Path:
+    """A stand-in engine that writes its argv where a test can read it."""
+    lib = tmp_path / "lib" / "scripts"
+    lib.mkdir(parents=True)
+    (lib / "check-vendored-copies.py").write_text(
+        "import json, sys\n"
+        "open(%r, 'w').write(json.dumps(sys.argv[1:]))\n" % str(tmp_path / "argv.json"),
+        encoding="utf-8",
+    )
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "vendored-manifest.yml").write_text(
+        "vendored: []\n", encoding="utf-8"
+    )
+    return tmp_path / "lib"
+
+
+def test_a_ref_reaches_the_engine(tmp_path):
+    """Without --ref the engine compares against the library working tree, so a
+    consumer's pass would say nothing about the release it pins."""
+    lib = _recording_engine(tmp_path)
+    assert copier_render.check_registered_copies(lib, tmp_path, ref="v1.2.3") == []
+    argv = json.loads((tmp_path / "argv.json").read_text(encoding="utf-8"))
+    assert argv[argv.index("--ref") + 1] == "v1.2.3"
+
+
+def test_no_ref_leaves_the_flag_off(tmp_path):
+    """Every current caller passes no ref and must keep the argv it had."""
+    lib = _recording_engine(tmp_path)
+    assert copier_render.check_registered_copies(lib, tmp_path) == []
+    argv = json.loads((tmp_path / "argv.json").read_text(encoding="utf-8"))
+    assert "--ref" not in argv
 
 
 def test_a_failing_engine_is_reported(tmp_path):
