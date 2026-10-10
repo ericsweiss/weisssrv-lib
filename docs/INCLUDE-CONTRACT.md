@@ -588,7 +588,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `kustomize_sha256` | the sha for `kustomize_version` | moves with it |
 | `helm_version` | `3.22.0` |  |
 | `helm_sha256` | the sha for `helm_version` | moves with it |
-| `flux_version` | `2.9.0` | substitute mode only — the flux CLI whose `envsubst --strict` decides whether the post-build will reconcile. Keep it on the Flux release the cluster runs |
+| `flux_version` | `2.9.0` | substitute mode only — the flux CLI whose `envsubst --strict` decides whether the post-build will reconcile. Held equal to the versions ConfigMap's own `flux_version` by the job, which fails on a mismatch rather than linting with a parser the cluster does not run |
 | `flux_sha256` | the sha for `flux_version` | moves with it |
 | `pyyaml_version` | `6.0.2` | pins the inline `spec.path` parser |
 | `k8s_version` | `""` | empty = derived from the ConfigMap's `k3s_version` (substitute mode); simple mode falls back to 1.36.0 |

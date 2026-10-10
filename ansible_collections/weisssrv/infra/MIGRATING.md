@@ -75,6 +75,18 @@ substitute (root) arm only, so the tenant arm downloads nothing. A consumer
 whose cluster runs another Flux release passes its own, so the gate's parser is
 the one its kustomize-controller uses.
 
+**The job holds that CLI equal to the versions ConfigMap's `flux_version`.**
+`flux_version` was a fourth Flux pin no gate checked —
+`scripts/check-flux-version-pin.py` reads only the `FLUX_VERSION[=:]` spelling
+— so a cluster that bumped Flux in `all.yml` kept linting with the old parser
+silently. The substitute arm now compares the installed CLI against the
+exported `flux_version` after `export-versions` and fails on a mismatch, naming
+both versions; a leading `v` on either side is tolerated. **Act at the bump:** a
+consumer whose ConfigMap declares a `flux_version` other than `2.9.0` must pass
+the matching `flux_version`/`flux_sha256` inputs or the job reds. A ConfigMap
+declaring no `flux_version` prints that the pin is held equal to nothing and
+proceeds.
+
 **One pin set per tool across the CI surface, asserted by
 `tests/test_pin_parity.py`.** Changed defaults: `flux-lint`'s
 `kustomize_version` 5.8.1 → 5.8.2 (sha with it), `ci/lint/shellcheck.yml`'s

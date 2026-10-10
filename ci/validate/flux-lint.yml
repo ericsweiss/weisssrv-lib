@@ -48,8 +48,10 @@ spec:
       default: "2.9.0"
       description: >-
         (substitute=true) flux CLI whose `envsubst --strict` is the authority on
-        what kustomize-controller's post-build accepts. Keep it on the Flux
-        release the cluster runs: the parser is the component's own.
+        what kustomize-controller's post-build accepts. Held equal to the
+        versions ConfigMap's `flux_version` by the job itself, which fails on a
+        mismatch: the parser must be the release the cluster runs. A ConfigMap
+        declaring no `flux_version` gets a printed note instead.
     flux_sha256:
       default: "7aa9779fc7ec6d030e609dab7dbed8c6fc9e3a7f4670834ad02369268aaf341f"
       description: sha256 of the flux_version linux-amd64 tarball; moves with it.
@@ -311,6 +313,21 @@ spec:
       VARS=$(bash "$FLUX_RENDER_SCRIPT" export-versions "$VERSIONS_CONFIGMAP") \
         || { echo "ERROR: failed to extract version keys from $VERSIONS_CONFIGMAP"; exit 1; }
       eval "$VARS"
+
+      # CRITICAL: `envsubst --strict` is authoritative only while the CLI is the
+      # release kustomize-controller runs, and the ConfigMap is where the
+      # cluster states that release.
+      FLUX_CLI=$(flux --version | awk '{print $NF}')
+      if [ -n "${flux_version:-}" ]; then
+        if [ "$FLUX_CLI" != "${flux_version#v}" ]; then
+          echo "ERROR: flux CLI $FLUX_CLI != $VERSIONS_CONFIGMAP flux_version ${flux_version#v}"
+          echo "The strict parser must be the cluster's own: move this include's flux_version/flux_sha256 inputs onto ${flux_version#v}."
+          exit 1
+        fi
+        echo "flux CLI $FLUX_CLI matches the versions-configmap flux_version"
+      else
+        echo "NOTE: $VERSIONS_CONFIGMAP declares no flux_version, so the flux CLI pin ($FLUX_CLI) is held equal to nothing"
+      fi
 
       RENDER_ALL=$(mktemp)
       export RENDER_ALL
