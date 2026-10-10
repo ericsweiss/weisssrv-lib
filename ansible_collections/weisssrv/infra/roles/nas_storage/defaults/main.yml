@@ -83,9 +83,9 @@ nas_storage_archive_backup_sources: []
 # entry. Needs `zfs send -X` (OpenZFS 2.3+); the script refuses to run on an
 # older zfs rather than silently replicating an excluded child.
 nas_storage_archive_backup_exclude: []
-# Excluding an already-replicated child destroys its archive-side copy and
-# snapshot history, because the recursive receive uses -F. The run refuses
-# until this is set.
+# Destroy the archive-side copy of a newly excluded child. The stream leaves it
+# in place, so while this is false the run proceeds and warns about an orphan
+# whose space is never reclaimed.
 nas_storage_archive_backup_exclude_destroy_ok: false
 # The one dataset receiving cluster-wide vzdump writes, snapshotted only once
 # writes under its mountpoint have quiesced. Empty disables the guard.

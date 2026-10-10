@@ -217,12 +217,20 @@ plug/unplug/restore subcommands and the scrub-timer wiring.
   recursive send (`zfs send -X`, OpenZFS 2.3+). Each entry must be a descendant
   of a source, which the role asserts, and a zfs without `send -X` fails the run
   instead of replicating the excluded child anyway.
-- Adding an exclusion for a child that is already replicated **destroys its copy
-  on the archive pool** on the next run: the recursive receive uses `-F`, which
-  removes datasets absent from the stream. The run refuses, naming the dataset,
-  until `nas_storage_archive_backup_exclude_destroy_ok` is `true`. Snapshot or
-  `zfs send` the archived copy elsewhere first if it still has value. With the
-  flag set the run logs a warning naming each destination it destroys.
+- An excluded child also loses its **source-side** snapshots. The recursive
+  snapshot still covers it, so the copy taken each run is destroyed immediately —
+  it has no destination and no incremental base — and retention destroys every
+  `archsync-*` snapshot it still carries: the exclusion is its retention policy.
+- An exclusion for a child that is **already replicated leaves that copy on the
+  archive pool**. A `send -R -X` stream does not remove it, `receive -F` included,
+  so each run reconciles it instead. With
+  `nas_storage_archive_backup_exclude_destroy_ok: true` the copy is destroyed
+  (`zfs destroy -r`, one log line per copy, and a failed destroy fails the run);
+  with it `false` the run proceeds and warns, naming the orphan whose space is
+  never reclaimed. Snapshot or `zfs send` it elsewhere first if it has value.
+- That orphan is not counted when the next incremental base is chosen, so keeping
+  it does not force a full re-send. It keeps its own snapshot history under the
+  normal window — only the source side treats an exclusion as "keep nothing".
 - A successful run starts `nas_storage_archive_backup_on_success_units`. The
   default is empty, which renders no `OnSuccess=` line, because the units it
   would name belong to other roles. A site running `restic_offsite` sets
@@ -233,9 +241,9 @@ plug/unplug/restore subcommands and the scrub-timer wiring.
   its mountpoint quiesce, so a half-written image is never captured. On timeout
   that dataset is deferred to the next run (exit 75) rather than failed. Empty
   disables the guard.
-- Retention per dataset: the newest `nas_storage_archive_backup_keep_recent`
-  snapshots, plus the newest of each of the last
-  `nas_storage_archive_backup_keep_monthly` calendar months. A failed
+- Retention per dataset (an excluded child excepted, above): the newest
+  `nas_storage_archive_backup_keep_recent` snapshots, plus the newest of each of
+  the last `nas_storage_archive_backup_keep_monthly` calendar months. A failed
   `zfs destroy` does not fail the run — replication still succeeded — but it
   sets `archive_backup_last_prune_success 0`, so blocked retention is visible
   before the pool fills. The per-dataset child carries that back as exit 76
@@ -381,8 +389,8 @@ change deferred to a future release.
 | `nas_storage_archive_backup_enabled` | `false` | Deploy archive replication (off converges). |
 | `nas_storage_archive_backup_pool` | `""` | Destination pool; its root properties are rewritten. |
 | `nas_storage_archive_backup_sources` | `[]` | Datasets replicated recursively. Roots must be filesystems. |
-| `nas_storage_archive_backup_exclude` | `[]` | Children left out of the recursive send (`zfs send -X`, OpenZFS 2.3+). Each must be a descendant of a source. Adding one destroys the child's existing archive-side copy, because the receive uses `-F`. |
-| `nas_storage_archive_backup_exclude_destroy_ok` | `false` | Opt-in for that destruction. While `false` the run refuses, naming the archive-side dataset an exclusion would destroy. |
+| `nas_storage_archive_backup_exclude` | `[]` | Children left out of the recursive send (`zfs send -X`, OpenZFS 2.3+). Each must be a descendant of a source. An excluded child keeps no source-side `archsync-*` snapshot. |
+| `nas_storage_archive_backup_exclude_destroy_ok` | `false` | Destroy the archive-side copy of an excluded child (`zfs destroy -r`). While `false` the run proceeds and warns, naming the orphan it leaves on the archive pool. |
 | `nas_storage_archive_backup_on_success_units` | `[]` | Units the unit starts on a successful run; empty renders no `OnSuccess=`. A site handing off to `restic_offsite` sets `[restic-offsite.service]`. |
 | `nas_storage_archive_backup_vzdump_target` | `""` | Dataset needing the quiesce guard; empty disables it. |
 | `nas_storage_archive_backup_keep_recent`, `nas_storage_archive_backup_keep_monthly` | `3` / `6` | Snapshot retention. |
