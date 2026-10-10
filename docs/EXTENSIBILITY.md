@@ -17,6 +17,13 @@ Two rules govern every seam:
   [README](../ansible_collections/weisssrv/infra/README.md)). A seam is only
   needed where a role hardcodes a *mechanism*.
 
+A gate or script a consumer forked because this library does not offer it is a
+missing seam of the same kind. The queue of those, each with the site data that
+has to become a flag first, is [SCRIPTS.md § Extraction
+queue](SCRIPTS.md#extraction-queue) — including the ones already offered under
+another name, where the work is a consumer deleting its fork rather than a
+library change.
+
 ## Seam map
 
 | Axis | Today | Seam | Where |

@@ -2603,8 +2603,9 @@ consumer copies, as a measure of how far the forks have already travelled; a
 large one means reconciling two behaviours, not copying a file.
 
 Two of them need no extraction — the library already offers the gate under
-another name, and the work is for the consumers to adopt it and delete their
-fork:
+another name, so each is a **consumer-adoption item** (include the offered
+gate, delete the fork), not library work, and neither should be rediscovered as
+an extraction next release:
 
 - `check-kustomization-coverage.py` → [`check-kustomization.py`](#check-kustomizationpy-pyyaml),
   which walks the reference graph from a root directory rather than flat-walking
