@@ -360,6 +360,55 @@ def test_a_missing_cluster_config_is_vacuous(tmp_path):
         gate.check(root)
 
 
+HOSTS_NAMED = HOSTS.replace(
+    "ansible_host: 10.0.10.222", "ansible_host: k3s-02.example.com"
+)
+
+
+def test_a_name_valued_ansible_host_is_skipped_not_fatal(tmp_path, capsys):
+    """`ansible_host` is legally a name, and parsing one as an address ended
+    the gate in a traceback and exit 1, read by a wrapper as drift."""
+    root = _repo(
+        tmp_path, hosts=HOSTS_NAMED,
+        manifests={"apps/a/slice.yaml": _slice("10.0.10.102")},
+        group_vars={"nas.yml": _exports("10.0.10.0/24")},
+    )
+    assert gate.main(["--repo-root", str(root)]) == 0
+    assert "2 LAN address(es) checked" in capsys.readouterr().out
+
+
+def test_a_name_valued_ansible_host_caveats_a_containment_finding(tmp_path):
+    """A host behind a name is neither matched nor reported, so a finding that
+    rests on containment must say the comparison was partial."""
+    root = _repo(
+        tmp_path, hosts=HOSTS_NAMED,
+        manifests={"apps/a/slice.yaml": _slice("10.0.10.199")},
+    )
+    problems, _checked = gate.check(root)
+    assert any("k3s-02.example.com is not an address" in p for p in problems)
+
+
+def test_a_group_with_a_name_valued_member_is_compared_on_its_addresses(tmp_path):
+    """The partial-group arm parses the same values, so a named member must
+    leave both sides of the comparison rather than end the run."""
+    root = _repo(
+        tmp_path, hosts=HOSTS_NAMED,
+        manifests={"apps/a/slice.yaml": _slice("10.0.10.102")},
+        group_vars={"nas.yml": _exports("10.0.10.221/32")},
+    )
+    assert gate.check(root) == ([], 2)
+
+
+def test_an_inventory_of_only_names_is_vacuous(tmp_path):
+    root = _repo(
+        tmp_path,
+        hosts="all:\n  hosts:\n    nas:\n      ansible_host: nas.example.com\n",
+        manifests={"apps/a/slice.yaml": _slice("10.0.10.102")},
+    )
+    with pytest.raises(gate.Vacuous, match="is a name, not an address"):
+        gate.check(root)
+
+
 def test_main_reports_a_finding_as_exit_1(tmp_path, capsys):
     root = _repo(tmp_path, manifests={"apps/a/slice.yaml": _slice("10.0.10.199")})
     assert gate.main(["--repo-root", str(root)]) == 1

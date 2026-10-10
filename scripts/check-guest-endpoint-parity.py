@@ -137,6 +137,36 @@ def nfs_exports(root: Path, inventory_dir: str) -> Tuple[
     return found, skipped
 
 
+def host_addresses(values) -> Tuple[Dict[str, object], List[str]]:
+    """({value: parsed address}, the values that are names instead).
+
+    An `ansible_host` is ordinarily an address but legally a name, and a name
+    cannot be placed in a CIDR, so containment reads the parsed map alone.
+    """
+    parsed: Dict[str, object] = {}
+    unparsed: List[str] = []
+    for value in values:
+        try:
+            parsed[str(value)] = ipaddress.ip_address(str(value))
+        except ValueError:
+            unparsed.append(str(value))
+    return parsed, sorted(unparsed)
+
+
+def _name_caveat(names: List[str]) -> str:
+    """The clause a containment finding carries when an ansible_host is a name.
+
+    A host behind a name is neither matched nor reported, so the finding may
+    name an address that is in fact live.
+    """
+    if not names:
+        return ""
+    return (
+        f" (ansible_host {', '.join(names)} is not an address, so no endpoint "
+        "can be matched against it)"
+    )
+
+
 def _networks(specs: List[str]) -> List[Tuple[str, object]]:
     """(spec, network) for every client spec that is a CIDR or a bare address.
 
@@ -166,17 +196,18 @@ def partial_group_exports(
         if not networks:
             continue
         for group, members in sorted(groups.items()):
+            placeable, named = host_addresses(members)
             admitted = {
                 address
-                for address in members
-                if any(ipaddress.ip_address(address) in net for net in networks)
+                for address, parsed in placeable.items()
+                if any(parsed in net for net in networks)
             }
-            if not admitted or admitted == members:
+            if not admitted or admitted == set(placeable):
                 continue
             problems.append(
                 f"{rel}: export {export} admits part of {group} but not "
-                f"{', '.join(sorted(members - admitted))} — that node mounts "
-                "nothing while the rest do"
+                f"{', '.join(sorted(set(placeable) - admitted))} — that node "
+                "mounts nothing while the rest do" + _name_caveat(named)
             )
     return problems
 
@@ -299,6 +330,12 @@ def check(
     """(problems, number of in-LAN addresses compared against the inventory)."""
     hosts_yml = f"{inventory_dir}/hosts.yml"
     known, groups = inventory(root, hosts_yml, scoped_groups)
+    hosts, named_hosts = host_addresses(known)
+    if not hosts:
+        raise Vacuous(
+            f"every ansible_host in {hosts_yml} is a name, not an address, so no "
+            "endpoint or export client can be matched against one"
+        )
     try:
         config = gate_common.load_cluster_config(root)
     except gate_common.OperatorError as exc:
@@ -326,11 +363,11 @@ def check(
             problems.append(
                 f"{rel}: {resource} points at {address}, which is no ansible_host "
                 f"in {hosts_yml} — the guest was renumbered on one side only"
+                + _name_caveat(named_hosts)
             )
 
     exports, export_skipped = nfs_exports(root, inventory_dir)
     problems.extend(export_skipped)
-    hosts = [ipaddress.ip_address(a) for a in known]
     for export, specs, rel in exports:
         for spec, network in _networks(specs):
             in_lan = [
@@ -340,11 +377,12 @@ def check(
             if not in_lan:
                 continue
             checked += 1
-            if not any(host in network for host in hosts):
+            if not any(host in network for host in hosts.values()):
                 problems.append(
                     f"{rel}: export {export} admits {spec}, which covers no "
                     f"ansible_host in {hosts_yml} — the client list was written "
                     "for an address range the inventory no longer uses"
+                    + _name_caveat(named_hosts)
                 )
     problems.extend(partial_group_exports(exports, groups))
 

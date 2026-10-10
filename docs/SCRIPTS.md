@@ -1596,6 +1596,9 @@ scripts/check-guest-endpoint-parity.py
   endpoint may legitimately name an upstream. The same holds for an export
   client range outside them, and for a spec this gate cannot resolve to an
   address at all (a hostname, netgroup or wildcard).
+- An `ansible_host` holding a NAME rather than an address cannot be placed in a
+  CIDR, so it is left out of the comparison and every finding that rests on
+  containment says which names were skipped.
 - Addresses spelled `${cluster_*}` are substituted from the cluster-config
   ConfigMap the way Flux's postBuild does, including a whole-list roster key; a
   placeholder that resolves to nothing is reported rather than dropped, because
@@ -1604,8 +1607,9 @@ scripts/check-guest-endpoint-parity.py
   directory, and names both at once when either is absent. Vendor all three.
 - **Exit codes:** 0 clean, 1 on drift, 2 when it inspected nothing — no
   endpoint address in the tree, no address inside the declared CIDRs, an
-  inventory declaring no `ansible_host`, or a cluster-config naming none of the
-  `--lan-cidr-key` keys with no `--extra-lan-cidr` to stand in.
+  inventory declaring no `ansible_host` or declaring only names, or a
+  cluster-config naming none of the `--lan-cidr-key` keys with no
+  `--extra-lan-cidr` to stand in.
 
 ### `check-role-inputs.py` (PyYAML, Jinja2)
 
