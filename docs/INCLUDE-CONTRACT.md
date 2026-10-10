@@ -42,7 +42,7 @@ column here.
 | [`ci/lint/terraform-tflint.yml`](#cilintterraform-tflintyml) | | ○ | | ○ |
 | [`ci/lint/docs-link-check.yml`](#cilintdocs-link-checkyml) | ● | ● | ● | ● |
 | [`ci/lint/runbook-anchors.yml`](#cilintrunbook-anchorsyml) | | ○ | | ○ |
-| [`ci/lint/comment-length.yml`](#cilintcomment-lengthyml) | ● | ● | ○ | ○ |
+| [`ci/lint/comment-length.yml`](#cilintcomment-lengthyml) | ● | ● | ● | ● |
 | [`ci/lint/python-lint.yml`](#cilintpython-lintyml) | ● | ● | ● | ● |
 | [`ci/lint/ansible-lint.yml`](#cilintansible-lintyml) | ● | ● | | ● |
 | [`ci/validate/terraform.yml`](#civalidateterraformyml) | ● | ● | | ● |
@@ -60,29 +60,27 @@ column here.
 | [`ci/templates/{dep-cache,install-1password,terraform-http-backend}.yml`](#shared-fragments-citemplates) | | ● | | ● |
 | [`ci/templates/docker-dind.yml`](#shared-fragments-citemplates) | | ● | ○ | |
 | [`ci/deploy/deploy-base.yml`](#deploy-templates-cideploy) | | ● | | ● |
-| [`ci/deploy/kubectl-setup.yml`](#deploy-templates-cideploy) | | ○ | | ● |
+| [`ci/deploy/kubectl-setup.yml`](#deploy-templates-cideploy) | | ● | | ● |
 | [`ci/deploy/ansible-deploy.yml`](#deploy-templates-cideploy) | | ○ | | ○ |
 | [`ci/deploy/cluster-verify-base.yml`](#deploy-templates-cideploy) | | ○ | | ○ |
 
 ●‡ = three separate `docker-build` entries, one per published image
 (molecule-ci, molecule-test, ansible-deploy).
 ●* = copier-gated on `enable_semantic_release` (cluster template only).
-†  = copier-gated on `enable_image_build` (app template). The other 17
-cluster-template entries and 7 app-template entries are unconditional; the app
+†  = copier-gated on `enable_image_build` (app template). The other 18
+cluster-template entries and 8 app-template entries are unconditional; the app
 template has no `enable_semantic_release` question, so its tenant always gets
 the release job.
 ○ = extracted here, not yet adopted. Every ○ in the table is one of these:
-weisssrv carries a local render of `kubectl-setup` and runs the
-runbook-anchors gate from its own job; weisssrv and the cluster template each
-carry a local `.terraform-drift-plan` rather than including this one;
-comment-length runs locally in both of those repos too (weisssrv from its own
-consolidated gate job, the cluster template as `task lint:comment-length`) and
-the tenant pipeline does not run it at all; the tenant extends
+weisssrv runs the runbook-anchors gate from its own consolidated gate job and
+the cluster template runs no equivalent; the cluster template carries a local
+`.terraform-drift-plan` rather than including this one; the tenant extends
 `ci/build/docker-build.yml` directly instead of `ci/templates/docker-dind.yml`;
 and no consumer takes `cluster-verify-base`, `cluster-drift-plan`,
 `terraform-tflint` or the `ansible-deploy` job template yet. Until a consumer
-adopts one, treat its defaults as free to change. The cluster template includes
-`kubectl-setup` and `!reference`s `.kubectl-setup`, so its inputs are contract.
+adopts one, treat its defaults as free to change. weisssrv and the cluster
+template both include `kubectl-setup` and `!reference` `.kubectl-setup`, so its
+inputs are contract.
 
 The app template renders a TENANT: no Ansible, no Terraform, no shell scripts
 and no test suite of its own, which is why the shellcheck, terraform-tflint,
