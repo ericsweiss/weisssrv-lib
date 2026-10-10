@@ -202,7 +202,14 @@ byte-identically vendored workflow cannot carry a tenant's value; it is
 consulted only when a monitor declares `matchNames`, so a tenant whose
 Namespace the cluster operator owns is unaffected, and zero or several
 Namespace manifests under a tree that does declare `matchNames` is the
-operator error.
+operator error. **Act at the bump, app-template:** the GitHub workflow is one
+of five call sites, and the other four pass no namespace at all — the
+`Taskfile.yml`, the GitLab pipeline, the pre-commit hook and the
+`manifest-gates` workflow. A tenant tree that relies on the Kustomization's
+namespace transformer still exits 2 there the moment a monitor declares
+`matchNames`, so add `--namespace-from-tree` to all four in the MR that bumps
+the pin, and check the rendered `kubernetes/flux` ships exactly one Namespace
+manifest for the derivation to find.
 
 **`tests/copier_render.py`'s `check_registered_copies` takes an optional
 `ref`** and forwards `--ref`. Without it the comparison runs against whatever
