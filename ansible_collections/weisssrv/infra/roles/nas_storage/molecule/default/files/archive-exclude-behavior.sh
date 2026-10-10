@@ -111,6 +111,37 @@ if grep -q '^DESTROY' "$WARN_OUT"; then
   fail "without the opt-in no archive copy may be destroyed"
 fi
 
+# The orphans left in place are counted, so write_prom_metrics can publish them.
+env -i PATH="$PATH" bash -c '
+  # shellcheck disable=SC1091
+  source "'"$WORK"'/'"$(basename "$EXCLUDED")"'.lib" || true
+  set +e
+  zfs() { return 0; }
+  reconcile_excluded_archive_copies >/dev/null
+  [ "$EXCLUDED_ORPHANS" -eq 2 ] || exit 61
+  [ "$_EXCLUDE_RECONCILED" -eq 1 ] || exit 62
+  exit 0
+' || fail "the reconcile must count the orphans it leaves (exit $?)"
+
+# The probe records the zfs the leave-in-place behaviour was observed on.
+PROBE_OUT="$WORK/probe.out"
+env -i PATH="$PATH" bash -c '
+  # shellcheck disable=SC1091
+  source "'"$WORK"'/'"$(basename "$EXCLUDED")"'.lib" || true
+  set +e
+  zfs() {
+    case "$1" in
+      version) echo "zfs-2.3.1"; echo "zfs-kmod-2.3.1" ;;
+      *) echo "usage: zfs send [-R [-X dataset[,dataset]...]] snapshot" >&2; return 2 ;;
+    esac
+  }
+  assert_send_exclude_supported
+  echo "rc=$?"
+' >"$PROBE_OUT" 2>&1
+grep -q '^rc=0$' "$PROBE_OUT" || fail "the probe must pass on a zfs with -X: $(cat "$PROBE_OUT")"
+grep -q "send -X' supported by zfs-2.3.1" "$PROBE_OUT" \
+  || fail "the probe must log the zfs version it observed: $(cat "$PROBE_OUT")"
+
 # Nothing on the archive pool yet: the reconcile has nothing to do.
 env -i PATH="$PATH" bash -c '
   # shellcheck disable=SC1091

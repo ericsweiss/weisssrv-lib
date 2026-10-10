@@ -99,6 +99,27 @@ write_prom_metrics 1 42
 grep -qx 'archive_backup_last_prune_success 1' "$PROM_FILE" \
   || fail "prune gauge stuck at 0 with no marker present"
 
+# An excluded child's orphaned archive copy is alertable, not just a log line.
+_EXCLUDE_RECONCILED=1
+EXCLUDED_ORPHANS=2
+write_prom_metrics 1 42
+grep -qx 'archive_backup_excluded_orphans 2' "$PROM_FILE" \
+  || fail "the orphan count did not reach its gauge"
+
+# A run that exits before the reconcile knows nothing about the archive pool,
+# so it must re-publish the last count rather than clear the alert.
+_EXCLUDE_RECONCILED=0
+EXCLUDED_ORPHANS=0
+write_prom_metrics 1 42
+grep -qx 'archive_backup_excluded_orphans 2' "$PROM_FILE" \
+  || fail "an early exit cleared the orphan gauge"
+
+# With the reconcile run and nothing left behind the gauge clears.
+_EXCLUDE_RECONCILED=1
+write_prom_metrics 1 42
+grep -qx 'archive_backup_excluded_orphans 0' "$PROM_FILE" \
+  || fail "the orphan gauge stuck at its previous count"
+
 # media-mover: failure branch preserves the last-success timestamp
 # media-mover.sh runs top-level code on source, so extract just the function.
 awk '/^write_prom_metrics\(\) \{/{f=1} f; f && /^\}/{exit}' "$MOVER" > "$WORK/mover-fn.sh"
