@@ -89,12 +89,17 @@ proxmox_ha_replication_jobs:
   index (a `<type>:<vmid>` line plus that resource's indented properties), so
   the role reads it once per run and splits it per SID. A per-resource
   `ha-manager config <sid>` call is rejected by PVE.
-- **Replication drift.** Proxmox permutes job-id↔target pairings when a guest
-  migrates. Only a differing target *set* is treated as drift (delete +
-  recreate); permuted ids with an equal set are left alone, because churning
-  them forces a full ZFS resync per target. A job's `--comment` may therefore
-  name a stale target — read the live target from
-  `pvesh get /cluster/replication`.
+- **A job's identity is `(VMID, target)`, not its id.** Proxmox permutes
+  job-id↔target pairings when a guest migrates, so only a differing target
+  *set* is treated as drift (delete + recreate); permuted ids with an equal set
+  are reported as `ID PERMUTATION` and left alone, because churning them forces
+  a full ZFS resync per target.
+- **`schedule` and `comment` are reconciled from the entry naming the LIVE
+  target**, read from `pvesh get /cluster/replication`, not from the entry
+  carrying that id. A comment can therefore never name a node the job does not
+  replicate to, and a stale one left by an earlier run is corrected in place.
+  Write each entry's `comment` about its own `target_node` and the permutation
+  takes care of itself.
 - **Deletes only where they can be repaired.** Jobs are deleted only while the
   guest is local, so a job that could not be recreated here is never removed.
 - **The live index is read from the API, not `pvesr`.** `pvesr list` takes no
@@ -147,8 +152,10 @@ pvesh get /cluster/replication  # the job index this role parses
 `ha-manager`, `pvesh`, `pvesr`, `qm` and `pct` are stubbed and every mutation is
 logged, so each case asserts the exact commands issued: add, update, removal
 (`enabled: false`), the permuted-target no-op, the unsupported-rule-type
-failure, and orphan reporting with zero mutations. The replication cases drive
-the API index in the shape the API returns, and the `pvesr` stub rejects
-`--output-format` the way the real CLI does. Delegate selection is driven
-in its own play: a mixed probe group, a non-member host, and — through
-`tasks_from: delegate` — a group where nothing answers.
+failure, orphan reporting with zero mutations, and the two permuted-comment
+cases (a live index already describing its own targets mutates nothing; a
+stale comment is rewritten to the live target, never the inventory one). The
+replication cases drive the API index in the shape the API returns, and the
+`pvesr` stub rejects `--output-format` the way the real CLI does. Delegate
+selection is driven in its own play: a mixed probe group, a non-member host,
+and — through `tasks_from: delegate` — a group where nothing answers.

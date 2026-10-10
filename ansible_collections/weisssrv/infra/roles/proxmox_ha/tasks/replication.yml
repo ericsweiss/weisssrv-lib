@@ -1,6 +1,7 @@
 ---
 # ZFS storage replication jobs for Proxmox HA failover, with IDs of the form
-# <VMID>-<job_number>. Drift handling and the orphan policy are in the README.
+# <VMID>-<job_number>. A job's identity is (VMID, target): Proxmox permutes the
+# id<->target pairing on migration. Drift and orphan policy are in the README.
 
 # `pvesr list` takes no --output-format, so the index comes from the API. A
 # failed read must abort — an empty index would fire create for every job and
@@ -90,16 +91,18 @@
   tags: [proxmox_ha_replication]
 
 # `pvesr update` cannot change a job's target: delete and recreate.
-- name: Initialize target-drift tracking
+- name: Initialize target-drift and permutation tracking
   ansible.builtin.set_fact:
     proxmox_ha_drifted_job_ids: []
+    proxmox_ha_permuted_jobs: []
   tags: [proxmox_ha_replication]
 
-- name: Detect target drift for each desired job
+- name: Detect target drift and id permutation for each desired job
   vars:
     _vmid: "{{ item.id.split('-')[0] }}"
+    _live: "{{ proxmox_ha_current_jobs_detail.get(item.id, {}) }}"
     # Desired vs live target SETS for this job's VMID: a per-ID mismatch is
-    # only real drift when the sets differ (see the file header).
+    # only real drift when the sets differ, otherwise it is a permutation.
     _desired_vmid_targets: >-
       {{
         proxmox_ha_desired_jobs
@@ -114,20 +117,31 @@
         | map(attribute='target')
         | sort | list
       }}
+    _id_mismatch: >-
+      {{
+        item.id in proxmox_ha_current_replication_job_ids and
+        item.source_node == inventory_hostname and
+        (item.enabled | default(true)) and
+        _vmid in proxmox_ha_local_vmids and
+        _live.target is defined and
+        _live.target != item.target_node
+      }}
   ansible.builtin.set_fact:
     proxmox_ha_drifted_job_ids: >-
       {{
         proxmox_ha_drifted_job_ids | default([]) + (
-          [item.id] if (
-            item.id in proxmox_ha_current_replication_job_ids and
-            item.source_node == inventory_hostname and
-            (item.enabled | default(true)) and
-            item.id.split('-')[0] in proxmox_ha_local_vmids and
-            proxmox_ha_current_jobs_detail[item.id] is defined and
-            proxmox_ha_current_jobs_detail[item.id].target is defined and
-            proxmox_ha_current_jobs_detail[item.id].target != item.target_node and
-            _desired_vmid_targets != _current_vmid_targets
-          ) else []
+          [item.id]
+          if (_id_mismatch | bool and _desired_vmid_targets != _current_vmid_targets)
+          else []
+        )
+      }}
+    proxmox_ha_permuted_jobs: >-
+      {{
+        proxmox_ha_permuted_jobs | default([]) + (
+          [{'id': item.id, 'live_target': _live.target | default(''),
+            'inventory_target': item.target_node}]
+          if (_id_mismatch | bool and _desired_vmid_targets == _current_vmid_targets)
+          else []
         )
       }}
   loop: "{{ proxmox_ha_replication_jobs | default([]) }}"
@@ -142,6 +156,25 @@
       {{ proxmox_ha_drifted_job_ids | join(', ') }} point at the wrong target and
       will be deleted and recreated.
   when: proxmox_ha_drifted_job_ids | length > 0
+  tags: [proxmox_ha_replication]
+
+# Reported once per run: the ids swapped targets but the set holds, so every
+# job is left as it is and the schedule and comment follow the live target.
+- name: Display permuted replication job ids
+  vars:
+    _triples: >-
+      {{
+        proxmox_ha_permuted_jobs | map(attribute='id')
+        | zip(proxmox_ha_permuted_jobs | map(attribute='live_target'),
+              proxmox_ha_permuted_jobs | map(attribute='inventory_target'))
+        | map('join', ' -> ') | list
+      }}
+  ansible.builtin.debug:
+    msg: >-
+      ID PERMUTATION on {{ inventory_hostname }} (id -> live target -> inventory
+      target): {{ _triples | join(', ') }} — the target set matches, so nothing
+      is rewritten; see proxmox_ha README, "Behaviour worth knowing".
+  when: proxmox_ha_permuted_jobs | default([]) | length > 0
   tags: [proxmox_ha_replication]
 
 - name: Delete replication jobs with target drift
@@ -231,11 +264,23 @@
     - "'already exists' not in proxmox_ha_replication_job_add_result.stderr | default('')"
   tags: [proxmox_ha_replication]
 
+# The entry reconciled here is the one naming the LIVE target, not the one
+# carrying this id: a permuted id would otherwise have a comment stamped on it
+# naming a node it does not replicate to.
 - name: Update storage replication jobs
   vars:
     _current: "{{ proxmox_ha_current_jobs_detail.get(item.id, {}) }}"
-    _desired_schedule: "{{ item.schedule }}"
-    _desired_comment: "{{ item.comment | default('') }}"
+    _live_target: "{{ _current.target | default(item.target_node) }}"
+    _live_entry_matches: >-
+      {{
+        proxmox_ha_desired_jobs
+        | selectattr('id', 'match', item.id.split('-')[0] ~ '-')
+        | selectattr('target_node', 'equalto', _live_target)
+        | list
+      }}
+    _live_entry: "{{ (_live_entry_matches | first) if (_live_entry_matches | length > 0) else item }}"
+    _desired_schedule: "{{ _live_entry.schedule }}"
+    _desired_comment: "{{ _live_entry.comment | default('') }}"
     _current_schedule: "{{ _current.schedule | default('') }}"
     _current_comment: "{{ _current.comment | default('') }}"
     # Only schedule and comment are updatable in place.
@@ -244,12 +289,11 @@
          _desired_comment != _current_comment }}
     # An empty --comment is required to CLEAR a comment; omitting it keeps
     # the old one and the drift check never converges.
-    _needs_comment_arg: "{{ (item.comment is defined) or (_current_comment | length > 0) }}"
-    _comment_value: "{{ item.comment | default('') }}"
+    _needs_comment_arg: "{{ (_live_entry.comment is defined) or (_current_comment | length > 0) }}"
   ansible.builtin.command: >-
     pvesr update {{ item.id }}
-    --schedule "{{ item.schedule }}"
-    {% if _needs_comment_arg %}--comment "{{ _comment_value }}"{% endif %}
+    --schedule "{{ _desired_schedule }}"
+    {% if _needs_comment_arg %}--comment "{{ _desired_comment }}"{% endif %}
   when:
     - item.id in proxmox_ha_current_replication_job_ids
     - item.id not in proxmox_ha_drifted_job_ids | default([])
@@ -260,7 +304,7 @@
     - _has_drift | bool
   loop: "{{ proxmox_ha_replication_jobs | default([]) }}"
   loop_control:
-    label: "{{ item.id }} ({{ item.source_node }} -> {{ item.target_node }})"
+    label: "{{ item.id }} ({{ item.source_node }} -> {{ _live_target }})"
   register: proxmox_ha_replication_job_update_result
   changed_when: proxmox_ha_replication_job_update_result.rc == 0
   tags: [proxmox_ha_replication]
