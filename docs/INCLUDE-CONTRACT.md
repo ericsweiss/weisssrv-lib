@@ -363,13 +363,13 @@ the heaviest scenarios run 8-11 minutes per attempt.
 
 ## ci/lint/docs-link-check.yml
 
-- **Reproduces:** weisssrv `docs-link-check`.
+- **Reproduces:** weisssrv `lint-docs-links`.
 - **Inputs** — the three resource inputs every job template takes are in
   [Conventions shared by every template](#conventions-shared-by-every-template).
 
 | Input | Default | Notes |
 |---|---|---|
-| `job_name` | `docs-link-check` |  |
+| `job_name` | `lint-docs-links` | the name every consumer already passes |
 | `stage` | `lint` |  |
 | `image` | `python:3.11` | must ship git: the checker enumerates tracked Markdown and fails loud without it, so a slim image cannot silently shrink the scan |
 | `tags` | `["infrastructure"]` |  |
