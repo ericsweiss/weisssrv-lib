@@ -34,7 +34,7 @@ not restart it.
 | --- | --- | --- |
 | `home_assistant_host` | Address the HAOS SSH add-on listens on | yes (deploy) |
 | `home_assistant_host_key` | Pinned SSH host key — algorithm + base64, no host prefix | yes (deploy) |
-| `home_assistant_trusted_proxies` | CIDRs allowed to set `X-Forwarded-For` | yes |
+| `home_assistant_trusted_proxies` | CIDRs allowed to set `X-Forwarded-For`; imported on first boot only, see below | yes |
 | `home_assistant_oidc_configure_url` | Identity provider's OIDC discovery URL | yes |
 | `home_assistant_oidc_client_id`, `home_assistant_oidc_client_secret` | OIDC client credentials | yes (env defaults) |
 | `home_assistant_oidc_scope` | OIDC scopes | no (`openid profile email`) |
@@ -127,6 +127,22 @@ through `to_json` so a value containing `:` or `[` stays valid YAML.
 
 Both templates must stay **byte-stable** across runs — the idempotency check is
 a checksum comparison, so a timestamp in the render would defeat it.
+
+### `trusted_proxies` governs first boot only
+
+`home_assistant_trusted_proxies` is rendered into the `http:` block because a
+fresh instance imports it, and it is asserted at role entry. It is **not** the
+live control on an instance that has already migrated `http` to its storage
+backend: from then on Home Assistant answers from `/config/.storage/http` and
+ignores the YAML list, so a narrower list here does not stop a LAN host
+forging `X-Forwarded-For`.
+
+The effective list is live UI state, not something this role writes — editing
+`.storage` from Ansible would race Home Assistant's own writer. Change it on
+HAOS (over the SSH add-on this role already uses, or `qm guest exec` on the
+hypervisor when the add-on is unreachable) and restart Home Assistant, then
+re-check from a host that should not be trusted. Keep the rendered list correct
+anyway: it is what a rebuilt instance imports.
 
 ## Prerequisites on HAOS
 
