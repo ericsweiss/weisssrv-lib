@@ -9,8 +9,14 @@ spec:
     validate_stage:
       default: validate
     image:
-      default: "hashicorp/terraform:1.15"
-      description: Terraform image (entrypoint cleared for shell scripts).
+      default: "hashicorp/terraform:1.16.5@sha256:c7926feace05d0f7e73542842bf3945924e955a1f782cf000ccbb8d18fa42d77"
+      description: >-
+        Terraform image (entrypoint cleared for shell scripts). Digest-pinned
+        on the multi-arch INDEX digest, and on the line the consumers plan
+        with, so the gate parses what the apply does. It must satisfy every
+        root's `required_version` floor — terraform/modules/README.md. The tag
+        is held equal to scripts/ci-fetch-tools.py's terraform pin by
+        tests/test_pin_parity.py.
     tags:
       type: array
       default: ["infrastructure"]

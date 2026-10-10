@@ -27,6 +27,10 @@ three are 1.7. Raise one only when that module's own configuration or tests need
 the feature, never to keep the four in step. Raising a floor is breaking for a
 consumer on an older Terraform.
 
+The CLI that renders those floors in CI is `ci/validate/terraform.yml`'s `image`
+input, digest-pinned to the 1.16.x line the consumers plan with. A raised floor
+needs an image at or above it; the image does not set the floor.
+
 ## Pre-1.0 providers are pinned to the minor
 
 A pre-1.0 provider can break shapes in a minor release, so those are pinned with
