@@ -48,6 +48,9 @@ DEFAULT_MANIFEST_TREE = "kubernetes"
 # left out takes its endpoints with it, uncompared and unreported.
 MANIFEST_GLOBS = ("*.yaml", "*.yml")
 EXPORTS_KEY = "nas_storage_exports"
+# What Ansible itself skips in a vars directory. Everything else there is
+# parsed, an extensionless `group_vars/all` included.
+VARS_IGNORED_SUFFIXES = (".orig", ".bak", ".ini", ".cfg", ".retry", ".pyc", ".pyo")
 DEFAULT_LAN_CIDR_KEY = "cluster_lan_cidr"
 GATEWAY_KEY = "cluster_lan_gateway"
 # Groups an export either admits in full or not at all. A group of mixed roles
@@ -91,18 +94,22 @@ def inventory(root: Path, hosts_yml: str, scoped_groups: Tuple[str, ...]) -> Tup
 
 
 def inventory_var_files(root: Path, inventory_dir: str) -> List[Path]:
-    """Every group_vars and host_vars file, both YAML spellings and nested dirs.
+    """Every group_vars and host_vars file Ansible would read, nested dirs too.
 
-    A group's vars live in `<group>.yml`, `<group>.yaml` or a `<group>/`
-    directory; reading one spelling passes silently over the others.
+    A group's vars live in `<group>.yml`, `<group>.yaml`, a bare `<group>` or a
+    `<group>/` directory; one spelling alone passes over the rest.
     """
     found: List[Path] = []
     for tree in ("group_vars", "host_vars"):
         directory = root / inventory_dir / tree
         if not directory.is_dir():
             continue
-        for pattern in MANIFEST_GLOBS:
-            found += [path for path in directory.rglob(pattern) if path.is_file()]
+        for path in directory.rglob("*"):
+            if not path.is_file() or path.name.startswith("."):
+                continue
+            if path.name.endswith("~") or path.suffix in VARS_IGNORED_SUFFIXES:
+                continue
+            found.append(path)
     return sorted(set(found))
 
 
@@ -370,13 +377,25 @@ def check(
     problems.extend(export_skipped)
     for export, specs, rel in exports:
         for spec, network in _networks(specs):
+            # An overlap either way is in scope: a spec CONTAINING a host CIDR
+            # is the broadest client list an exports file can carry, and
+            # containment in one direction alone never saw it.
             in_lan = [
                 lan for lan in lans
-                if lan.version == network.version and network.subnet_of(lan)
+                if lan.version == network.version
+                and (network.subnet_of(lan) or network.supernet_of(lan))
             ]
             if not in_lan:
                 continue
             checked += 1
+            wider = [lan for lan in in_lan if lan.subnet_of(network) and lan != network]
+            if wider:
+                problems.append(
+                    f"{rel}: export {export} admits {spec}, which is wider than "
+                    f"the host CIDR {wider[0]} — it admits every address in that "
+                    "CIDR and beyond, whatever the inventory holds"
+                )
+                continue
             if not any(host in network for host in hosts.values()):
                 problems.append(
                     f"{rel}: export {export} admits {spec}, which covers no "

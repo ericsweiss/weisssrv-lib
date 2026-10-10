@@ -199,6 +199,29 @@ def test_an_export_32_naming_a_host_passes(tmp_path):
     assert gate.check(root) == ([], 4)
 
 
+def test_an_export_wider_than_the_lan_is_reported_not_skipped(tmp_path):
+    """The broadest client list an exports file can carry: containment in one
+    direction alone left it unchecked and uncounted."""
+    root = _repo(
+        tmp_path,
+        manifests={"apps/b/slice.yaml": _slice("10.0.10.102")},
+        group_vars={"nas.yml": _exports("10.0.0.0/8")},
+    )
+    problems, checked = gate.check(root)
+    assert checked == 2
+    assert any("wider than the host CIDR 10.0.10.0/24" in p for p in problems)
+
+
+def test_a_default_route_client_spec_is_reported(tmp_path):
+    root = _repo(
+        tmp_path,
+        manifests={"apps/b/slice.yaml": _slice("10.0.10.102")},
+        group_vars={"nas.yml": _exports("0.0.0.0/0")},
+    )
+    problems, _checked = gate.check(root)
+    assert any("admits 0.0.0.0/0, which is wider" in p for p in problems)
+
+
 def test_an_export_outside_every_lan_is_out_of_scope(tmp_path):
     """An export admitting a VPN or off-site range names no inventory host by
     design, so scoping it in would fail a legitimate client list."""
@@ -291,6 +314,30 @@ def test_host_vars_exports_are_read_as_well(tmp_path):
     )
     problems, _checked = gate.check(root)
     assert any("covers no ansible_host" in p for p in problems)
+
+
+def test_an_extensionless_group_vars_file_is_read(tmp_path):
+    """Ansible loads `group_vars/all` with no extension, so globbing the two
+    YAML spellings alone left an exports block there unscanned."""
+    root = _repo(
+        tmp_path,
+        manifests={"apps/b/slice.yaml": _slice("10.0.10.102")},
+        group_vars={"all": _exports("10.0.10.64/27")},
+    )
+    problems, _checked = gate.check(root)
+    assert any("covers no ansible_host" in p for p in problems)
+
+
+def test_a_file_ansible_itself_ignores_is_not_read(tmp_path):
+    """A backup or editor leftover beside the vars is not inventory, so parsing
+    it would report a file Ansible never reads."""
+    root = _repo(
+        tmp_path,
+        manifests={"apps/b/slice.yaml": _slice("10.0.10.102")},
+        group_vars={"nas.yml.bak": "{{ not yaml", ".hidden": "{{ not yaml",
+                    "nas.yml~": "{{ not yaml"},
+    )
+    assert gate.check(root) == ([], 1)
 
 
 def test_an_unreadable_vars_file_is_reported_not_skipped(tmp_path):

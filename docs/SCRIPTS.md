@@ -1611,6 +1611,14 @@ scripts/check-guest-endpoint-parity.py
 - An `ansible_host` holding a NAME rather than an address cannot be placed in a
   CIDR, so it is left out of the comparison and every finding that rests on
   containment says which names were skipped.
+- **An export client spec WIDER than a host CIDR is in scope too**, reported on
+  its own terms rather than skipped: `10.0.0.0/8` over a `10.0.10.0/24` LAN, or
+  `0.0.0.0/0`, is the broadest client list an exports file can carry, and
+  testing containment in one direction alone never looked at it.
+- **Every `group_vars`/`host_vars` file Ansible would read is read**, including
+  an extensionless `group_vars/all`; only the names Ansible itself ignores are
+  skipped (`.`-prefixed, `~`-suffixed, `.orig`, `.bak`, `.ini`, `.cfg`,
+  `.retry`, `.pyc`, `.pyo`). One that does not parse is reported, not dropped.
 - Addresses spelled `${cluster_*}` are substituted from the cluster-config
   ConfigMap the way Flux's postBuild does, including a whole-list roster key; a
   placeholder that resolves to nothing is reported rather than dropped, because
