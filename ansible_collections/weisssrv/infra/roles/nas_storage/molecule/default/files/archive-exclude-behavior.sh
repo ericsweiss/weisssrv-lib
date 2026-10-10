@@ -123,6 +123,20 @@ env -i PATH="$PATH" bash -c '
   exit 0
 ' || fail "the reconcile must count the orphans it leaves (exit $?)"
 
+# With the opt-in, a destroy that fails still leaves the copy in place, so the
+# run fails AND the copy stays counted for the published gauge.
+env -i PATH="$PATH" bash -c '
+  # shellcheck disable=SC1091
+  source "'"$WORK"'/'"$(basename "$OPTED")"'.lib" || true
+  set +e
+  zfs() { case "$1" in destroy) return 1 ;; esac; return 0; }
+  reconcile_excluded_archive_copies >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -eq 1 ] || exit 63
+  [ "$EXCLUDED_ORPHANS" -eq 2 ] || exit 64
+  exit 0
+' || fail "a failed opted-in destroy must fail the run and keep the orphan counted (exit $?)"
+
 # The probe records the zfs the leave-in-place behaviour was observed on.
 PROBE_OUT="$WORK/probe.out"
 env -i PATH="$PATH" bash -c '

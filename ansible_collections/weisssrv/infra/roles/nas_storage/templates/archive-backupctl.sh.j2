@@ -118,8 +118,13 @@ reconcile_excluded_archive_copies() {
         continue
       fi
       log "Exclusion: destroying archive copy ${dst} and its descendants"
-      zfs destroy -r "$dst" \
-        || { log "FATAL: cannot destroy excluded archive copy ${dst}"; rc=1; }
+      # A failed destroy leaves the copy in place, so it still counts as an orphan
+      # for the gauge the exit trap publishes.
+      zfs destroy -r "$dst" || {
+        EXCLUDED_ORPHANS=$((EXCLUDED_ORPHANS + 1))
+        log "FATAL: cannot destroy excluded archive copy ${dst}"
+        rc=1
+      }
     done
   done
   return "$rc"
