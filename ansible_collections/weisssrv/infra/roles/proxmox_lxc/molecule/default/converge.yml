@@ -13,6 +13,11 @@
     # it as the container name. The role takes the IP from
     # proxmox_lxc_target_ip, pinned to a stub value here.
     proxmox_lxc_target_ip: "192.168.0.199"
+    # Case 15 inputs: the key the role manages, and a cert-distribution entry
+    # planted in the container by hand that the reconcile must not drop.
+    lxc_authkeys_managed: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAMANAGED managed@test"
+    lxc_authkeys_stale: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAASTALE stale@test"
+    lxc_authkeys_foreign: 'command="/usr/local/bin/cert-receive",restrict ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAACERT cert@test'
   pre_tasks:
     - name: Pre-create Ansible remote_tmp (raw bypasses tmpdir setup)
       ansible.builtin.raw: |
@@ -683,3 +688,104 @@
           {"missing_gateway_failed": {{ lxc_missing_gateway_failed | to_json }},
            "bad_disk_size_failed": {{ lxc_bad_disk_size_failed | to_json }},
            "reconcile_without_gateway_ok": {{ lxc_reconcile_without_gateway_ok | to_json }}}
+
+    # 15 — the authorized_keys reconcile is a merge: a forced-command entry the
+    # role never wrote survives repeat runs, and prune makes the managed set
+    # authoritative. pct exec runs for real here (see the prepare.yml stub).
+    - name: 15 — stub the container as existing and let pct exec run for real
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: ct_exists_state, content: "exists\n"}
+        - {name: pct_exec_passthrough, content: "on\n"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: 15 — create the stand-in admin home
+      ansible.builtin.file:
+        path: /tmp/lxc-authkeys/.ssh
+        state: directory
+        mode: "0700"
+
+    - name: 15 — seed authorized_keys with a foreign forced command and a stale key
+      ansible.builtin.copy:
+        dest: /tmp/lxc-authkeys/.ssh/authorized_keys
+        mode: "0600"
+        content: |
+          {{ lxc_authkeys_foreign }}
+          {{ lxc_authkeys_stale }}
+
+    - name: 15 — reconcile the managed key over the seeded file
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_lxc
+      vars:
+        proxmox_lxc_storage: local-ssd
+        proxmox_lxc_admin_user: root
+        proxmox_lxc_admin_home: /tmp/lxc-authkeys
+        proxmox_lxc_ssh_public_keys: "{{ lxc_authkeys_managed }}"
+
+    - name: 15 — record the first reconcile
+      ansible.builtin.set_fact:
+        lxc_authkeys_first_changed: "{{ proxmox_lxc_authkeys_reconcile.changed }}"
+
+    - name: 15 — read the merged file
+      ansible.builtin.slurp:
+        src: /tmp/lxc-authkeys/.ssh/authorized_keys
+      register: lxc_authkeys_after_first
+
+    - name: 15 — reconcile the same key a second time
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_lxc
+      vars:
+        proxmox_lxc_storage: local-ssd
+        proxmox_lxc_admin_user: root
+        proxmox_lxc_admin_home: /tmp/lxc-authkeys
+        proxmox_lxc_ssh_public_keys: "{{ lxc_authkeys_managed }}"
+
+    - name: 15 — record the second reconcile
+      ansible.builtin.set_fact:
+        lxc_authkeys_second_changed: "{{ proxmox_lxc_authkeys_reconcile.changed }}"
+
+    - name: 15 — read the file after the replay
+      ansible.builtin.slurp:
+        src: /tmp/lxc-authkeys/.ssh/authorized_keys
+      register: lxc_authkeys_after_second
+
+    - name: 15 — reconcile once more with prune enabled
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_lxc
+      vars:
+        proxmox_lxc_storage: local-ssd
+        proxmox_lxc_admin_user: root
+        proxmox_lxc_admin_home: /tmp/lxc-authkeys
+        proxmox_lxc_ssh_public_keys: "{{ lxc_authkeys_managed }}"
+        proxmox_lxc_ssh_authorized_keys_prune: true
+
+    - name: 15 — read the pruned file
+      ansible.builtin.slurp:
+        src: /tmp/lxc-authkeys/.ssh/authorized_keys
+      register: lxc_authkeys_after_prune
+
+    - name: 15 — record the file mode after the prune
+      ansible.builtin.stat:
+        path: /tmp/lxc-authkeys/.ssh/authorized_keys
+      register: lxc_authkeys_stat
+
+    - name: 15 — stop the pct exec passthrough
+      ansible.builtin.file:
+        path: /tmp/molecule-stub-state/pct_exec_passthrough
+        state: absent
+
+    - name: 15 — capture authorized-keys merge artifact
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/15-authorized-keys.json
+        mode: "0644"
+        content: |
+          {"after_first": {{ lxc_authkeys_after_first.content | b64decode | to_json }},
+           "after_second": {{ lxc_authkeys_after_second.content | b64decode | to_json }},
+           "after_prune": {{ lxc_authkeys_after_prune.content | b64decode | to_json }},
+           "first_changed": {{ lxc_authkeys_first_changed | to_json }},
+           "second_changed": {{ lxc_authkeys_second_changed | to_json }},
+           "mode": {{ lxc_authkeys_stat.stat.mode | to_json }}}
