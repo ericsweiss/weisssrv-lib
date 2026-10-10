@@ -316,3 +316,47 @@ def test_an_unused_external_store_is_reported_not_fatal(monkeypatch, capsys):
     argv = ["--external-store", "gone-elsewhere"]
     assert _run(SCOPED + EXTERNAL_SECRET, monkeypatch, argv) == 0
     assert "not referenced by this corpus: gone-elsewhere" in capsys.readouterr().out
+
+
+# --- a selector key the CRD prunes is an unmodelled grant, not a non-match ----
+
+
+def test_a_misspelled_selector_key_is_reported_as_unmodelled(monkeypatch, capsys):
+    """`matchLabel:` (singular) is pruned, leaving the empty selector."""
+    typo = _store("""  conditions:
+    - namespaceSelector:
+        matchLabel: {example.test/vault: "true"}
+""")
+    assert _run(typo + NAMESPACES + EXTERNAL_SECRET, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "unmodelled key(s) matchLabel" in err
+    assert "admits every namespace" in err
+
+
+def test_an_extra_sibling_selector_key_is_reported_as_unmodelled(monkeypatch, capsys):
+    """A recognised term beside an unrecognised one is still pruned to nothing
+    this gate can judge."""
+    extra = _store("""  conditions:
+    - namespaceSelector:
+        matchLabels: {example.test/vault: "true"}
+        matchFields: {metadata.name: apps}
+""")
+    assert _run(extra + NAMESPACES + EXTERNAL_SECRET, monkeypatch) == 1
+    assert "unmodelled key(s) matchFields" in capsys.readouterr().err
+
+
+def test_a_cluster_external_secret_selector_typo_is_unmodelled(monkeypatch, capsys):
+    """The fan-out side of the same prune: it reaches every namespace."""
+    ces = """
+---
+apiVersion: external-secrets.io/v1
+kind: ClusterExternalSecret
+metadata: {name: fan-out-typo}
+spec:
+  namespaceSelectors:
+    - matchLables: {example.test/vault: "true"}
+  externalSecretSpec:
+    secretStoreRef: {kind: ClusterSecretStore, name: onepassword-homelab}
+"""
+    assert _run(SCOPED + NAMESPACES + ces, monkeypatch) == 1
+    assert "unmodelled key(s) matchLables" in capsys.readouterr().err

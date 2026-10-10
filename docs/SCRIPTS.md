@@ -1249,6 +1249,12 @@ cat rendered-corpus.yaml | scripts/check-secretstore-scope.py
   `namespaceSelector` label match. A ClusterExternalSecret's
   `namespaceSelector: {}` is a selector with no terms and therefore matches
   EVERY namespace — absent and empty are not the same thing.
+- A `namespaceSelector` carrying a key outside `matchLabels` / `matchExpressions`
+  — a singular `matchLabel:`, or an extra sibling — is reported as **unmodelled**,
+  not as a non-match: the CRD prunes the unknown key, so the apiserver keeps the
+  empty selector and the condition (or fan-out) reaches every namespace. The
+  store's consumer admissions are skipped once it is reported, because they
+  certify nothing.
 - A ClusterExternalSecret's fan-out is the **union** of `spec.namespaceSelectors`
   (or the deprecated singular `spec.namespaceSelector`) and its literal
   `spec.namespaces` list, the way ESO resolves it — a CES written with the list
