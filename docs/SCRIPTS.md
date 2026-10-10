@@ -450,12 +450,15 @@ target has a mutating, cpu-excluding VPA, and enforces the no-CPU-limits policy
 across pod specs and HelmRelease `.spec.values`.
 
 The same flag enforces the VPA memory-cap rule, scoped to what each policy
-controls: `maxAllowed.memory` **above** the container's limit fails in every
-shape (the kubelet would reject the recommendation), and **equal to** it fails
-only where the policy also controls limits (`controlledValues: RequestsAndLimits`
-or unset, mode not `Off`) — there the updater rescales the limit with the
+controls: `maxAllowed.memory` **above** the container's limit fails whatever the
+policy controls (the kubelet would reject the recommendation), and **equal to**
+it fails only where the policy also controls limits (`controlledValues:
+RequestsAndLimits` or unset) — there the updater rescales the limit with the
 request, so the ceiling never binds. Under `RequestsOnly` cap == limit is the
-correct shape. A VPA whose target workload is not rendered into this
+correct shape. **Both arms are exempt when the policy is `Off`** — `updateMode:
+Off` or a containerPolicy `mode: Off`: no recommendation is ever applied, so the
+kubelet never sees the cap, and a finding there would be unfixable except by an
+allowlist entry. Do not re-add it; flipping the VPA on brings the arm back. A VPA whose target workload is not rendered into this
 kustomize-only corpus has no limit to compare against: it is reported as a cap
 the gate could **not judge**, which fails the run unless its real limit is
 declared in `vpa_cap_declared_limits` or the targets are acknowledged with
@@ -820,7 +823,8 @@ the rendered manifest corpus on stdin through `gate_common.py`** —
 the corpus is what
 `task flux:lint` accumulates from `kustomize build | envsubst`, so they wire
 into `ci/validate/flux-lint.yml`'s `extra_validation` chain. **The rest take
-paths or flags**: `check-netpol-except-parity.py`, `check-kustomization.py`
+paths or flags**: `check-netpol-except-parity.py` (manifest paths, plus an
+optional rendered stream via `--corpus`), `check-kustomization.py`
 and `check-scrape-wiring.py` (manifest paths), and
 `check-alertmanager-behaviour.py`, `check-backup-artifact-apps.py`,
 `check-cluster-invariants.py` and `check-role-inputs.py` (flags). Where a gate
@@ -1085,11 +1089,11 @@ cat rendered-corpus.yaml | scripts/check-scrape-netpol.py \
 ### `check-scrape-wiring.py` (PyYAML)
 
 Fails a monitor whose scraped PORT no NetworkPolicy admits from the
-observability namespace. Reads one manifest tree from **paths**, where every
-policy covers the same namespace, so the monitor, the Service, the workload and
-the policy resolve against each other. `check-scrape-netpol.py` is the
+observability namespace. Reads a manifest tree from **paths** and judges it one
+effective namespace at a time, so the monitor, the Service, the workload and the
+policy resolve against each other. `check-scrape-netpol.py` is the
 namespace-granularity gate for a whole cluster corpus; this one is the port
-granularity for one namespace.
+granularity.
 
 ```
 scripts/check-scrape-wiring.py [--observability-namespace NS]
@@ -1107,11 +1111,25 @@ scripts/check-scrape-wiring.py [--observability-namespace NS]
 - A shape the gate does not model — `matchExpressions`, an `ipBlock` peer, a
   peer scoping the namespace with a `podSelector` — is **not credited**, and is
   named in the failure so the reader can tell "wired wrong" from "not modelled".
-- A monitor whose `spec.namespaceSelector` reaches outside the tree is an
-  operator error: the policies here cover one namespace, so a wider scrape must
+- A matched Service with **no `spec.selector`** is a Violation, not a target:
+  its endpoints are managed by hand, so no workload in the tree serves the
+  scraped port and crediting a policy against it certifies nothing.
+- **One port name resolves to one number.** A port name two selected workloads
+  declare at different numbers is an operator error: a policy naming it would be
+  credited against whichever workload was read last.
+- **Documents are grouped by effective namespace** — their own
+  `metadata.namespace`, else `--namespace` — and each group is judged against
+  its own policies, so a policy in one namespace never admits a scrape in
+  another. A tree stating exactly ONE namespace lends it to the documents that
+  name none, the way its Kustomization does; stating several while a document
+  names none is an operator error, and so is a stated namespace that disagrees
+  with `--namespace`.
+- A monitor whose `spec.namespaceSelector` reaches outside its group is an
+  operator error: the policies there cover one namespace, so a wider scrape must
   be checked where those policies live. A `matchNames` entry is verified
-  against `--namespace` (the namespace the tree deploys into) and refused
-  without it, so a stale name never certifies against the wrong policies.
+  against the group's namespace (`--namespace`, or the one the document states)
+  and refused without one, so a stale name never certifies against the wrong
+  policies.
 - **`--namespace-from-tree`** reads that namespace from the one Namespace
   manifest under the directory, for a pipeline vendored byte-identically that
   cannot carry a tenant's value (`ci/github/ci.example.yml` passes it). It is
@@ -1119,11 +1137,12 @@ scripts/check-scrape-wiring.py [--observability-namespace NS]
   Namespace the cluster operator owns is unaffected; when one is declared and
   the tree names no namespace, or names several, that is the operator error.
   Mutually exclusive with `--namespace`.
-- **Exit codes:** 0 clean, 1 on an unadmitted port, 2 on an operator error — a
-  directory that does not exist, a manifest that does not parse, a corpus with
-  no kinded document, a monitor with no endpoints or a selector matching every
-  pod, and a policy that admits the observability namespace while no monitor is
-  present at all.
+- **Exit codes:** 0 clean, 1 on an unadmitted port or a selectorless Service, 2
+  on an operator error — a directory that does not exist, a manifest that does
+  not parse, a corpus with no kinded document, a monitor with no endpoints or a
+  selector matching every pod, an ambiguous namespace grouping, one port name at
+  two numbers, and a policy that admits the observability namespace while no
+  monitor is present in its namespace at all.
 
 ### `check-kustomization.py` (PyYAML)
 
@@ -1257,6 +1276,12 @@ cat rendered-corpus.yaml | scripts/check-secretstore-scope.py
   `namespaceSelector` label match. A ClusterExternalSecret's
   `namespaceSelector: {}` is a selector with no terms and therefore matches
   EVERY namespace — absent and empty are not the same thing.
+- A `namespaceSelector` carrying a key outside `matchLabels` / `matchExpressions`
+  — a singular `matchLabel:`, or an extra sibling — is reported as **unmodelled**,
+  not as a non-match: the CRD prunes the unknown key, so the apiserver keeps the
+  empty selector and the condition (or fan-out) reaches every namespace. The
+  store's consumer admissions are skipped once it is reported, because they
+  certify nothing.
 - A ClusterExternalSecret's fan-out is the **union** of `spec.namespaceSelectors`
   (or the deprecated singular `spec.namespaceSelector`) and its literal
   `spec.namespaces` list, the way ESO resolves it — a CES written with the list
@@ -1280,15 +1305,15 @@ cat rendered-corpus.yaml | scripts/check-secretstore-scope.py
 
 ### `check-netpol-except-parity.py` (PyYAML)
 
-Reads NetworkPolicy manifests from **paths** (not stdin) and asserts no fenced
-pod has unrestricted egress, three ways: every egress `ipBlock` /0 peer carries
-one of the canonical reserved-CIDR except-lists exactly and in order; no egress
-rule reaches a whole fenced range (a /0 written as two /1s, or a lone
-`192.168.0.0/16`, are the same escape); and a peer-less egress rule — which
-allows every destination — is declared with a reason.
+Reads NetworkPolicy manifests from **paths**, and optionally a rendered stream
+via `--corpus`, and asserts no fenced pod has unrestricted egress, three ways:
+every egress `ipBlock` /0 peer carries one of the canonical reserved-CIDR
+except-lists exactly and in order; no egress rule reaches a whole fenced range
+(a /0 written as two /1s, or a lone `192.168.0.0/16`, are the same escape); and
+an egress rule that allows every destination is declared with a reason.
 
 ```
-scripts/check-netpol-except-parity.py [--config FILE] [path ...]
+scripts/check-netpol-except-parity.py [--config FILE] [--corpus FILE] [path ...]
 ```
 
 - **Config keys:** `canonical_except_lists` (name -> `[cidr]`, replaces the
@@ -1306,9 +1331,24 @@ scripts/check-netpol-except-parity.py [--config FILE] [path ...]
 - Ingress is exempt, whatever it excludes: an unfenced `0.0.0.0/0` ingress
   peer is a deliberate shape (a WAN endpoint). A narrower egress block keeps
   its own except-list too; the canonical lists are the egress /0 contract.
-- A `${name}` substitution placeholder in a CIDR is left unevaluated, neither
+- **Which corpus it judges.** A path scan reads the tree **as written**, so a
+  `${name}` substitution placeholder in a CIDR is left unevaluated, neither
   parsed nor reported: a template spells site ranges that way and the consumer
-  substitutes them before the API sees the manifest.
+  substitutes them before the API sees the manifest. The consequence is that in
+  a placeholder-shaped repo the LAN-escape arm examines nothing, so a consumer
+  pipes its substituted render through `--corpus FILE` (`-` for stdin), where
+  the skip is off: the fence arms judge real CIDRs and a leftover `${...}` is an
+  exit-2 operator error. `--corpus` replaces the default `kubernetes/` tree, not
+  an explicit path list — pass both to scan both.
+- **A `.json` manifest is scanned too** — the directory walk globs `*.yaml`,
+  `*.yml` and `*.json`, and a JSON file holds one document or a top-level list
+  of them. An unparseable one is an exit-2 operator error like its YAML sibling.
+- **The empty peer is the allow-everything case.** `to: [{}]` is a non-empty
+  peer list carrying no constraint, and Kubernetes reads a peer with none of
+  `ipBlock` / `podSelector` / `namespaceSelector` as every destination — the
+  same finding as a rule with no `to:` at all, and declared the same way.
+  `podSelector: {}` is a real peer (every pod in the namespace), not the empty
+  one.
 - **Exit codes:** 0 clean, 1 on a policy violation, 2 on an operator error — a
   path that does not exist, a scanned manifest that does not parse, a run that
   inspected **zero** NetworkPolicy documents, and a `--config` that is missing,
@@ -1793,13 +1833,14 @@ commit in the consuming repo at all.
 - **The collection surface.** The file checked is `<ci-file dir>/ansible/requirements.yml`.
   A repo without one — a tenant app scaffold — is a silent no-op. A
   requirements.yml that installs the library **with no `version:`** is a floating
-  pin and fails. The entry is located from the parsed node tree by `--project`
-  appearing in its `name:`, so a `version:` under a different collection is never
-  matched; that substring match resolves both the Galaxy name and a
-  `git+https://…#/ansible_collections/weisssrv/infra` source. The collection is
-  matched on the repository NAME as well as the full project path, and on
-  `source:` as well as `name:`, so an instance-local mirror or a fork on another
-  host is still gated. A requirements.yml that declares a git collection
+  pin and fails. The entry is located from the parsed node tree, so a `version:`
+  under a different collection is never matched, and it is matched on the
+  **repository NAME** of its `name:` or `source:` — the last path segment,
+  lower-cased and `.git`-stripped — never as a substring of the URL. That keeps
+  an instance-local mirror of the same repository on another host gated while a
+  FORK, or a mirror whose URL merely contains the project path
+  (`…/mirrors/eric/weisssrv-lib-fork.git`), is a different repository and does
+  not count as installing the library. A requirements.yml that declares a git collection
   matching nothing fails with `no git collection matching <project>` rather than
   passing silently; one with no git collection at all stays a no-op.
 - **`--fix`** rewrites the literals to the single source — both the `include:`
@@ -2074,8 +2115,14 @@ Tools: `amtool`, `jq`, `kubeconform`, `kustomize`, `promtool`, `shellcheck`,
 - **`DIR` defaults to `$CI_PROJECT_DIR/.bin`**, else `./.bin`, and is created if
   missing. **The caller adds `DIR` to `PATH`**: the script installs binaries and
   deliberately changes nothing about the environment of the job that ran it.
-- A tool already present in `DIR` is skipped, printing `jq: present`, unless
-  `--force` re-installs it. A job can therefore call the script repeatedly.
+- **Each install stamps `DIR/<name>.version`** with the effective version and
+  sha256, and a tool counts as present only when that stamp matches the resolved
+  pin — so a skip prints `jq 1.8.2: present`, and a cached, pre-seeded,
+  truncated or differently-versioned binary is re-fetched instead of trusted.
+  That is what makes a `cache:` on `DIR` safe: a version bump still takes
+  effect. The stamp lands after the binary, so an interrupted install reads as
+  absent. `--force` re-installs regardless, and a job can call the script
+  repeatedly.
 - **The pinned versions are this script's own**, not a consumer's, and they are
   not site data — the same pins serve every consumer. A consumer re-pins one
   tool with `TOOL_<NAME>_VERSION` and `TOOL_<NAME>_SHA256` (the name
