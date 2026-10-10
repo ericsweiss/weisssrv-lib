@@ -450,12 +450,15 @@ target has a mutating, cpu-excluding VPA, and enforces the no-CPU-limits policy
 across pod specs and HelmRelease `.spec.values`.
 
 The same flag enforces the VPA memory-cap rule, scoped to what each policy
-controls: `maxAllowed.memory` **above** the container's limit fails in every
-shape (the kubelet would reject the recommendation), and **equal to** it fails
-only where the policy also controls limits (`controlledValues: RequestsAndLimits`
-or unset, mode not `Off`) — there the updater rescales the limit with the
+controls: `maxAllowed.memory` **above** the container's limit fails whatever the
+policy controls (the kubelet would reject the recommendation), and **equal to**
+it fails only where the policy also controls limits (`controlledValues:
+RequestsAndLimits` or unset) — there the updater rescales the limit with the
 request, so the ceiling never binds. Under `RequestsOnly` cap == limit is the
-correct shape. A VPA whose target workload is not rendered into this
+correct shape. **Both arms are exempt when the policy is `Off`** — `updateMode:
+Off` or a containerPolicy `mode: Off`: no recommendation is ever applied, so the
+kubelet never sees the cap, and a finding there would be unfixable except by an
+allowlist entry. Do not re-add it; flipping the VPA on brings the arm back. A VPA whose target workload is not rendered into this
 kustomize-only corpus has no limit to compare against: it is reported as a cap
 the gate could **not judge**, which fails the run unless its real limit is
 declared in `vpa_cap_declared_limits` or the targets are acknowledged with
