@@ -363,13 +363,13 @@ the heaviest scenarios run 8-11 minutes per attempt.
 
 ## ci/lint/docs-link-check.yml
 
-- **Reproduces:** weisssrv `docs-link-check`.
+- **Reproduces:** weisssrv `lint-docs-links`.
 - **Inputs** — the three resource inputs every job template takes are in
   [Conventions shared by every template](#conventions-shared-by-every-template).
 
 | Input | Default | Notes |
 |---|---|---|
-| `job_name` | `docs-link-check` |  |
+| `job_name` | `lint-docs-links` | the name every consumer already passes |
 | `stage` | `lint` |  |
 | `image` | `python:3.11` | must ship git: the checker enumerates tracked Markdown and fails loud without it, so a slim image cannot silently shrink the scan |
 | `tags` | `["infrastructure"]` |  |
@@ -590,6 +590,8 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `kustomize_sha256` | the sha for `kustomize_version` | moves with it |
 | `helm_version` | `3.22.0` |  |
 | `helm_sha256` | the sha for `helm_version` | moves with it |
+| `flux_version` | `2.9.0` | substitute mode only — the flux CLI whose `envsubst --strict` decides whether the post-build will reconcile. Keep it on the Flux release the cluster runs |
+| `flux_sha256` | the sha for `flux_version` | moves with it |
 | `pyyaml_version` | `6.0.2` | pins the inline `spec.path` parser |
 | `k8s_version` | `""` | empty = derived from the ConfigMap's `k3s_version` (substitute mode); simple mode falls back to 1.36.0 |
 | `kustomize_path` | `kubernetes/flux` | simple mode only — the ONE directory that arm builds. The default is the tenant layout the app template renders; a repo laid out differently passes the path it actually reconciles |
@@ -610,7 +612,8 @@ the heaviest scenarios run 8-11 minutes per attempt.
   (`kubernetes/infrastructure/sources/versions-configmap.yaml`),
   `flux_render_script` (`scripts/flux-render.sh`), `skipped_script`
   (`scripts/kubeconform-skipped.py`), `require_cluster_root` (true),
-  `extra_validation` (empty).
+  `extra_validation` (empty), `helm_version` / `helm_sha256` and
+  `flux_version` / `flux_sha256`.
 - **Simple-mode inputs:** `kustomize_path` (`kubernetes/flux`), `k8s_version`,
   `allowed_skips` (`"0"`). Every other input above belongs to substitute mode.
 - **Neither arm can pass on nothing.** The simple arm fails when
@@ -620,6 +623,15 @@ the heaviest scenarios run 8-11 minutes per attempt.
   resources than `allowed_skips` or printed no `Skipped:` field at all.
   Substitute mode has the same two floors: the empty-`$RENDER_ALL` check and
   the unvalidated-kind tracker.
+- **Flux's own envsubst is the authority on substitution (substitute mode).**
+  Each rendered tree is piped through `flux envsubst --strict` before the GNU
+  `envsubst` render, and the file fails on a non-zero exit with flux's message
+  quoted. GNU envsubst reads only `${NAME}`, while Flux's Go implementation also
+  reads bash modifiers — `${conf%/*}` is a variable to it — so a form only it
+  sees would otherwise pass this gate and leave the Kustomization BuildFailed
+  in-cluster, reconciling nothing. The cheap `${`-shape pre-scan stays ahead of
+  it: that one names the offending line, which `--strict` does not. The tenant
+  arm substitutes nothing, so it installs no flux CLI.
 - **`k8s_version` has no silent fallback in substitute mode.** When it is empty,
   `flux-render.sh k8s-version` derives the schema version from the versions
   ConfigMap's `k3s_version` key — and **fails the job** if that key is absent or
@@ -828,7 +840,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `image` | `python:3.11` |  |
 | `tags` | `["infrastructure"]` | **must be a privileged runner** |
 | `dind_service` | `docker:27.5.1-dind`, digest-pinned | digest-pinned, with an explicit `alias: docker` |
-| `dind_mtu` | `1420` | `dockerd --mtu` for the service; must not exceed the job pod's interface MTU (1420 on flannel over WireGuard or VXLAN) |
+| `dind_mtu` | `1420` | MTU of the daemon's bridges, passed as both `--mtu` and `--default-network-opt=bridge=com.docker.network.driver.mtu`; must not exceed the job pod's interface MTU (1420 on flannel over WireGuard or VXLAN). `--mtu` alone covers only the default bridge, so a user-defined network (molecule, compose) would stay at 1500 and black-hole large TLS frames |
 | `docker_cli_version` | `27.5.1` |  |
 | `docker_cli_sha256_amd64` | the sha for `docker_cli_version` | moves with it |
 | `docker_cli_sha256_arm64` | the sha for `docker_cli_version` | moves with it |
@@ -1284,7 +1296,9 @@ byte-identically to what they replaced.
   installs, the daemon readiness loop and the registry login. Every default is
   the value `ci/build/docker-build.yml` carries, and `tests/test_pin_parity.py`
   holds them equal. Not self-applied: this pipeline's image builds include
-  `ci/build/docker-build.yml`, which carries the same body. Inputs:
+  `ci/build/docker-build.yml`, which carries the same body. Its `dind_mtu` is
+  applied as both `--mtu` and `--default-network-opt`, so the networks molecule
+  and compose create inherit it too. Inputs:
   `dind_service`, `dind_mtu`, `docker_cli_version`,
   `docker_cli_sha256_amd64`, `docker_cli_sha256_arm64`, `buildx_version`,
   `buildx_sha256_amd64`, `buildx_sha256_arm64`, `login_registry`,
@@ -1453,15 +1467,18 @@ canonical-copy header naming its source.
   `yaml-lint`, `flux-lint` (`kustomize build` + kubeconform, carrying the same
   empty-render and non-zero-Skipped guards as `ci/validate/flux-lint.yml`'s
   simple mode), `manifest-gates` (`check-netpol-except-parity.py`,
-  `check-scrape-wiring.py`, `check-kustomization.py` — each skipped with a
-  `::warning::` when the repo does not ship it, and the job fails when NONE
-  ran), `shellcheck`, `python-lint`, `docs-link-check`, `secret-detection` and a
-  discarded `docker-build`. Its tool pins are the same values as the library's
-  template defaults, held by `tests/test_pin_parity.py`, so both CI shapes gate
-  on identical tools.
+  `check-scrape-wiring.py` — with `--namespace-from-tree`, because a
+  byte-identical file cannot carry a tenant's namespace and a monitor scoped
+  with `matchNames` is refused without one — and `check-kustomization.py`, each
+  skipped with a `::warning::` when the repo does not ship it, and the job fails
+  when NONE ran), `shellcheck`, `python-lint`, `comment-length`,
+  `lint-docs-links`, `secret-detection` and a discarded `docker-build`. The job
+  set is held to that list by `tests/test_github_example_gates.py`, and the tool
+  pins are the same values as the library's template defaults, held by
+  `tests/test_pin_parity.py`, so both CI shapes gate on identical tools.
   **Where parity stops:** the library-pin check (`check-lib-pins.py`,
-  `check-molecule-image-pin.py`) and the comment-length gate have no job here —
-  a GitHub consumer has no `include:` to drift and runs those from `task lint`.
+  `check-molecule-image-pin.py`) has no job here — a GitHub consumer has no
+  `include:` to drift and runs it from `task lint`.
   A consumer's shape-parity table should cite this list rather than re-derive it
   from the file, and a new step added here is release-noted as closing a parity
   gap.

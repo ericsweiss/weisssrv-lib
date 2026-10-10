@@ -2,7 +2,7 @@
 # ansible-lint, black and yamllint are held equal to the ci/lint template
 # defaults by tests/test_lint_version_parity.py. ansible-core is outside it.
 ansible==14.4.0
-ansible-lint==26.8.0
+ansible-lint==26.9.0
 # A transitive dep of ansible-lint's jinja rule, held below 26.5.x, whose
 # wheels ship a broken mypyc extension that makes ansible-lint fail to load.
 black==26.3.1

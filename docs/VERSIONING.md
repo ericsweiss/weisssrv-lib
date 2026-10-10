@@ -295,7 +295,7 @@ carry privilege (the DinD service, the AI-review image).
 
 ### Pins asserted across files
 
-Three pin sets are duplicated across files that no single gate renders together,
+Four pin sets are duplicated across files that no single gate renders together,
 so each can drift silently. `tests/test_pin_parity.py` holds them equal.
 
 - **`ci/github/ci.example.yml`** — the forge-portable workflow a consumer
@@ -308,6 +308,10 @@ so each can drift silently. `tests/test_pin_parity.py` holds them equal.
 - **`docker/molecule-test/Dockerfile`'s `ADGUARD_HOME_VERSION`** — a mismatch is
   not fatal (the role falls back to fetching github.com mid-test), which is why
   it rots unnoticed: the symptom is a slower, flakier job, not a red one.
+- **`scripts/ci-fetch-tools.py`'s `TOOLS` table** — the one place a tool bump
+  lands. The templates and the example workflow that install kustomize,
+  kubeconform, shellcheck or terraform another way are held equal to it, so a
+  job's behaviour cannot depend on which path installed the binary.
 
 Two dependencies deliberately move outside this discipline, and both are
 recorded where they bite: the GitLab-managed template nested by

@@ -8,7 +8,7 @@ spec:
       # Ships from `pragent/`; the `codiumai/` namespace is FROZEN at 0.34.
       # Digest-pinned because the job handles a GitLab PAT and a model API key,
       # on the multi-arch INDEX digest so the pin stays portable.
-      default: pragent/pr-agent:0.45.0@sha256:e6463e802562daa47db51950de84100a5679472844926d77d53911e529398ee5
+      default: pragent/pr-agent:0.47.0@sha256:7d98954c29289846a08faf00aaea0f1f1375b1676cd8a2ed303e0af07010af7a
       description: Digest-pinned pr-agent image.
     tags:
       type: array

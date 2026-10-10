@@ -252,3 +252,65 @@ class TestManifestGatesFloor:
         )
         assert result.returncode == 0, result.stderr
         assert "--config scripts/netpol-except.yaml kubernetes/flux" in result.stdout
+
+
+EXPECTED_JOBS = (
+    "yaml-lint",
+    "flux-lint",
+    "manifest-gates",
+    "shellcheck",
+    "python-lint",
+    "comment-length",
+    "lint-docs-links",
+    "secret-detection",
+    "docker-build",
+)
+
+
+def test_the_workflow_ships_exactly_the_documented_job_set():
+    """docs/INCLUDE-CONTRACT.md's GitHub section enumerates this set, and the
+    app template's shape-parity table cites it, so a job added or renamed here
+    without the docs is drift."""
+    assert tuple(yaml.safe_load(WORKFLOW.read_text())["jobs"]) == EXPECTED_JOBS
+
+
+class TestCommentLengthJob:
+    """The gate exits 2 on a tree it could not scan, which is the floor here."""
+
+    SCRIPT = ("comment-length", "Check comment length")
+
+    def test_it_runs_the_vendored_gate_over_the_whole_tree(self):
+        assert _run_script(*self.SCRIPT).strip() == (
+            "python3 scripts/check-comment-length.py ."
+        )
+
+    def test_it_reports_the_gates_failure(self, tmp_path):
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "check-comment-length.py").write_text("import sys\nsys.exit(1)\n")
+        result = _bash(_run_script(*self.SCRIPT), tmp_path, _stub_bin(tmp_path, "true"))
+        assert result.returncode != 0
+
+
+class TestScrapeWiringNamespace:
+    """A byte-identical workflow cannot carry a tenant's namespace, so the gate
+    derives it from the tree instead of being refused on a scoped monitor."""
+
+    def test_the_gate_is_called_with_namespace_from_tree(self):
+        script = _run_script("manifest-gates", "Run the manifest gates")
+        assert "check-scrape-wiring.py --namespace-from-tree" in script
+
+    def test_the_flag_reaches_the_gate(self, tmp_path):
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "check-scrape-wiring.py").write_text(
+            "import sys\nprint(' '.join(sys.argv[1:]))\n"
+        )
+        result = _bash(
+            _run_script("manifest-gates", "Run the manifest gates"),
+            tmp_path,
+            _stub_bin(tmp_path, "true"),
+            MANIFEST_ROOT="kubernetes/flux",
+        )
+        assert result.returncode == 0, result.stderr
+        assert "--namespace-from-tree kubernetes/flux" in result.stdout

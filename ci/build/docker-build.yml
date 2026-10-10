@@ -30,10 +30,12 @@ spec:
     dind_mtu:
       default: "1420"
       description: >-
-        MTU of the dind daemon's bridge (`dockerd --mtu`). Inside a Kubernetes
-        job pod it must not exceed the pod interface MTU (1420 on flannel over
-        WireGuard or VXLAN); the 1500 default black-holes large TLS frames and
-        shows up as connection resets on fetches from the job's containers.
+        MTU of the dind daemon's bridges. Inside a Kubernetes job pod it must
+        not exceed the pod interface MTU (1420 on flannel over WireGuard or
+        VXLAN); the 1500 default black-holes large TLS frames and shows up as
+        connection resets on fetches from the job's containers. `--mtu` covers
+        the default bridge, the default-network-opt the user-defined networks
+        molecule and compose create.
     docker_cli_version:
       default: "27.5.1"
       description: Static docker CLI version (sha256-pinned per arch below).
@@ -186,7 +188,9 @@ spec:
     # digest-pinned name must still answer at the `docker` host DOCKER_HOST uses.
     - name: $[[ inputs.dind_service ]]
       alias: docker
-      command: ["--mtu=$[[ inputs.dind_mtu ]]"]
+      command:
+        - "--mtu=$[[ inputs.dind_mtu ]]"
+        - "--default-network-opt=bridge=com.docker.network.driver.mtu=$[[ inputs.dind_mtu ]]"
   variables:
     KUBERNETES_MEMORY_LIMIT: $[[ inputs.job_memory_limit ]]
     KUBERNETES_MEMORY_REQUEST: $[[ inputs.job_memory_request ]]

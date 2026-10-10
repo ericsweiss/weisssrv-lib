@@ -388,3 +388,67 @@ def test_unmodelled_notes_do_not_leak_between_runs(tmp_path, capsys):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+NAMESPACE = """\
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app
+"""
+
+SCOPED_MONITOR = SERVICE_MONITOR.replace(
+    "spec:\n", "spec:\n  namespaceSelector:\n    matchNames: [app]\n", 1
+)
+
+
+class TestNamespaceFromTree:
+    """`--namespace-from-tree` is for a byte-identical pipeline, which cannot
+    carry a per-tenant `--namespace` value."""
+
+    def test_the_tree_namespace_verifies_a_matchnames_entry(self, tmp_path):
+        argv = tree(tmp_path, NAMESPACE, DEPLOYMENT, SERVICE, SCOPED_MONITOR, policy())
+        assert gate.main([*argv, "--namespace-from-tree"]) == 0
+
+    def test_a_matchnames_entry_for_another_namespace_is_refused(self, tmp_path, capsys):
+        elsewhere = SERVICE_MONITOR.replace(
+            "spec:\n", "spec:\n  namespaceSelector:\n    matchNames: [elsewhere]\n", 1
+        )
+        argv = tree(tmp_path, NAMESPACE, DEPLOYMENT, SERVICE, elsewhere, policy())
+        assert gate.main([*argv, "--namespace-from-tree"]) == 2
+        assert "against --namespace app" in capsys.readouterr().err
+
+    def test_a_tree_with_no_namespace_manifest_still_passes_an_unscoped_monitor(
+        self, tmp_path
+    ):
+        """The shipped tenant layout: the operator owns the Namespace, and the
+        monitor names none, so the derivation is never consulted."""
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy())
+        assert gate.main([*argv, "--namespace-from-tree"]) == 0
+
+    def test_a_tree_with_no_namespace_manifest_refuses_a_matchnames_entry(
+        self, tmp_path, capsys
+    ):
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SCOPED_MONITOR, policy())
+        assert gate.main([*argv, "--namespace-from-tree"]) == 2
+        assert "found no named Namespace manifest" in capsys.readouterr().err
+
+    def test_two_namespace_manifests_are_refused(self, tmp_path, capsys):
+        second = NAMESPACE.replace("name: app", "name: other")
+        argv = tree(
+            tmp_path, NAMESPACE, second, DEPLOYMENT, SERVICE, SCOPED_MONITOR, policy()
+        )
+        assert gate.main([*argv, "--namespace-from-tree"]) == 2
+        assert "found 2 of them here (app, other)" in capsys.readouterr().err
+
+    def test_the_same_namespace_twice_is_one_namespace(self, tmp_path):
+        argv = tree(
+            tmp_path, NAMESPACE, NAMESPACE, DEPLOYMENT, SERVICE, SCOPED_MONITOR,
+            policy(),
+        )
+        assert gate.main([*argv, "--namespace-from-tree"]) == 0
+
+    def test_the_two_namespace_options_are_mutually_exclusive(self, tmp_path):
+        argv = tree(tmp_path, NAMESPACE, DEPLOYMENT, SERVICE, SCOPED_MONITOR, policy())
+        with pytest.raises(SystemExit):
+            gate.main([*argv, "--namespace-from-tree", "--namespace", "app"])

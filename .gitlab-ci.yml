@@ -394,7 +394,7 @@ molecule-plan:
     KUBERNETES_MEMORY_LIMIT: "1Gi"
     KUBERNETES_MEMORY_REQUEST: "256Mi"
   needs:
-    - job: docs-link-check
+    - job: lint-docs-links
       optional: true
 
 # Right-size the tag-less job pods (the runner allows overrides <= 6Gi): these
@@ -415,7 +415,7 @@ python-lint:
     KUBERNETES_MEMORY_LIMIT: "1Gi"
     KUBERNETES_MEMORY_REQUEST: "256Mi"
 
-docs-link-check:
+lint-docs-links:
   variables:
     KUBERNETES_MEMORY_LIMIT: "1Gi"
     KUBERNETES_MEMORY_REQUEST: "256Mi"

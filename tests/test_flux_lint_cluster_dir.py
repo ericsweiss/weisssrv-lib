@@ -139,3 +139,74 @@ def test_only_another_kind_is_skipped_quietly():
 def test_the_loop_still_reads_the_cluster_dir():
     """Both branch assertions would pass vacuously against an empty loop."""
     assert 'for ks in "$CLUSTER_DIR"/*.yaml; do' in _script()
+
+
+def _before_script() -> str:
+    job = ci_yaml.parse_ci(TEMPLATE.read_text(encoding="utf-8"))["$[[ inputs.job_name ]]"]
+    return job["before_script"][0]
+
+
+def _strict_block() -> str:
+    """The loop's `flux envsubst --strict` check, `if` through `fi`."""
+    match = re.search(r"\n(  if ! STRICT_ERR=.*?\n  fi\n)", _script(), re.S)
+    assert match, "the strict-substitution check is gone from the render loop"
+    return match.group(1)
+
+
+class TestStrictSubstitution:
+    """Flux's Go envsubst reads forms GNU envsubst does not, so its own
+    --strict is what decides whether the post-build will reconcile."""
+
+    def test_it_runs_before_the_gnu_envsubst_render(self):
+        script = _script()
+        assert script.index("flux envsubst --strict") < script.index(
+            'RENDERED=$(printf \'%s\\n\' "$RAW" | envsubst'
+        )
+
+    def test_the_cheap_pre_scan_is_still_there(self):
+        """The `${`-shape scan names the offending line; --strict does not."""
+        assert "MALFORMED=$(printf" in _script()
+
+    def test_the_substitute_arm_installs_the_pinned_flux_cli(self):
+        before = _before_script()
+        assert 'fetch_verified flux.tar.gz "$FLUX_URL" "$FLUX_SHA256"' in before
+        # The non-root tenant arm has no envsubst step, so it must not pay for
+        # the download: the `else` half downloads kubeconform and kustomize only.
+        tenant = before.split("else", 1)[1]
+        assert "flux" not in tenant
+
+    def _run(self, tmp_path: Path, returncode: int, message: str = ""):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        stub = bin_dir / "flux"
+        # The stub must drain stdin: under pipefail a SIGPIPE'd printf would
+        # fail the pipeline whatever flux returned.
+        stub.write_text(
+            "#!/bin/sh\ncat >/dev/null\n"
+            f"printf '%s\\n' '{message}' >&2\nexit {returncode}\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        script = (
+            'set -eo pipefail\nFAILED=0\nRAW="kind: ConfigMap"\n'
+            "SRCPATH=kubernetes/apps\nfor _ in 1; do\n"
+            + _strict_block()
+            + "done\nexit $FAILED\n"
+        )
+        return subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+        )
+
+    def test_a_rejected_render_fails_the_job_and_quotes_flux(self, tmp_path):
+        result = self._run(tmp_path, 1, "variable not set: conf")
+        assert result.returncode == 1
+        assert "kubernetes/apps fails Flux's strict substitution" in result.stdout
+        assert "variable not set: conf" in result.stdout
+
+    def test_an_accepted_render_leaves_the_job_green(self, tmp_path):
+        result = self._run(tmp_path, 0)
+        assert result.returncode == 0, result.stderr
+        assert "strict substitution" not in result.stdout
