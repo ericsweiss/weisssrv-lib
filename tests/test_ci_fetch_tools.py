@@ -295,24 +295,85 @@ class TestEnvOverrides:
 
 
 class TestIdempotence:
-    def test_an_existing_binary_is_skipped(self, monkeypatch, tmp_path, capsys):
+    """The stamp beside the binary decides, so a cache cannot hide a stale one."""
+
+    def test_a_matching_stamp_is_a_no_op(self, monkeypatch, tmp_path, capsys):
+        asset = write_raw(tmp_path / "jq-linux-amd64")
+        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
+        target = tmp_path / "bin"
+        assert run(monkeypatch, ["jq"], target) == 0
+        capsys.readouterr()
+        (target / "jq").write_bytes(b"untouched\n")
+        assert run(monkeypatch, ["jq"], target) == 0
+        assert capsys.readouterr().out.strip() == "jq 9.9.9: present"
+        assert (target / "jq").read_bytes() == b"untouched\n"
+
+    def test_a_missing_stamp_re_fetches(self, monkeypatch, tmp_path):
+        """A pre-seeded, cached or truncated binary claims nothing about itself."""
         asset = write_raw(tmp_path / "jq-linux-amd64")
         pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
         target = tmp_path / "bin"
         target.mkdir()
         (target / "jq").write_bytes(b"stale\n")
         assert run(monkeypatch, ["jq"], target) == 0
-        assert capsys.readouterr().out.strip() == "jq: present"
-        assert (target / "jq").read_bytes() == b"stale\n"
+        assert (target / "jq").read_bytes() == PAYLOAD
 
-    def test_force_replaces_it(self, monkeypatch, tmp_path):
+    def test_a_stale_stamp_re_fetches(self, monkeypatch, tmp_path):
+        """The bump that silently did not take effect: the cached .bin survived
+        with the old version in it."""
         asset = write_raw(tmp_path / "jq-linux-amd64")
         pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
         target = tmp_path / "bin"
         target.mkdir()
         (target / "jq").write_bytes(b"stale\n")
+        gate.stamp_path(target, "jq").write_text("9.9.8 %s\n" % sha(PAYLOAD))
+        assert run(monkeypatch, ["jq"], target) == 0
+        assert (target / "jq").read_bytes() == PAYLOAD
+        assert gate.stamp_path(target, "jq").read_text() == "9.9.9 %s\n" % sha(PAYLOAD)
+
+    def test_a_stamp_at_another_checksum_re_fetches(self, monkeypatch, tmp_path):
+        """Same version, re-cut asset: the sha256 half of the stamp catches it."""
+        asset = write_raw(tmp_path / "jq-linux-amd64")
+        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
+        target = tmp_path / "bin"
+        target.mkdir()
+        (target / "jq").write_bytes(b"stale\n")
+        gate.stamp_path(target, "jq").write_text("9.9.9 %s\n" % sha(OTHER))
+        assert run(monkeypatch, ["jq"], target) == 0
+        assert (target / "jq").read_bytes() == PAYLOAD
+
+    def test_an_env_override_re_fetches_over_a_table_stamp(self, monkeypatch, tmp_path):
+        """The override is part of the resolved tool, so the stamp tracks it."""
+        write_raw(tmp_path / "jq-9.9.9", PAYLOAD)
+        write_raw(tmp_path / "jq-1.0.0", OTHER)
+        pin(
+            monkeypatch, "jq", url=as_url(tmp_path) + "/jq-{version}",
+            sha256=sha(PAYLOAD), kind=gate.RAW,
+        )
+        target = tmp_path / "bin"
+        assert run(monkeypatch, ["jq"], target) == 0
+        monkeypatch.setenv("TOOL_JQ_VERSION", "1.0.0")
+        monkeypatch.setenv("TOOL_JQ_SHA256", sha(OTHER))
+        assert gate.main(["--dir", str(target), "jq"]) == 0
+        assert (target / "jq").read_bytes() == OTHER
+
+    def test_force_replaces_a_stamped_install(self, monkeypatch, tmp_path):
+        asset = write_raw(tmp_path / "jq-linux-amd64")
+        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
+        target = tmp_path / "bin"
+        assert run(monkeypatch, ["jq"], target) == 0
+        (target / "jq").write_bytes(b"stale\n")
         assert run(monkeypatch, ["--force", "jq"], target) == 0
         assert (target / "jq").read_bytes() == PAYLOAD
+
+    def test_a_failed_install_leaves_no_stamp(self, monkeypatch, tmp_path, capsys):
+        """An interrupted install must read as absent, not as the pinned version."""
+        asset = write_raw(tmp_path / "jq-linux-amd64", OTHER)
+        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
+        target = tmp_path / "bin"
+        assert run(monkeypatch, ["jq"], target) == 2
+        assert not gate.stamp_path(target, "jq").exists()
+        assert "sha256 mismatch" in capsys.readouterr().err
 
 
 class TestInstallDirectory:

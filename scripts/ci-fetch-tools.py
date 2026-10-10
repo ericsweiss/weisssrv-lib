@@ -191,11 +191,35 @@ def extract(archive: Path, tool: Tool, target: Path) -> None:
         raise FetchError("cannot read %s: %s" % (archive.name, exc)) from exc
 
 
+def stamp_path(directory: Path, name: str) -> Path:
+    """Where the installed version and checksum are recorded."""
+    return directory / ("%s.version" % name)
+
+
+def stamp_text(tool: Tool) -> str:
+    """What the stamp beside an installed tool holds."""
+    return "%s %s\n" % (tool.version, tool.sha256.strip().lower())
+
+
+def is_installed(name: str, tool: Tool, directory: Path) -> bool:
+    """Whether the pinned tool is already there.
+
+    The stamp decides, not the path's existence: a cached or pre-seeded binary
+    of any version would otherwise be trusted and a bump never take effect.
+    """
+    if not (directory / name).exists():
+        return False
+    try:
+        return stamp_path(directory, name).read_text() == stamp_text(tool)
+    except OSError:
+        return False
+
+
 def install_tool(name: str, tool: Tool, directory: Path, force: bool = False) -> str:
     """Install one tool into `directory`, and return the line to print."""
     destination = directory / name
-    if destination.exists() and not force:
-        return "%s: present" % name
+    if is_installed(name, tool, directory) and not force:
+        return "%s %s: present" % (name, tool.version)
     url = tool.url.format(version=tool.version)
     staging = Path(tempfile.mkdtemp(dir=directory, prefix=".fetch-"))
     try:
@@ -207,7 +231,10 @@ def install_tool(name: str, tool: Tool, directory: Path, force: bool = False) ->
             binary = staging / name
             extract(asset, tool, binary)
         binary.chmod(BINARY_MODE)
+        # The stamp lands after the binary, so an interrupted install reads as
+        # absent and re-fetches rather than as the pinned version.
         os.replace(binary, destination)
+        stamp_path(directory, name).write_text(stamp_text(tool))
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return "%s %s -> %s" % (name, tool.version, destination)

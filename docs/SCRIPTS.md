@@ -2103,8 +2103,14 @@ Tools: `amtool`, `jq`, `kubeconform`, `kustomize`, `promtool`, `shellcheck`,
 - **`DIR` defaults to `$CI_PROJECT_DIR/.bin`**, else `./.bin`, and is created if
   missing. **The caller adds `DIR` to `PATH`**: the script installs binaries and
   deliberately changes nothing about the environment of the job that ran it.
-- A tool already present in `DIR` is skipped, printing `jq: present`, unless
-  `--force` re-installs it. A job can therefore call the script repeatedly.
+- **Each install stamps `DIR/<name>.version`** with the effective version and
+  sha256, and a tool counts as present only when that stamp matches the resolved
+  pin — so a skip prints `jq 1.8.2: present`, and a cached, pre-seeded,
+  truncated or differently-versioned binary is re-fetched instead of trusted.
+  That is what makes a `cache:` on `DIR` safe: a version bump still takes
+  effect. The stamp lands after the binary, so an interrupted install reads as
+  absent. `--force` re-installs regardless, and a job can call the script
+  repeatedly.
 - **The pinned versions are this script's own**, not a consumer's, and they are
   not site data — the same pins serve every consumer. A consumer re-pins one
   tool with `TOOL_<NAME>_VERSION` and `TOOL_<NAME>_SHA256` (the name
