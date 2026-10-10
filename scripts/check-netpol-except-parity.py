@@ -295,19 +295,46 @@ def classify(except_list, policy=None):
     return None
 
 
+def _json_manifest_docs(payload):
+    """The Kubernetes documents in a parsed JSON file, or None if it holds none.
+
+    A JSON file under a manifest tree is as likely to be a Grafana dashboard,
+    so the shape decides whether this gate owns the file at all.
+    """
+    docs = payload if isinstance(payload, list) else [payload]
+    if docs and all(
+        isinstance(doc, dict) and "apiVersion" in doc and "kind" in doc
+        for doc in docs
+    ):
+        return docs
+    return None
+
+
+def looks_like_json_manifest(path):
+    """Whether an UNPARSEABLE JSON file was meant to be a manifest.
+
+    Its text is all that is left to go on, and a dashboard that lost a comma
+    must not read as the NetworkPolicy corpus failing to load.
+    """
+    try:
+        text = Path(path).read_text(errors="replace")
+    except OSError:
+        return True
+    return '"apiVersion"' in text and '"kind"' in text
+
+
 def load_manifest(path):
     """Documents in one manifest file, or raise an OSError / parse error.
 
     A `.json` manifest holds one document, or a top-level list of them; a YAML
-    stream carries several.
+    stream carries several. A JSON file of another shape yields nothing.
     """
     path = Path(path)
     # The handle, not the text: PyYAML names the stream in its mark, so the
     # parse error points at the file instead of at "<unicode string>".
     with path.open() as fh:
         if path.suffix == ".json":
-            doc = json.load(fh)
-            return list(doc) if isinstance(doc, list) else [doc]
+            return _json_manifest_docs(json.load(fh)) or []
         return list(yaml.safe_load_all(fh))
 
 
@@ -425,22 +452,28 @@ def scan_paths(paths, policy=None):
     for root in paths:
         root = Path(root)
         if root.is_dir():
-            files = sorted(
-                p for ext in ("*.yaml", "*.yml", "*.json") for p in root.rglob(ext)
-            )
+            files = [
+                (p, True)
+                for p in sorted(
+                    p for ext in ("*.yaml", "*.yml", "*.json") for p in root.rglob(ext)
+                )
+            ]
         elif root.is_file():
-            files = [root]
+            files = [(root, False)]
         else:
             errors.append(f"{root}: no such file or directory")
             continue
-        for path in files:
+        for path, discovered in files:
             try:
                 docs = load_manifest(path)
             except OSError as e:
                 errors.append(f"{path}: unreadable: {e}")
                 continue
             except json.JSONDecodeError as e:
-                errors.append(f"{path}: unparseable JSON: {e}")
+                # A file this gate was POINTED at is its subject whatever it
+                # holds; one it merely walked onto has to look like a manifest.
+                if not discovered or looks_like_json_manifest(path):
+                    errors.append(f"{path}: unparseable JSON: {e}")
                 continue
             except yaml.YAMLError as e:
                 errors.append(f"{path}: unparseable YAML: {e}")

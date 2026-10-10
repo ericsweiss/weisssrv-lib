@@ -635,9 +635,41 @@ def test_a_json_list_manifest_is_scanned(tmp_path):
 
 
 def test_an_unparseable_json_manifest_is_an_operator_error(tmp_path, capsys):
-    (tmp_path / "netpol.json").write_text("{\n")
+    (tmp_path / "netpol.json").write_text(
+        '{"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",\n'
+    )
     assert mod.main([str(tmp_path)]) == 2
     assert "unparseable JSON" in capsys.readouterr().err
+
+
+def test_an_unparseable_json_file_named_outright_is_still_an_error(tmp_path, capsys):
+    """Whatever it holds, a file the gate was pointed at is its subject."""
+    path = tmp_path / "dashboard.json"
+    path.write_text("{\n")
+    assert mod.main([str(path)]) == 2
+    assert "unparseable JSON" in capsys.readouterr().err
+
+
+def test_a_json_file_of_another_shape_is_not_a_manifest(tmp_path):
+    """The default scan root holds the Grafana dashboards, and a netpol-fence
+    gate reporting a dashboard is a wrong attribution."""
+    import json as _json
+
+    (tmp_path / "dashboard.json").write_text(
+        _json.dumps({"title": "Cluster", "panels": [{"type": "timeseries"}]})
+    )
+    (tmp_path / "netpol.json").write_text(_json.dumps(_policy(["10.0.0.0/8"])))
+    violations, scanned, errors = mod.scan_paths([tmp_path])
+    assert scanned == 1 and errors == [] and len(violations) == 1
+
+
+def test_a_broken_dashboard_does_not_red_the_gate(tmp_path):
+    """A dashboard is hand-edited; a stray comma in one must not read as the
+    NetworkPolicy corpus being unreadable."""
+    (tmp_path / "dashboard.json").write_text('{"title": "Cluster",,}')
+    (tmp_path / "netpol.yaml").write_text(yaml.safe_dump(_policy(["10.0.0.0/8"])))
+    violations, scanned, errors = mod.scan_paths([tmp_path])
+    assert errors == [] and scanned == 1 and len(violations) == 1
 
 
 def test_a_placeholder_tree_passes_but_its_render_is_judged(tmp_path, capsys):

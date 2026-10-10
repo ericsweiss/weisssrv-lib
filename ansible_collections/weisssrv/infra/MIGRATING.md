@@ -158,10 +158,18 @@ finding that was unfixable except by an allowlist entry in every consumer.
 
 **`check-netpol-except-parity.py` takes `--corpus FILE` (`-` for stdin)** so a
 placeholder-shaped repo can be judged after substitution: the `${...}` CIDR
-skip is off there and a leftover placeholder is an operator error. Its
-directory walk also globs `*.json`, and an egress peer carrying none of
-`ipBlock` / `podSelector` / `namespaceSelector` is now reported as the empty
-peer Kubernetes reads as every destination.
+skip is off there and a leftover placeholder is an operator error. **Act at the
+bump:** a consumer that passes no `--corpus` keeps the vacuous LAN-escape arm
+and gets the verdict it got before the flag existed, so wire the rendered
+stream into the render-gate driver — a `render-gates.conf` row for
+`run-render-gates.sh`, or `--corpus "$RENDER_ALL"` where the render loop
+already has one. Its directory walk also globs `*.json`, counting a walked JSON
+file as a manifest only while every document in it carries `apiVersion` and
+`kind` — the Grafana dashboards under the same tree are left alone, and a
+hand-edited one that lost a comma does not red the fence gate, while a file
+named on the command line stays the gate's subject whatever it holds. An egress
+peer carrying none of `ipBlock` / `podSelector` / `namespaceSelector` is now
+reported as the empty peer Kubernetes reads as every destination.
 
 **`check-lib-pins.py` compares repository names, not substrings.** `project in
 value` counted any Galaxy name/source or include path whose URL merely

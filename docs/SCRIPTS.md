@@ -1367,9 +1367,21 @@ scripts/check-netpol-except-parity.py [--config FILE] [--corpus FILE] [path ...]
   the skip is off: the fence arms judge real CIDRs and a leftover `${...}` is an
   exit-2 operator error. `--corpus` replaces the default `kubernetes/` tree, not
   an explicit path list — pass both to scan both.
+- **A consumer that passes no `--corpus` keeps the vacuous arm.** The flag is
+  not optional polish: a placeholder-shaped repo running the path scan alone
+  gets the same verdict it got before the arm existed. The render-gate driver is
+  where it belongs — [`run-render-gates.sh`](#run-render-gatessh) with a
+  `render-gates.conf` row, or the include's own `$RENDER_ALL`, both of which
+  already hold a fully substituted stream.
 - **A `.json` manifest is scanned too** — the directory walk globs `*.yaml`,
   `*.yml` and `*.json`, and a JSON file holds one document or a top-level list
-  of them. An unparseable one is an exit-2 operator error like its YAML sibling.
+  of them. **The shape decides ownership**: a walked JSON file counts as a
+  manifest only while every document in it is a mapping carrying `apiVersion`
+  and `kind`, so the Grafana dashboards living under the same tree are not
+  manifests, and a hand-edited one that lost a comma does not red this gate. A
+  file named on the command line is the gate's subject whatever it holds, and
+  an unparseable manifest-shaped JSON is an exit-2 operator error like its YAML
+  sibling.
 - **The empty peer is the allow-everything case.** `to: [{}]` is a non-empty
   peer list carrying no constraint, and Kubernetes reads a peer with none of
   `ipBlock` / `podSelector` / `namespaceSelector` as every destination — the
