@@ -59,6 +59,10 @@ vendorable:
   - scripts/check-ephemeral-storage-cap.py
   - scripts/check-flux-stage-timeouts.py
   - scripts/check-flux-version-pin.py
+  # check-guest-endpoint-parity.py imports gate_common.py and
+  # inventory_tree.py from its own directory: vendor all three, or the
+  # gate exits 2 on import.
+  - scripts/check-guest-endpoint-parity.py
   # check-helm-repo-parity.py loads check-versions.py from its own directory
   # for the registry loader: vendor the pair.
   - scripts/check-helm-repo-parity.py
@@ -124,6 +128,9 @@ vendorable:
   - scripts/flux-child-kustomizations.py
   - scripts/flux-env.sh
   - scripts/flux-render.sh
+  # Reads `kubectl get -o json` on stdin, so it runs from an operator's
+  # shell and from a Taskfile with no cluster access of its own.
+  - scripts/flux-secret-consumers.py
   # gate_common.py is imported from its own directory by every corpus gate
   # above and by the live-input gate (live-cpu-limits): vendor it with any of
   # them. tests/test_gate_common_vendoring.py holds that list to the tree.
@@ -146,6 +153,9 @@ vendorable:
   # consumer-owned, because its endpoint list is site data.
   - scripts/smoke-lib.sh
   - scripts/supervised-apply-guard.sh
+  # Importable module: a consumer's Taskfile gates read the flattened
+  # `includes:` tree through it.
+  - scripts/taskfile_tree.py
   - scripts/unifi-settings-drift.py
   # validate-helm-values.py loads check-hpa-vpa-invariant.py by path and fails
   # loudly when it is missing: vendor the pair.

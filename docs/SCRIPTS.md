@@ -28,6 +28,7 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`check-doc-links.py`](#check-doc-linkspy) | relative Markdown cross-links resolve | env | neutral |
 | [`check-flux-stage-timeouts.py`](#check-flux-stage-timeoutspy-pyyaml) | a waiting Flux stage that does not outlast the releases beneath it | flags | neutral |
 | [`check-flux-version-pin.py`](#check-flux-version-pinpy) | the Flux CLI pin, the versions ConfigMap and gotk-components agree | flags | neutral |
+| [`check-guest-endpoint-parity.py`](#check-guest-endpoint-paritypy-pyyaml) | a hand-written LAN endpoint address or NFS export client that covers no inventory host, and an export admitting part of a node group | flags | neutral |
 | [`check-helm-repo-parity.py`](#check-helm-repo-paritypy-pyyaml) | chart-repo URLs equal to the HelmRepository CRs Flux pulls from | flags | neutral |
 | [`check-helm-values-coverage.py`](#check-helm-values-coveragepy-pyyaml) | a HelmRelease the helm-values registry neither lists nor excludes | flags | neutral |
 | [`check-helmrelease-crd-safety.py`](#check-helmrelease-crd-safetypy-pyyaml) | a CRD-owning HelmRelease that would delete its CRDs on uninstall | `helmrelease-crd-safety.example.yaml` | neutral |
@@ -68,6 +69,7 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`flux-child-kustomizations.py`](#flux-child-kustomizationspy-pyyaml) | child Flux Kustomizations in `dependsOn` order | flags | blocking on a cycle |
 | [`flux-env.sh`](#flux-envsh-pyyaml-wraps-flux-rendersh) | multi-ConfigMap front end to `flux-render.sh` | env | neutral |
 | [`flux-render.sh`](#flux-envsh-pyyaml-wraps-flux-rendersh) | ConfigMap → shell exports, and the kubeconform schema version | args | neutral |
+| [`flux-secret-consumers.py`](#flux-secret-consumerspy) | the workloads in one namespace that consume a named Secret, and which manager owns each | args + stdin | neutral |
 | [`gate_common.py`](#gate-commonpy-pyyaml-not-run-directly) | shared loader, cluster-config, key and NetworkPolicy helpers for the corpus gates | n/a | neutral |
 | [`generate-hosts-env.py`](#generate-hosts-envpy-pyyaml) | inventory → shell/dotenv file, with a drift gate | `hosts-env-map.example.yml` | neutral |
 | [`generate-molecule-pipeline.py`](#generate-molecule-pipelinepy-pyyaml) | targeted molecule child pipeline for an MR | env | gitlab-only |
@@ -82,6 +84,7 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`sanitize-junit-expected-failures.py`](#sanitize-junit-expected-failurespy) | downgrades declared negative-path junit failures | expectations file | neutral |
 | [`supervised-apply-guard.sh`](#supervised-apply-guardsh) | confirmation ceremony for a supervised apply | env | neutral |
 | [`semantic-release.py`](#semantic-releasepy) | cuts the tag + Release from conventional commits | flags | dual |
+| `taskfile_tree.py` | importable flattener for a Taskfile `includes:` tree | n/a | neutral |
 | `shell-lib.sh` | sourceable `timeout_cmd` / `ssh_probe` / `kubectl_read` / `captured_match` / `url_contains` / `ssh_contains` helpers | env | neutral |
 | `smoke-lib.sh` | sourceable HTTP/TCP probe classifiers and a PASS/FAIL ledger for a consumer's per-guest verify scripts | env | neutral |
 | [`wait-for-reloader-roll.sh`](#wait-for-reloader-rollsh) | waits for Reloader to roll a Deployment after its ConfigMap was patched | args | neutral |
@@ -789,6 +792,29 @@ stderr when any Kustomization declares no `spec.path`, so a missing stage cannot
 pass as a complete corpus. `--allow-missing-paths` prints the paths there are and
 still warns. `--require-paths` is accepted as a no-op alias for the default.
 
+### `flux-secret-consumers.py`
+
+The workloads in one namespace that reference a named Secret, read off
+`kubectl get deployment,statefulset,daemonset -o json` on stdin: one TSV row per
+consumer — `<kind>/<name>`, `kustomize` or `other`, and the workload's
+`matchLabels` as a selector. A rotated Secret is picked up by deleting the pods
+a row names; the manager column says which workloads a restart ANNOTATION would
+not survive, because kustomize-controller reverts it on the next reconcile.
+
+```
+kubectl -n <ns> get deployment,statefulset,daemonset -o json \
+  | scripts/flux-secret-consumers.py <secret-name>
+```
+
+- Every reference mechanism counts: a secret volume, a projected source, an
+  `envFrom.secretRef`, an `env.valueFrom.secretKeyRef` and an
+  `imagePullSecrets` entry. Reading only volumes leaves a consumer running the
+  old Secret.
+- **Exit codes:** 0 with the rows (none is a clean empty result), 2 on a
+  payload that is not the JSON kubectl emits, carries no `.items`, or holds a
+  consumer with no `matchLabels` — a pod delete cannot be scoped to that one,
+  so it is named rather than silently omitted.
+
 ### `run-render-gates.sh`
 
 Runs a consumer's ordered corpus-gate list from `scripts/render-gates.conf`
@@ -811,7 +837,7 @@ propagated, never collapsed into a finding).
 
 ## Cluster invariant gates
 
-Fifteen gates plus one shared module, in two invocation shapes. **Eight read
+Sixteen gates plus one shared module, in two invocation shapes. **Eight read
 the rendered manifest corpus on stdin through `gate_common.py`** —
 `check-pvc-storageclass.py`, `check-scrape-netpol.py`,
 `check-default-deny-coverage.py`, `check-issuer-refs.py`,
@@ -823,7 +849,8 @@ into `ci/validate/flux-lint.yml`'s `extra_validation` chain. **The rest take
 paths or flags**: `check-netpol-except-parity.py`, `check-kustomization.py`
 and `check-scrape-wiring.py` (manifest paths), and
 `check-alertmanager-behaviour.py`, `check-backup-artifact-apps.py`,
-`check-cluster-invariants.py` and `check-role-inputs.py` (flags). Where a gate
+`check-cluster-invariants.py`, `check-guest-endpoint-parity.py` and
+`check-role-inputs.py` (flags). Where a gate
 needs site data it comes from a flag or a config file, never from the source, so
 the shipped file is identical in every consumer — `check-pvc-storageclass` needs
 none at all, and `check-secretstore-scope` only an optional `--external-store`.
@@ -1491,6 +1518,46 @@ scripts/check-cluster-invariants.py
   itself; a host named rather than addressed is left to DNS.
 - **Exit codes:** 0 clean, 1 on a collision, 2 on an operator error including an
   inventory with no host or a config declaring no VIP or no LAN CIDR.
+
+### `check-guest-endpoint-parity.py` (PyYAML)
+
+The addresses a cluster hand-writes for a guest that lives outside it: an
+`EndpointSlice`/`Endpoints` address, and an NFS export's client specs. Inside a
+declared host CIDR each must cover a host's `ansible_host`, so a guest
+renumbered on the Ansible side alone is caught before the route or the mount
+fails. A third arm reports an export that admits part of a node group: a client
+list is frozen when it is written, so a node added or renumbered later loses the
+mount on itself alone while the rest keep it.
+
+```
+scripts/check-guest-endpoint-parity.py
+```
+
+- `--repo-root` (default: the script's parent's parent), `--inventory` (the
+  directory holding `hosts.yml`, `group_vars/` and `host_vars/`, default
+  `ansible/inventories/prod`), `--manifest-tree` (default `kubernetes`).
+- Repeatable `--lan-cidr-key` names the cluster-config keys holding a host
+  CIDR, so a site with management, storage or DMZ VLANs scopes to all of them
+  (default `cluster_lan_cidr`); `--extra-lan-cidr` adds a range cluster-config
+  does not name. `cluster_lan_gateway` is allowed without being a host.
+- Repeatable `--scoped-group` names the inventory groups an export must admit
+  whole (default `k3s_servers`, `k3s_agents`). A group of mixed roles (`all`)
+  would report every export that legitimately admits one role, so the default
+  is the node groups rather than every group the inventory declares.
+- An address outside every declared CIDR is out of scope, not a finding: an
+  endpoint may legitimately name an upstream. The same holds for an export
+  client range outside them, and for a spec this gate cannot resolve to an
+  address at all (a hostname, netgroup or wildcard).
+- Addresses spelled `${cluster_*}` are substituted from the cluster-config
+  ConfigMap the way Flux's postBuild does, including a whole-list roster key; a
+  placeholder that resolves to nothing is reported rather than dropped, because
+  an empty list passes every check below it.
+- **Vendoring:** imports `gate_common.py` and `inventory_tree.py` from its own
+  directory, and names both at once when either is absent. Vendor all three.
+- **Exit codes:** 0 clean, 1 on drift, 2 when it inspected nothing — no
+  endpoint address in the tree, no address inside the declared CIDRs, an
+  inventory declaring no `ansible_host`, or a cluster-config naming none of the
+  `--lan-cidr-key` keys with no `--extra-lan-cidr` to stand in.
 
 ### `check-role-inputs.py` (PyYAML, Jinja2)
 
@@ -2340,6 +2407,7 @@ scripts/unifi-settings-drift.py [--config FILE]
 | `resolve-tool.sh` | prints how to invoke a Python dev tool (`PATH` → `python3 -m <module>` → validated pyenv glob) |
 | `cluster-config-value.sh` | prints one or more `data:` values from the cluster-config ConfigMap, space-separated; fails on an absent key rather than printing nothing. `$CLUSTER_CONFIG` overrides the path |
 | `collect-state-lib.sh` | function-only helpers a consumer's `collect-state.sh` sources: `REDACT_PATTERNS` + `redact_file`, the `cs_capped` / `cs_emit` section emitters, `warning_events_filter`, `coerce_int`, and the `classify_regular` / `regular_failing_predicates` / `classify_json` verdicts. Detail below |
+| `taskfile_tree.py` | importable flattener for a `Taskfile.yml` `includes:` tree (PyYAML): `include_paths(repo)` reads both entry shapes (a bare path and a `taskfile:` mapping), `taskfile_paths` prepends the root file, `load_tasks` returns every task keyed by the name `task <name>` would run with each `- task:`/`deps:` reference rewritten fully qualified (a leading colon is root-relative, a bare name resolves inside its namespace), and `task_names` drops `internal: true` templates. Rewriting is done on a copy, so two namespaces including one fragment do not qualify each other's |
 | `inventory_tree.py` | importable Ansible-inventory resolver (PyYAML): `group_index(inventory)` indexes every group that carries content, merged across occurrences; `resolve_hosts(name, index)` expands a group in inventory order with children depth first, deduped, and terminates on a cycle (`strict=True` raises `InventoryCycle`); `declared_groups` also counts a null-bodied placeholder; `host_vars` merges a host's vars across every group listing it; `all_hosts`, `hosts_by_address` and `addresses_by_host` read off that. `generate-hosts-env.py` imports it from its own directory: vendor the pair |
 | `ci_playbook_invocations.py` | importable argv walk over a job script's `ansible-playbook` calls: `parse_invocations(text)` returns one dict per call (`inventory`, `playbook`, `limit`, `tags`, `skip_tags`, `argv`). Every call is returned, so two chained on one script line are two invocations, and `--skip-tags` is kept out of `tags` so a gate never reads a skip as a selection. Stdlib only. `check-deploy-preflight.py` imports it from its own directory: vendor the pair |
 | `ci_yaml.py` | importable loader for a `.gitlab-ci.yml` that uses GitLab's `!` tags: `CILoader` preserves a tagged node's structure and turns `!reference` into a resolvable `Reference`, `NullTagCILoader` collapses every tagged node to None; plus `load_ci`, `parse_ci`, `jobs`, `script_lines`. Both subclass SafeLoader and neither registers a constructor globally. **Forge: gitlab-only** |
@@ -2442,6 +2510,57 @@ scripts/wait-for-reloader-roll.sh ns app "$gen" 60 provider
 | `kubernetes/reapers/kube_reaper.py` | the shared half of a pod-reaper CronJob program (kube-apiserver client, paging, age arithmetic, uid-preconditioned deletes, config validation, entry point). Stdlib only; mounted beside the app script so `import kube_reaper` resolves from the same directory |
 | `tests/copier_render.py` | copier render harness for a template repo's own suite: `copy_source`, `copier_argv`, `render`, `cli_main`, `check_registered_copies`. Every per-repo value is a parameter |
 | `lint/gitattributes` | the line-ending policy, vendored as a consumer's `.gitattributes` |
+
+---
+
+## Extraction queue
+
+These scripts exist in both `weisssrv/scripts/` and the cluster template's
+`template/scripts/` without being offered here, so every fix has to be made
+twice and nothing notices when it is not. The count is the diff between the two
+consumer copies, as a measure of how far the forks have already travelled; a
+large one means reconciling two behaviours, not copying a file.
+
+Two of them need no extraction — the library already offers the gate under
+another name, and the work is for the consumers to adopt it and delete their
+fork:
+
+- `check-kustomization-coverage.py` → [`check-kustomization.py`](#check-kustomizationpy-pyyaml),
+  which walks the reference graph from a root directory rather than flat-walking
+  the tree, and already reports an unlisted manifest, a reference to nothing, an
+  emptied manifest and an inert kustomization or Component.
+- `flux-corpus-gates.sh` → [`run-render-gates.sh`](#run-render-gatessh) plus the
+  consumer's own `render-gates.conf`. The hand-written gate list, the per-gate
+  flags and the corpus appends are exactly what the config file holds, and the
+  driver keeps the rc-2-is-not-a-finding rule both forks implement by hand.
+
+The rest, with what has to become a flag or a config key before each can ship
+from here:
+
+| Script | Diff lines between the two copies | Site data to lift out |
+|---|---|---|
+| `deploy-verify.sh` | 246 | the probe list; [`deploy-verify-lib.sh`](#shell-helpers) already holds the readiness classifiers, so only the driver is left |
+| `check-tenant-wiring.py` | 233 (template copy is a `.jinja`) | the tenant list and the confinement set each tenant must carry |
+| `bootstrap-proxmox-host.sh` | 204 (template copy is a `.jinja`) | repository URLs, pool names and the package set |
+| `check-cluster-literals.py` | 132 (template copy is a `.jinja`) | the literal patterns and the trees exempted because a tool parses them before Flux substitutes |
+| `maintenance-lib.sh` | 93 (template copy is a `.jinja`) | the host and guest lists; pairs with `maintenance-run-with-verify.sh`, already offered |
+| `check-upstream-rule-mirror.py` | 83 | the chart-version source file and the mirror locations |
+| `generate-host-log-staleness.py` | 70 | the inventory group, the rule file path and the thresholds |
+| `post-maintenance-verify.sh` | 43 | the probe list, as for `deploy-verify.sh` |
+| `diagnose-network-issues.sh` | 32 (template copy is a `.jinja`) | the addresses and interfaces it probes |
+| `check-role-default-flips.py` | 27 | the collection name and the two refs to compare |
+| `check-integration-matrix-coverage.py` | 21 | the integration-test directory and the matrix job name; near-neighbour of `check-molecule-matrix-coverage.sh` |
+| `check-ansible-service-names.py` | 21 | nothing — it reads the playbook tree and a unit-suffix list |
+| `check-unmanaged-secrets.py` | 19 | the owner allowlist; reads live `kubectl get -o json`, so it wants `gate_common.load_live_items` |
+| `check-skill-refs.py` | 16 | the skill directory; near-neighbour of `check-doc-links.py`, which cannot see a backticked path |
+| `check-tenant-traefik-isolation.py` | 8 (template copy is a `.jinja`) | the tenant namespaces and the Traefik deployment path |
+| `check-ci-pin-parity.sh` | 4 | the pin names written twice; near-neighbour of `check-lib-pins.py` |
+| `check-deploy-host-coverage.py` | 2 | the inventory, playbook and CI paths |
+
+A script a consumer owns on purpose is not on this queue: `collect-state.sh`,
+the per-guest smoke scripts and `version-registry.py` are site data by
+definition, and the library ships their shared halves
+(`collect-state-lib.sh`, `smoke-lib.sh`, `version-registry.example.py`).
 
 ---
 

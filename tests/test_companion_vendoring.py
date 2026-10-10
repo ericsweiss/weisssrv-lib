@@ -26,6 +26,7 @@ PAIRS = (
     ("check-ci-include-job-names.py", "ci_yaml.py"),
     ("check-cluster-invariants.py", "inventory_tree.py"),
     ("check-deploy-coverage.sh", "ci_yaml.py"),
+    ("check-guest-endpoint-parity.py", "inventory_tree.py"),
     ("check-deploy-preflight.py", "ci_playbook_invocations.py"),
     ("check-deploy-preflight.py", "ci_yaml.py"),
     ("check-molecule-image-pin.py", "ci_yaml.py"),
