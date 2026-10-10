@@ -85,9 +85,10 @@ def _other(value):
     return "parallel" if value != "parallel" else "fastest_addr"
 
 
-def _drifts(live: dict) -> bool:
+def _drifts(live: dict, **wanted) -> bool:
     """Evaluate the role's own drift expression against one live reading."""
     context = {var: WANTED[var] for var in FIELDS.values()}
+    context.update(wanted)
     context["adguard_home_current_dns_config"] = {"json": live}
     rendered = ansible_env().from_string(
         "{{ (" + _drift_expression() + ") | bool }}"
@@ -126,6 +127,54 @@ def test_an_instance_not_reporting_the_subnet_lengths_does_not_churn(field: str)
     live = {f: WANTED[var] for f, var in FIELDS.items()}
     del live[field]
     assert _drifts(live) is False
+
+
+@pytest.mark.parametrize(
+    "field,var",
+    [
+        ("ratelimit_subnet_len_ipv4", "adguard_home_ratelimit_subnet_len_ipv4"),
+        ("ratelimit_subnet_len_ipv6", "adguard_home_ratelimit_subnet_len_ipv6"),
+    ],
+)
+def test_a_site_that_narrowed_the_lengths_does_not_churn_either(
+    field: str, var: str
+) -> None:
+    """The never-converging run: a build that omits the key read as 24, so a
+    site asking for 32 reposted and reported changed on every run forever."""
+    live = {f: WANTED[v] for f, v in FIELDS.items()}
+    del live[field]
+    assert _drifts(live, **{var: 32}) is False
+
+
+@pytest.mark.parametrize(
+    "field,var",
+    [
+        ("ratelimit_subnet_len_ipv4", "adguard_home_ratelimit_subnet_len_ipv4"),
+        ("ratelimit_subnet_len_ipv6", "adguard_home_ratelimit_subnet_len_ipv6"),
+    ],
+)
+def test_a_length_written_as_a_string_is_not_drift(field: str, var: str) -> None:
+    """Inventory can spell a number either way, and an untyped comparison made
+    the task permanently changed for the one that is a string."""
+    live = {f: WANTED[v] for f, v in FIELDS.items()}
+    live[field] = 32
+    assert _drifts(live, **{var: "32"}) is False
+    live[field] = 24
+    assert _drifts(live, **{var: "32"}) is True
+
+
+def test_an_instance_omitting_the_lengths_is_reported_not_passed() -> None:
+    """A build that cannot honour the fields must not read as agreement with no
+    one saying so: the drift arm is silent there, so an assert is not."""
+    matches = [
+        t for t in TASKS
+        if str(t.get("name", "")) == "Assert AdGuard reports the rate-limiter subnet lengths"
+    ]
+    assert len(matches) == 1
+    conditions = [str(c) for c in matches[0]["ansible.builtin.assert"]["that"]]
+    assert any("'ratelimit_subnet_len_ipv4' in" in c for c in conditions)
+    assert any("'ratelimit_subnet_len_ipv6' in" in c for c in conditions)
+    assert "0.107.4x" in str(matches[0]["ansible.builtin.assert"]["fail_msg"])
 
 
 @pytest.mark.parametrize(
