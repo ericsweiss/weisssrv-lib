@@ -2186,12 +2186,14 @@ Tools: `amtool`, `jq`, `kubeconform`, `kustomize`, `promtool`, `shellcheck`,
 - **`DIR` defaults to `$CI_PROJECT_DIR/.bin`**, else `./.bin`, and is created if
   missing. **The caller adds `DIR` to `PATH`**: the script installs binaries and
   deliberately changes nothing about the environment of the job that ran it.
-- **Each install stamps `DIR/<name>.version`** with the effective version and
-  sha256, and a tool counts as present only when that stamp matches the resolved
-  pin — so a skip prints `jq 1.8.2: present`, and a cached, pre-seeded,
-  truncated or differently-versioned binary is re-fetched instead of trusted.
-  That is what makes a `cache:` on `DIR` safe: a version bump still takes
-  effect. The stamp lands after the binary, so an interrupted install reads as
+- **Each install stamps `DIR/<name>.version`** with the effective version, the
+  asset's sha256 and the sha256 of the INSTALLED binary, and a tool counts as
+  present only when that stamp matches the resolved pin AND the binary still
+  hashes to what the stamp records — so a skip prints `jq 1.8.2: present`, and a
+  cached, pre-seeded, truncated or differently-versioned binary is re-fetched
+  instead of trusted. That is what makes a `cache:` on `DIR` safe: a restored
+  cache carries binary and stamp together, so only the bytes can say they are
+  intact. The stamp lands after the binary, so an interrupted install reads as
   absent. `--force` re-installs regardless, and a job can call the script
   repeatedly.
 - **The pinned versions are this script's own**, not a consumer's, and they are

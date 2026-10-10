@@ -66,7 +66,8 @@ spec:
         CREATION), and a path that does not exist is ignored, leaving the
         prefix alone as the key. Default: the vendored fetcher, so a pin bump
         busts the cache. Correctness does not rest on it — `ci-fetch-tools.py`
-        stamps the version beside each binary and re-fetches on a mismatch.
+        stamps the version and the binary's own sha256 beside each binary, and
+        re-fetches on a mismatch of either.
     job_memory_limit:
       default: "1500Mi"
       description: >-
@@ -92,8 +93,8 @@ spec:
       - runner_system_failure
       - scheduler_failure
   # Cache the binaries a setup_command fetches, so each pipeline does not
-  # re-download them. Safe because ci-fetch-tools.py re-verifies the stamp
-  # beside each one. No-op without a runner cache backend.
+  # re-download them. Safe because ci-fetch-tools.py re-hashes each binary
+  # against its stamp. No-op without a runner cache backend.
   cache:
     key:
       prefix: python-tests-bin

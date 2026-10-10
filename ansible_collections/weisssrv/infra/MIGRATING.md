@@ -109,14 +109,19 @@ overlay. No input change.
 GitLab's `cache:key:files` limit). It is a no-op without a runner cache
 backend, and correctness does not rest on it — see the next entry.
 
-**`scripts/ci-fetch-tools.py` stamps the installed version beside each
-binary.** A destination that merely existed used to count as present, so a
-cached, pre-seeded or truncated binary of any version was trusted forever and a
-version bump in the table silently did not take effect in a job whose `.bin`
-survived. Each install now writes `<name>.version` with the effective version
-and sha256, and a tool counts as present only when that stamp matches the
-resolved pin. The stamp lands after the binary, so an interrupted install reads
-as absent. `--force` is unchanged. Re-vendor it with the cache change above.
+**`scripts/ci-fetch-tools.py` stamps the installed version and the binary's
+own sha256 beside each binary.** A destination that merely existed used to count
+as present, so a cached, pre-seeded or truncated binary of any version was
+trusted forever and a version bump in the table silently did not take effect in
+a job whose `.bin` survived. Each install now writes `<name>.version` with the
+effective version, the asset's sha256 and the sha256 of the installed binary,
+and a tool counts as present only when that stamp matches the resolved pin AND
+the binary re-hashes to the recorded digest — which is what lets a `cache:` on
+the directory be safe, since a restored cache carries binary and stamp
+together. The stamp lands after the binary, so an interrupted install reads as
+absent. A stamp written by an earlier release has no binary digest in it, so the
+first run after the bump re-fetches each tool once. `--force` is unchanged.
+Re-vendor it with the cache change above.
 
 **Three gates now refuse shapes they used to pass vacuously.**
 `check-secretstore-scope.py` reports a `namespaceSelector` carrying a key
