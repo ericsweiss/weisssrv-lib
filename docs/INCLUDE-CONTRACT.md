@@ -335,7 +335,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `shellcheck` |  |
 | `stage` | `lint` |  |
-| `image` | `koalaman/shellcheck-alpine:v0.10.0` |  |
+| `image` | `koalaman/shellcheck-alpine:v0.11.0` |  |
 | `tags` | `["infrastructure"]` |  |
 | `severity` | `warning` |  |
 | `exclude` | `SC1091,SC2034` |  |
@@ -510,7 +510,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `stage` | `lint` |  |
 | `image` | `python:3.13-slim` |  |
 | `tags` | `["infrastructure"]` |  |
-| `ansible_lint_version` | `26.8.0` | keep in step with `docker/molecule-ci/requirements.txt` so lint and molecule agree |
+| `ansible_lint_version` | `26.9.0` | keep in step with `docker/molecule-ci/requirements.txt` so lint and molecule agree |
 | `pip_extra` | `black==26.3.1` | held below the broken 26.5.x mypyc wheels; routed through a job variable, so a `<`/`>`/`|` ceiling is safe |
 | `config` | `""` | empty = ansible-lint's own discovery; pass the FULL argument, e.g. `-c .ansible-lint` |
 | `targets` | `.` |  |
@@ -584,7 +584,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `substitute` | `true` | `true` = the cluster path, `false` = the tenant path |
 | `kubeconform_version` | `0.8.0` |  |
 | `kubeconform_sha256` | the sha for `kubeconform_version` | moves with it |
-| `kustomize_version` | `5.8.1` |  |
+| `kustomize_version` | `5.8.2` |  |
 | `kustomize_sha256` | the sha for `kustomize_version` | moves with it |
 | `helm_version` | `3.22.0` |  |
 | `helm_sha256` | the sha for `helm_version` | moves with it |
@@ -668,7 +668,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
   `flux-render.sh` and `kubeconform-skipped.py` are shipped here AND vendored in
   weisssrv.
 - **Tenant:** `inputs: { tags: [], substitute: false, kubeconform_version:
-  "0.8.0", kubeconform_sha256: "…", kustomize_version: "5.8.1",
+  "0.8.0", kubeconform_sha256: "…", kustomize_version: "5.8.2",
   kustomize_sha256: "…", k8s_version: "1.36.0" }` (its own newer pins).
 
 ## ci/validate/terraform.yml
@@ -684,7 +684,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `validate_job_name` | `terraform-validate` |  |
 | `fmt_stage` | `lint` |  |
 | `validate_stage` | `validate` | a pipeline with no validate stage passes `lint` |
-| `image` | `hashicorp/terraform:1.15` |  |
+| `image` | `hashicorp/terraform:1.16.5`, digest-pinned |  |
 | `tags` | `["infrastructure"]` |  |
 | `fmt_dir` | `terraform/` |  |
 | `module_glob` | `terraform/*/` |  |
@@ -991,7 +991,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 ## ci/review/pr-agent.yml
 
 - **Reproduces:** the `pr-agent-review` job in all three consumers. Runs
-  `pragent/pr-agent:0.45.0` on gpt-5.6 / `high` with committable inline
+  `pragent/pr-agent:0.47.0` on gpt-5.6 / `high` with committable inline
   suggestions (`PR_CODE_SUGGESTIONS__DUAL_PUBLISHING_SCORE_THRESHOLD`,
   `CONFIG__PERSISTENT_INLINE_COMMENTS`); `allow_failure: true`, the schedule
   exclusion and the MR-only token-gated rule are baked in. weisssrv
@@ -1003,7 +1003,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `pr-agent-review` |  |
 | `stage` | `ai-review` |  |
-| `image` | `pragent/pr-agent:0.45.0`, digest-pinned | multi-arch index digest |
+| `image` | `pragent/pr-agent:0.47.0`, digest-pinned | multi-arch index digest |
 | `tags` | `["infrastructure"]` |  |
 | `needs` | `[]` |  |
 | `model` | `gpt-5.6` |  |
