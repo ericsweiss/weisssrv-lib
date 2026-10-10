@@ -172,8 +172,9 @@
   ansible.builtin.debug:
     msg: >-
       ID PERMUTATION on {{ inventory_hostname }} (id -> live target -> inventory
-      target): {{ _triples | join(', ') }} — the target set matches, so nothing
-      is rewritten; see proxmox_ha README, "Behaviour worth knowing".
+      target): {{ _triples | join(', ') }} — the target set matches, so no job
+      is deleted or recreated; schedule and comment follow the live target. See
+      proxmox_ha README, "Behaviour worth knowing".
   when: proxmox_ha_permuted_jobs | default([]) | length > 0
   tags: [proxmox_ha_replication]
 
