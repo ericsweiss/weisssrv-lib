@@ -334,9 +334,8 @@
           with no pvesr mutations, got aborted={{ ha.v_aborted }},
           mutations={{ ha.v_total }}
 
-# The delegate seam the role took over from the calling play. Without it, a
-# consumer that drops serial: 1 (as MIGRATING instructs) fans the cluster-wide
-# reconcile out to every node at once.
+# The role owns delegate selection, so a play without serial: 1 still runs the
+# cluster-wide reconcile from one node.
 - name: Verify delegate selection
   hosts: proxmox-ha-test
   become: true

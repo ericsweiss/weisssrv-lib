@@ -464,8 +464,8 @@ the heaviest scenarios run 8-11 minutes per attempt.
 
 ## ci/lint/python-lint.yml
 
-- **Reproduces:** nothing — the family had no Python linter before this
-  template. This library self-applies it; weisssrv includes it over `scripts/`
+- **Reproduces:** nothing — no consumer carries a local Python-lint job; this
+  template is the only one. This library self-applies it; weisssrv includes it over `scripts/`
   with the shared profile vendored to its repo root as `ruff.toml`; the app
   template includes it over `scripts tests` with the same profile vendored to
   its root (no `config:` input, so ruff's discovery finds it — which is what
@@ -994,8 +994,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
   `pragent/pr-agent:0.45.0` on gpt-5.6 / `high` with committable inline
   suggestions (`PR_CODE_SUGGESTIONS__DUAL_PUBLISHING_SCORE_THRESHOLD`,
   `CONFIG__PERSISTENT_INLINE_COMMENTS`); `allow_failure: true`, the schedule
-  exclusion and the MR-only token-gated rule are baked in. Not byte-identical to
-  any pre-extraction copy — see the release notes for the migration. weisssrv
+  exclusion and the MR-only token-gated rule are baked in. weisssrv
   passes `secrets_source: env`, its own `gate` and a lint-only `needs` list.
 - **Inputs** — the three resource inputs every job template takes are in
   [Conventions shared by every template](#conventions-shared-by-every-template).
@@ -1623,10 +1622,9 @@ collections path:
 ANSIBLE_COLLECTIONS_PATH=~/src/weisssrv-lib ansible-playbook site.yml
 ```
 
-The role table, the inventory-wide alias table and the migration entry point are
-in the [collection README](../ansible_collections/weisssrv/infra/README.md); the
-complete old → new variable map is
-[MIGRATING.md](../ansible_collections/weisssrv/infra/MIGRATING.md). Site-specific
+The role table and the inventory-wide alias table are in the
+[collection README](../ansible_collections/weisssrv/infra/README.md); per-role
+variables are in each role's own README. Site-specific
 values (domains, IPs, pool names) are **inputs**, never role defaults — that is
 the line between this collection and a cluster instantiation.
 

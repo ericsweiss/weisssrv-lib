@@ -147,6 +147,18 @@ Each role documents its variables in its own `README.md`; they are prefixed with
 the role name (`nas_storage_*`), and role defaults hold only values that are
 genuinely generic.
 
+Two consequences of that naming worth knowing before editing inventory:
+
+- **Metric names are not variable names.** Several roles deliberately keep a
+  metric prefix that does not match their variable prefix (`adguardhome_sync_*`,
+  `cert_distribution_targets.prom`) because live alerts, promtool tests and
+  dashboards consume those exact strings. Renaming one is an observability
+  change, not a tidy-up.
+- **Some roles de-provision on `enabled: false`.** `nas_storage`'s archive
+  replication and `zfs_encryption`'s mount-anchor unit are removed when their
+  inputs go empty, rather than being left inert. That is a live-host action the
+  first time the collection reconciles a host that has them.
+
 ### Inventory-wide names the roles alias
 
 Where a value is conventionally inventory-wide and read by several roles, the
@@ -212,40 +224,6 @@ today's behaviour (`zfs_encryption_key_command`, `proxmox_storage_defaults`,
 by-design list, and the contract for contributing an alternative are in
 [docs/EXTENSIBILITY.md](../../../docs/EXTENSIBILITY.md).
 
-## Migrating
-
-Two files, for two different jobs:
-
-- **[MIGRATING.md](MIGRATING.md)** is the per-release upgrade record. Read the
-  sections newer than your current pin before every bump.
-- **[MIGRATING-from-in-tree-roles.md](MIGRATING-from-in-tree-roles.md)** is the
-  one-time adoption map for a repo coming from un-prefixed in-tree roles: every
-  renamed variable, every externalized default (same name, site-specific value
-  now empty), and every required input, per role.
-
-Either way the change is a **silent** one: each alias and each default is
-`| default(...)`, so a name you miss does not raise `AnsibleUndefinedVariable`,
-it quietly takes the role default. Read "How to check a migration" in the
-adoption map before starting; the short version is that a `--check` run catches
-the loud half (required-input asserts) and only a rendered-config diff catches
-the quiet half.
-
-Three rules the migration depends on:
-
-- **Land the inventory rename and the collection adoption in the same MR.** Most
-  renames have no back-compat shim. A half-migrated inventory does not fail
-  cleanly — it provisions a guest with a role default (wrong ISO store, wrong
-  gateway assert, an empty firewall group set).
-- **Metric names are not variable names.** Several roles deliberately keep a
-  metric prefix that no longer matches their variable prefix
-  (`adguardhome_sync_*`, `cert_distribution_targets.prom`) because live alerts,
-  promtool tests and dashboards consume those exact strings. Renaming one is an
-  observability change, not a tidy-up.
-- **Some roles de-provision on `enabled: false`.** `nas_storage`'s archive
-  replication and `zfs_encryption`'s mount-anchor unit are removed when their
-  inputs go empty, rather than being left inert. That is a live-host action the
-  first time the collection reconciles a host that has them.
-
 ## Developing against an unmerged checkout
 
 The library repo already uses the `ansible_collections/<namespace>/<name>`
@@ -270,9 +248,6 @@ and is **removed in ansible-core 2.19** — use the singular form.
 galaxy.yml         collection metadata + runtime dependency contract
 CHANGELOG.md       a pointer to the GitLab Releases page — not a changelog
 LICENSE            ships in the artifact
-MIGRATING.md       per-release upgrade notes, newest first
-MIGRATING-from-in-tree-roles.md
-                   one-time old -> new variable map for adopting the collection
 meta/runtime.yml   requires_ansible floor
 requirements.yml   galaxy deps for TEST environments (what molecule installs)
 roles/<role>/      one dir per role, each with its own README + molecule scenario

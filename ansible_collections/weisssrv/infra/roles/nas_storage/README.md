@@ -32,8 +32,8 @@ properties; a missing one fails the deploy.
   from each dataset into the export tree, and a client-facing readiness probe on
   port 2049 (`nfs-server.service` is `oneshot`, so its unit state proves nothing).
 - The `#` prose in `exports.j2` is deployed content, and the task that writes it
-  notifies `exportfs -ra`. Reword it only in a release that carries a MIGRATING
-  note, because every consumer re-exports its whole table on the next converge.
+  notifies `exportfs -ra`. Rewording it makes every consumer re-export its whole
+  table on the next converge.
 - **Mounted-dataset guard**: every ZFS-backed `bind_source` must be a mountpoint
   before the role touches it. Without it, an unmounted or key-locked dataset
   leaves a bare root-filesystem directory that would be created, bound and then
@@ -344,8 +344,7 @@ site that shares the layout gets a working role with no inventory and one that
 does not overrides them wholesale. The classification guard
 (`assert_zfs_classification.yml`) is what keeps the mount-roots default from
 failing open on a different layout — anything it cannot classify is a hard
-failure, not a silent skip. Converting them to asserted inputs is a breaking
-change deferred to a future release.
+failure, not a silent skip.
 
 | Variable | Default | Purpose |
 |---|---|---|

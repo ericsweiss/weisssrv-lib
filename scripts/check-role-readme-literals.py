@@ -50,7 +50,6 @@ def check(roles_dir: Path, domains: tuple, extra: tuple = ()) -> "tuple[int, lis
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="Role READMEs carry example values, never one site's wiring.",
-        epilog="MIGRATING.md is out of scope: it quotes a consumer's old values.",
     )
     parser.add_argument(
         "--roles-dir", type=Path, default=Path(DEFAULT_ROLES_DIR),

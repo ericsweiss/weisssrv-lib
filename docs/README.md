@@ -24,8 +24,7 @@ for the linter configs.
 
 The Ansible collection has its own front door —
 [../ansible_collections/weisssrv/infra/README.md](../ansible_collections/weisssrv/infra/README.md)
-(role table, inventory-wide aliases, testing) — and its own migration map,
-[MIGRATING.md](../ansible_collections/weisssrv/infra/MIGRATING.md).
+(role table, inventory-wide aliases, testing).
 
 Each Terraform module documents its own inputs, outputs and consumption pattern:
 [cloudflare-zone](../terraform/modules/cloudflare-zone/README.md),

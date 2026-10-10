@@ -557,7 +557,7 @@
 
 # A timer, not root cron: the service carries RequiresMountsFor on the NFS
 # landing zone and a bounded TimeoutStartSec, and a failed run surfaces in the
-# unit's status. Removal guard for older hosts; see MIGRATING.md.
+# unit's status. A root cron entry of the same name is removed so both cannot fire.
 - name: Remove the legacy GitLab backup root cron job
   ansible.builtin.cron:
     name: "GitLab backup"
@@ -692,8 +692,8 @@
     - gitlab_fail2ban_enabled | bool
     - gitlab_fail2ban_service_file.stat.exists
 
-# Removal guard for hosts converged before the built-in sshd filter; see
-# MIGRATING.md.
+# The built-in sshd filter covers gitlab-shell, so a standalone filter file is
+# removed.
 - name: Remove obsolete gitlab-shell filter
   ansible.builtin.file:
     path: /etc/fail2ban/filter.d/gitlab-shell.conf

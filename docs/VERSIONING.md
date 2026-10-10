@@ -82,7 +82,7 @@ Release — one source, written by the thing that cut the tag. A second,
 hand-written changelog goes stale within a release and tells consumers a
 different story than the tag notes, so `changelogs` is `build_ignore`d in
 `galaxy.yml` to keep a stray one out of the artifact. The collection's
-`CHANGELOG.md` is a six-line pointer to that Releases page, not a changelog.
+`CHANGELOG.md` is a short pointer to that Releases page, not a changelog.
 
 To see what changed between two tags, read the releases, or
 `git log v0.5.0..v0.5.2`.
@@ -216,15 +216,11 @@ The procedure:
    release's gate under this release's template.
 4. If a template's inputs changed, update the consumer's `inputs:` accordingly —
    read the parity note per template in
-   [INCLUDE-CONTRACT.md](INCLUDE-CONTRACT.md).
-5. If the collection moved, work
-   [MIGRATING.md](../ansible_collections/weisssrv/infra/MIGRATING.md) for the
-   roles you consume, and land the inventory rename in the SAME MR as the
-   collection bump — most renames have no back-compat shim. The one-time
-   in-tree-role adoption map is a separate file,
-   [MIGRATING-from-in-tree-roles.md](../ansible_collections/weisssrv/infra/MIGRATING-from-in-tree-roles.md),
-   and does not change at tag time.
-6. For weisssrv specifically, prove pipeline parity before merging (merged-YAML
+   [INCLUDE-CONTRACT.md](INCLUDE-CONTRACT.md). A role variable that the tag
+   renames or removes is `| default(...)`-guarded, so the inventory edit lands
+   in the SAME MR as the pin bump — a missed one takes the role default
+   silently instead of failing.
+5. For weisssrv specifically, prove pipeline parity before merging (merged-YAML
    diff + per-pipeline-type job-set enumeration) so no coverage is lost.
 
 ## Release checklist (this repo)
@@ -265,21 +261,11 @@ Before merging the MR that will cut a tag:
 - [ ] `scripts/vendorable-paths.yml` still describes the tree being tagged:
       every offered path exists (`tests/test_vendorable_paths.py` is the
       mechanical half), and a path this release renames or stops shipping is
-      called out in MIGRATING.md — consumers' manifests name these paths at
+      called out in the tag's release notes — consumers' manifests name these paths at
       the pinned tag, so a silent removal reds their gates with no
       consumer-side fix. `reconciled_sha256` values live in consumer
       manifests and are re-taken there, at adoption: a consumer that moves a
       vendored file edits its own manifest in the same commit.
-- [ ] The collection's
-      [MIGRATING.md](../ansible_collections/weisssrv/infra/MIGRATING.md)
-      `# Unreleased (next release)` heading is retitled to the tag being cut,
-      and a fresh empty `# Unreleased (next release)` opened above it. It is the
-      only per-release migration record for the collection (see
-      [No changelog file](#no-changelog-file)); leaving it untitled makes the
-      next cycle's delta read as one pending set with this one's. A release with
-      nothing to migrate still gets a section saying so.
-      `tests/test_migrating_sections.py::TestMigratingSections` holds the newest
-      titled section equal to `galaxy.yml`'s version, so this one is mechanical.
 - [ ] A breaking change is written as `feat!:` or carries a `BREAKING CHANGE:`
       trailer — otherwise it ships as a patch and consumers get it unannounced.
 
