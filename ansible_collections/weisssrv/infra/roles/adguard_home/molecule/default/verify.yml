@@ -367,7 +367,7 @@
 
     - name: Read the live DNS configuration back
       ansible.builtin.uri:
-        url: "{{ _adguard_home_api_base | trim }}/control/dns_info"
+        url: http://localhost:3000/control/dns_info
         method: GET
         user: "{{ adguard_home_admin_user | default('admin') }}"
         password: "{{ adguard_home_admin_password }}"
