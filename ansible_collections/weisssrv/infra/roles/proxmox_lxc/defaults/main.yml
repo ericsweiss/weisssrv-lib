@@ -56,6 +56,10 @@ proxmox_lxc_admin_home: >-
   {{ '/root' if proxmox_lxc_admin_user == 'root'
      else '/home/' + proxmox_lxc_admin_user }}
 proxmox_lxc_ssh_public_keys: "{{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY', default='') }}"
+# The reconcile keeps authorized_keys lines it did not write (a cert-receive
+# forced command, a from=-restricted key). Set true to make the managed set
+# authoritative and delete everything else.
+proxmox_lxc_ssh_authorized_keys_prune: false
 
 # Startup configuration
 proxmox_lxc_onboot: true

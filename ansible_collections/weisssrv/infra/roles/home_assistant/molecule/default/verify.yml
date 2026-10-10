@@ -51,6 +51,19 @@
           Expected an http block with use_x_forwarded_for and all three
           trusted-proxy CIDRs from the scenario group_vars.
 
+    # The list is inert once HA has migrated http to .storage, so the render
+    # has to say so — an operator reading only configuration.yaml would
+    # otherwise take it for the live proxy-trust control.
+    - name: Assert the http block says the trusted_proxies list is first-boot only
+      ansible.builtin.assert:
+        that:
+          - "home_assistant_t_cfg_text is search('FIRST BOOT only')"
+          - "home_assistant_t_cfg_text is search('/config/\\.storage/http')"
+        fail_msg: >-
+          The rendered http block must carry the note that the list is imported
+          on first boot only and that a migrated instance answers from
+          /config/.storage/http.
+
     - name: Assert the SSL block is rendered when ssl_enabled
       ansible.builtin.assert:
         that:

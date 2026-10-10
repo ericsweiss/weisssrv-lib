@@ -117,6 +117,7 @@ def ansible_env(**kwargs) -> jinja2.Environment:
     env.filters["to_nice_yaml"] = lambda value, indent=2: yaml.safe_dump(
         value, default_flow_style=False, indent=indent)
     env.filters["b64decode"] = lambda v: base64.b64decode(v).decode()
+    env.filters["b64encode"] = lambda v: base64.b64encode(str(v).encode()).decode()
     # Ansible's `quote` filter is shlex.quote.
     env.filters["quote"] = shlex.quote
     env.tests["search"] = lambda value, pattern: re.search(pattern, str(value)) is not None

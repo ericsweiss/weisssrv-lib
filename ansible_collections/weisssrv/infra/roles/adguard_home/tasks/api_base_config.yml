@@ -65,6 +65,8 @@
           disable_ipv6: "{{ adguard_home_disable_ipv6 }}"
           ratelimit: "{{ adguard_home_ratelimit }}"
           ratelimit_whitelist: "{{ adguard_home_ratelimit_whitelist }}"
+          ratelimit_subnet_len_ipv4: "{{ adguard_home_ratelimit_subnet_len_ipv4 }}"
+          ratelimit_subnet_len_ipv6: "{{ adguard_home_ratelimit_subnet_len_ipv6 }}"
           cache_enabled: "{{ adguard_home_cache_enabled }}"
           cache_size: "{{ adguard_home_cache_size }}"
           cache_ttl_min: "{{ adguard_home_cache_ttl_min }}"
@@ -87,6 +89,8 @@
           (adguard_home_current_dns_config.json.disable_ipv6 | default(false) != adguard_home_disable_ipv6) or
           (adguard_home_current_dns_config.json.ratelimit | default(0) != adguard_home_ratelimit) or
           (adguard_home_current_dns_config.json.ratelimit_whitelist | default([]) != adguard_home_ratelimit_whitelist) or
+          (adguard_home_current_dns_config.json.ratelimit_subnet_len_ipv4 | default(24) != adguard_home_ratelimit_subnet_len_ipv4) or
+          (adguard_home_current_dns_config.json.ratelimit_subnet_len_ipv6 | default(56) != adguard_home_ratelimit_subnet_len_ipv6) or
           (adguard_home_current_dns_config.json.cache_enabled | default(true) != adguard_home_cache_enabled) or
           (adguard_home_current_dns_config.json.cache_size | default(0) != adguard_home_cache_size) or
           (adguard_home_current_dns_config.json.cache_ttl_min | default(0) != adguard_home_cache_ttl_min) or

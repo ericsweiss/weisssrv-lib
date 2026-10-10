@@ -698,9 +698,9 @@
     - proxmox_lxc_exists.rc != 0
   changed_when: true
 
-# Reconciled on every run so a rotated SSH key propagates. The key set is
-# compared in a temp file and moved into place only on difference. `pct exec`
-# forwards no env, so values reach the inner shell as positional arguments.
+# Reconciled on every run so a rotated SSH key propagates, preserving lines the
+# role does not manage. `pct exec` forwards no env, so values reach the inner
+# shell as positional arguments.
 - name: Reconcile SSH authorized keys for the admin user
   delegate_to: "{{ proxmox_lxc_reconcile_host }}"
   become: true
@@ -713,9 +713,18 @@
         auth_dir="$2/.ssh"
         auth_file="${auth_dir}/authorized_keys"
         desired="$(printf "%s" "$3" | base64 -d)"
+        prune="$4"
         install -d -m 700 -o "$user" -g "$user" "$auth_dir"
         tmp="$(mktemp "${auth_file}.XXXXXX")"
         printf "%s\n" "$desired" > "$tmp"
+        # Every line outside the managed set is kept, so a forced-command or
+        # from=-restricted key seeded outside Ansible survives the reconcile.
+        if [ "$prune" != "true" ] && [ -f "$auth_file" ]; then
+          foreign="$(grep -vxF -f "$tmp" "$auth_file" || true)"
+          if [ -n "$foreign" ]; then
+            printf "%s\n" "$foreign" >> "$tmp"
+          fi
+        fi
         chmod 600 "$tmp"
         # mktemp creates root-owned; sshd rejects authorized_keys not owned by the
         # user, so always chown before the move (whether or not content changed).
@@ -726,7 +735,9 @@
           mv "$tmp" "$auth_file"
           echo CHANGED
         fi
-      ' _ {{ proxmox_lxc_admin_user | quote }} {{ proxmox_lxc_admin_home | trim | quote }} {{ proxmox_lxc_ssh_public_keys | b64encode | quote }}
+      ' _ {{ proxmox_lxc_admin_user | quote }} {{ proxmox_lxc_admin_home | trim | quote }} \
+        {{ proxmox_lxc_ssh_public_keys | b64encode | quote }} \
+        {{ proxmox_lxc_ssh_authorized_keys_prune | bool | ternary('true', 'false') }}
   args:
     executable: /bin/bash
   register: proxmox_lxc_authkeys_reconcile

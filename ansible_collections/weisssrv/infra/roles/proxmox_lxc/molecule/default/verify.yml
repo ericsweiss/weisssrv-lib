@@ -20,6 +20,10 @@
       lxc.idmap: g 2001 102001 63535
       lxc.cgroup2.devices.allow: c 226:* rwm
       lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir
+    # The same three entries converge case 15 seeded and reconciled.
+    lxc_authkeys_managed: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAMANAGED managed@test"
+    lxc_authkeys_stale: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAASTALE stale@test"
+    lxc_authkeys_foreign: 'command="/usr/local/bin/cert-receive",restrict ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAACERT cert@test'
     expected_conf_standard: |
       arch: amd64
       lxc.idmap: u 0 100000 1000
@@ -47,6 +51,7 @@
         - 12-netmask.json
         - 13-dns-reconcile.json
         - 14-create-inputs.json
+        - 15-authorized-keys.json
       register: artifacts
 
     - name: Decode artifacts
@@ -65,6 +70,7 @@
         netmask: "{{ artifacts.results[11].content | b64decode | from_json }}"
         dns_reconcile: "{{ artifacts.results[12].content | b64decode | from_json }}"
         create_inputs: "{{ artifacts.results[13].content | b64decode | from_json }}"
+        authkeys: "{{ artifacts.results[14].content | b64decode | from_json }}"
 
     - name: Compute host defaults to local-ssd
       ansible.builtin.assert:
@@ -206,3 +212,34 @@
           Expected an absent container to fail on an empty gateway and on a
           non-GiB disk size, and an EXISTING container to reconcile without
           either — got {{ create_inputs }}.
+
+    # A key the role does not manage — the cert-distribution forced command is
+    # the one that stranded renewals — must survive the reconcile, and the
+    # replay must not churn the file.
+    - name: Authorized-keys reconcile preserves entries it does not manage
+      ansible.builtin.assert:
+        that:
+          - authkeys.after_first.splitlines()[0] == lxc_authkeys_managed
+          - lxc_authkeys_foreign in authkeys.after_first.splitlines()
+          - authkeys.first_changed
+          - authkeys.after_second == authkeys.after_first
+          - not authkeys.second_changed
+        fail_msg: >-
+          The managed key must head the file, the foreign forced-command entry
+          must still be there, and a replay must report no change — got
+          {{ authkeys.after_first | to_json }} then
+          {{ authkeys.after_second | to_json }}.
+
+    # Rotation does not revoke on its own: a plain key outside the managed set
+    # is preserved like any other unknown line, and prune is the revocation
+    # lever that empties the file down to the managed set.
+    - name: Prune is the only path that deletes an unmanaged key
+      ansible.builtin.assert:
+        that:
+          - lxc_authkeys_stale in authkeys.after_first.splitlines()
+          - authkeys.after_prune.splitlines() == [lxc_authkeys_managed]
+          - authkeys.mode == '0600'
+        fail_msg: >-
+          proxmox_lxc_ssh_authorized_keys_prune must reduce the file to the
+          managed set at mode 0600 while a default run keeps every other line —
+          got {{ authkeys.after_prune | to_json }} at mode {{ authkeys.mode }}.
