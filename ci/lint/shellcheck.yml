@@ -7,8 +7,11 @@ spec:
     image:
       # Pinned (not :stable) so lint results are reproducible — a moving tag
       # could silently change shellcheck behavior between runs.
-      default: koalaman/shellcheck-alpine:v0.10.0
-      description: shellcheck image (pinned digest/tag for reproducibility).
+      default: koalaman/shellcheck-alpine:v0.11.0
+      description: >-
+        shellcheck image (pinned digest/tag for reproducibility). Its tag is
+        held equal to scripts/ci-fetch-tools.py's shellcheck pin by
+        tests/test_pin_parity.py, so both paths lint on one version.
     tags:
       type: array
       default: ["infrastructure"]

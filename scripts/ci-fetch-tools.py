@@ -43,6 +43,10 @@ class Tool:
 # linux-amd64 pins. Every sha256 is computed from the asset itself and
 # cross-checked against the project's published checksums; shellcheck
 # publishes none. `{version}` renders from the effective version.
+
+# This table is the one place a tool bump lands: every ci/ template and example
+# workflow installing the same tool another way is held equal to it by
+# tests/test_pin_parity.py.
 TOOLS: dict[str, Tool] = {
     "amtool": Tool(
         version="0.34.1",
