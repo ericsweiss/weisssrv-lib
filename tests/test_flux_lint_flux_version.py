@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -45,8 +46,10 @@ def _run(tmp_path: Path, *, cli: str, declared: str | None) -> subprocess.Comple
     configmap = CONFIGMAP + (f"  flux_version: {declared}\n" if declared else "")
     (tmp_path / "versions.yaml").write_text(configmap, encoding="utf-8")
     (tmp_path / "cluster").mkdir(exist_ok=True)
+    # The render script's python3 must be the interpreter running the tests,
+    # the one that has PyYAML; the job image's /usr/bin/python3 does not.
     env = {
-        "PATH": f"{bin_dir}:/usr/bin:/bin",
+        "PATH": f"{bin_dir}:{Path(sys.executable).parent}:/usr/bin:/bin",
         "CI_PROJECT_DIR": str(tmp_path),
         "SUBSTITUTE": "true",
         "CLUSTER_DIR": str(tmp_path / "cluster"),
