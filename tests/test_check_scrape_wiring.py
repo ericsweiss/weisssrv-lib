@@ -388,3 +388,100 @@ def test_unmodelled_notes_do_not_leak_between_runs(tmp_path, capsys):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --- shapes a vacuous pass turned on -----------------------------------------
+
+
+def test_a_selectorless_service_is_not_credited(tmp_path, capsys):
+    """Manual endpoints: the Service points at no workload here, and an empty
+    selector widened to the monitor's labels, certifying a policy against none."""
+    manual = SERVICE.replace("  selector:\n    app.kubernetes.io/name: app\n", "")
+    argv = tree(tmp_path, DEPLOYMENT, manual, SERVICE_MONITOR, policy())
+    assert gate.main(argv) == 1
+    assert "no spec.selector" in capsys.readouterr().err
+
+
+def test_an_empty_service_selector_is_not_credited(tmp_path, capsys):
+    empty = SERVICE.replace("  selector:\n    app.kubernetes.io/name: app\n", "  selector: {}\n")
+    argv = tree(tmp_path, DEPLOYMENT, empty, SERVICE_MONITOR, policy())
+    assert gate.main(argv) == 1
+    assert "no spec.selector" in capsys.readouterr().err
+
+
+def test_one_port_name_at_two_numbers_is_an_operator_error(tmp_path, capsys):
+    """`http2-9090` on two selected workloads: the gate cannot say which number
+    a policy naming it resolves to, and took whichever workload was read last."""
+    second = DEPLOYMENT.replace("name: app\n", "name: app-shard\n", 1).replace(
+        "containerPort: 9100", "containerPort: 9200"
+    )
+    argv = tree(tmp_path, DEPLOYMENT, second, SERVICE, SERVICE_MONITOR, policy())
+    assert gate.main(argv) == 2
+    err = capsys.readouterr().err
+    assert "named 'metrics' at [9100, 9200]" in err
+
+
+def test_the_same_port_name_at_one_number_is_fine(tmp_path):
+    """Two replicas of the same shape are not an ambiguity."""
+    second = DEPLOYMENT.replace("name: app\n", "name: app-shard\n", 1)
+    argv = tree(tmp_path, DEPLOYMENT, second, SERVICE, SERVICE_MONITOR, policy())
+    assert gate.main(argv) == 0
+
+
+def test_each_namespace_is_judged_against_its_own_policies(tmp_path, capsys):
+    """A two-namespace tree: the policy in `a` must not admit the scrape in `b`."""
+
+    def namespaced(document: str, namespace: str) -> str:
+        return document.replace("metadata:\n", f"metadata:\n  namespace: {namespace}\n", 1)
+
+    argv = tree(
+        tmp_path,
+        *(namespaced(d, "a") for d in (DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy())),
+        *(namespaced(d, "b") for d in (DEPLOYMENT, SERVICE, SERVICE_MONITOR)),
+    )
+    assert gate.main(argv) == 1
+    assert "no NetworkPolicy admits namespace observability" in capsys.readouterr().err
+
+
+def test_both_namespaces_wired_passes_and_counts_every_monitor(tmp_path, capsys):
+    def namespaced(document: str, namespace: str) -> str:
+        return document.replace("metadata:\n", f"metadata:\n  namespace: {namespace}\n", 1)
+
+    documents = (DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy())
+    argv = tree(
+        tmp_path,
+        *(namespaced(d, "a") for d in documents),
+        *(namespaced(d, "b") for d in documents),
+    )
+    assert gate.main(argv) == 0
+    assert "2 monitor(s)" in capsys.readouterr().out
+
+
+def test_a_tree_disagreeing_with_the_namespace_option_is_refused(tmp_path, capsys):
+    stated = SERVICE_MONITOR.replace("metadata:\n", "metadata:\n  namespace: elsewhere\n", 1)
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, stated, policy())
+    assert gate.main([*argv, "--namespace", "app"]) == 2
+    assert "disagrees with the namespaces the tree states" in capsys.readouterr().err
+
+
+def test_one_stated_namespace_reaches_the_documents_naming_none(tmp_path):
+    """The Kustomization's own behaviour: a lone stated namespace is the tree's."""
+    stated = SERVICE_MONITOR.replace("metadata:\n", "metadata:\n  namespace: app\n", 1)
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, stated, policy())
+    assert gate.main(argv) == 0
+
+
+def test_an_unassignable_document_in_a_multi_namespace_tree_is_refused(
+    tmp_path, capsys
+):
+    def namespaced(document: str, namespace: str) -> str:
+        return document.replace("metadata:\n", f"metadata:\n  namespace: {namespace}\n", 1)
+
+    argv = tree(
+        tmp_path,
+        *(namespaced(d, "a") for d in (DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy())),
+        *(namespaced(d, "b") for d in (DEPLOYMENT, SERVICE, SERVICE_MONITOR)),
+        policy(),
+    )
+    assert gate.main(argv) == 2
+    assert "names none for NetworkPolicy allow-scrape" in capsys.readouterr().err

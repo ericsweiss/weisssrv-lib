@@ -1086,11 +1086,11 @@ cat rendered-corpus.yaml | scripts/check-scrape-netpol.py \
 ### `check-scrape-wiring.py` (PyYAML)
 
 Fails a monitor whose scraped PORT no NetworkPolicy admits from the
-observability namespace. Reads one manifest tree from **paths**, where every
-policy covers the same namespace, so the monitor, the Service, the workload and
-the policy resolve against each other. `check-scrape-netpol.py` is the
+observability namespace. Reads a manifest tree from **paths** and judges it one
+effective namespace at a time, so the monitor, the Service, the workload and the
+policy resolve against each other. `check-scrape-netpol.py` is the
 namespace-granularity gate for a whole cluster corpus; this one is the port
-granularity for one namespace.
+granularity.
 
 ```
 scripts/check-scrape-wiring.py [--observability-namespace NS] [--namespace NS] [DIRECTORY]
@@ -1107,16 +1107,31 @@ scripts/check-scrape-wiring.py [--observability-namespace NS] [--namespace NS] [
 - A shape the gate does not model — `matchExpressions`, an `ipBlock` peer, a
   peer scoping the namespace with a `podSelector` — is **not credited**, and is
   named in the failure so the reader can tell "wired wrong" from "not modelled".
-- A monitor whose `spec.namespaceSelector` reaches outside the tree is an
-  operator error: the policies here cover one namespace, so a wider scrape must
+- A matched Service with **no `spec.selector`** is a Violation, not a target:
+  its endpoints are managed by hand, so no workload in the tree serves the
+  scraped port and crediting a policy against it certifies nothing.
+- **One port name resolves to one number.** A port name two selected workloads
+  declare at different numbers is an operator error: a policy naming it would be
+  credited against whichever workload was read last.
+- **Documents are grouped by effective namespace** — their own
+  `metadata.namespace`, else `--namespace` — and each group is judged against
+  its own policies, so a policy in one namespace never admits a scrape in
+  another. A tree stating exactly ONE namespace lends it to the documents that
+  name none, the way its Kustomization does; stating several while a document
+  names none is an operator error, and so is a stated namespace that disagrees
+  with `--namespace`.
+- A monitor whose `spec.namespaceSelector` reaches outside its group is an
+  operator error: the policies there cover one namespace, so a wider scrape must
   be checked where those policies live. A `matchNames` entry is verified
-  against `--namespace` (the namespace the tree deploys into) and refused
-  without it, so a stale name never certifies against the wrong policies.
-- **Exit codes:** 0 clean, 1 on an unadmitted port, 2 on an operator error — a
-  directory that does not exist, a manifest that does not parse, a corpus with
-  no kinded document, a monitor with no endpoints or a selector matching every
-  pod, and a policy that admits the observability namespace while no monitor is
-  present at all.
+  against the group's namespace (`--namespace`, or the one the document states)
+  and refused without one, so a stale name never certifies against the wrong
+  policies.
+- **Exit codes:** 0 clean, 1 on an unadmitted port or a selectorless Service, 2
+  on an operator error — a directory that does not exist, a manifest that does
+  not parse, a corpus with no kinded document, a monitor with no endpoints or a
+  selector matching every pod, an ambiguous namespace grouping, one port name at
+  two numbers, and a policy that admits the observability namespace while no
+  monitor is present in its namespace at all.
 
 ### `check-kustomization.py` (PyYAML)
 
