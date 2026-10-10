@@ -5,6 +5,7 @@ kustomize-controller runs, and the versions ConfigMap states that release.
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -46,10 +47,11 @@ def _run(tmp_path: Path, *, cli: str, declared: str | None) -> subprocess.Comple
     configmap = CONFIGMAP + (f"  flux_version: {declared}\n" if declared else "")
     (tmp_path / "versions.yaml").write_text(configmap, encoding="utf-8")
     (tmp_path / "cluster").mkdir(exist_ok=True)
-    # The render script's python3 must be the interpreter running the tests,
-    # the one that has PyYAML; the job image's /usr/bin/python3 does not.
+    # The render script's python3 is the test interpreter, and HOME rides along
+    # because CI installs PyYAML into the user site, which resolves from HOME.
     env = {
         "PATH": f"{bin_dir}:{Path(sys.executable).parent}:/usr/bin:/bin",
+        "HOME": os.environ.get("HOME", str(tmp_path)),
         "CI_PROJECT_DIR": str(tmp_path),
         "SUBSTITUTE": "true",
         "CLUSTER_DIR": str(tmp_path / "cluster"),
