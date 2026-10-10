@@ -29,6 +29,162 @@ one-time rename map is
 
 Nothing yet.
 
+# v0.19.0
+
+A follow-up pass on the v0.18.x review findings. Two roles change what they do
+to existing state — `proxmox_ha` corrects replication comments it used to
+stamp backwards, and `nas_storage` reclaims an excluded child's snapshots —
+and one flag, `nas_storage_archive_backup_exclude_destroy_ok`, keeps its name
+and its `false` default while changing what `true` means. Read the first
+section before bumping a site that set it.
+
+## Breaking — act in the same MR as the bump
+
+| Role | What to do |
+|---|---|
+| `nas_storage` | `nas_storage_archive_backup_exclude_destroy_ok` keeps its name and its `false` default, but both arms mean something new. `false` no longer REFUSES the run: it proceeds and logs one WARNING per excluded child whose archive-side copy still exists, naming the dataset, this variable, and that the space is never reclaimed. `true` no longer merely permits a destruction the recursive receive was expected to perform — it destroys each such copy with `zfs destroy -r`, and a failed destroy fails the run before any replication. The v0.18.0 row below describing `receive -F` as the destroyer is **superseded**: `zfs send -R -X` prunes the excluded subtree from the stream, so `receive -F` never touches the copy. A site that set this flag `true` only to get past the old refusal must decide which arm it wants before the bump. |
+| `nas_storage` | An excluded descendant now keeps **no** source-side `archsync-*` snapshot: the snapshot `zfs snapshot -r` just created is destroyed on every excluded child, and retention keeps no window there. The first run after the bump therefore destroys the whole accrued backlog on each excluded dataset in one pass. That is reclamation, not data loss — those snapshots were never replicated — but it is a one-shot bulk destroy, so take it on a run you are watching. The archive-side copy's own 3+6 window is untouched; destroying it is what the opt-in above guards. |
+
+## Changed defaults and behaviour
+
+| Role | What changed |
+|---|---|
+| `proxmox_ha` | A replication job's identity is **(VMID, target)**, not its id. Proxmox reverses a job toward the node a guest migrated to, so per-id targets permute by design. For a job that already exists, `schedule` and `comment` are now reconciled from the `proxmox_ha_replication_jobs` entry whose `target_node` equals the job's LIVE target (read from `pvesh get /cluster/replication`), not from the entry carrying that job id. On the first run after the bump, each job whose id↔target pairing Proxmox has permuted gets one `pvesr update` correcting its comment (and its schedule, where schedules are staggered per target) to the live target; the run after that is clean. The reverse behaviour — the role stamping the inventory id's target onto a permuted job, so a `--comment` named a node the job does not replicate to — is gone. No input change: write each entry's `comment` about its own `target_node` and the role handles the permutation. |
+| `proxmox_ha` | A permutation whose target SET still matches is **reported, not rewritten**. A new `ID PERMUTATION on <host> (id -> live target -> inventory target): ...` line appears in the play output beside the existing orphan and source-drift banners, and the new `proxmox_ha_permuted_jobs` fact (a list of `{id, live_target, inventory_target}`) carries the same triples. It is informational: reassigning ids to match live state would force a full ZFS resync per touched target, so do not "fix" the inventory to chase it. Anything that greps the play output for drift banners sees one new string. |
+| `nas_storage` | The incremental base (`latest_common_snapshot`) no longer counts a destination dataset whose mapped source is excluded. A kept orphan stops receiving snapshots, so without this it would drag the all-datasets count down and, once the last shared snapshot aged out, force a full multi-TB re-send. Verification after the first run: the NEXT run must log `Incremental: ...`, not `No common archsync-* snapshots; full replicate`. |
+| `proxmox_lxc` | The admin `authorized_keys` reconcile **merges** instead of rewriting the whole file: every line not byte-identical to a managed key is preserved, so a forced-command or `from=`-restricted entry seeded in a container outside Ansible survives a converge. The consequence to act on: rotating `proxmox_lxc_ssh_public_keys` no longer removes the superseded key, because a plain key outside the managed set is an unmanaged line like any other. Revoke with one run at `proxmox_lxc_ssh_authorized_keys_prune: true`, or set that permanently for the old whole-file behaviour. The merge preserves an entry that is still there; it does not restore one an earlier run already stripped. |
+| `adguard_home` | The `/control/dns_config` reconcile now sends **and compares** the rate-limiter subnet lengths. Both default to AdGuard's own values, so nothing moves on a site that left them alone; a site that narrowed them in the UI while the role defaults stood sees one reconcile back to 24/56. The fields exist in the dns_config schema from the AdGuard Home 0.107.4x line — an older build rejects the POST and the role's own assert fails loudly rather than drifting. |
+| `home_assistant` | Documentation and one assert message only, no behaviour change: `home_assistant_trusted_proxies` renders a block Home Assistant imports on **first boot only**. A storage-migrated instance reads `/config/.storage/http`, so narrowing the rendered list changes nothing there. The README says why the block is still rendered and that the effective list is an owner edit followed by a restart; writing `.storage` from Ansible stays out of scope. |
+
+## New variables (defaults preserve today's behaviour)
+
+| Role | Variable | Default | What it does |
+|---|---|---|---|
+| `proxmox_lxc` | `proxmox_lxc_ssh_authorized_keys_prune` | `false` | Makes the managed key set authoritative again: the merge is skipped and the file is reduced to the rendered keys. One run with it true is how a rotated-out key is revoked. |
+| `adguard_home` | `adguard_home_ratelimit_subnet_len_ipv4`, `adguard_home_ratelimit_subnet_len_ipv6` | `24`, `56` | The prefix the rate limiter buckets clients by. At the default `24`, one noisy non-whitelisted client consumes the bucket for a whole homelab `/24`, which makes a per-host `adguard_home_ratelimit_whitelist` ineffective; `32` makes the limit per client. A deliberate posture change, not part of adopting the release. |
+
+## Library surfaces outside the collection
+
+**`ci/validate/flux-lint.yml` renders every Kustomization through `flux
+envsubst --strict`.** GNU `envsubst` reads only `${NAME}`, while
+kustomize-controller's Go envsubst also reads bash modifiers (`${conf%/*}`) as
+variables, so a file that passed the gate could still fail post-build
+in-cluster and stop that Kustomization reconciling. Two new inputs carry the
+parser: `flux_version` (default `2.9.0`) and `flux_sha256`. They apply to the
+substitute (root) arm only, so the tenant arm downloads nothing. A consumer
+whose cluster runs another Flux release passes its own, so the gate's parser is
+the one its kustomize-controller uses.
+
+**One pin set per tool across the CI surface, asserted by
+`tests/test_pin_parity.py`.** Changed defaults: `flux-lint`'s
+`kustomize_version` 5.8.1 → 5.8.2 (sha with it), `ci/lint/shellcheck.yml`'s
+`image` `koalaman/shellcheck-alpine:v0.10.0` → `v0.11.0`,
+`ci/lint/ansible-lint.yml`'s `ansible_lint_version` 26.8.0 → 26.9.0 (moved
+together with `docker/molecule-ci/requirements.txt`),
+`ci/review/pr-agent.yml`'s `image` 0.45.0 → 0.47.0, and
+`ci/validate/terraform.yml`'s `image` `hashicorp/terraform:1.15` →
+`1.16.5@sha256:c7926fe…` so the gate parses the line the consumers plan with.
+`ci/github/ci.example.yml`'s `KUSTOMIZE_*` and `SHELLCHECK_*` env move with
+them. A consumer taking the shellcheck default lints under a newer shellcheck
+and may see new findings; the library's own tree is clean on 0.11.0.
+
+**`ci/lint/docs-link-check.yml`'s `job_name` default is `lint-docs-links`.**
+Every consumer already overrides it, so nothing moves for them; the GitHub
+example's job id and `name:` were renamed with it. The template path is
+unchanged. No other `job_name` default moved — `comment-length`,
+`runbook-anchors` and `manifest-gates` also read as nouns, but all three
+consumers take those defaults, so renaming them is a coordinated fan-out
+rather than a names-only change.
+
+**All three dind definitions pass
+`--default-network-opt=bridge=com.docker.network.driver.mtu=<dind_mtu>` beside
+`--mtu`** (`ci/templates/docker-dind.yml`, `ci/build/docker-build.yml` and the
+library's own molecule jobs). A user-defined network — the kind molecule
+creates — ignores `--mtu`, which is how TLS frames black-hole on a 1420-MTU
+overlay. No input change.
+
+**`ci/test/python-tests.yml` caches `.bin/`** under the prefix
+`python-tests-bin`, keyed on the new `tools_cache_key_files` input (default
+`["scripts/ci-fetch-tools.py"]`, so a pin bump busts it; one or two entries,
+GitLab's `cache:key:files` limit). It is a no-op without a runner cache
+backend, and correctness does not rest on it — see the next entry.
+
+**`scripts/ci-fetch-tools.py` stamps the installed version beside each
+binary.** A destination that merely existed used to count as present, so a
+cached, pre-seeded or truncated binary of any version was trusted forever and a
+version bump in the table silently did not take effect in a job whose `.bin`
+survived. Each install now writes `<name>.version` with the effective version
+and sha256, and a tool counts as present only when that stamp matches the
+resolved pin. The stamp lands after the binary, so an interrupted install reads
+as absent. `--force` is unchanged. Re-vendor it with the cache change above.
+
+**Three gates now refuse shapes they used to pass vacuously.**
+`check-secretstore-scope.py` reports a `namespaceSelector` carrying a key
+outside `matchLabels`/`matchExpressions` (a singular `matchLabel:`, an extra
+sibling) as unmodelled instead of as a plain non-match, because both
+recognised arms were empty and the matcher admitted every namespace.
+`check-scrape-wiring.py` fails a matched Service with no `spec.selector`
+(it widened to the monitor's own labels and certified a policy against no
+workload), fails a port name two selected workloads declare at different
+numbers, and groups documents by effective namespace so a policy in one
+namespace no longer admits a scrape in another. `check-hpa-vpa-invariant.py`
+goes the other way: its `maxAllowed`-above-limit arm no longer fires on a VPA
+at `updateMode: Off`, whose recommendation the kubelet can never apply — a
+finding that was unfixable except by an allowlist entry in every consumer.
+
+**`check-netpol-except-parity.py` takes `--corpus FILE` (`-` for stdin)** so a
+placeholder-shaped repo can be judged after substitution: the `${...}` CIDR
+skip is off there and a leftover placeholder is an operator error. Its
+directory walk also globs `*.json`, and an egress peer carrying none of
+`ipBlock` / `podSelector` / `namespaceSelector` is now reported as the empty
+peer Kubernetes reads as every destination.
+
+**`check-lib-pins.py` compares repository names, not substrings.** `project in
+value` counted any Galaxy name/source or include path whose URL merely
+contained the library's project path — a fork, a path-prefixed mirror — as
+installing the library, so its unrelated pin passed the gate instead of being
+reported unchecked. The normalised repo-name comparison beside it was already
+the correct test and is now the only one; it still matches the same repository
+on another host.
+
+**Three more gate scripts are offered on `scripts/vendorable-paths.yml`.**
+`check-guest-endpoint-parity.py` reconciles the two forks weisssrv and the
+cluster template each carried, taking the wider behaviour of each: every
+`group_vars` and `host_vars` file is read for exports, an export client is
+matched by network containment rather than `/32` equality, the cluster-config
+read goes through `gate_common`, and a cycle in the group tree is an operator
+error. It imports `gate_common.py` **and** `inventory_tree.py` from its own
+directory, so vendor all three or it exits 2 on import.
+`flux-secret-consumers.py` (reads `kubectl get -o json` on stdin) and
+`taskfile_tree.py` (an importable module for a consumer's Taskfile gates) ship
+byte-identical to what both consumers already run. `docs/SCRIPTS.md` gains a
+contract section for each, plus an extraction queue naming the scripts still
+duplicated.
+
+**`ci/github/ci.example.yml` gained a `comment-length` job and passes
+`--namespace-from-tree` to the scrape gate.** The new job runs the vendored
+`python3 scripts/check-comment-length.py .` — stdlib-only, no config, the
+GitHub twin of `ci/lint/comment-length.yml`. The scrape flag reads the
+namespace from the one Namespace manifest under the tree, because a
+byte-identically vendored workflow cannot carry a tenant's value; it is
+consulted only when a monitor declares `matchNames`, so a tenant whose
+Namespace the cluster operator owns is unaffected, and zero or several
+Namespace manifests under a tree that does declare `matchNames` is the
+operator error.
+
+**`tests/copier_render.py`'s `check_registered_copies` takes an optional
+`ref`** and forwards `--ref`. Without it the comparison runs against whatever
+the library checkout holds rather than the release the consumer pins, so a
+passing gate said nothing about the ref the copies were taken at and a failing
+one told the operator to re-vendor backwards. Every current caller keeps the
+argv it had; pass your own `WEISSSRV_LIB_REF`.
+
+**`docs/INCLUDE-CONTRACT.md`'s adoption ledger matches the consumer
+pipelines.** The `kubectl-setup` and `comment-length` rows move to adopted, and
+the legend drops the clauses that described local renders those consumers no
+longer do.
+
+
 # v0.18.1
 
 ## Fixed
