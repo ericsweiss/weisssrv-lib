@@ -1822,13 +1822,14 @@ commit in the consuming repo at all.
 - **The collection surface.** The file checked is `<ci-file dir>/ansible/requirements.yml`.
   A repo without one — a tenant app scaffold — is a silent no-op. A
   requirements.yml that installs the library **with no `version:`** is a floating
-  pin and fails. The entry is located from the parsed node tree by `--project`
-  appearing in its `name:`, so a `version:` under a different collection is never
-  matched; that substring match resolves both the Galaxy name and a
-  `git+https://…#/ansible_collections/weisssrv/infra` source. The collection is
-  matched on the repository NAME as well as the full project path, and on
-  `source:` as well as `name:`, so an instance-local mirror or a fork on another
-  host is still gated. A requirements.yml that declares a git collection
+  pin and fails. The entry is located from the parsed node tree, so a `version:`
+  under a different collection is never matched, and it is matched on the
+  **repository NAME** of its `name:` or `source:` — the last path segment,
+  lower-cased and `.git`-stripped — never as a substring of the URL. That keeps
+  an instance-local mirror of the same repository on another host gated while a
+  FORK, or a mirror whose URL merely contains the project path
+  (`…/mirrors/eric/weisssrv-lib-fork.git`), is a different repository and does
+  not count as installing the library. A requirements.yml that declares a git collection
   matching nothing fails with `no git collection matching <project>` rather than
   passing silently; one with no git collection at all stays a no-op.
 - **`--fix`** rewrites the literals to the single source — both the `include:`
