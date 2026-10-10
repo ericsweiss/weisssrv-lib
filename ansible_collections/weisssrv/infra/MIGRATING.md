@@ -87,6 +87,13 @@ the matching `flux_version`/`flux_sha256` inputs or the job reds. A ConfigMap
 declaring no `flux_version` prints that the pin is held equal to nothing and
 proceeds.
 
+**The strict render reaches a consumer's `task lint` only through that
+consumer's own copy of the render loop.** The include covers CI; `flux:lint`
+runs the loop each consumer carries in `taskfiles/flux.yml`, so adopting this
+release does not add `flux envsubst --strict` locally — the local copy has to
+gain it too. The program is now on the extraction queue in `docs/SCRIPTS.md`
+with the flags it needs, so the third copy is recorded rather than rediscovered.
+
 **One pin set per tool across the CI surface, asserted by
 `tests/test_pin_parity.py`.** Changed defaults: `flux-lint`'s
 `kustomize_version` 5.8.1 → 5.8.2 (sha with it), `ci/lint/shellcheck.yml`'s

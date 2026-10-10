@@ -2618,6 +2618,18 @@ from here:
 | `check-ci-pin-parity.sh` | 4 | the pin names written twice; near-neighbour of `check-lib-pins.py` |
 | `check-deploy-host-coverage.py` | 2 | the inventory, playbook and CI paths |
 
+One queued program is not a script at all. The render/scan/kubeconform loop
+exists three times: `ci/validate/flux-lint.yml`'s substitute arm here, and each
+consumer's own `flux:lint` task (`weisssrv/taskfiles/flux.yml`, the cluster
+template's `template/taskfiles/flux.yml.jinja`). A consumer's `task lint`
+therefore reaches the strict render only through that local copy — which is how
+the strict-render gap opened in the first place, the fix landing in one of the
+three. Extracting it as `scripts/flux-lint.sh`, called by the include once the
+tool cache is populated and offered in `vendorable-paths.yml`, needs these to
+become flags: the cluster directory, the envsubst variable list (the
+`export-versions` allowlist), the kubeconform k8s version, the CRD catalog ref,
+the allowed-skips budget, and whether a cluster root is required.
+
 A script a consumer owns on purpose is not on this queue: `collect-state.sh`,
 the per-guest smoke scripts and `version-registry.py` are site data by
 definition, and the library ships their shared halves
