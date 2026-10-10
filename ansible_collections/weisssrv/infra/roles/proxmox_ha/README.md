@@ -93,7 +93,11 @@ proxmox_ha_replication_jobs:
   job-id↔target pairings when a guest migrates, so only a differing target
   *set* is treated as drift (delete + recreate); permuted ids with an equal set
   are reported as `ID PERMUTATION` and left alone, because churning them forces
-  a full ZFS resync per target.
+  a full ZFS resync per target. The report is a play-output banner,
+  `ID PERMUTATION on <host> (id -> live target -> inventory target): ...`, and
+  the `proxmox_ha_permuted_jobs` fact, a list of
+  `{id, live_target, inventory_target}` carrying the same triples. Both are
+  informational: do not edit the inventory to chase them.
 - **`schedule` and `comment` are reconciled from the entry naming the LIVE
   target**, read from `pvesh get /cluster/replication`, not from the entry
   carrying that id. A comment can therefore never name a node the job does not

@@ -33,7 +33,7 @@ the role is a no-op.
 | `acme_certs_local_cert_dir`, `acme_certs_local_cert_group` | Local install path and reader group | no (`/etc/ssl/private`, `root`) |
 | `acme_certs_textfile_dir` | Where the renewal/distribution metrics land; aliases `node_exporter_host_textfile_dir` | no (`/var/lib/node_exporter`) |
 | `acme_certs_local_reload_command` | Reload for a local consumer of the cert; empty omits the block | no (`""`) |
-| `acme_certs_key_from` | `from="..."` source pin on the distributed key | no (`""`) |
+| `acme_certs_key_from` | `from="..."` source pin on the distributed key; empty renders no `from=` clause, leaving the root-equivalent distribution key usable from any source address | no (`""`) |
 | `acme_certs_distribute_pubkeys` | Seed the targets; `false` renders locally only | no (`true`) |
 | `acme_certs_skip_distribution` | Skip the proactive push at the end | no (`false`) |
 | `acme_certs_distribution_check_enabled` | Install the daily distribution check timer | no (`true`) |
