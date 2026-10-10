@@ -715,6 +715,11 @@
         desired="$(printf "%s" "$3" | base64 -d)"
         prune="$4"
         install -d -m 700 -o "$user" -g "$user" "$auth_dir"
+        # A blank managed set manages nothing, so leave the file as it stands
+        # instead of merging every line against an empty pattern.
+        if [ "$prune" != "true" ] && [ -z "${desired//[[:space:]]/}" ]; then
+          exit 0
+        fi
         tmp="$(mktemp "${auth_file}.XXXXXX")"
         printf "%s\n" "$desired" > "$tmp"
         # Every line outside the managed set is kept, so a forced-command or

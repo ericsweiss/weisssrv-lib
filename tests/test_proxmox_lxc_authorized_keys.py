@@ -158,3 +158,41 @@ def test_the_file_is_chowned_to_the_admin_user_before_the_move(bindir, tmp_path)
     _seed(home, FOREIGN)
     _run(bindir, home)
     assert "chown molecule:molecule" in (bindir / "calls.log").read_text(encoding="utf-8")
+
+
+def test_a_blank_managed_set_leaves_the_file_untouched(bindir, tmp_path) -> None:
+    """`grep -x` keeps foreign lines against an empty pattern, and the guard
+    above it never writes the file in the first place."""
+    home = tmp_path / "home"
+    auth = _seed(home, FOREIGN, STALE)
+    before = auth.read_text(encoding="utf-8")
+    for keys in ("\n", "   ", " \n\t\n"):
+        proc = _run(bindir, home, keys=keys)
+        assert proc.returncode == 0, proc.stderr
+        assert "CHANGED" not in proc.stdout
+        assert auth.read_text(encoding="utf-8") == before
+
+
+def test_a_blank_managed_set_still_prunes_when_asked(bindir, tmp_path) -> None:
+    """The guard covers the preserving path only: prune stays authoritative."""
+    home = tmp_path / "home"
+    auth = _seed(home, FOREIGN, STALE)
+    proc = _run(bindir, home, keys="\n", prune=True)
+    assert proc.returncode == 0, proc.stderr
+    assert "CHANGED" in proc.stdout
+    assert auth.read_text(encoding="utf-8").strip() == ""
+
+
+def test_the_merge_matches_whole_lines(bindir, tmp_path) -> None:
+    """Dropping `-x` from the merge would make an empty pattern match every
+    line, so the test asserts the flag the guard is a second layer over."""
+    home = tmp_path / "home"
+    _seed(home, FOREIGN)
+    script = _script(home, MANAGED, False)
+    assert 'grep -vxF -f "$tmp"' in script
+    # A prefix of a managed key is its own line, not a duplicate of it.
+    prefix = MANAGED[:40]
+    auth = _seed(home, prefix)
+    proc = _run(bindir, home)
+    assert proc.returncode == 0, proc.stderr
+    assert auth.read_text(encoding="utf-8").splitlines() == [MANAGED, prefix]
