@@ -2,7 +2,9 @@
 # overwritten by the next deploy. The role compares a sha256 of this file with
 # the deployed one, so the render must stay byte-stable (no timestamps).
 
-# Reverse proxy: HA only honours X-Forwarded-For from these networks.
+# Reverse-proxy trust, imported on FIRST BOOT only: once Home Assistant has
+# migrated http to its storage backend it reads the list from
+# /config/.storage/http and ignores every line below.
 http:
   use_x_forwarded_for: true
   trusted_proxies:

@@ -52,6 +52,7 @@ id; `local-ssd` is used when the role is unknown. Override per-container with
 | `proxmox_lxc_admin_user` | `admin_user` | User created inside the container with sudo and SSH key access. |
 | `proxmox_lxc_admin_home` | derived | `/root` for root, `/home/<user>` otherwise. |
 | `proxmox_lxc_ssh_public_keys` | `$SSH_PUBLIC_KEY` | Authorized keys for that user; asserted non-empty before create. |
+| `proxmox_lxc_ssh_authorized_keys_prune` | `false` | Delete `authorized_keys` lines outside the managed set; left false, a forced-command or `from=`-restricted key seeded outside Ansible survives the reconcile. |
 | `proxmox_lxc_onboot` | `true` | Start the container when the node boots. |
 | `proxmox_lxc_startup_order` | `100` | Proxmox `startup` order value. |
 | `proxmox_lxc_startup_delay` | `0` | Seconds waited after this container starts. |
@@ -119,7 +120,7 @@ plex:
 | Setting | Behaviour |
 |---------|-----------|
 | `onboot` / `startup` (order, delay) | **Reconciled** on existing containers — editing `proxmox_autostart_enabled` / `proxmox_startup_order` / `proxmox_startup_delay` and re-running applies them via an idempotent `pct set` (metadata-only, next-boot). |
-| Admin SSH `authorized_keys` | **Reconciled** on every run — a rotated `SSH_PUBLIC_KEY` propagates idempotently (atomic temp-file swap, only rewrites on content change). |
+| Admin SSH `authorized_keys` | **Reconciled** on every run — a rotated `SSH_PUBLIC_KEY` propagates idempotently (atomic temp-file swap, only rewrites on content change). The managed keys are written first and every other line in the file is preserved, unless `proxmox_lxc_ssh_authorized_keys_prune` is set. |
 | Per-container DNS — `nameserver` (`proxmox_lxc_nameserver`) and `searchdomain` (`proxmox_lxc_searchdomain`) | **Reconciled** on existing containers via an idempotent `pct set --nameserver --searchdomain`, only when `proxmox_lxc_nameserver` is non-empty. `pct set` stages the change as pending; Proxmox applies it on the container's next restart, so nothing is disrupted or rebooted. |
 | NIC `firewall=1` flag | **Reconciled** on existing containers. Skipped when the container does not exist and `proxmox_lxc_skip_create` is set. |
 | Bind mounts (`proxmox_lxc_bind_mounts`), UID/GID `lxc.idmap` (`proxmox_lxc_idmap_*`), GPU `/dev/dri` passthrough | **Create-time only.** Changing them in inventory does **not** reconcile onto an existing container — live idmap/mount changes are risky and out of scope. Recreate the container, or edit `/etc/pve/lxc/<id>.conf` and `pct restart <id>` manually. |
@@ -127,6 +128,15 @@ plex:
 Why reconcile these at all: Proxmox stores the guest's DNS and network config
 itself and re-applies it on start, so an inventory address change that is not
 converged is silently re-applied from the stale stored value.
+
+The `authorized_keys` reconcile is a merge, not a rewrite: the keys in
+`proxmox_lxc_ssh_public_keys` are written first and every other line in the file
+is appended back unchanged. A key the container was seeded with outside Ansible —
+a cert-distribution forced command, a `from=`-restricted entry — therefore keeps
+working across converges. `proxmox_lxc_ssh_authorized_keys_prune: true` makes the
+managed set authoritative instead, for a site that wants the whole file owned
+here; nothing warns when a pruned key was the only way a renewal reached the
+container, so set it deliberately.
 
 ## Bootstrap DNS fallback
 

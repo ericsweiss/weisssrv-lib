@@ -542,8 +542,25 @@ def test_cap_above_limit_flagged_even_for_requests_only():
     )
 
 
-def test_cap_above_limit_flagged_even_when_off():
-    assert mod.vpa_cap_violations(_docs(_capped_vpa("2Gi", limit="1Gi", update_mode="Off")))
+def test_cap_above_limit_is_not_flagged_when_the_vpa_is_off():
+    """An Off VPA's recommendation is never applied, so the kubelet can never
+    reject the cap: the finding would be unfixable and force an allowlist entry."""
+    docs = _docs(_capped_vpa("2Gi", limit="1Gi", update_mode="Off"))
+    assert mod.vpa_cap_violations(docs) == []
+    assert mod.vpa_cap_unjudged(docs) == []
+
+
+def test_cap_above_limit_is_not_flagged_when_the_container_policy_is_off():
+    """The per-container half of the same exemption."""
+    docs = _docs(_capped_vpa("2Gi", limit="1Gi", container_mode="Off"))
+    assert mod.vpa_cap_violations(docs) == []
+
+
+def test_cap_above_limit_is_flagged_again_once_the_vpa_is_on():
+    """The positive case the exemption must not swallow."""
+    assert mod.vpa_cap_violations(
+        _docs(_capped_vpa("2Gi", limit="1Gi", update_mode="Auto"))
+    )
 
 
 def test_cap_equal_to_limit_flagged_when_policy_controls_limits():

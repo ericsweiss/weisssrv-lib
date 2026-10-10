@@ -158,6 +158,39 @@
           a permuted target set, got drifted={{ ha.l_drifted }},
           delete={{ ha.l_delete }}/create={{ ha.l_create }}/update={{ ha.l_update }}
 
+    # (l2) The same permutation with comments that already name their own live
+    #      target: reconciling by (vmid, target) mutates nothing, and the
+    #      permutation is reported as info with both triples.
+    - name: L2 — permuted ids whose comments name the live target trigger NO mutations
+      ansible.builtin.assert:
+        that:
+          - ha.l2_total == 0
+          - ha.l2_drifted == []
+          - ha.l2_permuted | map(attribute='id') | sort == ['150-0', '150-1']
+          - "ha.l2_permuted | selectattr('id', 'equalto', '150-0') | map(attribute='live_target') | first == 'pve-opt-03'"
+          - "ha.l2_permuted | selectattr('id', 'equalto', '150-0') | map(attribute='inventory_target') | first == 'pve-opt-02'"
+        fail_msg: >-
+          Expected zero mutations and both ids reported as permuted, got
+          mutations={{ ha.l2_total }}, drifted={{ ha.l2_drifted }},
+          permuted={{ ha.l2_permuted }}
+
+    # (l3) Permuted ids still carrying the OLD comment: each is rewritten to
+    #      the node the job replicates to. A comment re-stamped from the
+    #      inventory entry with that id is the regression this guards.
+    - name: L3 — a stale comment is rewritten to the LIVE target, never the inventory one
+      ansible.builtin.assert:
+        that:
+          - ha.l3_update == 2
+          - ha.l3_live_comments == 2
+          - ha.l3_stale_comments == 0
+          - ha.l3_delete == 0
+          - ha.l3_create == 0
+        fail_msg: >-
+          Expected two updates naming the live targets and none naming the
+          inventory ones, got update={{ ha.l3_update }},
+          live={{ ha.l3_live_comments }}/stale={{ ha.l3_stale_comments }},
+          delete={{ ha.l3_delete }}/create={{ ha.l3_create }}
+
     # (m) An orphaned job, on this node but absent from config, is warned
     #     about and never deleted. Orphan cleanup is manual.
     - name: M — orphaned job triggers warning only, NO mutations
@@ -301,9 +334,8 @@
           with no pvesr mutations, got aborted={{ ha.v_aborted }},
           mutations={{ ha.v_total }}
 
-# The delegate seam the role took over from the calling play. Without it, a
-# consumer that drops serial: 1 (as MIGRATING instructs) fans the cluster-wide
-# reconcile out to every node at once.
+# The role owns delegate selection, so a play without serial: 1 still runs the
+# cluster-wide reconcile from one node.
 - name: Verify delegate selection
   hosts: proxmox-ha-test
   become: true

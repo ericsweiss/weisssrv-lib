@@ -9,9 +9,11 @@
       - home_assistant_trusted_proxies | length > 0
       - home_assistant_oidc_configure_url | length > 0
     fail_msg: >-
-      home_assistant_trusted_proxies (CIDRs allowed to set X-Forwarded-For) and
-      home_assistant_oidc_configure_url (the identity provider's OIDC discovery
-      URL) are required. See the role README for a worked example.
+      home_assistant_trusted_proxies (CIDRs allowed to set X-Forwarded-For, read
+      on first boot only — a migrated instance answers from
+      /config/.storage/http) and home_assistant_oidc_configure_url (the identity
+      provider's OIDC discovery URL) are required. See the role README for a
+      worked example.
     success_msg: "Rendered-config inputs are present"
 
 - name: Assert the OIDC client credentials are set

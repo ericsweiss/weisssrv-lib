@@ -19,6 +19,7 @@ SCRIPTS = REPO / "scripts"
 IMPORTERS = (
     "check-default-deny-coverage.py",
     "check-ephemeral-storage-cap.py",
+    "check-guest-endpoint-parity.py",
     "check-helmrelease-crd-safety.py",
     "check-hpa-vpa-invariant.py",
     "check-ingressroute-backends.py",

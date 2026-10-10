@@ -386,5 +386,250 @@ def test_unmodelled_notes_do_not_leak_between_runs(tmp_path, capsys):
     assert "matchExpressions" not in capsys.readouterr().out
 
 
+NAMESPACE = """\
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app
+"""
+
+SCOPED_MONITOR = SERVICE_MONITOR.replace(
+    "spec:\n", "spec:\n  namespaceSelector:\n    matchNames: [app]\n", 1
+)
+
+
+class TestNamespaceFromTree:
+    """`--namespace-from-tree` is for a byte-identical pipeline, which cannot
+    carry a per-tenant `--namespace` value."""
+
+    def test_the_tree_namespace_verifies_a_matchnames_entry(self, tmp_path):
+        argv = tree(tmp_path, NAMESPACE, DEPLOYMENT, SERVICE, SCOPED_MONITOR, policy())
+        assert gate.main([*argv, "--namespace-from-tree"]) == 0
+
+    def test_a_matchnames_entry_for_another_namespace_is_refused(self, tmp_path, capsys):
+        elsewhere = SERVICE_MONITOR.replace(
+            "spec:\n", "spec:\n  namespaceSelector:\n    matchNames: [elsewhere]\n", 1
+        )
+        argv = tree(tmp_path, NAMESPACE, DEPLOYMENT, SERVICE, elsewhere, policy())
+        assert gate.main([*argv, "--namespace-from-tree"]) == 2
+        assert "against --namespace app" in capsys.readouterr().err
+
+    def test_a_tree_with_no_namespace_manifest_still_passes_an_unscoped_monitor(
+        self, tmp_path
+    ):
+        """The shipped tenant layout: the operator owns the Namespace, and the
+        monitor names none, so the derivation is never consulted."""
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy())
+        assert gate.main([*argv, "--namespace-from-tree"]) == 0
+
+    def test_a_tree_with_no_namespace_manifest_refuses_a_matchnames_entry(
+        self, tmp_path, capsys
+    ):
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SCOPED_MONITOR, policy())
+        assert gate.main([*argv, "--namespace-from-tree"]) == 2
+        assert "found no named Namespace manifest" in capsys.readouterr().err
+
+    def test_two_namespace_manifests_are_refused(self, tmp_path, capsys):
+        second = NAMESPACE.replace("name: app", "name: other")
+        argv = tree(
+            tmp_path, NAMESPACE, second, DEPLOYMENT, SERVICE, SCOPED_MONITOR, policy()
+        )
+        assert gate.main([*argv, "--namespace-from-tree"]) == 2
+        assert "found 2 of them here (app, other)" in capsys.readouterr().err
+
+    def test_the_same_namespace_twice_is_one_namespace(self, tmp_path):
+        argv = tree(
+            tmp_path, NAMESPACE, NAMESPACE, DEPLOYMENT, SERVICE, SCOPED_MONITOR,
+            policy(),
+        )
+        assert gate.main([*argv, "--namespace-from-tree"]) == 0
+
+    def test_the_two_namespace_options_are_mutually_exclusive(self, tmp_path):
+        argv = tree(tmp_path, NAMESPACE, DEPLOYMENT, SERVICE, SCOPED_MONITOR, policy())
+        with pytest.raises(SystemExit):
+            gate.main([*argv, "--namespace-from-tree", "--namespace", "app"])
+
+
+# --- shapes a vacuous pass turned on -----------------------------------------
+
+
+def test_a_selectorless_service_is_not_credited(tmp_path, capsys):
+    """Manual endpoints: the Service points at no workload here, and an empty
+    selector widened to the monitor's labels, certifying a policy against none."""
+    manual = SERVICE.replace("  selector:\n    app.kubernetes.io/name: app\n", "")
+    argv = tree(tmp_path, DEPLOYMENT, manual, SERVICE_MONITOR, policy())
+    assert gate.main(argv) == 1
+    assert "no spec.selector" in capsys.readouterr().err
+
+
+def test_an_empty_service_selector_is_not_credited(tmp_path, capsys):
+    empty = SERVICE.replace("  selector:\n    app.kubernetes.io/name: app\n", "  selector: {}\n")
+    argv = tree(tmp_path, DEPLOYMENT, empty, SERVICE_MONITOR, policy())
+    assert gate.main(argv) == 1
+    assert "no spec.selector" in capsys.readouterr().err
+
+
+def test_one_port_name_at_two_numbers_is_an_operator_error(tmp_path, capsys):
+    """`http2-9090` on two selected workloads: the gate cannot say which number
+    a policy naming it resolves to, and took whichever workload was read last."""
+    second = DEPLOYMENT.replace("name: app\n", "name: app-shard\n", 1).replace(
+        "containerPort: 9100", "containerPort: 9200"
+    )
+    argv = tree(tmp_path, DEPLOYMENT, second, SERVICE, SERVICE_MONITOR, policy())
+    assert gate.main(argv) == 2
+    err = capsys.readouterr().err
+    assert "named 'metrics' at [9100, 9200]" in err
+
+
+def test_the_same_port_name_at_one_number_is_fine(tmp_path):
+    """Two replicas of the same shape are not an ambiguity."""
+    second = DEPLOYMENT.replace("name: app\n", "name: app-shard\n", 1)
+    argv = tree(tmp_path, DEPLOYMENT, second, SERVICE, SERVICE_MONITOR, policy())
+    assert gate.main(argv) == 0
+
+
+def test_each_namespace_is_judged_against_its_own_policies(tmp_path, capsys):
+    """A two-namespace tree: the policy in `a` must not admit the scrape in `b`."""
+
+    def namespaced(document: str, namespace: str) -> str:
+        return document.replace("metadata:\n", f"metadata:\n  namespace: {namespace}\n", 1)
+
+    argv = tree(
+        tmp_path,
+        *(namespaced(d, "a") for d in (DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy())),
+        *(namespaced(d, "b") for d in (DEPLOYMENT, SERVICE, SERVICE_MONITOR)),
+    )
+    assert gate.main(argv) == 1
+    assert "no NetworkPolicy admits namespace observability" in capsys.readouterr().err
+
+
+def test_both_namespaces_wired_passes_and_counts_every_monitor(tmp_path, capsys):
+    def namespaced(document: str, namespace: str) -> str:
+        return document.replace("metadata:\n", f"metadata:\n  namespace: {namespace}\n", 1)
+
+    documents = (DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy())
+    argv = tree(
+        tmp_path,
+        *(namespaced(d, "a") for d in documents),
+        *(namespaced(d, "b") for d in documents),
+    )
+    assert gate.main(argv) == 0
+    assert "2 monitor(s)" in capsys.readouterr().out
+
+
+def test_a_tree_disagreeing_with_the_namespace_option_is_refused(tmp_path, capsys):
+    stated = SERVICE_MONITOR.replace("metadata:\n", "metadata:\n  namespace: elsewhere\n", 1)
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, stated, policy())
+    assert gate.main([*argv, "--namespace", "app"]) == 2
+    assert "disagrees with the namespaces the tree states" in capsys.readouterr().err
+
+
+def test_one_stated_namespace_reaches_the_documents_naming_none(tmp_path):
+    """The Kustomization's own behaviour: a lone stated namespace is the tree's."""
+    stated = SERVICE_MONITOR.replace("metadata:\n", "metadata:\n  namespace: app\n", 1)
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, stated, policy())
+    assert gate.main(argv) == 0
+
+
+def test_an_unassignable_document_in_a_multi_namespace_tree_is_refused(
+    tmp_path, capsys
+):
+    def namespaced(document: str, namespace: str) -> str:
+        return document.replace("metadata:\n", f"metadata:\n  namespace: {namespace}\n", 1)
+
+    argv = tree(
+        tmp_path,
+        *(namespaced(d, "a") for d in (DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy())),
+        *(namespaced(d, "b") for d in (DEPLOYMENT, SERVICE, SERVICE_MONITOR)),
+        policy(),
+    )
+    assert gate.main(argv) == 2
+    assert "names none for NetworkPolicy allow-scrape" in capsys.readouterr().err
+
+
+CLUSTER_SCOPED = (
+    "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: a\n",
+    "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: b\n",
+    "apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\n"
+    "metadata:\n  name: widgets.example.com\n",
+    "apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\n"
+    "metadata:\n  name: app-reader\n",
+    "apiVersion: scheduling.k8s.io/v1\nkind: PriorityClass\n"
+    "metadata:\n  name: app-high\nvalue: 1000\n",
+)
+
+
+def _namespaced(document: str, namespace: str) -> str:
+    return document.replace("metadata:\n", f"metadata:\n  namespace: {namespace}\n", 1)
+
+
+def _two_namespaces() -> list[str]:
+    """A wired monitor, Service, workload and policy in each of `a` and `b`."""
+    documents = (DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy())
+    return [_namespaced(d, ns) for ns in ("a", "b") for d in documents]
+
+
+def test_a_cluster_scoped_document_does_not_make_a_tree_ambiguous(tmp_path, capsys):
+    """A Namespace or CRD carries no namespace because it has none, so counting
+    it as unassigned refused a two-namespace tree that is wired correctly."""
+    argv = tree(tmp_path, *_two_namespaces(), *CLUSTER_SCOPED)
+    assert gate.main(argv) == 0
+    assert "2 monitor(s)" in capsys.readouterr().out
+
+
+def test_a_namespaced_document_naming_none_is_still_refused_beside_them(
+    tmp_path, capsys
+):
+    """The guard narrows to namespaced kinds; it does not go away."""
+    argv = tree(tmp_path, *_two_namespaces(), *CLUSTER_SCOPED, policy())
+    assert gate.main(argv) == 2
+    err = capsys.readouterr().err
+    assert "names none for NetworkPolicy allow-scrape:" in err
+    assert "Namespace" not in err
+
+
+def test_the_tree_namespace_is_still_read_from_the_ungrouped_namespace(tmp_path):
+    """Skipping the Namespace for grouping must not drop it from the tree the
+    `--namespace-from-tree` derivation reads."""
+    scoped = SERVICE_MONITOR.replace(
+        "spec:\n", "spec:\n  namespaceSelector:\n    matchNames: [a]\n", 1
+    )
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, scoped, policy(), CLUSTER_SCOPED[0])
+    assert gate.main([*argv, "--namespace-from-tree"]) == 0
+
+
+def test_a_tree_of_only_cluster_scoped_documents_checks_nothing(tmp_path, capsys):
+    argv = tree(tmp_path, *CLUSTER_SCOPED)
+    assert gate.main(argv) == 0
+    assert "no ServiceMonitor or PodMonitor" in capsys.readouterr().out
+
+
+def test_a_kustomization_file_does_not_make_a_tree_ambiguous(tmp_path, capsys):
+    """kustomize's own documents are build inputs, so they hold no namespace."""
+    kustomization = (
+        "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n"
+        "resources:\n  - manifests.yaml\n"
+    )
+    component = (
+        "apiVersion: kustomize.config.k8s.io/v1alpha1\nkind: Component\n"
+        "resources:\n  - manifests.yaml\n"
+    )
+    argv = tree(tmp_path, *_two_namespaces(), kustomization, component)
+    assert gate.main(argv) == 0
+    assert "2 monitor(s)" in capsys.readouterr().out
+
+
+def test_a_flux_kustomization_naming_no_namespace_is_still_refused(tmp_path, capsys):
+    """Flux's CR shares the kind name but is namespaced, so the carve-out is by
+    API group and this one still counts toward the ambiguity."""
+    flux = (
+        "apiVersion: kustomize.toolkit.fluxcd.io/v1\nkind: Kustomization\n"
+        "metadata:\n  name: apps\n"
+    )
+    argv = tree(tmp_path, *_two_namespaces(), flux)
+    assert gate.main(argv) == 2
+    assert "names none for Kustomization apps:" in capsys.readouterr().err
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

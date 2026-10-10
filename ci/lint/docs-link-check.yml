@@ -1,7 +1,7 @@
 spec:
   inputs:
     job_name:
-      default: docs-link-check
+      default: lint-docs-links
     stage:
       default: lint
     image:

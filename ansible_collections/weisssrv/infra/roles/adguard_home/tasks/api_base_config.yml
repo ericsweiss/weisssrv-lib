@@ -47,6 +47,24 @@
         success_msg: "AdGuard DNS configuration read"
       when: not ansible_check_mode
 
+    # A build whose dns_info omits these keys cannot honour them, and the drift
+    # comparison reads an absent key as agreement — so absence fails here
+    # instead of leaving a requested limit silently unapplied.
+    - name: Assert AdGuard reports the rate-limiter subnet lengths
+      ansible.builtin.assert:
+        that:
+          - "'ratelimit_subnet_len_ipv4' in adguard_home_current_dns_config.json"
+          - "'ratelimit_subnet_len_ipv6' in adguard_home_current_dns_config.json"
+        fail_msg: >-
+          AdGuard's /control/dns_info reports no ratelimit_subnet_len_ipv4 /
+          ratelimit_subnet_len_ipv6, so this build cannot apply
+          adguard_home_ratelimit_subnet_len_ipv4/_ipv6. They need the AdGuard
+          Home 0.107.4x line or newer.
+        success_msg: "AdGuard reports the rate-limiter subnet lengths"
+      when:
+        - not ansible_check_mode
+        - adguard_home_current_dns_config.json is defined
+
     - name: Update DNS configuration
       ansible.builtin.uri:
         url: "{{ _adguard_home_api_base }}/control/dns_config"
@@ -65,6 +83,8 @@
           disable_ipv6: "{{ adguard_home_disable_ipv6 }}"
           ratelimit: "{{ adguard_home_ratelimit }}"
           ratelimit_whitelist: "{{ adguard_home_ratelimit_whitelist }}"
+          ratelimit_subnet_len_ipv4: "{{ adguard_home_ratelimit_subnet_len_ipv4 }}"
+          ratelimit_subnet_len_ipv6: "{{ adguard_home_ratelimit_subnet_len_ipv6 }}"
           cache_enabled: "{{ adguard_home_cache_enabled }}"
           cache_size: "{{ adguard_home_cache_size }}"
           cache_ttl_min: "{{ adguard_home_cache_ttl_min }}"
@@ -87,6 +107,8 @@
           (adguard_home_current_dns_config.json.disable_ipv6 | default(false) != adguard_home_disable_ipv6) or
           (adguard_home_current_dns_config.json.ratelimit | default(0) != adguard_home_ratelimit) or
           (adguard_home_current_dns_config.json.ratelimit_whitelist | default([]) != adguard_home_ratelimit_whitelist) or
+          ((adguard_home_current_dns_config.json.ratelimit_subnet_len_ipv4 | default(adguard_home_ratelimit_subnet_len_ipv4) | int) != (adguard_home_ratelimit_subnet_len_ipv4 | int)) or
+          ((adguard_home_current_dns_config.json.ratelimit_subnet_len_ipv6 | default(adguard_home_ratelimit_subnet_len_ipv6) | int) != (adguard_home_ratelimit_subnet_len_ipv6 | int)) or
           (adguard_home_current_dns_config.json.cache_enabled | default(true) != adguard_home_cache_enabled) or
           (adguard_home_current_dns_config.json.cache_size | default(0) != adguard_home_cache_size) or
           (adguard_home_current_dns_config.json.cache_ttl_min | default(0) != adguard_home_cache_ttl_min) or

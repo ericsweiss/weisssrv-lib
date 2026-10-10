@@ -13,7 +13,7 @@ The tag below is an example: use the tag your repo pins (docs/VERSIONING.md).
 
 ```hcl
 module "sso" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/authentik-sso?ref=v0.18.1"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/authentik-sso?ref=v0.19.0"
 
   oauth2_providers = {
     grafana = {
@@ -304,26 +304,6 @@ after every apply that creates objects (the `policy_binding_ids`,
 `custom_scope_mapping_ids` and `*_provider_ids` outputs give you the
 identifiers) rather than assuming an import file written at adoption time still
 covers everything.
-
-### Migrating an existing root module onto this one
-
-State that already holds the resources needs `moved {}`, not `import` — the
-objects stay put and only their addresses change:
-
-```hcl
-moved {
-  from = authentik_application.app["grafana"]
-  to   = module.sso.authentik_application.this["grafana"]
-}
-```
-
-Write one block per **instance**, not per resource, and check the list against
-`terraform state list` before planning: an address with no block plans as
-destroy+create of a live SSO object. `prevent_destroy` does not block a move,
-and re-applying is a no-op once state carries the new addresses. Keep any
-`import` blocks (and any import script) pointing at the new addresses in the
-same change — the two files describe the same identities and are the disaster
-recovery path.
 
 ## Tests
 

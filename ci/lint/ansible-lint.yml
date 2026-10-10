@@ -16,7 +16,7 @@ spec:
         Runner tag(s). Default targets weisssrv's privileged runner; pass `[]`
         for the shared tag-less tenant runner.
     ansible_lint_version:
-      default: "26.8.0"
+      default: "26.9.0"
       description: >-
         ansible-lint pip pin (pulls its matching ansible-core). Held equal to
         docker/molecule-ci/requirements.txt by

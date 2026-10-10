@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Cross-file pins asserted equal in comments are asserted here too.
 
-The three pin sets: docs/VERSIONING.md. Linter pins live in
+The four pin sets: docs/VERSIONING.md. Linter pins live in
 tests/test_lint_version_parity.py.
 """
 
 from __future__ import annotations
 
+import functools
 import re
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ from pathlib import Path
 import pytest
 import yaml
 from _helpers import template_input_default
+from script_loader import load_script
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
@@ -30,6 +32,9 @@ MOLECULE_MATRIX = REPO / "ci" / "internal" / "molecule-matrix.gitlab-ci.yml"
 KUBECTL_SETUP = REPO / "ci" / "deploy" / "kubectl-setup.yml"
 FLUX_LINT = REPO / "ci" / "validate" / "flux-lint.yml"
 DOCKER_DIND_TEMPLATE = REPO / "ci" / "templates" / "docker-dind.yml"
+SHELLCHECK_TEMPLATE = REPO / "ci" / "lint" / "shellcheck.yml"
+TERRAFORM_TEMPLATE = REPO / "ci" / "validate" / "terraform.yml"
+FETCH_TOOLS = REPO / "scripts" / "ci-fetch-tools.py"
 ADGUARD_ROLE = (
     REPO / "ansible_collections" / "weisssrv" / "infra" / "roles" / "adguard_home"
 )
@@ -112,6 +117,51 @@ class TestLibraryOwnPins:
         m = re.search(r'K8S_VER="\$\{K8S_VERSION_INPUT:-([\d.]+)\}"', FLUX_LINT.read_text())
         assert m, "flux-lint simple-mode K8S_VER fallback not found"
         assert workflow_env("K8S_VERSION") == m.group(1)
+
+
+@functools.lru_cache(maxsize=1)
+def _fetch_tools() -> dict:
+    """scripts/ci-fetch-tools.py's TOOLS table, where a tool bump lands."""
+    return load_script("ci-fetch-tools.py", register=True).TOOLS
+
+
+def _image_version(template: Path) -> str:
+    """The version out of a `repo:<version>[@sha256:…]` image input default."""
+    image = template_input_default(template, "image")
+    return image.split("@", 1)[0].rsplit(":", 1)[1].lstrip("v")
+
+
+class TestFetchToolsPinParity:
+    """One pin set per tool, so a job's behaviour cannot depend on which path
+    installed the binary. flux-lint keeps its own version/sha inputs — dropping
+    them is a MAJOR input change — so they are held equal here instead.
+    """
+
+    @pytest.mark.parametrize("tool", ["kustomize", "kubeconform"])
+    def test_the_flux_lint_inputs_match(self, tool):
+        pinned = _fetch_tools()[tool]
+        assert template_input_default(FLUX_LINT, f"{tool}_version") == pinned.version
+        assert template_input_default(FLUX_LINT, f"{tool}_sha256") == pinned.sha256
+
+    @pytest.mark.parametrize("tool", ["kustomize", "kubeconform", "shellcheck"])
+    def test_the_github_example_env_matches(self, tool):
+        pinned = _fetch_tools()[tool]
+        assert workflow_env(f"{tool.upper()}_VERSION") == pinned.version
+        assert workflow_env(f"{tool.upper()}_SHA256") == pinned.sha256
+
+    @pytest.mark.parametrize(
+        ("tool", "template"),
+        [("shellcheck", SHELLCHECK_TEMPLATE), ("terraform", TERRAFORM_TEMPLATE)],
+        ids=lambda value: value if isinstance(value, str) else None,
+    )
+    def test_an_image_pinned_tool_runs_the_same_version(self, tool, template):
+        assert _image_version(template) == _fetch_tools()[tool].version
+
+    def test_the_table_carries_every_tool_named_above(self):
+        """A renamed key would make every case above vacuous."""
+        assert {"kustomize", "kubeconform", "shellcheck", "terraform"} <= set(
+            _fetch_tools()
+        )
 
 
 _DIND_INPUTS = (
@@ -344,6 +394,9 @@ class TestContractIsDocumented:
             DOCKER_DIND_TEMPLATE,
             MOLECULE_CI_DOCKERFILE,
             MOLECULE_TEST_DOCKERFILE,
+            FETCH_TOOLS,
+            SHELLCHECK_TEMPLATE,
+            TERRAFORM_TEMPLATE,
         ],
         ids=lambda p: str(p.relative_to(REPO)),
     )

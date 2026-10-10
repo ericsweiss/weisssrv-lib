@@ -21,6 +21,7 @@ needs its own upstreams and TLS:
 - IPv6 DNS support
 - Rate limiting (requests/s per client)
 - Rate limit whitelist
+- Rate limit subnet lengths (the bucket the per-client count is kept over)
 - TLS/DoT/DoQ configuration (HTTPS, DoT, DoQ ports)
 - DNS cache size + TTL bounds
 - Cache optimistic mode
@@ -89,6 +90,7 @@ missing, or post-write verification failing.
 | `adguard_home_upstream_dns` | Upstream resolvers | no (`127.0.0.1:5335`) |
 | `adguard_home_rewrites`, `adguard_home_user_rules` | Primary-only API-managed records; empty means "manage none" | no (`[]`) |
 | `adguard_home_prune_rewrites`, `adguard_home_prune_user_rules` | Treat the empty list as authoritative and delete what it does not name | no (`false`) |
+| `adguard_home_ratelimit_subnet_len_ipv4`, `adguard_home_ratelimit_subnet_len_ipv6` | Subnet the per-client rate limit is counted over. At the default 24, one non-whitelisted client consumes the bucket for its whole /24, so a per-host `adguard_home_ratelimit_whitelist` only has bite at 32. Needs an AdGuard that reports the fields (0.107.4x line or newer); one that does not fails the play rather than dropping the value | no (`24`, `56`) |
 | `adguard_home_web_bind`, `adguard_home_dns_bind` | Listen addresses written by the first-install wizard | no (`0.0.0.0`) |
 | `adguard_home_after_units`, `adguard_home_wants_units` | Extra systemd ordering for the upstream resolver | no (`[unbound.service]`) |
 | `adguard_home_dns_probe_name` | Name resolved by the post-deploy smoke test | no (`google.com`) |
@@ -140,9 +142,11 @@ adguard_home_cache_ttl_min: 0
 adguard_home_cache_ttl_max: 0
 adguard_home_cache_optimistic: false
 
-# Rate limiting
+# Rate limiting (counted per subnet — 32 to make the whitelist per-host)
 adguard_home_ratelimit: 20
 adguard_home_ratelimit_whitelist: []
+adguard_home_ratelimit_subnet_len_ipv4: 24
+adguard_home_ratelimit_subnet_len_ipv6: 56
 
 # DHCP (must stay false — see "Not managed")
 adguard_home_dhcp_enabled: false

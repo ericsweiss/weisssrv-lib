@@ -833,8 +833,8 @@
       changed_when: false
 
     # The per-child exclusion seam: the container has no ZFS, so the render, the
-    # per-source -X derivation and the fail-loud capability probe are driven
-    # against a second render carrying exclusions.
+    # -X derivation and probe, the archive-copy reconcile and the source-side
+    # snapshot/retention arms are driven against renders carrying exclusions.
     - name: Render archive-backupctl with an exclusion list  # noqa no-relative-paths
       ansible.builtin.template:
         src: ../../templates/archive-backupctl.sh.j2
@@ -864,7 +864,7 @@
         nas_storage_zfs_scrub_schedule: monthly
         nas_storage_backup_artifact_metrics_dir: /var/lib/node_exporter
 
-    - name: Assert the archive exclusion seam (rendered, derived, probed)
+    - name: Assert the archive exclusion seam (rendered, derived, probed, reconciled)
       ansible.builtin.script: >-
         files/archive-exclude-behavior.sh /tmp/archive-backupctl-excluded
         /usr/local/sbin/archive-backupctl /tmp/archive-backupctl-excluded-ok

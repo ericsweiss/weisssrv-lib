@@ -71,6 +71,14 @@
           #!/bin/bash
           STATE=/tmp/molecule-stub-state
           echo "pct $*" >> "$STATE/pct.log"
+          # `pct exec` is recorded only. The authorized-keys case flips this file
+          # to run the inner script here instead, where the keys reconcile is the
+          # sole caller on an existing container.
+          if [ "$1" = "exec" ] && [ -f "$STATE/pct_exec_passthrough" ]; then
+            shift 2
+            [ "$1" = "--" ] && shift
+            exec "$@"
+          fi
           # Defaults match the role defaults, so every reconcile is a no-op;
           # the override files inject drift per case.
           if [ "$1" = "config" ]; then

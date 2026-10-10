@@ -92,6 +92,11 @@ adguard_home_cache_optimistic: false
 
 adguard_home_ratelimit: 20
 adguard_home_ratelimit_whitelist: []
+# AdGuard counts the per-client limit per SUBNET, at AdGuard's own default
+# lengths. A per-host whitelist only has bite at 32, where one noisy client
+# stops consuming the bucket for every other address in its /24.
+adguard_home_ratelimit_subnet_len_ipv4: 24
+adguard_home_ratelimit_subnet_len_ipv6: 56
 
 # The role only reconciles the DISABLED state (it asserts this stays false);
 # running AdGuard's DHCP server is out of scope.

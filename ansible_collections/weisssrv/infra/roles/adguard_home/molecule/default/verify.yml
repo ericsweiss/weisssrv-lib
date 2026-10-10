@@ -353,3 +353,38 @@
           A rewrite-list read against a closed port did not fail with the URL
           and status: {{ adguard_home_read_failure | default('the read did not fail at all') }}
         success_msg: "a failed API read names the URL and status"
+
+    # AdGuard counts the per-client limit per subnet, so a per-host whitelist
+    # only has bite at 32. Reconciling a non-default length proves both keys
+    # reach dns_config rather than sitting unsent in defaults.
+    - name: Reconcile a per-host rate-limit bucket
+      ansible.builtin.include_role:
+        name: weisssrv.infra.adguard_home
+        tasks_from: api_base_config.yml
+      vars:
+        adguard_home_ratelimit_subnet_len_ipv4: 32
+        adguard_home_ratelimit_subnet_len_ipv6: 128
+
+    - name: Read the live DNS configuration back
+      ansible.builtin.uri:
+        url: http://localhost:3000/control/dns_info
+        method: GET
+        user: "{{ adguard_home_admin_user | default('admin') }}"
+        password: "{{ adguard_home_admin_password }}"
+        force_basic_auth: true
+        status_code: 200
+      register: adguard_home_ratelimit_readback
+      no_log: true
+
+    - name: Assert the rate-limit subnet lengths reconciled
+      ansible.builtin.assert:
+        that:
+          - adguard_home_ratelimit_readback.json.ratelimit_subnet_len_ipv4 == 32
+          - adguard_home_ratelimit_readback.json.ratelimit_subnet_len_ipv6 == 128
+        fail_msg: >-
+          dns_config must carry the rate-limiter subnet lengths — AdGuard still
+          reports ipv4
+          {{ adguard_home_ratelimit_readback.json.ratelimit_subnet_len_ipv4 | default('absent') }}
+          and ipv6
+          {{ adguard_home_ratelimit_readback.json.ratelimit_subnet_len_ipv6 | default('absent') }}.
+        success_msg: "the rate limiter buckets per host after the reconcile"
