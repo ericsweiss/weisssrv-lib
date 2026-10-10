@@ -29,7 +29,7 @@ provisioner:
 scenario:
   # No `idempotence` step: converge drives add/set/delete case by case, so a
   # second converge is expected to report changes. The no-churn contract is
-  # asserted in-scenario instead, by cases B, C2b, E, E2, L and M.
+  # asserted in-scenario instead, by cases B, C2b, E, E2, L, L2 and M.
   test_sequence:
     - dependency
     - cleanup

@@ -99,6 +99,22 @@
         target_node: pve-opt-03
         schedule: "*/15"
         enabled: true
+    # Same two jobs with a comment naming each entry's own target — the shape
+    # inventory is written in, and what the permuted-comment cases (L2, L3)
+    # need to tell "comment follows the live target" from "follows the id".
+    test_replication_jobs_multi_commented:
+      - id: "150-0"
+        source_node: "{{ inventory_hostname }}"
+        target_node: pve-opt-02
+        schedule: "*/15"
+        comment: "guest-150 -> pve-opt-02"
+        enabled: true
+      - id: "150-1"
+        source_node: "{{ inventory_hostname }}"
+        target_node: pve-opt-03
+        schedule: "*/15"
+        comment: "guest-150 -> pve-opt-03"
+        enabled: true
     # `ha-manager config` index matching test_ha_resources[0]: the idempotency
     # case, no `ha-manager set` expected. Indentation is spaces, not Proxmox's
     # tabs; the role matches with `\s+`, so the two are equivalent.
@@ -565,6 +581,97 @@
       args:
         executable: /bin/bash
       register: case_l
+      changed_when: false
+
+    # CASE L2 — the same permutation with comments: the live jobs already
+    # describe their own targets, so reconciling against the entry for the LIVE
+    # target must mutate nothing (reconciling by id would rewrite both).
+    - name: L2 — reset log, seed permuted ids whose comments name their live target
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - {name: qm_vmids, content: "150\n"}
+        - name: pvesh_replication
+          content: |
+            [{"id": "150-0", "guest": 150, "jobnum": 0, "type": "local",
+              "source": "{{ inventory_hostname }}", "target": "pve-opt-03",
+              "schedule": "*/15", "comment": "guest-150 -> pve-opt-03"},
+             {"id": "150-1", "guest": 150, "jobnum": 1, "type": "local",
+              "source": "{{ inventory_hostname }}", "target": "pve-opt-02",
+              "schedule": "*/15", "comment": "guest-150 -> pve-opt-02"}]
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: L2 — run replication tasks against permuted, self-describing comments
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+        tasks_from: replication
+      vars:
+        proxmox_ha_replication_jobs: "{{ test_replication_jobs_multi_commented }}"
+
+    - name: L2 — record the reported permutation
+      ansible.builtin.set_fact:
+        l2_permuted: "{{ proxmox_ha_permuted_jobs | default([]) }}"
+        l2_drifted: "{{ proxmox_ha_drifted_job_ids | default([]) }}"
+
+    - name: L2 — count pvesr calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        total=$(grep -c '^pvesr ' /tmp/molecule-stub-state/pvesr.log || true)
+        echo "{\"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_l2
+      changed_when: false
+
+    # CASE L3 — the production fault: permuted ids whose comments still carry
+    # the OLD pairing. Each comment must be rewritten to the node the job
+    # actually replicates to, never re-stamped from the inventory entry's id.
+    - name: L3 — reset log, seed permuted ids carrying stale comments
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - {name: qm_vmids, content: "150\n"}
+        - name: pvesh_replication
+          content: |
+            [{"id": "150-0", "guest": 150, "jobnum": 0, "type": "local",
+              "source": "{{ inventory_hostname }}", "target": "pve-opt-03",
+              "schedule": "*/15", "comment": "guest-150 -> pve-opt-02"},
+             {"id": "150-1", "guest": 150, "jobnum": 1, "type": "local",
+              "source": "{{ inventory_hostname }}", "target": "pve-opt-02",
+              "schedule": "*/15", "comment": "guest-150 -> pve-opt-03"}]
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: L3 — run replication tasks against permuted, stale comments
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+        tasks_from: replication
+      vars:
+        proxmox_ha_replication_jobs: "{{ test_replication_jobs_multi_commented }}"
+
+    # The stub logs `pvesr $*`, so the quotes are gone from the recorded line.
+    - name: L3 — count pvesr calls and classify each comment written
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/pvesr.log
+        update=$(grep -c '^pvesr update ' "$log" || true)
+        delete=$(grep -c '^pvesr delete ' "$log" || true)
+        create=$(grep -c '^pvesr create-local-job ' "$log" || true)
+        live=$(grep -cxF 'pvesr update 150-0 --schedule */15 --comment guest-150 -> pve-opt-03' "$log" || true)
+        live=$((live + $(grep -cxF 'pvesr update 150-1 --schedule */15 --comment guest-150 -> pve-opt-02' "$log" || true)))
+        stale=$(grep -cxF 'pvesr update 150-0 --schedule */15 --comment guest-150 -> pve-opt-02' "$log" || true)
+        stale=$((stale + $(grep -cxF 'pvesr update 150-1 --schedule */15 --comment guest-150 -> pve-opt-03' "$log" || true)))
+        echo "{\"update_calls\": ${update}, \"delete_calls\": ${delete}, \"create_calls\": ${create}, \"live_comments\": ${live}, \"stale_comments\": ${stale}}"
+      args:
+        executable: /bin/bash
+      register: case_l3
       changed_when: false
 
     # CASE M — orphaned job (exists on this node, absent from config) next
@@ -1245,6 +1352,14 @@
            "l_delete": {{ (case_l.stdout | from_json).delete_calls }},
            "l_create": {{ (case_l.stdout | from_json).create_calls }},
            "l_update": {{ (case_l.stdout | from_json).update_calls }},
+           "l2_total": {{ (case_l2.stdout | from_json).total }},
+           "l2_permuted": {{ l2_permuted | to_json }},
+           "l2_drifted": {{ l2_drifted | to_json }},
+           "l3_update": {{ (case_l3.stdout | from_json).update_calls }},
+           "l3_delete": {{ (case_l3.stdout | from_json).delete_calls }},
+           "l3_create": {{ (case_l3.stdout | from_json).create_calls }},
+           "l3_live_comments": {{ (case_l3.stdout | from_json).live_comments }},
+           "l3_stale_comments": {{ (case_l3.stdout | from_json).stale_comments }},
            "m_delete": {{ (case_m.stdout | from_json).delete_calls }},
            "m_create": {{ (case_m.stdout | from_json).create_calls }},
            "m_update": {{ (case_m.stdout | from_json).update_calls }},
