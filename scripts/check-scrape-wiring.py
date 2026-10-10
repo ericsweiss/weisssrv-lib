@@ -21,6 +21,37 @@ DEFAULT_OBSERVABILITY_NS = "observability"
 WORKLOAD_KINDS = ("Deployment", "StatefulSet", "DaemonSet")
 ENDPOINT_KEYS = {"PodMonitor": "podMetricsEndpoints", "ServiceMonitor": "endpoints"}
 
+# kustomize's own documents are build inputs, not resources, and share a kind
+# name with the namespaced Flux CR, so they are recognised by API group.
+KUSTOMIZE_GROUP = "kustomize.config.k8s.io"
+
+# Kinds that exist outside any namespace. They carry none by definition, so they
+# are not grouped and cannot make a tree's namespaces ambiguous.
+CLUSTER_SCOPED_KINDS = frozenset(
+    {
+        "APIService",
+        "ClusterExternalSecret",
+        "ClusterIssuer",
+        "ClusterRole",
+        "ClusterRoleBinding",
+        "ClusterSecretStore",
+        "CSIDriver",
+        "CustomResourceDefinition",
+        "IngressClass",
+        "MutatingWebhookConfiguration",
+        "Namespace",
+        "Node",
+        "PersistentVolume",
+        "PriorityClass",
+        "ProxyClass",
+        "RuntimeClass",
+        "StorageClass",
+        "ValidatingAdmissionPolicy",
+        "ValidatingWebhookConfiguration",
+        "VolumeSnapshotClass",
+    }
+)
+
 # Policy shapes this gate only partly models, named in the failure message.
 UNMODELLED: list[str] = []
 
@@ -363,6 +394,12 @@ def tree_namespace(documents: list[dict]) -> tuple[str | None, str | None]:
     )
 
 
+def unnamespaced(document: dict) -> bool:
+    """Can this document carry no namespace at all?"""
+    group = str(document.get("apiVersion") or "").split("/", 1)[0]
+    return group == KUSTOMIZE_GROUP or document.get("kind") in CLUSTER_SCOPED_KINDS
+
+
 def effective_namespace(document: dict, default: str | None) -> str | None:
     """The namespace a document lands in: its own, else --namespace."""
     metadata = document.get("metadata")
@@ -373,17 +410,20 @@ def effective_namespace(document: dict, default: str | None) -> str | None:
 def group_by_namespace(
     documents: list[dict], namespace: str | None
 ) -> dict[str | None, list[dict]]:
-    """Documents keyed by effective namespace: their own, else the tree's.
+    """Namespaced documents keyed by effective namespace: their own, else the tree's.
 
     A policy admits only its own namespace's pods, so each group is judged
     alone; a tree stating ONE namespace lends it to the documents naming none.
     """
-    stated = {effective_namespace(d, None) for d in documents} - {None}
+    # A document that can hold no namespace is neither monitor nor policy, and
+    # reading its absent namespace as "unassigned" refuses a valid tree.
+    namespaced = [d for d in documents if not unnamespaced(d)]
+    stated = {effective_namespace(d, None) for d in namespaced} - {None}
     default = namespace
     if default is None and len(stated) == 1:
         default = next(iter(stated))
     groups: dict[str | None, list[dict]] = {}
-    for document in documents:
+    for document in namespaced:
         groups.setdefault(effective_namespace(document, default), []).append(document)
     return groups
 

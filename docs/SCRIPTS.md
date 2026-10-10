@@ -1150,6 +1150,14 @@ scripts/check-scrape-wiring.py [--observability-namespace NS]
   name none, the way its Kustomization does; stating several while a document
   names none is an operator error, and so is a stated namespace that disagrees
   with `--namespace`.
+- **A document that can hold no namespace is not grouped at all** — a
+  cluster-scoped kind (`Namespace`, `CustomResourceDefinition`, `ClusterRole`,
+  `PriorityClass`, `StorageClass` and the rest of `CLUSTER_SCOPED_KINDS`) and
+  kustomize's own `kustomize.config.k8s.io` documents. None of them is a
+  monitor, a policy, a Service or a workload, so counting their absent namespace
+  as "unassigned" refuses a correctly wired multi-namespace tree. Flux's
+  `Kustomization` CR shares a kind name with kustomize's but is namespaced, so
+  the carve-out is by API group and that CR still counts.
 - A monitor whose `spec.namespaceSelector` reaches outside its group is an
   operator error: the policies there cover one namespace, so a wider scrape must
   be checked where those policies live. A `matchNames` entry is verified

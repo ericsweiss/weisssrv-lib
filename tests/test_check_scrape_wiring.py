@@ -547,5 +547,89 @@ def test_an_unassignable_document_in_a_multi_namespace_tree_is_refused(
     assert "names none for NetworkPolicy allow-scrape" in capsys.readouterr().err
 
 
+CLUSTER_SCOPED = (
+    "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: a\n",
+    "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: b\n",
+    "apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\n"
+    "metadata:\n  name: widgets.example.com\n",
+    "apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\n"
+    "metadata:\n  name: app-reader\n",
+    "apiVersion: scheduling.k8s.io/v1\nkind: PriorityClass\n"
+    "metadata:\n  name: app-high\nvalue: 1000\n",
+)
+
+
+def _namespaced(document: str, namespace: str) -> str:
+    return document.replace("metadata:\n", f"metadata:\n  namespace: {namespace}\n", 1)
+
+
+def _two_namespaces() -> list[str]:
+    """A wired monitor, Service, workload and policy in each of `a` and `b`."""
+    documents = (DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy())
+    return [_namespaced(d, ns) for ns in ("a", "b") for d in documents]
+
+
+def test_a_cluster_scoped_document_does_not_make_a_tree_ambiguous(tmp_path, capsys):
+    """A Namespace or CRD carries no namespace because it has none, so counting
+    it as unassigned refused a two-namespace tree that is wired correctly."""
+    argv = tree(tmp_path, *_two_namespaces(), *CLUSTER_SCOPED)
+    assert gate.main(argv) == 0
+    assert "2 monitor(s)" in capsys.readouterr().out
+
+
+def test_a_namespaced_document_naming_none_is_still_refused_beside_them(
+    tmp_path, capsys
+):
+    """The guard narrows to namespaced kinds; it does not go away."""
+    argv = tree(tmp_path, *_two_namespaces(), *CLUSTER_SCOPED, policy())
+    assert gate.main(argv) == 2
+    err = capsys.readouterr().err
+    assert "names none for NetworkPolicy allow-scrape:" in err
+    assert "Namespace" not in err
+
+
+def test_the_tree_namespace_is_still_read_from_the_ungrouped_namespace(tmp_path):
+    """Skipping the Namespace for grouping must not drop it from the tree the
+    `--namespace-from-tree` derivation reads."""
+    scoped = SERVICE_MONITOR.replace(
+        "spec:\n", "spec:\n  namespaceSelector:\n    matchNames: [a]\n", 1
+    )
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, scoped, policy(), CLUSTER_SCOPED[0])
+    assert gate.main([*argv, "--namespace-from-tree"]) == 0
+
+
+def test_a_tree_of_only_cluster_scoped_documents_checks_nothing(tmp_path, capsys):
+    argv = tree(tmp_path, *CLUSTER_SCOPED)
+    assert gate.main(argv) == 0
+    assert "no ServiceMonitor or PodMonitor" in capsys.readouterr().out
+
+
+def test_a_kustomization_file_does_not_make_a_tree_ambiguous(tmp_path, capsys):
+    """kustomize's own documents are build inputs, so they hold no namespace."""
+    kustomization = (
+        "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n"
+        "resources:\n  - manifests.yaml\n"
+    )
+    component = (
+        "apiVersion: kustomize.config.k8s.io/v1alpha1\nkind: Component\n"
+        "resources:\n  - manifests.yaml\n"
+    )
+    argv = tree(tmp_path, *_two_namespaces(), kustomization, component)
+    assert gate.main(argv) == 0
+    assert "2 monitor(s)" in capsys.readouterr().out
+
+
+def test_a_flux_kustomization_naming_no_namespace_is_still_refused(tmp_path, capsys):
+    """Flux's CR shares the kind name but is namespaced, so the carve-out is by
+    API group and this one still counts toward the ambiguity."""
+    flux = (
+        "apiVersion: kustomize.toolkit.fluxcd.io/v1\nkind: Kustomization\n"
+        "metadata:\n  name: apps\n"
+    )
+    argv = tree(tmp_path, *_two_namespaces(), flux)
+    assert gate.main(argv) == 2
+    assert "names none for Kustomization apps:" in capsys.readouterr().err
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
