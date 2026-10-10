@@ -165,6 +165,6 @@
           - not (kept | bool)
         fail_msg: >-
           A drop-in carrying only the ansible_managed header survived the
-          disabled arm, so a host converged before the role-owned marker shipped
-          keeps its GPU bound to vfio-pci.
+          disabled arm, so a host whose drop-in carries only that header keeps
+          its GPU bound to vfio-pci.
         success_msg: "the removal arm accepts the legacy ansible_managed marker"

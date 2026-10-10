@@ -97,8 +97,7 @@ should be a new template plus an include, not an inline job.
 ## Editing collection roles
 
 - Every role variable carries the role name as a prefix; that name is
-  consumer-visible API, so a rename is a breaking change and belongs in
-  `MIGRATING.md` in the same MR.
+  consumer-visible API, so a rename is a breaking change.
 - A role directory with a molecule scenario and no entry in the CI matrix fails
   the pipeline by design. Adding a role means adding its matrix row.
 - A download is a `get_url`, or a `uri` that writes a `dest`. Every one carries

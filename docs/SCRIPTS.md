@@ -306,9 +306,8 @@ semantic-release.py [--platform gitlab|github] [--repo-dir DIR] [--tag-prefix v]
   create (`target_commitish` is documented as unused once the tag exists).
   What differs is how the orphan arises — GitHub creates ref and Release in one
   request, so the GitLab half-failure window is not the usual cause. The states
-  that do produce it there are ordinary: a `vX.Y.Z` pushed by hand (what a
-  GitHub repo did before this backend existed), or a Release deleted while
-  GitHub kept its tag. Both land in exactly the same place, and the same repair
+  that do produce it there are ordinary: a `vX.Y.Z` pushed by hand, or a Release
+  deleted while GitHub kept its tag. Both land in exactly the same place, and the same repair
   fixes them. One asymmetry: the probe cannot see a *draft* Release, so a draft
   squatting on the tag reads as "missing" and the backfill then fails loudly
   against that tag rather than publishing a second Release for it.
@@ -1827,8 +1826,7 @@ scripts/check-role-readme-literals.py [--roles-dir DIR] [--site-domain NAME]
     [--no-site-domains] [--site-literal REGEX] [--no-site-addresses]
 ```
 
-- Scope is `<roles-dir>/*/README.md` only. `MIGRATING.md` legitimately quotes a
-  consumer's old values as migration examples, so it is never scanned.
+- Scope is `<roles-dir>/*/README.md` only.
 - `192.168.0.0/16` addresses and `pve-<word>-nn` hostnames always fail. Product
   spellings such as `pve-firewall` are not hostnames and pass.
 - A consumer passes its own domains with `--site-domain` (repeatable), or
@@ -2643,9 +2641,8 @@ One queued program is not a script at all. The render/scan/kubeconform loop
 exists three times: `ci/validate/flux-lint.yml`'s substitute arm here, and each
 consumer's own `flux:lint` task (`weisssrv/taskfiles/flux.yml`, the cluster
 template's `template/taskfiles/flux.yml.jinja`). A consumer's `task lint`
-therefore reaches the strict render only through that local copy — which is how
-the strict-render gap opened in the first place, the fix landing in one of the
-three. Extracting it as `scripts/flux-lint.sh`, called by the include once the
+therefore reaches the strict render only through that local copy.
+Extracting it as `scripts/flux-lint.sh`, called by the include once the
 tool cache is populated and offered in `vendorable-paths.yml`, needs these to
 become flags: the cluster directory, the envsubst variable list (the
 `export-versions` allowlist), the kubeconform k8s version, the CRD catalog ref,

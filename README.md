@@ -182,10 +182,7 @@ collections:
 Site data (domains, IPs, pool names) is passed in — never baked into a role
 default. The role table and the inventory-wide alias table are in the
 [collection README](ansible_collections/weisssrv/infra/README.md); per-role
-variables are in each role's own README. Per-release upgrade notes are
-[MIGRATING.md](ansible_collections/weisssrv/infra/MIGRATING.md); the one-time
-map for a repo adopting the collection from un-prefixed in-tree roles is
-[MIGRATING-from-in-tree-roles.md](ansible_collections/weisssrv/infra/MIGRATING-from-in-tree-roles.md).
+variables are in each role's own README.
 
 ## The CLI
 

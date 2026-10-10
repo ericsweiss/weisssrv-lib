@@ -55,7 +55,7 @@ here rather than restating it.
 | `vfio_passthrough_cmdline_params` | `[intel_iommu=on, iommu=pt]` | IOMMU cmdline params appended via the GRUB drop-in. The role *also* appends `vfio-pci.ids=<vfio_passthrough_pci_ids>` (from the template) for the earliest bind — don't add an `ids=` here. |
 | `vfio_passthrough_manage_absent` | `true` | Lets the disabled arm remove the three VFIO drop-ins. Set `false` to leave every drop-in alone. |
 | `vfio_passthrough_managed_marker` | `managed by weisssrv.infra.vfio_passthrough` | Role-owned literal the three templates emit. It identifies a role-written drop-in, so a file without it is reported and kept. |
-| `vfio_passthrough_legacy_markers` | the stable prefix of `ansible_managed` | Extra ownership markers the disabled arm accepts, so a drop-in written before the literal above shipped is still removable. An empty entry is ignored. The disabled arm asserts that at least one marker is non-empty. |
+| `vfio_passthrough_legacy_markers` | the stable prefix of `ansible_managed` | Extra ownership markers the disabled arm accepts, so a drop-in carrying only a bare `ansible_managed` header is still removable. An empty entry is ignored. The disabled arm asserts that at least one marker is non-empty. |
 | `vfio_passthrough_cmdline_method` | `grub` | How the kernel cmdline is written. `grub` (a `/etc/default/grub.d` drop-in) is the only method implemented; a preflight refuses a host that carries `/etc/kernel/cmdline`. |
 | `vfio_passthrough_skip_boot_update` | `false` | Molecule/check-mode: render the files, skip `update-grub`/`update-initramfs`. |
 

@@ -193,8 +193,6 @@ a credentialed surface, and a relay's log sink is site data:
     - {port: 31100, sources: [core-cluster], comment: loki push NodePort}
   ```
 
-  Repos upgrading from the release where the template built these ports in
-  find the removed set in [MIGRATING.md](../../MIGRATING.md).
 - `sg-dns` builds in 53/853 and takes its admin surfaces from
   `proxmox_firewall_dns_admin_ports`, which defaults to the two admin sets on
   :443 and :3000. Admitting a scraper to the plaintext :3000 API means adding

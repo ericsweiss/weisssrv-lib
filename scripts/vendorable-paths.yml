@@ -1,7 +1,7 @@
 ---
 # Paths a consumer may vendor or fork, as byte-identical copies so a consumer
 # can run its gates from a checkout alone. Removing or renaming one is a
-# consumer-facing change: release-note it in MIGRATING.md.
+# consumer-facing change: release-note it on the tag.
 
 # Sorted, one path per line; held to the tree by tests/test_vendorable_paths.py.
 

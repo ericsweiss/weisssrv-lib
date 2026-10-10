@@ -714,8 +714,8 @@ molecule-tests:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     # No merge_request_event clause: MRs run the targeted child instead.
-    # Subtrees, not `ansible_collections/**/*`: galaxy.yml and MIGRATING.md move
-    # on every release MR, which would fire the whole matrix for docs-only work.
+    # Subtrees, not `ansible_collections/**/*`: galaxy.yml moves on every
+    # release MR, which would fire the whole matrix for docs-only work.
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
         - "ansible_collections/weisssrv/infra/roles/**/*"

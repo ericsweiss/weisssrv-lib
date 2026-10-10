@@ -190,12 +190,8 @@ mapping.
    (`ci/internal/molecule-matrix.gitlab-ci.yml`). A seam added to an existing
    role needs coverage of the *non-default* branch only if the branch renders
    different content.
-4. **MIGRATING entry.** Only if a consumer must act. New variables with
-   behaviour-preserving defaults do not belong in
-   [MIGRATING.md](../ansible_collections/weisssrv/infra/MIGRATING.md) — a
-   rename, a removal or a changed default does.
-5. **Versioning.** A new role or a new variable is a minor bump; a changed
+4. **Versioning.** A new role or a new variable is a minor bump; a changed
    default or a rename is major. See [VERSIONING.md](VERSIONING.md).
-6. **Register it.** Add the row to the seam map above. A new consumer registers
+5. **Register it.** Add the row to the seam map above. A new consumer registers
    nothing here — it records its own pins and, if it vendors files, its own
    `scripts/vendored-manifest.yml`.
