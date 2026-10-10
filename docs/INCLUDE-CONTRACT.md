@@ -946,6 +946,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `apt_packages` | `git jq` | the one root-only default in the library; a tenant clears it |
 | `pip_packages` | `""` | extra pinned pip specs; routed through a job variable, so ceilings are safe |
 | `setup_command` | `true` | one command, run after the apt install and before the pip install; `python3 scripts/ci-fetch-tools.py jq amtool` drops verified static binaries into `$CI_PROJECT_DIR/.bin` |
+| `tools_cache_key_files` | `["scripts/ci-fetch-tools.py"]` | consumer path(s) keying the `.bin/` cache; one or two entries, a missing one ignored |
 | `default_branch` | `main` |  |
 | `changes` | `["scripts/**/*", ".gitlab-ci.yml"]` |  |
 
@@ -961,6 +962,16 @@ the heaviest scenarios run 8-11 minutes per attempt.
   kubernetes, terraform, docs and Taskfile paths its tests read. Defaults are
   NOT byte-identical for this job. Derive such a list by tracing what the suite
   opens, not by reasoning about what it "should" read.
+- **`.bin/` is cached** under the key prefix `python-tests-bin`, keyed on
+  `tools_cache_key_files` (default the vendored `scripts/ci-fetch-tools.py`,
+  so a pin bump busts it), `policy: pull-push`. A job whose `setup_command`
+  fetches tools stops re-downloading them from GitHub once per pipeline — the
+  same egress that produces the DinD-MTU reset class. The cache cannot serve a
+  stale binary: `ci-fetch-tools.py` stamps `<name>.version` beside each one and
+  re-fetches when the stamp does not match the resolved pin, so a version bump
+  still takes effect even when the key does not change. Do not cache `.bin/`
+  with a fetcher that lacks that stamp. No-op without a runner cache backend,
+  and a no-op in substance for the default `setup_command: true`.
 - **Tenant:** `inputs: { tags: [], apt_packages: "", image: python:3.13,
   test_dir: "tests" }`. `apt_packages` is the one root-only default in the
   library: installing them needs write access to the apt lock, which the shared

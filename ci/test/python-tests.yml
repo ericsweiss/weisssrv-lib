@@ -57,6 +57,16 @@ spec:
         subject is absent here cannot fire on an MR that only touches that
         subject. Trace what the suite opens; do not reason about what it
         "should" read.
+    tools_cache_key_files:
+      type: array
+      default: ["scripts/ci-fetch-tools.py"]
+      description: >-
+        CONSUMER path(s) whose contents key the `.bin/` cache — one or two
+        entries (GitLab's `cache:key:files` limit; an empty list fails pipeline
+        CREATION), and a path that does not exist is ignored, leaving the
+        prefix alone as the key. Default: the vendored fetcher, so a pin bump
+        busts the cache. Correctness does not rest on it — `ci-fetch-tools.py`
+        stamps the version beside each binary and re-fetches on a mismatch.
     job_memory_limit:
       default: "1500Mi"
       description: >-
@@ -81,6 +91,16 @@ spec:
     when:
       - runner_system_failure
       - scheduler_failure
+  # Cache the binaries a setup_command fetches, so each pipeline does not
+  # re-download them. Safe because ci-fetch-tools.py re-verifies the stamp
+  # beside each one. No-op without a runner cache backend.
+  cache:
+    key:
+      prefix: python-tests-bin
+      files: $[[ inputs.tools_cache_key_files ]]
+    paths:
+      - .bin/
+    policy: pull-push
   variables:
     KUBERNETES_MEMORY_LIMIT: $[[ inputs.job_memory_limit ]]
     KUBERNETES_MEMORY_REQUEST: $[[ inputs.job_memory_request ]]
