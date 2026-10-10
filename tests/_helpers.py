@@ -46,17 +46,6 @@ def require_git_checkout(repo: Path) -> None:
         pytest.skip("not a git checkout")
 
 
-def release_tags(repo: Path) -> list[str]:
-    """Every `vX.Y.Z` tag. `v*` also matches `v1.0` and `v0.18.0-rc1`; parsing
-    those would raise ValueError instead of a gate's own message."""
-    tags = git(repo, "tag", "--list", "v*").split()
-    return [tag for tag in tags if re.fullmatch(r"v\d+\.\d+\.\d+", tag)]
-
-
-def newest_release_tag(tags: list[str]) -> str:
-    return max(tags, key=lambda tag: tuple(int(p) for p in tag[1:].split(".")))
-
-
 def require_tool(name: str, gate_name: str, install_hint: str = "") -> None:
     """Stop a binary-driven gate that has no binary instead of skipping in CI.
 
