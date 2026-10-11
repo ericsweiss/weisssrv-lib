@@ -58,9 +58,9 @@ spec:
     pyyaml_version:
       default: "6.0.2"
       description: >-
-        (substitute=true) pinned PyYAML for the inline spec.path parser. An
-        unpinned floating install would let a breaking release change the
-        before_script's behaviour between runs.
+        (substitute=true) pinned PyYAML for flux-lint.sh's ConfigMap and
+        spec.path parsers. An unpinned floating install would let a breaking
+        release change the job's behaviour between runs.
     k8s_version:
       default: ""
       description: >-
@@ -101,6 +101,13 @@ spec:
     versions_configmap:
       default: "kubernetes/infrastructure/sources/versions-configmap.yaml"
       description: (substitute=true) the cluster-versions ConfigMap.
+    flux_lint_script:
+      default: "scripts/flux-lint.sh"
+      description: >-
+        Repo-local copy of the render/scan/kubeconform program (weisssrv-lib
+        scripts/flux-lint.sh), which this job runs instead of carrying its own.
+        A consumer's `flux:lint` task runs the same file, so the strict render
+        and every floor below reach local lint and CI together.
     flux_render_script:
       default: "scripts/flux-render.sh"
       description: (substitute=true) repo-local copy of the shared render helper.
@@ -124,8 +131,9 @@ spec:
     extra_validation:
       default: ""
       description: >-
-        (substitute=true) extra shell injected after the render loop, with
-        $RENDER_ALL / $K8S_VER / $FAILED in scope. The supported shape is a
+        (substitute=true) extra shell injected after flux-lint.sh, with
+        $RENDER_ALL / $K8S_VER / $FAILED and the ConfigMap exports in scope.
+        The supported shape is a
         consumer gate chain listed in scripts/render-gates.conf and run by
         scripts/run-render-gates.sh, so the value stays one line:
         `bash scripts/run-render-gates.sh --flux-env scripts/flux-env.sh`. The
@@ -200,6 +208,7 @@ spec:
     CLUSTER_DIR: "$[[ inputs.cluster_dir ]]"
     REQUIRE_CLUSTER_ROOT: "$[[ inputs.require_cluster_root ]]"
     VERSIONS_CONFIGMAP: "$[[ inputs.versions_configmap ]]"
+    FLUX_LINT_SCRIPT: "$[[ inputs.flux_lint_script ]]"
     FLUX_RENDER_SCRIPT: "$[[ inputs.flux_render_script ]]"
     SKIPPED_SCRIPT: "$[[ inputs.skipped_script ]]"
     CRD_CATALOG_REF: "$[[ inputs.crd_catalog_ref ]]"
@@ -258,260 +267,47 @@ spec:
     - |
       set -eo pipefail
       FAILED=0
-      CATALOG="https://raw.githubusercontent.com/datreeio/CRDs-catalog/${CRD_CATALOG_REF}/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
+      [ -f "$FLUX_LINT_SCRIPT" ] || { echo "ERROR: $FLUX_LINT_SCRIPT not found — vendor weisssrv-lib's scripts/flux-lint.sh (scripts/vendorable-paths.yml)"; exit 1; }
 
       if [ "$SUBSTITUTE" != "true" ]; then
         # Simple mode (tenant): render one literal-pinned path, validate it.
         # .bin is prepended only here; in substitute mode the verified tools
         # live in /usr/local/bin and a repo-controlled .bin must not shadow them.
         export PATH="$CI_PROJECT_DIR/.bin:$PATH"
-        # Held equal to ci/github/ci.example.yml's K8S_VERSION by
-        # tests/test_pin_parity.py.
-        K8S_VER="${K8S_VERSION_INPUT:-1.36.0}"
-        echo "=== kustomize build $KUSTOMIZE_PATH ==="
-        kustomize build "$KUSTOMIZE_PATH" > /tmp/rendered.yaml
-        # CRITICAL: an emptied or mistyped `resources:` list renders nothing and
-        # both tools exit 0 on it, while the cluster-side Kustomization's prune
-        # then deletes every object this repo applied.
-        if ! grep -q '^kind:' /tmp/rendered.yaml; then
-          echo "ERROR: kustomize build $KUSTOMIZE_PATH rendered no document — check for an emptied or mistyped resources: list"
-          exit 1
-        fi
-        echo "=== kubeconform (k8s $K8S_VER) ==="
-        # -ignore-missing-schemas lets platform CRDs validate against the
-        # datreeio catalog; core kinds validate against the bundled schemas.
-        # 2>&1 because per-resource failures go to stderr.
-        if ! SUMMARY=$(kubeconform -strict -ignore-missing-schemas \
-            -kubernetes-version "$K8S_VER" \
-            -schema-location default \
-            -schema-location "$CATALOG" \
-            -summary /tmp/rendered.yaml 2>&1); then
-          printf '%s\n' "$SUMMARY"
-          exit 1
-        fi
-        printf '%s\n' "$SUMMARY"
-        # CRITICAL: -ignore-missing-schemas exits 0 on a resource it could not
-        # schema-validate, so an unreachable catalog degrades the run to core
-        # kinds in silence. A summary with no Skipped: field is that signature.
-        case "$ALLOWED_SKIPS" in
-          ''|*[!0-9]*) echo "ERROR: allowed_skips must be a non-negative integer, got '$ALLOWED_SKIPS'"; exit 1 ;;
-        esac
-        SKIPPED=$(printf '%s\n' "$SUMMARY" | sed -n 's/.*Skipped: \([0-9][0-9]*\).*/\1/p')
-        if [ -z "$SKIPPED" ] || [ "$SKIPPED" -gt "$ALLOWED_SKIPS" ]; then
-          echo "ERROR: kubeconform validated ${SKIPPED:-?} resource(s) against no schema (allowed_skips=$ALLOWED_SKIPS)"
-          echo "The catalog at $CRD_CATALOG_REF moved or was unreachable, or the kind has no published schema."
-          echo "Add a -schema-location for it, or raise allowed_skips."
-          exit 1
-        fi
-        exit 0
+        # The script's own 1.36.0 floor is held equal to
+        # ci/github/ci.example.yml's K8S_VERSION by tests/test_pin_parity.py.
+        bash "$FLUX_LINT_SCRIPT" --mode simple \
+          --kustomize-path "$KUSTOMIZE_PATH" \
+          --allowed-skips "$ALLOWED_SKIPS" \
+          --k8s-version "$K8S_VERSION_INPUT" \
+          --crd-catalog-ref "$CRD_CATALOG_REF"
+        exit $?
       fi
 
       [ -n "$CLUSTER_DIR" ] || { echo "ERROR: cluster_dir is required when substitute=true: name the dir of Flux Kustomizations to iterate"; exit 1; }
 
-      # --- Substitute mode: mirror the kustomize-controller postBuild step,
-      # then kubeconform every rendered top-level Kustomization. ---
+      # extra_validation runs in THIS shell, so the corpus, the schema version
+      # and the ConfigMap exports are job variables rather than the script's.
       VARS=$(bash "$FLUX_RENDER_SCRIPT" export-versions "$VERSIONS_CONFIGMAP") \
         || { echo "ERROR: failed to extract version keys from $VERSIONS_CONFIGMAP"; exit 1; }
       eval "$VARS"
-
-      # CRITICAL: `envsubst --strict` is authoritative only while the CLI is the
-      # release kustomize-controller runs, and the ConfigMap is where the
-      # cluster states that release.
-      FLUX_CLI=$(flux --version | awk '{print $NF}')
-      if [ -n "${flux_version:-}" ]; then
-        if [ "$FLUX_CLI" != "${flux_version#v}" ]; then
-          echo "ERROR: flux CLI $FLUX_CLI != $VERSIONS_CONFIGMAP flux_version ${flux_version#v}"
-          echo "The strict parser must be the cluster's own: move this include's flux_version/flux_sha256 inputs onto ${flux_version#v}."
-          exit 1
-        fi
-        echo "flux CLI $FLUX_CLI matches the versions-configmap flux_version"
-      else
-        echo "NOTE: $VERSIONS_CONFIGMAP declares no flux_version, so the flux CLI pin ($FLUX_CLI) is held equal to nothing"
-      fi
-
+      K8S_VER="$K8S_VERSION_INPUT"
+      [ -n "$K8S_VER" ] || K8S_VER=$(bash "$FLUX_RENDER_SCRIPT" k8s-version "$VERSIONS_CONFIGMAP")
+      export K8S_VER
       RENDER_ALL=$(mktemp)
       export RENDER_ALL
       trap 'rm -f "$RENDER_ALL"' EXIT
 
-      if [ -n "$K8S_VERSION_INPUT" ]; then
-        K8S_VER="$K8S_VERSION_INPUT"
-      else
-        K8S_VER=$(bash "$FLUX_RENDER_SCRIPT" k8s-version "$VERSIONS_CONFIGMAP")
-      fi
-      export K8S_VER
-      echo "kubeconform -kubernetes-version: $K8S_VER (from versions-configmap k3s_version)"
-
-      for ks in "$CLUSTER_DIR"/*.yaml; do
-        [ -f "$ks" ] || continue
-        NAME=$(basename "$ks" .yaml)
-        [ "$NAME" = "kustomization" ] && continue
-        # A cluster dir also holds non-Kustomization documents (GitRepository,
-        # Secret); only a Flux Kustomization has a spec.path to build, and the
-        # apiVersion tells one apart from a kustomize.config kustomization.yaml.
-        if ! META=$(python3 -c '
-      import sys
-
-      import yaml
-
-      with open(sys.argv[1]) as f:
-          docs = [d for d in yaml.safe_load_all(f) if isinstance(d, dict)]
-      flux = [d for d in docs if d.get("kind") == "Kustomization"
-              and str(d.get("apiVersion", "")).startswith("kustomize.toolkit")]
-      if len(flux) > 1:
-          sys.exit("%s holds %d Flux Kustomizations; give each one its own file"
-                   % (sys.argv[1], len(flux)))
-      if flux:
-          doc, label = flux[0], "Kustomization"
-      elif docs:
-          doc = docs[0]
-          label = "%s %s" % (doc.get("apiVersion") or "?", doc.get("kind") or "?")
-      else:
-          doc, label = {}, "empty document"
-      print(label)
-      print((doc.get("spec") or {}).get("path") or "")
-      ' "$ks"); then
-          echo "ERROR: failed to read $ks"
-          FAILED=1
-          continue
-        fi
-        KSKIND=$(printf '%s\n' "$META" | sed -n 1p)
-        SRCPATH=$(printf '%s\n' "$META" | sed -n 2p)
-        if [ "$KSKIND" != "Kustomization" ]; then
-          echo "SKIP: $ks is a $KSKIND, not a Flux Kustomization"
-          continue
-        fi
-        if [ -z "$SRCPATH" ]; then
-          # Flux reconciles the repository root when spec.path is absent, which
-          # this job cannot build; the path is required, not skipped.
-          echo "ERROR: $ks is a Flux Kustomization with no spec.path: spell the path it reconciles"
-          FAILED=1
-          continue
-        fi
-        SRCPATH="${SRCPATH#./}"
-        echo "=== Building + validating $ks (path $SRCPATH) ==="
-        if ! RAW=$(kustomize build "$SRCPATH" 2>&1); then
-          echo "ERROR: kustomize build failed for $SRCPATH:"
-          printf '%s\n' "$RAW"
-          FAILED=1
-          continue
-        fi
-        # Rendered manifests are read with printf, never echo: a first line
-        # beginning `-n` would be swallowed as an option. Flux's envsubst
-        # parse-errors on a malformed `${` and eats `${1}` refs; `$${` escapes.
-        MALFORMED=$(printf '%s\n' "$RAW" | sed 's/\$\$[{]/__FLUX_ESCAPED__/g' | grep -nE '\$\{[^A-Za-z_]' || true)
-        if [ -n "$MALFORMED" ]; then
-          echo "ERROR: $SRCPATH renders a \${ sequence Flux's envsubst mishandles (escape as \$\${ or assemble at runtime):"
-          printf '%s\n' "$MALFORMED" | head -5 | sed 's/^/  /'
-          FAILED=1
-          continue
-        fi
-        MISSING=""
-        # Strip Flux's `$${` escape first: an escaped sequence still contains
-        # `${var}` textually, so without the strip an escaped Grafana panel var
-        # false-positives as an unknown substitution key.
-        for ref in $(printf '%s\n' "$RAW" | sed 's/\$\$[{]/__FLUX_ESCAPED__/g' | grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' | sort -u); do
-          varname=${ref#\$\{}
-          varname=${varname%\}}
-          if [ -z "${!varname+x}" ]; then
-            MISSING="$MISSING $varname"
-          fi
-        done
-        MISSING=$(printf '%s\n' "$MISSING" | tr ' ' '\n' | grep -v '^$' | sort -u || true)
-        if [ -n "$MISSING" ]; then
-          echo "ERROR: placeholders in $SRCPATH reference keys not in versions-configmap:"
-          printf '%s\n' "$MISSING" | sed 's/^/  - /'
-          FAILED=1
-          continue
-        fi
-        # CRITICAL: GNU envsubst below reads only `${NAME}`, while Flux's Go
-        # envsubst also reads bash modifiers (`${conf%/*}`) as variables. Its
-        # own --strict is the authority, or the post-build fails in-cluster and
-        # that Kustomization stops reconciling.
-        if ! STRICT_ERR=$(printf '%s\n' "$RAW" | flux envsubst --strict 2>&1 >/dev/null); then
-          echo "ERROR: $SRCPATH fails Flux's strict substitution: $STRICT_ERR"
-          FAILED=1
-          continue
-        fi
-        RENDERED=$(printf '%s\n' "$RAW" | envsubst "$FLUX_ENVSUBST_VARS")
-        printf '%s\n---\n' "$RENDERED" >> "$RENDER_ALL"
-        if ! printf '%s\n' "$RENDERED" | kubeconform -strict -ignore-missing-schemas \
-            -kubernetes-version "$K8S_VER" \
-            -schema-location default \
-            -schema-location "$CATALOG" \
-            -summary; then
-          FAILED=1
-        fi
-      done
-
-      # A gate that inspects nothing is not a gate: every check below reads
-      # $RENDER_ALL.
-      if [ ! -s "$RENDER_ALL" ]; then
-        echo "ERROR: no Kustomization under $CLUSTER_DIR rendered any manifest — check cluster_dir and each child's spec.path"
-        FAILED=1
-      fi
-
-      # Which rendered kinds kubeconform could NOT schema-validate
-      # (-ignore-missing-schemas skipped them). With expected_skipped_file set a
-      # kind outside that baseline fails the job; without it, informational.
-      echo "=== kubeconform unvalidated-kind tracking ==="
-      SKIPPED_JSON=$(mktemp)
-      kubeconform -verbose -ignore-missing-schemas -kubernetes-version "$K8S_VER" \
-        -schema-location default \
-        -schema-location "$CATALOG" \
-        -output json < "$RENDER_ALL" > "$SKIPPED_JSON" || true
-      if [ -n "$EXPECTED_SKIPPED_FILE" ]; then
-        python3 "$SKIPPED_SCRIPT" "$EXPECTED_SKIPPED_FILE" < "$SKIPPED_JSON" || FAILED=1
-      else
-        python3 "$SKIPPED_SCRIPT" < "$SKIPPED_JSON" || true
-      fi
-      rm -f "$SKIPPED_JSON"
-
-      # Build the cluster root to catch a malformed top-level kustomization.
-      # Both gotk files absent is the pre-bootstrap state and skips. `-e || -L`,
-      # not `-f`, so a dangling symlink cannot read as pre-bootstrap.
-      gotk_components="$CLUSTER_DIR/flux-system/gotk-components.yaml"
-      gotk_sync="$CLUSTER_DIR/flux-system/gotk-sync.yaml"
-      # CRITICAL: check the shape of the tree first, independent of bootstrap
-      # state. The -L tests below inspect only each path's final component, so
-      # containment is asserted on the resolved path too. Otherwise an
-      # intermediate symlink hands kustomize a tree outside the repo.
-      repo_root=$(pwd -P)
-      cluster_real=$(readlink -f "$CLUSTER_DIR" 2>/dev/null || echo "")
-      case "${cluster_real:-/nonexistent}/" in
-        "$repo_root"/*) cluster_contained=1 ;;
-        *) cluster_contained=0 ;;
-      esac
-      if [ "$cluster_contained" != "1" ]; then
-        echo "ERROR: $CLUSTER_DIR resolves to ${cluster_real:-nothing}, which is outside the repository at $repo_root (symlinked path component?)"
-        FAILED=1
-      elif [ ! -d "$CLUSTER_DIR" ] || [ -L "$CLUSTER_DIR" ] \
-        || [ ! -d "$CLUSTER_DIR/flux-system" ] \
-        || [ -L "$CLUSTER_DIR/flux-system" ] \
-        || [ ! -f "$CLUSTER_DIR/kustomization.yaml" ] \
-        || [ -L "$CLUSTER_DIR/kustomization.yaml" ] \
-        || [ ! -f "$CLUSTER_DIR/flux-system/kustomization.yaml" ] \
-        || [ -L "$CLUSTER_DIR/flux-system/kustomization.yaml" ]; then
-        echo "ERROR: $CLUSTER_DIR and its flux-system/ must be real directories, and both hand-authored kustomization.yaml files must be regular files (not symlinks)"
-        FAILED=1
-      elif [ -e "$gotk_components" ] || [ -L "$gotk_components" ] \
-        || [ -e "$gotk_sync" ] || [ -L "$gotk_sync" ] \
-        || [ "$REQUIRE_CLUSTER_ROOT" = "true" ]; then
-        echo "=== Building cluster root $CLUSTER_DIR ==="
-        if ! kustomize build "$CLUSTER_DIR" >/dev/null; then
-          echo "ERROR: cluster root kustomization failed to build"
-          # Name the one cause the consumer cannot deduce: a repo that has never
-          # been bootstrapped has no gotk files for its kustomization to resolve,
-          # and the fix is an input, not a code change.
-          if [ ! -e "$gotk_components" ] && [ ! -L "$gotk_components" ] \
-            && [ ! -e "$gotk_sync" ] && [ ! -L "$gotk_sync" ]; then
-            echo "HINT: neither flux-system/gotk-components.yaml nor gotk-sync.yaml exists, so this repo has not been bootstrapped yet."
-            echo "HINT: pass require_cluster_root: false to this template until \`flux bootstrap\` has run."
-          fi
-          FAILED=1
-        fi
-      else
-        echo "=== Skipping cluster root $CLUSTER_DIR: neither flux-system/gotk-components.yaml nor gotk-sync.yaml exists (flux bootstrap writes both); set require_cluster_root: true to build anyway ==="
-      fi
+      bash "$FLUX_LINT_SCRIPT" \
+        --cluster-dir "$CLUSTER_DIR" \
+        --versions-configmap "$VERSIONS_CONFIGMAP" \
+        --render-script "$FLUX_RENDER_SCRIPT" \
+        --skipped-script "$SKIPPED_SCRIPT" \
+        --expected-skipped "$EXPECTED_SKIPPED_FILE" \
+        --require-cluster-root "$REQUIRE_CLUSTER_ROOT" \
+        --k8s-version "$K8S_VERSION_INPUT" \
+        --crd-catalog-ref "$CRD_CATALOG_REF" \
+        --render-all "$RENDER_ALL" || FAILED=1
 
       # Consumer-injected extra validation (e.g. an HPA/VPA invariant or a
       # helm-values check). Runs with $RENDER_ALL / $K8S_VER / $FAILED in

@@ -5,6 +5,8 @@ resolving a Service hop, a PodMonitor endpoint or a port spelling turns red.
 """
 from __future__ import annotations
 
+import io
+import pathlib
 import textwrap
 
 import pytest
@@ -298,6 +300,38 @@ def test_a_matchexpressions_pod_selector_is_not_credited(tmp_path, capsys):
     assert "matchExpressions, which this gate does not model" in capsys.readouterr().err
 
 
+class TestAPeerNarrowingTheScrapeNamespace:
+    """Prometheus is chart-installed, so a peer naming its pod labels resolves
+    against no manifest: the namespace and port it admits still count."""
+
+    NARROWED = policy().replace(
+        "              kubernetes.io/metadata.name: observability\n",
+        "              kubernetes.io/metadata.name: observability\n"
+        "          podSelector:\n"
+        "            matchLabels:\n"
+        "              app.kubernetes.io/name: prometheus\n",
+    )
+
+    def test_the_port_it_admits_is_credited(self, tmp_path):
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, self.NARROWED)
+        assert gate.main(argv) == 0
+        # Recorded, not printed: a note annotates a finding, and there is none.
+        assert any("narrows namespace observability" in n for n in gate.UNMODELLED)
+
+    def test_it_still_has_to_name_the_scraped_port(self, tmp_path, capsys):
+        wrong = self.NARROWED.replace("port: 9100", "port: 9101")
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, wrong)
+        assert gate.main(argv) == 1
+        assert "no NetworkPolicy admits namespace observability" in capsys.readouterr().err
+
+    def test_a_peer_naming_another_namespace_is_not_credited(self, tmp_path):
+        elsewhere = self.NARROWED.replace(
+            "kubernetes.io/metadata.name: observability", "kubernetes.io/metadata.name: other"
+        )
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, elsewhere)
+        assert gate.main(argv) == 1
+
+
 def test_an_egress_only_policy_does_not_admit_the_scrape(tmp_path):
     egress = policy().replace("policyTypes: [Ingress]", "policyTypes: [Egress]")
     argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, egress)
@@ -469,16 +503,51 @@ def test_an_empty_service_selector_is_not_credited(tmp_path, capsys):
     assert "no spec.selector" in capsys.readouterr().err
 
 
-def test_one_port_name_at_two_numbers_is_an_operator_error(tmp_path, capsys):
-    """`http2-9090` on two selected workloads: the gate cannot say which number
-    a policy naming it resolves to, and took whichever workload was read last."""
-    second = DEPLOYMENT.replace("name: app\n", "name: app-shard\n", 1).replace(
+class TestOnePortNameAtTwoNumbers:
+    """`targetPort: metrics` resolves per pod, so two selected workloads may
+    serve the one Service port at different numbers; every number is a target."""
+
+    SHARD = DEPLOYMENT.replace("name: app\n", "name: app-shard\n", 1).replace(
         "containerPort: 9100", "containerPort: 9200"
     )
-    argv = tree(tmp_path, DEPLOYMENT, second, SERVICE, SERVICE_MONITOR, policy())
-    assert gate.main(argv) == 2
-    err = capsys.readouterr().err
-    assert "named 'metrics' at [9100, 9200]" in err
+
+    def test_a_policy_admitting_every_number_passes(self, tmp_path):
+        both = policy().replace(
+            "          port: 9100\n",
+            "          port: 9100\n        - protocol: TCP\n          port: 9200\n",
+        )
+        argv = tree(tmp_path, DEPLOYMENT, self.SHARD, SERVICE, SERVICE_MONITOR, both)
+        assert gate.main(argv) == 0
+
+    def test_the_number_left_out_is_a_violation(self, tmp_path, capsys):
+        argv = tree(tmp_path, DEPLOYMENT, self.SHARD, SERVICE, SERVICE_MONITOR, policy())
+        assert gate.main(argv) == 1
+        err = capsys.readouterr().err
+        assert "on port 9200" in err
+        assert "Deployment app-shard" in err
+
+    def test_a_policy_naming_the_port_covers_both(self, tmp_path):
+        """A named policy port is resolved against each pod's own ports, so one
+        name admits both numbers."""
+        argv = tree(
+            tmp_path, DEPLOYMENT, self.SHARD, SERVICE, SERVICE_MONITOR, policy("metrics")
+        )
+        assert gate.main(argv) == 0
+
+    def test_each_workload_is_judged_against_the_policies_matching_it(self, tmp_path):
+        """One policy per shard, each naming only that shard's number."""
+        shard = self.SHARD.replace(
+            "        app.kubernetes.io/name: app",
+            "        app.kubernetes.io/name: app\n        shard: two",
+        )
+        narrowed = policy(9200).replace(
+            "      app.kubernetes.io/name: app\n  policyTypes",
+            "      app.kubernetes.io/name: app\n      shard: two\n  policyTypes",
+        ).replace("name: allow-scrape", "name: allow-scrape-two")
+        argv = tree(
+            tmp_path, DEPLOYMENT, shard, SERVICE, SERVICE_MONITOR, policy(), narrowed
+        )
+        assert gate.main(argv) == 0
 
 
 def test_the_same_port_name_at_one_number_is_fine(tmp_path):
@@ -629,6 +698,333 @@ def test_a_flux_kustomization_naming_no_namespace_is_still_refused(tmp_path, cap
     argv = tree(tmp_path, *_two_namespaces(), flux)
     assert gate.main(argv) == 2
     assert "names none for Kustomization apps:" in capsys.readouterr().err
+
+
+# --- hand-written endpoints ---------------------------------------------------
+
+
+ENDPOINT_SLICE = """\
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: app
+  labels:
+    kubernetes.io/service-name: app
+addressType: IPv4
+ports:
+  - name: metrics
+    port: 9100
+    protocol: TCP
+endpoints:
+  - addresses: ["10.0.10.153"]
+"""
+
+SELECTORLESS = SERVICE.replace("  selector:\n    app.kubernetes.io/name: app\n", "")
+
+
+class TestHandWrittenEndpoints:
+    """A selectorless Service whose addresses the repo declares itself: the
+    target is not a pod here, so no NetworkPolicy governs the scrape."""
+
+    def test_an_endpointslice_makes_the_target_a_non_pod_one(self, tmp_path, capsys):
+        argv = tree(tmp_path, DEPLOYMENT, SELECTORLESS, SERVICE_MONITOR, ENDPOINT_SLICE)
+        assert gate.main(argv) == 0
+        assert "1 target(s) have hand-written endpoints" in capsys.readouterr().out
+
+    def test_an_endpoints_object_counts_too(self, tmp_path):
+        endpoints = (
+            "apiVersion: v1\nkind: Endpoints\nmetadata:\n  name: app\n"
+            "subsets:\n  - addresses: [{ip: 10.0.10.153}]\n"
+            "    ports: [{name: metrics, port: 9100}]\n"
+        )
+        argv = tree(tmp_path, DEPLOYMENT, SELECTORLESS, SERVICE_MONITOR, endpoints)
+        assert gate.main(argv) == 0
+
+    def test_a_slice_with_no_address_is_no_target(self, tmp_path, capsys):
+        """The object exists, so only its contents tell the scrape from nothing."""
+        empty = ENDPOINT_SLICE.replace('endpoints:\n  - addresses: ["10.0.10.153"]\n', "")
+        argv = tree(tmp_path, DEPLOYMENT, SELECTORLESS, SERVICE_MONITOR, empty)
+        assert gate.main(argv) == 1
+        assert "hold no address on 'metrics'" in capsys.readouterr().err
+
+    def test_a_slice_naming_another_port_is_no_target(self, tmp_path, capsys):
+        """Prometheus keeps the target by the endpoint port's name."""
+        other = ENDPOINT_SLICE.replace("name: metrics", "name: health")
+        argv = tree(tmp_path, DEPLOYMENT, SELECTORLESS, SERVICE_MONITOR, other)
+        assert gate.main(argv) == 1
+        assert "hold no address on 'metrics'" in capsys.readouterr().err
+
+    def test_a_numberless_entry_under_another_name_is_no_target(self, tmp_path, capsys):
+        """The name is what Prometheus keeps, so an unnumbered `health` entry
+        does not stand in for `metrics`."""
+        other = ENDPOINT_SLICE.replace("name: metrics\n    port: 9100\n", "name: health\n")
+        argv = tree(tmp_path, DEPLOYMENT, SELECTORLESS, SERVICE_MONITOR, other)
+        assert gate.main(argv) == 1
+        assert "hold no address on 'metrics'" in capsys.readouterr().err
+
+    def test_an_endpoints_subset_pairs_its_addresses_with_its_own_ports(
+        self, tmp_path, capsys
+    ):
+        """One subset holds the addresses, another the port: neither serves."""
+        endpoints = (
+            "apiVersion: v1\nkind: Endpoints\nmetadata:\n  name: app\n"
+            "subsets:\n  - addresses: [{ip: 10.0.10.153}]\n    ports: []\n"
+            "  - addresses: []\n    ports: [{name: metrics, port: 9100}]\n"
+        )
+        argv = tree(tmp_path, DEPLOYMENT, SELECTORLESS, SERVICE_MONITOR, endpoints)
+        assert gate.main(argv) == 1
+        assert "hold no address on 'metrics'" in capsys.readouterr().err
+
+    def test_addresses_a_substitution_fills_in_are_credited(self, tmp_path):
+        """A `${...}` placeholder is a scalar here: its addresses are unknowable."""
+        deferred = ENDPOINT_SLICE.replace(
+            'endpoints:\n  - addresses: ["10.0.10.153"]\n',
+            "endpoints: ${cluster_exporter_addresses}\n",
+        )
+        argv = tree(tmp_path, DEPLOYMENT, SELECTORLESS, SERVICE_MONITOR, deferred)
+        assert gate.main(argv) == 0
+
+    def test_a_targetport_monitor_matches_the_endpoint_number(self, tmp_path):
+        """`targetPort` addresses the port directly, so the number is the match."""
+        monitor = SERVICE_MONITOR.replace("    - port: metrics\n", "    - targetPort: 9100\n")
+        unnamed = ENDPOINT_SLICE.replace(
+            "  - name: metrics\n    port: 9100\n", "  - port: 9100\n"
+        )
+        argv = tree(tmp_path, DEPLOYMENT, SELECTORLESS, monitor, unnamed)
+        assert gate.main(argv) == 0
+
+    def test_an_endpointslice_for_another_service_does_not_count(self, tmp_path, capsys):
+        other = ENDPOINT_SLICE.replace("kubernetes.io/service-name: app", "service-name: other")
+        argv = tree(tmp_path, DEPLOYMENT, SELECTORLESS, SERVICE_MONITOR, other)
+        assert gate.main(argv) == 1
+        assert "no spec.selector" in capsys.readouterr().err
+
+
+# --- the rendered-corpus arm --------------------------------------------------
+
+
+SCRAPING_MONITOR = SERVICE_MONITOR.replace(
+    "metadata:\n", "metadata:\n  namespace: observability\n", 1
+).replace("spec:\n", "spec:\n  namespaceSelector:\n    matchNames: [app]\n", 1)
+
+
+def corpus_documents(*extra: str) -> list[str]:
+    """A monitor in `observability` scraping the workload in `app`."""
+    return [
+        _namespaced(DEPLOYMENT, "app"),
+        _namespaced(SERVICE, "app"),
+        SCRAPING_MONITOR,
+        *extra,
+    ]
+
+
+def corpus(tmp_path, *documents: str) -> str:
+    """One multi-document stream, the shape `kustomize build` writes."""
+    path = tmp_path / "render-all.yaml"
+    path.write_text("\n---\n".join(textwrap.dedent(d) for d in documents))
+    return str(path)
+
+
+class TestRenderedCorpus:
+    """`--corpus`: a whole rendered cluster, so a monitor's matchNames resolves
+    against the namespace its pods and their policies live in."""
+
+    def test_a_cross_namespace_monitor_wired_right_passes(self, tmp_path, capsys):
+        stream = corpus(tmp_path, *corpus_documents(_namespaced(policy(), "app")))
+        assert gate.main(["--corpus", stream]) == 0
+        assert "1 monitor(s)" in capsys.readouterr().out
+
+    def test_the_same_monitor_is_refused_as_a_tree(self, tmp_path, capsys):
+        """The tree arm covers one namespace, so it cannot verify this scope."""
+        argv = tree(tmp_path, *corpus_documents(_namespaced(policy(), "app")))
+        assert gate.main(argv) == 2
+        assert "cannot be verified" in capsys.readouterr().err
+
+    def test_a_policy_on_the_wrong_port_is_a_violation(self, tmp_path, capsys):
+        stream = corpus(tmp_path, *corpus_documents(_namespaced(policy(9101), "app")))
+        assert gate.main(["--corpus", stream]) == 1
+        err = capsys.readouterr().err
+        assert "namespace app" in err
+        assert "on port 9100" in err
+
+    def test_no_policy_in_the_target_namespace_is_a_violation(self, tmp_path):
+        stream = corpus(tmp_path, *corpus_documents())
+        assert gate.main(["--corpus", stream]) == 1
+
+    def test_a_policy_beside_the_monitor_does_not_admit_it(self, tmp_path):
+        """The policy must live where the pods are, not where the monitor is."""
+        stream = corpus(
+            tmp_path, *corpus_documents(_namespaced(policy(), "observability"))
+        )
+        assert gate.main(["--corpus", stream]) == 1
+
+    def test_a_directory_of_rendered_manifests_is_a_corpus_too(self, tmp_path):
+        corpus(tmp_path, *corpus_documents(_namespaced(policy(), "app")))
+        assert gate.main(["--corpus", str(tmp_path)]) == 0
+
+    def test_the_corpus_reads_from_stdin(self, tmp_path, monkeypatch):
+        stream = pathlib.Path(
+            corpus(tmp_path, *corpus_documents(_namespaced(policy(), "app")))
+        )
+        monkeypatch.setattr("sys.stdin", io.StringIO(stream.read_text()))
+        assert gate.main(["--corpus", "-"]) == 0
+
+    def test_a_matchnames_namespace_absent_from_the_corpus_is_an_operator_error(
+        self, tmp_path, capsys
+    ):
+        elsewhere = SCRAPING_MONITOR.replace("matchNames: [app]", "matchNames: [gone]")
+        stream = corpus(
+            tmp_path,
+            _namespaced(DEPLOYMENT, "app"),
+            _namespaced(SERVICE, "app"),
+            _namespaced(policy(), "app"),
+            elsewhere,
+        )
+        assert gate.main(["--corpus", stream]) == 2
+        assert "holds no object in" in capsys.readouterr().err
+
+    def test_a_monitor_naming_no_namespace_scrapes_its_own(self, tmp_path):
+        documents = [
+            _namespaced(d, "app") for d in (DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy())
+        ]
+        assert gate.main(["--corpus", corpus(tmp_path, *documents)]) == 0
+
+    def test_an_untargeted_scrape_allow_is_not_an_operator_error(self, tmp_path):
+        """A chart renders monitors a corpus does not carry, so an allow here
+        cannot be paired with one the way a tenant tree's is."""
+        stream = corpus(
+            tmp_path,
+            *corpus_documents(_namespaced(policy(), "app")),
+            _namespaced(policy(), "chart-owned"),
+        )
+        assert gate.main(["--corpus", stream]) == 0
+
+    def test_a_corpus_with_no_monitor_at_all_is_still_refused(self, tmp_path, capsys):
+        stream = corpus(
+            tmp_path,
+            _namespaced(DEPLOYMENT, "app"),
+            _namespaced(SERVICE, "app"),
+            _namespaced(policy(), "app"),
+        )
+        assert gate.main(["--corpus", stream]) == 2
+        assert "a gate that checks nothing is not a gate" in capsys.readouterr().err
+
+    def test_a_hand_written_endpoint_target_needs_no_policy(self, tmp_path, capsys):
+        """The shape a cluster uses to scrape a host outside it."""
+        stream = corpus(
+            tmp_path,
+            _namespaced(SELECTORLESS, "observability"),
+            _namespaced(ENDPOINT_SLICE, "observability"),
+            SERVICE_MONITOR.replace(
+                "metadata:\n", "metadata:\n  namespace: observability\n", 1
+            ),
+        )
+        assert gate.main(["--corpus", stream]) == 0
+        assert "1 target(s) have hand-written endpoints" in capsys.readouterr().out
+
+    def test_the_corpus_and_a_directory_are_not_both_read(self, tmp_path, capsys):
+        stream = corpus(tmp_path, *corpus_documents(_namespaced(policy(), "app")))
+        assert gate.main(["--corpus", stream, str(tmp_path)]) == 2
+        assert "--corpus replaces the manifest directory" in capsys.readouterr().err
+
+    def test_the_corpus_and_the_namespace_options_are_mutually_exclusive(self, tmp_path):
+        stream = corpus(tmp_path, *corpus_documents(_namespaced(policy(), "app")))
+        with pytest.raises(SystemExit):
+            gate.main(["--corpus", stream, "--namespace", "app"])
+        with pytest.raises(SystemExit):
+            gate.main(["--corpus", stream, "--namespace-from-tree"])
+
+    def test_an_unreadable_corpus_is_an_operator_error(self, tmp_path, capsys):
+        assert gate.main(["--corpus", str(tmp_path / "gone.yaml")]) == 2
+        assert "unreadable" in capsys.readouterr().err
+
+
+class TestPodsAChartRenders:
+    """A HelmRelease's workloads reach no manifest, so the namespace a corpus
+    carries for them holds policies and nothing to match them against."""
+
+    def _corpus(self, tmp_path, *extra: str) -> str:
+        return corpus(
+            tmp_path,
+            _namespaced("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: app\n", "app"),
+            _namespaced(policy(), "app"),
+            SCRAPING_MONITOR,
+            *extra,
+        )
+
+    def test_a_namespace_rendering_no_workload_is_counted(self, tmp_path, capsys):
+        assert gate.main(["--corpus", self._corpus(tmp_path)]) == 0
+        assert "1 endpoint(s) scrape pods a chart renders" in capsys.readouterr().out
+
+    def test_a_service_the_namespace_carries_is_judged_as_written(self, tmp_path, capsys):
+        """No workload, but a selectorless Service for the monitor whose
+        hand-written endpoints carry no address: that is broken wiring, not
+        a chart's."""
+        empty_slice = ENDPOINT_SLICE.replace(
+            'endpoints:\n  - addresses: ["10.0.10.153"]\n', "endpoints: []\n"
+        )
+        stream = self._corpus(
+            tmp_path, _namespaced(SELECTORLESS, "app"), _namespaced(empty_slice, "app")
+        )
+        assert gate.main(["--corpus", stream]) == 1
+        assert "a chart renders" not in capsys.readouterr().out
+
+    def test_the_same_namespace_is_judged_once_it_renders_one(self, tmp_path, capsys):
+        wrong_port = DEPLOYMENT.replace("name: metrics", "name: http")
+        stream = self._corpus(
+            tmp_path, _namespaced(wrong_port, "app"), _namespaced(SERVICE, "app")
+        )
+        assert gate.main(["--corpus", stream]) == 1
+        assert "declares a port named 'metrics'" in capsys.readouterr().err
+
+    def test_the_tree_arm_still_reports_it(self, tmp_path, capsys):
+        """Outside a corpus a missing workload is a tree that cannot be right,
+        not a chart's."""
+        argv = tree(tmp_path, SERVICE, SERVICE_MONITOR, policy())
+        assert gate.main(argv) == 1
+        assert "declares a port named 'metrics'" in capsys.readouterr().err
+
+
+class TestCorpusWideScope:
+    """`any: true` reaches every namespace the corpus carries, so the monitor is
+    judged on their union."""
+
+    ANY = SERVICE_MONITOR.replace(
+        "metadata:\n", "metadata:\n  namespace: observability\n", 1
+    ).replace("spec:\n", "spec:\n  namespaceSelector:\n    any: true\n", 1)
+
+    def test_a_namespace_with_no_matching_service_contributes_nothing(self, tmp_path):
+        stream = corpus(
+            tmp_path,
+            _namespaced(DEPLOYMENT, "app"),
+            _namespaced(SERVICE, "app"),
+            _namespaced(policy(), "app"),
+            _namespaced(DEPLOYMENT, "quiet"),
+            self.ANY,
+        )
+        assert gate.main(["--corpus", stream]) == 0
+
+    def test_a_second_namespace_serving_the_scrape_needs_its_own_policy(
+        self, tmp_path, capsys
+    ):
+        stream = corpus(
+            tmp_path,
+            *(_namespaced(d, "app") for d in (DEPLOYMENT, SERVICE, policy())),
+            *(_namespaced(d, "other") for d in (DEPLOYMENT, SERVICE)),
+            self.ANY,
+        )
+        assert gate.main(["--corpus", stream]) == 1
+        assert "namespace other" in capsys.readouterr().err
+
+    def test_no_namespace_serving_the_scrape_is_a_violation(self, tmp_path, capsys):
+        stream = corpus(tmp_path, _namespaced(DEPLOYMENT, "app"), self.ANY)
+        assert gate.main(["--corpus", stream]) == 1
+        assert "no Service carries the monitor's labels" in capsys.readouterr().err
+
+    def test_the_tree_arm_still_refuses_it(self, tmp_path, capsys):
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, self.ANY, policy())
+        assert gate.main(argv) == 2
+        assert "scopes the scrape outside this directory" in capsys.readouterr().err
 
 
 if __name__ == "__main__":

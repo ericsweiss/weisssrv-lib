@@ -267,6 +267,30 @@ class TestSectionCitations:
         )
         assert cdl.dangling_sections([src], tmp_path) == []
 
+    def test_a_heading_named_for_a_file_keeps_its_extension(self, tmp_path: Path):
+        """docs/SCRIPTS.md names each section after the script; bounding the
+        citation at the dot would cite `flux-lint` and never resolve."""
+        _write(
+            tmp_path / "docs" / "SCRIPTS.md",
+            "# Scripts\n\n### `flux-lint.sh` (PyYAML; needs kustomize)\n",
+        )
+        src = _write(
+            tmp_path / "docs" / "01-a.md",
+            "the program is `scripts/flux-lint.sh` (docs/SCRIPTS.md § flux-lint.sh).\n",
+        )
+        assert cdl.dangling_sections([src], tmp_path) == []
+
+    def test_a_file_heading_that_was_renamed_still_fails(self, tmp_path: Path):
+        _write(
+            tmp_path / "docs" / "SCRIPTS.md",
+            "# Scripts\n\n### `flux-lint.sh` (PyYAML; needs kustomize)\n",
+        )
+        src = _write(
+            tmp_path / "docs" / "01-a.md",
+            "see (docs/SCRIPTS.md § flux-render.sh).\n",
+        )
+        assert len(cdl.dangling_sections([src], tmp_path)) == 1
+
     def test_two_shared_words_are_not_enough(self, tmp_path: Path):
         """`Rotating a token` shares `rotating a` with `Rotating a secret`;
         accepting that would let every renamed section through."""

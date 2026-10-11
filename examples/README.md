@@ -19,6 +19,7 @@ point the script at it. Each script's config resolution is documented in
 | `unifi-settings.example.json` | `unifi-settings-drift.py` | `scripts/unifi-settings.json` |
 | `helmrelease-crd-safety.example.yaml` | `check-helmrelease-crd-safety.py` | `kubernetes/helmrelease-crd-safety.yaml` |
 | `comment-length.example.yml` | `check-comment-length.py` | `.comment-length.yml` |
+| `lib-ref-sites.example.yml` | `check-lib-pins.py` | `scripts/lib-ref-sites.yml` |
 
 The values in these files are illustrative placeholders, not a live
 configuration. `b2-bucket.example.json` and `unifi-settings.example.json` in

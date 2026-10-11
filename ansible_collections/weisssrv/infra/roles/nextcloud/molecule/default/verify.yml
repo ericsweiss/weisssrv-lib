@@ -254,9 +254,9 @@
     - name: Assert the helper library defines the prefixed metric series + the size noun
       ansible.builtin.assert:
         that:
-          - (nextcloud_backup_lib.content | b64decode) is search('write_prom_metrics\(\)')
-          - (nextcloud_backup_lib.content | b64decode) is search('\$\{prefix\}_last_run_success')
-          - (nextcloud_backup_lib.content | b64decode) is search('\$\{prefix\}_last_success_timestamp_seconds')
+          - (nextcloud_backup_lib.content | b64decode) is search('write_prom_metrics\\(\\)')
+          - (nextcloud_backup_lib.content | b64decode) is search('\\$\\{prefix\\}_last_run_success')
+          - (nextcloud_backup_lib.content | b64decode) is search('\\$\\{prefix\\}_last_success_timestamp_seconds')
           - (nextcloud_backup_lib.content | b64decode) is search('Size of the most recent dump in bytes')
 
     # Run the wrapper end to end (mocked docker) and assert the EMITTED .prom:

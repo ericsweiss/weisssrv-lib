@@ -594,7 +594,7 @@
       ansible.builtin.assert:
         that:
           - nic_tuning_bond_primary_empty_lines
-            | select('search', '^\s*bond-primary\s') | list | length == 0
+            | select('search', '^\\s*bond-primary\\s') | list | length == 0
         fail_msg: >-
           An empty nic_tuning_bond_primary took the pin path and left a
           bond-primary line in /etc/network/interfaces:

@@ -487,6 +487,314 @@ class TestEscalationInhibits:
             self._config(tmp_path, escalation_pairs=[{"warning": "A"}])
 
 
+class TestEscalationReplacementPairs:
+    """A critical sibling that REPLACES the warning marker is still a pair."""
+
+    def _rules(self, *alerts) -> dict:
+        return {
+            "groups": [
+                {
+                    "name": "g",
+                    "rules": [
+                        {"alert": name, "expr": "x", "labels": {"severity": severity}}
+                        for name, severity in alerts
+                    ],
+                }
+            ]
+        }
+
+    def test_a_trailing_warning_is_replaced_by_the_suffix(self):
+        rules = self._rules(("DiskUsageWarning", "warning"), ("DiskUsageCritical", "critical"))
+        assert mod.derive_escalation_pairs(rules, ["Critical"]) == [
+            ("DiskUsageCritical", "DiskUsageWarning")
+        ]
+
+    def test_a_trailing_low_pairs_with_the_suffix_in_front_of_the_marker(self):
+        rules = self._rules(("HostMemLow", "warning"), ("HostMemCriticalLow", "critical"))
+        assert mod.derive_escalation_pairs(rules, ["Critical"]) == [
+            ("HostMemCriticalLow", "HostMemLow")
+        ]
+
+    def test_a_trailing_low_also_pairs_with_a_plain_critical(self):
+        rules = self._rules(
+            ("HostMemAvailableLow", "warning"), ("HostMemAvailableCritical", "critical")
+        )
+        assert mod.derive_escalation_pairs(rules, ["Critical"]) == [
+            ("HostMemAvailableCritical", "HostMemAvailableLow")
+        ]
+
+    def test_a_trailing_high_is_a_marker_too(self):
+        rules = self._rules(("NVMeTempHigh", "warning"), ("NVMeTempCritical", "critical"))
+        assert mod.derive_escalation_pairs(rules, ["Critical"]) == [
+            ("NVMeTempCritical", "NVMeTempHigh")
+        ]
+
+    def test_the_appended_spelling_still_pairs(self):
+        rules = self._rules(
+            ("ArchiveBackupFailed", "warning"), ("ArchiveBackupFailedProlonged", "critical")
+        )
+        assert mod.derive_escalation_pairs(rules, ["Prolonged"]) == [
+            ("ArchiveBackupFailedProlonged", "ArchiveBackupFailed")
+        ]
+
+    def test_a_marker_with_no_critical_sibling_is_not_a_pair(self):
+        rules = self._rules(("SATASsdTempWarning", "warning"), ("Unrelated", "critical"))
+        assert mod.derive_escalation_pairs(rules, ["Critical"]) == []
+
+    def test_no_markers_leaves_only_the_appended_spelling(self):
+        rules = self._rules(("DiskUsageWarning", "warning"), ("DiskUsageCritical", "critical"))
+        assert mod.derive_escalation_pairs(rules, ["Critical"], ()) == []
+
+    def test_a_marker_listed_twice_yields_one_pair(self):
+        rules = self._rules(("DiskUsageWarning", "warning"), ("DiskUsageCritical", "critical"))
+        assert mod.derive_escalation_pairs(rules, ["Critical"], ("Warning", "Warning")) == [
+            ("DiskUsageCritical", "DiskUsageWarning")
+        ]
+
+    def test_a_name_that_is_nothing_but_the_marker_keeps_its_stem(self):
+        """Stripping the whole name would pair `Warning` with every critical."""
+        rules = self._rules(("Warning", "warning"), ("Critical", "critical"))
+        assert mod.derive_escalation_pairs(rules, ["Critical"]) == []
+
+    def test_an_alert_at_both_severities_is_not_its_own_pair(self):
+        rules = self._rules(("FooWarning", "warning"), ("FooWarning", "critical"))
+        assert mod.derive_escalation_pairs(rules, ["Warning"]) == []
+
+    def test_a_replacement_pair_with_no_inhibit_rule_is_reported(self, tmp_path):
+        rules = self._rules(("DiskUsageWarning", "warning"), ("DiskUsageCritical", "critical"))
+        config = mod.load_config(
+            _config(tmp_path, {"route_cases": [{"receiver": "r", "labels": ["alertname=X"]}]})
+        )
+        problems = mod.check_escalation_inhibits({"inhibit_rules": []}, rules, config)
+        assert problems and "DiskUsageCritical -> DiskUsageWarning" in problems[0]
+
+    def test_the_markers_must_be_a_list(self, tmp_path):
+        with pytest.raises(ValueError, match="escalation_warning_markers"):
+            mod.load_config(
+                _config(
+                    tmp_path,
+                    {
+                        "route_cases": [{"receiver": "r", "labels": ["alertname=X"]}],
+                        "escalation_warning_markers": "Warning",
+                    },
+                )
+            )
+
+
+class TestEscalationInhibitCoverage:
+    """What counts as inhibiting a pair whose two alertnames differ."""
+
+    RULES = {
+        "groups": [
+            {
+                "name": "temp",
+                "rules": [
+                    {
+                        "alert": "CPUTempWarning",
+                        "expr": "x",
+                        "labels": {"severity": "warning", "component": "cpu"},
+                    },
+                    {
+                        "alert": "CPUTempCritical",
+                        "expr": "x",
+                        "labels": {"severity": "critical", "component": "cpu"},
+                    },
+                ],
+            }
+        ]
+    }
+
+    def _config(self, tmp_path, **extra):
+        doc = {"route_cases": [{"receiver": "r", "labels": ["alertname=X"]}]}
+        doc.update(extra)
+        return mod.load_config(_config(tmp_path, doc))
+
+    def _scoped(self, source, target, equal) -> dict:
+        return {
+            "inhibit_rules": [
+                {"source_matchers": source, "target_matchers": target, "equal": list(equal)}
+            ]
+        }
+
+    def test_a_severity_scoped_rule_inhibits_the_pair(self, tmp_path):
+        """The pair's own labels satisfy a rule that pins no alertname at all."""
+        am = self._scoped(
+            ['severity="critical"', 'component=~"cpu|gpu"'],
+            ['severity="warning"', 'component=~"cpu|gpu"'],
+            ("instance", "component"),
+        )
+        assert mod.check_escalation_inhibits(am, self.RULES, self._config(tmp_path)) == []
+
+    def test_an_alertname_equal_rule_does_not_inhibit_a_renamed_pair(self, tmp_path):
+        """`equal: [alertname]` pairs same-named alerts, so these two never meet."""
+        am = self._scoped(
+            ['severity="critical"'], ['severity="warning"'], ("alertname", "namespace")
+        )
+        problems = mod.check_escalation_inhibits(am, self.RULES, self._config(tmp_path))
+        assert problems and "pages twice" in problems[0]
+
+    def test_a_scope_the_pair_falls_outside_does_not_inhibit_it(self, tmp_path):
+        am = self._scoped(
+            ['severity="critical"', 'component=~"gpu|network"'],
+            ['severity="warning"', 'component=~"gpu|network"'],
+            ("instance",),
+        )
+        problems = mod.check_escalation_inhibits(am, self.RULES, self._config(tmp_path))
+        assert problems and "pages twice" in problems[0]
+
+    def test_a_scope_exempting_the_warning_does_not_inhibit_it(self, tmp_path):
+        am = self._scoped(
+            ['severity="critical"', 'component="cpu"'],
+            ['severity="warning"', 'alertname!="CPUTempWarning"'],
+            ("instance",),
+        )
+        problems = mod.check_escalation_inhibits(am, self.RULES, self._config(tmp_path))
+        assert problems and "pages twice" in problems[0]
+
+    def test_a_scoped_rule_still_has_to_carry_every_equal_label(self, tmp_path):
+        am = self._scoped(
+            ['severity="critical"', 'component="cpu"'],
+            ['severity="warning"', 'component="cpu"'],
+            ("instance",),
+        )
+        config = self._config(tmp_path, escalation_equal=["instance", "chip"])
+        problems = mod.check_escalation_inhibits(am, self.RULES, config)
+        assert problems and "equal:['chip']" in problems[0]
+
+    def test_naming_a_derived_pair_replaces_its_equal_requirement(self, tmp_path):
+        """A namespaced pair opts out of a global key written for host series."""
+        am = self._scoped(
+            ['alertname="CPUTempCritical"'], ['alertname="CPUTempWarning"'], ("chip",)
+        )
+        config = self._config(
+            tmp_path,
+            escalation_equal=["instance"],
+            escalation_pairs=[
+                {"critical": "CPUTempCritical", "warning": "CPUTempWarning", "equal": ["chip"]}
+            ],
+        )
+        assert mod.check_escalation_inhibits(am, self.RULES, config) == []
+
+    def test_a_pair_the_corpus_does_not_declare_is_not_covered_by_a_scope(self, tmp_path):
+        """A declared pair naming upstream alerts has no labels to test a scope on."""
+        config = self._config(
+            tmp_path,
+            escalation_pairs=[{"critical": "KubeNodeUnreachable", "warning": "KubeNodeNotReady"}],
+        )
+        am = self._scoped(['severity="critical"'], ['severity="warning"'], ("instance",))
+        problems = mod.check_escalation_inhibits(am, self.RULES, config)
+        assert any("KubeNodeUnreachable -> KubeNodeNotReady" in p for p in problems)
+
+
+class TestRuleCorpora:
+    """Rule trees the Prometheus extractor cannot see still have to resolve."""
+
+    LOKI = textwrap.dedent(
+        """\
+        groups:
+          - name: host-log-staleness
+            interval: 1m
+            rules:
+              - alert: HostLogShippingStale
+                expr: absent_over_time({job="journal"}[45m])
+                labels: {severity: warning}
+        """
+    )
+
+    def _corpus(self, tmp_path, body=None) -> Path:
+        tree = tmp_path / "loki"
+        tree.mkdir(exist_ok=True)
+        (tree / "host-log-staleness.yaml").write_text(self.LOKI if body is None else body)
+        return tree
+
+    def test_a_directory_of_plain_groups_documents_is_read(self, tmp_path):
+        self._corpus(tmp_path)
+        doc = mod.load_rule_corpora(["loki"], tmp_path)
+        assert mod._known_alertnames(doc) == {"HostLogShippingStale"}
+
+    def test_a_single_file_entry_is_read(self, tmp_path):
+        tree = self._corpus(tmp_path)
+        doc = mod.load_rule_corpora([str(tree / "host-log-staleness.yaml")], tmp_path)
+        assert mod._known_alertnames(doc) == {"HostLogShippingStale"}
+
+    def test_a_sibling_manifest_without_groups_is_ignored(self, tmp_path):
+        tree = self._corpus(tmp_path)
+        (tree / "release.yaml").write_text("apiVersion: helm.toolkit.fluxcd.io/v2\nkind: HelmRelease\n")
+        doc = mod.load_rule_corpora(["loki"], tmp_path)
+        assert mod._known_alertnames(doc) == {"HostLogShippingStale"}
+
+    def test_a_missing_entry_is_an_operator_error(self, tmp_path):
+        with pytest.raises(ValueError, match="does not exist"):
+            mod.load_rule_corpora(["loki"], tmp_path)
+
+    def test_an_entry_declaring_no_alert_is_an_operator_error(self, tmp_path):
+        """An emptied tree would otherwise leave every name it owns unknown."""
+        self._corpus(tmp_path, body="groups: []\n")
+        with pytest.raises(ValueError, match="declares no alerting rule"):
+            mod.load_rule_corpora(["loki"], tmp_path)
+
+    def test_the_key_must_be_a_list(self, tmp_path):
+        with pytest.raises(ValueError, match="rule_corpora"):
+            mod.load_config(
+                _config(
+                    tmp_path,
+                    {
+                        "route_cases": [{"receiver": "r", "labels": ["alertname=X"]}],
+                        "rule_corpora": "loki",
+                    },
+                )
+            )
+
+    def test_a_route_case_naming_a_corpus_alert_only_resolves_once_declared(
+        self, tmp_path, stub_amtool
+    ):
+        """Without the corpus the case names no rule, so it asserts nothing."""
+        self._corpus(tmp_path)
+        rules_body = tmp_path / "rules-body.yaml"
+        rules_body.write_text("groups:\n- name: g\n  rules:\n  - alert: A\n    expr: x\n")
+        am_body = tmp_path / "am-body.yaml"
+        am_body.write_text(
+            yaml.safe_dump(
+                {"inhibit_rules": [{"source_matchers": ['alertname="A"'],
+                                    "target_matchers": ['alertname="A"']}]}
+            )
+        )
+        extract = tmp_path / "extract.py"
+        extract.write_text(
+            "import pathlib, sys\n"
+            f"src = {str(rules_body)!r} if sys.argv[1] == 'rules' else {str(am_body)!r}\n"
+            "pathlib.Path(sys.argv[2]).write_text(pathlib.Path(src).read_text())\n"
+        )
+        stub_amtool(output="discord")
+        doc = {"route_cases": [{"receiver": "discord", "labels": ["alertname=HostLogShippingStale"]}]}
+        without = tmp_path / "without.yaml"
+        without.write_text(yaml.safe_dump(doc))
+        argv = ["--repo-root", str(tmp_path), "--extract-script", str(extract)]
+        assert mod.main(["--config", str(without), *argv]) == 1
+        doc["rule_corpora"] = ["loki"]
+        declared = tmp_path / "declared.yaml"
+        declared.write_text(yaml.safe_dump(doc))
+        assert mod.main(["--config", str(declared), *argv]) == 0
+
+    def test_a_missing_entry_exits_two_from_main(self, tmp_path, capsys, stub_amtool):
+        extract = tmp_path / "extract.py"
+        extract.write_text("import sys; sys.exit(0)\n")
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    "route_cases": [{"receiver": "r", "labels": ["alertname=X"]}],
+                    "rule_corpora": ["loki"],
+                }
+            )
+        )
+        rc = mod.main(
+            ["--config", str(path), "--repo-root", str(tmp_path), "--extract-script", str(extract)]
+        )
+        assert rc == 2
+        assert "rule_corpora" in capsys.readouterr().err
+
+
 class TestExtractedBodyIsParsedOnce:
     """A malformed extracted body is an operator error, not a routing finding."""
 
@@ -794,6 +1102,33 @@ class TestEqualLabelScope:
         inhibit = _info_inhibit()
         inhibit["inhibit_rules"][0]["target_matchers"] = ['alertname="NotificationsDropping"']
         assert mod.check_equal_label_scope(inhibit, INFO_RULES) == []
+
+
+class TestSideAdmits:
+    """A pinned side still has to satisfy its other matchers."""
+
+    RULES = {"EndpointDown": [{"alert": "EndpointDown", "labels": {"severity": "warning"}}]}
+
+    def _parsed(self, *matchers: str):
+        problems: list[str] = []
+        parsed = mod._parse_matchers(list(matchers), 0, "target", problems)
+        assert not problems
+        return parsed
+
+    def test_a_pin_alone_admits_an_undeclared_alert(self):
+        assert mod._side_admits(self._parsed('alertname="Upstream"'), "Upstream", {})
+
+    def test_a_pin_with_a_severity_the_alert_carries_admits(self):
+        parsed = self._parsed('alertname="EndpointDown"', 'severity="warning"')
+        assert mod._side_admits(parsed, "EndpointDown", self.RULES)
+
+    def test_a_pin_with_a_severity_the_alert_lacks_does_not(self):
+        parsed = self._parsed('alertname="EndpointDown"', 'severity="critical"')
+        assert not mod._side_admits(parsed, "EndpointDown", self.RULES)
+
+    def test_a_pin_with_another_matcher_needs_a_declaration(self):
+        parsed = self._parsed('alertname="Upstream"', 'component="storage"')
+        assert not mod._side_admits(parsed, "Upstream", {})
 
 
 SCOPE_RULES = {

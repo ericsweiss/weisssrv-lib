@@ -115,7 +115,7 @@
       ansible.builtin.assert:
         that:
           - ansible_architecture == 'x86_64'
-          - restic_offsite_rclone_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+          - restic_offsite_rclone_version is match('^[0-9]+\\.[0-9]+\\.[0-9]+$')
           - restic_offsite_rclone_deb_sha256 is match('^[A-Fa-f0-9]{64}$')
         fail_msg: >-
           restic_offsite installs rclone from an amd64-only pinned .deb, and

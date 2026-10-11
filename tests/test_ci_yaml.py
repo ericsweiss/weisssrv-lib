@@ -108,6 +108,56 @@ def test_a_spec_header_file_still_lists_its_jobs():
     assert list(ci_yaml.jobs(ci_yaml.parse_ci(SPEC_HEADER))) == ["build"]
 
 
+def test_split_header_returns_the_spec_document_and_the_body_text():
+    header, body = ci_yaml.split_header(SPEC_HEADER)
+    assert header == {"spec": {"inputs": {"stage": {"default": "test"}}}}
+    assert body.startswith("---\n")
+    assert "build:" in body and "spec:" not in body
+
+
+def test_the_body_text_is_the_tail_of_the_source():
+    """A caller rebuilding the file concatenates the two halves back."""
+    _, body = ci_yaml.split_header(SPEC_HEADER)
+    assert SPEC_HEADER.endswith(body)
+    assert SPEC_HEADER[: len(SPEC_HEADER) - len(body)].lstrip().startswith("spec:")
+
+
+def test_split_header_on_a_file_without_one_hands_back_the_whole_text():
+    assert ci_yaml.split_header(PIPELINE) == (None, PIPELINE)
+
+
+def test_a_leading_document_marker_alone_is_not_a_header():
+    """Most pipeline files open with `---`; that is one document, not two."""
+    text = "---\nbuild:\n  script: ['true']\n"
+    assert ci_yaml.split_header(text) == (None, text)
+    assert "build" in ci_yaml.parse_ci(text)
+
+
+def test_a_two_document_file_whose_first_doc_is_not_a_spec_is_not_split():
+    """`spec:` is what makes the first document a header, not its position."""
+    text = "notspec: 1\n---\nbuild:\n  script: ['true']\n"
+    assert ci_yaml.split_header(text) == (None, text)
+
+
+def test_spec_inputs_reads_the_declared_inputs():
+    assert ci_yaml.spec_inputs(SPEC_HEADER) == {"stage": {"default": "test"}}
+
+
+def test_spec_inputs_is_empty_without_a_header():
+    assert ci_yaml.spec_inputs(PIPELINE) == {}
+
+
+def test_spec_inputs_is_empty_when_the_header_declares_none():
+    assert ci_yaml.spec_inputs("spec:\n---\nbuild:\n  script: ['true']\n") == {}
+
+
+def test_a_header_does_not_hide_a_tagged_body():
+    """The body keeps the `!reference` semantics the loader gives it."""
+    text = "spec:\n  inputs:\n    a:\n      default: x\n---\n" + PIPELINE
+    doc = ci_yaml.parse_ci(text)
+    assert isinstance(doc["build"]["script"][0], ci_yaml.Reference)
+
+
 TAGGED = """
 job:
   a: !custom scalar

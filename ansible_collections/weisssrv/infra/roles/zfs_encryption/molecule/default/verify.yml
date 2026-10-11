@@ -109,7 +109,7 @@
           # The operator's command is what produces the passphrase.
           - >-
             (keycmd_script_content.content | b64decode)
-            is search('PASSPHRASE=\$\(printf')
+            is search('PASSPHRASE=\\$\\(printf')
           # The locators the command is contracted to receive.
           - (keycmd_script_content.content | b64decode) is search('export ZFS_ENCRYPTION_POOL=')
           - (keycmd_script_content.content | b64decode) is search('export ZFS_ENCRYPTION_ITEM=')
@@ -321,7 +321,7 @@
     - name: Assert the guest-start script renders the configured VM cohort
       ansible.builtin.assert:
         that:
-          - (guest_script_content.content | b64decode) is search('VMIDS=\(999\)')
+          - (guest_script_content.content | b64decode) is search('VMIDS=\\(999\\)')
         fail_msg: "zfs-start-encrypted-guests.sh does not render zfs_encryption_guest_vmids (expected VMIDS=(999))"
 
     # "Not provisioned" must be the missing config file, not a failed
@@ -330,8 +330,8 @@
       ansible.builtin.assert:
         that:
           - (guest_script_content.content | b64decode) is search('mountpoint -q /etc/pve')
-          - (guest_script_content.content | b64decode) is search('/etc/pve/qemu-server/\$\{vm\}.conf')
-          - (guest_script_content.content | b64decode) is search('/etc/pve/lxc/\$\{ct\}.conf')
+          - (guest_script_content.content | b64decode) is search('/etc/pve/qemu-server/\\$\\{vm\\}.conf')
+          - (guest_script_content.content | b64decode) is search('/etc/pve/lxc/\\$\\{ct\\}.conf')
           - (guest_script_content.content | b64decode) is not search('qm config')
           - (guest_script_content.content | b64decode) is not search('pct config')
         fail_msg: >-

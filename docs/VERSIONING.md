@@ -2,18 +2,26 @@
 
 ## Consume by tag, never by branch
 
-Every consumer pins a **release tag** in its `include: ref:`:
+Every consumer declares a **release tag** once, in its pipeline's `spec:`
+header, and every pin reads it:
 
 ```yaml
+spec:
+  inputs:
+    lib_ref:
+      default: <CURRENT_TAG>
+---
 include:
   - project: eric/weisssrv-lib
-    ref: <CURRENT_TAG>
+    ref: $[[ inputs.lib_ref ]]
     file: /ci/lint/yaml-lint.yml
 ```
 
 `<CURRENT_TAG>` is the placeholder convention used in every example across this
 repo's docs. The literal current release is named once, in the
 [README](../README.md#current-release) — substitute it when you copy a snippet.
+Why the header rather than a variable, and what holds the other surfaces to it,
+is [The library pin](INCLUDE-CONTRACT.md#the-library-pin).
 
 A floating `main` (or `~latest`) ref would auto-propagate a library change into
 every consumer's pipeline **with no review** — a supply-chain and
@@ -62,12 +70,33 @@ job runs after `semantic-release` and retags the `molecule-ci` /
 appending that tag↔image pair to the registry. The two molecule images are
 *exercised* by the pipeline that cuts the tag, so a consumer that pins
 `ref: vX.Y.Z` can pin `…/molecule-test:vX.Y.Z` and know the two were run against
-each other. `ansible-deploy` is retagged for pin alignment only — no job in this
-pipeline runs it; what holds it to the tag is `tests/test_ansible_deploy_image.py`,
-a static assertion that `docker/ansible-deploy/requirements.txt`'s `ansible==`
-pin equals the `ansible_version` default in `ci/deploy/deploy-base.yml`. The job
-is a no-op when no release was cut, and warns rather than reddening when an
-image was never pushed at all.
+each other. `ansible-deploy` is retagged for pin alignment only — no job in
+this pipeline runs it; what holds it to the tag is
+`tests/test_ansible_deploy_image.py`, a static assertion that
+`docker/ansible-deploy/requirements.txt`'s `ansible==` pin equals the
+`ansible_version` default in `ci/deploy/deploy-base.yml`. The job is a no-op
+when no release was cut, and warns rather than reddening when an image was
+never pushed at all.
+
+**A consumer's molecule scenarios carry no image literal.** Each platform reads
+the bare `image: "${MOLECULE_TEST_IMAGE}"`, and the consumer's Taskfile wrapper
+exports that variable from the one declared ref:
+
+```yaml
+env:
+  MOLECULE_TEST_IMAGE: >-
+    registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:{{.LIB_REF}}
+vars:
+  LIB_REF:
+    sh: scripts/check-lib-pins.py --print
+```
+
+CI already sets `MOLECULE_TEST_IMAGE` from `WEISSSRV_LIB_REF`, which reads the
+same input, so a local run and a pipeline run pull the same image by
+construction. A `${MOLECULE_TEST_IMAGE:-…:vX.Y.Z}` fallback would be a second
+pin that only a local run reads — green pipeline, stale local image — which is
+why the layout removes it rather than gating it. The library's OWN scenarios
+keep a `:latest` fallback: it names no release, so no bump reaches it.
 
 `:vX.Y.Z` image tags exist only from the first release that carried that job,
 and `ansible-deploy:vX.Y.Z` only from the release that added that image —
@@ -186,16 +215,17 @@ consumer's own version-check command against the consumer's own tracked-version
 config, and this library tracks no upstream versions, so its pipeline does not
 include it.
 
-**A library bump is not just the `include: ref:`.** Five surfaces carry a pin,
-and three of them are enforced by a gate (1, 2 and 4). Walk all five in one MR:
+**A library bump is one declared tag plus the copies no YAML can reach.** Five
+surfaces carry a pin, and four of them are enforced by a gate (1-4). Walk all
+five in one MR:
 
 | # | Surface | Where | Enforced by |
 |---|---|---|---|
-| 1 | CI template `ref:` on every include entry | `.gitlab-ci.yml` (plus the single-source `WEISSSRV_LIB_REF` variable) | `scripts/check-lib-pins.py` — vendored; fails on drift or a branch ref; `--fix` rewrites them |
-| 2 | Ansible collection `version:` | `ansible/requirements.yml` | the same `scripts/check-lib-pins.py` — it reads the sibling `ansible/requirements.yml` and holds the collection `version:` equal to `WEISSSRV_LIB_REF`; `--fix` syncs it. The file it inspects is forge-independent, but the ref it compares against comes from `.gitlab-ci.yml`, so a consumer without one cannot run the gate |
-| 3 | Terraform module `?ref=` | each `main.tf` `source =` | nothing — `terraform init` happily fetches the old tag |
+| 1 | the declared tag itself | `spec.inputs.lib_ref.default` in `.gitlab-ci.yml` — every include `ref:` and `variables.WEISSSRV_LIB_REF` read it as `$[[ inputs.lib_ref ]]` | `scripts/check-lib-pins.py` — vendored; fails on a literal pin, a branch ref or a missing header; `--bump vX.Y.Z` moves it |
+| 2 | Ansible collection `version:` | `ansible/requirements.yml` | the same `scripts/check-lib-pins.py` — it reads the sibling `ansible/requirements.yml` and holds the collection `version:` equal to the declared tag; `--fix` syncs it. The file it inspects is forge-independent, but the ref it compares against comes from `.gitlab-ci.yml`, so a consumer without one cannot run the gate |
+| 3 | Terraform module `?ref=`, and any other file repeating the tag | each `main.tf` `source =`; a copier answer default | the same `scripts/check-lib-pins.py`, through the consumer-owned `scripts/lib-ref-sites.yml` — one `{path, pattern}` entry per site, rewritten by `--fix`/`--bump`. A site the consumer never declares is unenforced, and a declared site that matches nothing FAILS |
 | 4 | **Vendored scripts** (and the lint profiles, vendored suites and workflows alongside them) | the consumer's `scripts/`, plus the paths its own `scripts/vendored-manifest.yml` records | `scripts/check-vendored-copies.py` — manifest-driven, run from the consumer against a library checkout at its pinned `--ref`; fails on drift in either direction, on a converged fork, on a fork whose library side moved since its `reconciled_sha256`, and on a manifest entry outside the library's offer list (`scripts/vendorable-paths.yml`) |
-| 5 | CLI install spec | wherever `pipx install …@<tag>` is written | nothing |
+| 5 | CLI install spec | wherever `pipx install …@<tag>` is written | a `lib-ref-sites.yml` entry, when the consumer declares one |
 
 Which of the five a given consumer has is that consumer's own record — the
 library keeps no registry of its consumers. Each consumer's gates catch a
@@ -207,8 +237,8 @@ The procedure:
 
 1. Read the target tag's GitLab release notes for what changed — the release job
    generates them per tag; this repo keeps no CHANGELOG file.
-2. Bump every `ref:` / `version:` / `?ref=` in one MR (`check-lib-pins.py --fix`
-   does surfaces 1 and 2).
+2. `scripts/check-lib-pins.py --bump vX.Y.Z` in one MR — surfaces 1, 2 and 3 in
+   one command. Re-run the gate to see the count it rewrote.
 3. **Re-vendor the scripts** the consumer copies. All three consumers gate
    byte-identity against the library at their pinned ref (see "A vendored
    script is a pin too" in [INCLUDE-CONTRACT.md](INCLUDE-CONTRACT.md)), so
@@ -221,7 +251,9 @@ The procedure:
    in the SAME MR as the pin bump — a missed one takes the role default
    silently instead of failing.
 5. For weisssrv specifically, prove pipeline parity before merging (merged-YAML
-   diff + per-pipeline-type job-set enumeration) so no coverage is lost.
+   diff + per-pipeline-type job-set enumeration) so no coverage is lost. A
+   manual run overriding the `lib_ref` input resolves the whole pipeline at the
+   candidate tag without a commit, which is the cheap half of that check.
 
 ## Release checklist (this repo)
 

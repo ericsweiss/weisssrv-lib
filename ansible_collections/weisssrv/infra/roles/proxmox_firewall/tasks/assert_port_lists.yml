@@ -57,7 +57,7 @@
       - lookup('vars', item) is not mapping
       - lookup('vars', item) | length > 0
       - lookup('vars', item) | select('string') | list | length == lookup('vars', item) | length
-      - lookup('vars', item) | select('match', '^[A-Za-z][A-Za-z0-9_-]{1,63}\Z') | list | length == lookup('vars', item) | length
+      - lookup('vars', item) | select('match', '^[A-Za-z][A-Za-z0-9_-]{1,63}\\Z') | list | length == lookup('vars', item) | length
     fail_msg: >-
       {{ item }} must be a non-empty LIST of valid IPSet NAMES
       (e.g. `[admin_ts, dns_clients]`) — cluster.fw.j2 renders each entry as
@@ -85,7 +85,7 @@
       - proxmox_firewall_smtp_relay_sources is not string
       - proxmox_firewall_smtp_relay_sources is not mapping
       - proxmox_firewall_smtp_relay_sources | select('string') | list | length == proxmox_firewall_smtp_relay_sources | length
-      - proxmox_firewall_smtp_relay_sources | select('match', '^[A-Za-z][A-Za-z0-9_-]{1,63}\Z') | list | length == proxmox_firewall_smtp_relay_sources | length
+      - proxmox_firewall_smtp_relay_sources | select('match', '^[A-Za-z][A-Za-z0-9_-]{1,63}\\Z') | list | length == proxmox_firewall_smtp_relay_sources | length
     fail_msg: >-
       proxmox_firewall_smtp_relay_sources must be a LIST of valid IPSet NAMES
       (e.g. `[core-cluster]`), or empty to render no rule at all —

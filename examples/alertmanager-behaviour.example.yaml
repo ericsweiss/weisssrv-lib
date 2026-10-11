@@ -32,12 +32,24 @@ upstream_alerts:
   - KubePodNotReady
   - Watchdog
 
-# escalation_suffixes: a severity=warning alert whose name plus one of these
-# suffixes is a severity=critical alert in the same corpus is an escalation
-# pair, and the pair needs an inhibit rule or it pages twice.
+# rule_corpora: extra rule trees the extractor never reads, each a file or
+# directory of plain `groups:` documents — a Loki ruler's rules, say — relative
+# to --repo-root. Left out here because the path is site-specific.
+
+# escalation_suffixes: the critical half of a sibling's name. A severity=warning
+# alert whose name, with one of these appended or swapped in for its warning
+# marker, is a severity=critical alert here is a pair needing an inhibit rule.
 escalation_suffixes:
   - Prolonged
   - Critical
+
+# escalation_warning_markers: the trailing word a warning alert's own name ends
+# in, which a suffix above may replace (DiskUsageWarning -> DiskUsageCritical)
+# or sit in front of (HostMemLow -> HostMemCriticalLow).
+escalation_warning_markers:
+  - Warning
+  - Low
+  - High
 
 # escalation_equal: label keys the inhibit rule for every pair must share, so
 # one instance's critical does not silence another instance's warning.

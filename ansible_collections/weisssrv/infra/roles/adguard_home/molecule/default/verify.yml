@@ -150,7 +150,7 @@
           - >-
             (adguard_home_config_content.content | b64decode | from_yaml).users
             | selectattr('name', 'equalto', adguard_home_admin_user | default('admin'))
-            | map(attribute='password') | select('match', '^\$2[aby]\$')
+            | map(attribute='password') | select('match', '^\\$2[aby]\\$')
             | list | length == 1
         fail_msg: "The admin user's password is not a bcrypt hash"
         success_msg: "The admin user's password is a bcrypt hash"

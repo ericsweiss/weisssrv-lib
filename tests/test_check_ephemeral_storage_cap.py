@@ -188,6 +188,209 @@ def test_an_init_container_is_held_to_the_same_rule(monkeypatch, capsys):
     assert "'seed'" in capsys.readouterr().err
 
 
+SHARED = """
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: demo, namespace: apps}
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          resources:
+            requests: {ephemeral-storage: 256Mi}
+            limits: {ephemeral-storage: 256Mi}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+        - name: helper
+          resources:
+            requests: {ephemeral-storage: 256Mi}
+            limits: {ephemeral-storage: 256Mi}
+          volumeMounts:
+            - {name: tmp, mountPath: /shared}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 512Mi}
+"""
+
+
+def test_a_shared_emptydir_is_charged_once(monkeypatch):
+    """One volume, two mounts: 512Mi against a 512Mi pod budget, not 1Gi."""
+    assert _run(SHARED, monkeypatch) == 0
+
+
+AGGREGATE = """
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: demo, namespace: apps}
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          resources:
+            requests: {ephemeral-storage: 32Mi}
+            limits: {ephemeral-storage: 32Mi}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+        - name: helper
+          resources:
+            requests: {ephemeral-storage: 32Mi}
+            limits: {ephemeral-storage: 32Mi}
+          volumeMounts:
+            - {name: cache, mountPath: /cache}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+        - name: cache
+          emptyDir: {sizeLimit: 64Mi}
+"""
+
+
+def test_unique_sizelimits_above_the_aggregate_limit_fail(monkeypatch, capsys):
+    """The budget is the pod's, so it is one finding against the summed limits."""
+    assert _run(AGGREGATE, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "mounts 128Mi of sized emptyDir (tmp=64Mi, cache=64Mi)" in err
+    assert "limit of 64Mi" in err
+    assert err.count("apps/Deployment/demo") == 1
+
+
+BYSTANDER = """
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: demo, namespace: apps}
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          resources:
+            requests: {ephemeral-storage: 64Mi}
+            limits: {ephemeral-storage: 64Mi}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+        - name: bystander
+          resources:
+            limits: {ephemeral-storage: 512Mi}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 512Mi}
+"""
+
+
+def test_a_container_that_mounts_nothing_still_funds_the_budget(monkeypatch):
+    """The kubelet weighs pod usage against every container's limit."""
+    assert _run(BYSTANDER, monkeypatch) == 0
+
+
+FLOOR = """
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: demo, namespace: apps}
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: seed
+          resources:
+            requests: {ephemeral-storage: 1Gi}
+            limits: {ephemeral-storage: 1Gi}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      containers:
+        - name: app
+          resources:
+            requests: {ephemeral-storage: 8Mi}
+            limits: {ephemeral-storage: 8Mi}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 512Mi}
+"""
+
+
+def test_a_plain_init_container_raises_the_floor(monkeypatch):
+    """It runs alone, so the kubelet takes its limit as the pod's, not a term of it."""
+    assert _run(FLOOR, monkeypatch) == 0
+
+
+SIDECAR = """
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: demo, namespace: apps}
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: logger
+          restartPolicy: Always
+          resources:
+            requests: {ephemeral-storage: 64Mi}
+            limits: {ephemeral-storage: 64Mi}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      containers:
+        - name: app
+          resources:
+            requests: {ephemeral-storage: 64Mi}
+            limits: {ephemeral-storage: 64Mi}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 128Mi}
+"""
+
+
+def test_a_sidecar_init_container_adds_to_the_budget(monkeypatch):
+    """A restartable init container runs beside the app, so its limit is a term."""
+    assert _run(SIDECAR, monkeypatch) == 0
+
+
+def _init_phase(order: tuple[str, ...]) -> str:
+    """A pod whose init phase holds a sidecar and a plain init, in this order."""
+    blocks = {
+        "sidecar": (
+            "        - name: logger\n          restartPolicy: Always\n"
+            "          resources:\n"
+            "            requests: {ephemeral-storage: 64Mi}\n"
+            "            limits: {ephemeral-storage: 64Mi}\n"
+            "          volumeMounts:\n            - {name: tmp, mountPath: /tmp}\n"
+        ),
+        "init": (
+            "        - name: seed\n          resources:\n"
+            "            requests: {ephemeral-storage: 64Mi}\n"
+            "            limits: {ephemeral-storage: 64Mi}\n"
+            "          volumeMounts:\n            - {name: tmp, mountPath: /tmp}\n"
+        ),
+    }
+    return (
+        "apiVersion: apps/v1\nkind: Deployment\n"
+        "metadata: {name: demo, namespace: apps}\n"
+        "spec:\n  template:\n    spec:\n      initContainers:\n"
+        + "".join(blocks[name] for name in order)
+        + "      containers:\n        - name: app\n          resources:\n"
+        "            requests: {ephemeral-storage: 8Mi}\n"
+        "            limits: {ephemeral-storage: 8Mi}\n"
+        "          volumeMounts:\n            - {name: tmp, mountPath: /tmp}\n"
+        "      volumes:\n        - name: tmp\n"
+        "          emptyDir: {sizeLimit: 128Mi}\n"
+    )
+
+
+def test_an_init_container_after_a_sidecar_counts_both(monkeypatch):
+    """The sidecar is already running, so the init phase holds 64Mi + 64Mi."""
+    assert _run(_init_phase(("sidecar", "init")), monkeypatch) == 0
+
+
+def test_an_init_container_before_the_sidecar_counts_only_itself(monkeypatch, capsys):
+    """Nothing has started beside it, so 128Mi of volume outruns the budget."""
+    assert _run(_init_phase(("init", "sidecar")), monkeypatch) == 1
+    assert "72Mi" in capsys.readouterr().err
+
+
 def test_an_unreadable_sizelimit_is_reported(monkeypatch, capsys):
     assert _run(deployment(size_limit="64 Mi"), monkeypatch) == 1
     assert "not a readable quantity" in capsys.readouterr().err
@@ -200,6 +403,19 @@ def test_a_corpus_with_no_pod_spec_is_an_operator_error(monkeypatch, capsys):
 
 def test_an_empty_corpus_is_an_operator_error(monkeypatch):
     assert _run("", monkeypatch) == 2
+
+
+def test_an_unreadable_corpus_is_an_operator_error(monkeypatch, capsys):
+    """A corpus the loader cannot parse exits 2 with the operator message."""
+    assert _run("kind: Deployment\nmetadata: {name: x\n", monkeypatch) == 2
+    assert "ERROR:" in capsys.readouterr().err
+
+
+def test_byte_counts_print_in_the_units_a_manifest_writes():
+    assert mod.format_bytes(2**30) == "1Gi"
+    assert mod.format_bytes(3 * 2**20) == "3Mi"
+    assert mod.format_bytes(2**10) == "1Ki"
+    assert mod.format_bytes(1000) == "1000 bytes"
 
 
 def test_quantity_parsing_covers_the_suffixes_it_claims():

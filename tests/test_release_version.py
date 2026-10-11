@@ -19,7 +19,9 @@ PYPROJECT = REPO / "cli" / "pyproject.toml"
 TAG = r"v\d+\.\d+\.\d+"
 LITERAL_SITES: dict[str, re.Pattern[str]] = {
     "cli/README.md": re.compile(rf"weisssrv-lib\.git@({TAG})"),
-    "docker/README.md": re.compile(rf"^\s*ref:\s*({TAG})\s*$", re.MULTILINE),
+    # The include snippet declares the tag in a `spec:` header, so the literal
+    # is the input default rather than the entry's `ref:`.
+    "docker/README.md": re.compile(rf"^\s*default:\s*({TAG})\s*$", re.MULTILINE),
     "terraform/modules/cloudflare-zone/README.md": re.compile(rf"\?ref=({TAG})"),
     "terraform/modules/tailscale-acl/README.md": re.compile(rf"\?ref=({TAG})"),
     "terraform/modules/authentik-sso/README.md": re.compile(rf"\?ref=({TAG})"),

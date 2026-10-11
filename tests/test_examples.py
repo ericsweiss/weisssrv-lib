@@ -132,6 +132,40 @@ class TestNetpolExceptExample:
         )
 
 
+class TestLibRefSitesExample:
+    """examples/lib-ref-sites.example.yml -> check-lib-pins.py."""
+
+    def test_loads_through_load_sites(self, tmp_path):
+        clp = load_script("check-lib-pins.py")
+        (tmp_path / "scripts").mkdir()
+        (tmp_path / "scripts" / "lib-ref-sites.yml").write_text(
+            (EXAMPLES / "lib-ref-sites.example.yml").read_text()
+        )
+        sites = clp.load_sites(tmp_path / ".gitlab-ci.yml")
+        assert sites, "the example declares no sites"
+        for glob, pattern in sites:
+            assert not glob.startswith("/")
+            assert pattern.groups == 1
+
+    def test_every_pattern_matches_a_release_tag(self, tmp_path):
+        """A pattern that cannot match vX.Y.Z would fail its own vacuity guard."""
+        clp = load_script("check-lib-pins.py")
+        (tmp_path / "scripts").mkdir()
+        (tmp_path / "scripts" / "lib-ref-sites.yml").write_text(
+            (EXAMPLES / "lib-ref-sites.example.yml").read_text()
+        )
+        samples = [
+            'source = "git::https://host/eric/weisssrv-lib.git//terraform/'
+            'modules/cloudflare-zone?ref=v1.2.3"',
+            "pipx install 'git+https://host/eric/weisssrv-lib.git@v1.2.3"
+            "#subdirectory=cli'",
+        ]
+        for glob, pattern in clp.load_sites(tmp_path / ".gitlab-ci.yml"):
+            assert any(
+                (m := pattern.search(s)) and m.group(1) == "v1.2.3" for s in samples
+            ), f"no sample line matches the pattern for {glob}"
+
+
 class TestB2BucketExample:
     """Shape guard for the one example carrying placeholder identifiers."""
 

@@ -29,7 +29,6 @@ PAIRS = (
     ("check-guest-endpoint-parity.py", "inventory_tree.py"),
     ("check-deploy-preflight.py", "ci_playbook_invocations.py"),
     ("check-deploy-preflight.py", "ci_yaml.py"),
-    ("check-molecule-image-pin.py", "ci_yaml.py"),
     ("check-molecule-matrix-coverage.sh", "ci_yaml.py"),
     ("check-version-checksums.py", "check-versions.py"),
     ("check-helm-repo-parity.py", "check-versions.py"),

@@ -103,7 +103,7 @@
             | map('join', ':') | sort | join(','))
          if (_current.nodes is defined and _current.nodes is mapping)
          else (_current.nodes | default('') | string | split(',')
-               | map('regex_replace', '^([^:]+)$', '\\1:0') | sort | join(',')) }}
+               | map('regex_replace', '^([^:]+)$', '\1:0') | sort | join(',')) }}
     _current_resources: >-
       {{ (_current.resources | dict2items | map(attribute='key') | sort | join(','))
          if (_current.resources is defined and _current.resources is mapping)

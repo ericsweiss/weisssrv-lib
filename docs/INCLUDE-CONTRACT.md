@@ -2,18 +2,25 @@
 
 How to consume each CI template, its complete `spec:inputs` set with defaults,
 and the parity note recording what it reproduces for which consumer. All
-templates are included the same way — by project + pinned ref + file path, with
-optional `inputs:`:
+templates are included the same way — by project + the one declared ref + file
+path, with optional `inputs:`:
 
 ```yaml
+spec:
+  inputs:
+    lib_ref:
+      default: <CURRENT_TAG>   # a release TAG (see VERSIONING.md) — never a branch
+---
 include:
   - project: eric/weisssrv-lib
-    ref: <CURRENT_TAG>     # a release TAG (see VERSIONING.md) — never a branch
+    ref: $[[ inputs.lib_ref ]]
     file: /ci/<area>/<template>.yml
     inputs:
       <name>: <value>
 ```
 
+The consuming pipeline declares the tag ONCE, in its own `spec:` header, and
+every entry interpolates it — see [The library pin](#the-library-pin).
 `<CURRENT_TAG>` is the placeholder convention across this repo's docs; the
 current release is named once, in the [README](../README.md#current-release).
 
@@ -136,8 +143,9 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
   consumer's behaviour byte-for-byte.
 - **The pod-resource inputs** are in [Resource inputs](#resource-inputs),
   which records which templates take them and what each default is.
-- **The library pin is a literal release tag on every entry.** The rule and the
-  reasons are in [The library pin](#the-library-pin).
+- **Every entry's `ref:` is `$[[ inputs.lib_ref ]]`**, resolving to the release
+  tag the consuming pipeline declares once. The rule and the reasons are in
+  [The library pin](#the-library-pin).
 - **Name a template by its FULL path** (`ci/templates/install-1password.yml`,
   not `install-1password.yml`), and never name a `ci/<dir>/<file>.yml` path this
   repo does not ship — not even as a "not provided" example. The
@@ -228,15 +236,50 @@ full concurrency burst still fits the runner nodes' allocatable CPU.
 
 ## The library pin
 
-Every weisssrv-lib `include:` entry pins a literal release tag. GitLab resolves
-`include:` at pipeline-CREATION time, before the same file's `variables:` block
-exists, so `ref: $WEISSSRV_LIB_REF` does not resolve. A project or group CI/CD
-variable IS readable there, but it moves the pin out of git: a library bump
-would stop appearing in a diff and could not be reviewed or reverted as an MR.
-A branch ref is forbidden for the same reason plus one worse — a branch deleted
-after merge takes the include with it, and until then the pipeline's behaviour
-can change with no commit in the consuming repo. `scripts/check-lib-pins.py`
-enforces both.
+A consuming repo declares the library release tag in exactly ONE in-git place:
+`spec.inputs.lib_ref.default`, in the `spec:` header document at the top of its
+`.gitlab-ci.yml`. Every `include:` entry's `ref:` and the
+`variables.WEISSSRV_LIB_REF` that jobs and image tags interpolate are both the
+literal string `$[[ inputs.lib_ref ]]`:
+
+```yaml
+spec:
+  inputs:
+    lib_ref:
+      default: <CURRENT_TAG>
+---
+variables:
+  WEISSSRV_LIB_REF: $[[ inputs.lib_ref ]]
+include:
+  - project: eric/weisssrv-lib
+    ref: $[[ inputs.lib_ref ]]
+    file: /ci/lint/yaml-lint.yml
+```
+
+**Why an input and not a variable.** GitLab resolves `include:` at
+pipeline-CREATION time, before the same file's `variables:` block exists, so
+`ref: $WEISSSRV_LIB_REF` does not resolve. Inputs are the exception: they
+interpolate BEFORE include resolution, so the value reaches the include. A
+project or group CI/CD variable is readable there too, but it moves the pin out
+of git — a library bump would stop appearing in a diff and could not be reviewed
+or reverted as an MR. The header keeps the single source in the file, and a
+manual or API run can override `lib_ref` to resolve the whole pipeline at a
+candidate tag, which is the pipeline-parity check before a bump merges.
+
+A branch ref stays forbidden: a branch deleted after merge takes the include
+with it, and until then the pipeline's behaviour can change with no commit in
+the consuming repo.
+
+**The gate.** `scripts/check-lib-pins.py` (vendored, with `ci_yaml.py`) holds
+the declared tag to `vX.Y.Z`, every include `ref:` and the variable to the
+interpolation, `ansible/requirements.yml`'s collection `version:` to the tag,
+and every entry of the optional per-repo `scripts/lib-ref-sites.yml` — the
+Terraform `?ref=` pins, a copier answer default, any other file that repeats the
+tag. `--fix` converts a repo still carrying a literal tag on every entry and is
+idempotent afterwards; `--bump vX.Y.Z` moves the declared tag and rewrites every
+surface from it, so a library upgrade is one command; `--print` writes the
+declared tag for a Taskfile to read. Flags, exit codes and the site-list schema
+are in [SCRIPTS.md](SCRIPTS.md#check-lib-pinspy-pyyaml).
 
 ## Self-application (this library's own pipeline)
 
@@ -564,6 +607,12 @@ the heaviest scenarios run 8-11 minutes per attempt.
 
 - **Reproduces:** weisssrv `flux-lint` (substitute mode) and the tenant/cluster
   `flux-lint` (simple mode).
+- **The program is `scripts/flux-lint.sh`,** vendored from this library and run
+  by this job AND by a consumer's `flux:lint` task, so one implementation
+  decides both. The job keeps the tool install, the inputs and the environment
+  `extra_validation` reads; everything else is in the script
+  (docs/SCRIPTS.md § flux-lint.sh). A consumer that has not vendored it fails
+  with the path and the offer file named.
 - **Key input `substitute` (boolean, default true):**
   - `true` (weisssrv): extract postBuild vars from a cluster-versions ConfigMap
     (`flux_render_script`), iterate `cluster_dir` Kustomizations, envsubst each,
@@ -590,18 +639,19 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `helm_sha256` | the sha for `helm_version` | moves with it |
 | `flux_version` | `2.9.0` | substitute mode only — the flux CLI whose `envsubst --strict` decides whether the post-build will reconcile. Held equal to the versions ConfigMap's own `flux_version` by the job, which fails on a mismatch rather than linting with a parser the cluster does not run |
 | `flux_sha256` | the sha for `flux_version` | moves with it |
-| `pyyaml_version` | `6.0.2` | pins the inline `spec.path` parser |
+| `pyyaml_version` | `6.0.2` | pins the ConfigMap and `spec.path` parsers `flux-lint.sh` runs |
 | `k8s_version` | `""` | empty = derived from the ConfigMap's `k3s_version` (substitute mode); simple mode falls back to 1.36.0 |
 | `kustomize_path` | `kubernetes/flux` | simple mode only — the ONE directory that arm builds. The default is the tenant layout the app template renders; a repo laid out differently passes the path it actually reconciles |
 | `allowed_skips` | `"0"` | simple mode only. How many rendered resources kubeconform may validate against NO schema. Above it the job fails, and so does a summary carrying no `Skipped:` field, which is what an unreachable catalog looks like. Substitute mode uses `expected_skipped_file` instead |
 | `cluster_dir` | `""` (required in substitute mode) | substitute mode only; the simple arm never reads it, so it need not be passed there. Empty in substitute mode FAILS the job — a cluster name is site data, so there is no real default |
 | `require_cluster_root` | `true` | substitute mode; pass `false` pre-bootstrap |
 | `versions_configmap` | `kubernetes/infrastructure/sources/versions-configmap.yaml` | substitute mode only |
+| `flux_lint_script` | `scripts/flux-lint.sh` | the render/scan/kubeconform program, taken from the CONSUMER tree. Vendor it (`scripts/vendorable-paths.yml`) alongside `flux_render_script` and `skipped_script`; a consumer's own `flux:lint` task runs the same file |
 | `flux_render_script` | `scripts/flux-render.sh` | substitute mode; the path is taken from the CONSUMER tree |
 | `skipped_script` | `scripts/kubeconform-skipped.py` | substitute mode; consumer tree |
 | `crd_catalog_ref` | a `datreeio/CRDs-catalog` commit sha | ref the kubeconform schema location resolves against. Pinned so a catalog rewrite cannot change what the gate accepts; point it at an internal mirror ref to self-host |
 | `expected_skipped_file` | `""` | repo-local baseline of `apiVersion/Kind` pairs known to have no schema in the CRD catalog, one per line, `#` comments allowed. Empty keeps the unvalidated-kind tracker informational. Set it and a kind skipped outside the baseline FAILS the job — without it an unreachable or rate-limited catalog silently degrades the run to core-kinds-only while flux-lint reports green |
-| `extra_validation` | `""` | shell run with `$RENDER_ALL` / `$FAILED` in scope; see `scripts/run-render-gates.sh` |
+| `extra_validation` | `""` | shell run in the JOB shell after the script, with `$RENDER_ALL` / `$K8S_VER` / `$FAILED` and the ConfigMap exports in scope; see `scripts/run-render-gates.sh` |
 | `default_branch` | `main` |  |
 | `changes` | `["kubernetes/**/*", "ansible/inventories/prod/group_vars/all.yml"]` |  |
 
@@ -619,8 +669,10 @@ the heaviest scenarios run 8-11 minutes per attempt.
   list, which both tools exit 0 on while the cluster-side Kustomization's prune
   deletes what the repo applied), and fails when kubeconform skipped more
   resources than `allowed_skips` or printed no `Skipped:` field at all.
-  Substitute mode has the same two floors: the empty-`$RENDER_ALL` check and
-  the unvalidated-kind tracker.
+  Substitute mode fails a STAGE whose render is empty, fails a cluster
+  directory in which nothing rendered at all, and carries the unvalidated-kind
+  tracker. It also fails a placeholder whose key is present but **EMPTY**:
+  `image: foo:${x}` renders as `foo:`, which yamllint and kubeconform pass.
 - **Flux's own envsubst is the authority on substitution (substitute mode).**
   Each rendered tree is piped through `flux envsubst --strict` before the GNU
   `envsubst` render, and the file fails on a non-zero exit with flux's message
@@ -659,14 +711,14 @@ the heaviest scenarios run 8-11 minutes per attempt.
   absent. If either exists, the root is built so a missing companion file fails
   loudly. A generated repo that omits the input fails its first pipeline; the
   job prints the input to pass.
-- **Parity:** the render loop, missing-placeholder check, envsubst allowlist and
-  informational skip tracker are extracted from weisssrv. **Full weisssrv parity
+- **Parity:** the render program, missing-placeholder check, envsubst allowlist
+  and skip tracker all live in `scripts/flux-lint.sh`. **Full weisssrv parity
   requires passing `extra_validation`** with its HPA/VPA invariant,
   scrape/NetworkPolicy invariant, secret-store scoping, PVC storage-class and
   helm-values calls — those reference weisssrv-local scripts that stay in
   weisssrv and run with `$RENDER_ALL` / `$FAILED` in scope.
-  `flux-render.sh` and `kubeconform-skipped.py` are shipped here AND vendored in
-  weisssrv.
+  `flux-lint.sh`, `flux-render.sh` and `kubeconform-skipped.py` are shipped
+  here AND vendored in weisssrv.
 - **Tenant:** `inputs: { tags: [], substitute: false, kubeconform_version:
   "0.8.0", kubeconform_sha256: "…", kustomize_version: "5.8.2",
   kustomize_sha256: "…", k8s_version: "1.36.0" }` (its own newer pins).
@@ -977,11 +1029,13 @@ the heaviest scenarios run 8-11 minutes per attempt.
   so a pin bump busts it), `policy: pull-push`. A job whose `setup_command`
   fetches tools stops re-downloading them from GitHub once per pipeline — the
   same egress that produces the DinD-MTU reset class. The cache cannot serve a
-  stale binary: `ci-fetch-tools.py` stamps `<name>.version` beside each one and
-  re-fetches when the stamp does not match the resolved pin, so a version bump
-  still takes effect even when the key does not change. Do not cache `.bin/`
-  with a fetcher that lacks that stamp. No-op without a runner cache backend,
-  and a no-op in substance for the default `setup_command: true`.
+  stale or tampered binary: `ci-fetch-tools.py` keeps each verified asset under
+  `.bin/.assets/`, re-hashes it against its own pin on every run and re-fetches
+  unless the binary beside it is the executable that asset installs — so a
+  version bump still takes effect even when the key does not change, and the
+  cache carries the assets as well as the binaries. Do not cache `.bin/` with a
+  fetcher that lacks that check. No-op without a runner cache backend, and a
+  no-op in substance for the default `setup_command: true`.
 - **Tenant:** `inputs: { tags: [], apt_packages: "", image: python:3.13,
   test_dir: "tests" }`. `apt_packages` is the one root-only default in the
   library: installing them needs write access to the apt lock, which the shared
@@ -1484,9 +1538,9 @@ canonical-copy header naming its source.
   set is held to that list by `tests/test_github_example_gates.py`, and the tool
   pins are the same values as the library's template defaults, held by
   `tests/test_pin_parity.py`, so both CI shapes gate on identical tools.
-  **Where parity stops:** the library-pin check (`check-lib-pins.py`,
-  `check-molecule-image-pin.py`) has no job here — a GitHub consumer has no
-  `include:` to drift and runs it from `task lint`.
+  **Where parity stops:** the library-pin check (`check-lib-pins.py`) has no
+  job here — a GitHub consumer has no `include:` to drift and runs it from
+  `task lint`.
   A consumer's shape-parity table should cite this list rather than re-derive it
   from the file, and a new step added here is release-noted as closing a parity
   gap.
@@ -1648,13 +1702,12 @@ to the same tag it pins the templates to — see
 [`docker/README.md`](../docker/README.md). Cross-project registry pulls require
 the consumer to be on this project's CI/CD job-token allowlist.
 
-**The fallback only resolves where the images are hosted.** The molecule
-templates set `MOLECULE_TEST_IMAGE` in CI, so the scenario fallback is read by
-LOCAL runs alone — and a generated consumer's fallback is built from its own
-forge and its own path to this library, which only resolves if that forge hosts
-the library and its `molecule-ci` / `molecule-test` images. A consumer on
-another forge sets `MOLECULE_TEST_IMAGE` for local runs rather than relying on
-the fallback.
+**The fallback is this library's own, and a consumer ships none.** The molecule
+templates set `MOLECULE_TEST_IMAGE` in CI, so the fallback is read by LOCAL runs
+alone, and a second literal tag in a consumer's scenarios would be one more
+surface to bump. A consumer's scenario spells the bare
+`image: "${MOLECULE_TEST_IMAGE}"` and its Taskfile exports the variable from
+`check-lib-pins.py --print` — see [VERSIONING.md](VERSIONING.md).
 
 `molecule-shared/` (the shared scenario base config), each role's `molecule/`
 tree and `changelogs/` are `build_ignore`d, so an installed copy carries only

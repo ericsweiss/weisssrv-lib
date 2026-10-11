@@ -189,7 +189,7 @@
           # The pages daemon binds loopback only; pages_nginx fronts it on 8443.
           - gitlab_config is search('listen_proxy')
           - gitlab_config is search('localhost:8090')
-          - gitlab_config is not search('0\.0\.0\.0:8090')
+          - gitlab_config is not search('0\\.0\\.0\\.0:8090')
           - gitlab_config is search('pages_nginx.*enable.*=.*true')
           - gitlab_config is search('pages_nginx.*listen_port.*=.*8443')
           - gitlab_config is search('pages_nginx.*listen_https.*=.*true')

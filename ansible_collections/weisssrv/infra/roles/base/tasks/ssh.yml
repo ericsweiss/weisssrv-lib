@@ -107,7 +107,7 @@
       - _sshd_effective is search('(?m)^permitrootlogin ' ~ _want_rootlogin ~ '$')
       # Exactly one Port line after dedupe: a stale Port from another drop-in
       # fails closed.
-      - (_sshd_effective | regex_findall('(?m)^port\s+\S+$') | unique) == ['port ' ~ (base_ssh_port | string)]
+      - (_sshd_effective | regex_findall('(?m)^port\\s+\\S+$') | unique) == ['port ' ~ (base_ssh_port | string)]
     fail_msg: >-
       sshd -T does not reflect the intended hardening. Another
       sshd_config.d drop-in (e.g. 50-cloud-init.conf) likely sets a

@@ -121,7 +121,7 @@
     - name: Verify ip_forward is not persisted in /etc/sysctl.conf
       ansible.builtin.assert:
         that:
-          - sysctl_conf_content.content | b64decode is not search('(?m)^net\.ipv4\.ip_forward\s*=')
+          - sysctl_conf_content.content | b64decode is not search('(?m)^net\\.ipv4\\.ip_forward\\s*=')
         fail_msg: "/etc/sysctl.conf still carries the ip_forward entry (drop-in should own it)"
         success_msg: "ip_forward persisted only in the role-owned sysctl.d drop-in"
       when: sysctl_conf_stat.stat.exists

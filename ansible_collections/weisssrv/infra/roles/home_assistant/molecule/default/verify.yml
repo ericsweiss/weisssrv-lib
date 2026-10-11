@@ -44,9 +44,9 @@
         that:
           - "home_assistant_t_cfg_text is search('use_x_forwarded_for: true')"
           - "home_assistant_t_cfg_text is search('trusted_proxies:')"
-          - "home_assistant_t_cfg_text is search('- 192\\.168\\.0\\.0/24')"
-          - "home_assistant_t_cfg_text is search('- 10\\.42\\.0\\.0/16')"
-          - "home_assistant_t_cfg_text is search('- 10\\.43\\.0\\.0/16')"
+          - "home_assistant_t_cfg_text is search('- 192\\\\.168\\\\.0\\\\.0/24')"
+          - "home_assistant_t_cfg_text is search('- 10\\\\.42\\\\.0\\\\.0/16')"
+          - "home_assistant_t_cfg_text is search('- 10\\\\.43\\\\.0\\\\.0/16')"
         fail_msg: >-
           Expected an http block with use_x_forwarded_for and all three
           trusted-proxy CIDRs from the scenario group_vars.
@@ -58,7 +58,7 @@
       ansible.builtin.assert:
         that:
           - "home_assistant_t_cfg_text is search('FIRST BOOT only')"
-          - "home_assistant_t_cfg_text is search('/config/\\.storage/http')"
+          - "home_assistant_t_cfg_text is search('/config/\\\\.storage/http')"
         fail_msg: >-
           The rendered http block must carry the note that the list is imported
           on first boot only and that a migrated instance answers from
@@ -67,8 +67,8 @@
     - name: Assert the SSL block is rendered when ssl_enabled
       ansible.builtin.assert:
         that:
-          - "home_assistant_t_cfg_text is search('ssl_certificate: /ssl/fullchain\\.pem')"
-          - "home_assistant_t_cfg_text is search('ssl_key: /ssl/privkey\\.pem')"
+          - "home_assistant_t_cfg_text is search('ssl_certificate: /ssl/fullchain\\\\.pem')"
+          - "home_assistant_t_cfg_text is search('ssl_key: /ssl/privkey\\\\.pem')"
         fail_msg: >-
           ssl_enabled=true but the ssl_certificate / ssl_key lines are missing —
           the home_assistant_ssl_enabled branch in configuration.yaml.j2 is
@@ -80,7 +80,7 @@
           - "home_assistant_t_cfg_text is search('openid:')"
           - "home_assistant_t_cfg_text is search('client_id: !secret oidc_client_id')"
           - "home_assistant_t_cfg_text is search('client_secret: !secret oidc_client_secret')"
-          - "home_assistant_t_cfg_text is search('configure_url: \"https://auth\\.example\\.com/application/o/home/\\.well-known/openid-configuration\"')"
+          - "home_assistant_t_cfg_text is search('configure_url: \"https://auth\\\\.example\\\\.com/application/o/home/\\\\.well-known/openid-configuration\"')"
           - "home_assistant_t_cfg_text is search('scope: \"openid profile email\"')"
           - "home_assistant_t_cfg_text is search('username_field: \"preferred_username\"')"
           - "home_assistant_t_cfg_text is search('block_login: true')"
@@ -95,9 +95,9 @@
           - "home_assistant_t_cfg_text is search('^prometheus:', multiline=True)"
           - "home_assistant_t_cfg_text is search('^default_config:', multiline=True)"
           - "home_assistant_t_cfg_text is search('platform: google_translate')"
-          - "home_assistant_t_cfg_text is search('automation: !include automations\\.yaml')"
-          - "home_assistant_t_cfg_text is search('script: !include scripts\\.yaml')"
-          - "home_assistant_t_cfg_text is search('scene: !include scenes\\.yaml')"
+          - "home_assistant_t_cfg_text is search('automation: !include automations\\\\.yaml')"
+          - "home_assistant_t_cfg_text is search('script: !include scripts\\\\.yaml')"
+          - "home_assistant_t_cfg_text is search('scene: !include scenes\\\\.yaml')"
         fail_msg: >-
           Expected prometheus, default_config, tts (google_translate) and the
           !include lines for automations / scripts / scenes.
@@ -412,7 +412,7 @@
         that:
           - home_assistant_t_rescue_fired | default(false)
           - "(home_assistant_t_rolled_back_cfg.content | b64decode) == (home_assistant_t_deployed_cfg.content | b64decode)"
-          - "(home_assistant_t_rolled_back_cfg.content | b64decode) is not search('10\\.99\\.99\\.0/24')"
+          - "(home_assistant_t_rolled_back_cfg.content | b64decode) is not search('10\\\\.99\\\\.99\\\\.0/24')"
           - "home_assistant_t_rollback_baks.results | selectattr('stat.exists') | list | length == 0"
         fail_msg: >-
           The rescue did not restore the pre-deploy /config after a failed

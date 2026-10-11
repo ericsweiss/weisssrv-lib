@@ -61,8 +61,8 @@
     - name: Verify the inotify drop-in raises both ceilings
       ansible.builtin.assert:
         that:
-          - (k3s_inotify_dropin.content | b64decode) is search('(?m)^fs\.inotify\.max_user_instances\s*=\s*8192\s*$')
-          - (k3s_inotify_dropin.content | b64decode) is search('(?m)^fs\.inotify\.max_user_watches\s*=\s*1048576\s*$')
+          - (k3s_inotify_dropin.content | b64decode) is search('(?m)^fs\\.inotify\\.max_user_instances\\s*=\\s*8192\\s*$')
+          - (k3s_inotify_dropin.content | b64decode) is search('(?m)^fs\\.inotify\\.max_user_watches\\s*=\\s*1048576\\s*$')
         fail_msg: "inotify sysctl drop-in missing or ceilings not raised"
         success_msg: "inotify drop-in raises max_user_instances=8192 and max_user_watches=1048576"
 

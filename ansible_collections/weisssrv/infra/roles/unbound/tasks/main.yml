@@ -69,7 +69,7 @@
   retries: 3
   delay: 2
   # dig can exit 0 on SERVFAIL/NXDOMAIN, so require an A record in +short too.
-  until: unbound_test.rc == 0 and (unbound_test.stdout | regex_search('^\d+\.\d+\.\d+\.\d+', multiline=True) is not none)
+  until: unbound_test.rc == 0 and (unbound_test.stdout | regex_search('^\\d+\\.\\d+\\.\\d+\\.\\d+', multiline=True) is not none)
   when: not ansible_check_mode
 
 # /etc/resolv.conf is deliberately untouched: this resolver is not on port 53.

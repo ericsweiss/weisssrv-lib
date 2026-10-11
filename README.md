@@ -8,7 +8,7 @@ a pinned tag.
 
 ## Current release
 
-**v0.19.1.** Every pin example on this page and in `docs/` is written as
+**v0.20.0.** Every pin example on this page and in `docs/` is written as
 `<CURRENT_TAG>`; substitute the release you are adopting, so a release bump
 touches the few copy-paste snippets that must be runnable rather than a dozen
 stale examples. This line is the authority for the literal; the runnable
@@ -87,18 +87,28 @@ tests/         pytest for scripts/ (the CLI has its own cli/tests/)
 
 ## Using it
 
-Consumers pin a **release tag** and include a template by file path:
+Consumers declare a **release tag** once, in their pipeline's `spec:` header,
+and include a template by file path:
 
 ```yaml
+spec:
+  inputs:
+    lib_ref:
+      default: <CURRENT_TAG>
+---
 include:
   - project: eric/weisssrv-lib
-    ref: <CURRENT_TAG>
+    ref: $[[ inputs.lib_ref ]]
     file: /ci/lint/yaml-lint.yml
     inputs:
       tags: []                     # tag-less shared runner (tenant default)
       config: "-c lint/yamllint-relaxed.yml"
       targets: "."
 ```
+
+An input interpolates before `include:` resolves, where `variables:` does not
+exist yet, so one in-git line pins every entry — see
+[The library pin](docs/INCLUDE-CONTRACT.md#the-library-pin).
 
 The library is **internal** visibility, so any authenticated instance user (and
 therefore every repo `eric` owns) can resolve `include: project:`.

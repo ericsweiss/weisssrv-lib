@@ -82,9 +82,6 @@ vendorable:
   # check-live-cpu-limits.py imports gate_common.py from its own directory
   # for the fail-closed live-input arm: vendor the pair.
   - scripts/check-live-cpu-limits.py
-  # check-molecule-image-pin.py imports scripts/ci_yaml.py from its own
-  # directory: vendor the pair, or the gate exits 2 on import.
-  - scripts/check-molecule-image-pin.py
   # check-molecule-matrix-coverage.sh imports scripts/ci_yaml.py from its own
   # directory: vendor the pair, or the gate exits 2 on import.
   - scripts/check-molecule-matrix-coverage.sh
@@ -127,6 +124,10 @@ vendorable:
   - scripts/find-reachable-host.sh
   - scripts/flux-child-kustomizations.py
   - scripts/flux-env.sh
+  # flux-lint.sh runs the render helper and the skipped tracker by path: vendor
+  # flux-render.sh (or flux-env.sh) and kubeconform-skipped.py with it, plus
+  # flux-child-kustomizations.py to iterate the stages in dependsOn order.
+  - scripts/flux-lint.sh
   - scripts/flux-render.sh
   # Reads `kubectl get -o json` on stdin, so it runs from an operator's
   # shell and from a Taskfile with no cluster access of its own.
@@ -141,6 +142,8 @@ vendorable:
   - scripts/generate-versions-configmap.py
   - scripts/inventory_tree.py
   - scripts/kubeconform-skipped.py
+  # lint-prometheus-config.sh runs extract-prometheus-config.py by path
+  # (EXTRACT_SCRIPT overrides it): vendor the pair, or the gate cannot open it.
   - scripts/lint-prometheus-config.sh
   - scripts/maintenance-run-with-verify.sh
   - scripts/molecule-retry.sh

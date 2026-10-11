@@ -55,7 +55,7 @@
       ansible.builtin.assert:
         that:
           - "'ALIASES' in cluster_fw_sections"
-          - "cluster_fw_text | regex_findall('^\\[ALIASES\\]$', multiline=True) | length == 1"
+          - "cluster_fw_text | regex_findall('^\\\\[ALIASES\\\\]$', multiline=True) | length == 1"
           - "'dns-01 192.168.0.150 # Primary DNS server' in alias_lines"
           - "'api-vip 192.168.0.161 # k3s API VIP' in alias_lines"
         fail_msg: >-

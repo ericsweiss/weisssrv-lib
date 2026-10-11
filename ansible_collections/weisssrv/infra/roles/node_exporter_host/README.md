@@ -58,6 +58,34 @@ Pair any such rule with an existence witness on the same instance:
 up{job="<host exporter job>"} == 1 unless on (instance) <metric>
 ```
 
+`absent(<metric>)` is not that witness. It is global: it yields nothing while
+any one host still publishes the series, so the host that lost its textfile
+stays masked by its healthy peers. Keep it only as the extra arm that covers
+every host losing the series at once.
+
+Each `*CollectorStale` companion named below is therefore two arms — staleness
+over the sentinel, plus the per-instance witness — with the witness scoped to
+the hosts the collector actually runs on:
+
+```
+max by (instance) (time() - <collector>_last_success_seconds > 900)
+or (
+  max by (instance) (
+    up{job="<host exporter job>"} == 1
+    unless on (instance) <collector>_last_success_seconds
+  )
+  and on (instance) (max_over_time(<enrolment series>[30d]) > 0)
+)
+```
+
+The job scrapes guests and hosts alike and some collectors are opt-in, so
+without that scope gate every target that was never meant to run the collector
+pages forever. The enrolment proof is a lookback over a series the collector
+publishes only where it runs — its own sentinel does, and it lapses a month
+after the last good run. `SMARTCollectorStale` narrows it to
+`smartmon_collector_devices_scanned`, so a Proxmox host whose scan lists no
+SMART device never qualifies.
+
 Each collector here writes its `*_collector_success` line on every run and sets
 it to `0` on failure, so a failure is a value rather than an absence. The
 corosync collector is the one exception: an unsampleable corosync keeps the
@@ -160,10 +188,17 @@ cluster's alerting rules:
 node_slabinfo_collector_success == 0
   or (time() - node_slabinfo_collector_last_success_seconds > 1800)
   or min by (instance, cache) (node_slab_cache_present) == 0
+  or (
+    up{job="<host exporter job>", instance=~"<hosts under investigation>"} == 1
+    unless on (instance) node_slabinfo_collector_success
+  )
 ```
 
 `for: 30m`, severity warning. Scope each selector to the job that scrapes this
-exporter.
+exporter. The three leading arms all read series from this collector's own
+textfile, so the last arm is what survives the file being wiped or the
+collector turned off mid-investigation; this one is opt-in per host, so that
+arm names the instances it is enabled on rather than taking a lookback gate.
 
 ## smartmon collector (Proxmox hosts only)
 

@@ -54,6 +54,6 @@
     - name: Assert the unset pass emitted no capless zfs_arc_max line
       ansible.builtin.assert:
         that:
-          - "(zfs_conf_after_unset.content | b64decode) is not search('zfs_arc_max=\\s*$')"
+          - "(zfs_conf_after_unset.content | b64decode) is not search('zfs_arc_max=\\\\s*$')"
         fail_msg: "zfs.conf carries a capless `zfs_arc_max=` line — the ARC would cap at zero"
         success_msg: "no capless zfs_arc_max line was emitted"

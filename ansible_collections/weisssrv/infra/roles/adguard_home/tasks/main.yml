@@ -221,7 +221,7 @@
              and adguard_home_staged_archive.stat.checksum == adguard_home_archive_sha256)
             or (adguard_home_staged_checksums_content.content is defined
                 and (adguard_home_staged_checksums_content.content | b64decode)
-                    is search(adguard_home_staged_archive.stat.checksum ~ '\s+\S*AdGuardHome_linux_' ~ adguard_home_arch ~ '\.tar\.gz'))
+                    is search(adguard_home_staged_archive.stat.checksum ~ '\\s+\\S*AdGuardHome_linux_' ~ adguard_home_arch ~ '\\.tar\\.gz'))
         fail_msg: >-
           The staged archive {{ adguard_home_staged_archive.stat.path }}
           (sha256 {{ adguard_home_staged_archive.stat.checksum }}) is not
@@ -506,7 +506,7 @@
   until:
     - adguard_home_dns_test.rc == 0
     - adguard_home_dns_test.stdout | length > 0
-    - adguard_home_dns_test.stdout is regex('^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
+    - adguard_home_dns_test.stdout is regex('^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+')
   when:
     - not ansible_check_mode
     - not (adguard_home_skip_resolv_conf_update | default(false))

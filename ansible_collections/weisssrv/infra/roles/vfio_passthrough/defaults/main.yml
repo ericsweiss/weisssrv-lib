@@ -19,7 +19,7 @@ vfio_passthrough_managed_marker: "managed by weisssrv.infra.vfio_passthrough"
 vfio_passthrough_legacy_markers:
   - >-
     {{ lookup('ansible.builtin.config', 'DEFAULT_MANAGED_STR', on_missing='skip')
-       | default('', true) | regex_replace('\\{.*$', '') | trim }}
+       | default('', true) | regex_replace('\{.*$', '') | trim }}
   - "{{ ansible_managed | default('') | regex_replace('\\{.*$', '') | trim }}"
 
 # How the kernel command line is written. 'grub' appends a /etc/default/grub.d

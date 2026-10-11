@@ -16,7 +16,7 @@ Example configs for every script live in [`../examples/`](../examples/).
 | Script | Does | Config | Forge |
 |---|---|---|---|
 | [`b2-bucket-drift.py`](#b2-bucket-driftpy) | codified B2 bucket settings, drift check + supervised `--apply` | `b2-bucket.example.json` | neutral |
-| [`check-alertmanager-behaviour.py`](#check-alertmanager-behaviourpy-pyyaml-needs-amtool) | asserts what the Alertmanager config routes, inhibits and silences | `alertmanager-behaviour.example.yaml` | neutral |
+| [`check-alertmanager-behaviour.py`](#check-alertmanager-behaviourpy-pyyaml-needs-amtool) | asserts what the Alertmanager config routes, inhibits and silences, across every declared rule corpus | `alertmanager-behaviour.example.yaml` | neutral |
 | [`check-ci-include-job-names.py`](#check-ci-include-job-namespy-pyyaml) | an optional `needs:` naming a job no include creates | flags | gitlab-only |
 | [`check-backup-artifact-apps.py`](#check-backup-artifact-appspy-pyyaml) | pairs the backup-artifact app list with its alert rule, both ways | flags | neutral |
 | [`check-cluster-invariants.py`](#check-cluster-invariantspy-pyyaml) | duplicate vmid / address, a host on a VIP, a host outside the LAN CIDR, an alert-rule `instance=` literal that is no inventory address | flags | neutral |
@@ -33,15 +33,14 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`check-helm-values-coverage.py`](#check-helm-values-coveragepy-pyyaml) | a HelmRelease the helm-values registry neither lists nor excludes | flags | neutral |
 | [`check-helmrelease-crd-safety.py`](#check-helmrelease-crd-safetypy-pyyaml) | a CRD-owning HelmRelease that would delete its CRDs on uninstall | `helmrelease-crd-safety.example.yaml` | neutral |
 | [`check-hpa-vpa-invariant.py`](#check-hpa-vpa-invariantpy-pyyaml) | HPA/VPA overlap, CPU limits, VPA caps, 1:1 memory ratios, a request above its own limit | `autoscaling-policy.example.yaml` | neutral |
-| [`check-ephemeral-storage-cap.py`](#check-ephemeral-storage-cappy-pyyaml) | a sized emptyDir larger than its container's ephemeral-storage limit | stdin | neutral |
+| [`check-ephemeral-storage-cap.py`](#check-ephemeral-storage-cappy-pyyaml) | sized emptyDirs larger than their pod's ephemeral-storage budget | stdin | neutral |
 | [`check-include-contract.py`](#check-include-contractpy-pyyaml) | an undeclared `inputs:` key, an omitted REQUIRED input, a job stage the pipeline does not declare | flags | gitlab-only |
 | [`check-ingressroute-backends.py`](#check-ingressroute-backendspy-pyyaml) | a route backend or scrape port that resolves to no Service in the corpus | stdin | neutral |
 | [`check-issuer-refs.py`](#check-issuer-refspy-pyyaml) | a cert-manager issuer reference that resolves to nothing the corpus ships | `--allow-external` | neutral |
 | [`check-kubectl-version-pin.py`](#check-kubectl-version-pinpy) | a CI kubectl pin within ±1 minor of the cluster | env | neutral |
 | [`check-kustomization.py`](#check-kustomizationpy-pyyaml) | a manifest no kustomization.yaml lists, and a list that renders nothing | paths | neutral |
-| [`check-lib-pins.py`](#check-lib-pinspy-pyyaml) | every library pin equals `WEISSSRV_LIB_REF` and is a release tag | flags | gitlab-only |
+| [`check-lib-pins.py`](#check-lib-pinspy-pyyaml) | every library pin reads the one declared release tag | `lib-ref-sites.example.yml` | gitlab-only |
 | [`check-live-cpu-limits.py`](#check-live-cpu-limitspy-pyyaml-via-gate-common) | a live container running with a CPU limit, and live/template memory-limit drift | none | neutral |
-| [`check-molecule-image-pin.py`](#check-molecule-image-pinpy-pyyaml) | every hand-written molecule test-image tag equals the same pin | flags | gitlab-only |
 | [`check-molecule-matrix-coverage.sh`](#check-molecule-matrix-coveragesh-pyyaml) | molecule scenarios and matrix entries agree, both directions | env | gitlab-only |
 | [`check-netpol-except-parity.py`](#check-netpol-except-paritypy-pyyaml) | no fenced pod has unrestricted egress | `netpol-except.example.yaml` | neutral |
 | [`check-nfs-tls.py`](#check-nfs-tlspy-pyyaml) | an NFS PV that does not mount over TLS by hostname | flags | neutral |
@@ -53,7 +52,7 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`check-rule-windows.py`](#check-rule-windowspy-pyyaml) | an alert `for:` hold that is not inside its accumulating lookback | flags | neutral |
 | [`check-runbook-anchors.py`](#check-runbook-anchorspy) | an alert `runbook_url` pointing at a missing doc or a dangling anchor | flags | neutral |
 | [`check-scrape-netpol.py`](#check-scrape-netpolpy-pyyaml) | a scraped, fenced namespace that admits no observability traffic, or a monitor port nothing declares | `--exempt` | neutral |
-| [`check-scrape-wiring.py`](#check-scrape-wiringpy-pyyaml) | a scrape NetworkPolicy that does not admit the port its monitor scrapes | paths | neutral |
+| [`check-scrape-wiring.py`](#check-scrape-wiringpy-pyyaml) | a scrape NetworkPolicy that does not admit the port its monitor scrapes | paths or `--corpus` | neutral |
 | [`check-secret-rotation-coverage.py`](#check-secret-rotation-coveragepy-pyyaml) | an ESO-managed credential with no documented rotation path | flags | neutral |
 | [`check-secretstore-scope.py`](#check-secretstore-scopepy-pyyaml) | an unscoped ClusterSecretStore, or a consumer outside its conditions | `--external-store` | neutral |
 | [`check-taskfile.sh`](#check-taskfilesh) | every script, dotenv and task a Taskfile references exists, and no fragment is orphaned | env | neutral |
@@ -68,6 +67,7 @@ Example configs for every script live in [`../examples/`](../examples/).
 | `find-reachable-host.sh` | prints the first reachable SSH target from its args | args | neutral |
 | [`flux-child-kustomizations.py`](#flux-child-kustomizationspy-pyyaml) | child Flux Kustomizations in `dependsOn` order | flags | blocking on a cycle |
 | [`flux-env.sh`](#flux-envsh-pyyaml-wraps-flux-rendersh) | multi-ConfigMap front end to `flux-render.sh` | env | neutral |
+| [`flux-lint.sh`](#flux-lintsh-pyyaml-needs-kustomize-kubeconform-flux-envsubst) | renders, scans and kubeconforms a Flux tree | flags | neutral |
 | [`flux-render.sh`](#flux-envsh-pyyaml-wraps-flux-rendersh) | ConfigMap → shell exports, and the kubeconform schema version | args | neutral |
 | [`flux-secret-consumers.py`](#flux-secret-consumerspy) | the workloads in one namespace that consume a named Secret, and which manager owns each | args + stdin | neutral |
 | [`gate_common.py`](#gate-commonpy-pyyaml-not-run-directly) | shared loader, cluster-config, key and NetworkPolicy helpers for the corpus gates | n/a | neutral |
@@ -672,10 +672,10 @@ eval "$VARS"        # every key from every file + ONE merged FLUX_ENVSUBST_VARS
 
 ### `flux-render.sh` (PyYAML)
 
-The two shared halves of `ci/validate/flux-lint.yml`'s substitute mode: turn the
-cluster-versions ConfigMap into shell exports, and derive the kubeconform schema
-version from it. It does **not** own the per-Kustomization build + kubeconform
-loop — that stays in the template.
+Turns the cluster-versions ConfigMap into shell exports, and derives the
+kubeconform schema version from it. The per-Kustomization build + kubeconform
+loop is [`flux-lint.sh`](#flux-lintsh-pyyaml-needs-kustomize-kubeconform-flux-envsubst)'s;
+this file is the half `run-render-gates.sh` needs on its own too.
 
 ```
 VARS=$(scripts/flux-render.sh export-versions "$CM") || exit 1
@@ -706,6 +706,72 @@ K8S_VER=$(scripts/flux-render.sh k8s-version "$CM")
   line by line, and a newline could not survive envsubst into YAML.
 - **Dual-maintained:** weisssrv vendors this file and the flux-lint template
   takes the path from the consumer tree, so the vendored copy is the one CI runs.
+
+### `flux-lint.sh` (PyYAML; needs kustomize, kubeconform, flux, envsubst)
+
+The whole render/scan/kubeconform program, run by `ci/validate/flux-lint.yml`
+**and** by a consumer's `flux:lint` task, so the strict render and every floor
+below reach local lint and CI as one implementation.
+
+```bash
+# A cluster repo, as its `flux:lint` task runs it
+RENDER_ALL=$(mktemp); export RENDER_ALL
+scripts/flux-lint.sh --cluster-dir kubernetes/clusters/<name> \
+  --versions-configmap kubernetes/infrastructure/sources/versions-configmap.yaml \
+  --render-script scripts/flux-env.sh \
+  --child-kustomizations scripts/flux-child-kustomizations.py \
+  --expected-skipped scripts/kubeconform-expected-skipped.txt \
+  --crd-catalog-ref <sha> --render-all "$RENDER_ALL"
+# A tenant repo
+scripts/flux-lint.sh --mode simple --kustomize-path kubernetes/flux \
+  --k8s-version 1.36.0 --crd-catalog-ref <sha>
+```
+
+**Substitute mode** (the default) evaluates the ConfigMap's keys through
+`--render-script` (`flux-render.sh`, or `flux-env.sh` for a cluster that
+substitutes from several files), then per stage: `kustomize build`, the
+`${`-shape scan, the unknown-key and empty-key scans, `flux envsubst --strict`,
+the GNU `envsubst` render, and `kubeconform`. Afterwards it tracks the kinds no
+schema validated through `--skipped-script`, and builds the cluster root.
+
+- **Flux's own envsubst is the authority on substitution.** GNU `envsubst`
+  reads only `${NAME}`, while Flux's Go implementation also reads bash modifiers
+  — `${conf%/*}` is a variable to it — so a form only it sees would otherwise
+  pass and leave the Kustomization BuildFailed in-cluster, reconciling nothing.
+  The cheap `${`-shape pre-scan stays ahead of `--strict` because that one names
+  the offending line. `$${` is Flux's escape and is masked out of every scan.
+- **Nothing passes on nothing.** A stage whose render is empty FAILS (kubeconform
+  exits 0 on an empty stream, and the cluster-side prune then deletes every
+  object that stage applied), and so does a cluster directory in which no
+  Kustomization rendered anything.
+- **A key that is present but EMPTY fails too**, because `image: foo:${x}`
+  renders as `foo:` and yamllint and kubeconform both pass it.
+- `--child-kustomizations` hands the stage list to
+  [`flux-child-kustomizations.py`](#flux-child-kustomizationspy-pyyaml), which
+  iterates in `dependsOn` order and fails on a Kustomization with no
+  `spec.path`. Without it the cluster directory is scanned (`*.yaml`, `*.yml`;
+  `kustomization.yaml` and every non-Kustomization document skipped), which
+  needs no second vendored file.
+- `--render-all FILE` appends every rendered stage to a file the CALLER owns, so
+  a corpus gate chain (`run-render-gates.sh`) can read it afterwards. Without
+  the flag the corpus is a temp file removed on exit.
+- `--k8s-version` is empty by default and then derived from the ConfigMap's
+  `k3s_version`; **simple mode falls back to 1.36.0**, held equal to
+  `ci/github/ci.example.yml`'s `K8S_VERSION` by `tests/test_pin_parity.py`.
+- `--check-flux-version false` waives holding the flux CLI equal to the
+  ConfigMap's `flux_version`. Leave it on: `--strict` is authoritative only
+  while the CLI is the release kustomize-controller runs. A ConfigMap declaring
+  no `flux_version` gets a printed note instead.
+- **Simple mode** (`--mode simple`) builds the one `--kustomize-path`, fails on
+  a render with no document, and fails when kubeconform skipped more than
+  `--allowed-skips` resources or printed no `Skipped:` field at all — the
+  signature of an unreachable catalog.
+- The catalog is pinned: `--crd-catalog-ref` is a `datreeio/CRDs-catalog` ref, or
+  `--crd-catalog` takes the whole `-schema-location` template to self-host.
+- **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error (an unknown
+  flag, a missing `--cluster-dir`, no catalog).
+- Flag state is `FL_`-prefixed: the script `eval`s the render helper's exports,
+  and a ConfigMap key could otherwise overwrite one.
 
 ### `kubeconform-skipped.py`
 
@@ -848,9 +914,9 @@ the rendered manifest corpus on stdin through `gate_common.py`** —
 the corpus is what
 `task flux:lint` accumulates from `kustomize build | envsubst`, so they wire
 into `ci/validate/flux-lint.yml`'s `extra_validation` chain. **The rest take
-paths or flags**: `check-netpol-except-parity.py` (manifest paths, plus an
-optional rendered stream via `--corpus`), `check-kustomization.py`
-and `check-scrape-wiring.py` (manifest paths), and
+paths or flags**: `check-netpol-except-parity.py` and
+`check-scrape-wiring.py` (manifest paths, plus an optional rendered stream via
+`--corpus`), `check-kustomization.py` (manifest paths), and
 `check-alertmanager-behaviour.py`, `check-backup-artifact-apps.py`,
 `check-cluster-invariants.py`, `check-guest-endpoint-parity.py` and
 `check-role-inputs.py` (flags). Where a gate
@@ -927,28 +993,39 @@ cat rendered-corpus.yaml | scripts/check-pvc-storageclass.py
 ### `check-ephemeral-storage-cap.py` (PyYAML)
 
 Fails a container that mounts a `sizeLimit` emptyDir without an
-`ephemeral-storage` request AND limit, or whose limit is below the emptyDirs it
-mounts.
+`ephemeral-storage` request AND limit, and a pod whose sized emptyDirs together
+exceed its ephemeral-storage budget.
 
 ```
 cat rendered-corpus.yaml | scripts/check-ephemeral-storage-cap.py
 ```
 
-The kubelet evicts on the CONTAINER's limit, not on the volume's `sizeLimit`, so
-a limit below the sized volume kills the pod before the volume it sized ever
-fills — and nothing in the manifest looks wrong. Writing the two numbers near
-each other and asserting the relationship in a comment is what this replaces.
+The kubelet evicts on the POD's limit, not on the volume's `sizeLimit`, so a
+budget below the sized volumes kills the pod before they ever fill — and nothing
+in the manifest looks wrong. Writing the two numbers near each other and
+asserting the relationship in a comment is what this replaces.
 
 - **Subjects:** `Pod` and the pod template of `Deployment`, `StatefulSet`,
   `DaemonSet`, `Job`, `CronJob`, `ReplicaSet` and `ReplicationController`;
   `initContainers` as well as `containers`.
-- Every sized emptyDir a container mounts draws on the same budget, so the gate
-  weighs the limit against their SUM. Equal values pass: setting the limit to
-  exactly the volume size is a deliberate shape.
+- The request-and-limit pair is per container: every container mounting a sized
+  emptyDir declares both, the request being what the scheduler places the pod on.
+- The size comparison is per POD, because the emptyDirs and the containers draw
+  on one budget: each volume is charged ONCE however many containers mount it,
+  and their SUM weighs against the sum of the containers' limits — every
+  container's, not only the mounting ones'. Equal values pass: setting the
+  budget to exactly the volume size is a deliberate shape.
+- Init containers follow the kubelet's own arithmetic for that budget: the
+  higher of the running phase — every app container plus every sidecar
+  (`restartPolicy: Always`) — and the init phase, where each plain init
+  container's own limit joins the limits of the sidecars DECLARED BEFORE IT,
+  since those are already running. Order therefore counts: the same two init
+  containers swapped are a different budget.
 - Quantities compare numerically, so `1Gi` against `512Mi` is caught. A quantity
   the gate cannot read is reported rather than assumed to be fine.
 - A `medium: Memory` emptyDir is tmpfs, charged to the container's memory
-  limit, so it needs no ephemeral-storage pair and is left out.
+  limit, so it needs no ephemeral-storage pair and is left out. So is a sized
+  emptyDir no container mounts: nothing writes to it.
 - **Exit codes:** 0 clean, 1 on a violation, **2** on an operator error — an
   empty or unparseable corpus, or one declaring no pod spec at all, which is
   what a render loop that never reached the workload stages produces.
@@ -1101,9 +1178,10 @@ cat rendered-corpus.yaml | scripts/check-scrape-netpol.py \
   survives a clean run is the signal to check the live policy's selector.
 - **The port-level half is its own gate.** `check-scrape-wiring.py` below
   checks the allow policy's own `podSelector` and port against the pods a
-  monitor selects. It reads a single-namespace manifest tree, where the
-  monitor, the workload and the policy resolve against each other; this gate
-  spans every namespace in a cluster corpus and cannot assume that.
+  monitor selects, over a single-namespace tree or a rendered cluster
+  `--corpus`. It resolves the monitor, the Service, the workload and the policy
+  against each other, which this gate — namespace granularity, and no Service
+  hop — does not.
 - **An empty corpus is an operator error, exit 2**, as it is for the two sibling
   stdin gates. **So is a corpus that arrived but holds no scrape target** — the
   observability stage never rendered, so every namespace went unexamined. Scrape
@@ -1115,41 +1193,65 @@ cat rendered-corpus.yaml | scripts/check-scrape-netpol.py \
 ### `check-scrape-wiring.py` (PyYAML)
 
 Fails a monitor whose scraped PORT no NetworkPolicy admits from the
-observability namespace. Reads a manifest tree from **paths** and judges it one
-effective namespace at a time, so the monitor, the Service, the workload and the
-policy resolve against each other. `check-scrape-netpol.py` is the
-namespace-granularity gate for a whole cluster corpus; this one is the port
-granularity.
+observability namespace. Reads a manifest tree from **paths**, one effective
+namespace at a time, or a whole rendered cluster from **`--corpus`**, where a
+monitor's scope resolves against the namespaces the corpus carries. Either way
+the monitor, the Service, the workload and the policy resolve against each
+other. `check-scrape-netpol.py` is the namespace granularity; this one is the
+port granularity.
 
 ```
 scripts/check-scrape-wiring.py [--observability-namespace NS]
-    [--namespace NS | --namespace-from-tree] [DIRECTORY]
+    [--namespace NS | --namespace-from-tree | --corpus PATH] [DIRECTORY]
 ```
 
 - A ServiceMonitor resolves through **every** Service its labels select, then
   that Service's `targetPort` (or its `port`) to the container port, by name or
   by number. A PodMonitor's `port` / `portNumber` / `targetPort` resolves
   straight against `containerPorts`, with no Service hop.
+- **Every selected workload is its own target.** `targetPort: metrics` resolves
+  per pod, so pods behind one Service may serve the same Service port at
+  different numbers, each from pods carrying different labels. Every number
+  must be admitted, by a policy that selects those pods and names that number
+  — or names the port, since a policy's named port is resolved against each
+  pod's own ports and so covers every number the name holds.
 - A policy is credited when its `podSelector` matches the target pods and an
   ingress rule admits the observability namespace on that port. An absent or
   **empty** `ports:` list matches every port, as the API reads it, and
   `endPort` is read as a range.
-- A shape the gate does not model — `matchExpressions`, an `ipBlock` peer, a
-  peer scoping the namespace with a `podSelector` — is **not credited**, and is
-  named in the failure so the reader can tell "wired wrong" from "not modelled".
-- A matched Service with **no `spec.selector`** is a Violation, not a target:
-  its endpoints are managed by hand, so no workload in the tree serves the
-  scraped port and crediting a policy against it certifies nothing.
-- **One port name resolves to one number.** A port name two selected workloads
-  declare at different numbers is an operator error: a policy naming it would be
-  credited against whichever workload was read last.
+- A shape the gate does not model — `matchExpressions`, an `ipBlock` peer — is
+  **not credited**, and is named in the failure so the reader can tell "wired
+  wrong" from "not modelled".
+- A peer that admits the observability namespace and then **narrows it with a
+  `podSelector`** keeps its credit for the namespace and the port, with the
+  narrowing named as unresolved. Prometheus is chart-installed, so its pod
+  labels are in no manifest and no input can settle whether the narrowing
+  reaches it; refusing the policy would fail every cluster that admits the
+  scrape this way. The port is still required, so the credit is not vacuous.
+- A matched Service with **no `spec.selector`** is a target only if something in
+  the input declares its endpoints — an `Endpoints` object of that name, or an
+  `EndpointSlice` labelled `kubernetes.io/service-name`. Then the addresses are
+  the operator's, no pod here serves the port and no policy governs the scrape,
+  so it is counted in the success line rather than judged. With neither
+  selector nor endpoints it is a Violation: nothing serves the scraped port, so
+  crediting a policy against it certifies nothing.
+- **That credit is not vacuous: the endpoints must serve the scraped port.** The
+  object has to hold at least one address AND a port the monitor reaches —
+  Prometheus keeps an endpoint target by the port's NAME, so an `endpoints[].port`
+  monitor needs that name in the object, while a `targetPort` one matches the
+  number; a port entry carrying no number is read as every port, as the API
+  reads it. An `Endpoints` object pairs addresses with ports per subset, so a
+  port in one subset does not serve the addresses in another. An empty object,
+  one with no addresses, or one exposing only another port is a Violation.
+  Addresses or ports standing as a `${...}` substitution are a scalar here, so
+  what they hold is unknown and the object keeps its credit.
 - **Documents are grouped by effective namespace** — their own
-  `metadata.namespace`, else `--namespace` — and each group is judged against
-  its own policies, so a policy in one namespace never admits a scrape in
-  another. A tree stating exactly ONE namespace lends it to the documents that
-  name none, the way its Kustomization does; stating several while a document
-  names none is an operator error, and so is a stated namespace that disagrees
-  with `--namespace`.
+  `metadata.namespace`, else `--namespace` — and each target is judged against
+  the policies in the namespace its pods live in, so a policy in one namespace
+  never admits a scrape in another. A tree stating exactly ONE namespace lends
+  it to the documents that name none, the way its Kustomization does; stating
+  several while a document names none is an operator error, and so is a stated
+  namespace that disagrees with `--namespace`.
 - **A document that can hold no namespace is not grouped at all** — a
   cluster-scoped kind (`Namespace`, `CustomResourceDefinition`, `ClusterRole`,
   `PriorityClass`, `StorageClass` and the rest of `CLUSTER_SCOPED_KINDS`) and
@@ -1158,12 +1260,12 @@ scripts/check-scrape-wiring.py [--observability-namespace NS]
   as "unassigned" refuses a correctly wired multi-namespace tree. Flux's
   `Kustomization` CR shares a kind name with kustomize's but is namespaced, so
   the carve-out is by API group and that CR still counts.
-- A monitor whose `spec.namespaceSelector` reaches outside its group is an
-  operator error: the policies there cover one namespace, so a wider scrape must
-  be checked where those policies live. A `matchNames` entry is verified
-  against the group's namespace (`--namespace`, or the one the document states)
-  and refused without one, so a stale name never certifies against the wrong
-  policies.
+- **In tree mode a monitor whose `spec.namespaceSelector` reaches outside its
+  group is an operator error**: the policies there cover one namespace, so a
+  wider scrape must be checked where those policies live. A `matchNames` entry
+  is verified against the group's namespace (`--namespace`, or the one the
+  document states) and refused without one, so a stale name never certifies
+  against the wrong policies.
 - **`--namespace-from-tree`** reads that namespace from the one Namespace
   manifest under the directory, for a pipeline vendored byte-identically that
   cannot carry a tenant's value (`ci/github/ci.example.yml` passes it). It is
@@ -1171,12 +1273,33 @@ scripts/check-scrape-wiring.py [--observability-namespace NS]
   Namespace the cluster operator owns is unaffected; when one is declared and
   the tree names no namespace, or names several, that is the operator error.
   Mutually exclusive with `--namespace`.
-- **Exit codes:** 0 clean, 1 on an unadmitted port or a selectorless Service, 2
-  on an operator error — a directory that does not exist, a manifest that does
-  not parse, a corpus with no kinded document, a monitor with no endpoints or a
-  selector matching every pod, an ambiguous namespace grouping, one port name at
-  two numbers, and a policy that admits the observability namespace while no
-  monitor is present in its namespace at all.
+- **`--corpus PATH`** reads a rendered cluster instead of a tree: a
+  multi-document stream as `kustomize build` writes it, `-` for stdin, or a
+  directory of rendered manifests. Every namespace in it is judged, so
+  `matchNames` resolves against the namespace holding the pods and their
+  policies, and `any: true` reaches every namespace the corpus carries. A
+  monitor scoped to several is judged on their union: a namespace with no
+  matching Service contributes nothing, and only a monitor with no target
+  anywhere is a finding. A `matchNames` namespace the corpus holds no object in
+  is an operator error — a stale name, or a partial render. Mutually exclusive
+  with the two namespace options and with `DIRECTORY`.
+- **Pods a chart renders are counted, not judged.** Under `--corpus`, when no
+  namespace a monitor reaches renders a workload at all, the pods are a
+  HelmRelease's and no manifest states their ports: the endpoint is counted in
+  the success line. The moment one of those namespaces does render a workload,
+  the monitor is judged against it again, so a mislabelled selector in a
+  namespace this repo owns is still a finding.
+- **A scrape allow with no monitor is a vacuous pass**, so a namespace whose
+  NetworkPolicy admits the observability namespace while the tree ships no
+  monitor for it is an operator error. Over a `--corpus` that pairing is
+  required corpus-wide only: a chart renders monitors a corpus does not carry,
+  so a single namespace's allow cannot be held to one.
+- **Exit codes:** 0 clean, 1 on an unadmitted port or a Service with neither
+  selector nor endpoints, 2 on an operator error — a directory that does not
+  exist, a manifest that does not parse, an input with no kinded document, a
+  monitor with no endpoints or a selector matching every pod, an ambiguous
+  namespace grouping, a scope that cannot be verified, and a policy that admits
+  the observability namespace while no monitor scrapes its namespace.
 
 ### `check-kustomization.py` (PyYAML)
 
@@ -1436,25 +1559,54 @@ scripts/check-alertmanager-behaviour.py --config FILE [--repo-root DIR]
 - **Config keys:** `route_cases` (required, non-empty; each `receiver` +
   `labels`), `synthetic_route_alerts` (route-case alertnames that deliberately
   name no rule), `upstream_alerts` (alertnames shipped by a chart's own rule
-  groups, invisible to the extractor), plus the escalation keys below.
+  groups, invisible to the extractor), `rule_corpora` (below), plus the
+  escalation keys after it.
+- **`rule_corpora`** names extra rule trees the Prometheus extractor never
+  reads — a Loki ruler's rule files, say, which are plain `groups:` documents
+  rather than `PrometheusRule` manifests. Each entry is a file or a directory
+  (scanned recursively for `*.yaml`/`*.yml`), relative to `--repo-root` unless
+  absolute, and a sibling manifest carrying no top-level `groups:` is skipped.
+  The corpora widen the alertname and severity inventory, so a route case or an
+  inhibit matcher may name a Loki-ruler alert; the `expr`-reading arms stay on
+  the extracted PromQL corpus, which a LogQL rule tree is not. An entry that
+  does not exist, or that declares no alerting rule, exits 2 — a moved tree
+  would otherwise leave every name it owns unresolvable.
 - **`matcher_parity_labels`** turns on the matcher-value arm, opt-in per label.
   For each listed label, an inhibit rule's `=~`/`!~` matcher on it must be a
   selector value the mirrored rule's own `expr` declares, compared exactly. It
   catches an inhibit rule written to reproduce a rule's exclusion set drifting
   when that rule gains or loses a member. An exact `=` matcher pins one series
   and claims to mirror nothing, so it is left alone.
-- **Every escalation pair must be inhibited.** A `severity=warning` alert whose
-  name plus an `escalation_suffixes` entry (default `Prolonged`, `Critical`) is a
-  `severity=critical` alert in the same corpus is a pair, and a pair with no
-  inhibit rule pointing from the critical to the warning pages twice for as long
-  as the failure lasts. `escalation_equal` lists label keys that rule must share,
-  so one instance's critical does not silence another instance's warning. One
-  matching rule has to carry every key on its own: two rules each missing a
+- **Every escalation pair must be inhibited.** A `severity=warning` alert with a
+  same-stem `severity=critical` sibling in the corpus is a pair, and a pair with
+  no inhibit rule pointing from the critical to the warning pages twice for as
+  long as the failure lasts. `escalation_equal` lists label keys that rule must
+  share, so one instance's critical does not silence another instance's warning.
+  One matching rule has to carry every key on its own: two rules each missing a
   different key do not add up, and the finding names the closest rule and the
   keys it lacks. `escalation_pairs` declares a pair whose names share no stem,
   and `escalation_exceptions` declares one that delivers both severities on
   purpose. Each entry is a `critical` + `warning` mapping, with an optional
-  per-pair `equal` list.
+  per-pair `equal` list; naming a pair the gate already derived replaces its
+  `equal` requirement, which is how a namespaced pair opts out of a global
+  `escalation_equal` written for host-level series.
+- **A sibling is found by two spellings, because both are in use.** The suffix
+  is either appended to the whole warning name (`ArchiveBackupFailed` ->
+  `ArchiveBackupFailedProlonged`), or it replaces the warning marker the name
+  ends in (`DiskUsageWarning` -> `DiskUsageCritical`), or it lands in front of
+  that marker (`HostMemLow` -> `HostMemCriticalLow`). `escalation_suffixes`
+  (default `Prolonged`, `Critical`) is the critical half and
+  `escalation_warning_markers` (default `Warning`, `Low`, `High`) the warning
+  half; an empty marker list leaves only the appended spelling. A pair is only
+  derived when the candidate name is a real `severity=critical` rule, so a
+  marker with no sibling costs nothing.
+- **An inhibit rule covers a pair by alertname or by label scope.** A rule
+  pinning alertnames covers the pair when it names both. A rule that pins none —
+  the generic `severity="critical"` -> `severity="warning"` pair, narrowed by a
+  `component` matcher — covers it when the two alerts' OWN labels satisfy every
+  matcher on their side. A rule carrying `alertname` in `equal:` covers no pair
+  at all: it only ever joins same-named alerts, and an escalation pair's two
+  names differ by construction.
 - **Every member of a regex alternation is checked**, not just "at least one
   survives", and a regex that is not a plain alternation is REPORTED rather than
   skipped — an empty name set would otherwise pass silently.
@@ -1896,62 +2048,103 @@ scripts/check-taskfile.sh [Taskfile.yml ...]  # default: <repo-root>/Taskfile.ym
 
 ### `check-lib-pins.py` (PyYAML)
 
-Asserts every place a consumer pins this library agrees with its single source
-(`variables.WEISSSRV_LIB_REF` in `.gitlab-ci.yml`) and that the value is a
-release TAG. Two surfaces, one command:
+Asserts every place a consumer pins this library derives from ONE declared
+release tag, and that the value is a TAG. The tag is
+`spec.inputs.lib_ref.default` in the pipeline file's `spec:` header document;
+four surfaces read it, one command checks them:
 
-1. every `include:` entry naming this library, and
-2. the `weisssrv.infra` collection `version:` in the sibling
-   `ansible/requirements.yml`.
+1. every `include:` entry naming this library, whose `ref:` must be the exact
+   string `$[[ inputs.lib_ref ]]`,
+2. `variables.WEISSSRV_LIB_REF`, same string — the value jobs and images
+   interpolate at run time,
+3. the `weisssrv.infra` collection `version:` in the sibling
+   `ansible/requirements.yml`, equal to the declared tag, and
+4. every match of every entry in the optional per-repo
+   [`scripts/lib-ref-sites.yml`](../examples/lib-ref-sites.example.yml).
 
-`--fix` rewrites both.
+`--fix` rewrites all four; `--bump vX.Y.Z` moves the declared tag first, so a
+library bump is one command and one reviewable line of diff.
 
-The copies are not avoidable: GitLab resolves `include:` at pipeline-CREATION
-time, before the `variables:` block exists, so `ref: $WEISSSRV_LIB_REF` silently
-does not work. A project/group CI/CD variable *is* readable there, but it moves
-the pin out of git, where a bump no longer appears in a diff and cannot be
-reverted as an MR. So each entry repeats the tag and this keeps them honest.
+**Why the header.** GitLab resolves `include:` at pipeline-CREATION time,
+before the same file's `variables:` block exists, so `ref: $WEISSSRV_LIB_REF`
+silently does not resolve. Inputs are different: they interpolate BEFORE include
+resolution, so `$[[ inputs.lib_ref ]]` reaches the include. A project or group
+CI/CD variable would also be readable there, but it moves the pin out of git,
+where a bump no longer appears in a diff and cannot be reverted as an MR. The
+header keeps the single source in the file, and a run can override the input to
+test a candidate tag — the pipeline-parity check before a bump merges.
 
-Both failures it catches are otherwise silent. A stale ref on one entry runs
-that job from a different library version — a changed input default altering the
-pipeline with nothing red to show for it. A **branch** ref is worse, and is the
-one [VERSIONING.md](VERSIONING.md) forbids: a branch deleted after merge takes
-the include with it, and until then the pipeline can change behaviour with no
-commit in the consuming repo at all.
+Both failures it catches are otherwise silent. A pin left literal on one entry
+runs that job from a different library version — a changed input default
+altering the pipeline with nothing red to show for it. A **branch** ref is
+worse, and is the one [VERSIONING.md](VERSIONING.md) forbids: a branch deleted
+after merge takes the include with it, and until then the pipeline can change
+behaviour with no commit in the consuming repo at all.
 
 - **Forge: gitlab-only.** `ansible/requirements.yml` is itself forge-independent,
-  but the value it is compared against comes from `variables.WEISSSRV_LIB_REF` in
-  `.gitlab-ci.yml`, and an absent CI file exits 2 as an operator error — so on a
-  GitHub consumer the gate still cannot run. A GitHub consumer also has no
-  `include:` to drift (it vendors workflows), so it is simply not wired there.
+  but the declared ref comes from the `spec:` header of `.gitlab-ci.yml`, and an
+  absent CI file exits 2 as an operator error — so on a GitHub consumer the gate
+  still cannot run. A GitHub consumer also has no `include:` to drift (it vendors
+  workflows), so it is simply not wired there.
 - **Flags:** `--ci-file PATH` (default `<repo root>/.gitlab-ci.yml`),
   `--project` (default `eric/weisssrv-lib`), `--ref-var` (default
-  `WEISSSRV_LIB_REF`), `--fix`.
+  `WEISSSRV_LIB_REF`), `--input` (default `lib_ref`), `--fix`,
+  `--bump vX.Y.Z`, `--print`.
+- **`--print`** writes the declared tag to stdout and nothing else, for a
+  Taskfile or a shell: `MOLECULE_TEST_IMAGE=…/molecule-test:$(scripts/check-lib-pins.py --print)`.
+  A file that declares no release tag exits 2 and prints nothing, rather than
+  exporting a garbage image tag.
 - **The collection surface.** The file checked is `<ci-file dir>/ansible/requirements.yml`.
   A repo without one — a tenant app scaffold — is a silent no-op. A
   requirements.yml that installs the library **with no `version:`** is a floating
   pin and fails. The entry is located from the parsed node tree, so a `version:`
   under a different collection is never matched, and it is matched on the
-  **repository NAME** of its `name:` or `source:` — the last path segment,
-  lower-cased and `.git`-stripped — never as a substring of the URL. That keeps
+  **repository NAME** of its `name:` or `source:` — the last path segment with
+  any `.git` suffix stripped — never as a substring of the URL. That keeps
   an instance-local mirror of the same repository on another host gated while a
   FORK, or a mirror whose URL merely contains the project path
   (`…/mirrors/eric/weisssrv-lib-fork.git`), is a different repository and does
   not count as installing the library. A requirements.yml that declares a git collection
   matching nothing fails with `no git collection matching <project>` rather than
   passing silently; one with no git collection at all stays a no-op.
-- **`--fix`** rewrites the literals to the single source — both the `include:`
-  refs and the collection `version:` — and reports the two counts together
-  (`rewrote N pin(s) in <ci-file> + requirements.yml`). A bump is one edit plus
-  one command. The rewrite is textual, so comments and formatting survive,
-  but the lines it touches come from the PARSED tree — the `ref` key of each
-  direct mapping under `include:`, exactly the nodes `check()` reads. Every
-  indentation heuristic tried here leaked (`inputs:` may carry its own `project`
-  and `ref`), so the two halves agree by construction rather than by scanning.
-- **`--fix` refuses rather than half-repairs.** Four checks, any of which
-  aborts before a byte is written:
-  - the source value is validated first, so a branch ref is reported instead of
-    propagated to every include;
+- **The site list** is site data, so it lives beside the vendored script rather
+  than inside it: `sites:`, a list of `{path: <glob relative to the repo root>,
+  pattern: <regex with exactly one capture group>}`. Every captured value in
+  every matched file must equal the declared tag, and an entry that matches
+  NOTHING fails — a stale glob or pattern would otherwise pass the gate by
+  inspecting an empty set. `--fix` rewrites only the captured group, so an
+  unrelated version in the same file is left alone. A malformed list (not a
+  mapping, a non-list `sites:`, a bad regex, a pattern with any number of groups
+  but one, a glob escaping the repo) is an operator error, never a no-op. The
+  file is optional; a repo with no other pin site ships none.
+- **A site reads and rewrites inside the repository only.** The glob's `..`
+  check is syntax; a match is also resolved, and a SYMLINK match, or one a
+  linked parent directory carries outside the repo root, is an operator error
+  naming the path. Reading and writing both follow a link, so `--fix` would
+  otherwise rewrite a file the repository does not own.
+- **`--fix`** rewrites every surface from the declared tag and reports one count
+  (`rewrote N pin(s) at vX.Y.Z`). On a repo still carrying the literal layout it
+  CONVERTS it: the current `variables.WEISSSRV_LIB_REF` becomes the header
+  default, and every pin becomes the interpolation. It reuses an existing
+  leading `---` as the document separator, adds one when there is none, and is
+  idempotent from the second run. The rewrite is textual, so comments and
+  formatting survive, but the lines it touches come from the PARSED tree — the
+  `ref` key of each direct mapping under `include:`, the `variables:` entry, the
+  header's `default:` — exactly the nodes `check()` reads. Every indentation
+  heuristic tried here leaked (`inputs:` may carry its own `project` and `ref`),
+  so the two halves agree by construction rather than by scanning.
+- **`--bump vX.Y.Z`** sets the declared tag and then runs the same fix, so a
+  library upgrade is one command across all four surfaces. A non-tag argument
+  exits 2 before anything is written.
+- **`--fix` refuses rather than half-repairs.** Any of these aborts before a
+  byte is written:
+  - the ref is validated first, so a branch is reported instead of propagated
+    to every pin;
+  - a file that declares neither a header default nor a literal variable has
+    nothing to convert FROM, and says so;
+  - a file whose header exists but declares no `lib_ref:` input with a
+    `default:` is refused, because inventing an input inside someone else's
+    header is not a line rewrite;
   - the output is re-parsed and every pin must have landed as the exact string
     intended;
   - targets are bounded to the `include:` block's own span, so an aliased entry
@@ -1964,14 +2157,17 @@ commit in the consuming repo at all.
   `include:`, an aliased block — it says so and leaves the file untouched
   instead of returning a clean 0. An alias elsewhere in the file does not
   disable it.
-- **Exit codes:** 0 consistent, 1 on drift / branch ref / missing variable /
-  **no matching include entries at all** — an empty set is reported rather than
-  passing, so restructuring the includes out from under the gate is visible.
-  **2** for an operator error (unreadable path, malformed YAML, or a top-level
-  document that is not a mapping), one line and no traceback, so CI can tell
-  "the pins drifted" from "I could not read the file".
+- **Exit codes:** 0 consistent, 1 on a literal pin / branch ref / missing header
+  or variable / a drifted collection or site / **no matching include entries at
+  all** — an empty set is reported rather than passing, so restructuring the
+  includes out from under the gate is visible. **2** for an operator error
+  (unreadable path, malformed YAML, a top-level document that is not a mapping,
+  a malformed site list, a non-tag `--bump`), one line and no traceback, so CI
+  can tell "a pin drifted" from "I could not read the file".
 - **Handles a `file:` list**, the form that shares one `ref:` across several
   templates, and names every affected template rather than just the entry.
+- **Vendoring:** imports `ci_yaml.py` from its own directory for the header
+  split. Vendor the pair, or it exits 2 on import.
 - **Consumers vendor it** and run it from their own tree (their `python-tests`
   job, plus `task lint`). Point that job's `changes` at `.gitlab-ci.yml` so the
   guard fires on its own subject.
@@ -2008,33 +2204,6 @@ kubectl get pods,deployments,statefulsets,daemonsets,verticalpodautoscalers \
   otherwise read as a clean cluster.
 - **Vendoring:** imports `gate_common.py` from its own directory. Vendor the
   pair, or it exits 2 on import.
-
-### `check-molecule-image-pin.py` (PyYAML)
-
-Asserts every hand-written `<project>/molecule-{test,ci}:<tag>` literal in the
-molecule scenarios and `ansible/TESTING.md` equals the same single source
-`check-lib-pins.py` reads (`variables.WEISSSRV_LIB_REF`). `--fix` rewrites them.
-
-CI exports `MOLECULE_TEST_IMAGE` and overrides the literal, so only a LOCAL
-integration run reads it: a stale tag runs the local suite against an old image
-while the pipeline stays green. That is the failure this catches.
-
-- **Forge: gitlab-only**, for the same reason as `check-lib-pins.py`: the value
-  comes from `variables.WEISSSRV_LIB_REF` in `.gitlab-ci.yml`.
-- **Flags:** `--ci-file PATH` (default `.gitlab-ci.yml`; its directory is the
-  tree that is scanned and rewritten), `--project` (default
-  `eric/weisssrv-lib`), `--ref-var` (default `WEISSSRV_LIB_REF`), `--source
-  GLOB` (repeatable; default the molecule scenarios and `ansible/TESTING.md`),
-  `--fix`.
-- The match is anchored on the image PATH, so an unrelated `:v1.2.3` elsewhere
-  in the same file is never rewritten, and on a `v`-prefixed tag, so a `:local`
-  sentinel is not read as a stale pin.
-- **Exit codes:** 0 consistent, 1 on drift, **2** for an operator error — an
-  unreadable or malformed CI file, a `ref-var` that is unset or is not a release
-  tag, or **no literal found at all**, which means the fallback moved or
-  `--project`/`--source` is wrong rather than that everything is fine.
-- **Consumers vendor it** and run it beside `check-lib-pins.py` in `task lint`,
-  with the same `changes:` rules.
 
 ### `check-vendored-copies.py` (PyYAML)
 
@@ -2212,16 +2381,21 @@ Tools: `amtool`, `jq`, `kubeconform`, `kustomize`, `promtool`, `shellcheck`,
 - **`DIR` defaults to `$CI_PROJECT_DIR/.bin`**, else `./.bin`, and is created if
   missing. **The caller adds `DIR` to `PATH`**: the script installs binaries and
   deliberately changes nothing about the environment of the job that ran it.
-- **Each install stamps `DIR/<name>.version`** with the effective version, the
-  asset's sha256 and the sha256 of the INSTALLED binary, and a tool counts as
-  present only when that stamp matches the resolved pin AND the binary still
-  hashes to what the stamp records — so a skip prints `jq 1.8.2: present`, and a
-  cached, pre-seeded, truncated or differently-versioned binary is re-fetched
-  instead of trusted. That is what makes a `cache:` on `DIR` safe: a restored
-  cache carries binary and stamp together, so only the bytes can say they are
-  intact. The stamp lands after the binary, so an interrupted install reads as
-  absent. `--force` re-installs regardless, and a job can call the script
-  repeatedly.
+- **The verified asset decides what is present.** Each download is kept at
+  `DIR/.assets/<name>` and re-hashed against this script's pin on every later
+  run, and a tool counts as present only when that asset still matches the pin
+  AND `DIR/<name>` is a plain executable file holding exactly the bytes that
+  asset installs — so a skip prints `jq 1.8.2: present`, and a tampered,
+  truncated, pre-seeded, non-executable or differently-versioned binary, a
+  directory or symlink in its place, or a binary whose asset is gone or no
+  longer verifies, is re-fetched instead of trusted. That is what makes a
+  `cache:` on `DIR` safe: the pin lives in the script, so nothing the mutable
+  cache says about itself is believed — and the cache carries the assets as
+  well as the binaries.
+- **Each install also stamps `DIR/<name>.version`** with the effective version,
+  the asset's sha256 and the sha256 of the installed binary. It lands after the
+  binary, so an interrupted install reads as absent. `--force` re-installs
+  regardless, and a job can call the script repeatedly.
 - **The pinned versions are this script's own**, not a consumer's, and they are
   not site data — the same pins serve every consumer. A consumer re-pins one
   tool with `TOOL_<NAME>_VERSION` and `TOOL_<NAME>_SHA256` (the name
@@ -2497,7 +2671,7 @@ scripts/unifi-settings-drift.py [--config FILE]
 | `taskfile_tree.py` | importable flattener for a `Taskfile.yml` `includes:` tree (PyYAML): `include_paths(repo)` reads both entry shapes (a bare path and a `taskfile:` mapping), `taskfile_paths` prepends the root file, `load_tasks` returns every task keyed by the name `task <name>` would run with each `- task:`/`deps:` reference rewritten fully qualified (a leading colon is root-relative, a bare name resolves inside its namespace), and `task_names` drops `internal: true` templates. Rewriting is done on a copy, so two namespaces including one fragment do not qualify each other's |
 | `inventory_tree.py` | importable Ansible-inventory resolver (PyYAML): `group_index(inventory)` indexes every group that carries content, merged across occurrences; `resolve_hosts(name, index)` expands a group in inventory order with children depth first, deduped, and terminates on a cycle (`strict=True` raises `InventoryCycle`); `declared_groups` also counts a null-bodied placeholder; `host_vars` merges a host's vars across every group listing it; `all_hosts`, `hosts_by_address` and `addresses_by_host` read off that. `generate-hosts-env.py` imports it from its own directory: vendor the pair |
 | `ci_playbook_invocations.py` | importable argv walk over a job script's `ansible-playbook` calls: `parse_invocations(text)` returns one dict per call (`inventory`, `playbook`, `limit`, `tags`, `skip_tags`, `argv`). Every call is returned, so two chained on one script line are two invocations, and `--skip-tags` is kept out of `tags` so a gate never reads a skip as a selection. Stdlib only. `check-deploy-preflight.py` imports it from its own directory: vendor the pair |
-| `ci_yaml.py` | importable loader for a `.gitlab-ci.yml` that uses GitLab's `!` tags: `CILoader` preserves a tagged node's structure and turns `!reference` into a resolvable `Reference`, `NullTagCILoader` collapses every tagged node to None; plus `load_ci`, `parse_ci`, `jobs`, `script_lines`. Both subclass SafeLoader and neither registers a constructor globally. **Forge: gitlab-only** |
+| `ci_yaml.py` | importable loader for a `.gitlab-ci.yml` that uses GitLab's `!` tags: `CILoader` preserves a tagged node's structure and turns `!reference` into a resolvable `Reference`, `NullTagCILoader` collapses every tagged node to None; plus `load_ci`, `parse_ci`, `jobs`, `script_lines`, and `split_header` / `spec_inputs` for a file whose first document is a `spec:` header (every other reader gets the body). Both subclass SafeLoader and neither registers a constructor globally. **Forge: gitlab-only** |
 
 ### `collect-state-lib.sh`
 
@@ -2645,17 +2819,6 @@ from here:
 | `check-ci-pin-parity.sh` | 4 | the pin names written twice; near-neighbour of `check-lib-pins.py` |
 | `check-deploy-host-coverage.py` | 2 | the inventory, playbook and CI paths |
 
-One queued program is not a script at all. The render/scan/kubeconform loop
-exists three times: `ci/validate/flux-lint.yml`'s substitute arm here, and each
-consumer's own `flux:lint` task (`weisssrv/taskfiles/flux.yml`, the cluster
-template's `template/taskfiles/flux.yml.jinja`). A consumer's `task lint`
-therefore reaches the strict render only through that local copy.
-Extracting it as `scripts/flux-lint.sh`, called by the include once the
-tool cache is populated and offered in `vendorable-paths.yml`, needs these to
-become flags: the cluster directory, the envsubst variable list (the
-`export-versions` allowlist), the kubeconform k8s version, the CRD catalog ref,
-the allowed-skips budget, and whether a cluster root is required.
-
 A script a consumer owns on purpose is not on this queue: `collect-state.sh`,
 the per-guest smoke scripts and `version-registry.py` are site data by
 definition, and the library ships their shared halves
@@ -2695,20 +2858,38 @@ scripts/check-ci-include-job-names.py --lib-path ../weisssrv-lib
 - `$[[ inputs.* ]]` resolves against the include's own `inputs:` first, then the
   included file's `spec.inputs` default. It resolves in a job key, in a need's
   `job:`, in an include's path and in the values an include passes on. A
-  `needs:` that is one `$[[ inputs.needs ]]` takes the whole array from the
-  include. A `.hidden` key creates no job, so a need on one is a finding.
-- `--extra-job JOB=REASON` declares a job created by a source this gate cannot
-  read (a `remote:`, `component:` or `template:` include). A reason is
-  mandatory, and an entry no need references is a finding.
+  reference standing alone as the whole value keeps the input's parsed type, so
+  a `needs:` that is one `$[[ inputs.needs ]]` takes the whole array from the
+  include and an include forwarding that array hands the next file a list, not
+  its text. A `needs:` that is a `!reference` is followed to the template it
+  names. A `.hidden` key creates no job, so a need on one is a finding.
+- **A key that needs an input neither passed nor defaulted is a finding on its
+  own.** A job key that cannot be formed names no job to credit, and a need
+  target that cannot be formed is a need the gate never checked, so the job set
+  is incomplete even when every other need resolves.
+- An include the gate cannot read is an operator error whether or not a need
+  dangles, because its jobs AND its needs are both invisible and a clean run
+  would prove nothing. A `project:` include with no library checkout, a path
+  that resolves to no file and a file that will not parse are errors to fix.
+- A `remote:`, `component:` or `template:` include names a file outside both
+  checkouts, which no invocation can fix, so it is an operator error until
+  `--allow-unreadable-include SUBSTRING=REASON` declares the blind spot. The
+  substring matches the include's own value, so one entry covers a component
+  across version bumps; the accepted include and its reason print on every
+  run, and an entry matching nothing is a finding.
+- `--extra-job JOB=REASON` declares a job created by a source this gate does
+  not read: a declared unreadable include, or a child or generated pipeline. A
+  reason is mandatory, and an entry no need references is a finding.
 - `--require-optional-needs` makes a pipeline declaring no optional need an
   operator error, for a consumer that relies on them.
 - **Vendoring:** imports `ci_yaml.py` from its own directory. Vendor the pair.
 - **Forge: gitlab-only.** It resolves job names out of a GitLab CI file's keys,
   `local:`/`project:` includes and `spec.inputs` defaults, so an Actions
   pipeline replaces it rather than porting it.
-- **Exit codes:** 0 clean, 1 on an unresolvable need or a stale `--extra-job`,
-  2 on an operator error — a missing `--ci-file`, an unparseable file, or no job
-  names resolved at all.
+- **Exit codes:** 0 clean, 1 on an unresolvable need or a stale declaration,
+  2 on an operator error — a missing `--ci-file`, an unparseable file, an
+  include the gate cannot read or has not been allowed, or no job names
+  resolved at all.
 
 ### `check-include-contract.py` (PyYAML)
 

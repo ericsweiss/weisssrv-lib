@@ -31,6 +31,7 @@ MOLECULE_JOBS = REPO / ".gitlab" / "ci" / "molecule-jobs.gitlab-ci.yml"
 MOLECULE_MATRIX = REPO / "ci" / "internal" / "molecule-matrix.gitlab-ci.yml"
 KUBECTL_SETUP = REPO / "ci" / "deploy" / "kubectl-setup.yml"
 FLUX_LINT = REPO / "ci" / "validate" / "flux-lint.yml"
+FLUX_LINT_SCRIPT = REPO / "scripts" / "flux-lint.sh"
 DOCKER_DIND_TEMPLATE = REPO / "ci" / "templates" / "docker-dind.yml"
 SHELLCHECK_TEMPLATE = REPO / "ci" / "lint" / "shellcheck.yml"
 TERRAFORM_TEMPLATE = REPO / "ci" / "validate" / "terraform.yml"
@@ -114,8 +115,9 @@ class TestLibraryOwnPins:
 
     def test_k8s_minor_matches_the_flux_lint_fallback(self):
         """K8S_VERSION is otherwise held equal to nothing."""
-        m = re.search(r'K8S_VER="\$\{K8S_VERSION_INPUT:-([\d.]+)\}"', FLUX_LINT.read_text())
-        assert m, "flux-lint simple-mode K8S_VER fallback not found"
+        m = re.search(r'k8s_ver="\$\{FL_K8S_VERSION:-([\d.]+)\}"',
+                      FLUX_LINT_SCRIPT.read_text())
+        assert m, "flux-lint.sh simple-mode k8s_ver fallback not found"
         assert workflow_env("K8S_VERSION") == m.group(1)
 
 

@@ -310,6 +310,26 @@ The repo-root `.ansible-lint` pins `profile: production` with **no**
 rule on molecule scenario playbooks only: their registers and set_facts are
 test-local state, not role API.
 
+## Jinja string literals in expressions
+
+Ansible lexes the two kinds of expression differently, and a regex pattern has
+to be spelled for the one it sits in:
+
+- A **`{{ }}` template** processes no escape sequences. Whatever the YAML scalar
+  hands it is the regex, so `\s`, `\.` and a backreference `\1` each carry
+  ONE backslash — remembering that a double-quoted YAML scalar halves `\\`
+  before Jinja sees it, which is why both spellings appear in the tree.
+- A **conditional** (`when`, `that`, `failed_when`, `changed_when`, `until`)
+  processes Python's escapes, so EVERY escape is doubled: `\\s`, `\\.`, `\\b`
+  and a backreference `\\1`. A single backslash arrives intact only where the
+  decoder leaves an escape it does not know, and says so; `\1` is read as the
+  octal escape chr(1) and `\b` as a backspace, both without a word.
+
+`tests/test_molecule_expressions_parse.py` holds both rules: it lexes every
+expression on its own path and fails on a decoded escape, on a doubled template
+escape, on a lost backreference, and on a silently decoded `\b` — each one is
+otherwise silent, since the pattern simply stops matching what it names.
+
 ## Versioning
 
 One library tag versions this collection together with the CI templates,
