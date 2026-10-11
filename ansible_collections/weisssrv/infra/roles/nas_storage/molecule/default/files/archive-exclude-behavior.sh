@@ -201,57 +201,73 @@ grep -q '^rc=1$' "$DESTROY_FAIL" || fail "a failed destroy must fail the run: $(
 grep -q 'FATAL:.*archive/share/scratch' "$DESTROY_FAIL" \
   || fail "a failed destroy must name the copy it could not remove"
 
-# The recursive snapshot covers excluded children too, so the just-created
-# snapshot is destroyed on each of them - and on nothing else.
-SNAP_OUT="$WORK/snapdrop.out"
-env -i PATH="$PATH" bash -c '
+# `send -R -X` still walks the excluded child and refuses to run once its
+# snapshot is gone, so a stub that models that refusal drives one incremental
+# replication end to end: the send must see the snapshot, the prune retires it.
+ORDER_OUT="$WORK/order.out"
+STATE="$WORK/snapshots"
+printf '%s\n' tank/share@archsync-20260104-000000 tank/share/media@archsync-20260104-000000 \
+  tank/share/scratch@archsync-20260104-000000 archive/share@archsync-20260104-000000 \
+  archive/share/media@archsync-20260104-000000 > "$STATE"
+env -i PATH="$PATH" STATE="$STATE" bash -c '
   # shellcheck disable=SC1091
   source "'"$WORK"'/'"$(basename "$EXCLUDED")"'.lib" || true
   set +e
   zfs() {
-    case "$*" in
-      "list -H -o name -r tank/share")
-        printf "%s\n" tank/share tank/share/media tank/share/scratch tank/share/scratch/tmp ;;
-      "destroy "*) echo "DESTROY $2" ;;
+    local sub="$1" last="${!#}"; shift
+    case "$sub" in
+      set|inherit|unmount) return 0 ;;
+      get)
+        case "$*" in
+          *encryption*) echo off ;;
+          *receive_resume_token*) printf "archive/share\t-\narchive/share/media\t-\n" ;;
+          *) echo - ;;
+        esac
+        return 0 ;;
+      list)
+        case "$*" in
+          "-H -o name tank/share"|"-H -o name archive/share") return 0 ;;
+          "-H -o name archive/share-reseed") return 1 ;;
+          "-H -o name -r tank/share") printf "%s\n" tank/share tank/share/media tank/share/scratch ;;
+          "-H -o name -r archive/share") printf "%s\n" archive/share archive/share/media ;;
+          *"-t snapshot"*"-d 1 "*) grep "^${last}@" "$STATE" ;;
+          *"-t snapshot"*"-r "*) grep "^${last}\(/[^@]*\)\?@" "$STATE" ;;
+          *) return 1 ;;
+        esac
+        return 0 ;;
+      snapshot)
+        local root="${2%@*}" snap="${2#*@}"
+        printf "%s\n" "${root}@${snap}" "${root}/media@${snap}" "${root}/scratch@${snap}" >> "$STATE"
+        echo "SNAPSHOT $2"; return 0 ;;
+      destroy)
+        grep -vx "$1" "$STATE" > "$STATE.new" && mv "$STATE.new" "$STATE"
+        echo "DESTROY $1"; return 0 ;;
+      send)
+        local snap="${!#}" ex=""
+        while [ $# -gt 0 ]; do [ "$1" = -X ] && ex="$2"; shift; done
+        if ! grep -qx "${ex}@${snap#*@}" "$STATE"; then
+          echo "cannot send ${snap} recursively: snapshot ${ex}@${snap#*@} does not exist" >&2
+          return 1
+        fi
+        echo "SEND -X ${ex} ${snap}" >&2; return 0 ;;
+      receive) cat >/dev/null; echo "RECEIVE $*"; return 0 ;;
     esac
-    return 0
+    return 1
   }
-  drop_excluded_snapshots tank/share archsync-20260105-000000
+  replicate_one tank/share archive/share
   echo "rc=$?"
-' >"$SNAP_OUT" 2>&1
-grep -q '^rc=0$' "$SNAP_OUT" || fail "dropping excluded snapshots must succeed: $(cat "$SNAP_OUT")"
-grep -qx 'DESTROY tank/share/scratch@archsync-20260105-000000' "$SNAP_OUT" \
-  || fail "the excluded child must lose the snapshot just taken"
-grep -qx 'DESTROY tank/share/scratch/tmp@archsync-20260105-000000' "$SNAP_OUT" \
-  || fail "a descendant of an excluded child must lose it too"
-[ "$(grep -c '^DESTROY ' "$SNAP_OUT")" -eq 2 ] \
-  || fail "only excluded datasets may lose the snapshot: $(cat "$SNAP_OUT")"
-
-# A failed destroy there is a retention failure, reported not swallowed.
-env -i PATH="$PATH" bash -c '
-  # shellcheck disable=SC1091
-  source "'"$WORK"'/'"$(basename "$EXCLUDED")"'.lib" || true
-  set +e
-  zfs() {
-    case "$*" in
-      "list -H -o name -r tank/share") printf "%s\n" tank/share tank/share/scratch ;;
-      "destroy "*) return 1 ;;
-    esac
-    return 0
-  }
-  drop_excluded_snapshots tank/share archsync-20260105-000000 && exit 61
-  exit 0
-' || fail "a failed snapshot destroy must be reported (exit $?)"
-
-# Nothing excluded: the drop must not even enumerate the tree.
-env -i PATH="$PATH" bash -c '
-  # shellcheck disable=SC1091
-  source "'"$WORK"'/'"$(basename "$PLAIN")"'.lib" || true
-  set +e
-  zfs() { exit 62; }
-  drop_excluded_snapshots tank/share archsync-20260105-000000 || exit 63
-  exit 0
-' || fail "an empty exclusion list must make the snapshot drop a no-op (exit $?)"
+' >"$ORDER_OUT" 2>&1
+grep -q '^rc=0$' "$ORDER_OUT" || fail "an incremental send with an excluded child must succeed: $(cat "$ORDER_OUT")"
+grep -q '^SEND -X tank/share/scratch tank/share@archsync-' "$ORDER_OUT" \
+  || fail "the recursive send must carry the exclusion: $(cat "$ORDER_OUT")"
+[ "$(grep -n '^SEND ' "$ORDER_OUT" | cut -d: -f1)" -lt "$(grep -n '^DESTROY tank/share/scratch@' "$ORDER_OUT" | head -1 | cut -d: -f1)" ] \
+  || fail "the excluded child's snapshot must outlive the send: $(cat "$ORDER_OUT")"
+[ "$(grep -c '^DESTROY tank/share/scratch@archsync-' "$ORDER_OUT")" -eq 2 ] \
+  || fail "the prune must retire every snapshot of the excluded child: $(cat "$ORDER_OUT")"
+grep -q '^DESTROY tank/share@\|^DESTROY tank/share/media@' "$ORDER_OUT" \
+  && fail "retention must keep the replicated datasets' snapshots: $(cat "$ORDER_OUT")"
+grep -q 'drop_excluded_snapshots' "$EXCLUDED" \
+  && fail "no pre-send destroy of excluded snapshots may remain in the script"
 
 # Retention: the exclusion IS the policy on the source side (every archsync
 # snapshot goes), while the archive-side tree keeps its 3+6 window.

@@ -524,22 +524,6 @@ prune_snaps_tree() {
   return "$rc"
 }
 
-# The recursive snapshot takes no account of the exclusion list, so an excluded
-# child's copy is destroyed immediately: it has no destination and no
-# incremental base, and would otherwise pin source space forever.
-drop_excluded_snapshots() {
-  local root="$1" snap="$2" ds rc=0
-  [[ ${#EXCLUDE_LIST[@]} -gt 0 ]] || return 0
-  while IFS= read -r ds; do
-    is_excluded "$ds" || continue
-    zfs list -H -o name -t snapshot "${ds}@${snap}" >/dev/null 2>&1 || continue
-    log "Exclusion: destroying ${ds}@${snap} (excluded from the send)"
-    zfs destroy "${ds}@${snap}" \
-      || { log "Exclusion: FAILED to destroy ${ds}@${snap}"; rc=1; }
-  done < <(zfs list -H -o name -r "$root")
-  return "$rc"
-}
-
 # POOL DEFAULTS
 
 set_pool_root_props() {
@@ -631,9 +615,11 @@ replicate_one() {
     maybe_resume_receive "$dst"
   fi
 
+  # The recursive snapshot covers the excluded children too, and `send -X`
+  # still walks them: their snapshot has to exist until the send returns. The
+  # prune below retires it, since the exclusion is their whole retention.
   log "Snapshot: ${src}@${snap_now}"
   zfs snapshot -r "${src}@${snap_now}"
-  drop_excluded_snapshots "$src" "$snap_now" || note_prune_failure
 
   # A raw stream cannot continue a non-raw base, so a source encrypted after the
   # fact needs a one-time raw re-seed: built in a temp sibling, swapped in only

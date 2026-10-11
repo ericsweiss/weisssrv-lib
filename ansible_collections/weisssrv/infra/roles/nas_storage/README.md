@@ -217,10 +217,10 @@ plug/unplug/restore subcommands and the scrub-timer wiring.
   recursive send (`zfs send -X`, OpenZFS 2.3+). Each entry must be a descendant
   of a source, which the role asserts, and a zfs without `send -X` fails the run
   instead of replicating the excluded child anyway.
-- An excluded child also loses its **source-side** snapshots. The recursive
-  snapshot still covers it, so the copy taken each run is destroyed immediately —
-  it has no destination and no incremental base — and retention destroys every
-  `archsync-*` snapshot it still carries: the exclusion is its retention policy.
+- An excluded child also keeps no **source-side** snapshots. The recursive
+  snapshot still covers it and `send -X` still walks it, so that snapshot has
+  to exist until the send returns; retention then destroys every `archsync-*`
+  snapshot it carries: the exclusion is its retention policy.
 - An exclusion for a child that is **already replicated leaves that copy on the
   archive pool**. A `send -R -X` stream does not remove it, `receive -F` included,
   so each run reconciles it instead. With
