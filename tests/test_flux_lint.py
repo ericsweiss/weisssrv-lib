@@ -86,8 +86,14 @@ import os
 import sys
 
 args = sys.argv[1:]
-if not [a for a in args if not a.startswith("-") and os.path.exists(a)]:
+files = [a for a in args if not a.startswith("-") and os.path.exists(a)]
+if not files:
     sys.stdin.read()
+# kubeconform parses a file by its extension and reports an unknown one as no
+# file at all, with a clean summary.
+elif not files[0].endswith((".yaml", ".yml", ".json")):
+    print("Summary: 0 resource found in 0 file - Valid: 0, Invalid: 0, Errors: 0, Skipped: 0")
+    raise SystemExit(0)
 if "-output" in args:
     print(os.environ.get("STUB_KC_JSON", '{"resources": [{"status": "statusValid"}]}'))
     raise SystemExit(0)
@@ -202,6 +208,35 @@ class TestSubstitutionFloors:
         assert proc.returncode == 1
         assert "present but EMPTY" in proc.stdout
         assert "- blank_key" in proc.stdout
+
+
+class TestSimpleMode:
+    def _run(self, tree: Path, *extra: str) -> subprocess.CompletedProcess:
+        env = {
+            "PATH": "%s:%s:/usr/bin:/bin" % (tree / "bin", Path(sys.executable).parent),
+            "HOME": os.environ.get("HOME", str(tree)),
+            "STUB_RENDERS": str(tree / "renders"),
+        }
+        return subprocess.run(
+            ["bash", str(SCRIPT), "--mode", "simple",
+             "--kustomize-path", "kubernetes/apps", "--k8s-version", "1.36.0",
+             "--crd-catalog-ref", "deadbeef", *extra],
+            cwd=tree, env=env, capture_output=True, text=True,
+        )
+
+    def test_the_render_reaches_kubeconform(self, tree):
+        """kubeconform reads the render on stdin: handed a bare temp path it
+        parses nothing and still exits 0."""
+        proc = self._run(tree)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "1 resource found" in proc.stdout
+        assert "0 resource found" not in proc.stdout
+
+    def test_a_render_with_no_document_fails(self, tree):
+        _write(tree / "renders" / "kubernetes_apps.yaml", "# nothing\n")
+        proc = self._run(tree)
+        assert proc.returncode == 1
+        assert "rendered no document" in proc.stdout
 
 
 class TestNothingPassesOnNothing:

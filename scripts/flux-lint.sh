@@ -107,14 +107,14 @@ run_simple_mode() {
     fi
 
     echo "=== kubeconform (k8s $k8s_ver) ==="
-    # -ignore-missing-schemas lets platform CRDs validate against the
-    # datreeio catalog; core kinds validate against the bundled schemas.
-    # 2>&1 because per-resource failures go to stderr.
+    # -ignore-missing-schemas lets platform CRDs validate against the datreeio
+    # catalog; 2>&1 because per-resource failures go to stderr; stdin because
+    # kubeconform parses a file by its extension and reads a bare name as none.
     if ! summary=$(kubeconform -strict -ignore-missing-schemas \
             -kubernetes-version "$k8s_ver" \
             -schema-location default \
             -schema-location "$FL_CATALOG" \
-            -summary "$rendered" 2>&1); then
+            -summary < "$rendered" 2>&1); then
         printf '%s\n' "$summary"
         return 1
     fi
