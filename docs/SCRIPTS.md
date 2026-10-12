@@ -206,6 +206,7 @@ JSON renderers.
 | `tag_filter` | (github) regex the upstream tag must match |
 | `tag_regex` | (dockerhub/ghcr/lsio) regex the image tag must match |
 | `strip_prefix` | (github) drop `version_prefix` from the recorded version |
+| `releases_per_page` | (github, with `tag_filter`) releases fetched per page, default 100; smaller for a repo whose per-release asset lists make a page too large to finish reliably |
 | `checksum_var` | `vars_file` key holding the artefact's sha256 (`sha256:<hex>` or bare hex); requires `checksum_url` |
 | `checksum_url` | URL of the artefact to hash, `{version}` rendered from the entry's pinned version |
 | `coupled_vars` | partner pins a human must rewrite with this one; the write prints `PAIRED-EDIT-REQUIRED` |

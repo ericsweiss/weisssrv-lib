@@ -1248,6 +1248,22 @@ class TestFetchGithubReleaseLatest(unittest.TestCase):
     tag_name, matching the tag_filter branch — otherwise the service silently
     reports up-to-date with a blank Latest column."""
 
+    def test_tag_filter_scan_honours_the_entry_page_size(self):
+        """A repo with huge per-release asset lists needs smaller pages; the
+        entry's releases_per_page sets the page size and the last-page test."""
+        svc = {"github_repo": "o/r", "tag_filter": r"^v\d+\.\d+\.\d+$", "releases_per_page": 2}
+        pages = {1: [{"tag_name": "v1.0.0"}, {"tag_name": "v1.2.0"}], 2: [{"tag_name": "v1.1.0"}]}
+        seen = []
+
+        def fake(path):
+            seen.append(path)
+            page = int(path.rsplit("page=", 1)[1])
+            return pages.get(page, [])
+
+        with patch.object(check_versions, "github_api", side_effect=fake):
+            self.assertEqual(check_versions.fetch_github_release(svc), "v1.2.0")
+        self.assertEqual(seen, ["/repos/o/r/releases?per_page=2&page=1", "/repos/o/r/releases?per_page=2&page=2"])
+
     def test_missing_tag_name_raises(self):
         svc = {"github_repo": "owner/repo"}  # no tag_filter -> latest endpoint
         with patch.object(check_versions, "github_api", return_value={}):
