@@ -344,8 +344,10 @@ version-bump-mr.py [--repo-dir DIR] [--branch bot/version-bumps]
   default push URL is credential-free
   (`https://gitlab-ci-token@$CI_SERVER_HOST/$CI_PROJECT_PATH.git`) and the token
   reaches git through `GIT_ASKPASS`, so it never appears in the runner's process
-  table; a `--remote-url` is used verbatim and any credential in it is
-  registered for log redaction.
+  table. The askpass environment also sets `credential.interactive=always` at
+  command scope, because the runner writes `never` into the workspace repo's
+  config and git would otherwise skip the shim. A `--remote-url` is used
+  verbatim and any credential in it is registered for log redaction.
 - **Only tracked changes are committed** (`git add --update`), so report
   artifacts the check command drops stay untracked and out of the MR. Detection
   and staging share one list, read from `git status --porcelain -z` (raw,
