@@ -1232,7 +1232,7 @@ scripts/check-scrape-wiring.py [--observability-namespace NS]
   operator error, because discarding it judges objects the monitor does not
   select and leaves the ones it does select unresolved.
 - A peer that admits the observability namespace and then **narrows it with a
-  `podSelector`** is credited only when every label it asks for is declared
+  `podSelector`** (a mapping; any other shape is unresolved narrowing) is credited only when every label it asks for is declared
   with **`--prometheus-pod-label KEY=VALUE`** (repeatable, the same flag the
   scrape-netpol invariant takes): Prometheus is chart-installed, so its pod
   labels are in no manifest and the caller is the only source. An undeclared

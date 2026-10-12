@@ -610,6 +610,18 @@ class TestCacheEscapes:
         assert planted.read_bytes() == KEEP
         assert not stamp.is_symlink() and stamp.is_file()
 
+    def test_no_directory_descriptor_rename_fails_closed(self, monkeypatch, tmp_path, capsys):
+        """Without a descriptor-relative rename the containment cannot be held,
+        so the write is refused rather than made through a path."""
+        asset = write_raw(tmp_path / "jq-linux-amd64")
+        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
+        target = tmp_path / "bin"
+        target.mkdir()
+        monkeypatch.setattr(gate.os, "supports_dir_fd", set())
+        assert run(monkeypatch, ["jq"], target) == 2
+        assert "directory descriptor" in capsys.readouterr().err
+        assert not (target / "jq").exists()
+
     def test_a_linked_stamp_is_refused(self, monkeypatch, tmp_path, capsys):
         """The stamp is written by path, so a link there would be followed."""
         asset = write_raw(tmp_path / "jq-linux-amd64")
@@ -669,24 +681,6 @@ class TestCacheEscapes:
         assert capsys.readouterr().err.startswith("ERROR:")
         assert planted.read_bytes() == KEEP
 
-    def test_the_resolved_path_check_stands_alone(self, monkeypatch, tmp_path, capsys):
-        """Where no directory descriptor can carry a rename, the resolved-path
-        check is the whole guard and a clean install still works."""
-        monkeypatch.setattr(gate.os, "supports_dir_fd", set())
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
-        target = tmp_path / "bin"
-        assert run(monkeypatch, ["jq"], target) == 0
-        assert (target / "jq").read_bytes() == PAYLOAD
-        planted = write_raw(tmp_path / "planted", KEEP)
-        gate.asset_path(target, "jq").unlink()
-        gate.asset_path(target, "jq").symlink_to(planted)
-        assert run(monkeypatch, ["jq"], target) == 2
-        assert "refusing the symlink" in capsys.readouterr().err
-        assert planted.read_bytes() == KEEP
-
-
-class TestInstallDirectory:
     def test_the_default_comes_from_ci_project_dir(self, tmp_path):
         assert gate.default_dir({"CI_PROJECT_DIR": str(tmp_path)}) == tmp_path / ".bin"
 

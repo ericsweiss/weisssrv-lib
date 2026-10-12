@@ -88,7 +88,10 @@ import sys
 args = sys.argv[1:]
 files = [a for a in args if not a.startswith("-") and os.path.exists(a)]
 if not files:
-    sys.stdin.read()
+    # Like kubeconform, a stream with no kinded document validates nothing.
+    if "kind:" not in sys.stdin.read():
+        print("Summary: 0 resource found parsing stdin - Valid: 0, Invalid: 0, Errors: 0, Skipped: 0")
+        raise SystemExit(0)
 # kubeconform parses a file by its extension and reports an unknown one as no
 # file at all, with a clean summary.
 elif not files[0].endswith((".yaml", ".yml", ".json")):
@@ -252,6 +255,15 @@ class TestNothingPassesOnNothing:
         proc = run(tree, render="# nothing here\n---\n# still nothing\n")
         assert proc.returncode == 1
         assert "kubernetes/apps rendered no resources" in proc.stdout
+
+    def test_a_caller_owned_corpus_starts_empty(self, tree):
+        """Manifests left by an earlier run must not satisfy this run's floor."""
+        corpus = tree / "corpus.yaml"
+        corpus.write_text("kind: Namespace\nmetadata:\n  name: stale\n")
+        proc = run(tree, "--render-all", str(corpus), render="# nothing\n")
+        assert proc.returncode == 1
+        assert "rendered no resources" in proc.stdout
+        assert "stale" not in corpus.read_text()
 
     def test_a_render_larger_than_a_pipe_buffer_passes(self, tree):
         """The floor reads the whole stream: an early exit on the first kinded

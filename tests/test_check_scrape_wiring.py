@@ -434,6 +434,27 @@ class TestAPeerNarrowingTheScrapeNamespace:
         assert gate.main(argv) == 1
         assert "narrows it with namespaceSelector.matchExpressions" in capsys.readouterr().err
 
+    def test_a_non_mapping_podselector_is_unresolved_narrowing(self, tmp_path, capsys):
+        scalar = self.NARROWED.replace(
+            "          podSelector:\n"
+            "            matchLabels:\n"
+            "              app.kubernetes.io/name: prometheus\n",
+            "          podSelector: prometheus\n",
+        )
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, scalar)
+        assert gate.main(argv + self.DECLARED) == 1
+        assert "narrows it with podSelector" in capsys.readouterr().err
+
+    def test_a_non_mapping_matchlabels_is_unresolved_narrowing(self, tmp_path, capsys):
+        scalar = self.NARROWED.replace(
+            "            matchLabels:\n"
+            "              app.kubernetes.io/name: prometheus\n",
+            "            matchLabels: prometheus\n",
+        )
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, scalar)
+        assert gate.main(argv + self.DECLARED) == 1
+        assert "narrows it with podSelector" in capsys.readouterr().err
+
     def test_a_podselector_with_matchexpressions_is_not_credited_even_when_declared(
         self, tmp_path, capsys
     ):
