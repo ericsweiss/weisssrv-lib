@@ -1248,6 +1248,16 @@ class TestFetchGithubReleaseLatest(unittest.TestCase):
     tag_name, matching the tag_filter branch — otherwise the service silently
     reports up-to-date with a blank Latest column."""
 
+    def test_a_page_size_outside_githubs_range_is_refused(self):
+        """GitHub clamps per_page above 100, which would make the first page
+        read as the last; the entry is refused instead of silently truncated."""
+        for bad in (0, 101):
+            svc = {"github_repo": "o/r", "tag_filter": r"^v", "releases_per_page": bad}
+            with patch.object(check_versions, "github_api") as api:
+                with self.assertRaises(RuntimeError):
+                    check_versions.fetch_github_release(svc)
+                api.assert_not_called()
+
     def test_tag_filter_scan_honours_the_entry_page_size(self):
         """A repo with huge per-release asset lists needs smaller pages; the
         entry's releases_per_page sets the page size and the last-page test."""

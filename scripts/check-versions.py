@@ -788,7 +788,9 @@ def fetch_github_release(svc: dict) -> str:
         max_pages = 5  # Limit pagination to avoid excessive API calls
         # A repo that attaches many assets per release serves pages too large
         # to finish reliably; the entry can ask for smaller ones.
-        per_page = int(svc.get("releases_per_page") or 100)
+        per_page = int(svc.get("releases_per_page", 100))
+        if not 1 <= per_page <= 100:
+            raise RuntimeError(f"releases_per_page must be 1-100, got {per_page}")
 
         for page in range(1, max_pages + 1):
             releases = github_api(f"/repos/{repo}/releases?per_page={per_page}&page={page}")
