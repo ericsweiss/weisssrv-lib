@@ -1289,11 +1289,34 @@ def test_print_reads_only_the_leading_document(tmp_path: Path) -> None:
     assert proc.stdout == "v0.4.0\n"
 
 
+def test_print_reads_the_header_behind_a_preamble(tmp_path: Path) -> None:
+    """Comments, blank lines and a directive may precede the first `---`;
+    the document that follows is still the header."""
+    ci = tmp_path / ".gitlab-ci.yml"
+    ci.write_text(textwrap.dedent("""\
+        # the pipeline
+
+        %YAML 1.2
+        --- # header
+        spec:
+          inputs:
+            lib_ref:
+              default: v0.4.0
+        ---
+        variables: {}
+        """))
+    proc = _print(ci)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "v0.4.0\n"
+
+
 def test_print_refuses_a_default_glued_to_a_comment(tmp_path: Path) -> None:
     """`v0.4.0#x` is one scalar to YAML, so it is no release tag; only a `#`
     after separation whitespace is a comment."""
     ci = tmp_path / ".gitlab-ci.yml"
-    for default, expect in (("v0.4.0#x", 2), ("v0.4.0 # x", 0), ("\"v0.4.0\"  # x", 0)):
+    for default, expect in (
+        ("v0.4.0#x", 2), ("v0.4.0 # x", 0), ("\"v0.4.0\"  # x", 0), ("\"v0.4.0", 2), ("'v0.4.0\"", 2)
+    ):
         ci.write_text(f"spec:\n  inputs:\n    lib_ref:\n      default: {default}\n---\nvariables: {{}}\n")
         proc = _print(ci)
         assert proc.returncode == expect, (default, proc.stdout, proc.stderr)
