@@ -19,7 +19,7 @@ from pathlib import Path
 _PREAMBLE_RE = re.compile(r"\A(?:(?:[ \t]*#.*|%.*|[ \t]*)\n)*")
 _DOC_SEP_RE = re.compile(r"^---(?:[ \t].*)?$", re.M)
 _INPUTS_RE = re.compile(
-    r"^spec:\n(?:(?:[ \t]+.*|[ \t]*#.*|[ \t]*)\n)*?  inputs:\n((?:(?:    .*|\s*)\n)*)", re.M
+    r"^spec:\n(?:(?=[ \t#\n])[^\n]*\n)*?  inputs:\n((?:(?:    .*|\s*)\n)*)", re.M
 )
 _STANZA_RE = re.compile(r"^    ([\w-]+):[ \t]*(?:#.*)?\n((?:(?:      .*|\s*)\n)*)", re.M)
 _DEFAULT_RE = re.compile(
