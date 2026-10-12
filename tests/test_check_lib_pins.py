@@ -1310,6 +1310,33 @@ def test_print_reads_the_header_behind_a_preamble(tmp_path: Path) -> None:
     assert proc.stdout == "v0.4.0\n"
 
 
+def test_print_never_borrows_inputs_from_a_later_root_key(tmp_path: Path) -> None:
+    """Once the document dedents out of `spec:`, a two-space `inputs:` under
+    another root key is not the header's."""
+    ci = tmp_path / ".gitlab-ci.yml"
+    ci.write_text(textwrap.dedent("""\
+        spec:
+          description: no inputs here
+        other:
+          inputs:
+            lib_ref:
+              default: v9.9.9
+        ---
+        variables: {}
+        """))
+    proc = _print(ci)
+    assert proc.returncode == 2, proc.stdout
+    assert proc.stdout == ""
+
+
+def test_print_accepts_an_indented_preamble_comment(tmp_path: Path) -> None:
+    ci = tmp_path / ".gitlab-ci.yml"
+    ci.write_text("  # indented comment\n---\nspec:\n  inputs:\n    lib_ref:\n      default: v0.4.0\n---\nvariables: {}\n")
+    proc = _print(ci)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "v0.4.0\n"
+
+
 def test_print_refuses_a_default_glued_to_a_comment(tmp_path: Path) -> None:
     """`v0.4.0#x` is one scalar to YAML, so it is no release tag; only a `#`
     after separation whitespace is a comment."""
