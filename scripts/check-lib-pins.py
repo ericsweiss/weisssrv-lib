@@ -16,9 +16,19 @@ from pathlib import Path
 # `--print` is what a Taskfile var reads, so it works with no PyYAML: the
 # header's `spec.inputs` block is scanned one four-space stanza at a time and
 # a default is read only from the stanza naming the requested input.
-_INPUTS_RE = re.compile(r"^spec:\n(?:(?!---$).*\n)*?  inputs:\n((?:(?:    .*|\s*)\n)*)", re.M)
+_DOC_SEP_RE = re.compile(r"^---(?:[ \t].*)?$", re.M)
+_INPUTS_RE = re.compile(r"^spec:\n(?:.*\n)*?  inputs:\n((?:(?:    .*|\s*)\n)*)", re.M)
 _STANZA_RE = re.compile(r"^    ([\w-]+):[ \t]*(?:#.*)?\n((?:(?:      .*|\s*)\n)*)", re.M)
-_DEFAULT_RE = re.compile(r"^      default: *['\"]?(v\d+\.\d+\.\d+)['\"]?[ \t]*(?:#.*)?$", re.M)
+_DEFAULT_RE = re.compile(
+    r"^      default: *['\"]?(v\d+\.\d+\.\d+)['\"]?(?:[ \t]+#.*)?[ \t]*$", re.M
+)
+
+
+def _header(text: str) -> str:
+    """The leading YAML document, the only place GitLab reads `spec:` from."""
+    start = _DOC_SEP_RE.match(text).end() if _DOC_SEP_RE.match(text) else 0
+    sep = _DOC_SEP_RE.search(text, start)
+    return text[: sep.start()] if sep else text
 
 
 def print_declared_ref(argv: list[str]) -> int:
@@ -40,7 +50,7 @@ def print_declared_ref(argv: list[str]) -> int:
     except OSError as exc:
         print(f"ERROR: {ci}: {exc}", file=sys.stderr)
         return 2
-    block = _INPUTS_RE.search(text)
+    block = _INPUTS_RE.search(_header(text))
     for stanza in _STANZA_RE.finditer(block.group(1) if block else ""):
         if stanza.group(1) != want:
             continue

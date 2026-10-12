@@ -455,6 +455,28 @@ def test_askpass_shim_prints_the_secret_and_is_removed():
     assert not Path(shim).exists()
 
 
+def test_askpass_env_outranks_the_runner_non_interactive_config(tmp_path, monkeypatch):
+    """The runner writes credential.interactive=never into the workspace repo,
+    which makes git skip GIT_ASKPASS; the env must carry the override, after
+    any command-scope config the caller already set."""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "credential.interactive", "never"], check=True)
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.name")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "bot")
+    with bot.askpass_env("glpat-tok") as env:
+        assert env["GIT_CONFIG_COUNT"] == "2"
+        assert (env["GIT_CONFIG_KEY_1"], env["GIT_CONFIG_VALUE_1"]) == ("credential.interactive", "always")
+        out = subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "--get", "credential.interactive"],
+            capture_output=True, text=True, env=env,
+        )
+        assert out.stdout.strip() == "always"
+        assert subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "--get", "user.name"], capture_output=True, text=True, env=env
+        ).stdout.strip() == "bot"
+
+
 def test_askpass_env_without_a_secret_inherits_the_environment():
     with bot.askpass_env("") as env:
         assert env is None
