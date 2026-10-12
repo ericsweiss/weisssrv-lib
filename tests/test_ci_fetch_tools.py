@@ -17,6 +17,8 @@ gate = load_script("ci-fetch-tools.py", register=True)
 
 PAYLOAD = b"#!/bin/sh\necho tool\n"
 OTHER = b"#!/bin/sh\necho newer\n"
+# A file outside the cache that no run may touch.
+KEEP = b"keep me\n"
 
 
 def sha(data: bytes) -> str:
@@ -41,6 +43,15 @@ def require_lzma() -> None:
         if os.environ.get("CI"):
             pytest.fail("this Python has no lzma — the tar.xz case cannot run")
         pytest.skip("this Python has no lzma")
+
+
+def require_dir_fd_rename() -> None:
+    """Stop the descriptor case on a platform without renameat, not skip in CI."""
+    if os.rename in os.supports_dir_fd:
+        return
+    if os.environ.get("CI"):
+        pytest.fail("this platform has no renameat — the descriptor case cannot run")
+    pytest.skip("this platform has no renameat")
 
 
 def write_tar(path: Path, members: dict, mode: str = "w:gz") -> Path:
@@ -423,19 +434,20 @@ class TestIdempotence:
         assert (target / "jq").read_bytes() == PAYLOAD
 
     def test_a_symlinked_binary_re_fetches(self, monkeypatch, tmp_path):
-        """A symlink is not the file the pin installs, whatever it points at, and
-        the install replaces it with a real one."""
+        """A symlink is not the file the pin installs, whatever it points at. The
+        install replaces the link itself, leaving what it pointed at alone."""
         asset = write_raw(tmp_path / "jq-linux-amd64")
         pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
         target = tmp_path / "bin"
         assert run(monkeypatch, ["jq"], target) == 0
-        elsewhere = write_raw(tmp_path / "elsewhere")
+        elsewhere = write_raw(tmp_path / "elsewhere", OTHER)
         elsewhere.chmod(0o755)
         (target / "jq").unlink()
         (target / "jq").symlink_to(elsewhere)
         assert run(monkeypatch, ["jq"], target) == 0
         assert not (target / "jq").is_symlink()
         assert (target / "jq").read_bytes() == PAYLOAD
+        assert elsewhere.read_bytes() == OTHER
 
     def test_a_non_executable_binary_re_fetches(self, monkeypatch, tmp_path):
         """Right bytes, no execute bit: the job would fail on the call, so the
@@ -536,6 +548,142 @@ class TestIdempotence:
         assert run(monkeypatch, ["jq"], target) == 2
         assert not gate.stamp_path(target, "jq").exists()
         assert "sha256 mismatch" in capsys.readouterr().err
+
+
+class TestCacheEscapes:
+    """Every write lands inside the install directory: a link restored into the
+    cache is refused rather than followed out of it."""
+
+    def test_an_assets_dir_linked_outside_is_refused(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The kept asset would land on whatever the link names."""
+        asset = write_raw(tmp_path / "jq-linux-amd64")
+        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        planted = write_raw(outside / "jq", KEEP)
+        target = tmp_path / "bin"
+        target.mkdir()
+        (target / gate.ASSETS_DIR).symlink_to(outside)
+        assert run(monkeypatch, ["jq"], target) == 2
+        assert "outside the cache" in capsys.readouterr().err
+        assert planted.read_bytes() == KEEP
+        assert not (target / "jq").exists()
+
+    def test_a_linked_cache_entry_is_refused(self, monkeypatch, tmp_path, capsys):
+        """A link where the asset belongs is not the cache's own file, so the
+        asset is neither read through it nor replaced under it."""
+        asset = write_raw(tmp_path / "jq-linux-amd64")
+        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
+        planted = write_raw(tmp_path / "planted", KEEP)
+        target = tmp_path / "bin"
+        (target / gate.ASSETS_DIR).mkdir(parents=True)
+        gate.asset_path(target, "jq").symlink_to(planted)
+        assert run(monkeypatch, ["jq"], target) == 2
+        assert "refusing the symlink" in capsys.readouterr().err
+        assert planted.read_bytes() == KEEP
+        assert not (target / "jq").exists()
+
+    def test_a_stamp_link_swapped_in_after_the_check_is_replaced_not_followed(
+        self, monkeypatch, tmp_path
+    ):
+        """The stamp goes through the same descriptor-based replace as the
+        binary, so a link planted between the check and the write is replaced."""
+        asset = write_raw(tmp_path / "jq-linux-amd64")
+        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
+        planted = write_raw(tmp_path / "planted", KEEP)
+        target = tmp_path / "bin"
+        target.mkdir()
+        stamp = gate.stamp_path(target, "jq")
+        original = gate.replace_into
+
+        def plant_after_the_binary(directory, source, name):
+            # The binary lands first; the link appears before the stamp write.
+            result = original(directory, source, name)
+            if name == "jq" and not stamp.exists():
+                stamp.symlink_to(planted)
+            return result
+
+        monkeypatch.setattr(gate, "replace_into", plant_after_the_binary)
+        assert run(monkeypatch, ["jq"], target) == 0
+        assert planted.read_bytes() == KEEP
+        assert not stamp.is_symlink() and stamp.is_file()
+
+    def test_a_linked_stamp_is_refused(self, monkeypatch, tmp_path, capsys):
+        """The stamp is written by path, so a link there would be followed."""
+        asset = write_raw(tmp_path / "jq-linux-amd64")
+        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
+        planted = write_raw(tmp_path / "planted", KEEP)
+        target = tmp_path / "bin"
+        target.mkdir()
+        gate.stamp_path(target, "jq").symlink_to(planted)
+        assert run(monkeypatch, ["jq"], target) == 2
+        assert "refusing the symlink" in capsys.readouterr().err
+        assert planted.read_bytes() == KEEP
+        assert not (target / "jq").exists()
+
+    def test_a_clean_cache_installs_keeps_and_skips(self, monkeypatch, tmp_path):
+        """The guards are invisible to a cache the script owns: the asset is a
+        real file beside the binary, and the second run reads it offline."""
+        asset = write_raw(tmp_path / "jq-linux-amd64")
+        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
+        target = tmp_path / "bin"
+        assert run(monkeypatch, ["jq"], target) == 0
+        kept = gate.asset_path(target, "jq")
+        assert not kept.is_symlink() and kept.read_bytes() == PAYLOAD
+        assert (target / "jq").read_bytes() == PAYLOAD
+        asset.unlink()
+        assert run(monkeypatch, ["jq"], target) == 0
+
+    def test_a_symlinked_install_dir_is_still_installed_into(
+        self, monkeypatch, tmp_path
+    ):
+        """`--dir` is the caller's own path: resolving it is what makes a link
+        inside it visible, and a link to it stays usable."""
+        asset = write_raw(tmp_path / "jq-linux-amd64")
+        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
+        real = tmp_path / "real-bin"
+        real.mkdir()
+        linked = tmp_path / "bin"
+        linked.symlink_to(real)
+        assert run(monkeypatch, ["jq"], linked) == 0
+        assert (real / "jq").read_bytes() == PAYLOAD
+
+    def test_the_descriptor_refuses_a_link_swapped_in_behind_the_check(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The window between the check and the rename: with the check stubbed
+        out, the descriptor on the directory itself is what refuses."""
+        require_dir_fd_rename()
+        asset = write_raw(tmp_path / "jq-linux-amd64")
+        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        planted = write_raw(outside / "jq", KEEP)
+        target = tmp_path / "bin"
+        target.mkdir()
+        (target / gate.ASSETS_DIR).symlink_to(outside)
+        monkeypatch.setattr(gate, "in_cache", lambda directory, path: path)
+        assert run(monkeypatch, ["jq"], target) == 2
+        assert capsys.readouterr().err.startswith("ERROR:")
+        assert planted.read_bytes() == KEEP
+
+    def test_the_resolved_path_check_stands_alone(self, monkeypatch, tmp_path, capsys):
+        """Where no directory descriptor can carry a rename, the resolved-path
+        check is the whole guard and a clean install still works."""
+        monkeypatch.setattr(gate.os, "supports_dir_fd", set())
+        asset = write_raw(tmp_path / "jq-linux-amd64")
+        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
+        target = tmp_path / "bin"
+        assert run(monkeypatch, ["jq"], target) == 0
+        assert (target / "jq").read_bytes() == PAYLOAD
+        planted = write_raw(tmp_path / "planted", KEEP)
+        gate.asset_path(target, "jq").unlink()
+        gate.asset_path(target, "jq").symlink_to(planted)
+        assert run(monkeypatch, ["jq"], target) == 2
+        assert "refusing the symlink" in capsys.readouterr().err
+        assert planted.read_bytes() == KEEP
 
 
 class TestInstallDirectory:

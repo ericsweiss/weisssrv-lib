@@ -1215,19 +1215,30 @@ scripts/check-scrape-wiring.py [--observability-namespace NS]
   must be admitted, by a policy that selects those pods and names that number
   — or names the port, since a policy's named port is resolved against each
   pod's own ports and so covers every number the name holds.
+- **Resolution is declaration-based, by number as well as by name.** A numeric
+  `targetPort` needs no matching `containerPort` for the Service to be valid, so
+  that Service is never faulted for it; the scrape is credited only where a
+  selected workload declares the number, exactly as a named port is credited
+  only where one declares the name. A port no selected workload declares at all
+  is a Violation.
 - A policy is credited when its `podSelector` matches the target pods and an
   ingress rule admits the observability namespace on that port. An absent or
   **empty** `ports:` list matches every port, as the API reads it, and
   `endPort` is read as a range.
-- A shape the gate does not model — `matchExpressions`, an `ipBlock` peer — is
-  **not credited**, and is named in the failure so the reader can tell "wired
-  wrong" from "not modelled".
+- A policy shape the gate does not model — `matchExpressions`, an `ipBlock`
+  peer — is **not credited**, and is named in the failure so the reader can
+  tell "wired wrong" from "not modelled". A **monitor's** own `spec.selector`
+  is the input, not a shape to judge: a term beyond `matchLabels` there is an
+  operator error, because discarding it judges objects the monitor does not
+  select and leaves the ones it does select unresolved.
 - A peer that admits the observability namespace and then **narrows it with a
-  `podSelector`** keeps its credit for the namespace and the port, with the
-  narrowing named as unresolved. Prometheus is chart-installed, so its pod
-  labels are in no manifest and no input can settle whether the narrowing
-  reaches it; refusing the policy would fail every cluster that admits the
-  scrape this way. The port is still required, so the credit is not vacuous.
+  `podSelector`** is credited only when every label it asks for is declared
+  with **`--prometheus-pod-label KEY=VALUE`** (repeatable, the same flag the
+  scrape-netpol invariant takes): Prometheus is chart-installed, so its pod
+  labels are in no manifest and the caller is the only source. An undeclared
+  or differing label, a `matchExpressions` term on either selector, or a
+  `namespaceSelector` term beyond the name is **not credited**, and the
+  narrowing is named. A `podSelector: {}` narrows nothing and keeps its credit.
 - A matched Service with **no `spec.selector`** is a target only if something in
   the input declares its endpoints — an `Endpoints` object of that name, or an
   `EndpointSlice` labelled `kubernetes.io/service-name`. Then the addresses are
@@ -1244,7 +1255,9 @@ scripts/check-scrape-wiring.py [--observability-namespace NS]
   port in one subset does not serve the addresses in another. An empty object,
   one with no addresses, or one exposing only another port is a Violation.
   Addresses or ports standing as a `${...}` substitution are a scalar here, so
-  what they hold is unknown and the object keeps its credit.
+  what they hold is unknown and the object keeps its credit. Any **other**
+  scalar where that list belongs is a shape nothing can read, and an operator
+  error.
 - **Documents are grouped by effective namespace** — their own
   `metadata.namespace`, else `--namespace` — and each target is judged against
   the policies in the namespace its pods live in, so a policy in one namespace
@@ -1278,11 +1291,13 @@ scripts/check-scrape-wiring.py [--observability-namespace NS]
   directory of rendered manifests. Every namespace in it is judged, so
   `matchNames` resolves against the namespace holding the pods and their
   policies, and `any: true` reaches every namespace the corpus carries. A
-  monitor scoped to several is judged on their union: a namespace with no
-  matching Service contributes nothing, and only a monitor with no target
-  anywhere is a finding. A `matchNames` namespace the corpus holds no object in
-  is an operator error — a stale name, or a partial render. Mutually exclusive
-  with the two namespace options and with `DIRECTORY`.
+  monitor scoped to several is judged on their union: a namespace holding
+  nothing the monitor selects contributes nothing, while a namespace holding a
+  Service or workload it **does** select is judged there — a misconfigured one
+  is a finding wherever it lives, whatever the other namespaces resolve to. A
+  `matchNames` namespace the corpus holds no object in is an operator error —
+  a stale name, or a partial render. Mutually exclusive with the two namespace
+  options and with `DIRECTORY`.
 - **Pods a chart renders are counted, not judged.** Under `--corpus`, when no
   namespace a monitor reaches renders a workload at all, the pods are a
   HelmRelease's and no manifest states their ports: the endpoint is counted in
@@ -1297,9 +1312,11 @@ scripts/check-scrape-wiring.py [--observability-namespace NS]
 - **Exit codes:** 0 clean, 1 on an unadmitted port or a Service with neither
   selector nor endpoints, 2 on an operator error — a directory that does not
   exist, a manifest that does not parse, an input with no kinded document, a
-  monitor with no endpoints or a selector matching every pod, an ambiguous
-  namespace grouping, a scope that cannot be verified, and a policy that admits
-  the observability namespace while no monitor scrapes its namespace.
+  monitor with no endpoints, a selector matching every pod or one carrying a
+  term beyond `matchLabels`, a hand-written endpoints object whose addresses or
+  ports are a scalar that is no substitution, an ambiguous namespace grouping, a
+  scope that cannot be verified, and a policy that admits the observability
+  namespace while no monitor scrapes its namespace.
 
 ### `check-kustomization.py` (PyYAML)
 
@@ -1603,10 +1620,12 @@ scripts/check-alertmanager-behaviour.py --config FILE [--repo-root DIR]
 - **An inhibit rule covers a pair by alertname or by label scope.** A rule
   pinning alertnames covers the pair when it names both. A rule that pins none —
   the generic `severity="critical"` -> `severity="warning"` pair, narrowed by a
-  `component` matcher — covers it when the two alerts' OWN labels satisfy every
-  matcher on their side. A rule carrying `alertname` in `equal:` covers no pair
-  at all: it only ever joins same-named alerts, and an escalation pair's two
-  names differ by construction.
+  `component` matcher — covers it when each alert has a declaration whose OWN
+  labels satisfy every matcher on that alert's side. An alert instance carries
+  one declaration's labels, so a name declared at two severities is admitted by
+  whichever declaration the side pins. A rule carrying `alertname` in `equal:`
+  covers no pair at all: it only ever joins same-named alerts, and an escalation
+  pair's two names differ by construction.
 - **Every member of a regex alternation is checked**, not just "at least one
   survives", and a regex that is not a plain alternation is REPORTED rather than
   skipped — an empty name set would otherwise pass silently.
@@ -2117,11 +2136,24 @@ behaviour with no commit in the consuming repo at all.
   mapping, a non-list `sites:`, a bad regex, a pattern with any number of groups
   but one, a glob escaping the repo) is an operator error, never a no-op. The
   file is optional; a repo with no other pin site ships none.
+- **Anchor the capture on the delimiter that closes the pin**, with a lookahead
+  so only the tag is rewritten: `…\?ref=(v\d+\.\d+\.\d+)(?=")` for a Terraform
+  `source =`, `…@(v\d+\.\d+\.\d+)(?=#subdirectory=cli)` for a CLI install
+  spec. Unanchored, a pre-release `v1.2.3-rc1` captures as `v1.2.3` and reads as
+  the declared tag, so the gate passes over a pin that is not the release. The
+  shipped example anchors both of its entries.
 - **A site reads and rewrites inside the repository only.** The glob's `..`
   check is syntax; a match is also resolved, and a SYMLINK match, or one a
   linked parent directory carries outside the repo root, is an operator error
   naming the path. Reading and writing both follow a link, so `--fix` would
   otherwise rewrite a file the repository does not own.
+- **The whole rewrite is one plan.** Every surface is validated and its new
+  text computed in memory BEFORE the first byte is written, so a refusal
+  anywhere — a bad site pattern, a symlinked match, a site matching nothing —
+  leaves the pipeline file, `ansible/requirements.yml` and every earlier site
+  byte-identical. Two surfaces planning a write to the SAME file (a site glob
+  naming the pipeline file or its requirements.yml) is refused rather than
+  letting one plan discard the other.
 - **`--fix`** rewrites every surface from the declared tag and reports one count
   (`rewrote N pin(s) at vX.Y.Z`). On a repo still carrying the literal layout it
   CONVERTS it: the current `variables.WEISSSRV_LIB_REF` becomes the header
@@ -2151,19 +2183,32 @@ behaviour with no commit in the consuming repo at all.
     cannot redirect the rewrite at an anchor elsewhere in the file;
   - an **alias** inside `include:` — or an anchor DEFINED there, which something
     outside can reference — refuses the whole block, because composing resolves
-    aliases away and the node tree cannot show either.
+    aliases away and the node tree cannot show either;
+  - the declared ref is re-read from the planned text and must equal the target
+    **even when nothing changed**, so a `default:` the line rewriter cannot
+    reach is refused rather than reported as a clean 0 at the OLD tag.
 
-  Where it cannot repair — a missing `ref:`, a flow-style entry, a pin outside
-  `include:`, an aliased block — it says so and leaves the file untouched
-  instead of returning a clean 0. An alias elsewhere in the file does not
-  disable it.
+  **The header `default:`.** A flow mapping written on ONE line
+  (`lib_ref: {default: vX.Y.Z}`, or a whole flow `spec:`) IS rewritten: the
+  splice is bounded by the value node's own marks, so a sibling key such as
+  `type: string` on that line survives. A `default:` whose value sits on another
+  line — a flow mapping spanning lines, a folded or literal scalar — is an
+  operator error naming the header line and the shape; write it as
+  `default: vX.Y.Z` on the input's own line.
+
+  Where it cannot repair — a missing `ref:`, a flow-style include entry, a pin
+  outside `include:`, an aliased block — it says so and leaves the file
+  untouched instead of returning a clean 0. An alias elsewhere in the file does
+  not disable it.
 - **Exit codes:** 0 consistent, 1 on a literal pin / branch ref / missing header
   or variable / a drifted collection or site / **no matching include entries at
   all** — an empty set is reported rather than passing, so restructuring the
   includes out from under the gate is visible. **2** for an operator error
   (unreadable path, malformed YAML, a top-level document that is not a mapping,
-  a malformed site list, a non-tag `--bump`), one line and no traceback, so CI
-  can tell "a pin drifted" from "I could not read the file".
+  a malformed site list, a non-tag `--bump`, and under `--fix`/`--bump` an
+  unreachable header `default:`, a site matching nothing, or a site glob
+  colliding with another surface's file), one line and no traceback, so CI can
+  tell "a pin drifted" from "I could not read the file".
 - **Handles a `file:` list**, the form that shares one `ref:` across several
   templates, and names every affected template rather than just the entry.
 - **Vendoring:** imports `ci_yaml.py` from its own directory for the header
@@ -2392,6 +2437,14 @@ Tools: `amtool`, `jq`, `kubeconform`, `kustomize`, `promtool`, `shellcheck`,
   `cache:` on `DIR` safe: the pin lives in the script, so nothing the mutable
   cache says about itself is believed — and the cache carries the assets as
   well as the binaries.
+- **Every write lands inside `DIR`, through a real path.** `DIR/.assets`, the
+  asset kept in it and `DIR/<name>.version` are refused when a symlink stands
+  where one of them belongs, or when the path resolves outside the resolved
+  `DIR`; each rename goes through a descriptor on the directory itself rather
+  than through the path. So a link restored with a cached `DIR` cannot carry an
+  asset or a stamp out of the workspace, while a symlinked `DIR` itself — the
+  caller's own path — still installs. The binary's own path is replaced
+  whatever stands there, the rename taking the link rather than its target.
 - **Each install also stamps `DIR/<name>.version`** with the effective version,
   the asset's sha256 and the sha256 of the installed binary. It lands after the
   binary, so an interrupted install reads as absent. `--force` re-installs
@@ -2408,8 +2461,9 @@ Tools: `amtool`, `jq`, `kubeconform`, `kustomize`, `promtool`, `shellcheck`,
   override already applied, and exits 0. It takes no tool argument.
 - **Exit codes:** 0 on success, 2 on an unknown tool name (the message lists the
   known ones), a download failure naming the URL, a sha256 mismatch, an archive
-  whose named member is missing or escapes the archive, or a half-made
-  override. A mismatch leaves no file in `DIR`.
+  whose named member is missing or escapes the archive, a cache path that is a
+  symlink or resolves outside `DIR`, or a half-made override. A mismatch leaves
+  no file in `DIR`.
 
 ### `check-molecule-matrix-coverage.sh` (PyYAML)
 
@@ -2871,6 +2925,9 @@ scripts/check-ci-include-job-names.py --lib-path ../weisssrv-lib
   dangles, because its jobs AND its needs are both invisible and a clean run
   would prove nothing. A `project:` include with no library checkout, a path
   that resolves to no file and a file that will not parse are errors to fix.
+- An include resolving outside its own checkout — a `..` component, or a path
+  whose link lands elsewhere — is an operator error naming where it resolved.
+  GitLab includes nothing from there, so its job names are not the pipeline's.
 - A `remote:`, `component:` or `template:` include names a file outside both
   checkouts, which no invocation can fix, so it is an operator error until
   `--allow-unreadable-include SUBSTRING=REASON` declares the blind spot. The
@@ -2888,8 +2945,8 @@ scripts/check-ci-include-job-names.py --lib-path ../weisssrv-lib
   pipeline replaces it rather than porting it.
 - **Exit codes:** 0 clean, 1 on an unresolvable need or a stale declaration,
   2 on an operator error — a missing `--ci-file`, an unparseable file, an
-  include the gate cannot read or has not been allowed, or no job names
-  resolved at all.
+  include the gate cannot read, one resolving outside its checkout or one not
+  allowed, or no job names resolved at all.
 
 ### `check-include-contract.py` (PyYAML)
 

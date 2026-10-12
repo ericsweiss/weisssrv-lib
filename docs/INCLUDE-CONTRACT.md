@@ -278,8 +278,10 @@ Terraform `?ref=` pins, a copier answer default, any other file that repeats the
 tag. `--fix` converts a repo still carrying a literal tag on every entry and is
 idempotent afterwards; `--bump vX.Y.Z` moves the declared tag and rewrites every
 surface from it, so a library upgrade is one command; `--print` writes the
-declared tag for a Taskfile to read. Flags, exit codes and the site-list schema
-are in [SCRIPTS.md](SCRIPTS.md#check-lib-pinspy-pyyaml).
+declared tag for a Taskfile to read. Both rewrites are planned whole and
+written only once every surface validates, so a refusal leaves the tree
+byte-identical. Flags, exit codes and the site-list schema are in
+[SCRIPTS.md](SCRIPTS.md#check-lib-pinspy-pyyaml).
 
 ## Self-application (this library's own pipeline)
 

@@ -6,10 +6,14 @@
 # Each entry is a glob relative to the repo root plus a regex carrying exactly
 # ONE capture group — the ref, which must equal the declared one. A glob or
 # pattern that matches nothing FAILS the gate rather than passing vacuously.
+
+# Anchor the capture on the delimiter that closes the pin, with a lookahead so
+# only the tag is rewritten: unanchored, `v1.2.3-rc1` captures as `v1.2.3` and
+# reads as the declared tag.
 sites:
   # Terraform roots calling a library module at a `?ref=` pin.
   - path: terraform/*/main.tf
-    pattern: 'weisssrv-lib\.git//terraform/modules/[a-z-]+\?ref=(v\d+\.\d+\.\d+)'
+    pattern: 'weisssrv-lib\.git//terraform/modules/[a-z-]+\?ref=(v\d+\.\d+\.\d+)(?=")'
   # A CLI install spec written into a doc, so the snippet stays runnable.
   - path: docs/*.md
-    pattern: 'weisssrv-lib\.git@(v\d+\.\d+\.\d+)#subdirectory=cli'
+    pattern: 'weisssrv-lib\.git@(v\d+\.\d+\.\d+)(?=#subdirectory=cli)'

@@ -289,6 +289,27 @@ class TestEscalationInhibits:
         ]
     }
 
+    DUAL_SEVERITY_RULES = {
+        "groups": [
+            {
+                "name": "disk",
+                "rules": [
+                    {"alert": "DiskUsageWarning", "expr": "x", "labels": {"severity": "warning"}},
+                    {
+                        "alert": "DiskUsageWarningProlonged",
+                        "expr": "x",
+                        "labels": {"severity": "critical"},
+                    },
+                    {
+                        "alert": "DiskUsageWarningProlonged",
+                        "expr": "y",
+                        "labels": {"severity": "warning"},
+                    },
+                ],
+            }
+        ]
+    }
+
     def _config(self, tmp_path, **extra):
         doc = {"route_cases": [{"receiver": "r", "labels": ["alertname=X"]}]}
         doc.update(extra)
@@ -318,6 +339,24 @@ class TestEscalationInhibits:
             ]
         }
         assert mod.check_escalation_inhibits(am, self.RULES, self._config(tmp_path)) == []
+
+    def test_a_name_declared_at_two_severities_is_still_inhibited(self, tmp_path):
+        """The critical declaration alone satisfies a severity-scoped source side."""
+        am = {
+            "inhibit_rules": [
+                {
+                    "source_matchers": ['severity="critical"'],
+                    "target_matchers": ['severity="warning"'],
+                    "equal": ["instance"],
+                }
+            ]
+        }
+        assert (
+            mod.check_escalation_inhibits(
+                am, self.DUAL_SEVERITY_RULES, self._config(tmp_path)
+            )
+            == []
+        )
 
     def test_a_negated_source_alertname_does_not_satisfy_the_pair(self, tmp_path):
         """A rule excluding the critical can never match it, so the pair is open."""
@@ -1108,6 +1147,12 @@ class TestSideAdmits:
     """A pinned side still has to satisfy its other matchers."""
 
     RULES = {"EndpointDown": [{"alert": "EndpointDown", "labels": {"severity": "warning"}}]}
+    BOTH = {
+        "DiskUsage": [
+            {"alert": "DiskUsage", "labels": {"severity": "warning"}},
+            {"alert": "DiskUsage", "labels": {"severity": "critical"}},
+        ]
+    }
 
     def _parsed(self, *matchers: str):
         problems: list[str] = []
@@ -1129,6 +1174,18 @@ class TestSideAdmits:
     def test_a_pin_with_another_matcher_needs_a_declaration(self):
         parsed = self._parsed('alertname="Upstream"', 'component="storage"')
         assert not mod._side_admits(parsed, "Upstream", {})
+
+    def test_one_of_two_declared_severities_admits(self):
+        """The critical declaration produces the instance the side pins."""
+        parsed = self._parsed('alertname="DiskUsage"', 'severity="critical"')
+        assert mod._side_admits(parsed, "DiskUsage", self.BOTH)
+
+    def test_a_severity_neither_declaration_carries_does_not(self):
+        parsed = self._parsed('alertname="DiskUsage"', 'severity="info"')
+        assert not mod._side_admits(parsed, "DiskUsage", self.BOTH)
+
+    def test_a_scope_with_no_pin_reads_the_declarations_too(self):
+        assert mod._side_admits(self._parsed('severity="critical"'), "DiskUsage", self.BOTH)
 
 
 SCOPE_RULES = {

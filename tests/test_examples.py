@@ -166,6 +166,24 @@ class TestLibRefSitesExample:
             ), f"no sample line matches the pattern for {glob}"
 
 
+    def test_a_pre_release_suffix_does_not_read_as_its_base_tag(self, tmp_path):
+        """Unanchored, `v1.2.3-rc1` captures as `v1.2.3` and passes the gate."""
+        clp = load_script("check-lib-pins.py")
+        (tmp_path / "scripts").mkdir()
+        (tmp_path / "scripts" / "lib-ref-sites.yml").write_text(
+            (EXAMPLES / "lib-ref-sites.example.yml").read_text()
+        )
+        samples = [
+            'source = "git::https://host/eric/weisssrv-lib.git//terraform/'
+            'modules/cloudflare-zone?ref=v1.2.3-rc1"',
+            "pipx install 'git+https://host/eric/weisssrv-lib.git@v1.2.3-rc1"
+            "#subdirectory=cli'",
+        ]
+        for glob, pattern in clp.load_sites(tmp_path / ".gitlab-ci.yml"):
+            for sample in samples:
+                assert not pattern.search(sample), f"{glob} read a pre-release"
+
+
 class TestB2BucketExample:
     """Shape guard for the one example carrying placeholder identifiers."""
 

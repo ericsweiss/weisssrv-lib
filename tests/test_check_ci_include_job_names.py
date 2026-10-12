@@ -682,5 +682,96 @@ def test_a_nested_include_resolves_its_inputs_against_the_parent(world, capsys):
     assert "Optional needs OK" in capsys.readouterr().out
 
 
+def _escaping_target(world) -> Path:
+    """A readable CI file outside both checkouts, creating `escaped-gate`."""
+    consumer, _lib = world
+    outside = consumer.parent / "outside" / "evil.yml"
+    _write(
+        outside,
+        """\
+        escaped-gate:
+          script:
+            - echo ok
+        """,
+    )
+    ci = consumer / ".gitlab-ci.yml"
+    ci.write_text(
+        ci.read_text(encoding="utf-8").replace(
+            "    - job: python-lint\n      optional: true\n",
+            "    - job: python-lint\n      optional: true\n"
+            "    - job: escaped-gate\n      optional: true\n",
+        ),
+        encoding="utf-8",
+    )
+    return outside
+
+
+def test_local_include_climbing_out_of_the_repo_exits_2(world, capsys):
+    """A `..` path leaves the project, so GitLab never creates its jobs."""
+    consumer, _lib = world
+    _escaping_target(world)
+    ci = consumer / ".gitlab-ci.yml"
+    ci.write_text(
+        ci.read_text(encoding="utf-8").replace(
+            "include:\n", "include:\n  - local: ../outside/evil.yml\n"
+        ),
+        encoding="utf-8",
+    )
+    assert _run(world) == 2
+    err = capsys.readouterr().err
+    assert "'../outside/evil.yml'" in err
+    assert "outside the checkout" in err
+
+
+def test_project_include_symlinked_out_of_the_library_exits_2(world, capsys):
+    """The path stays inside the checkout; the link it names does not."""
+    consumer, lib = world
+    outside = _escaping_target(world)
+    (lib / "ci" / "lint" / "linked.yml").symlink_to(outside)
+    ci = consumer / ".gitlab-ci.yml"
+    ci.write_text(
+        ci.read_text(encoding="utf-8").replace(
+            "    file: ci/lint/python-lint.yml\n",
+            "    file: ci/lint/python-lint.yml\n"
+            "  - project: org/weisssrv-lib\n    ref: v1.0.0\n"
+            "    file: ci/lint/linked.yml\n",
+        ),
+        encoding="utf-8",
+    )
+    assert _run(world) == 2
+    err = capsys.readouterr().err
+    assert "'ci/lint/linked.yml'" in err
+    assert "outside the checkout" in err
+
+
+def test_a_symlinked_include_inside_the_checkout_resolves(world, capsys):
+    """Containment is the test, not the link: this one stays in the repo."""
+    consumer, _lib = world
+    _write(
+        consumer / ".gitlab" / "ci" / "real.yml",
+        """\
+        child-gate:
+          script:
+            - echo ok
+        """,
+    )
+    (consumer / ".gitlab" / "ci" / "link.yml").symlink_to(
+        consumer / ".gitlab" / "ci" / "real.yml"
+    )
+    ci = consumer / ".gitlab-ci.yml"
+    ci.write_text(
+        ci.read_text(encoding="utf-8")
+        .replace("include:\n", "include:\n  - local: .gitlab/ci/link.yml\n")
+        .replace(
+            "    - job: python-lint\n      optional: true\n",
+            "    - job: python-lint\n      optional: true\n"
+            "    - job: child-gate\n      optional: true\n",
+        ),
+        encoding="utf-8",
+    )
+    assert _run(world) == 0
+    assert "Optional needs OK" in capsys.readouterr().out
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
