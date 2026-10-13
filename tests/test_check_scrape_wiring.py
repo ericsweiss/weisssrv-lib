@@ -468,6 +468,22 @@ class TestAPeerNarrowingTheScrapeNamespace:
         assert gate.main(argv + self.DECLARED) == 1
         assert "narrows it with podSelector" in capsys.readouterr().err
 
+    def test_a_null_selector_label_is_not_read_as_an_absent_declared_label(
+        self, tmp_path, capsys
+    ):
+        """`tier: null` asks for a label the scraper never declared; an absent
+        declared label must not compare equal to a null wanted one."""
+        null_label = self.NARROWED.replace(
+            "            matchLabels:\n"
+            "              app.kubernetes.io/name: prometheus\n",
+            "            matchLabels:\n"
+            "              app.kubernetes.io/name: prometheus\n"
+            "              tier: null\n",
+        )
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, null_label)
+        assert gate.main(argv + self.DECLARED) == 1
+        assert "declared scraper labels do not carry" in capsys.readouterr().err
+
     def test_an_extra_namespace_label_narrows_the_peer(self, tmp_path, capsys):
         """A second matchLabels entry beside the name asks for a namespace label
         nothing here can resolve, so the peer is not credited."""
