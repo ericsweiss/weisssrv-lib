@@ -17,7 +17,9 @@ from jinja2.lexer import TOKEN_STRING, TOKEN_VARIABLE_BEGIN, TOKEN_VARIABLE_END
 
 COLLECTION = Path(__file__).resolve().parent.parent / "ansible_collections" / "weisssrv" / "infra"
 EXPRESSION_KEYS = {"that", "when", "failed_when", "changed_when", "until"}
-DECODED_ESCAPE = "invalid escape sequence"
+# A warnings filter matches at the start of the message, and 3.14 leads with
+# the offending sequence, so the pattern skips to the phrase both spell.
+DECODED_ESCAPE = r".*invalid escape sequence"
 
 
 class _Loader(yaml.SafeLoader):

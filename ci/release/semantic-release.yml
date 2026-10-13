@@ -11,7 +11,7 @@ spec:
     image:
       # The full python image ships git; python:*-slim does not, and the shared
       # non-root runner cannot apt-install it.
-      default: python:3.13
+      default: python:3.14
     tags:
       type: array
       default: ["infrastructure"]

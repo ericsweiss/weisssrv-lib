@@ -26,15 +26,15 @@ the tag your repo pins (docs/VERSIONING.md).
 
 ```bash
 # No install:
-pipx run --spec 'git+https://git.ericsweiss.com/eric/weisssrv-lib.git@v0.20.6#subdirectory=cli' \
+pipx run --spec 'git+https://git.ericsweiss.com/eric/weisssrv-lib.git@v0.21.0#subdirectory=cli' \
   weisssrv-new-project --help
 
 # Install the console script. The spec is POSITIONAL: `pipx install --spec …`
 # fails with "unrecognized arguments: --spec" (pipx dropped that flag).
-pipx install 'git+https://git.ericsweiss.com/eric/weisssrv-lib.git@v0.20.6#subdirectory=cli'
+pipx install 'git+https://git.ericsweiss.com/eric/weisssrv-lib.git@v0.21.0#subdirectory=cli'
 
 # …with the copier extra, which rendering needs:
-pipx install 'weisssrv-lib-cli[cluster] @ git+https://git.ericsweiss.com/eric/weisssrv-lib.git@v0.20.6#subdirectory=cli'
+pipx install 'weisssrv-lib-cli[cluster] @ git+https://git.ericsweiss.com/eric/weisssrv-lib.git@v0.21.0#subdirectory=cli'
 
 # From a checkout of this library:
 pip install ./cli            # or: pip install './cli[cluster]'
@@ -43,7 +43,7 @@ PYTHONPATH=cli python3 -m weisssrv_lib_cli --help   # no install at all
 
 weisssrv-lib is an **internal-visibility** GitLab project, so `git+https://`
 needs credentials (a PAT with `read_repository` in the URL, or use
-`git+ssh://git@git.ericsweiss.com/eric/weisssrv-lib.git@v0.20.6#subdirectory=cli`).
+`git+ssh://git@git.ericsweiss.com/eric/weisssrv-lib.git@v0.21.0#subdirectory=cli`).
 
 ## new-cluster / new-app `[source] <destination>`
 
@@ -101,7 +101,7 @@ validation, the missing-copier hint) runs unconditionally.
 ## Python floor
 
 `requires-python = ">=3.9"` is what pip enforces on an installing machine. CI
-runs the suite on one Python (the image's 3.13), so the floor is held here by
+runs the suite on one Python (the image's 3.14), so the floor is held here by
 `tests/test_python_floor.py`, which parses every module and rejects both an
 annotated module without `from __future__ import annotations` and any 3.10+
 syntax. That covers

@@ -5,7 +5,7 @@ spec:
     stage:
       default: build
     image:
-      default: "python:3.11"
+      default: "python:3.14"
       description: >-
         The job image the docker CLI runs in. Needs curl, tar AND `dpkg
         --print-architecture` — the before_script derives the arch from it, so

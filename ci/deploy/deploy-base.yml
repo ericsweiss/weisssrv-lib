@@ -4,7 +4,7 @@ spec:
       default: ".deploy-base"
       description: Name of the generated hidden job.
     image:
-      default: "python:3.13-slim"
+      default: "python:3.14-slim"
       description: >-
         Job image. Debian-based with pip, because the fragment apt-installs and
         pip-installs ansible. The published `ansible-deploy` image ships those

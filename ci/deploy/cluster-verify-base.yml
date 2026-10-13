@@ -11,7 +11,7 @@ spec:
         so it needs a root-capable runner; it needs no LAN or SSH reach to the
         hosts, only the Kubernetes API the kubeconfig names.
     image:
-      default: "python:3.13-slim"
+      default: "python:3.14-slim"
       description: >-
         Job image. Debian-based, because the 1Password install is apt-based. A
         digest-bearing name pins the supply chain, which is worth doing on a job

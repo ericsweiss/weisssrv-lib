@@ -345,7 +345,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `yaml-lint` |  |
 | `stage` | `lint` |  |
-| `image` | `python:3.11-slim` |  |
+| `image` | `python:3.14-slim` |  |
 | `tags` | `["infrastructure"]` |  |
 | `yamllint_version` | `1.38.0` |  |
 | `config` | `-d relaxed` | the FULL argument, e.g. `-c lint/yamllint-relaxed.yml` |
@@ -414,7 +414,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `lint-docs-links` | the name every consumer already passes |
 | `stage` | `lint` |  |
-| `image` | `python:3.11` | must ship git: the checker enumerates tracked Markdown and fails loud without it, so a slim image cannot silently shrink the scan |
+| `image` | `python:3.14` | must ship git: the checker enumerates tracked Markdown and fails loud without it, so a slim image cannot silently shrink the scan |
 | `tags` | `["infrastructure"]` |  |
 | `script_path` | `scripts/check-doc-links.py` |  |
 | `roots` | `""` | empty = the checker's own default scope |
@@ -444,7 +444,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `runbook-anchors` |  |
 | `stage` | `lint` |  |
-| `image` | `python:3.13-slim` | stdlib only, so no pip step |
+| `image` | `python:3.14-slim` | stdlib only, so no pip step |
 | `tags` | `["infrastructure"]` |  |
 | `script_path` | `scripts/check-runbook-anchors.py` | the consumer's vendored copy |
 | `rules_dir` | `kubernetes/infrastructure/observability` | the whole tree is walked |
@@ -477,7 +477,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `comment-length` |  |
 | `stage` | `lint` |  |
-| `image` | `python:3.13-slim` | needs pip only when `pyyaml_version` is set |
+| `image` | `python:3.14-slim` | needs pip only when `pyyaml_version` is set |
 | `tags` | `["infrastructure"]` |  |
 | `script_path` | `scripts/check-comment-length.py` | the consumer's vendored copy |
 | `paths` | `"."` | space-separated; the whole tree by default |
@@ -523,7 +523,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `python-lint` |  |
 | `stage` | `lint` |  |
-| `image` | `python:3.11-slim` |  |
+| `image` | `python:3.14-slim` |  |
 | `tags` | `["infrastructure"]` |  |
 | `ruff_version` | `0.16.7` |  |
 | `config` | `""` | empty = ruff's own discovery; pass the FULL argument, e.g. `--config lint/ruff.toml` |
@@ -553,7 +553,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `ansible-lint` |  |
 | `stage` | `lint` |  |
-| `image` | `python:3.13-slim` |  |
+| `image` | `python:3.14-slim` |  |
 | `tags` | `["infrastructure"]` |  |
 | `ansible_lint_version` | `26.9.0` | keep in step with `docker/molecule-ci/requirements.txt` so lint and molecule agree |
 | `pip_extra` | `black==26.3.1` | held below the broken 26.5.x mypyc wheels; routed through a job variable, so a `<`/`>`/`|` ceiling is safe |
@@ -630,7 +630,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `flux-lint` |  |
 | `stage` | `lint` |  |
-| `image` | `python:3.11-slim` | **must ship bash** (`set -o pipefail`, `${!var+x}`), and apt on the root path |
+| `image` | `python:3.14-slim` | **must ship bash** (`set -o pipefail`, `${!var+x}`), and apt on the root path |
 | `tags` | `["infrastructure"]` |  |
 | `substitute` | `true` | `true` = the cluster path, `false` = the tenant path |
 | `kubeconform_version` | `0.8.0` |  |
@@ -889,7 +889,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `build-image` |  |
 | `stage` | `build` |  |
-| `image` | `python:3.11` |  |
+| `image` | `python:3.14` |  |
 | `tags` | `["infrastructure"]` | **must be a privileged runner** |
 | `dind_service` | `docker:27.5.1-dind`, digest-pinned | digest-pinned, with an explicit `alias: docker` |
 | `dind_mtu` | `1420` | MTU of the daemon's bridges, passed as both `--mtu` and `--default-network-opt=bridge=com.docker.network.driver.mtu`; must not exceed the job pod's interface MTU (1420 on flannel over WireGuard or VXLAN). `--mtu` alone covers only the default bridge, so a user-defined network (molecule, compose) would stay at 1500 and black-hole large TLS frames |
@@ -1002,7 +1002,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `python-tests` |  |
 | `stage` | `test` |  |
-| `image` | `python:3.11-slim` |  |
+| `image` | `python:3.14-slim` |  |
 | `tags` | `["infrastructure"]` |  |
 | `test_dir` | `scripts/` |  |
 | `pytest_version` | `9.1.1` |  |
@@ -1038,11 +1038,11 @@ the heaviest scenarios run 8-11 minutes per attempt.
   cache carries the assets as well as the binaries. Do not cache `.bin/` with a
   fetcher that lacks that check. No-op without a runner cache backend, and a
   no-op in substance for the default `setup_command: true`.
-- **Tenant:** `inputs: { tags: [], apt_packages: "", image: python:3.13,
+- **Tenant:** `inputs: { tags: [], apt_packages: "", image: python:3.14,
   test_dir: "tests" }`. `apt_packages` is the one root-only default in the
   library: installing them needs write access to the apt lock, which the shared
   non-privileged runner does not have, so a tenant clears it and picks an image
-  that already ships what its tests need (the full `python:3.13` has git).
+  that already ships what its tests need (the full `python:3.14` has git).
 
 ## ci/review/pr-agent.yml
 
@@ -1133,7 +1133,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `semantic-release` |  |
 | `stage` | `release` |  |
-| `image` | `python:3.13` | the full image ships git |
+| `image` | `python:3.14` | the full image ships git |
 | `tags` | `["infrastructure"]` |  |
 | `script_path` | `scripts/semantic-release.py` |  |
 | `tag_prefix` | `v` |  |
@@ -1197,7 +1197,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `version-check` |  |
 | `stage` | `lint` | `lint`, so it runs inside a normal MR pipeline |
-| `image` | `python:3.11` |  |
+| `image` | `python:3.14` |  |
 | `tags` | `["infrastructure"]` |  |
 | `setup_command` | `true` |  |
 | `check_command` | **required** | no default: the tools a checker needs are a property of that checker |
@@ -1263,7 +1263,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `version-bump-bot` |  |
 | `stage` | `maintenance` | `maintenance`: it only runs on a schedule or a manual web trigger |
-| `image` | `python:3.13` |  |
+| `image` | `python:3.14` |  |
 | `tags` | `["infrastructure"]` |  |
 | `script_path` | `scripts/version-bump-mr.py` |  |
 | `setup_command` | `true` |  |
@@ -1400,7 +1400,7 @@ definition, and parameterising them would trade duplication for indirection.
 | Input | Default | Notes |
 |---|---|---|
 | `fragment_name` | `.deploy-base` |  |
-| `image` | `python:3.13-slim` | must ship pip: the fragment pip-installs ansible |
+| `image` | `python:3.14-slim` | must ship pip: the fragment pip-installs ansible |
 | `tags` | `["infrastructure"]` |  |
 | `secrets_source` | `1password` | `1password` reads the SSH key with `op read`; `env` takes it from `$SSH_PRIVATE_KEY` |
 | `op_vault` | **required** | no default: a vault name is site data |
@@ -1471,7 +1471,7 @@ definition, and parameterising them would trade duplication for indirection.
 |---|---|---|
 | `fragment_name` | `.cluster-verify-base` |  |
 | `tags` | `["infrastructure"]` | root-capable runner; no LAN or SSH reach needed |
-| `image` | `python:3.13-slim` | Debian-based: the 1Password install is apt-based |
+| `image` | `python:3.14-slim` | Debian-based: the 1Password install is apt-based |
 
 - **ansible-deploy.yml** → one deploy job: `op run -- ansible-playbook` from
   `ansible_dir`, `extends` the base, on `branch` (main) with the `gate`

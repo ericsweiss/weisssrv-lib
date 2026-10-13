@@ -131,7 +131,7 @@ include:
   - local: /ci/lint/yaml-lint.yml
     inputs:
       tags: []
-      image: python:3.13-slim
+      image: python:3.14-slim
       # Explicit copy of the template default; the parity gate holds all three
       # copies (here, the template, the molecule image) equal.
       yamllint_version: "1.38.0"
@@ -164,7 +164,7 @@ include:
   - local: /ci/lint/python-lint.yml
     inputs:
       tags: []
-      image: python:3.13-slim
+      image: python:3.14-slim
       config: "--config lint/ruff.toml"
       # examples/ carries a runnable *.example.py that tests/test_examples.py
       # loads, so it is linted like any other shipped source.
@@ -182,7 +182,7 @@ include:
   - local: /ci/lint/docs-link-check.yml
     inputs:
       tags: []
-      image: python:3.13
+      image: python:3.14
   # Blocking over the whole tree: the script excludes tool caches itself, and
   # the convention covers every file, so neither paths nor changes is narrowed.
   # No config file here, so PyYAML is not installed.
@@ -196,7 +196,7 @@ include:
       # The FULL python image (not -slim) ships git — needed by the
       # check-taskfile and vendored-copy tests that init throwaway repos — so no
       # apt package is required and the job stays non-root safe.
-      image: python:3.13
+      image: python:3.14
       apt_packages: ""
       # The binary-driven gates fail, not skip, under $CI: jq for the
       # collect-state and deploy-verify suites, amtool for the Alertmanager one.
@@ -465,7 +465,7 @@ ci-templates-parse:
   # Smoke: every CI template must be valid multi-document YAML (a spec header +
   # config). Catches a malformed template before a consumer includes it.
   stage: lint
-  image: python:3.13-slim
+  image: python:3.14-slim
   needs: []
   before_script:
     - pip install --user --quiet "pyyaml==${PYYAML_VERSION}"
@@ -508,7 +508,7 @@ collection-checks:
   # on disk (the generator's own check is ROLE-level), and the built collection
   # matches `build_ignore` (a bad pattern exits 0, so the tarball is inspected).
   stage: lint
-  image: python:3.13-slim
+  image: python:3.14-slim
   tags: []
   variables:
     CI_FILE: .gitlab-ci.yml
@@ -572,6 +572,8 @@ collection-checks:
 collection-floor-build:
   <<: *retry-runner-contention
   stage: lint
+  # 3.13: the newest control-node Python ansible-core 2.18 supports, so the
+  # floor is proven on a pairing it is meant to run on.
   image: python:3.13-slim
   tags: []
   variables:

@@ -334,7 +334,7 @@ so each can drift silently. `tests/test_pin_parity.py` holds them equal.
 Two dependencies deliberately move outside this discipline, and both are
 recorded where they bite: the GitLab-managed template nested by
 `ci/security/secret-detection.yml` (no supported way to pin it — it tracks the
-instance), and `ci/build/docker-build.yml`'s own `python:3.11` job image (a
+instance), and `ci/build/docker-build.yml`'s own `python:3.14` job image (a
 version tag, not `:latest`; the checksum promise is scoped to downloaded
 binaries).
 
