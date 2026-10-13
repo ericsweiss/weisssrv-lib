@@ -7,7 +7,7 @@ spec:
       default: lint
       description: Pipeline stage the job runs in.
     image:
-      default: python:3.13-slim
+      default: python:3.14-slim
       description: Base image (must have pip).
     tags:
       type: array

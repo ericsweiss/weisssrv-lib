@@ -19,7 +19,7 @@ spec:
         privileged tag is the default because that runner is where the child's
         DinD jobs must land.
     image:
-      default: python:3.13
+      default: python:3.14
       description: >-
         Plan-job image. The FULL python image (not -slim) ships git, which the
         MR diff needs — so no apt, and the job stays non-root safe.

@@ -101,7 +101,7 @@ validation, the missing-copier hint) runs unconditionally.
 ## Python floor
 
 `requires-python = ">=3.9"` is what pip enforces on an installing machine. CI
-runs the suite on one Python (the image's 3.13), so the floor is held here by
+runs the suite on one Python (the image's 3.14), so the floor is held here by
 `tests/test_python_floor.py`, which parses every module and rejects both an
 annotated module without `from __future__ import annotations` and any 3.10+
 syntax. That covers

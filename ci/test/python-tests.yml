@@ -24,7 +24,7 @@ spec:
         build throwaway git repos; jq by tests that parse JSON). Installing them
         needs ROOT — on the shared non-privileged tenant runner apt-get fails on
         the lock, so a tenant passes "" and uses an image that already ships
-        what its tests need (e.g. the full `python:3.13`, which has git).
+        what its tests need (e.g. the full `python:3.14`, which has git).
     pip_packages:
       default: ""
       description: >-
