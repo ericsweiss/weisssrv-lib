@@ -572,7 +572,9 @@ collection-checks:
 collection-floor-build:
   <<: *retry-runner-contention
   stage: lint
-  image: python:3.14-slim
+  # 3.13: the newest control-node Python ansible-core 2.18 supports, so the
+  # floor is proven on a pairing it is meant to run on.
+  image: python:3.13-slim
   tags: []
   variables:
     # The floor meta/runtime.yml advertises.
