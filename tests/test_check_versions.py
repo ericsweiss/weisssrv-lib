@@ -1274,6 +1274,23 @@ class TestFetchGithubReleaseLatest(unittest.TestCase):
         self.assertEqual(len(seen), 20)
         self.assertTrue(seen[-1].endswith("per_page=25&page=20"))
 
+    def test_a_page_size_that_does_not_divide_the_horizon_scans_exactly_500(self):
+        """With 99 per page the sixth page would reach release 594; only the
+        5 releases inside the horizon count, so a higher tag past it never wins."""
+        svc = {"github_repo": "o/r", "tag_filter": r"^v\d+\.\d+\.\d+$", "releases_per_page": 99}
+        seen = []
+
+        def fake(path):
+            seen.append(path)
+            page = int(path.rsplit("page=", 1)[1])
+            start = (page - 1) * 99
+            # release index i carries v1.i.0 except the one just past the horizon
+            return [{"tag_name": "v9.0.0" if start + i == 500 else f"v1.{start + i}.0"} for i in range(99)]
+
+        with patch.object(check_versions, "github_api", side_effect=fake):
+            self.assertEqual(check_versions.fetch_github_release(svc), "v1.499.0")
+        self.assertEqual(len(seen), 6)
+
     def test_tag_filter_scan_honours_the_entry_page_size(self):
         """A repo with huge per-release asset lists needs smaller pages; the
         entry's releases_per_page sets the page size and the last-page test."""

@@ -800,6 +800,9 @@ def fetch_github_release(svc: dict) -> str:
 
             if not releases:
                 break
+            # The last page may run past the horizon when the page size does
+            # not divide it; releases beyond the horizon are not scanned.
+            releases = releases[: RELEASE_SCAN_HORIZON - (page - 1) * per_page]
 
             for release in releases:
                 if release.get("draft") or release.get("prerelease"):
