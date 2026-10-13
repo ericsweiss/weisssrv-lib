@@ -1258,6 +1258,22 @@ class TestFetchGithubReleaseLatest(unittest.TestCase):
                     check_versions.fetch_github_release(svc)
                 api.assert_not_called()
 
+    def test_the_scan_horizon_does_not_shrink_with_the_page_size(self):
+        """Smaller pages mean more pages: the newest 500 releases are always
+        covered, and nothing past them is requested."""
+        svc = {"github_repo": "o/r", "tag_filter": r"^v\d+\.\d+\.\d+$", "releases_per_page": 25}
+        seen = []
+
+        def fake(path):
+            seen.append(path)
+            page = int(path.rsplit("page=", 1)[1])
+            return [{"tag_name": f"v1.{page}.{i}"} for i in range(25)]
+
+        with patch.object(check_versions, "github_api", side_effect=fake):
+            self.assertEqual(check_versions.fetch_github_release(svc), "v1.20.24")
+        self.assertEqual(len(seen), 20)
+        self.assertTrue(seen[-1].endswith("per_page=25&page=20"))
+
     def test_tag_filter_scan_honours_the_entry_page_size(self):
         """A repo with huge per-release asset lists needs smaller pages; the
         entry's releases_per_page sets the page size and the last-page test."""
