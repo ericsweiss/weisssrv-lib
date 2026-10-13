@@ -45,7 +45,7 @@ spec:
     helm_sha256:
       default: "1e4ab49e429626cf6c6958d914248b78c9730803c2751b87627e171dc800e7bb"
     flux_version:
-      default: "2.9.0"
+      default: "2.9.6"
       description: >-
         (substitute=true) flux CLI whose `envsubst --strict` is the authority on
         what kustomize-controller's post-build accepts. Held equal to the
@@ -53,7 +53,7 @@ spec:
         mismatch: the parser must be the release the cluster runs. A ConfigMap
         declaring no `flux_version` gets a printed note instead.
     flux_sha256:
-      default: "7aa9779fc7ec6d030e609dab7dbed8c6fc9e3a7f4670834ad02369268aaf341f"
+      default: "b4d22673e9246cbd628881f1a9ef3b090085dced291e42d804555cee8e8d42c5"
       description: sha256 of the flux_version linux-amd64 tarball; moves with it.
     pyyaml_version:
       default: "6.0.2"
