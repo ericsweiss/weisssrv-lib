@@ -9,7 +9,7 @@ spec:
         MR lint jobs. Its bump-bot counterpart defaults to `maintenance`, so a
         consumer declaring stages needs both.
     image:
-      default: python:3.11
+      default: python:3.14
     tags:
       type: array
       default: ["infrastructure"]

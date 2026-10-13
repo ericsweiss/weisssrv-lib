@@ -5,7 +5,7 @@ spec:
     stage:
       default: lint
     image:
-      default: python:3.11-slim
+      default: python:3.14-slim
       description: >-
         Job image. Must ship BASH and python: the scripts use `set -o pipefail`
         and `${!var+x}` indirect expansion, so an Alpine base (ash) fails in

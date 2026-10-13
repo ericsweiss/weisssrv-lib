@@ -345,7 +345,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `yaml-lint` |  |
 | `stage` | `lint` |  |
-| `image` | `python:3.11-slim` |  |
+| `image` | `python:3.14-slim` |  |
 | `tags` | `["infrastructure"]` |  |
 | `yamllint_version` | `1.38.0` |  |
 | `config` | `-d relaxed` | the FULL argument, e.g. `-c lint/yamllint-relaxed.yml` |
@@ -414,7 +414,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `lint-docs-links` | the name every consumer already passes |
 | `stage` | `lint` |  |
-| `image` | `python:3.11` | must ship git: the checker enumerates tracked Markdown and fails loud without it, so a slim image cannot silently shrink the scan |
+| `image` | `python:3.14` | must ship git: the checker enumerates tracked Markdown and fails loud without it, so a slim image cannot silently shrink the scan |
 | `tags` | `["infrastructure"]` |  |
 | `script_path` | `scripts/check-doc-links.py` |  |
 | `roots` | `""` | empty = the checker's own default scope |
@@ -523,7 +523,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `python-lint` |  |
 | `stage` | `lint` |  |
-| `image` | `python:3.11-slim` |  |
+| `image` | `python:3.14-slim` |  |
 | `tags` | `["infrastructure"]` |  |
 | `ruff_version` | `0.16.7` |  |
 | `config` | `""` | empty = ruff's own discovery; pass the FULL argument, e.g. `--config lint/ruff.toml` |
@@ -630,7 +630,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `flux-lint` |  |
 | `stage` | `lint` |  |
-| `image` | `python:3.11-slim` | **must ship bash** (`set -o pipefail`, `${!var+x}`), and apt on the root path |
+| `image` | `python:3.14-slim` | **must ship bash** (`set -o pipefail`, `${!var+x}`), and apt on the root path |
 | `tags` | `["infrastructure"]` |  |
 | `substitute` | `true` | `true` = the cluster path, `false` = the tenant path |
 | `kubeconform_version` | `0.8.0` |  |
@@ -889,7 +889,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `build-image` |  |
 | `stage` | `build` |  |
-| `image` | `python:3.11` |  |
+| `image` | `python:3.14` |  |
 | `tags` | `["infrastructure"]` | **must be a privileged runner** |
 | `dind_service` | `docker:27.5.1-dind`, digest-pinned | digest-pinned, with an explicit `alias: docker` |
 | `dind_mtu` | `1420` | MTU of the daemon's bridges, passed as both `--mtu` and `--default-network-opt=bridge=com.docker.network.driver.mtu`; must not exceed the job pod's interface MTU (1420 on flannel over WireGuard or VXLAN). `--mtu` alone covers only the default bridge, so a user-defined network (molecule, compose) would stay at 1500 and black-hole large TLS frames |
@@ -1002,7 +1002,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `python-tests` |  |
 | `stage` | `test` |  |
-| `image` | `python:3.11-slim` |  |
+| `image` | `python:3.14-slim` |  |
 | `tags` | `["infrastructure"]` |  |
 | `test_dir` | `scripts/` |  |
 | `pytest_version` | `9.1.1` |  |
@@ -1197,7 +1197,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `version-check` |  |
 | `stage` | `lint` | `lint`, so it runs inside a normal MR pipeline |
-| `image` | `python:3.11` |  |
+| `image` | `python:3.14` |  |
 | `tags` | `["infrastructure"]` |  |
 | `setup_command` | `true` |  |
 | `check_command` | **required** | no default: the tools a checker needs are a property of that checker |
