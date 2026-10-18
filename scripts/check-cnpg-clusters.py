@@ -49,12 +49,23 @@ def _of(docs: list[dict], api: str, kind: str) -> list[dict]:
 
 
 def _plugin_store(spec: dict) -> str | None:
-    """The ObjectStore a WAL-archiving Barman plugin entry names, else None."""
+    """The ObjectStore a WAL-archiving Barman plugin entry names ("" for none), else None."""
     for plugin in spec.get("plugins") or []:
         if (isinstance(plugin, dict) and plugin.get("name") == BARMAN_PLUGIN
                 and plugin.get("isWALArchiver")):
-            return str((plugin.get("parameters") or {}).get("barmanObjectName"))
+            name = (plugin.get("parameters") or {}).get("barmanObjectName")
+            return str(name) if name else ""
     return None
+
+
+def _window(days: int | None) -> str:
+    return f"{days} day(s)" if days is not None else "no recovery window"
+
+
+def _by_plugin(schedule: dict) -> bool:
+    """True when a ScheduledBackup runs through the Barman Cloud plugin."""
+    return (schedule.get("method") == "plugin"
+            and (schedule.get("pluginConfiguration") or {}).get("name") == BARMAN_PLUGIN)
 
 
 def violations(docs: list[dict], min_days: int) -> tuple[list[str], int]:
@@ -64,10 +75,12 @@ def violations(docs: list[dict], min_days: int) -> tuple[list[str], int]:
         (doc_namespace(d), (d.get("metadata") or {}).get("name")): d
         for d in _of(docs, PLUGIN_API, "ObjectStore")
     }
-    scheduled = {
-        (doc_namespace(d), ((d.get("spec") or {}).get("cluster") or {}).get("name"))
-        for d in _of(docs, CNPG_API, "ScheduledBackup")
-    }
+    scheduled: dict[tuple, list[dict]] = {}
+    for d in _of(docs, CNPG_API, "ScheduledBackup"):
+        sched = d.get("spec") or {}
+        if not sched.get("suspend"):
+            key = (doc_namespace(d), (sched.get("cluster") or {}).get("name"))
+            scheduled.setdefault(key, []).append(sched)
     out: list[str] = []
     for cluster in clusters:
         where = doc_key(cluster)
@@ -76,23 +89,37 @@ def violations(docs: list[dict], min_days: int) -> tuple[list[str], int]:
         namespace = doc_namespace(cluster)
         store_name = _plugin_store(spec)
         in_tree = (spec.get("backup") or {}).get("barmanObjectStore")
-        if store_name is not None:
-            store = stores.get((namespace, store_name))
-            if store is None:
-                out.append(f"  {where}: names ObjectStore {store_name!r}, which the corpus does not ship")
-            else:
-                days = retention_days((store.get("spec") or {}).get("retentionPolicy"))
-                if days is None or days < min_days:
-                    out.append(f"  {where}: ObjectStore {store_name} keeps {days} day(s), under the {min_days}-day floor")
+        store = stores.get((namespace, store_name)) if store_name else None
+        if store_name == "":
+            out.append(f"  {where}: Barman plugin entry names no barmanObjectName")
+        elif store_name is not None and store is None:
+            out.append(f"  {where}: names ObjectStore {store_name!r}, which the corpus does not ship")
+        elif store is not None:
+            days = retention_days((store.get("spec") or {}).get("retentionPolicy"))
+            if days is None or days < min_days:
+                out.append(f"  {where}: ObjectStore {store_name} keeps {_window(days)}, under the {min_days}-day floor")
+            if ((store.get("metadata") or {}).get("annotations") or {}).get(PRUNE_ANNOTATION) != "disabled":
+                out.append(f"  {where}: ObjectStore {store_name} has no {PRUNE_ANNOTATION}: disabled, "
+                           "so removing the file deletes the backup target")
         elif in_tree:
             days = retention_days((spec.get("backup") or {}).get("retentionPolicy"))
             if days is None or days < min_days:
-                out.append(f"  {where}: backup.retentionPolicy keeps {days} day(s), under the {min_days}-day floor")
+                out.append(f"  {where}: backup.retentionPolicy keeps {_window(days)}, under the {min_days}-day floor")
         else:
             out.append(f"  {where}: no WAL archiver, so point-in-time recovery is impossible")
-        if (namespace, meta.get("name")) not in scheduled:
-            out.append(f"  {where}: no ScheduledBackup targets this cluster")
-        if int(spec.get("instances", 1)) == 1 and spec.get("enablePDB", True) is not False:
+        schedules = scheduled.get((namespace, meta.get("name")), [])
+        if not schedules:
+            out.append(f"  {where}: no ScheduledBackup targets this cluster (a suspended one does not count)")
+        elif store_name is not None and not any(_by_plugin(s) for s in schedules):
+            out.append(f"  {where}: no ScheduledBackup with method: plugin and "
+                       f"pluginConfiguration.name {BARMAN_PLUGIN} targets this plugin-archived cluster")
+        try:
+            instances = int(spec.get("instances", 1))
+        except (TypeError, ValueError):
+            out.append(f"  {where}: spec.instances {spec.get('instances')!r} is not an integer "
+                       "(pipe the post-substitution build)")
+            instances = None
+        if instances == 1 and spec.get("enablePDB", True) is not False:
             out.append(f"  {where}: one instance with a PodDisruptionBudget blocks every node drain; set enablePDB: false")
         if (meta.get("annotations") or {}).get(PRUNE_ANNOTATION) != "disabled":
             out.append(f"  {where}: no {PRUNE_ANNOTATION}: disabled, so removing the file deletes the database")

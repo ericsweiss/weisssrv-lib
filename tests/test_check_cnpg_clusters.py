@@ -30,7 +30,11 @@ spec:
 STORE = """
 apiVersion: barmancloud.cnpg.io/v1
 kind: ObjectStore
-metadata: {name: app-store, namespace: app}
+metadata:
+  name: app-store
+  namespace: app
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
 spec:
   retentionPolicy: "30d"
 """
@@ -42,6 +46,7 @@ metadata: {name: app-db-nightly, namespace: app}
 spec:
   cluster: {name: app-db}
   method: plugin
+  pluginConfiguration: {name: barman-cloud.cloudnative-pg.io}
 """
 
 
@@ -100,6 +105,61 @@ def test_a_cluster_without_a_scheduled_backup_fails(monkeypatch, capsys):
 def test_a_schedule_in_another_namespace_does_not_count(monkeypatch):
     schedule = SCHEDULE.replace("namespace: app}", "namespace: other}")
     assert _run(_corpus(CLUSTER, STORE, schedule), monkeypatch) == 1
+
+
+def test_a_suspended_schedule_does_not_count(monkeypatch, capsys):
+    schedule = SCHEDULE + "  suspend: true\n"
+    assert _run(_corpus(CLUSTER, STORE, schedule), monkeypatch) == 1
+    assert "no ScheduledBackup" in capsys.readouterr().err
+
+
+def test_a_schedule_without_the_plugin_method_fails(monkeypatch, capsys):
+    schedule = SCHEDULE.replace("  method: plugin\n", "")
+    assert _run(_corpus(CLUSTER, STORE, schedule), monkeypatch) == 1
+    assert "method: plugin" in capsys.readouterr().err
+
+
+def test_a_schedule_naming_another_plugin_fails(monkeypatch, capsys):
+    schedule = SCHEDULE.replace("{name: barman-cloud.cloudnative-pg.io}", "{name: other.example.com}")
+    assert _run(_corpus(CLUSTER, STORE, schedule), monkeypatch) == 1
+    assert "method: plugin" in capsys.readouterr().err
+
+
+def test_a_schedule_with_the_plugin_method_passes(monkeypatch):
+    assert _run(_corpus(CLUSTER, STORE, SCHEDULE), monkeypatch) == 0
+
+
+def test_a_prunable_object_store_fails(monkeypatch, capsys):
+    store = STORE.replace("    kustomize.toolkit.fluxcd.io/prune: disabled\n", "    a: b\n")
+    assert _run(_corpus(CLUSTER, store, SCHEDULE), monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "ObjectStore app-store" in err
+    assert "prune: disabled" in err
+
+
+def test_a_plugin_entry_naming_no_store_says_so(monkeypatch, capsys):
+    cluster = CLUSTER.replace("      parameters:\n        barmanObjectName: app-store\n", "")
+    assert _run(_corpus(cluster, STORE, SCHEDULE), monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "names no barmanObjectName" in err
+    assert "'None'" not in err
+
+
+def test_a_store_without_retention_names_no_window(monkeypatch, capsys):
+    store = STORE.replace('  retentionPolicy: "30d"\n', "  configuration: {}\n")
+    assert _run(_corpus(CLUSTER, store, SCHEDULE), monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "keeps no recovery window" in err
+    assert "None" not in err
+
+
+@pytest.mark.parametrize("instances", ['"${DB_INSTANCES}"', "null", "three"])
+def test_a_non_integer_instance_count_is_a_finding(monkeypatch, capsys, instances):
+    cluster = CLUSTER.replace("  instances: 1\n", f"  instances: {instances}\n")
+    assert _run(_corpus(cluster, STORE, SCHEDULE), monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "is not an integer (pipe the post-substitution build)" in err
+    assert "Traceback" not in err
 
 
 def test_an_in_tree_archiver_with_retention_passes(monkeypatch):

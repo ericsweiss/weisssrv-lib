@@ -18,7 +18,7 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`b2-bucket-drift.py`](#b2-bucket-driftpy) | codified B2 bucket settings, drift check + supervised `--apply` | `b2-bucket.example.json` | neutral |
 | [`check-alertmanager-behaviour.py`](#check-alertmanager-behaviourpy-pyyaml-needs-amtool) | asserts what the Alertmanager config routes, inhibits and silences, across every declared rule corpus | `alertmanager-behaviour.example.yaml` | neutral |
 | [`check-ci-include-job-names.py`](#check-ci-include-job-namespy-pyyaml) | an optional `needs:` naming a job no include creates | flags | gitlab-only |
-| [`check-cnpg-clusters.py`](#check-cnpg-clusterspy-pyyaml) | a CloudNativePG Cluster with no WAL archiver, a short retention, no ScheduledBackup, a one-instance PDB, or prunable by Flux | `--min-retention-days` | neutral |
+| [`check-cnpg-clusters.py`](#check-cnpg-clusterspy-pyyaml) | a CloudNativePG Cluster with no WAL archiver, a short retention, no running ScheduledBackup (or none through the plugin), a one-instance PDB, a non-integer `instances`, or a Cluster or ObjectStore prunable by Flux | `--min-retention-days` | neutral |
 | [`check-backup-artifact-apps.py`](#check-backup-artifact-appspy-pyyaml) | pairs the backup-artifact app list with its alert rule, both ways | flags | neutral |
 | [`check-cluster-invariants.py`](#check-cluster-invariantspy-pyyaml) | duplicate vmid / address, a host on a VIP, a host outside the LAN CIDR, an alert-rule `instance=` literal that is no inventory address | flags | neutral |
 | [`check-comment-length.py`](#check-comment-lengthpy) | a comment block longer than three content lines | flags or YAML | neutral |
@@ -1940,12 +1940,19 @@ kustomize build kubernetes/db | scripts/check-cnpg-clusters.py --min-retention-d
   must be in the corpus with a `retentionPolicy` recovery window (`Nd`, `Nw`,
   `Nm`, a month counted as 30 days) of at least `--min-retention-days`; in-tree,
   `backup.retentionPolicy`.
+  A plugin entry with no `parameters.barmanObjectName` is its own finding.
 - **A `ScheduledBackup`** in the same namespace whose `spec.cluster.name` is
-  the cluster.
+  the cluster and which is not `suspend: true`. For a plugin-archived cluster
+  at least one of them must carry `method: plugin` and
+  `pluginConfiguration.name: barman-cloud.cloudnative-pg.io`, since the default
+  method has no target there. The cron cadence is left to review.
 - **`enablePDB: false` on a one-instance cluster.** A PodDisruptionBudget that
-  can never be satisfied makes every node drain time out.
-- **`kustomize.toolkit.fluxcd.io/prune: disabled`** on the `Cluster`, so
-  removing or moving its file never garbage-collects the database.
+  can never be satisfied makes every node drain time out. An `instances` that
+  is not an integer (an unsubstituted `${...}` placeholder, say) is a finding:
+  pipe the post-substitution build.
+- **`kustomize.toolkit.fluxcd.io/prune: disabled`** on the `Cluster` and on the
+  plugin's `ObjectStore`, so removing or moving either file never
+  garbage-collects the database or its backup target.
 - **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error (an empty
   corpus, or one with no `Cluster` in it).
 - `--min-retention-days` is the only flag (default 30). Renaming it is a MAJOR
