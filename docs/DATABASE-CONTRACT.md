@@ -32,13 +32,27 @@ the operator re-applies a rotated password, and carries exactly these keys:
 | `uri` | `postgresql://<role>:<urlencoded password>@<app>-db-rw:5432/<db>?sslmode=verify-full` |
 
 The server CA is the CNPG-generated Secret `<app>-db-ca`, key `ca.crt`. Clients
-mount it and pass it as `sslrootcert`; the server certificate names the
-`<app>-db-rw` Service, so `verify-full` holds.
+mount that one key (see Delivery) and pass it as `sslrootcert`; the server
+certificate names the `<app>-db-rw` Service, so `verify-full` holds.
 
 ## Delivery
 
-Secrets reach pods as files: mount the whole Secret as a volume (never with
+Secrets reach pods as files: mount the Secret as a volume (never with
 `subPath`, which blocks in-place rotation) and read each key from its file.
+The three role Secrets are mounted whole. The CA Secret `<app>-db-ca` also
+carries `ca.key`, the CA's signing key, which must never reach an application
+pod, so its volume projects only `ca.crt` through `items`. An `items`
+projection still updates in place on rotation; `subPath` does not.
+
+```yaml
+volumes:
+  - name: db-ca
+    secret:
+      secretName: <app>-db-ca
+      items:
+        - key: ca.crt
+          path: ca.crt
+```
 Passwords come from one secrets-backend item with fields `migrate-password`,
 `app-password` and `ro-password`, templated into the three Secrets by an
 ExternalSecret each; the owner Secret is also `bootstrap.initdb.secret`, and the
