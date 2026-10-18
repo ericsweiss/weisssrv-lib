@@ -818,6 +818,19 @@ def test_a_cluster_scoped_document_does_not_make_a_tree_ambiguous(tmp_path, caps
     assert "2 monitor(s)" in capsys.readouterr().out
 
 
+def test_a_validating_admission_policy_binding_is_cluster_scoped(tmp_path, capsys):
+    """A tenant policy ships its Binding beside the policy, with no namespace."""
+    binding = (
+        "apiVersion: admissionregistration.k8s.io/v1\n"
+        "kind: ValidatingAdmissionPolicyBinding\n"
+        "metadata:\n  name: tenant-traefik\n"
+        "spec:\n  policyName: tenant-traefik\n"
+    )
+    argv = tree(tmp_path, *_two_namespaces(), binding)
+    assert gate.main(argv) == 0
+    assert "2 monitor(s)" in capsys.readouterr().out
+
+
 def test_a_namespaced_document_naming_none_is_still_refused_beside_them(
     tmp_path, capsys
 ):
