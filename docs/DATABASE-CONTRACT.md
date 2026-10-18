@@ -59,7 +59,11 @@ volumes:
 Passwords come from one secrets-backend item with fields `migrate-password`,
 `app-password` and `ro-password`, templated into the three Secrets by an
 ExternalSecret each; the owner Secret is also `bootstrap.initdb.secret`, and the
-other two are `spec.managed.roles[].passwordSecret`.
+other two are `spec.managed.roles[].passwordSecret`. `bootstrap.initdb.secret`
+is not read only at initdb: the primary's instance manager re-applies the
+owner's password whenever that Secret changes, as it does the superuser's
+(CloudNativePG 1.30, Labels and annotations, `cnpg.io/passwordPassthrough`,
+which lists the application user's Secret among those the operator consumes).
 
 ## Privileges
 
@@ -75,7 +79,10 @@ a migration grants them, so append-only tables stay append-only by default.
 Change the field in the secrets backend, then force the ExternalSecret
 (`kubectl annotate externalsecret <name> force-sync=$(date +%s) --overwrite`).
 The operator runs `ALTER ROLE` from the reloaded Secret; file mounts update in
-place, so clients pick up the new password on their next connection.
+place, so a client that reads the file at connect time picks up the new password.
+A running process or connection pool still holds the old password, so a
+long-running consumer re-reads the password file before each new connection or
+is reloaded after CNPG has reconciled the role.
 
 ## Gates
 
