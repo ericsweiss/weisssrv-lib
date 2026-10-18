@@ -14,6 +14,9 @@
   weisssrv's (Ceph, a non-1Password secrets store, GitHub) adopts the library:
   the seam map, what is backend-specific by design, and the contract for adding
   an alternative.
+- [DATABASE-CONTRACT.md](DATABASE-CONTRACT.md) — the connection-Secret contract
+  for CloudNativePG consumers: Secret names, keys, delivery as files,
+  privileges and rotation.
 - Consumer pins are recorded consumer-side — this library does not keep a
   registry of who pins it. What it publishes is the vendorable offer list,
   [../scripts/vendorable-paths.yml](../scripts/vendorable-paths.yml).

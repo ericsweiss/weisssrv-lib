@@ -18,6 +18,7 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`b2-bucket-drift.py`](#b2-bucket-driftpy) | codified B2 bucket settings, drift check + supervised `--apply` | `b2-bucket.example.json` | neutral |
 | [`check-alertmanager-behaviour.py`](#check-alertmanager-behaviourpy-pyyaml-needs-amtool) | asserts what the Alertmanager config routes, inhibits and silences, across every declared rule corpus | `alertmanager-behaviour.example.yaml` | neutral |
 | [`check-ci-include-job-names.py`](#check-ci-include-job-namespy-pyyaml) | an optional `needs:` naming a job no include creates | flags | gitlab-only |
+| [`check-cnpg-clusters.py`](#check-cnpg-clusterspy-pyyaml) | a CloudNativePG Cluster with no WAL archiver, a short retention, no unsuspended ScheduledBackup (or none with the method its archiver needs), a one-instance PDB, a non-integer `instances`, or a Cluster or ObjectStore prunable by Flux | `--min-retention-days` | neutral |
 | [`check-backup-artifact-apps.py`](#check-backup-artifact-appspy-pyyaml) | pairs the backup-artifact app list with its alert rule, both ways | flags | neutral |
 | [`check-cluster-invariants.py`](#check-cluster-invariantspy-pyyaml) | duplicate vmid / address, a host on a VIP, a host outside the LAN CIDR, an alert-rule `instance=` literal that is no inventory address | flags | neutral |
 | [`check-comment-length.py`](#check-comment-lengthpy) | a comment block longer than three content lines | flags or YAML | neutral |
@@ -960,8 +961,12 @@ own failure type.
 
 ### `check-pvc-storageclass.py` (PyYAML)
 
-Fails any PersistentVolumeClaim, StatefulSet `volumeClaimTemplate` or
-HelmRelease `persistence` block that sizes a volume without naming a class.
+Fails any PersistentVolumeClaim, StatefulSet `volumeClaimTemplate`,
+CloudNativePG `Cluster` storage block (`spec.storage`, `spec.walStorage` and
+each `spec.tablespaces[].storage`) or HelmRelease `persistence` block that
+sizes a volume without naming a class. A CNPG block is pinned by `storageClass`,
+the usual form (a cluster's tenant StorageClass and a `size`), or by
+`pvcTemplate.storageClassName`, where `""` binds a pre-created static volume.
 Omitting `storageClassName` is not neutral: the DefaultStorageClass admission
 plugin rewrites it at create time to whatever class is default, so the claim
 silently binds a dynamically provisioned volume instead of the static PV it was
@@ -1918,6 +1923,43 @@ scripts/check-doc-links.py <root>...  # scan explicit roots
   `**/*.md` plus the gate script, matching the checker's own tracked-Markdown
   scope. Pass your own `changes` only to narrow the trigger deliberately; a path
   missing from it means no run on that edit.
+
+### `check-cnpg-clusters.py` (PyYAML)
+
+Holds every CloudNativePG `Cluster` in the rendered corpus to the settings that
+make it recoverable and safe to run on a reboot-managed cluster:
+
+```
+kustomize build kubernetes/db | scripts/check-cnpg-clusters.py --min-retention-days 30
+```
+
+- **WAL archiving.** A Barman Cloud plugin entry with `isWALArchiver: true`
+  that is not `enabled: false`, or the in-tree `backup.barmanObjectStore`.
+  Without one there is no point-in-time recovery.
+- **Retention at or above the floor.** For the plugin, the named `ObjectStore`
+  must be in the corpus with a `retentionPolicy` recovery window (`Nd`, `Nw`,
+  `Nm`, a month counted as 30 days) of at least `--min-retention-days`; in-tree,
+  `backup.retentionPolicy`.
+  A plugin entry with no `parameters.barmanObjectName` is its own finding.
+- **A `ScheduledBackup`** in the same namespace whose `spec.cluster.name` is
+  the cluster and which is not `suspend: true`. For a plugin-archived cluster
+  at least one of them must carry `method: plugin` and
+  `pluginConfiguration.name: barman-cloud.cloudnative-pg.io`, since the default
+  method has no target there. For an in-tree-archived cluster at least one must
+  use the default `method: barmanObjectStore`. The cron cadence is left to
+  review.
+- **`enablePDB: false` on a one-instance cluster.** A PodDisruptionBudget that
+  can never be satisfied makes every node drain time out. An `instances` that
+  is not a YAML integer (an unsubstituted `${...}` placeholder, a quoted `"1"`,
+  `1.5` or a boolean, say) is a finding:
+  pipe the post-substitution build.
+- **`kustomize.toolkit.fluxcd.io/prune: disabled`** on the `Cluster` and on the
+  plugin's `ObjectStore`, so removing or moving either file never
+  garbage-collects the database or its backup target.
+- **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error (an empty
+  corpus, one with no `Cluster` in it, or a `--min-retention-days` under 1).
+- `--min-retention-days` is the only flag (default 30, at least 1, since a
+  floor of 0 would pass any retention). Renaming it is a MAJOR change.
 
 ### `check-comment-length.py`
 

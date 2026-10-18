@@ -213,5 +213,70 @@ def test_a_named_existing_claim_pins(monkeypatch):
     assert _run(hr_claim, monkeypatch) == 0
 
 
+# The template pattern: the cluster's tenant StorageClass and a size.
+CNPG_PINNED = """
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata: {name: app-db, namespace: app}
+spec:
+  instances: 1
+  storage:
+    storageClass: tenant-local
+    size: 20Gi
+"""
+
+# `size` alone: CNPG renders a claim with no class, which the default
+# StorageClass captures exactly like an unpinned PVC.
+CNPG_UNPINNED = """
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata: {name: app-db, namespace: app}
+spec:
+  instances: 1
+  storage:
+    size: 20Gi
+"""
+
+
+def test_cnpg_cluster_requesting_a_storage_class_passes(monkeypatch):
+    assert _run(CNPG_PINNED, monkeypatch) == 0
+
+
+def test_cnpg_cluster_with_only_a_size_fails(monkeypatch, capsys):
+    assert _run(CNPG_UNPINNED, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "app/Cluster/app-db spec.storage" in err
+    assert "name the provisioner's class" in err
+
+
+def test_cnpg_static_pvc_template_pins(monkeypatch):
+    doc = CNPG_UNPINNED.replace(
+        "    size: 20Gi", '    size: 20Gi\n    pvcTemplate:\n      storageClassName: ""')
+    assert _run(doc, monkeypatch) == 0
+
+
+def test_cnpg_storage_class_wins_over_the_pvc_template(monkeypatch):
+    doc = CNPG_PINNED.replace(
+        "    size: 20Gi", "    size: 20Gi\n    pvcTemplate:\n      storageClassName: null")
+    assert _run(doc, monkeypatch) == 0
+
+
+def test_cnpg_wal_storage_is_a_claim_too(monkeypatch, capsys):
+    doc = CNPG_PINNED + "  walStorage:\n    size: 5Gi\n"
+    assert _run(doc, monkeypatch) == 1
+    assert "spec.walStorage" in capsys.readouterr().err
+
+
+def test_cnpg_tablespace_storage_is_a_claim_too(monkeypatch, capsys):
+    doc = CNPG_PINNED + "  tablespaces:\n    - name: hot\n      storage:\n        size: 1Gi\n"
+    assert _run(doc, monkeypatch) == 1
+    assert "app/Cluster/app-db tablespace 'hot'" in capsys.readouterr().err
+
+
+def test_a_cluster_of_another_api_group_is_not_cnpg(monkeypatch):
+    doc = CNPG_UNPINNED.replace("postgresql.cnpg.io/v1", "example.com/v1")
+    assert _run(PVC_STATIC + "---\n" + doc, monkeypatch) == 0
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
