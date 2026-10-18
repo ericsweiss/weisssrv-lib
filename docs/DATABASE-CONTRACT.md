@@ -7,8 +7,10 @@ renders it.
 
 ## Secrets
 
-For an application `<app>` with CNPG cluster `<app>-db` and database `<db>`,
-three Secrets exist in the application's namespace, one per login role:
+For an application `<app>` with CNPG cluster `<app>-db`, database `<db>` and
+role prefix `<prefix>` (a lowercase PostgreSQL identifier, separate from `<app>`
+because `<app>` may contain hyphens), three Secrets exist in the application's
+namespace, one per login role:
 
 | Secret | Role | Use |
 |---|---|---|
