@@ -39,7 +39,10 @@ certificate names the `<app>-db-rw` Service, so `verify-full` holds.
 
 Secrets reach pods as files: mount the Secret as a volume (never with
 `subPath`, which blocks in-place rotation) and read each key from its file.
-The three role Secrets are mounted whole. The CA Secret `<app>-db-ca` also
+Each workload mounts only the role Secret it connects as, whole: migrations (a
+Job or an init container) `<app>-db-migrate`, runtime containers `<app>-db-app`,
+reporting or logical-dump Jobs `<app>-db-ro`. No container mounts a role Secret
+it does not use. The CA Secret `<app>-db-ca` also
 carries `ca.key`, the CA's signing key, which must never reach an application
 pod, so its volume projects only `ca.crt` through `items`. An `items`
 projection still updates in place on rotation; `subPath` does not.
