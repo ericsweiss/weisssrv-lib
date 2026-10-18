@@ -114,6 +114,10 @@ def violations(docs: list[dict], min_days: int) -> tuple[list[str], int]:
         elif store_name is not None and not any(_by_plugin(s) for s in schedules):
             out.append(f"  {where}: no ScheduledBackup with method: plugin and "
                        f"pluginConfiguration.name {BARMAN_PLUGIN} targets this plugin-archived cluster")
+        elif store_name is None and in_tree and not any(
+                s.get("method", "barmanObjectStore") == "barmanObjectStore" for s in schedules):
+            out.append(f"  {where}: no ScheduledBackup with method barmanObjectStore (the default) "
+                       "targets this in-tree-archived cluster")
         try:
             instances = int(spec.get("instances", 1))
         except (TypeError, ValueError):

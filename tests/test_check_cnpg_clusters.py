@@ -49,6 +49,16 @@ spec:
   pluginConfiguration: {name: barman-cloud.cloudnative-pg.io}
 """
 
+IN_TREE = CLUSTER.replace(
+    "  plugins:\n    - name: barman-cloud.cloudnative-pg.io\n      isWALArchiver: true\n"
+    "      parameters:\n        barmanObjectName: app-store\n",
+    "  backup:\n    retentionPolicy: \"30d\"\n    barmanObjectStore:\n"
+    "      destinationPath: s3://bucket/\n",
+)
+
+SCHEDULE_IN_TREE = SCHEDULE.replace("  method: plugin\n", "").replace(
+    "  pluginConfiguration: {name: barman-cloud.cloudnative-pg.io}\n", "")
+
 
 def _corpus(*docs: str) -> str:
     return "---\n".join(docs)
@@ -169,13 +179,12 @@ def test_a_non_integer_instance_count_is_a_finding(monkeypatch, capsys, instance
 
 
 def test_an_in_tree_archiver_with_retention_passes(monkeypatch):
-    cluster = CLUSTER.replace(
-        "  plugins:\n    - name: barman-cloud.cloudnative-pg.io\n      isWALArchiver: true\n"
-        "      parameters:\n        barmanObjectName: app-store\n",
-        "  backup:\n    retentionPolicy: \"30d\"\n    barmanObjectStore:\n"
-        "      destinationPath: s3://bucket/\n",
-    )
-    assert _run(_corpus(cluster, SCHEDULE), monkeypatch) == 0
+    assert _run(_corpus(IN_TREE, SCHEDULE_IN_TREE), monkeypatch) == 0
+
+
+def test_an_in_tree_archiver_needs_a_default_method_schedule(monkeypatch, capsys):
+    assert _run(_corpus(IN_TREE, SCHEDULE), monkeypatch) == 1
+    assert "no ScheduledBackup with method barmanObjectStore" in capsys.readouterr().err
 
 
 def test_more_than_one_instance_may_keep_its_pdb(monkeypatch):
