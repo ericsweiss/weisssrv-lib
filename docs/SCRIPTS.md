@@ -960,8 +960,12 @@ own failure type.
 
 ### `check-pvc-storageclass.py` (PyYAML)
 
-Fails any PersistentVolumeClaim, StatefulSet `volumeClaimTemplate` or
-HelmRelease `persistence` block that sizes a volume without naming a class.
+Fails any PersistentVolumeClaim, StatefulSet `volumeClaimTemplate`,
+CloudNativePG `Cluster` storage block (`spec.storage`, `spec.walStorage` and
+each `spec.tablespaces[].storage`) or HelmRelease `persistence` block that
+sizes a volume without naming a class. A CNPG block is pinned by `storageClass`,
+the usual form (a cluster's tenant StorageClass and a `size`), or by
+`pvcTemplate.storageClassName`, where `""` binds a pre-created static volume.
 Omitting `storageClassName` is not neutral: the DefaultStorageClass admission
 plugin rewrites it at create time to whatever class is default, so the claim
 silently binds a dynamically provisioned volume instead of the static PV it was
