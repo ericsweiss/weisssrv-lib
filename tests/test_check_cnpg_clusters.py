@@ -97,8 +97,20 @@ def test_a_disabled_barman_plugin_is_no_archiver(monkeypatch, capsys):
     assert "no WAL archiver, so point-in-time recovery is impossible" in capsys.readouterr().err
 
 
+def test_another_plugin_marked_wal_archiver_is_not_barman(monkeypatch, capsys):
+    cluster = CLUSTER.replace("- name: barman-cloud.cloudnative-pg.io", "- name: other.example.com")
+    assert _run(_corpus(cluster, STORE, SCHEDULE), monkeypatch) == 1
+    assert "no WAL archiver" in capsys.readouterr().err
+
+
 def test_a_missing_object_store_fails(monkeypatch, capsys):
     assert _run(_corpus(CLUSTER, SCHEDULE), monkeypatch) == 1
+    assert "does not ship" in capsys.readouterr().err
+
+
+def test_an_object_store_in_another_namespace_does_not_count(monkeypatch, capsys):
+    store = STORE.replace("  namespace: app\n", "  namespace: other\n")
+    assert _run(_corpus(CLUSTER, store, SCHEDULE), monkeypatch) == 1
     assert "does not ship" in capsys.readouterr().err
 
 
@@ -118,9 +130,16 @@ def test_a_cluster_without_a_scheduled_backup_fails(monkeypatch, capsys):
     assert "no ScheduledBackup" in capsys.readouterr().err
 
 
-def test_a_schedule_in_another_namespace_does_not_count(monkeypatch):
+def test_a_schedule_in_another_namespace_does_not_count(monkeypatch, capsys):
     schedule = SCHEDULE.replace("namespace: app}", "namespace: other}")
     assert _run(_corpus(CLUSTER, STORE, schedule), monkeypatch) == 1
+    assert "no ScheduledBackup targets this cluster" in capsys.readouterr().err
+
+
+def test_a_schedule_for_another_cluster_does_not_count(monkeypatch, capsys):
+    schedule = SCHEDULE.replace("cluster: {name: app-db}", "cluster: {name: other-db}")
+    assert _run(_corpus(CLUSTER, STORE, schedule), monkeypatch) == 1
+    assert "no ScheduledBackup targets this cluster" in capsys.readouterr().err
 
 
 def test_a_suspended_schedule_does_not_count(monkeypatch, capsys):
@@ -139,10 +158,6 @@ def test_a_schedule_naming_another_plugin_fails(monkeypatch, capsys):
     schedule = SCHEDULE.replace("{name: barman-cloud.cloudnative-pg.io}", "{name: other.example.com}")
     assert _run(_corpus(CLUSTER, STORE, schedule), monkeypatch) == 1
     assert "method: plugin" in capsys.readouterr().err
-
-
-def test_a_schedule_with_the_plugin_method_passes(monkeypatch):
-    assert _run(_corpus(CLUSTER, STORE, SCHEDULE), monkeypatch) == 0
 
 
 def test_a_prunable_object_store_fails(monkeypatch, capsys):
@@ -182,6 +197,19 @@ def test_an_in_tree_archiver_with_retention_passes(monkeypatch):
     assert _run(_corpus(IN_TREE, SCHEDULE_IN_TREE), monkeypatch) == 0
 
 
+@pytest.mark.parametrize(
+    ("policy", "expected"),
+    [
+        ('    retentionPolicy: "7d"\n', "backup.retentionPolicy keeps 7 day(s), under the 30-day floor"),
+        ("", "backup.retentionPolicy keeps no recovery window"),
+    ],
+)
+def test_an_in_tree_archiver_under_the_floor_fails(monkeypatch, capsys, policy, expected):
+    cluster = IN_TREE.replace('    retentionPolicy: "30d"\n', policy)
+    assert _run(_corpus(cluster, SCHEDULE_IN_TREE), monkeypatch) == 1
+    assert expected in capsys.readouterr().err
+
+
 def test_an_in_tree_archiver_needs_a_default_method_schedule(monkeypatch, capsys):
     assert _run(_corpus(IN_TREE, SCHEDULE), monkeypatch) == 1
     assert "no ScheduledBackup with method barmanObjectStore" in capsys.readouterr().err
@@ -190,6 +218,13 @@ def test_an_in_tree_archiver_needs_a_default_method_schedule(monkeypatch, capsys
 def test_more_than_one_instance_may_keep_its_pdb(monkeypatch):
     cluster = CLUSTER.replace("  instances: 1\n  enablePDB: false\n", "  instances: 3\n")
     assert _run(_corpus(cluster, STORE, SCHEDULE), monkeypatch) == 0
+
+
+@pytest.mark.parametrize("pdb", ["  enablePDB: true\n", ""])
+def test_an_unset_instance_count_is_one_instance(monkeypatch, capsys, pdb):
+    cluster = CLUSTER.replace("  instances: 1\n  enablePDB: false\n", pdb)
+    assert _run(_corpus(cluster, STORE, SCHEDULE), monkeypatch) == 1
+    assert "set enablePDB: false" in capsys.readouterr().err
 
 
 def test_a_corpus_with_no_cluster_is_an_operator_error(monkeypatch, capsys):
