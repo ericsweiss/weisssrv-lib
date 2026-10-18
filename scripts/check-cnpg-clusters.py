@@ -49,7 +49,7 @@ def _of(docs: list[dict], api: str, kind: str) -> list[dict]:
 
 
 def _plugin_store(spec: dict) -> str | None:
-    """The ObjectStore a WAL-archiving Barman plugin entry names ("" for none), else None."""
+    """The ObjectStore an enabled WAL-archiving Barman plugin entry names ("" for none), else None."""
     for plugin in spec.get("plugins") or []:
         if (isinstance(plugin, dict) and plugin.get("name") == BARMAN_PLUGIN
                 and plugin.get("enabled", True) is not False
