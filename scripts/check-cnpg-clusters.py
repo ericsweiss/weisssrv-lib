@@ -52,7 +52,8 @@ def _plugin_store(spec: dict) -> str | None:
     """The ObjectStore a WAL-archiving Barman plugin entry names ("" for none), else None."""
     for plugin in spec.get("plugins") or []:
         if (isinstance(plugin, dict) and plugin.get("name") == BARMAN_PLUGIN
-                and plugin.get("isWALArchiver")):
+                and plugin.get("enabled", True) is not False
+                and plugin.get("isWALArchiver") is True):
             name = (plugin.get("parameters") or {}).get("barmanObjectName")
             return str(name) if name else ""
     return None

@@ -81,6 +81,12 @@ def test_a_cluster_missing_a_setting_fails(monkeypatch, capsys, mutate, expected
     assert expected in capsys.readouterr().err
 
 
+def test_a_disabled_barman_plugin_is_no_archiver(monkeypatch, capsys):
+    cluster = CLUSTER.replace("      isWALArchiver: true\n", "      enabled: false\n      isWALArchiver: true\n")
+    assert _run(_corpus(cluster, STORE, SCHEDULE), monkeypatch) == 1
+    assert "no WAL archiver, so point-in-time recovery is impossible" in capsys.readouterr().err
+
+
 def test_a_missing_object_store_fails(monkeypatch, capsys):
     assert _run(_corpus(CLUSTER, SCHEDULE), monkeypatch) == 1
     assert "does not ship" in capsys.readouterr().err

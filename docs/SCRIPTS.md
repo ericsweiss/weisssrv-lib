@@ -1933,9 +1933,9 @@ make it recoverable and safe to run on a reboot-managed cluster:
 kustomize build kubernetes/db | scripts/check-cnpg-clusters.py --min-retention-days 30
 ```
 
-- **WAL archiving.** A Barman Cloud plugin entry with `isWALArchiver: true`, or
-  the in-tree `backup.barmanObjectStore`. Without one there is no
-  point-in-time recovery.
+- **WAL archiving.** A Barman Cloud plugin entry with `isWALArchiver: true`
+  that is not `enabled: false`, or the in-tree `backup.barmanObjectStore`.
+  Without one there is no point-in-time recovery.
 - **Retention at or above the floor.** For the plugin, the named `ObjectStore`
   must be in the corpus with a `retentionPolicy` recovery window (`Nd`, `Nw`,
   `Nm`, a month counted as 30 days) of at least `--min-retention-days`; in-tree,
