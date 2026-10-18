@@ -47,6 +47,9 @@ vendorable:
   # check-cluster-invariants.py imports scripts/inventory_tree.py from its own
   # directory: vendor the pair, or the gate exits 2 on import.
   - scripts/check-cluster-invariants.py
+  # check-cnpg-clusters.py imports gate_common.py from its own directory:
+  # vendor the pair.
+  - scripts/check-cnpg-clusters.py
   - scripts/check-comment-length.py
   - scripts/check-dashboards.py
   - scripts/check-default-deny-coverage.py

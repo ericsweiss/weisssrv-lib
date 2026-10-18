@@ -17,6 +17,7 @@ REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "scripts"
 
 IMPORTERS = (
+    "check-cnpg-clusters.py",
     "check-default-deny-coverage.py",
     "check-ephemeral-storage-cap.py",
     "check-guest-endpoint-parity.py",

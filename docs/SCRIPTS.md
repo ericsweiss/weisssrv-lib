@@ -18,6 +18,7 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`b2-bucket-drift.py`](#b2-bucket-driftpy) | codified B2 bucket settings, drift check + supervised `--apply` | `b2-bucket.example.json` | neutral |
 | [`check-alertmanager-behaviour.py`](#check-alertmanager-behaviourpy-pyyaml-needs-amtool) | asserts what the Alertmanager config routes, inhibits and silences, across every declared rule corpus | `alertmanager-behaviour.example.yaml` | neutral |
 | [`check-ci-include-job-names.py`](#check-ci-include-job-namespy-pyyaml) | an optional `needs:` naming a job no include creates | flags | gitlab-only |
+| [`check-cnpg-clusters.py`](#check-cnpg-clusterspy-pyyaml) | a CloudNativePG Cluster with no WAL archiver, a short retention, no ScheduledBackup, a one-instance PDB, or prunable by Flux | `--min-retention-days` | neutral |
 | [`check-backup-artifact-apps.py`](#check-backup-artifact-appspy-pyyaml) | pairs the backup-artifact app list with its alert rule, both ways | flags | neutral |
 | [`check-cluster-invariants.py`](#check-cluster-invariantspy-pyyaml) | duplicate vmid / address, a host on a VIP, a host outside the LAN CIDR, an alert-rule `instance=` literal that is no inventory address | flags | neutral |
 | [`check-comment-length.py`](#check-comment-lengthpy) | a comment block longer than three content lines | flags or YAML | neutral |
@@ -1922,6 +1923,33 @@ scripts/check-doc-links.py <root>...  # scan explicit roots
   `**/*.md` plus the gate script, matching the checker's own tracked-Markdown
   scope. Pass your own `changes` only to narrow the trigger deliberately; a path
   missing from it means no run on that edit.
+
+### `check-cnpg-clusters.py` (PyYAML)
+
+Holds every CloudNativePG `Cluster` in the rendered corpus to the settings that
+make it recoverable and safe to run on a reboot-managed cluster:
+
+```
+kustomize build kubernetes/db | scripts/check-cnpg-clusters.py --min-retention-days 30
+```
+
+- **WAL archiving.** A Barman Cloud plugin entry with `isWALArchiver: true`, or
+  the in-tree `backup.barmanObjectStore`. Without one there is no
+  point-in-time recovery.
+- **Retention at or above the floor.** For the plugin, the named `ObjectStore`
+  must be in the corpus with a `retentionPolicy` recovery window (`Nd`, `Nw`,
+  `Nm`, a month counted as 30 days) of at least `--min-retention-days`; in-tree,
+  `backup.retentionPolicy`.
+- **A `ScheduledBackup`** in the same namespace whose `spec.cluster.name` is
+  the cluster.
+- **`enablePDB: false` on a one-instance cluster.** A PodDisruptionBudget that
+  can never be satisfied makes every node drain time out.
+- **`kustomize.toolkit.fluxcd.io/prune: disabled`** on the `Cluster`, so
+  removing or moving its file never garbage-collects the database.
+- **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error (an empty
+  corpus, or one with no `Cluster` in it).
+- `--min-retention-days` is the only flag (default 30). Renaming it is a MAJOR
+  change.
 
 ### `check-comment-length.py`
 
