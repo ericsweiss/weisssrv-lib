@@ -1950,15 +1950,16 @@ kustomize build kubernetes/db | scripts/check-cnpg-clusters.py --min-retention-d
   review.
 - **`enablePDB: false` on a one-instance cluster.** A PodDisruptionBudget that
   can never be satisfied makes every node drain time out. An `instances` that
-  is not an integer (an unsubstituted `${...}` placeholder, say) is a finding:
+  is not a YAML integer (an unsubstituted `${...}` placeholder, a quoted `"1"`,
+  `1.5` or a boolean, say) is a finding:
   pipe the post-substitution build.
 - **`kustomize.toolkit.fluxcd.io/prune: disabled`** on the `Cluster` and on the
   plugin's `ObjectStore`, so removing or moving either file never
   garbage-collects the database or its backup target.
 - **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error (an empty
-  corpus, or one with no `Cluster` in it).
-- `--min-retention-days` is the only flag (default 30). Renaming it is a MAJOR
-  change.
+  corpus, one with no `Cluster` in it, or a `--min-retention-days` under 1).
+- `--min-retention-days` is the only flag (default 30, at least 1, since a
+  floor of 0 would pass any retention). Renaming it is a MAJOR change.
 
 ### `check-comment-length.py`
 

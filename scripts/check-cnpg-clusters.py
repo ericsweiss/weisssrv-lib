@@ -118,12 +118,13 @@ def violations(docs: list[dict], min_days: int) -> tuple[list[str], int]:
                 s.get("method", "barmanObjectStore") == "barmanObjectStore" for s in schedules):
             out.append(f"  {where}: no ScheduledBackup with method barmanObjectStore (the default) "
                        "targets this in-tree-archived cluster")
-        try:
-            instances = int(spec.get("instances", 1))
-        except (TypeError, ValueError):
-            out.append(f"  {where}: spec.instances {spec.get('instances')!r} is not an integer "
+        raw = spec.get("instances", 1)
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            out.append(f"  {where}: spec.instances {raw!r} is not an integer "
                        "(pipe the post-substitution build)")
             instances = None
+        else:
+            instances = raw
         if instances == 1 and spec.get("enablePDB", True) is not False:
             out.append(f"  {where}: one instance with a PodDisruptionBudget blocks every node drain; set enablePDB: false")
         if (meta.get("annotations") or {}).get(PRUNE_ANNOTATION) != "disabled":
@@ -133,8 +134,11 @@ def violations(docs: list[dict], min_days: int) -> tuple[list[str], int]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    parser.add_argument("--min-retention-days", type=int, default=30)
+    parser.add_argument("--min-retention-days", type=int, default=30,
+                        help="recovery-window floor in days (default 30, at least 1)")
     args = parser.parse_args(argv)
+    if args.min_retention_days < 1:
+        parser.error("--min-retention-days must be at least 1")
     docs = load_corpus()
     found, seen = violations(docs, args.min_retention_days)
     if found:

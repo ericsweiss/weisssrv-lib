@@ -125,6 +125,12 @@ def test_the_floor_is_a_flag(monkeypatch):
                 ["--min-retention-days", "45"]) == 1
 
 
+@pytest.mark.parametrize("days", ["0", "-5"])
+def test_a_floor_under_one_day_is_an_operator_error(monkeypatch, capsys, days):
+    assert _run(_corpus(CLUSTER, STORE, SCHEDULE), monkeypatch, ["--min-retention-days", days]) == 2
+    assert "--min-retention-days must be at least 1" in capsys.readouterr().err
+
+
 def test_a_cluster_without_a_scheduled_backup_fails(monkeypatch, capsys):
     assert _run(_corpus(CLUSTER, STORE), monkeypatch) == 1
     assert "no ScheduledBackup" in capsys.readouterr().err
@@ -184,7 +190,7 @@ def test_a_store_without_retention_names_no_window(monkeypatch, capsys):
     assert "None" not in err
 
 
-@pytest.mark.parametrize("instances", ['"${DB_INSTANCES}"', "null", "three"])
+@pytest.mark.parametrize("instances", ['"${DB_INSTANCES}"', "null", "three", '"1"', "1.5", "true"])
 def test_a_non_integer_instance_count_is_a_finding(monkeypatch, capsys, instances):
     cluster = CLUSTER.replace("  instances: 1\n", f"  instances: {instances}\n")
     assert _run(_corpus(cluster, STORE, SCHEDULE), monkeypatch) == 1
