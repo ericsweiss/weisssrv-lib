@@ -213,10 +213,6 @@ def test_a_named_existing_claim_pins(monkeypatch):
     assert _run(hr_claim, monkeypatch) == 0
 
 
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-v"]))
-
-
 # The template pattern: the cluster's tenant StorageClass and a size.
 CNPG_PINNED = """
 apiVersion: postgresql.cnpg.io/v1
@@ -268,3 +264,7 @@ def test_cnpg_wal_storage_is_a_claim_too(monkeypatch, capsys):
 def test_a_cluster_of_another_api_group_is_not_cnpg(monkeypatch):
     doc = CNPG_UNPINNED.replace("postgresql.cnpg.io/v1", "example.com/v1")
     assert _run(PVC_STATIC + "---\n" + doc, monkeypatch) == 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-v"]))
