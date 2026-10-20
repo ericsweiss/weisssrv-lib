@@ -1028,7 +1028,12 @@ asserting the relationship in a comment is what this replaces.
   sidecars): the kubelet adds up the limits that ARE declared and charges every
   container's writable layer and logs against that sum, so a container without
   a limit is not exempt, it is unfunded. One sidecar's 128Mi became the whole
-  hindsight pod's budget and evicted its API and model containers.
+  hindsight pod's budget and evicted its API and model containers. A plain init
+  container's limit is the floor of that budget, so when no running container
+  declares one it becomes the budget for the pod's whole life and is reported
+  the same way. A namespace `LimitRange` that defaults `ephemeral-storage`
+  limits fills the gap at admission; a corpus that relies on one reads as a
+  finding here, so declare the limits in the manifest instead.
 - The size comparison is per POD, because the emptyDirs and the containers draw
   on one budget: each volume is charged ONCE however many containers mount it,
   and their SUM weighs against the sum of the containers' limits — every
