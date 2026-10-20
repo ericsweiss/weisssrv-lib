@@ -136,6 +136,95 @@ class TestTagRegexWithoutCaptureGroup:
             "x/y", r"^v(\d+\.\d+\.\d+)$") == "1.10.0"
 
 
+class TestDockerHubTagWindow:
+    """Docker Hub lists tags by last push, so a window can end before the pin."""
+
+    def _pages(self, *pages):
+        pages = list(pages)
+        def fake(url):
+            tags = pages.pop(0)
+            return {"results": [{"name": t} for t in tags],
+                    "next": "next-page" if pages else None}
+        return fake
+
+    def test_a_window_that_missed_the_pin_is_an_error_naming_the_fix(self, monkeypatch):
+        monkeypatch.setattr(check_versions, "_make_request",
+                            self._pages(["8.8.3-alpine", "8.6.7-alpine"]))
+        svc = {"docker_image": "library/redis",
+               "tag_regex": r"^(\d+\.\d+\.\d+-alpine)$",
+               "_current_version": "8.10.1-alpine"}
+        with pytest.raises(RuntimeError) as excinfo:
+            check_versions.fetch_dockerhub_version(svc)
+        message = str(excinfo.value)
+        assert "window ended before the pinned tag" in message
+        assert "8.8.3-alpine" in message and "8.10.1-alpine" in message
+        assert "dockerhub_name_filter" in message
+
+    def test_a_window_holding_a_newer_tag_reports_it(self, monkeypatch):
+        monkeypatch.setattr(check_versions, "_make_request",
+                            self._pages(["8.8.3-alpine", "8.10.2-alpine"]))
+        svc = {"docker_image": "library/redis",
+               "tag_regex": r"^(\d+\.\d+\.\d+-alpine)$",
+               "_current_version": "8.10.1-alpine"}
+        assert check_versions.fetch_dockerhub_version(svc) == "8.10.2-alpine"
+
+    def test_the_pinned_tag_itself_is_not_a_miss(self, monkeypatch):
+        monkeypatch.setattr(check_versions, "_make_request",
+                            self._pages(["8.10.1-alpine", "8.8.3-alpine"]))
+        svc = {"docker_image": "library/redis",
+               "tag_regex": r"^(\d+\.\d+\.\d+-alpine)$",
+               "_current_version": "8.10.1-alpine"}
+        assert check_versions.fetch_dockerhub_version(svc) == "8.10.1-alpine"
+
+    @pytest.mark.parametrize("current", ["unknown", "latest", ""])
+    def test_a_pin_that_is_not_a_version_is_not_compared(self, monkeypatch, current):
+        monkeypatch.setattr(check_versions, "_make_request",
+                            self._pages(["1.2.0"]))
+        svc = {"docker_image": "x/y", "_current_version": current}
+        assert check_versions.fetch_dockerhub_version(svc) == "1.2.0"
+
+    def test_a_prefixed_tag_scheme_is_compared_on_the_captured_version(self, monkeypatch):
+        monkeypatch.setattr(check_versions, "_make_request",
+                            self._pages(["release-1.2.0"]))
+        svc = {"docker_image": "x/y", "tag_regex": r"^release-(\d+\.\d+\.\d+)$",
+               "_current_version": "release-1.3.0"}
+        with pytest.raises(RuntimeError, match="window ended before the pinned tag"):
+            check_versions.fetch_dockerhub_version(svc)
+
+    def test_a_pin_the_regex_does_not_read_is_not_compared(self, monkeypatch):
+        monkeypatch.setattr(check_versions, "_make_request",
+                            self._pages(["1.2.0"]))
+        svc = {"docker_image": "x/y", "tag_regex": r"^(\d+\.\d+\.\d+)$",
+               "_current_version": "9.9.9-alpine"}
+        assert check_versions.fetch_dockerhub_version(svc) == "1.2.0"
+
+    def test_a_pin_outside_the_version_prefix_names_the_prefix(self, monkeypatch):
+        monkeypatch.setattr(check_versions, "_make_request",
+                            self._pages(["1.15.9", "1.16.0"]))
+        svc = {"docker_image": "x/y", "version_prefix": "1.15.",
+               "_current_version": "1.16.0"}
+        with pytest.raises(RuntimeError, match="outside version_prefix '1.15.'"):
+            check_versions.fetch_dockerhub_version(svc)
+
+    def test_dockerhub_max_pages_widens_the_window(self, monkeypatch):
+        monkeypatch.setattr(check_versions, "_make_request",
+                            self._pages(["8.8.3-alpine"], ["8.10.1-alpine"]))
+        svc = {"docker_image": "library/redis",
+               "tag_regex": r"^(\d+\.\d+\.\d+-alpine)$",
+               "_current_version": "8.10.1-alpine",
+               "dockerhub_max_pages": 2}
+        assert check_versions.fetch_dockerhub_version(svc) == "8.10.1-alpine"
+
+    def test_the_default_window_is_one_page(self, monkeypatch):
+        calls = []
+        def fake(url):
+            calls.append(url)
+            return {"results": [{"name": "1.0.0"}], "next": "more"}
+        monkeypatch.setattr(check_versions, "_make_request", fake)
+        check_versions.fetch_dockerhub_version({"docker_image": "x/y"})
+        assert len(calls) == 1
+
+
 class TestPinnedImageVersionTracking(unittest.TestCase):
     """Digest-locked image pins that live outside the vars file."""
 

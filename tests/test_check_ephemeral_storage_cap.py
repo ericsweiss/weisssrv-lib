@@ -396,6 +396,89 @@ def test_an_unreadable_sizelimit_is_reported(monkeypatch, capsys):
     assert "not a readable quantity" in capsys.readouterr().err
 
 
+def _pod(containers: str, init_containers: str = "", volumes: str = "") -> str:
+    return (
+        "apiVersion: v1\n"
+        "kind: Pod\n"
+        "metadata: {name: demo, namespace: apps}\n"
+        "spec:\n"
+        + (init_containers and "  initContainers:\n" + init_containers)
+        + "  containers:\n" + containers
+        + (volumes and "  volumes:\n" + volumes)
+    )
+
+
+def _container(name: str, limit: str | None, restart_policy: str | None = None) -> str:
+    out = "    - name: %s\n" % name
+    if restart_policy:
+        out += "      restartPolicy: %s\n" % restart_policy
+    if limit is not None:
+        out += (
+            "      resources:\n        requests:\n          ephemeral-storage: 64Mi\n"
+            "        limits:\n          ephemeral-storage: %s\n" % limit
+        )
+    return out
+
+
+def test_a_pod_where_only_one_container_declares_a_limit_fails(monkeypatch, capsys):
+    """The hindsight shape: the dump sidecar's 128Mi was the whole pod budget."""
+    doc = _pod(_container("api", None) + _container("dump", "128Mi") + _container("llama", None))
+    assert _run(doc, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "container 'dump' declares limits.ephemeral-storage" in err
+    assert "containers 'api', 'llama' do not" in err
+    assert "spend a budget they never funded" in err
+
+
+def test_a_pod_where_every_container_declares_a_limit_passes(monkeypatch):
+    doc = _pod(_container("api", "1Gi") + _container("dump", "128Mi"))
+    assert _run(doc, monkeypatch) == 0
+
+
+def test_a_pod_where_no_container_declares_a_limit_passes(monkeypatch):
+    doc = _pod(_container("api", None) + _container("dump", None))
+    assert _run(doc, monkeypatch) == 0
+
+
+def test_a_sidecar_init_container_without_a_limit_is_unfunded(monkeypatch, capsys):
+    doc = _pod(_container("api", "1Gi"), _container("proxy", None, "Always"))
+    assert _run(doc, monkeypatch) == 1
+    assert "container 'proxy' does not" in capsys.readouterr().err
+
+
+def test_a_plain_init_container_is_outside_the_running_budget(monkeypatch):
+    """It runs alone before the app containers, so its limit is its own phase's."""
+    doc = _pod(_container("api", "1Gi"), _container("setup", None))
+    assert _run(doc, monkeypatch) == 0
+
+
+def test_a_plain_init_container_as_the_only_funder_is_reported(monkeypatch, capsys):
+    """Its limit is the floor of the pod budget; with nothing else declared it IS the budget."""
+    doc = _pod(_container("api", None) + _container("llama", None), _container("setup", "128Mi"))
+    assert _run(doc, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "init container 'setup' declares limits.ephemeral-storage" in err
+    assert "containers 'api', 'llama' do not" in err
+    assert "take it off the init container" in err
+
+
+def test_a_plain_init_container_beside_funded_app_containers_passes(monkeypatch):
+    doc = _pod(_container("api", "1Gi"), _container("setup", "128Mi"))
+    assert _run(doc, monkeypatch) == 0
+
+
+def test_the_partial_budget_finding_joins_the_sized_emptydir_findings(monkeypatch, capsys):
+    doc = _pod(
+        _container("api", None)
+        + _container("dump", "64Mi").replace("- name: dump\n", "- name: dump\n      volumeMounts:\n        - {name: tmp, mountPath: /tmp}\n"),
+        volumes="    - name: tmp\n      emptyDir:\n        sizeLimit: 512Mi\n",
+    )
+    assert _run(doc, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "never funded" in err
+    assert "evicts the pod before the volume fills" in err
+
+
 def test_a_corpus_with_no_pod_spec_is_an_operator_error(monkeypatch, capsys):
     assert _run("kind: ConfigMap\nmetadata: {name: x}\n", monkeypatch) == 2
     assert "inspected 0 pod specs" in capsys.readouterr().err

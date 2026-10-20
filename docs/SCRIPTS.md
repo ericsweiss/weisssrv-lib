@@ -34,7 +34,7 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`check-helm-values-coverage.py`](#check-helm-values-coveragepy-pyyaml) | a HelmRelease the helm-values registry neither lists nor excludes | flags | neutral |
 | [`check-helmrelease-crd-safety.py`](#check-helmrelease-crd-safetypy-pyyaml) | a CRD-owning HelmRelease that would delete its CRDs on uninstall | `helmrelease-crd-safety.example.yaml` | neutral |
 | [`check-hpa-vpa-invariant.py`](#check-hpa-vpa-invariantpy-pyyaml) | HPA/VPA overlap, CPU limits, VPA caps, 1:1 memory ratios, a request above its own limit | `autoscaling-policy.example.yaml` | neutral |
-| [`check-ephemeral-storage-cap.py`](#check-ephemeral-storage-cappy-pyyaml) | sized emptyDirs larger than their pod's ephemeral-storage budget | stdin | neutral |
+| [`check-ephemeral-storage-cap.py`](#check-ephemeral-storage-cappy-pyyaml) | sized emptyDirs larger than their pod's ephemeral-storage budget; pods where only some containers fund that budget | stdin | neutral |
 | [`check-include-contract.py`](#check-include-contractpy-pyyaml) | an undeclared `inputs:` key, an omitted REQUIRED input, a job stage the pipeline does not declare | flags | gitlab-only |
 | [`check-ingressroute-backends.py`](#check-ingressroute-backendspy-pyyaml) | a route backend or scrape port that resolves to no Service in the corpus | stdin | neutral |
 | [`check-issuer-refs.py`](#check-issuer-refspy-pyyaml) | a cert-manager issuer reference that resolves to nothing the corpus ships | `--allow-external` | neutral |
@@ -141,7 +141,12 @@ JSON renderers.
   name — a `ghcr.io/` prefix, Docker Hub's `library/` namespace), `source_url`
   (overrides the report link derived from the image name),
   `dockerhub_page_size` (tag page size, default 50, for image families whose
-  suffixed tags do not fit one page), `apt_exclude_regex` (case-insensitive;
+  suffixed tags do not fit one page), `dockerhub_name_filter` (Docker Hub's
+  `name=` substring filter on the tag listing) and `dockerhub_max_pages`
+  (default 1): Docker Hub lists tags by last push, so when the window ends
+  before the pinned tag the entry errors — "the window ended before the pinned
+  tag" — rather than printing the newest tag it did hold as a downgrade;
+  `apt_exclude_regex` (case-insensitive;
   matching versions are skipped) and `coupled_vars` (pins that must be rewritten
   with this one).
 - **Env:** `GITHUB_TOKEN` / `GH_API_TOKEN` (optional; raises the GitHub rate
@@ -1001,8 +1006,9 @@ cat rendered-corpus.yaml | scripts/check-pvc-storageclass.py
 ### `check-ephemeral-storage-cap.py` (PyYAML)
 
 Fails a container that mounts a `sizeLimit` emptyDir without an
-`ephemeral-storage` request AND limit, and a pod whose sized emptyDirs together
-exceed its ephemeral-storage budget.
+`ephemeral-storage` request AND limit, a pod whose sized emptyDirs together
+exceed its ephemeral-storage budget, and a pod where only some of its running
+containers declare an `ephemeral-storage` limit.
 
 ```
 cat rendered-corpus.yaml | scripts/check-ephemeral-storage-cap.py
@@ -1018,6 +1024,16 @@ asserting the relationship in a comment is what this replaces.
   `initContainers` as well as `containers`.
 - The request-and-limit pair is per container: every container mounting a sized
   emptyDir declares both, the request being what the scheduler places the pod on.
+- Limits are all-or-none across the running containers (app containers and
+  sidecars): the kubelet adds up the limits that ARE declared and charges every
+  container's writable layer and logs against that sum, so a container without
+  a limit is not exempt, it is unfunded. One sidecar's 128Mi became the whole
+  hindsight pod's budget and evicted its API and model containers. A plain init
+  container's limit is the floor of that budget, so when no running container
+  declares one it becomes the budget for the pod's whole life and is reported
+  the same way. A namespace `LimitRange` that defaults `ephemeral-storage`
+  limits fills the gap at admission; a corpus that relies on one reads as a
+  finding here, so declare the limits in the manifest instead.
 - The size comparison is per POD, because the emptyDirs and the containers draw
   on one budget: each volume is charged ONCE however many containers mount it,
   and their SUM weighs against the sum of the containers' limits — every

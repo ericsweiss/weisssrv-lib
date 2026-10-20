@@ -1047,7 +1047,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 ## ci/review/pr-agent.yml
 
 - **Reproduces:** the `pr-agent-review` job in all three consumers. Runs
-  `pragent/pr-agent:0.47.0` on gpt-5.6 / `high` with committable inline
+  `pragent/pr-agent:0.48.0` on gpt-5.6 / `high` with committable inline
   suggestions (`PR_CODE_SUGGESTIONS__DUAL_PUBLISHING_SCORE_THRESHOLD`,
   `CONFIG__PERSISTENT_INLINE_COMMENTS`); `allow_failure: true`, the schedule
   exclusion and the MR-only token-gated rule are baked in. weisssrv
@@ -1059,7 +1059,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `pr-agent-review` |  |
 | `stage` | `ai-review` |  |
-| `image` | `pragent/pr-agent:0.47.0`, digest-pinned | multi-arch index digest |
+| `image` | `pragent/pr-agent:0.48.0`, digest-pinned | multi-arch index digest |
 | `tags` | `["infrastructure"]` |  |
 | `needs` | `[]` |  |
 | `model` | `gpt-5.6` |  |
