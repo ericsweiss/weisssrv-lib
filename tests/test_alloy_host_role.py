@@ -51,10 +51,14 @@ def _accepts(arg: str) -> bool:
 
 
 def test_the_guard_exists_with_the_exact_conditions() -> None:
-    """Pinned literally: these two clauses are the whole guard, and a rewrite
-    into something looser (`is not search`, a `| quote`) would still read as a
-    quoting check while admitting the value that breaks the assignment."""
-    assert _conditions() == ["'\"' not in item", 'not item.endswith("\\\\")']
+    """Pinned literally: these three clauses are the whole guard (no `"`, no
+    trailing `\\`, no whitespace), and a looser rewrite (a `| quote`) would still
+    read as a quoting check while admitting a value that breaks the assignment."""
+    assert _conditions() == [
+        "'\"' not in item",
+        'not item.endswith("\\\\")',
+        'item is not search("\\\\s")',
+    ]
 
 
 def test_the_guard_covers_every_entry_of_the_variable() -> None:
@@ -113,10 +117,124 @@ def test_values_that_break_the_assignment_are_rejected(arg: str) -> None:
     assert _accepts(arg) is False
 
 
-@pytest.mark.parametrize("arg", ["--x=$(id)", "--x=`id`", "--x=a b", "--x='q'"])
+@pytest.mark.parametrize("arg", ["--x=$(id)", "--x=`id`", "--x='q'"])
 def test_the_guard_is_scoped_to_the_double_quote_it_names(arg: str) -> None:
     """The guard covers the double quote and trailing backslash only, not shell metacharacters."""
     assert _accepts(arg) is True
+
+
+def _render_custom_args(wal_enabled: bool, extra_args: list[str]) -> list[str]:
+    """Render the role's real CUSTOM_ARGS line and return its argument words."""
+    line = _task(CUSTOM_ARGS)["ansible.builtin.lineinfile"]["line"]
+    env = ansible_env(undefined=jinja2.StrictUndefined)
+    rendered = env.from_string(line).render(
+        alloy_host_wal_enabled=wal_enabled, alloy_host_extra_args=extra_args
+    )
+    assert rendered.startswith('CUSTOM_ARGS="') and rendered.endswith('"')
+    return rendered[len('CUSTOM_ARGS="') : -1].split(" ")
+
+
+def test_the_wal_adds_the_experimental_stability_level_once() -> None:
+    """Alloy >= 1.21 refuses the loki.write wal block below experimental."""
+    words = _render_custom_args(True, ["--server.http.listen-addr=0.0.0.0:12345"])
+    assert words == [
+        "--disable-reporting",
+        "--stability.level=experimental",
+        "--server.http.listen-addr=0.0.0.0:12345",
+    ]
+
+
+def test_no_stability_level_without_the_wal() -> None:
+    words = _render_custom_args(False, [])
+    assert words == ["--disable-reporting"]
+    assert not any(w.startswith("--stability.level") for w in words)
+
+
+STABILITY_ASSERT = "Assert a site stability level keeps the Alloy WAL loadable"
+
+
+def _stability_accepts(wal_enabled: bool, extra_args: list[str]) -> bool:
+    """Evaluate the role's real stability-level assert."""
+    env = ansible_env(undefined=jinja2.StrictUndefined)
+    conditions = _task(STABILITY_ASSERT)["ansible.builtin.assert"]["that"]
+    expression = " and ".join(f"({c})" for c in conditions)
+    rendered = env.from_string("{{ (" + expression + ") | bool }}").render(
+        alloy_host_wal_enabled=wal_enabled, alloy_host_extra_args=extra_args
+    )
+    return rendered == "True"
+
+
+def test_a_site_experimental_level_is_accepted_and_emitted_once() -> None:
+    args = ["--stability.level=experimental"]
+    assert _stability_accepts(True, args) is True
+    assert _render_custom_args(True, args) == [
+        "--disable-reporting",
+        "--stability.level=experimental",
+    ]
+
+
+@pytest.mark.parametrize(
+    "arg",
+    [
+        " --stability.level=public-preview",
+        "--foo=bar --stability.level=public-preview",
+        "--x=a b",
+        "--x=a\tb",
+        "--x=a\nb",
+    ],
+)
+def test_an_entry_holding_more_than_one_argument_is_rejected(arg: str) -> None:
+    """Whitespace splits an entry into words the stability guard never sees."""
+    assert _accepts(arg) is False
+
+
+def test_a_repeated_unrelated_flag_keeps_its_multiplicity() -> None:
+    args = ["--cluster.join-addresses=a", "--cluster.join-addresses=a"]
+    assert _render_custom_args(True, args) == [
+        "--disable-reporting",
+        "--stability.level=experimental",
+        *args,
+    ]
+    assert _render_custom_args(False, args) == ["--disable-reporting", *args]
+
+
+def test_a_site_experimental_level_given_twice_is_written_once() -> None:
+    args = ["--stability.level=experimental", "--stability.level=experimental"]
+    assert _stability_accepts(True, args) is True
+    words = _render_custom_args(True, args)
+    assert words.count("--stability.level=experimental") == 1
+    assert words == ["--disable-reporting", "--stability.level=experimental"]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--stability.level=public-preview"],
+        ["--stability.level=generally-available"],
+        ["--stability.level", "experimental"],
+        ["--stability.level=experimental", "--stability.level=public-preview"],
+    ],
+)
+def test_any_other_site_level_fails_while_the_wal_is_on(args: list[str]) -> None:
+    """public-preview still rejects the wal block; the assert stops the deploy."""
+    assert _stability_accepts(True, args) is False
+
+
+def test_with_the_wal_off_any_site_level_passes_through() -> None:
+    args = ["--stability.level=public-preview"]
+    assert _stability_accepts(False, args) is True
+    assert _render_custom_args(False, args) == [
+        "--disable-reporting",
+        "--stability.level=public-preview",
+    ]
+
+
+def test_no_site_level_passes_the_stability_assert() -> None:
+    assert _stability_accepts(True, ["--server.http.listen-addr=0.0.0.0:12345"]) is True
+
+
+def test_the_stability_assert_runs_before_the_line_is_written() -> None:
+    assert NAMES.index(STABILITY_ASSERT) < NAMES.index(CUSTOM_ARGS)
 
 
 def _negative_path_block() -> dict:

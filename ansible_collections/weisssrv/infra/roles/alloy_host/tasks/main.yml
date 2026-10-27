@@ -58,31 +58,53 @@
     name: alloy
     selection: hold
 
-# The joined args land inside a double-quoted assignment, so an embedded `"` or
-# a trailing `\` closes it early (systemd unescapes backslashes inside a quoted
-# EnvironmentFile value) and the rest of the line becomes further words.
+# The joined args land inside a double-quoted assignment: a `"` or trailing `\`
+# closes it early, and whitespace splits one entry into words no guard below sees
+# (so each entry must be exactly one argument).
 - name: Assert no Alloy extra argument breaks the CUSTOM_ARGS assignment
   ansible.builtin.assert:
     that:
       - '''"'' not in item'
       - 'not item.endswith("\\")'
+      - 'item is not search("\\s")'
     fail_msg: >-
-      alloy_host_extra_args entry {{ item | to_json }} contains a double quote
-      or ends with a backslash, either of which breaks out of the CUSTOM_ARGS
-      assignment in /etc/default/alloy.
+      alloy_host_extra_args entry {{ item | to_json }} contains a double quote,
+      ends with a backslash or contains whitespace. Each entry is one argument,
+      joined into the double-quoted CUSTOM_ARGS assignment in /etc/default/alloy.
     quiet: true
   loop: "{{ alloy_host_extra_args }}"
   loop_control:
     label: "{{ item | truncate(40) }}"
 
-# One managed CUSTOM_ARGS line: --disable-reporting plus whatever the site
-# needs, which is where a --server.http.listen-addr matching
-# alloy_host_http_port goes.
+# Alloy >= 1.21 rejects the loki.write wal block below experimental, so with the
+# WAL on a site-supplied --stability.level must be exactly the experimental one.
+- name: Assert a site stability level keeps the Alloy WAL loadable
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (alloy_host_wal_enabled | bool)
+        or (alloy_host_extra_args | select("search", "^--stability[.]level")
+        | reject("equalto", "--stability.level=experimental") | list | length == 0)
+    fail_msg: >-
+      alloy_host_extra_args sets
+      {{ alloy_host_extra_args | select("search", "^--stability[.]level") | list | to_json }}
+      while alloy_host_wal_enabled is true; the loki.write wal block needs
+      --stability.level=experimental (the role adds it), so drop the entry,
+      write it as exactly --stability.level=experimental, or disable the WAL.
+    quiet: true
+
+# One managed CUSTOM_ARGS line: --disable-reporting, then with the WAL on the
+# experimental level the wal block needs (site copies of it dropped, so it is
+# written once), then alloy_host_extra_args in their own order and multiplicity.
 - name: Set Alloy command-line arguments
   ansible.builtin.lineinfile:
     path: /etc/default/alloy
     regexp: '^CUSTOM_ARGS='
-    line: 'CUSTOM_ARGS="{{ (["--disable-reporting"] + alloy_host_extra_args) | join(" ") }}"'
+    line: >-
+      CUSTOM_ARGS="{{ (["--disable-reporting"]
+      + ((["--stability.level=experimental"]
+      + (alloy_host_extra_args | reject("equalto", "--stability.level=experimental") | list))
+      if (alloy_host_wal_enabled | bool) else alloy_host_extra_args)) | join(" ") }}"
   notify: Restart alloy
 
 - name: Deploy Alloy configuration

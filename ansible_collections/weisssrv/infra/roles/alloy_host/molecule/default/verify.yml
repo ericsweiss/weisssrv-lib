@@ -112,6 +112,27 @@
         fail_msg: "loki.source.journal is missing the pinned max_age"
         success_msg: "loki.source.journal max_age is pinned"
 
+    # The WAL is on in converge, so the role must add the stability level the
+    # loki.write wal block needs, and exactly once.
+    - name: Read the Alloy environment file
+      ansible.builtin.slurp:
+        src: /etc/default/alloy
+      register: alloy_host_env_file
+
+    - name: Assert CUSTOM_ARGS carries the experimental stability level once
+      vars:
+        alloy_host_custom_args: "{{ (alloy_host_env_file.content | b64decode) | regex_findall('(?m)^CUSTOM_ARGS=.*$') }}"
+      ansible.builtin.assert:
+        that:
+          - alloy_host_custom_args | length == 1
+          - (alloy_host_custom_args[0] | regex_findall('--stability[.]level=experimental')) | length == 1
+          - (alloy_host_custom_args[0] | regex_findall('--stability[.]level')) | length == 1
+        fail_msg: >-
+          /etc/default/alloy CUSTOM_ARGS is {{ alloy_host_custom_args }}, not one line
+          carrying --stability.level=experimental exactly once; Alloy refuses the
+          loki.write wal block without it.
+        success_msg: "CUSTOM_ARGS carries --stability.level=experimental once"
+
     # Negative-path artifact: the https-without-creds role run in converge
     # post_tasks must have been blocked by the credentials assert.
     - name: Read credentials assert artifact
