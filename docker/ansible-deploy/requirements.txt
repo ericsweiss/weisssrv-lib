@@ -1,4 +1,4 @@
 # Baked into the ansible-deploy image; exact pins so a rebuild is reproducible.
 # `ansible`, not `ansible-core`, matches what ci/deploy/deploy-base.yml installs;
 # tests/test_ansible_deploy_image.py holds the two equal.
-ansible==14.4.0
+ansible==14.5.0

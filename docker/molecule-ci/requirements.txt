@@ -1,11 +1,11 @@
 # Baked into the molecule-ci image; exact pins so a rebuild is reproducible.
 # ansible-lint, black and yamllint are held equal to the ci/lint template
 # defaults by tests/test_lint_version_parity.py. ansible-core is outside it.
-ansible==14.4.0
-ansible-lint==26.9.0
+ansible==14.5.0
+ansible-lint==26.10.1
 # A transitive dep of ansible-lint's jinja rule, held below 26.5.x, whose
 # wheels ship a broken mypyc extension that makes ansible-lint fail to load.
 black==26.3.1
-molecule==26.4.0
-molecule-plugins[docker]==25.8.12
+molecule==26.10.0
+molecule-plugins[docker]==26.10.12
 yamllint==1.38.0

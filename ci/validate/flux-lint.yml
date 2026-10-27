@@ -56,7 +56,7 @@ spec:
       default: "b4d22673e9246cbd628881f1a9ef3b090085dced291e42d804555cee8e8d42c5"
       description: sha256 of the flux_version linux-amd64 tarball; moves with it.
     pyyaml_version:
-      default: "6.0.2"
+      default: "6.0.3"
       description: >-
         (substitute=true) pinned PyYAML for flux-lint.sh's ConfigMap and
         spec.path parsers. An unpinned floating install would let a breaking

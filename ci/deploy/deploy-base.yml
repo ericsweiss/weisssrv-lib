@@ -33,7 +33,7 @@ spec:
         references resolve against, and a consumer overriding those on its jobs
         can pass any placeholder.
     ansible_version:
-      default: "14.4.0"
+      default: "14.5.0"
       description: ansible pip pin installed into the job.
     apt_packages:
       default: "git"

@@ -108,7 +108,7 @@ same shape, so every gate that CI runs also runs before the commit:
         name: kustomization resource list
         entry: python scripts/check-kustomization.py kubernetes/flux
         language: python
-        additional_dependencies: ["pyyaml==6.0.2"]
+        additional_dependencies: ["pyyaml==6.0.3"]
         pass_filenames: false
         always_run: true
         files: ^(kubernetes/|scripts/check-)
