@@ -46,7 +46,7 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`check-netpol-except-parity.py`](#check-netpol-except-paritypy-pyyaml) | no fenced pod has unrestricted egress | `netpol-except.example.yaml` | neutral |
 | [`check-nfs-tls.py`](#check-nfs-tlspy-pyyaml) | an NFS PV that does not mount over TLS by hostname | flags | neutral |
 | [`check-prometheus-rule-coverage.py`](#check-prometheus-rule-coveragepy-pyyaml) | a shipped alert with no promtool unit test and no declared exemption | flags | neutral |
-| [`check-pvc-storageclass.py`](#check-pvc-storageclasspy-pyyaml) | a sized volume with no storage class named | none | neutral |
+| [`check-pvc-storageclass.py`](#check-pvc-storageclasspy-pyyaml) | a sized volume with no storage class named; a `volumeName` claim Flux may prune | none | neutral |
 | [`check-role-defaults-documented.py`](#check-role-defaults-documentedpy-pyyaml) | a role default its README never names | flags | neutral |
 | [`check-role-inputs.py`](#check-role-inputspy-pyyaml-jinja2) | inventory vs the collection's opt-in and required-input conventions | flags | neutral |
 | [`check-role-readme-literals.py`](#check-role-readme-literalspy) | one site's addresses or domains in a role README | flags | neutral |
@@ -977,6 +977,13 @@ plugin rewrites it at create time to whatever class is default, so the claim
 silently binds a dynamically provisioned volume instead of the static PV it was
 written for — and a `volumeClaimTemplate` is immutable afterwards.
 
+It also fails a PersistentVolumeClaim whose `spec.volumeName` is a non-empty
+string unless it carries the annotation
+`kustomize.toolkit.fluxcd.io/prune: "disabled"` (exactly that value). Flux prune
+deletes the claim when it leaves the rendered set, which releases its
+PersistentVolume, and a `Released` volume never rebinds until someone hand-edits
+its `claimRef`. A claim with no `volumeName` is not subject to this rule.
+
 ```
 cat rendered-corpus.yaml | scripts/check-pvc-storageclass.py
 ```
@@ -999,8 +1006,9 @@ cat rendered-corpus.yaml | scripts/check-pvc-storageclass.py
   no other symptom. **So is a corpus that arrived but declares no claim** — that
   is what a render loop which never reached the storage-declaring stages
   produces; the success line prints the claim count next to the document count.
-- **Exit codes:** 0 clean, 1 on an unpinned claim, 2 on an operator error (an
-  empty or claim-less corpus, unparseable input).
+- **Exit codes:** 0 clean, 1 on an unpinned claim or a prunable `volumeName`
+  bind, 2 on an operator error (an empty or claim-less corpus, unparseable
+  input).
 - No configuration: the rule is universal.
 
 ### `check-ephemeral-storage-cap.py` (PyYAML)
