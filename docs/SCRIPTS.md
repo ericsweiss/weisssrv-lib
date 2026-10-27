@@ -145,7 +145,9 @@ JSON renderers.
   `name=` substring filter on the tag listing) and `dockerhub_max_pages`
   (default 1): Docker Hub lists tags by last push, so when the window ends
   before the pinned tag the entry errors — "the window ended before the pinned
-  tag" — rather than printing the newest tag it did hold as a downgrade;
+  tag" — rather than printing the newest tag it did hold as a downgrade.
+  An `lsio` entry gets the same check, and its error names that category's
+  knobs, `lsio_name_filter` and `lsio_max_pages`;
   `apt_exclude_regex` (case-insensitive;
   matching versions are skipped) and `coupled_vars` (pins that must be rewritten
   with this one).
