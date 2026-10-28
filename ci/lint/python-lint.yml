@@ -16,7 +16,7 @@ spec:
         Runner tag(s). Default targets weisssrv's privileged runner; pass `[]`
         for the shared tag-less tenant runner.
     ruff_version:
-      default: "0.16.7"
+      default: "0.17.3"
       description: ruff pip pin.
     config:
       default: ""

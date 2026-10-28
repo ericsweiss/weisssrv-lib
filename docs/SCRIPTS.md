@@ -46,7 +46,7 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`check-netpol-except-parity.py`](#check-netpol-except-paritypy-pyyaml) | no fenced pod has unrestricted egress | `netpol-except.example.yaml` | neutral |
 | [`check-nfs-tls.py`](#check-nfs-tlspy-pyyaml) | an NFS PV that does not mount over TLS by hostname | flags | neutral |
 | [`check-prometheus-rule-coverage.py`](#check-prometheus-rule-coveragepy-pyyaml) | a shipped alert with no promtool unit test and no declared exemption | flags | neutral |
-| [`check-pvc-storageclass.py`](#check-pvc-storageclasspy-pyyaml) | a sized volume with no storage class named | none | neutral |
+| [`check-pvc-storageclass.py`](#check-pvc-storageclasspy-pyyaml) | a sized volume with no storage class named; a `volumeName` claim Flux may prune | none | neutral |
 | [`check-role-defaults-documented.py`](#check-role-defaults-documentedpy-pyyaml) | a role default its README never names | flags | neutral |
 | [`check-role-inputs.py`](#check-role-inputspy-pyyaml-jinja2) | inventory vs the collection's opt-in and required-input conventions | flags | neutral |
 | [`check-role-readme-literals.py`](#check-role-readme-literalspy) | one site's addresses or domains in a role README | flags | neutral |
@@ -145,7 +145,9 @@ JSON renderers.
   `name=` substring filter on the tag listing) and `dockerhub_max_pages`
   (default 1): Docker Hub lists tags by last push, so when the window ends
   before the pinned tag the entry errors — "the window ended before the pinned
-  tag" — rather than printing the newest tag it did hold as a downgrade;
+  tag" — rather than printing the newest tag it did hold as a downgrade.
+  An `lsio` entry gets the same check, and its error names that category's
+  knobs, `lsio_name_filter` and `lsio_max_pages`;
   `apt_exclude_regex` (case-insensitive;
   matching versions are skipped) and `coupled_vars` (pins that must be rewritten
   with this one).
@@ -977,6 +979,13 @@ plugin rewrites it at create time to whatever class is default, so the claim
 silently binds a dynamically provisioned volume instead of the static PV it was
 written for — and a `volumeClaimTemplate` is immutable afterwards.
 
+It also fails a PersistentVolumeClaim whose `spec.volumeName` is a non-empty
+string unless it carries the annotation
+`kustomize.toolkit.fluxcd.io/prune: "disabled"` (exactly that value). Flux prune
+deletes the claim when it leaves the rendered set, which releases its
+PersistentVolume, and a `Released` volume never rebinds until someone hand-edits
+its `claimRef`. A claim with no `volumeName` is not subject to this rule.
+
 ```
 cat rendered-corpus.yaml | scripts/check-pvc-storageclass.py
 ```
@@ -999,8 +1008,9 @@ cat rendered-corpus.yaml | scripts/check-pvc-storageclass.py
   no other symptom. **So is a corpus that arrived but declares no claim** — that
   is what a render loop which never reached the storage-declaring stages
   produces; the success line prints the claim count next to the document count.
-- **Exit codes:** 0 clean, 1 on an unpinned claim, 2 on an operator error (an
-  empty or claim-less corpus, unparseable input).
+- **Exit codes:** 0 clean, 1 on an unpinned claim or a prunable `volumeName`
+  bind, 2 on an operator error (an empty or claim-less corpus, unparseable
+  input).
 - No configuration: the rule is universal.
 
 ### `check-ephemeral-storage-cap.py` (PyYAML)
@@ -1249,20 +1259,41 @@ scripts/check-scrape-wiring.py [--observability-namespace NS]
   ingress rule admits the observability namespace on that port. An absent or
   **empty** `ports:` list matches every port, as the API reads it, and
   `endPort` is read as a range.
-- A policy shape the gate does not model — `matchExpressions`, an `ipBlock`
-  peer — is **not credited**, and is named in the failure so the reader can
-  tell "wired wrong" from "not modelled". A **monitor's** own `spec.selector`
-  is the input, not a shape to judge: a term beyond `matchLabels` there is an
-  operator error, because discarding it judges objects the monitor does not
-  select and leaves the ones it does select unresolved.
+- **Every label selector is read with Kubernetes semantics:** `matchLabels`
+  AND every `matchExpressions` entry, with the operators `In`, `NotIn`,
+  `Exists` and `DoesNotExist`; `NotIn` and `DoesNotExist` hold for a key the
+  labels lack. That covers the policy's `podSelector` against the workload's
+  pod labels, so `app.kubernetes.io/component NotIn [db]` on a scrape allow
+  keeps the app pods admitted and leaves CloudNativePG's out, and a monitor's
+  `spec.selector` against Service labels (pod labels for a PodMonitor), whose
+  labels the corpus states in full. A scrape peer's selectors see only partial
+  labels and fail closed, as the next bullets say. An unknown operator or a
+  malformed entry is noted in the failure and matches nothing.
+- A policy shape the gate does not model — an `ipBlock` peer, or an empty
+  `namespaceSelector` beside a non-empty `podSelector` — is **not credited**,
+  and is named in the failure so the reader can tell "wired wrong" from "not
+  modelled". A **monitor's** own `spec.selector` is the input, not a shape to
+  judge: a key beyond `matchLabels`/`matchExpressions`, an unknown operator or
+  a malformed entry there is an operator error, because discarding it judges
+  objects the monitor does not select.
+- A peer's **`namespaceSelector`** is matched against the one label every
+  namespace is known to carry, `kubernetes.io/metadata.name`, so it may name
+  the observability namespace by `matchLabels` or by an `In` expression. A
+  term of any operator on another key cannot be verified and is **not
+  credited**, `NotIn` and `DoesNotExist` included: the namespace may carry the
+  label such a term excludes.
 - A peer that admits the observability namespace and then **narrows it with a
-  `podSelector`** (a mapping; any other shape is unresolved narrowing) is credited only when every label it asks for is declared
-  with **`--prometheus-pod-label KEY=VALUE`** (repeatable, the same flag the
+  `podSelector`** (a mapping; any other shape is unresolved narrowing) is
+  credited only when the declared labels satisfy it, declared with
+  **`--prometheus-pod-label KEY=VALUE`** (repeatable, the same flag the
   scrape-netpol invariant takes): Prometheus is chart-installed, so its pod
-  labels are in no manifest and the caller is the only source. An undeclared
-  or differing label, a `matchExpressions` term on either selector, or a
-  `namespaceSelector` term beyond the name is **not credited**, and the
-  narrowing is named. A `podSelector: {}` narrows nothing and keeps its credit.
+  labels are in no manifest and the caller is the only source. A selector the
+  declared labels do not satisfy, or any narrowing one while none are declared,
+  is **not credited**, and the narrowing is named. A `NotIn` term is credited
+  only on a declared key, whose declared value it must not list; on an
+  undeclared key the pods may carry the excluded value. `DoesNotExist` is
+  therefore never credited: on a declared key it fails, on an undeclared one it
+  is unverifiable. A `podSelector: {}` narrows nothing and keeps its credit.
 - A matched Service with **no `spec.selector`** is a target only if something in
   the input declares its endpoints — an `Endpoints` object of that name, or an
   `EndpointSlice` labelled `kubernetes.io/service-name`. Then the addresses are

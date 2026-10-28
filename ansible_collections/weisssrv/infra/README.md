@@ -43,7 +43,7 @@ the current release is named in the library
 `requirements.yml` adds the test-only ones (`community.crypto`,
 `community.docker`) that molecule needs and consumers do not.
 `meta/runtime.yml` declares the ansible-core floor: **2.18**. The molecule
-suites run on the core `ansible==14.4.0` ships (2.21); the
+suites run on the core `ansible==14.5.0` ships (2.21); the
 `collection-floor-build` job builds the collection and syntax-checks every
 converge play on `ansible-core` 2.18.18, so a role reaching past the floor reds
 the pipeline rather than a consumer. Bump `requires_ansible` and that job's

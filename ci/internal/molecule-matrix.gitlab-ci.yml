@@ -24,7 +24,7 @@ spec:
         Plan-job image. The FULL python image (not -slim) ships git, which the
         MR diff needs — so no apt, and the job stays non-root safe.
     pyyaml_version:
-      default: "6.0.2"
+      default: "6.0.3"
       description: PyYAML pip pin for the generator.
     generator:
       default: scripts/generate-molecule-pipeline.py

@@ -482,7 +482,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `script_path` | `scripts/check-comment-length.py` | the consumer's vendored copy |
 | `paths` | `"."` | space-separated; the whole tree by default |
 | `config` | `""` | e.g. `--config .comment-length.yml` |
-| `pyyaml_version` | `6.0.2` | empty skips the install; only a YAML `config` needs it |
+| `pyyaml_version` | `6.0.3` | empty skips the install; only a YAML `config` needs it |
 | `default_branch` | `main` |  |
 | `changes` | `["**/*"]` | every file, because the convention covers every file |
 
@@ -525,7 +525,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `stage` | `lint` |  |
 | `image` | `python:3.14-slim` |  |
 | `tags` | `["infrastructure"]` |  |
-| `ruff_version` | `0.16.7` |  |
+| `ruff_version` | `0.17.3` |  |
 | `config` | `""` | empty = ruff's own discovery; pass the FULL argument, e.g. `--config lint/ruff.toml` |
 | `targets` | `.` |  |
 | `default_branch` | `main` |  |
@@ -555,7 +555,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `stage` | `lint` |  |
 | `image` | `python:3.14-slim` |  |
 | `tags` | `["infrastructure"]` |  |
-| `ansible_lint_version` | `26.9.0` | keep in step with `docker/molecule-ci/requirements.txt` so lint and molecule agree |
+| `ansible_lint_version` | `26.10.1` | keep in step with `docker/molecule-ci/requirements.txt` so lint and molecule agree |
 | `pip_extra` | `black==26.3.1` | held below the broken 26.5.x mypyc wheels; routed through a job variable, so a `<`/`>`/`|` ceiling is safe |
 | `config` | `""` | empty = ansible-lint's own discovery; pass the FULL argument, e.g. `-c .ansible-lint` |
 | `targets` | `.` |  |
@@ -641,7 +641,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `helm_sha256` | the sha for `helm_version` | moves with it |
 | `flux_version` | `2.9.6` | substitute mode only — the flux CLI whose `envsubst --strict` decides whether the post-build will reconcile. Held equal to the versions ConfigMap's own `flux_version` by the job, which fails on a mismatch rather than linting with a parser the cluster does not run |
 | `flux_sha256` | the sha for `flux_version` | moves with it |
-| `pyyaml_version` | `6.0.2` | pins the ConfigMap and `spec.path` parsers `flux-lint.sh` runs |
+| `pyyaml_version` | `6.0.3` | pins the ConfigMap and `spec.path` parsers `flux-lint.sh` runs |
 | `k8s_version` | `""` | empty = derived from the ConfigMap's `k3s_version` (substitute mode); simple mode falls back to 1.36.0 |
 | `kustomize_path` | `kubernetes/flux` | simple mode only — the ONE directory that arm builds. The default is the tenant layout the app template renders; a repo laid out differently passes the path it actually reconciles |
 | `allowed_skips` | `"0"` | simple mode only. How many rendered resources kubeconform may validate against NO schema. Above it the job fails, and so does a summary carrying no `Skipped:` field, which is what an unreachable catalog looks like. Substitute mode uses `expected_skipped_file` instead |
@@ -1006,7 +1006,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `tags` | `["infrastructure"]` |  |
 | `test_dir` | `scripts/` |  |
 | `pytest_version` | `9.1.1` |  |
-| `pyyaml_version` | `6.0.2` |  |
+| `pyyaml_version` | `6.0.3` |  |
 | `apt_packages` | `git jq` | the one root-only default in the library; a tenant clears it |
 | `pip_packages` | `""` | extra pinned pip specs; routed through a job variable, so ceilings are safe |
 | `setup_command` | `true` | one command, run after the apt install and before the pip install; `python3 scripts/ci-fetch-tools.py jq amtool` drops verified static binaries into `$CI_PROJECT_DIR/.bin` |
@@ -1404,7 +1404,7 @@ definition, and parameterising them would trade duplication for indirection.
 | `tags` | `["infrastructure"]` |  |
 | `secrets_source` | `1password` | `1password` reads the SSH key with `op read`; `env` takes it from `$SSH_PRIVATE_KEY` |
 | `op_vault` | **required** | no default: a vault name is site data |
-| `ansible_version` | `14.4.0` |  |
+| `ansible_version` | `14.5.0` |  |
 | `apt_packages` | `git` | needed when the collection installs from a `git+` URL; reaches the shell as `APT_PACKAGES` |
 | `ansible_dir` | `ansible` |  |
 | `hosts_env` | `scripts/hosts.env` |  |

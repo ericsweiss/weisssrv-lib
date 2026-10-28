@@ -11,9 +11,10 @@ alloy_host_loki_user: ""
 alloy_host_loki_password: ""
 
 # On-disk write-ahead log for loki.write: buffers and backfills instead of
-# dropping once the in-memory queue fills, which matters most during a Loki
-# outage. max_segment_age bounds replay lag and disk use.
+# dropping once the in-memory queue fills. Alloy >= 1.21 needs
+# --stability.level=experimental for it, which the role adds to CUSTOM_ARGS.
 alloy_host_wal_enabled: true
+# The WAL segment cut interval bounds replay lag and disk use.
 alloy_host_wal_max_segment_age: "1h"
 
 # How far back a restarted Alloy re-reads the journal. Must stay <= Loki's
@@ -25,6 +26,7 @@ alloy_host_journal_max_age: "3h"
 # together with a matching --server.http.listen-addr in alloy_host_extra_args.
 alloy_host_http_port: 12345
 
-# Extra Alloy command-line arguments, appended to the managed CUSTOM_ARGS line
-# after --disable-reporting.
+# Extra Alloy command-line arguments, one argument per entry (no whitespace),
+# appended to CUSTOM_ARGS. With the WAL on, a --stability.level entry must be
+# exactly --stability.level=experimental.
 alloy_host_extra_args: []

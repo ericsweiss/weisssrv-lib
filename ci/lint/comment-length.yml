@@ -32,7 +32,7 @@ spec:
         The config carries paths, include/exclude globs and the two limits. A
         YAML config needs PyYAML; a JSON one does not.
     pyyaml_version:
-      default: "6.0.2"
+      default: "6.0.3"
       description: >-
         PyYAML pin installed before the run, so a YAML `config` parses. Pass an
         empty string to skip the install when the gate needs no config.

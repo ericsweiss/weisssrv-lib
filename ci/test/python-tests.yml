@@ -16,7 +16,7 @@ spec:
     pytest_version:
       default: "9.1.1"
     pyyaml_version:
-      default: "6.0.2"
+      default: "6.0.3"
     apt_packages:
       default: "git jq"
       description: >-

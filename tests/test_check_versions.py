@@ -225,6 +225,53 @@ class TestDockerHubTagWindow:
         assert len(calls) == 1
 
 
+class TestLsioTagWindow:
+    """An LSIO entry gets the Docker Hub window check; its pin is the captured version."""
+
+    SVC = {"docker_image": "linuxserver/sonarr",
+           "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
+           "_current_version": "4.0.16.2944"}
+
+    def _pages(self, *tags):
+        return lambda url: {"results": [{"name": t} for t in tags], "next": None}
+
+    def test_a_window_that_missed_the_pin_raises_naming_the_lsio_knobs(self, monkeypatch):
+        monkeypatch.setattr(check_versions, "_make_request",
+                            self._pages("version-4.0.15.2941", "latest"))
+        with pytest.raises(RuntimeError) as excinfo:
+            check_versions.fetch_lsio_version(dict(self.SVC))
+        message = str(excinfo.value)
+        assert "window ended before the pinned tag" in message
+        assert "version-4.0.15.2941" in message and "4.0.16.2944" in message
+        assert "lsio_name_filter" in message and "lsio_max_pages" in message
+        assert "dockerhub_" not in message
+
+    def test_a_window_holding_a_newer_tag_reports_it(self, monkeypatch):
+        monkeypatch.setattr(check_versions, "_make_request",
+                            self._pages("version-4.0.15.2941", "version-4.0.17.2950"))
+        assert check_versions.fetch_lsio_version(dict(self.SVC)) == "4.0.17.2950"
+
+    def test_the_pinned_version_itself_is_not_a_miss(self, monkeypatch):
+        monkeypatch.setattr(check_versions, "_make_request",
+                            self._pages("version-4.0.16.2944"))
+        assert check_versions.fetch_lsio_version(dict(self.SVC)) == "4.0.16.2944"
+
+    def test_a_bare_tag_scheme_is_checked_too(self, monkeypatch):
+        monkeypatch.setattr(check_versions, "_make_request", self._pages("5.1.3"))
+        svc = {"docker_image": "linuxserver/qbittorrent",
+               "lsio_version_regex": r"^(\d+\.\d+\.\d+)$",
+               "_current_version": "5.1.4"}
+        with pytest.raises(RuntimeError, match="lsio_name_filter"):
+            check_versions.fetch_lsio_version(svc)
+
+    @pytest.mark.parametrize("current", ["unknown", "latest", ""])
+    def test_a_pin_that_is_not_a_version_is_not_compared(self, monkeypatch, current):
+        monkeypatch.setattr(check_versions, "_make_request",
+                            self._pages("version-4.0.15.2941"))
+        svc = dict(self.SVC, _current_version=current)
+        assert check_versions.fetch_lsio_version(svc) == "4.0.15.2941"
+
+
 class TestPinnedImageVersionTracking(unittest.TestCase):
     """Digest-locked image pins that live outside the vars file."""
 

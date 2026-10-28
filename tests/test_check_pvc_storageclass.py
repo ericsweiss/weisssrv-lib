@@ -278,5 +278,70 @@ def test_a_cluster_of_another_api_group_is_not_cnpg(monkeypatch):
     assert _run(PVC_STATIC + "---\n" + doc, monkeypatch) == 0
 
 
+
+
+PVC_VOLUME_BOUND = """
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pg-dump
+  namespace: app
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  storageClassName: ""
+  volumeName: pg-dump-pv
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 10Gi}}
+"""
+
+PVC_VOLUME_BOUND_PRUNABLE = PVC_VOLUME_BOUND.replace(
+    "  annotations:\n    kustomize.toolkit.fluxcd.io/prune: disabled\n", ""
+)
+
+
+def test_volume_bound_claim_with_prune_disabled_passes(monkeypatch):
+    assert _run(PVC_VOLUME_BOUND, monkeypatch) == 0
+
+
+def test_volume_bound_claim_without_the_annotation_fails(monkeypatch, capsys):
+    """Pruning releases the PV, and a Released volume never rebinds unaided."""
+    assert "annotations" not in PVC_VOLUME_BOUND_PRUNABLE
+    assert _run(PVC_VOLUME_BOUND_PRUNABLE, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "pg-dump-pv" in err and "kustomize.toolkit.fluxcd.io/prune" in err
+
+
+@pytest.mark.parametrize("value", ["enabled", "true", "Disabled", "false"])
+def test_volume_bound_claim_with_any_other_prune_value_fails(monkeypatch, value):
+    doc = PVC_VOLUME_BOUND.replace("prune: disabled", f"prune: {value!r}")
+    assert _run(doc, monkeypatch) == 1
+
+
+def test_volume_bound_claim_with_prune_disabled_counts_as_inspected(monkeypatch, capsys):
+    """The vacuity guard still sees the claim: a corpus of one passes, not exit 2."""
+    assert _run(PVC_VOLUME_BOUND, monkeypatch) == 0
+    assert "1 claim(s)" in capsys.readouterr().out
+
+
+def test_a_claim_without_volume_name_is_untouched_by_the_prune_rule(monkeypatch):
+    """PVC_STATIC binds by class alone and carries no annotation."""
+    assert "volumeName" not in PVC_STATIC and "annotations" not in PVC_STATIC
+    assert _run(PVC_STATIC, monkeypatch) == 0
+
+
+@pytest.mark.parametrize("volume", ['""', "null"])
+def test_an_empty_or_null_volume_name_is_not_a_bind(monkeypatch, volume):
+    doc = PVC_VOLUME_BOUND_PRUNABLE.replace("volumeName: pg-dump-pv", f"volumeName: {volume}")
+    assert _run(doc, monkeypatch) == 0
+
+
+def test_the_prune_and_class_violations_are_both_reported(monkeypatch, capsys):
+    doc = PVC_VOLUME_BOUND_PRUNABLE.replace('  storageClassName: ""\n', "")
+    assert _run(doc, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "no storageClassName" in err and "pg-dump-pv" in err
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

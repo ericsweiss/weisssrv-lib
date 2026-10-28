@@ -10,6 +10,7 @@ import pathlib
 import textwrap
 
 import pytest
+import yaml
 from script_loader import load_script
 
 gate = load_script("check-scrape-wiring.py")
@@ -321,27 +322,233 @@ def test_a_service_monitor_with_no_service_is_a_violation(tmp_path, capsys):
     assert "no Service carries the monitor's labels" in capsys.readouterr().err
 
 
-def test_a_monitor_selector_with_matchexpressions_is_an_operator_error(tmp_path, capsys):
-    """Reading only matchLabels judges objects the monitor does not select and
-    leaves the ones it does select unresolved."""
+def test_a_monitor_selector_term_no_service_satisfies_selects_nothing(tmp_path, capsys):
+    """matchExpressions narrows the monitor's choice; reading only matchLabels
+    would judge a Service the monitor does not select."""
     monitor = SERVICE_MONITOR.replace(
         "    matchLabels:\n      app.kubernetes.io/name: app\n",
         "    matchLabels:\n      app.kubernetes.io/name: app\n"
         "    matchExpressions:\n      - {key: shard, operator: Exists}\n",
     )
     argv = tree(tmp_path, DEPLOYMENT, SERVICE, monitor, policy())
+    assert gate.main(argv) == 1
+    assert "no Service carries the monitor's labels" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("kind_monitor", [SERVICE_MONITOR, POD_MONITOR])
+def test_a_monitor_selector_with_matchexpressions_resolves_its_target(tmp_path, kind_monitor):
+    monitor = kind_monitor.replace(
+        "    matchLabels:\n      app.kubernetes.io/name: app\n",
+        "    matchExpressions:\n"
+        "      - {key: app.kubernetes.io/name, operator: In, values: [app, other]}\n"
+        "      - {key: app.kubernetes.io/component, operator: NotIn, values: [db]}\n",
+    )
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, monitor, policy())
+    assert gate.main(argv) == 0
+
+
+def test_a_monitor_selector_with_an_unknown_operator_is_an_operator_error(tmp_path, capsys):
+    monitor = SERVICE_MONITOR.replace(
+        "    matchLabels:\n      app.kubernetes.io/name: app\n",
+        "    matchExpressions:\n"
+        "      - {key: app.kubernetes.io/name, operator: Matches, values: [app]}\n",
+    )
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, monitor, policy())
     assert gate.main(argv) == 2
-    assert "spec.selector carries matchExpressions" in capsys.readouterr().err
+    assert "operator 'Matches'" in capsys.readouterr().err
 
 
-def test_a_matchexpressions_pod_selector_is_not_credited(tmp_path, capsys):
-    unmodelled = policy().replace(
+def test_a_matchexpressions_pod_selector_the_pod_fails_is_not_credited(tmp_path, capsys):
+    """The app pod carries no label `a`, so Exists does not select it."""
+    unselected = policy().replace(
         "  podSelector:\n    matchLabels:\n      app.kubernetes.io/name: app\n",
         "  podSelector:\n    matchExpressions:\n      - {key: a, operator: Exists}\n",
     )
-    argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, unmodelled)
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, unselected)
     assert gate.main(argv) == 1
-    assert "matchExpressions, which this gate does not model" in capsys.readouterr().err
+    assert "does not model" not in capsys.readouterr().err
+
+
+def _policy_pod_selector(*expressions: str) -> str:
+    """policy() with matchExpressions entries added beside its matchLabels."""
+    return policy().replace(
+        "  podSelector:\n    matchLabels:\n      app.kubernetes.io/name: app\n",
+        "  podSelector:\n    matchLabels:\n      app.kubernetes.io/name: app\n"
+        "    matchExpressions:\n"
+        + "".join(f"      - {e}\n" for e in expressions),
+    )
+
+
+DB_DEPLOYMENT = DEPLOYMENT.replace(
+    "        app.kubernetes.io/name: app\n",
+    "        app.kubernetes.io/name: app\n        app.kubernetes.io/component: db\n",
+)
+
+
+class TestPolicyPodSelectorMatchExpressions:
+    """The policy's podSelector is judged with Kubernetes LabelSelector semantics."""
+
+    NOT_DB = "{key: app.kubernetes.io/component, operator: NotIn, values: [db]}"
+
+    def test_notin_db_still_admits_the_app_pod_without_a_note(self, tmp_path, capsys):
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR,
+                    _policy_pod_selector(self.NOT_DB))
+        assert gate.main(argv) == 0
+        captured = capsys.readouterr()
+        assert "does not model" not in captured.out + captured.err
+
+    def test_notin_db_does_not_admit_a_db_pod(self, tmp_path):
+        argv = tree(tmp_path, DB_DEPLOYMENT, SERVICE, SERVICE_MONITOR,
+                    _policy_pod_selector(self.NOT_DB))
+        assert gate.main(argv) == 1
+
+    @pytest.mark.parametrize(("values", "expected"), [("[app, web]", 0), ("[web]", 1)])
+    def test_in_matches_only_a_listed_value(self, tmp_path, values, expected):
+        expression = f"{{key: app.kubernetes.io/name, operator: In, values: {values}}}"
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR,
+                    _policy_pod_selector(expression))
+        assert gate.main(argv) == expected
+
+    @pytest.mark.parametrize(
+        ("expression", "expected"),
+        [
+            ("{key: app.kubernetes.io/name, operator: Exists}", 0),
+            ("{key: app.kubernetes.io/component, operator: Exists}", 1),
+            ("{key: app.kubernetes.io/component, operator: DoesNotExist}", 0),
+            ("{key: app.kubernetes.io/name, operator: DoesNotExist}", 1),
+        ],
+    )
+    def test_exists_and_does_not_exist(self, tmp_path, expression, expected):
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR,
+                    _policy_pod_selector(expression))
+        assert gate.main(argv) == expected
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "{key: app.kubernetes.io/name, operator: Matches, values: [app]}",
+            "{key: app.kubernetes.io/name, operator: In}",
+            "{key: app.kubernetes.io/name, operator: Exists, values: [app]}",
+            "{operator: Exists}",
+        ],
+    )
+    def test_an_unknown_operator_or_malformed_entry_is_noted_not_credited(
+        self, tmp_path, capsys, expression
+    ):
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR,
+                    _policy_pod_selector(expression))
+        assert gate.main(argv) == 1
+        assert "allow-scrape: its selector has a" in capsys.readouterr().err
+
+
+class TestSelectorMatches:
+    """selector_matches against bare label maps, one operator at a time."""
+
+    LABELS = {"app": "web", "tier": "front"}
+
+    @pytest.mark.parametrize(
+        ("selector", "expected"),
+        [
+            ({}, True),
+            ({"matchLabels": {"app": "web"}}, True),
+            ({"matchLabels": {"app": "db"}}, False),
+            ({"matchExpressions": [{"key": "app", "operator": "In", "values": ["web"]}]}, True),
+            ({"matchExpressions": [{"key": "app", "operator": "In", "values": ["db"]}]}, False),
+            ({"matchExpressions": [{"key": "zone", "operator": "In", "values": ["a"]}]}, False),
+            ({"matchExpressions": [{"key": "app", "operator": "NotIn", "values": ["db"]}]}, True),
+            ({"matchExpressions": [{"key": "app", "operator": "NotIn", "values": ["web"]}]}, False),
+            ({"matchExpressions": [{"key": "zone", "operator": "NotIn", "values": ["a"]}]}, True),
+            ({"matchExpressions": [{"key": "tier", "operator": "Exists"}]}, True),
+            ({"matchExpressions": [{"key": "zone", "operator": "Exists"}]}, False),
+            ({"matchExpressions": [{"key": "zone", "operator": "DoesNotExist"}]}, True),
+            ({"matchExpressions": [{"key": "tier", "operator": "DoesNotExist"}]}, False),
+            (
+                {
+                    "matchLabels": {"app": "web"},
+                    "matchExpressions": [{"key": "tier", "operator": "NotIn", "values": ["front"]}],
+                },
+                False,
+            ),
+        ],
+    )
+    def test_kubernetes_semantics(self, selector, expected):
+        assert gate.selector_matches(selector, self.LABELS) is expected
+
+    @pytest.mark.parametrize("values", [None, []])
+    def test_exists_accepts_absent_null_or_empty_values(self, values):
+        selector = {"matchExpressions": [{"key": "tier", "operator": "Exists", "values": values}]}
+        assert gate.selector_problem(selector) is None
+        assert gate.selector_matches(selector, self.LABELS) is True
+
+    @pytest.mark.parametrize("value", ["", "web", "a" * 63, "v1.2_rc-3", "A.b-C_d"])
+    def test_valid_label_values_are_accepted(self, value):
+        selector = {
+            "matchLabels": {"tier": value},
+            "matchExpressions": [{"key": "tier", "operator": "In", "values": [value]}],
+        }
+        assert gate.selector_problem(selector) is None
+        assert gate.selector_matches(selector, {"tier": value}) is True
+
+    def test_a_whole_flux_placeholder_value_is_accepted(self):
+        """Tree mode reads manifests before postBuild substitutes them."""
+        selector = {"matchLabels": {"app": "${APP_NAME}"}}
+        assert gate.selector_problem(selector) is None
+        assert gate.selector_matches(selector, {"app": "${APP_NAME}"}) is True
+        assert gate.selector_problem({"matchLabels": {"app": "x-${APP_NAME}"}}) is not None
+
+    def test_a_63_char_prefix_segment_is_accepted(self):
+        key = "a" * 63 + ".example.com/tier"
+        assert gate.selector_problem({"matchLabels": {key: "web"}}) is None
+
+    def test_a_valid_prefixed_key_is_accepted(self):
+        labels = {"example.com/tier": "front"}
+        selector = {
+            "matchLabels": {"example.com/tier": "front"},
+            "matchExpressions": [
+                {"key": "example.com/tier", "operator": "In", "values": ["front"]}
+            ],
+        }
+        assert gate.selector_problem(selector) is None
+        assert gate.selector_matches(selector, labels) is True
+
+    @pytest.mark.parametrize(
+        "selector",
+        [
+            {"matchExpressions": [{"key": "app", "operator": "Gt", "values": ["1"]}]},
+            {"matchExpressions": [{"key": "app", "operator": "In", "values": []}]},
+            {"matchExpressions": "app"},
+            {"matchLabels": "app"},
+            {"matchLabels": []},
+            {"matchExpressions": {}},
+            {"matchExpressions": [{"key": "app", "operator": "Exists", "values": "web"}]},
+            {"matchExpressions": [{"key": "app", "operator": "Exists", "values": {"a": "b"}}]},
+            {"matchExpressions": [{"key": "app", "operator": "DoesNotExist", "values": ["web"]}]},
+            {"matchExpressions": [{"key": "app", "operator": "In", "values": "web"}]},
+            {"matchExpressions": [{"key": "app", "operator": "In", "values": [1]}]},
+            {"matchExpressions": [{"key": "app", "operator": "NotIn", "values": ["db", None]}]},
+            {"matchExpressions": [{"key": "", "operator": "NotIn", "values": ["db"]}]},
+            {"matchExpressions": [{"key": "app tier", "operator": "Exists"}]},
+            {"matchExpressions": [{"key": "a/b/c", "operator": "Exists"}]},
+            {"matchLabels": {"": "web"}},
+            {"matchLabels": {"app tier": "web"}},
+            {"matchLabels": {"app": "bad value"}},
+            {"matchLabels": {"app": "db\n"}},
+            {"matchLabels": {"app\n": "db"}},
+            {"matchLabels": {"app": "a" * 64}},
+            {"matchLabels": {"app": None}},
+            {"matchExpressions": [{"key": "app", "operator": "In", "values": ["bad value"]}]},
+            {"matchExpressions": [{"key": "app", "operator": "NotIn", "values": ["a" * 64]}]},
+            {"matchExpressions": [{"key": "a" * 64 + ".example.com/tier", "operator": "Exists"}]},
+            {"matchLabels": {"a" * 64 + "/tier": "web"}},
+            {"matchFields": {}},
+            {1: "web"},
+        ],
+    )
+    def test_an_unevaluable_selector_matches_nothing_and_notes(self, selector):
+        gate.UNMODELLED.clear()
+        assert gate.selector_matches(selector, self.LABELS, "subject") is False
+        assert any(n.startswith("subject: its selector") for n in gate.UNMODELLED)
+        gate.UNMODELLED.clear()
 
 
 class TestAPeerNarrowingTheScrapeNamespace:
@@ -455,7 +662,7 @@ class TestAPeerNarrowingTheScrapeNamespace:
         assert gate.main(argv + self.DECLARED) == 1
         assert "narrows it with podSelector" in capsys.readouterr().err
 
-    def test_a_podselector_with_matchexpressions_is_not_credited_even_when_declared(
+    def test_a_podselector_with_matchexpressions_resolves_against_the_declared_labels(
         self, tmp_path, capsys
     ):
         expr = self.NARROWED.replace(
@@ -465,14 +672,102 @@ class TestAPeerNarrowingTheScrapeNamespace:
             "              - {key: app.kubernetes.io/name, operator: Exists}\n",
         )
         argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, expr)
+        assert gate.main(argv) == 1
+        assert "declared scraper labels do not carry" in capsys.readouterr().err
+        assert gate.main(argv + self.DECLARED) == 0
+
+    def _negative(self, expression: str) -> str:
+        return self.NARROWED.replace(
+            "            matchLabels:\n"
+            "              app.kubernetes.io/name: prometheus\n",
+            f"            matchExpressions:\n              - {expression}\n",
+        )
+
+    def test_a_negative_only_podselector_needs_declared_labels(self, tmp_path, capsys):
+        """NotIn holds on an absent key, so with nothing declared it proves nothing:
+        the real Prometheus pods may carry the excluded value."""
+        negative = self._negative(
+            "{key: app.kubernetes.io/name, operator: NotIn, values: [alertmanager]}"
+        )
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, negative)
+        assert gate.main(argv) == 1
+        err = capsys.readouterr().err
+        assert "declared scraper labels do not carry" in err and "none declared" in err
+
+    def test_notin_on_a_declared_key_with_another_value_is_credited(self, tmp_path):
+        negative = self._negative(
+            "{key: app.kubernetes.io/name, operator: NotIn, values: [alertmanager]}"
+        )
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, negative)
+        assert gate.main(argv + self.DECLARED) == 0
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "{key: app.kubernetes.io/component, operator: NotIn, values: [db]}",
+            "{key: app.kubernetes.io/component, operator: DoesNotExist}",
+        ],
+    )
+    def test_a_negative_term_on_an_undeclared_key_is_not_credited(
+        self, tmp_path, capsys, expression
+    ):
+        """The declared labels say nothing about a key they omit, so the pods
+        may carry the excluded value; DoesNotExist is never credited."""
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, self._negative(expression))
         assert gate.main(argv + self.DECLARED) == 1
-        assert "narrows it with podSelector" in capsys.readouterr().err
+        assert "declared scraper labels do not carry" in capsys.readouterr().err
+
+    def test_a_namespace_named_by_an_in_expression_is_credited(self, tmp_path):
+        by_expression = policy().replace(
+            "            matchLabels:\n"
+            "              kubernetes.io/metadata.name: observability\n",
+            "            matchExpressions:\n"
+            "              - key: kubernetes.io/metadata.name\n"
+            "                operator: In\n"
+            "                values: [monitoring, observability]\n",
+        )
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, by_expression)
+        assert gate.main(argv) == 0
+        elsewhere = by_expression.replace("[monitoring, observability]", "[monitoring]")
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, elsewhere)
+        assert gate.main(argv) == 1
+
+    @pytest.mark.parametrize(
+        "expression",
+        ["{key: tier, operator: NotIn, values: [sandbox]}", "{key: quarantine, operator: DoesNotExist}"],
+    )
+    def test_a_negative_term_on_another_namespace_label_is_not_credited(
+        self, tmp_path, capsys, expression
+    ):
+        """Only the name label is known; the namespace may carry the excluded label."""
+        excluded = policy().replace(
+            "              kubernetes.io/metadata.name: observability\n",
+            "              kubernetes.io/metadata.name: observability\n"
+            "            matchExpressions:\n"
+            f"              - {expression}\n",
+        )
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, excluded)
+        assert gate.main(argv) == 1
+        assert "narrows it with namespaceSelector.matchExpressions." in capsys.readouterr().err
+
+    def test_an_unknown_namespace_operator_is_noted_not_credited(self, tmp_path, capsys):
+        unknown = policy().replace(
+            "              kubernetes.io/metadata.name: observability\n",
+            "              kubernetes.io/metadata.name: observability\n"
+            "            matchExpressions:\n"
+            "              - {key: tier, operator: Matches, values: [x]}\n",
+        )
+        argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, unknown)
+        assert gate.main(argv) == 1
+        assert "namespaceSelector has a matchExpressions operator 'Matches'" in (
+            capsys.readouterr().err
+        )
 
     def test_a_null_selector_label_is_not_read_as_an_absent_declared_label(
         self, tmp_path, capsys
     ):
-        """`tier: null` asks for a label the scraper never declared; an absent
-        declared label must not compare equal to a null wanted one."""
+        """`tier: null` is no valid label value, so the selector is malformed and
+        the peer is not credited; it is never read as an absent declared label."""
         null_label = self.NARROWED.replace(
             "            matchLabels:\n"
             "              app.kubernetes.io/name: prometheus\n",
@@ -482,7 +777,7 @@ class TestAPeerNarrowingTheScrapeNamespace:
         )
         argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, null_label)
         assert gate.main(argv + self.DECLARED) == 1
-        assert "declared scraper labels do not carry" in capsys.readouterr().err
+        assert "narrows it with podSelector" in capsys.readouterr().err
 
     def test_an_extra_namespace_label_narrows_the_peer(self, tmp_path, capsys):
         """A second matchLabels entry beside the name asks for a namespace label
@@ -544,6 +839,74 @@ def test_the_scrape_namespace_is_an_option(tmp_path):
     argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, renamed)
     assert gate.main(argv) == 1
     assert gate.main([*argv, "--observability-namespace", "monitoring"]) == 0
+
+
+def _peer_namespace_selector(selector: str) -> str:
+    """policy() with its peer namespaceSelector replaced by `selector` (flow YAML)."""
+    return policy().replace(
+        "        - namespaceSelector:\n"
+        "            matchLabels:\n"
+        "              kubernetes.io/metadata.name: observability\n",
+        f"        - namespaceSelector: {selector}\n",
+    )
+
+
+def _documents(*texts: str) -> list[dict]:
+    return [yaml.safe_load(t) for t in texts]
+
+
+class TestScrapeAllowDetection:
+    """scrape_allow is the repo's statement that something is scraped, so a peer
+    naming the namespace counts even when narrowed: the vacuity guard fails closed."""
+
+    def test_a_peer_naming_the_namespace_is_a_scrape_allow(self):
+        assert gate.scrape_allow(_documents(policy()), "observability") == "allow-scrape"
+
+    @pytest.mark.parametrize(
+        "selector",
+        [
+            "{matchLabels: {kubernetes.io/metadata.name: observability, tier: platform}}",
+            "{matchLabels: {kubernetes.io/metadata.name: observability},"
+            " matchExpressions: [{key: tier, operator: Exists}]}",
+        ],
+    )
+    def test_a_narrowed_peer_naming_the_namespace_is_still_a_scrape_allow(self, selector):
+        documents = _documents(_peer_namespace_selector(selector))
+        assert gate.scrape_allow(documents, "observability") == "allow-scrape"
+
+    @pytest.mark.parametrize("selector", ["[]", '""'])
+    def test_a_malformed_selector_is_not_a_scrape_allow_and_notes(self, selector):
+        gate.UNMODELLED.clear()
+        documents = _documents(_peer_namespace_selector(selector))
+        assert gate.scrape_allow(documents, "observability") is None
+        assert any("is not a mapping" in n for n in gate.UNMODELLED)
+        gate.UNMODELLED.clear()
+
+
+@pytest.mark.parametrize("selector", ["[]", '""'])
+def test_a_malformed_namespace_selector_is_not_the_empty_selector(tmp_path, capsys, selector):
+    """Only `{}` selects every namespace; a falsey list or string is malformed."""
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, _peer_namespace_selector(selector))
+    assert gate.main(argv) == 1
+    assert "namespaceSelector is not a mapping" in capsys.readouterr().err
+
+
+def test_an_empty_mapping_namespace_selector_still_admits_every_namespace(tmp_path):
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, _peer_namespace_selector("{}"))
+    assert gate.main(argv) == 0
+
+
+@pytest.mark.parametrize("pod_selector", ["[]", '""'])
+def test_an_empty_namespace_selector_beside_a_malformed_pod_selector_is_not_credited(
+    tmp_path, capsys, pod_selector
+):
+    """Only an absent, null or valid empty podSelector admits every pod."""
+    peer = f"        - namespaceSelector: {{}}\n          podSelector: {pod_selector}\n"
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, _peer_namespace_selector("{}").replace(
+        "        - namespaceSelector: {}\n", peer
+    ))
+    assert gate.main(argv) == 1
+    assert "a podSelector that is not a mapping" in capsys.readouterr().err
 
 
 class TestTheGateRefusesToBeVacuous:
