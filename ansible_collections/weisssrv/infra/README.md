@@ -99,7 +99,7 @@ here.
 | `adguard_sync` | Replicates AdGuard settings primary → replica, with freshness metrics |
 | `smtp_relay` | Central Postfix relay to an upstream provider with SASL, as a merge over role defaults |
 | `postfix_null_client` | Postfix satellite forwarding to the relay, incl. compiled-map repair |
-| `acme_certs` | Wildcard certificates via acme.sh (DNS-01) plus verified push to each consuming host |
+| `acme_certs` | Wildcard certificates via acme.sh (DNS-01) plus verified push to each consuming host; a `reseed` entry point re-pins the distribution key on its targets |
 
 ### Kubernetes
 
@@ -156,8 +156,8 @@ Two consequences of that naming worth knowing before editing inventory:
   change, not a tidy-up.
 - **Some roles de-provision on `enabled: false`.** `nas_storage`'s archive
   replication and `zfs_encryption`'s mount-anchor unit are removed when their
-  inputs go empty, rather than being left inert. That is a live-host action the
-  first time the collection reconciles a host that has them.
+  inputs go empty, rather than being left inert. Emptying the input is a
+  live-host change on the next run.
 
 ### Inventory-wide names the roles alias
 
@@ -200,7 +200,7 @@ variable defaulting to
 `node_exporter_host_textfile_dir | default('/var/lib/node_exporter')`, so a
 guest running both roles publishes where the exporter reads without restating
 the path, and a site that moved the textfile dir sets it once. The variables
-following the convention today are `acme_certs_textfile_dir`,
+following the convention are `acme_certs_textfile_dir`,
 `adguard_sync_textfile_dir`, `encrypted_swap_textfile_dir`,
 `gitlab_textfile_dir`, `immich_backup_metrics_dir`,
 `k3s_etcd_snapshot_textfile_dir`, `nas_storage_backup_artifact_metrics_dir`,

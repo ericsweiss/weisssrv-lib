@@ -17,16 +17,18 @@ Example configs for every script live in [`../examples/`](../examples/).
 |---|---|---|---|
 | [`b2-bucket-drift.py`](#b2-bucket-driftpy) | codified B2 bucket settings, drift check + supervised `--apply` | `b2-bucket.example.json` | neutral |
 | [`check-alertmanager-behaviour.py`](#check-alertmanager-behaviourpy-pyyaml-needs-amtool) | asserts what the Alertmanager config routes, inhibits and silences, across every declared rule corpus | `alertmanager-behaviour.example.yaml` | neutral |
-| [`check-ci-include-job-names.py`](#check-ci-include-job-namespy-pyyaml) | an optional `needs:` naming a job no include creates | flags | gitlab-only |
-| [`check-cnpg-clusters.py`](#check-cnpg-clusterspy-pyyaml) | a CloudNativePG Cluster with no WAL archiver, a short retention, no unsuspended ScheduledBackup (or none with the method its archiver needs), a one-instance PDB, a non-integer `instances`, or a Cluster or ObjectStore prunable by Flux | `--min-retention-days` | neutral |
 | [`check-backup-artifact-apps.py`](#check-backup-artifact-appspy-pyyaml) | pairs the backup-artifact app list with its alert rule, both ways | flags | neutral |
+| [`check-ci-include-job-names.py`](#check-ci-include-job-namespy-pyyaml) | an optional `needs:` naming a job no include creates | flags | gitlab-only |
 | [`check-cluster-invariants.py`](#check-cluster-invariantspy-pyyaml) | duplicate vmid / address, a host on a VIP, a host outside the LAN CIDR, an alert-rule `instance=` literal that is no inventory address | flags | neutral |
+| [`check-cnpg-clusters.py`](#check-cnpg-clusterspy-pyyaml) | a CloudNativePG Cluster with no WAL archiver, a short retention, no unsuspended ScheduledBackup (or none with the method its archiver needs), a one-instance PDB, a non-integer `instances`, or a Cluster or ObjectStore prunable by Flux | `--min-retention-days` | neutral |
 | [`check-comment-length.py`](#check-comment-lengthpy) | a comment block longer than three content lines | flags or YAML | neutral |
+| [`check-crd-stage-order.py`](#check-crd-stage-orderpy-pyyaml-via-gate_common) | a custom resource whose CRD only a same-stage, later or unordered Flux stage installs | `crd-sources.example.yaml` | neutral |
 | [`check-dashboards.py`](#check-dashboardspy-pyyaml) | Grafana dashboard JSON plus its configMapGenerator registration | flags | neutral |
 | [`check-default-deny-coverage.py`](#check-default-deny-coveragepy-pyyaml) | a namespace owning a workload with no ingress default-deny | `--exempt` | neutral |
 | [`check-deploy-coverage.sh`](#check-deploy-coveragesh-pyyaml-for-the-ci-parse) | a changed Ansible path matching no deploy job's `changes:` | `deploy-coverage.example.conf` | gitlab-only |
 | [`check-deploy-preflight.py`](#check-deploy-preflightpy-pyyaml) | a deploy job whose `--tags` selection, under its own `--skip-tags`, would run no task | flags | gitlab-only |
 | [`check-doc-links.py`](#check-doc-linkspy) | relative Markdown cross-links resolve | env | neutral |
+| [`check-ephemeral-storage-cap.py`](#check-ephemeral-storage-cappy-pyyaml) | sized emptyDirs larger than their pod's ephemeral-storage budget; pods where only some containers fund that budget | stdin | neutral |
 | [`check-flux-stage-timeouts.py`](#check-flux-stage-timeoutspy-pyyaml) | a waiting Flux stage that does not outlast the releases beneath it | flags | neutral |
 | [`check-flux-version-pin.py`](#check-flux-version-pinpy) | the Flux CLI pin, the versions ConfigMap and gotk-components agree | flags | neutral |
 | [`check-guest-endpoint-parity.py`](#check-guest-endpoint-paritypy-pyyaml) | a hand-written LAN endpoint address or NFS export client that covers no inventory host, and an export admitting part of a node group | flags | neutral |
@@ -34,19 +36,21 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`check-helm-values-coverage.py`](#check-helm-values-coveragepy-pyyaml) | a HelmRelease the helm-values registry neither lists nor excludes | flags | neutral |
 | [`check-helmrelease-crd-safety.py`](#check-helmrelease-crd-safetypy-pyyaml) | a CRD-owning HelmRelease that would delete its CRDs on uninstall | `helmrelease-crd-safety.example.yaml` | neutral |
 | [`check-hpa-vpa-invariant.py`](#check-hpa-vpa-invariantpy-pyyaml) | HPA/VPA overlap, CPU limits, VPA caps, 1:1 memory ratios, a request above its own limit | `autoscaling-policy.example.yaml` | neutral |
-| [`check-ephemeral-storage-cap.py`](#check-ephemeral-storage-cappy-pyyaml) | sized emptyDirs larger than their pod's ephemeral-storage budget; pods where only some containers fund that budget | stdin | neutral |
+| [`check-image-gc-threshold.py`](#check-image-gc-thresholdpy-pyyaml) | image-GC alert threshold, prose and inhibitor order against the kubelet watermark | `--rules`, `--alert-offset`, `--alert-cap` | neutral |
 | [`check-include-contract.py`](#check-include-contractpy-pyyaml) | an undeclared `inputs:` key, an omitted REQUIRED input, a job stage the pipeline does not declare | flags | gitlab-only |
 | [`check-ingressroute-backends.py`](#check-ingressroute-backendspy-pyyaml) | a route backend or scrape port that resolves to no Service in the corpus | stdin | neutral |
+| [`check-internal-route-allowlist.py`](#check-internal-route-allowlistpy-pyyaml-via-gate_common) | an internal-domain Traefik route with no source allowlist middleware | flags | neutral |
 | [`check-issuer-refs.py`](#check-issuer-refspy-pyyaml) | a cert-manager issuer reference that resolves to nothing the corpus ships | `--allow-external` | neutral |
 | [`check-kubectl-version-pin.py`](#check-kubectl-version-pinpy) | a CI kubectl pin within ±1 minor of the cluster | env | neutral |
-| [`check-kustomization.py`](#check-kustomizationpy-pyyaml) | a manifest no kustomization.yaml lists, and a list that renders nothing | paths | neutral |
+| [`check-kustomization.py`](#check-kustomizationpy-pyyaml) | a manifest no kustomization.yaml lists, a missing or empty listed path, and a kustomization that renders nothing | `--exempt` | neutral |
 | [`check-lib-pins.py`](#check-lib-pinspy-pyyaml) | every library pin reads the one declared release tag | `lib-ref-sites.example.yml` | gitlab-only |
-| [`check-live-cpu-limits.py`](#check-live-cpu-limitspy-pyyaml-via-gate-common) | a live container running with a CPU limit, and live/template memory-limit drift | none | neutral |
+| [`check-live-cpu-limits.py`](#check-live-cpu-limitspy-pyyaml-via-gate_common) | a live container running with a CPU limit, and live/template memory-limit drift | none | neutral |
 | [`check-molecule-matrix-coverage.sh`](#check-molecule-matrix-coveragesh-pyyaml) | molecule scenarios and matrix entries agree, both directions | env | gitlab-only |
 | [`check-netpol-except-parity.py`](#check-netpol-except-paritypy-pyyaml) | no fenced pod has unrestricted egress | `netpol-except.example.yaml` | neutral |
 | [`check-nfs-tls.py`](#check-nfs-tlspy-pyyaml) | an NFS PV that does not mount over TLS by hostname | flags | neutral |
 | [`check-prometheus-rule-coverage.py`](#check-prometheus-rule-coveragepy-pyyaml) | a shipped alert with no promtool unit test and no declared exemption | flags | neutral |
 | [`check-pvc-storageclass.py`](#check-pvc-storageclasspy-pyyaml) | a sized volume with no storage class named; a `volumeName` claim Flux may prune | none | neutral |
+| [`check-role-default-flips.py`](#check-role-default-flipspy-pyyaml) | changed role defaults between two collection refs that the inventory does not declare | inventory directory, `--allow` keys | neutral |
 | [`check-role-defaults-documented.py`](#check-role-defaults-documentedpy-pyyaml) | a role default its README never names | flags | neutral |
 | [`check-role-inputs.py`](#check-role-inputspy-pyyaml-jinja2) | inventory vs the collection's opt-in and required-input conventions | flags | neutral |
 | [`check-role-readme-literals.py`](#check-role-readme-literalspy) | one site's addresses or domains in a role README | flags | neutral |
@@ -56,13 +60,20 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`check-scrape-wiring.py`](#check-scrape-wiringpy-pyyaml) | a scrape NetworkPolicy that does not admit the port its monitor scrapes | paths or `--corpus` | neutral |
 | [`check-secret-rotation-coverage.py`](#check-secret-rotation-coveragepy-pyyaml) | an ESO-managed credential with no documented rotation path | flags | neutral |
 | [`check-secretstore-scope.py`](#check-secretstore-scopepy-pyyaml) | an unscoped ClusterSecretStore, or a consumer outside its conditions | `--external-store` | neutral |
+| [`check-skill-refs.py`](#check-skill-refspy) | backticked repo paths an agent skill cites still exist | `--skill-dir`, `--foreign`, `--shorthand-root` | neutral |
 | [`check-taskfile.sh`](#check-taskfilesh) | every script, dotenv and task a Taskfile references exists, and no fragment is orphaned | env | neutral |
+| [`check-tenant-traefik-isolation.py`](#check-tenant-traefik-isolationpy-pyyaml) | tenant onboarding without the shape-pinned Traefik admission policies or a hostname grant | flags | neutral |
+| [`check-tenant-wiring.py`](#check-tenant-wiringpy-pyyaml) | a tenant wiring file missing a piece of its confinement | `--tenant-storage-class` | neutral |
 | [`check-vendored-copies.py`](#check-vendored-copiespy-pyyaml) | a consumer's vendored and forked copies against a library checkout | the consumer's manifest | neutral |
 | [`check-version-checksums.py`](#check-version-checksumspy-pyyaml) | every checksum pin the version registry declares (network) | the version registry | neutral |
 | [`check-versions.py`](#check-versionspy-pyyaml-not-required) | multi-source version discovery against a repo's pins | `version-registry.example.py` | neutral |
 | [`ci-fetch-tools.py`](#ci-fetch-toolspy) | installs the pinned CI tool binaries into a workspace bin, sha256-verified (network) | env | neutral |
+| `ci-run-check.sh` | sourceable `run_check` / `run_check_summary` driver for a consolidated gate job | n/a | neutral |
+| `ci_playbook_invocations.py` | importable argv walk over a job script's `ansible-playbook` calls | n/a | gitlab-only |
 | `ci_yaml.py` | importable loader for a CI file using GitLab's `!` tags | n/a | gitlab-only |
 | `cluster-config-value.sh` | prints values from the cluster-config ConfigMap | env | neutral |
+| `collect-state-lib.sh` | sourceable redaction, section-emitter and cluster-verdict helpers | n/a | neutral |
+| `deploy-verify-lib.sh` | sourceable node, pod and HelmRelease readiness classifiers for a deploy-verify driver | n/a | neutral |
 | [`extract-prometheus-config.py`](#extract-prometheus-configpy-lint-prometheus-configsh-pyyaml) | extracts rules and Alertmanager config for promtool/amtool | flags | neutral |
 | `find-pve-host-for-vm.sh` | prints which Proxmox host runs a VMID | env | neutral |
 | `find-reachable-host.sh` | prints the first reachable SSH target from its args | args | neutral |
@@ -71,30 +82,30 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`flux-lint.sh`](#flux-lintsh-pyyaml-needs-kustomize-kubeconform-flux-envsubst) | renders, scans and kubeconforms a Flux tree | flags | neutral |
 | [`flux-render.sh`](#flux-envsh-pyyaml-wraps-flux-rendersh) | ConfigMap → shell exports, and the kubeconform schema version | args | neutral |
 | [`flux-secret-consumers.py`](#flux-secret-consumerspy) | the workloads in one namespace that consume a named Secret, and which manager owns each | args + stdin | neutral |
-| [`gate_common.py`](#gate-commonpy-pyyaml-not-run-directly) | shared loader, cluster-config, key and NetworkPolicy helpers for the corpus gates | n/a | neutral |
+| [`gate_common.py`](#gate_commonpy-pyyaml-not-run-directly) | shared loader, cluster-config, key and NetworkPolicy helpers for the corpus gates | n/a | neutral |
+| [`generate-host-log-staleness.py`](#generate-host-log-stalenesspy-pyyaml) | per-host and cluster-wide journald staleness rules from the log-shipping play, with a drift gate | `--runbook` | neutral |
 | [`generate-hosts-env.py`](#generate-hosts-envpy-pyyaml) | inventory → shell/dotenv file, with a drift gate | `hosts-env-map.example.yml` | neutral |
 | [`generate-molecule-pipeline.py`](#generate-molecule-pipelinepy-pyyaml) | targeted molecule child pipeline for an MR | env | gitlab-only |
 | [`generate-versions-configmap.py`](#generate-versions-configmappy-pyyaml) | vars file → Flux substitution ConfigMap, with a drift gate | flags | neutral |
+| `inventory_tree.py` | importable Ansible-inventory resolver | n/a | neutral |
 | [`kubeconform-skipped.py`](#kubeconform-skippedpy) | unvalidated-kind tracker, or a floor against a baseline | baseline file | neutral |
 | [`lint-prometheus-config.sh`](#extract-prometheus-configpy-lint-prometheus-configsh-pyyaml) | runs promtool/amtool over the extracted config | env | neutral |
 | [`maintenance-run-with-verify.sh`](#maintenance-run-with-verifysh) | runs a maintenance command, then the verify script whatever the outcome | env | neutral |
 | [`molecule-retry.sh`](#molecule-retrysh) | `molecule test` with an in-job destroy + jittered retry | env | neutral |
-| `ci-run-check.sh` | sourceable `run_check` / `run_check_summary` driver for a consolidated gate job | n/a | neutral |
 | `resolve-tool.sh` | prints how to invoke a Python dev tool | args | neutral |
 | [`run-render-gates.sh`](#run-render-gatessh) | runs a consumer's ordered corpus-gate list | `render-gates.example.conf` | neutral |
 | [`sanitize-junit-expected-failures.py`](#sanitize-junit-expected-failurespy) | downgrades declared negative-path junit failures | expectations file | neutral |
-| [`supervised-apply-guard.sh`](#supervised-apply-guardsh) | confirmation ceremony for a supervised apply | env | neutral |
 | [`semantic-release.py`](#semantic-releasepy) | cuts the tag + Release from conventional commits | flags | dual |
-| `taskfile_tree.py` | importable flattener for a Taskfile `includes:` tree | n/a | neutral |
 | `shell-lib.sh` | sourceable `timeout_cmd` / `ssh_probe` / `kubectl_read` / `captured_match` / `url_contains` / `ssh_contains` helpers | env | neutral |
 | `smoke-lib.sh` | sourceable HTTP/TCP probe classifiers and a PASS/FAIL ledger for a consumer's per-guest verify scripts | env | neutral |
-| [`wait-for-reloader-roll.sh`](#wait-for-reloader-rollsh) | waits for Reloader to roll a Deployment after its ConfigMap was patched | args | neutral |
-| `deploy-verify-lib.sh` | sourceable node, pod and HelmRelease readiness classifiers for a deploy-verify driver | n/a | neutral |
-| `collect-state-lib.sh` | sourceable redaction, section-emitter and cluster-verdict helpers | n/a | neutral |
+| [`supervised-apply-guard.sh`](#supervised-apply-guardsh) | confirmation ceremony for a supervised apply | env | neutral |
+| `taskfile_tree.py` | importable flattener for a Taskfile `includes:` tree | n/a | neutral |
+| [`tenant_common.py`](#tenant_commonpy-pyyaml-not-run-directly) | shared tenancy constants, target resolution and aggregator reader for the two tenant gates | n/a | neutral |
 | [`unifi-settings-drift.py`](#unifi-settings-driftpy) | a console-owned UniFi settings section drifting from its codified expectation | `unifi-settings.example.json` | neutral |
 | [`validate-helm-values.py`](#validate-helm-valuespy-pyyaml-needs-helm-network) | renders each HelmRelease's chart and validates it | `helm-values-releases.example.yaml` | neutral |
 | [`version-bump-mr.py`](#version-bump-mrpy) | keeps one open bot MR in sync with the version pins | flags | gitlab-only |
 | [`version-check-ci.py`](#version-check-cipy) | CI wrapper: report artifact + refreshed MR comment | the version registry | neutral core |
+| [`wait-for-reloader-roll.sh`](#wait-for-reloader-rollsh) | waits for Reloader to roll a Deployment after its ConfigMap was patched | args | neutral |
 
 ## Forge coupling
 
@@ -102,8 +113,8 @@ Neutral means stdlib/PyYAML, the filesystem and `git` — no forge API, no CI-YA
 parsing, no `CI_*` variable it cannot run without — so a GitHub-hosted consumer
 runs it unchanged from an Actions step. The `gitlab-only` rows above are the
 porting bill; each carries a **Forge** note explaining what would have to be
-replaced. (`check-versions.py` calls the GitHub *releases*
-API as a version SOURCE; that says nothing about where the consumer is hosted.)
+replaced. `check-versions.py` calls the GitHub releases API as a version
+source, which says nothing about where the consumer is hosted.
 
 GitHub consumers have no `include:` equivalent for a private library, so they
 vendor workflows — see
@@ -119,7 +130,8 @@ and the note in [INCLUDE-CONTRACT.md](INCLUDE-CONTRACT.md#who-includes-what).
 Multi-source version discovery: GitHub releases, Docker Hub, GHCR, LinuxServer,
 Helm repo indexes, and apt `Packages` indexes, compared against the pins in a
 vars file. Disk cache (1 h), bounded retry, Debian version comparison, table +
-JSON renderers.
+JSON renderers. A cached lookup is reused only while the registry entry and the
+current pin are both unchanged.
 
 - **Config:** `--config PATH`, else `$CHECK_VERSIONS_CONFIG`, else
   `scripts/version-registry.py` / `.json` under the repo root. `.py` (a module
@@ -132,7 +144,8 @@ JSON renderers.
 - **Config keys:** `vars_file`, `services`, `default_deploy_command`,
   `version_file_aliases`, `untracked_allowlist`, `cache_dir`, `repo_root`,
   `report_title` (heading on the table report; default `Version Check Report`).
-- **Service entry:** `name`, `var_name`, `category`, plus the category's fetch
+- **Service entry:** `name`, `var_name`, `category` (required; an entry
+  without one is exit 2), plus the category's fetch
   fields (`github_repo`, `docker_image`, `ghcr_image`, `helm_repo`/`helm_chart`,
   `apt_url`/`apt_package`), optional `deploy_command`, `version_file`, `pin_regex`, `held`,
   `unreadable_current`,
@@ -151,32 +164,38 @@ JSON renderers.
   `apt_exclude_regex` (case-insensitive;
   matching versions are skipped) and `coupled_vars` (pins that must be rewritten
   with this one).
-- **Env:** `GITHUB_TOKEN` / `GH_API_TOKEN` (optional; raises the GitHub rate
-  limit from 60 to 5000 req/hr), `CHECK_VERSIONS_CONFIG` (config path,
+- **Env:** `GH_API_TOKEN`, else `GITHUB_TOKEN` (optional; raises the GitHub
+  rate limit from 60 to 5000 req/hr), `CHECK_VERSIONS_CONFIG` (config path,
   overridden by `--config`), `DEBUG` (any non-empty value also prints the full
   traceback for an unexpected error).
 - **Two non-actionable states.** `held` is a deliberate hold; `unreadable_current`
   says the current version cannot be read here, so the entry reports the upstream
   release without flipping the exit code. Both are excluded from
   `summary.updates_available` and counted in their own JSON keys
-  (`updates_held`, `updates_current_unreadable`).
+  (`updates_held`, `updates_current_unreadable`). The summary buckets
+  partition the results, so the table and the JSON count the same totals.
 - **Modes:** default report (exit 0 clean / 1 updates / 2 errors), `--json`,
   `--service`, `--category`, `--list`, `--update NAME`, `--update-all`,
   `--check-coverage` (fails when a `*_version` pin has no registry entry and is
   not in `untracked_allowlist`), `--no-cache`, `--clear-cache`, `--repo-root`.
   An entry declaring `coupled_vars` is written by `--update-all` and `--update`,
   with a `PAIRED-EDIT-REQUIRED` banner naming each partner the script cannot
-  compute. A `--service` / `--category` combination that matches nothing prints
-  one line on stderr and exits 2, not 1.
+  compute. A `version_file` pin is digest-locked, so neither mode writes it:
+  `--update` prints the manual step, and `--update-all` lists every such update
+  under a manual-edit note. A `--service` / `--category` combination that
+  matches nothing prints one line on stderr and exits 2. Any unexpected failure
+  also exits 2, never 1.
 - **`--check-partner-pins BASE_REF`** reads the vars file at `BASE_REF` with
   `git show` and fails when an entry's `var_name` moved while one of its
-  `coupled_vars` did not. Exit 0 clean, 1 on a stale partner, 2 when the base
-  ref cannot be read. Run it as an MR gate beside `--check-coverage`.
+  `coupled_vars` did not. A coupled pin or a partner missing from the head vars
+  file is reported too. Exit 0 clean, 1 on a stale partner, 2 when the base ref
+  cannot be read. Run it as an MR gate beside `--check-coverage`.
 - **Two partner pins the script writes itself**, unlike `coupled_vars`:
   `revision_var` is rewritten to `<new version>-r1` whenever the base version
   moves, and `sha_var`
   (`{"var": ..., "repo": <git url>, "ref": "refs/tags/v{version}"}`) is resolved
-  with `git ls-remote`, taking the PEELED `^{}` line — a bare `refs/tags/<tag>`
+  with `git ls-remote`, bounded at 60s with no terminal prompt, taking the
+  PEELED `^{}` line — a bare `refs/tags/<tag>`
   query returns the annotated tag object's sha, not the commit, and a build that
   verifies the tag then fails. A ref resolving to nothing aborts that service's
   write rather than storing an empty sha. Neither is reported by
@@ -187,8 +206,8 @@ JSON renderers.
   `apt_exclude_regex` drops pre-release stanzas. A response that is not a
   Packages index falls back to `<url>.gz`. There are no per-vendor categories.
 - **The CLI is argparse**, so error wording is argparse's
-  (`unrecognized arguments: …`, `argument --config: expected one argument`);
-  exit code 2 for a usage error is unchanged. `--category` is validated against
+  (`unrecognized arguments: …`, `argument --config: expected one argument`) and
+  a usage error exits 2. `--category` is validated against
   the known set at parse time rather than failing later, and a registry entry
   whose category is unknown lands in an explicit **"Other"** bucket in the table
   instead of vanishing from it.
@@ -256,9 +275,10 @@ the copy in the consumer repo) and are stdlib-only.
 ### `semantic-release.py`
 
 Cuts the tag + Release from the conventional commits since the last
-version tag: `feat` → minor, `fix`/`perf`/`refactor` → patch, `!` or a
-`BREAKING CHANGE:` trailer → major (demoted to minor while the version is `0.x`
-unless `--major-on-zero`). Tag and Release are created in ONE Releases API call —
+version tag. The commit-to-bump mapping is the table in
+[VERSIONING.md](VERSIONING.md#releases-are-cut-automatically-conventional-commits);
+`--major-on-zero` lets a breaking change cut a MAJOR while the version is `0.x`.
+Tag and Release are created in ONE Releases API call —
 that endpoint creates the tag from the ref, which on GitLab is the only tag write
 a `CI_JOB_TOKEN` can perform. No releasable commit → exit 0, nothing created.
 
@@ -452,6 +472,35 @@ generate-hosts-env.py --inventory <hosts.yml> --map <exports.yml>
 
 ---
 
+### `generate-host-log-staleness.py` (PyYAML)
+
+Writes the journald-staleness alert rules for every host the log-shipping play
+targets, and fails when the committed file drifts from a regeneration.
+
+```
+scripts/generate-host-log-staleness.py --runbook <path#anchor> [--check | --count]
+    [--repo-root .]
+    [--output kubernetes/infrastructure/observability/loki/host-log-staleness.yaml]
+    [--site-yml ansible/playbooks/site.yml]
+    [--hosts-yml ansible/inventories/prod/hosts.yml] [--role alloy_host]
+    [--sync-command 'task flux:sync-host-log-staleness']
+```
+
+- It writes one `HostLogShippingStaleAll` rule and one `HostLogShippingStale`
+  rule per host that the single play running `--role` targets.
+- Hosts come in inventory order, deduplicated, with `!group` exclusions
+  removed. A declared empty group adds nothing.
+- `--runbook` is appended to `${cluster_runbook_base_url}/` in every rule.
+- **`--check`** exits 1 when the whole file, header included, differs from a
+  regeneration. `--sync-command` is the command the header and that error name.
+- **`--count`** prints the rule count a regenerated file carries: the hosts
+  plus one.
+- **Exit codes:** 0 clean, 1 on drift under `--check`, 2 on an undeclared
+  included group, a play resolving to no hosts, two matching plays, a play
+  without `hosts:`, a group cycle or an unparseable file.
+- **Vendoring:** imports `inventory_tree.py` from its own directory. Vendor the
+  pair, or it exits 2 on import.
+
 ## Kubernetes / Flux gates
 
 ### `check-hpa-vpa-invariant.py` (PyYAML)
@@ -463,20 +512,34 @@ target has a mutating, cpu-excluding VPA, and enforces the no-CPU-limits policy
 across pod specs and HelmRelease `.spec.values`.
 
 The same flag enforces the VPA memory-cap rule, scoped to what each policy
-controls: `maxAllowed.memory` **above** the container's limit fails whatever the
-policy controls (the kubelet would reject the recommendation), and **equal to**
-it fails only where the policy also controls limits (`controlledValues:
-RequestsAndLimits` or unset) — there the updater rescales the limit with the
-request, so the ceiling never binds. Under `RequestsOnly` cap == limit is the
-correct shape. **Both arms are exempt when the policy is `Off`** — `updateMode:
-Off` or a containerPolicy `mode: Off`: no recommendation is ever applied, so the
-kubelet never sees the cap, and a finding there would be unfixable except by an
-allowlist entry. Do not re-add it; flipping the VPA on brings the arm back. A VPA whose target workload is not rendered into this
-kustomize-only corpus has no limit to compare against: it is reported as a cap
-the gate could **not judge**, which fails the run unless its real limit is
-declared in `vpa_cap_declared_limits` or the targets are acknowledged with
+controls. `maxAllowed.memory` **above** the container's limit fails whatever
+the policy controls, because the kubelet would reject the recommendation.
+**Equal to** the limit fails only where the policy also controls limits:
+`controlledValues: RequestsAndLimits` or unset. There the updater rescales the
+limit with the request, so the ceiling never binds. Under `RequestsOnly`, cap
+equal to limit is the correct shape.
+
+Where a policy controls limits, the **ratio arm** also judges every capped
+resource, cpu and memory, of a container whose request is below its limit. The
+admission controller keeps the request:limit ratio, so a request capped at
+`cap` carries a limit of `cap x limit / request`. A cap whose effective limit
+exceeds the rendered limit fails, and the finding names the largest safe cap,
+`0.8 x request`. A 1:1 pair and a memory cap at or above the limit are left to
+their own arms.
+
+**A policy that is `Off` is exempt from every cap arm.** That covers
+`updateMode: Off` on the VPA and `mode: Off` on a containerPolicy. No
+recommendation is ever applied, so no cap can bind. A named `Off` policy still
+shadows the `"*"` policy for its container.
+
+A VPA whose target workload is not rendered into this kustomize-only corpus has
+no limit to compare against. It is reported as a cap the gate could **not
+judge**, which fails the run. Declare the real limit in
+`vpa_cap_declared_limits`, or acknowledge the target with
 `--allow-unjudged-vpa-caps`. A silent skip is how a cap at double the declared
-limit passes review.
+limit passes review. A declared limit carries no request, so a policy that
+controls limits on such a target stays unjudged for the request:limit ratio.
+Render the workload or set `controlledValues: RequestsOnly` to clear it.
 
 The same flag flags a container whose `requests.memory` equals its
 `limits.memory` while a VPA rewrites that limit (mode not `Off`, memory
@@ -484,6 +547,14 @@ controlled, `controlledValues` unset or `RequestsAndLimits`): the updater
 preserves the ratio, so the limit tracks the request up forever and the
 container never gains headroom. `controlledValues: RequestsOnly` is the correct
 1:1 shape.
+
+Without any flag it fails an HPA whose `minReplicas` is 1 beside a
+PodDisruptionBudget that allows no disruption at one replica. A drain of the
+node holding that pod then blocks forever. The budget's selector is matched
+with full LabelSelector semantics, `matchExpressions` included, through
+`gate_common.selector_matches`. An empty selector `{}` selects every pod, and a
+selector the apiserver would reject selects none. A target the corpus does not
+render is skipped, because its pod labels are unknown.
 
 Without any flag it fails a container whose resource request exceeds its own
 limit. The API server rejects that pod, so `kustomize build` and kubeconform
@@ -497,15 +568,17 @@ gate cannot parse is left unjudged rather than turned into a finding.
   (`namespace/VerticalPodAutoscaler/name`, the grace list for caps not yet
   re-derived) and `memory_ratio_allowlist` (`namespace/Kind/name`). All
   optional; absent = empty. Each allowlist is a
-  `{"namespace/Kind/name": "reason"}` mapping — one shape only, and a bare
-  string entry is refused, because an unexplained exemption is a hole.
+  `{"namespace/Kind/name": "reason"}` mapping. A bare string entry is refused,
+  because an unexplained exemption is a hole. `chart_native_hpa_targets` must
+  be a list of mappings; any other shape is exit 2.
 - **`vpa_cap_declared_limits`** supplies the memory limit of a target the corpus
   does not render (a chart-rendered DaemonSet, or one patched by a
   postRenderer), as
   `{"namespace/Kind/name": {container: limit}}`. It pins the target to its real
-  limit rather than exempting it, so the cap is still compared; a rendered limit
-  always wins over a declared one, and a value that is not a memory quantity is
-  refused.
+  limit rather than exempting it, so the cap is still compared against that
+  limit. It judges only that comparison, not the request:limit ratio. A
+  rendered limit always wins over a declared one, and a value that is not a
+  memory quantity is refused.
 - **`--require-rendered-targets`** fails an HPA or VPA whose target workload
   the corpus does not render. Leave it off where charts render the targets, so
   an unrenderable target is reported rather than failed.
@@ -530,7 +603,8 @@ helm/kubeconform call is timeout-bounded (120s repo add, 300s render).
 
 ```
 validate-helm-values.py [--kubeconform] [--repo-root DIR] [--releases FILE]
-    [--versions-configmap PATH] [--policy-config PATH]
+    [--versions-configmap PATH] [--policy-config PATH] [--sources-dir DIR]
+    [--crd-catalog-ref REF]
 ```
 
 - **Releases file** (default `<repo-root>/helm-values-releases.yaml`): a list (or
@@ -715,8 +789,8 @@ K8S_VER=$(scripts/flux-render.sh k8s-version "$CM")
 - An empty or unreadable ConfigMap path, and a ConfigMap with no `.data`, are
   both errors. So is a multi-line `.data` value: the export block is re-read
   line by line, and a newline could not survive envsubst into YAML.
-- **Dual-maintained:** weisssrv vendors this file and the flux-lint template
-  takes the path from the consumer tree, so the vendored copy is the one CI runs.
+- **Vendored:** the flux-lint template takes the path from the consumer tree,
+  so the consumer's vendored copy is the one CI runs.
 
 ### `flux-lint.sh` (PyYAML; needs kustomize, kubeconform, flux, envsubst)
 
@@ -757,6 +831,11 @@ schema validated through `--skipped-script`, and builds the cluster root.
   Kustomization rendered anything.
 - **A key that is present but EMPTY fails too**, because `image: foo:${x}`
   renders as `foo:` and yamllint and kubeconform both pass it.
+- **Only the ConfigMap keys resolve.** A name is known when the render script
+  exported it in `FLUX_ENVSUBST_VARS`, never because the process environment
+  happens to carry it. `flux envsubst --strict` runs under `env -i` with those
+  keys alone. A render script that exports no `FLUX_ENVSUBST_VARS` fails the
+  run.
 - `--child-kustomizations` hands the stage list to
   [`flux-child-kustomizations.py`](#flux-child-kustomizationspy-pyyaml), which
   iterates in `dependsOn` order and fails on a Kustomization with no
@@ -777,6 +856,11 @@ schema validated through `--skipped-script`, and builds the cluster root.
   a render with no document, and fails when kubeconform skipped more than
   `--allowed-skips` resources or printed no `Skipped:` field at all — the
   signature of an unreachable catalog.
+- Simple mode runs the same `${`-shape scan, and fails any `${NAME}` that is not
+  a `cluster_*` key. A tenant Kustomization substitutes from cluster-config
+  alone, under strict substitution, so any other name fails the whole tenant
+  reconcile. Escape a literal as `$${...}`. The kubeconform heading says when
+  the script's default Kubernetes version is in use.
 - The catalog is pinned: `--crd-catalog-ref` is a `datreeio/CRDs-catalog` ref, or
   `--crd-catalog` takes the whole `-schema-location` template to self-host.
 - **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error (an unknown
@@ -803,7 +887,7 @@ kind the baseline does not list, which is what turns the tracker into a floor
 assertion; flux-lint passes it through its `expected_skipped_file` input and
 drops the `|| true`. Unparseable or non-object input exits 1 rather than passing
 silently. The per-Kustomization kubeconform passes remain the actual gate — this
-makes the gap visible. Dual-maintained with weisssrv.
+makes the gap visible.
 
 ### `check-dashboards.py` (PyYAML)
 
@@ -914,26 +998,124 @@ propagated, never collapsed into a finding).
 
 ---
 
+### `check-image-gc-threshold.py` (PyYAML)
+
+Fails when the image-GC alert, its prose or an inhibitor drifts from the
+kubelet's image-GC high watermark.
+
+```
+scripts/check-image-gc-threshold.py [--repo-root .]
+    [--k3s-vars ansible/inventories/prod/group_vars/k3s.yml]
+    [--kubelet-args-var k3s_kubelet_args] [--rules <file|dir>]...
+    [--alertmanager-config <path>] [--alert KubeletImageGCIneffective]
+    [--alert-offset 0] [--alert-cap N] [--min-prose-mentions 2]
+    [--unthresholded-inhibitor ALERT]...
+```
+
+- It reads `image-gc-high-threshold` from the kubelet args in the vars file.
+- It finds the alert in any manifest shape under `--rules`, default
+  `kubernetes/infrastructure/observability/rules`. The alert's trailing `> N`
+  must equal `min(watermark + offset, cap)`.
+- Every `N% image-gc-high-threshold`, `image-gc-high-threshold (N%)` or
+  `image-gc-high-threshold of N%` in the alert's file must equal the watermark.
+  The file needs at least `--min-prose-mentions` of them.
+- Every inhibit rule targeting the alert is read. That covers `=` and `=~`
+  matchers, legacy match maps, top-level or Helm-values `inhibit_rules`, and an
+  embedded `alertmanager.yaml` with its Go templates neutralized. A source
+  whose threshold is at or below the alert's fails, because the alert could
+  then never notify. A source whose expr has no trailing `> N` is exit 2
+  unless `--unthresholded-inhibitor` names it.
+- **Exit codes:** 0 clean, 1 on drift, 2 when the gate could not inspect its
+  subject. That covers a missing kubelet arg, alert or comparison, too few
+  prose mentions, an unreadable file, an inhibit source alert that no searched
+  rules file defines, and a source regex that matches no alert.
+
+### `check-helm-values-coverage.py` (PyYAML)
+
+Holds the helm-values release registry to the HelmReleases on disk. The registry
+drives `validate-helm-values.py`, so a release missing from it is rendered by
+nothing and a `spec.values` typo there reaches the cluster.
+
+```
+scripts/check-helm-values-coverage.py --releases scripts/helm-values-releases.yaml
+```
+
+- `--repo-root`, `--releases` (default
+  `<repo-root>/scripts/helm-values-releases.yaml`), `--manifest-dir`
+  (repeatable, default `kubernetes`).
+- Each `releases:` entry needs `name`, `manifest` and `chart`, an existing
+  manifest holding a HelmRelease, and a `chart`/`repo_name` pair matching that
+  manifest's own `spec.chart.spec`. A duplicate name or manifest is a finding.
+- Coverage runs both ways: a HelmRelease neither listed nor in the `excluded:`
+  map fails, an `excluded:` entry naming no HelmRelease is stale, an exclusion
+  with no reason fails, and a path both listed and excluded fails.
+- **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error — an empty or
+  malformed registry, a missing manifest directory, or no HelmRelease found.
+
+### `check-prometheus-rule-coverage.py` (PyYAML)
+
+Accounts for every shipped alert against the promtool unit tests, so the gap
+between what fires in production and what is ever evaluated is recorded rather
+than discovered during an incident.
+
+```
+scripts/check-prometheus-rule-coverage.py --tests-dir tests/prometheus-rules \
+  --release kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml
+```
+
+- `--tests-dir` (required), `--repo-root`, `--manifest-dir` (repeatable,
+  default `kubernetes`), `--loki-rules-dir` (repeatable).
+- The corpus is the release's `additionalPrometheusRulesMap`, every
+  PrometheusRule CR under the walked trees, and the bare `groups:` Loki ruler
+  files. Pass exactly one of `--release <manifest>` or `--no-release`: an unset
+  release would silently drop every inline rule group.
+- A test counts an alert as covered when any `*.test.yaml` (or `.test.yaml.jinja`)
+  under `--tests-dir` names it in an `alertname:` key.
+- `--untested ALERTNAME=REASON` records a deliberate gap. An entry a test now
+  covers, or one no rule declares, is a finding — as is a test naming an alert
+  no rule declares, which passes against nothing.
+- **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error — an empty
+  corpus, a missing tests directory, or a missing release manifest.
+
+### `check-rule-windows.py` (PyYAML)
+
+Fails an alert whose `for:` hold is at or past the lookback window its own
+expression accumulates over. `count_over_time` and `increase` decay out of their
+window, so the expression goes false on the evaluation where the hold would
+elapse and a single burst never notifies.
+
+```
+scripts/check-rule-windows.py kubernetes/infrastructure/observability \
+  --allow SomeAlert=the burst repeats until it is cleared
+```
+
+- Takes rule files, or directories searched for `*.yaml` and `*.yml`. Both
+  PrometheusRule CRs and plain `groups:` ruler files are read.
+- Only accumulating functions are checked: `count_over_time`,
+  `sum_over_time`, `increase`, `delta`, `idelta`, `changes` and `resets`. A
+  `rate` or an `avg_over_time` expresses a sustained condition, where a longer
+  hold is the point.
+- The tightest window in the expression bounds the hold. For a subquery
+  `[range:step]` only the range counts, and quoted spans are skipped so a Loki
+  line filter is not read as a range selector.
+- `--allow ALERT=REASON` exempts an alert whose hold is deliberately at or past
+  its window; repeatable. The reason is mandatory and printed.
+- **Exit codes:** 0 clean, 1 on a hold that outlasts its window, 2 on an
+  operator error — a missing path, an unparseable file or duration, an
+  exemption with no reason, or a scan that examined no alert with both a hold
+  and an accumulating lookback.
+- **Vendoring:** offered in `scripts/vendorable-paths.yml`. Vendor
+  `tests/test_check_rule_windows.py` with it to keep the negative cases.
+
 ## Cluster invariant gates
 
-Sixteen gates plus one shared module, in two invocation shapes. **Eight read
-the rendered manifest corpus on stdin through `gate_common.py`** —
-`check-pvc-storageclass.py`, `check-scrape-netpol.py`,
-`check-default-deny-coverage.py`, `check-issuer-refs.py`,
-`check-secretstore-scope.py`, `check-nfs-tls.py`,
-`check-ephemeral-storage-cap.py` and `check-ingressroute-backends.py` — where
-the corpus is what
+These gates come in two invocation shapes. The **corpus gates** read the
+rendered manifest stream on stdin through `gate_common.py`. The corpus is what
 `task flux:lint` accumulates from `kustomize build | envsubst`, so they wire
 into `ci/validate/flux-lint.yml`'s `extra_validation` chain. **The rest take
-paths or flags**: `check-netpol-except-parity.py` and
-`check-scrape-wiring.py` (manifest paths, plus an optional rendered stream via
-`--corpus`), `check-kustomization.py` (manifest paths), and
-`check-alertmanager-behaviour.py`, `check-backup-artifact-apps.py`,
-`check-cluster-invariants.py`, `check-guest-endpoint-parity.py` and
-`check-role-inputs.py` (flags). Where a gate
-needs site data it comes from a flag or a config file, never from the source, so
-the shipped file is identical in every consumer — `check-pvc-storageclass` needs
-none at all, and `check-secretstore-scope` only an optional `--external-store`.
+paths or flags**, and each section says which. Where a gate needs site data it
+comes from a flag or a config file, never from the source, so the shipped file
+is identical in every consumer.
 
 ### `gate_common.py` (PyYAML, not run directly)
 
@@ -961,6 +1143,18 @@ does; an unknown name and any partial spelling come back untouched, to fail the
 caller's own parse. Gates that reach for a cluster-identity value use these
 instead of each re-implementing the reader, and wrap `OperatorError` in their
 own failure type.
+
+The label-selector helpers follow the apiserver. `label_key_is_valid` and
+`label_value_is_valid` apply its label-key and label-value rules.
+`label_selector_problem` returns None for an absent or valid selector, and
+otherwise names the fault: an unknown key, an untyped term, an invalid key or
+value, an empty value list for `In` / `NotIn`, or any values for `Exists` /
+`DoesNotExist`. `selector_matches(selector,
+labels)` ANDs `matchLabels` with every `matchExpressions` term. `{}` matches
+every label set. An absent selector, or one the apiserver would reject, matches
+nothing, so a gate never credits a match the cluster would not make.
+`check-hpa-vpa-invariant.py`, `check-scrape-netpol.py` and
+`check-secretstore-scope.py` take their selector logic from here.
 
 - **Vendoring:** every corpus gate below that imports it does so from its own
   directory. Vendor it wherever any of them is vendored.
@@ -1037,8 +1231,8 @@ asserting the relationship in a comment is what this replaces.
 - Limits are all-or-none across the running containers (app containers and
   sidecars): the kubelet adds up the limits that ARE declared and charges every
   container's writable layer and logs against that sum, so a container without
-  a limit is not exempt, it is unfunded. One sidecar's 128Mi became the whole
-  hindsight pod's budget and evicted its API and model containers. A plain init
+  a limit is not exempt, it is unfunded. One sidecar's small limit then becomes
+  the whole pod's budget and evicts the other containers. A plain init
   container's limit is the floor of that budget, so when no running container
   declares one it becomes the budget for the pod's whole life and is reported
   the same way. A namespace `LimitRange` that defaults `ephemeral-storage`
@@ -1376,29 +1570,46 @@ scripts/check-scrape-wiring.py [--observability-namespace NS]
 ### `check-kustomization.py` (PyYAML)
 
 Fails a manifest that is present but no `kustomization.yaml` lists, a listed
-path that does not exist, and a list that renders nothing. Reads the tree from
-**paths** and recurses into every directory it lists.
+path that does not exist, an empty listed manifest and a kustomization that
+renders nothing.
 
 ```
-scripts/check-kustomization.py [DIRECTORY]
+scripts/check-kustomization.py [DIRECTORY] [--walk] [--min-kustomizations N]
+                               [--exempt FILE] [--repo-root .]
 ```
 
-- Both directions. An unlisted manifest is inert, which `kustomize build` and
-  kubeconform both pass; an emptied or mistyped `resources:` list renders
-  nothing, and a cluster-side Kustomization with `prune: true` then deletes
+- **Descent** is the default. The gate starts at the kustomization in
+  `DIRECTORY`, default `kubernetes/flux`, and recurses into every directory it
+  lists.
+- **`--walk`** checks every kustomization under `DIRECTORY` against its own
+  siblings instead. `--min-kustomizations N`, default 1, gives exit 2 when fewer
+  are inspected: a walk that finds almost nothing is broken, not clean.
+- **`--exempt FILE`** is a YAML mapping of repo-relative manifest path to the
+  reason it is deliberately unlisted. It applies only to the unlisted arm. An
+  entry naming a file that is gone is a violation.
+- **`--repo-root`** is what the directory, the exemption file and its paths
+  resolve against. It defaults to the working directory.
+- Both directions matter. An unlisted manifest is inert, and `kustomize build`
+  and kubeconform both pass it. An emptied or mistyped `resources:` list
+  renders nothing, and a Flux Kustomization with `prune: true` then deletes
   every object this repo applied.
-- Listed paths are read from every content key, not only `resources:` —
-  `bases`, `components`, `patches`, `patchesStrategicMerge`, `patchesJson6902`,
-  `replacements`, `configMapGenerator`, `secretGenerator`, `helmCharts` and
-  `openapi`. A `kind: Component` legally carries patches only, so it is held to
-  contributing through one of those keys rather than to listing resources.
-- A remote base is fetched by kustomize, so it is not looked for on disk: an
+- Listed paths are read from every content key: `resources`, `bases`,
+  `components`, `generators`, `patches`, `patchesStrategicMerge`,
+  `patchesJson6902`, `replacements`, `configMapGenerator`, `secretGenerator`,
+  `helmCharts` and `openapi`.
+- The render rule counts `resources`, `bases`, `components`, `generators`,
+  `configMapGenerator`, `secretGenerator` and `helmCharts` as content. A
+  `kind: Component` only reshapes its parent's render, so it may contribute
+  through any transformer key instead.
+- `*.yaml`, `*.yml` and `*.json` files are manifests. kustomize renders JSON
+  resources, and a configMapGenerator reads dashboards from JSON siblings.
+- A remote base is fetched by kustomize, so it is not looked for on disk. An
   entry with a scheme, a `host/org/repo//path` shape, a `.git` component or a
   `?ref=` query is skipped. A listed directory covers the manifests beneath it.
-- **Exit codes:** 0 clean, 1 on a violation, 2 on an operator error — a
-  directory that does not exist, a root with no `kustomization.yaml` at all (a
-  run that inspected nothing is not a gate), and a `kustomization.yaml` that is
-  unreadable, unparseable or not a mapping.
+- **Exit codes:** 0 clean, 1 on a violation, 2 on an operator error. That covers
+  a missing directory, a root with no `kustomization.yaml`, too few
+  kustomizations under `--walk`, an unreadable exemption file, and a
+  `kustomization.yaml` that is unreadable, unparseable or not a mapping.
 
 ### `check-default-deny-coverage.py` (PyYAML)
 
@@ -1426,11 +1637,11 @@ cat rendered-corpus.yaml | scripts/check-default-deny-coverage.py \
   NetworkPolicy fences it. (A HelmRelease still honours `spec.targetNamespace`,
   falling back to that defaulted namespace.)
 - A namespace is **fenced** by a NetworkPolicy with `Ingress` in `policyTypes`
-  and a `podSelector` that selects every pod — absent, `{}`, or the equivalent
-  empty-termed spellings `{matchLabels: {}}` / `{matchExpressions: []}` (an
-  empty selector term matches everything). An app-scoped policy does not
-  count: it fences its own pods and leaves every other pod in the namespace
-  open.
+  and a `podSelector` that selects every pod: `{}`, or the equivalent
+  empty-termed spellings `{matchLabels: {}}` / `{matchExpressions: []}`. An
+  absent `podSelector` is API-invalid and never fences. An app-scoped policy
+  does not count: it fences its own pods and leaves every other pod in the
+  namespace open.
 - **A namespace-wide policy whose rule names no ports and admits every peer
   counts as wide open, not as a fence.** Both spellings qualify: an empty
   `ingress:` rule (`[{}]` — the API's "from anywhere, on any port"), and a rule
@@ -1505,6 +1716,10 @@ cat rendered-corpus.yaml | scripts/check-secretstore-scope.py
   `namespaceSelector` label match. A ClusterExternalSecret's
   `namespaceSelector: {}` is a selector with no terms and therefore matches
   EVERY namespace — absent and empty are not the same thing.
+- Selectors are matched through `gate_common.selector_matches`. Every namespace
+  carries the `kubernetes.io/metadata.name` label the apiserver stamps, so a
+  selector on that label admits the namespace it names. A condition is a
+  catch-all when its selector or regexes admit two random probe namespaces.
 - A `namespaceSelector` carrying a key outside `matchLabels` / `matchExpressions`
   — a singular `matchLabel:`, or an extra sibling — is reported as **unmodelled**,
   not as a non-match: the CRD prunes the unknown key, so the apiserver keeps the
@@ -1625,14 +1840,15 @@ scripts/check-alertmanager-behaviour.py --config FILE [--repo-root DIR]
 - `--extract-arg FLAG` (repeatable) is passed through to the extractor, for a
   consumer that needs its own `--rules-dir` or one of the extractor's
   `--require-*` assertions.
-- The resolved receiver is compared **exactly**, against the first token of
-  amtool's output (it can print several matching receivers in tree order). A
-  prefix comparison would pass `critical-page` for an expected `critical`.
-- **Config keys:** `route_cases` (required, non-empty; each `receiver` +
-  `labels`), `synthetic_route_alerts` (route-case alertnames that deliberately
-  name no rule), `upstream_alerts` (alertnames shipped by a chart's own rule
-  groups, invisible to the extractor), `rule_corpora` (below), plus the
-  escalation keys after it.
+- A route case names `receiver`, or `receivers` when a `continue: true` route
+  reaches several. amtool prints every matched receiver on its first line, in
+  tree order. That list is compared whole and exactly, so `critical-page` never
+  passes for an expected `critical`.
+- **Config keys:** `route_cases` (required, non-empty; each `labels` plus
+  exactly one of `receiver` and `receivers`), `synthetic_route_alerts`
+  (route-case alertnames that deliberately name no rule), `upstream_alerts`
+  (alertnames shipped by a chart's own rule groups, invisible to the extractor),
+  `rule_corpora` (below), plus the escalation keys after it.
 - **`rule_corpora`** names extra rule trees the Prometheus extractor never
   reads — a Loki ruler's rule files, say, which are plain `groups:` documents
   rather than `PrometheusRule` manifests. Each entry is a file or a directory
@@ -1662,7 +1878,7 @@ scripts/check-alertmanager-behaviour.py --config FILE [--repo-root DIR]
   per-pair `equal` list; naming a pair the gate already derived replaces its
   `equal` requirement, which is how a namespaced pair opts out of a global
   `escalation_equal` written for host-level series.
-- **A sibling is found by two spellings, because both are in use.** The suffix
+- **A sibling is found by three spellings, because all are in use.** The suffix
   is either appended to the whole warning name (`ArchiveBackupFailed` ->
   `ArchiveBackupFailedProlonged`), or it replaces the warning marker the name
   ends in (`DiskUsageWarning` -> `DiskUsageCritical`), or it lands in front of
@@ -1684,6 +1900,9 @@ scripts/check-alertmanager-behaviour.py --config FILE [--repo-root DIR]
 - **Every member of a regex alternation is checked**, not just "at least one
   survives", and a regex that is not a plain alternation is REPORTED rather than
   skipped — an empty name set would otherwise pass silently.
+- **Contradictory alertname matchers are reported.** Positive matchers that pin
+  disjoint names leave a side matching no alert. Such a target side is never
+  read as a scope.
 - **A label may carry several matchers and every one is read.** Alertmanager ANDs
   them, so a positive regex narrowed by a second negative matcher on the same
   label is honoured whichever order the two are written in. That second negative
@@ -1845,7 +2064,7 @@ scripts/check-guest-endpoint-parity.py
   CIDR, so it is left out of the comparison and every finding that rests on
   containment says which names were skipped.
 - **An export client spec WIDER than a host CIDR is in scope too**, reported on
-  its own terms rather than skipped: `10.0.0.0/8` over a `10.0.10.0/24` LAN, or
+  its own terms rather than skipped: `10.0.0.0/8` over a `10.20.0.0/24` LAN, or
   `0.0.0.0/0`, is the broadest client list an exports file can carry, and
   testing containment in one direction alone never looked at it.
 - **Every `group_vars`/`host_vars` file Ansible would read is read**, including
@@ -1916,61 +2135,6 @@ scripts/check-role-inputs.py \
 
 ---
 
-## Docs and Taskfile gates
-
-### `check-doc-links.py`
-
-Offline checker for relative Markdown cross-links: resolves every relative `.md`
-link target against the filesystem and fails on a missing one. A renamed or
-deleted doc otherwise rots every link pointing at it, silently.
-
-```
-scripts/check-doc-links.py            # scan every tracked *.md in the repo
-scripts/check-doc-links.py <root>...  # scan explicit roots
-```
-
-- **Scan scope: every *git-tracked* `*.md` in the repo.** Role, app and agent
-  READMEs cross-link into `docs/`, so both halves of the link graph must be
-  gated in one pass. Tracked-only is deliberate — untracked scratch Markdown is
-  not ours to gate, and including it would make the check fail differently on
-  every machine.
-- **Fallback (not a git checkout):** everything under `docs/` plus the files
-  named in `$CHECK_DOC_LINKS_EXTRA` (default `README.md CLAUDE.md`).
-- **What is NOT checked:** URLs, `mailto:`/`tel:`, in-page anchors, and non-`.md`
-  targets are all ignored, and the anchor part of a `file.md#section` link is not
-  validated — only the file is.
-- **Section citations:** a `docs/07-flux.md § Rotating a secret` or
-  `(docs/07 § Rotating a secret)` pointer is resolved against that document's
-  real headings, so a renamed section no longer leaves the pointer rotting. The
-  document may be backticked or bare; a bare one must contain a `/`, so prose
-  like "the role README § Metrics" names no path and is left alone. A numbered
-  prefix (`docs/07`) resolves through the one matching file, and a `.jinja`
-  source counts, nearest tree first, so a template repo does not resolve a
-  generated repo's pointer against its own docs. The citation is cut at the
-  punctuation that resumes the sentence, then compared word by word: either side
-  may be a prefix of the other, since prose runs on and a line wrap cuts the
-  name short. Set `$CHECK_DOC_LINKS_SECTIONS=0` to turn the arm off, for a
-  template repo whose pointers describe the tree it generates.
-- Stdlib-only and network-free, which is what lets every consumer vendor it.
-- **Exit codes:** 0 all links and citations resolve, 1 on a broken link or a
-  citation naming a missing heading, 2 on an operator error (the git enumeration
-  failed, or no Markdown was found under the given roots).
-- **Backticked repo paths** (`$CHECK_DOC_LINKS_PATHS=1`): a second pass resolves
-  backticked repo-relative paths (`docs/01-overview.md`, `scripts/`) against the
-  scanned root AND against the citing document's own directory, so a doc may
-  cite a sibling tree (`references/x.md` from a skill README) and only a token
-  that resolves under neither base is reported. A token qualifies only when its
-  first path segment is a directory of one of those two bases, so absolute
-  paths, `../` targets and prose are left alone; placeholders and quoted or
-  bracketed tokens are skipped. Off by default
-  because a doc may legitimately cite a path in another repo;
-  `$CHECK_DOC_LINKS_IGNORE` holds space-separated fnmatch patterns for the
-  exceptions that remain.
-- **Consumer note:** `ci/lint/docs-link-check.yml` defaults `changes` to
-  `**/*.md` plus the gate script, matching the checker's own tracked-Markdown
-  scope. Pass your own `changes` only to narrow the trigger deliberately; a path
-  missing from it means no run on that edit.
-
 ### `check-cnpg-clusters.py` (PyYAML)
 
 Holds every CloudNativePG `Cluster` in the rendered corpus to the settings that
@@ -2006,7 +2170,212 @@ kustomize build kubernetes/db | scripts/check-cnpg-clusters.py --min-retention-d
 - **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error (an empty
   corpus, one with no `Cluster` in it, or a `--min-retention-days` under 1).
 - `--min-retention-days` is the only flag (default 30, at least 1, since a
-  floor of 0 would pass any retention). Renaming it is a MAJOR change.
+  floor of 0 would pass any retention).
+
+### `check-crd-stage-order.py` (PyYAML via gate_common)
+
+Fails a custom resource whose CRD only a same-stage, later or unordered Flux
+stage installs. kubeconform cannot see the order, and the first reconcile on a
+fresh cluster then fails with `no matches for kind`.
+
+```
+scripts/check-crd-stage-order.py --cluster-dir kubernetes/clusters/NAME
+    [--repo-root .] [--crd-source FILE] [--crd-group CHART=GROUP]...
+    [--stage-corpus STAGE=FILE]... [--exempt ns/Kind/name=REASON]...
+    [--exempt-file PATH]... [--allow-unresolved]
+```
+
+- It is a tree gate and takes no stdin. It reads the stage Kustomizations under
+  `--cluster-dir`, then each stage's manifests by following `resources:` the
+  way kustomize does. `--stage-corpus` supplies a rendered corpus in their
+  place.
+- **A CR passes** when a stage it transitively depends on, and that waits,
+  installs its API group. Waiting means `wait: true`, or a healthCheck on the
+  installing release. A CR also passes when a CRD manifest sits in its own
+  stage, because kustomize-controller applies CRDs first.
+- **A CR fails** when the only installer is a HelmRelease in the same stage, a
+  later stage or an unordered stage, or a stage that does not wait.
+- Built-in groups, Flux toolkit groups and CRD manifests under the cluster
+  directory count as present from the start.
+- **HelmRelease sources.** `releases:` in the `--crd-source` map wins, then
+  `charts:` and `--crd-group`, then the built-in chart table. `install.crds:
+  Skip`, or a false `installCRDs` or `crds.enabled` / `crds.create` /
+  `crds.install`, means the release installs nothing.
+- Cluster-scoped kinds are keyed `default/Kind/name` in an exemption.
+- A group no source maps fails the run. `--allow-unresolved` reports it as a
+  warning instead.
+- **Exit codes:** 0 clean, 1 on a violation, and 2 on an operator error or a
+  run that checked nothing.
+- **Example:** [`crd-sources.example.yaml`](../examples/crd-sources.example.yaml).
+- **Vendoring:** imports `gate_common.py` from its own directory. Vendor the
+  pair.
+
+### `check-internal-route-allowlist.py` (PyYAML via gate_common)
+
+Fails a Traefik route to an internal-domain host that names no source
+allowlist middleware. Without one, an internal name answers anyone who can
+reach the ingress.
+
+```
+cat rendered-corpus.yaml | scripts/check-internal-route-allowlist.py
+    (--internal-domain D | --cluster-config PATH [--domain-key KEY])
+    --required-middleware NS/NAME... [--exempt ns/Kind/name=REASON]...
+    [--exempt-file PATH]...
+```
+
+- It checks `IngressRoute` and `IngressRouteTCP`, one route entry at a time.
+- `Host`, `HostHeader` and `HostSNI` match the domain or any subdomain of it.
+  The placeholder spelling `${KEY}` matches too. A `HostRegexp` matches when it
+  spells the domain. `HostSNI(`*`)` is out of scope.
+- A middleware with no namespace means the route's own namespace, and the
+  `NAME@kubernetescrd` form is accepted. A chain Middleware in the corpus that
+  contains an allowlist counts as one.
+- A `ClientIP()` term in the match is not credited as an allowlist.
+- `--domain-key` defaults to `cluster_internal_domain`.
+- **Exit codes:** 0 clean, 1 on a finding, 2 for no domain, no required
+  middleware, a malformed flag or file, an empty corpus, or a corpus with no
+  internal route at all.
+- **Vendoring:** imports `gate_common.py` from its own directory. Vendor the
+  pair.
+
+### `tenant_common.py` (PyYAML, not run directly)
+
+The tenancy constants, target resolution and aggregator reader the two tenant
+gates share. It is not run on its own. Vendor it beside both tenant gates.
+
+Both gates take the same targets: positional wiring files or one tenants
+directory, `--repo-root` (alias `--repo`, default the script's parent's
+parent), `--tenants-dir`, or `--cluster-dir`, which uses `<dir>/tenants`. With
+none of these they use the single `kubernetes/clusters/*/tenants` and exit 2
+on zero or several.
+
+### `check-tenant-wiring.py` (PyYAML)
+
+Fails a tenant wiring file that lacks any piece of the confinement it should
+carry. Each missing piece fails open: PSS labels, the quota and limit caps, the
+service account and RoleBindings, the secret stores and their vault, the
+landing namespace, the prune guards and the database Orphan policy.
+
+```
+scripts/check-tenant-wiring.py [PATHS...] [--repo-root .]
+    [--tenants-dir DIR | --cluster-dir DIR]
+    (--tenant-storage-class | --no-tenant-storage-class)
+```
+
+- Targets as in [`tenant_common.py`](#tenant_commonpy-pyyaml-not-run-directly).
+- Single-file mode skips the aggregator-listing arm and the cluster-tree
+  `spec.path` arm.
+- **The vault arm.** A 1Password store reads exactly one vault, named after a
+  tenant Namespace or its `fluxcd.io/tenant` label.
+- **`--tenant-storage-class`** says `tenant-local`, the one class a tenant
+  claim may name, enforces no claim size. The quota must then cap
+  `persistentvolumeclaims` and
+  `tenant-local.storageclass.storage.k8s.io/requests.storage`. One of it and
+  `--no-tenant-storage-class` is required, so an omitted flag never drops the
+  size caps.
+- **Exit codes:** 0 clean, 1 on a finding, 2 when nothing could be inspected.
+- **Vendoring:** imports `tenant_common.py` and `gate_common.py` from its own
+  directory. Vendor all three.
+
+### `check-tenant-traefik-isolation.py` (PyYAML)
+
+Fails tenant onboarding without the Deny-bound, shape-pinned tenant admission
+policies, whatever Traefik's `allowCrossNamespace` says, or without each
+tenant's hostname grant.
+
+```
+scripts/check-tenant-traefik-isolation.py [PATHS...] [--repo-root .]
+    [--tenants-dir DIR | --cluster-dir DIR]
+```
+
+- Targets as in [`tenant_common.py`](#tenant_commonpy-pyyaml-not-run-directly).
+  The policy file and the configs kustomization are read at their cluster-repo
+  paths under `kubernetes/infrastructure/configs/`.
+- It pins the shape of the `tenant-traefik-policy.yaml` both cluster repos
+  ship, including the internal-route allowlist validation.
+- File mode runs only the per-tenant routing arm.
+- **Exit codes:** 0 clean, 1 on a finding, 2 when nothing could be inspected.
+- **Vendoring:** imports `tenant_common.py` and `gate_common.py` from its own
+  directory. Vendor all three.
+
+### `check-secret-rotation-coverage.py` (PyYAML)
+
+Fails an ESO-managed credential that no document says how to rotate. Both the
+vault item titles (`remoteRef.key`, `extract`, `find`) and the ExternalSecrets
+themselves are checked, so a write-capable token cannot ship with no rotation
+path.
+
+```
+scripts/check-secret-rotation-coverage.py --doc docs/CREDENTIALS.md
+```
+
+- `--doc` (required, repeatable), `--repo-root`, `--manifest-dir` (repeatable,
+  default `kubernetes`).
+- A `ClusterExternalSecret` is keyed by the `spec.externalSecretName` it fans
+  out, which is the name an operator rotates; a namespaced ExternalSecret is
+  keyed `namespace/name`. A namespace-less ExternalSecret is reported, because
+  coverage for one including namespace would silently stand for the rest.
+- Matching is whole-name, so `alpha-secret-v2` in the document does not cover
+  `alpha-secret`.
+- `--declared-manual NAME=REASON` exempts a secret rotated outside the document.
+  A reason is mandatory, and an entry no ExternalSecret declares is a finding.
+- **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error — a missing
+  manifest directory, an unreadable document, or no ExternalSecret found.
+
+## Docs and Taskfile gates
+
+### `check-doc-links.py`
+
+Offline checker for relative Markdown cross-links: resolves every relative `.md`
+link target against the filesystem and fails on a missing one. A renamed or
+deleted doc otherwise rots every link pointing at it, silently.
+
+```
+scripts/check-doc-links.py            # scan every tracked *.md in the repo
+scripts/check-doc-links.py <root>...  # scan explicit roots
+```
+
+- **Scan scope: every *git-tracked* `*.md` in the repo.** Role, app and agent
+  READMEs cross-link into `docs/`, so both halves of the link graph must be
+  gated in one pass. Tracked-only is deliberate — untracked scratch Markdown is
+  not ours to gate, and including it would make the check fail differently on
+  every machine.
+- **Fallback (not a git checkout):** everything under `docs/` plus the files
+  named in `$CHECK_DOC_LINKS_EXTRA` (default `README.md CLAUDE.md`).
+- **What is NOT checked:** URLs, `mailto:`/`tel:`, in-page anchors, and non-`.md`
+  targets are all ignored, and the anchor part of a `file.md#section` link is not
+  validated — only the file is.
+- **Section citations:** a `docs/07-example.md § Rotating a secret` or
+  `(docs/07 § Rotating a secret)` pointer is resolved against that document's
+  real headings, so a renamed section no longer leaves the pointer rotting. The
+  document may be backticked or bare; a bare one must contain a `/`, so prose
+  like "the role README § Metrics" names no path and is left alone. A numbered
+  prefix (`docs/07`) resolves through the one matching file, and a `.jinja`
+  source counts, nearest tree first, so a template repo does not resolve a
+  generated repo's pointer against its own docs. The citation is cut at the
+  punctuation that resumes the sentence, then compared word by word: either side
+  may be a prefix of the other, since prose runs on and a line wrap cuts the
+  name short. Set `$CHECK_DOC_LINKS_SECTIONS=0` to turn the arm off, for a
+  template repo whose pointers describe the tree it generates.
+- Stdlib-only and network-free, which is what lets every consumer vendor it.
+- **Exit codes:** 0 all links and citations resolve, 1 on a broken link or a
+  citation naming a missing heading, 2 on an operator error (the git enumeration
+  failed, or no Markdown was found under the given roots).
+- **Backticked repo paths** (`$CHECK_DOC_LINKS_PATHS=1`): a second pass resolves
+  backticked repo-relative paths (`docs/01-overview.md`, `scripts/`) against the
+  scanned root AND against the citing document's own directory, so a doc may
+  cite a sibling tree (`references/x.md` from a skill README) and only a token
+  that resolves under neither base is reported. A token qualifies only when its
+  first path segment is a directory of one of those two bases, so absolute
+  paths, `../` targets and prose are left alone; placeholders and quoted or
+  bracketed tokens are skipped. Off by default
+  because a doc may legitimately cite a path in another repo;
+  `$CHECK_DOC_LINKS_IGNORE` holds space-separated fnmatch patterns for the
+  exceptions that remain.
+- **Consumer note:** `ci/lint/docs-link-check.yml` defaults `changes` to
+  `**/*.md` plus the gate script, matching the checker's own tracked-Markdown
+  scope. Pass your own `changes` only to narrow the trigger deliberately; a path
+  missing from it means no run on that edit.
 
 ### `check-comment-length.py`
 
@@ -2031,6 +2400,12 @@ scripts/check-comment-length.py [PATH ...] [--config FILE]
 - **Where a block ends:** a blank line. A bare `#` line keeps the same block
   going, so two paragraphs separated only by a `#` are counted as one block.
   Split them with an empty line to have them counted separately.
+- **Jinja statement lines.** A line of only `{% %}` statements renders to
+  nothing in a `.j2`, which Ansible renders with `trim_blocks`, and in a
+  `.jinja` only with a `-` trim marker. Such a line neither ends a block nor
+  counts toward it, and an `if` / `elif` / `else` chain counts as its longest
+  branch, the most one render can emit.
+- `.hujson` registers `//` and `/* */`, and `.dockerignore` registers `#`.
 - A `#!` line is the shebang, not a comment, while only blank lines or jinja
   tag lines precede it, so a `*.sh.jinja` that opens with a `{% if %}` seam
   keeps its shebang exempt.
@@ -2151,9 +2526,30 @@ scripts/check-taskfile.sh [Taskfile.yml ...]  # default: <repo-root>/Taskfile.ym
   wholly inert: `task --list` omits every task in it and no other gate fires.
   `CHECK_TASKFILE_FRAGMENT_DIR` names the directory scanned (default
   `taskfiles`); set it to an empty string for a repo that keeps none.
-- Dual-maintained with weisssrv.
 
 ---
+
+### `check-skill-refs.py`
+
+Fails a backticked repository path that an agent skill cites and that no longer
+exists. It complements `check-doc-links.py`, which sees only Markdown links.
+
+```
+scripts/check-skill-refs.py --skill-dir <dir> [--repo-root .] [--foreign PATH]...
+    [--shorthand-root DIR]... [--min-tokens 30]
+```
+
+- It scans every `*.md` page under the skill for backticked paths that contain
+  a `/` and end in `md`, `py`, `sh`, `yml`, `yaml`, `tf`, `json`, `hujson` or
+  `toml`.
+- Placeholders containing `<`, globs containing `*` and `--foreign` paths are
+  skipped.
+- A path passes when it resolves against the citing page, the skill
+  directory, the repo root or a `--shorthand-root` directory. Any other path
+  fails, so a citation into another repository is declared with `--foreign`.
+- **Exit codes:** 0 clean, 1 listing the missing paths, 2 for no skill Markdown
+  or fewer than `--min-tokens` checked citations.
+- Stdlib-only.
 
 ## CI invariants
 
@@ -2176,21 +2572,11 @@ four surfaces read it, one command checks them:
 `--fix` rewrites all four; `--bump vX.Y.Z` moves the declared tag first, so a
 library bump is one command and one reviewable line of diff.
 
-**Why the header.** GitLab resolves `include:` at pipeline-CREATION time,
-before the same file's `variables:` block exists, so `ref: $WEISSSRV_LIB_REF`
-silently does not resolve. Inputs are different: they interpolate BEFORE include
-resolution, so `$[[ inputs.lib_ref ]]` reaches the include. A project or group
-CI/CD variable would also be readable there, but it moves the pin out of git,
-where a bump no longer appears in a diff and cannot be reverted as an MR. The
-header keeps the single source in the file, and a run can override the input to
-test a candidate tag — the pipeline-parity check before a bump merges.
-
-Both failures it catches are otherwise silent. A pin left literal on one entry
-runs that job from a different library version — a changed input default
-altering the pipeline with nothing red to show for it. A **branch** ref is
-worse, and is the one [VERSIONING.md](VERSIONING.md) forbids: a branch deleted
-after merge takes the include with it, and until then the pipeline can change
-behaviour with no commit in the consuming repo at all.
+Why the tag lives in the header, and why a branch ref is forbidden, is in
+[INCLUDE-CONTRACT.md § The library pin](INCLUDE-CONTRACT.md#the-library-pin).
+Both failures the gate catches are otherwise silent: a pin left literal on one
+entry runs that job from a different library version, and a branch ref can
+change the pipeline with no commit in the consuming repo.
 
 - **Forge: gitlab-only.** `ansible/requirements.yml` is itself forge-independent,
   but the declared ref comes from the `spec:` header of `.gitlab-ci.yml`, and an
@@ -2198,13 +2584,13 @@ behaviour with no commit in the consuming repo at all.
   still cannot run. A GitHub consumer also has no `include:` to drift (it vendors
   workflows), so it is simply not wired there.
 - **Flags:** `--ci-file PATH` (default `<repo root>/.gitlab-ci.yml`),
-  `--project` (default `eric/weisssrv-lib`), `--ref-var` (default
-  `WEISSSRV_LIB_REF`), `--input` (default `lib_ref`), `--fix`,
-  `--bump vX.Y.Z`, `--print`.
+  `--project` (default `eric/weisssrv-lib`),
+  `--ref-var` (default `WEISSSRV_LIB_REF`), `--input` (default `lib_ref`),
+  `--fix`, `--bump vX.Y.Z`, `--print`.
 - **`--print`** writes the declared tag to stdout and nothing else, for a
   Taskfile or a shell: `MOLECULE_TEST_IMAGE=…/molecule-test:$(scripts/check-lib-pins.py --print)`.
   A file that declares no release tag exits 2 and prints nothing, rather than
-  exporting a garbage image tag.
+  exporting a garbage image tag. `--print` with `--fix` or `--bump` exits 2.
 - **The collection surface.** The file checked is `<ci-file dir>/ansible/requirements.yml`.
   A repo without one — a tenant app scaffold — is a silent no-op. A
   requirements.yml that installs the library **with no `version:`** is a floating
@@ -2220,14 +2606,15 @@ behaviour with no commit in the consuming repo at all.
   passing silently; one with no git collection at all stays a no-op.
 - **The site list** is site data, so it lives beside the vendored script rather
   than inside it: `sites:`, a list of `{path: <glob relative to the repo root>,
-  pattern: <regex with exactly one capture group>}`. Every captured value in
-  every matched file must equal the declared tag, and an entry that matches
-  NOTHING fails — a stale glob or pattern would otherwise pass the gate by
-  inspecting an empty set. `--fix` rewrites only the captured group, so an
-  unrelated version in the same file is left alone. A malformed list (not a
-  mapping, a non-list `sites:`, a bad regex, a pattern with any number of groups
-  but one, a glob escaping the repo) is an operator error, never a no-op. The
-  file is optional; a repo with no other pin site ships none.
+  pattern: <regex with exactly one capture group>}`. Every captured value
+  in every matched file must equal the declared tag. A glob that matches no file
+  fails, and so does a matched file in which the pattern finds no pin. Either
+  would otherwise pass the gate by inspecting an empty set. `--fix` rewrites
+  only the captured group, so an unrelated version in the same file is left
+  alone. A malformed list (not a mapping, a non-list `sites:`, a bad regex, a
+  pattern with any number of groups but one, a glob escaping the repo) is an
+  operator error, never a no-op. The file is optional; a repo with no other pin
+  site ships none.
 - **Anchor the capture on the delimiter that closes the pin**, with a lookahead
   so only the tag is rewritten: `…\?ref=(v\d+\.\d+\.\d+)(?=")` for a Terraform
   `source =`, `…@(v\d+\.\d+\.\d+)(?=#subdirectory=cli)` for a CLI install
@@ -2254,9 +2641,9 @@ behaviour with no commit in the consuming repo at all.
   idempotent from the second run. The rewrite is textual, so comments and
   formatting survive, but the lines it touches come from the PARSED tree — the
   `ref` key of each direct mapping under `include:`, the `variables:` entry, the
-  header's `default:` — exactly the nodes `check()` reads. Every indentation
-  heuristic tried here leaked (`inputs:` may carry its own `project` and `ref`),
-  so the two halves agree by construction rather than by scanning.
+  header's `default:` — exactly the nodes `check()` reads, so the two halves
+  agree by construction. `inputs:` may carry its own `project` and `ref`, which
+  no indentation rule can tell apart.
 - **`--bump vX.Y.Z`** sets the declared tag and then runs the same fix, so a
   library upgrade is one command across all four surfaces. A non-tag argument
   exits 2 before anything is written.
@@ -2298,7 +2685,8 @@ behaviour with no commit in the consuming repo at all.
   includes out from under the gate is visible. **2** for an operator error
   (unreadable path, malformed YAML, a top-level document that is not a mapping,
   a malformed site list, a non-tag `--bump`, and under `--fix`/`--bump` an
-  unreachable header `default:`, a site matching nothing, or a site glob
+  unreachable header `default:`, a site matching nothing, a matched file with
+  no pin, or a site glob
   colliding with another surface's file), one line and no traceback, so CI can
   tell "a pin drifted" from "I could not read the file".
 - **Handles a `file:` list**, the form that shares one `ref:` across several
@@ -2750,235 +3138,38 @@ sanitize-junit-expected-failures.py --junit-dir junit --expectations <file> [--s
 
 ---
 
-## Object storage
+### `check-role-default-flips.py` (PyYAML)
 
-### `b2-bucket-drift.py`
-
-Codified settings for a Backblaze B2 bucket (type, SSE, lifecycle rules,
-retention) with a drift check and a supervised `--apply` (interactive
-confirmation required; a bad lifecycle rule can expire the only offsite copy).
-
-- **Config:** `--config` (default `b2-bucket.json`): `account_id`, `bucket_id`,
-  `bucket_name`, `desired`.
-- **Env:** `B2_APPLICATION_KEY_ID`, `B2_APPLICATION_KEY`.
-- **Why no Terraform provider.** The Backblaze provider's READ path returned
-  empty attributes against B2's current API (writes applied; every refresh and
-  data source nulled `bucket_type`, SSE and lifecycle), so a plan reported a
-  permanent phantom "1 to change". The raw API reads and writes the same
-  settings correctly. Re-check this before assuming it still holds.
-- **Optimistic concurrency.** `--apply` sends the `revision` read from
-  `b2_list_buckets` as `ifRevisionIs`, so a change made in the B2 console
-  between the read and the write loses the write rather than being clobbered. B2
-  answers a stale revision with HTTP 409; the script prints "the bucket changed
-  since it was read; re-run the drift check" and exits 2.
-- **Example:** [`b2-bucket.example.json`](../examples/b2-bucket.example.json).
-
-### `unifi-settings-drift.py`
-
-Fails when a UniFi settings section the console owns drifts from its codified
-expectation. Terraform sets such a section once and then ignores it, so the only
-record of the intent is this config and nothing else notices a console edit.
+Run by an operator at a collection pin bump. It reports each role default that
+changes between two refs and that the inventory does not declare, so a flip
+cannot change a host silently.
 
 ```
-scripts/unifi-settings-drift.py [--config FILE]
+scripts/check-role-default-flips.py --from <installed tag> --to <new tag>
+    [--lib <checkout>] [--collection ansible_collections/weisssrv/infra]
+    [--inventory ansible/inventories/prod] [--playbooks ansible/playbooks]
+    [--allow KEY]... [--allow-partial]
 ```
 
-- **Config** (default `unifi-settings.json` beside the script): `site`,
-  `desired` (a non-empty object of the keys to pin), and `section` (one path
-  segment, default `ips`). Only the declared keys are compared, so the volatile
-  ones the controller maintains are left unread.
-- **Env:** `UNIFI_API_URL`, `UNIFI_API_KEY`. `UNIFI_ALLOW_INSECURE=1` turns TLS
-  verification off and says so on stderr.
-- **Only the section-addressed `/get/setting/<section>` is read.** The
-  unsectioned `/rest/setting` returns the device SSH password, its hash and the
-  site API token in cleartext, so the response body is never printed and every
-  reported value is truncated.
-- A list is compared order-insensitively, since the controller reorders one
-  freely.
-- **Exit codes:** 0 clean, 1 on drift naming each key with the live value first,
-  2 on an operator error (bad or missing config, missing credentials, a failed
-  read reported by exception type rather than by body).
-- **Example:** [`unifi-settings.example.json`](../examples/unifi-settings.example.json).
-
----
-
-## Shell helpers
-
-| Script | Contract |
-|---|---|
-| `shell-lib.sh` | function-only (safe to source under `set -e`): `timeout_cmd <secs> <cmd…>`, `ssh_probe <target> <cmd>`. With neither `timeout` nor `gtimeout` on `PATH` it warns **once per shell** on stderr that probes will run unbounded, rather than silently dropping the bound — anything parsing stderr from a sourcing script (the two finders below here; consumers source it from their own scripts too) sees that line. `kubectl_read <args…>` reads one object as JSON and separates the three outcomes a swallowed read cannot: 0 with the JSON on stdout, 3 on NotFound, 1 with kubectl's stderr on an unreachable cluster, a denied read or an API timeout. `captured_match <value> <pattern>` tests a value already in hand: `cmd | grep -q` under `pipefail` exits on the first match, SIGPIPEs the producer and returns its status, so the pipeline turns a match into a failure. Guest-smoke and probe scripts use the helper rather than the pipe. `url_contains <url> <bre>` fetches then tests a BRE, `ssh_contains <target> <cmd> <bre>` does the same over SSH; `SHELL_LIB_CURL_MAX_TIME` bounds the fetch (default 10s) |
-| `smoke-lib.sh` | the probe half of a per-guest smoke script, which stays consumer-owned because the endpoint list is site data. `http_status <url>` prints a HEAD request's status or `000` when nothing answered, and **always returns 0** so an errexit caller reaches the classifier. `check_http_ok` takes 2xx/3xx, `check_registry_ok` also takes 401 (a container registry answering without credentials is up), `check_http_below_500` takes anything that answered below 500. `check_tcp_port <host> <port>` is a bounded `nc` probe. `smoke_url_contains` / `smoke_ssh_contains` capture then test a **literal** needle, unlike `url_contains` / `ssh_contains` above, which take a BRE; `smoke_ssh_matches` takes an ERE for an anchored needle. `smoke_check <label> <cmd…>` and `smoke_optional <label> <reason> <cmd…>` keep the `SMOKE_PASS` / `SMOKE_FAIL` ledger, and `smoke_summary` prints it and is the script's exit status. `SMOKE_LIB_CURL_MAX_TIME` bounds every fetch |
-| `ci-run-check.sh` | function-only driver a consolidated gate job sources: `run_check <name> <cmd…>` runs one check in a `set -eo pipefail` subshell with errexit toggled off around it, so a failing check records itself in `overall`/`failed` and the next check still runs; `run_check_summary [label]` names every failure and returns the job's status. The job sets `set -euo pipefail` itself |
-| `find-reachable-host.sh` | prints the first reachable SSH target from its args, exit 1 if none |
-| `find-pve-host-for-vm.sh` | prints which Proxmox host runs a VMID (ha-manager → `pvesh /cluster/resources` → per-host `qm status`) |
-| `resolve-tool.sh` | prints how to invoke a Python dev tool (`PATH` → `python3 -m <module>` → validated pyenv glob) |
-| `cluster-config-value.sh` | prints one or more `data:` values from the cluster-config ConfigMap, space-separated; fails on an absent key rather than printing nothing. `$CLUSTER_CONFIG` overrides the path |
-| `collect-state-lib.sh` | function-only helpers a consumer's `collect-state.sh` sources: `REDACT_PATTERNS` + `redact_file`, the `cs_capped` / `cs_emit` section emitters, `warning_events_filter`, `coerce_int`, and the `classify_regular` / `regular_failing_predicates` / `classify_json` verdicts. Detail below |
-| `taskfile_tree.py` | importable flattener for a `Taskfile.yml` `includes:` tree (PyYAML): `include_paths(repo)` reads both entry shapes (a bare path and a `taskfile:` mapping), `taskfile_paths` prepends the root file, `load_tasks` returns every task keyed by the name `task <name>` would run with each `- task:`/`deps:` reference rewritten fully qualified (a leading colon is root-relative, a bare name resolves inside its namespace), and `task_names` drops `internal: true` templates. Rewriting is done on a copy, so two namespaces including one fragment do not qualify each other's |
-| `inventory_tree.py` | importable Ansible-inventory resolver (PyYAML): `group_index(inventory)` indexes every group that carries content, merged across occurrences; `resolve_hosts(name, index)` expands a group in inventory order with children depth first, deduped, and terminates on a cycle (`strict=True` raises `InventoryCycle`); `declared_groups` also counts a null-bodied placeholder; `host_vars` merges a host's vars across every group listing it; `all_hosts`, `hosts_by_address` and `addresses_by_host` read off that. `generate-hosts-env.py` imports it from its own directory: vendor the pair |
-| `ci_playbook_invocations.py` | importable argv walk over a job script's `ansible-playbook` calls: `parse_invocations(text)` returns one dict per call (`inventory`, `playbook`, `limit`, `tags`, `skip_tags`, `argv`). Every call is returned, so two chained on one script line are two invocations, and `--skip-tags` is kept out of `tags` so a gate never reads a skip as a selection. Stdlib only. `check-deploy-preflight.py` imports it from its own directory: vendor the pair |
-| `ci_yaml.py` | importable loader for a `.gitlab-ci.yml` that uses GitLab's `!` tags: `CILoader` preserves a tagged node's structure and turns `!reference` into a resolvable `Reference`, `NullTagCILoader` collapses every tagged node to None; plus `load_ci`, `parse_ci`, `jobs`, `script_lines`, and `split_header` / `spec_inputs` for a file whose first document is a `spec:` header (every other reader gets the body). Both subclass SafeLoader and neither registers a constructor globally. **Forge: gitlab-only** |
-
-### `collect-state-lib.sh`
-
-The pure-logic half of a cluster-state collector. The collector itself stays
-consumer-owned, because its section list is site data; what is shared is the
-redaction guard, the output emitters and the verdict ladder.
-
-- **Redaction:** `REDACT_PATTERNS` is a sed-program array and `redact_file
-  <in> <out>` applies it, then collapses whole PEM private-key blocks in a
-  second awk pass. POSIX character classes throughout, so it behaves the same
-  on BSD and GNU sed. A consumer adds its own patterns by appending to the
-  array after sourcing.
-- **Emitters:** `cs_capped <cap> <fallback>` prints at most `cap` stdin lines
-  (`0` uncapped), the fallback when stdin was empty, and an explicit truncation
-  marker when the cap clipped; it consumes the whole stream so the producer
-  never takes SIGPIPE. `cs_emit <fallback>` is the uncapped form. They replace
-  the `producer | head -N || echo MSG` idiom, which can never print `MSG`
-  because the pipeline exits with `head`'s status.
-- **`coerce_int <value> <fallback>`** is the probe contract: a probe that could
-  not answer returns a non-numeric value, and this coerces it to the caller's
-  fallback — `1` for a verdict input, so an unaskable query degrades instead of
-  reading as a clean zero, and `null` for JSON output, so a consumer can tell
-  "none" from "could not ask". **A probe must never return 0 for "unknown".**
-- **`warning_events_filter <cutoff>`** counts Warning events at or after an
-  RFC3339 cutoff from `kubectl get events -o json` on stdin, and echoes
-  `unknown` when jq could not parse the input. The counting rule is
-  `WARNING_EVENTS_JQ`, a readable constant rather than a line inside a remote
-  body; a consumer narrows it there.
-- **Verdicts:** `classify_regular` / `regular_failing_predicates` (the console
-  OK / PARTIAL / FAILED ladder, the second naming which predicates failed) and
-  `classify_json` (healthy / degraded / catastrophic). The two read the same
-  signals, so a signal added to one is added to the other.
-- Function-only and safe to source under `set -e`. Requires `jq` only for
-  `warning_events_filter`.
-
-### `find-pve-host-for-vm.sh`
-
-```
-find-pve-host-for-vm.sh <vmid> <host1> [host2 ...]
-```
-
-Exit 0 with the host name on stdout; exit 1 with diagnostics on stderr.
-
-### `resolve-tool.sh`
-
-```
-resolve-tool.sh <tool> [python-module]
-```
-
-Prints the invocation — possibly multi-word (`python3 -m molecule`) or an
-absolute pyenv path — or exits 1. **Callers must invoke the result UNQUOTED** so
-a multi-word form word-splits:
-
-```bash
-MOL=$(scripts/resolve-tool.sh molecule molecule) || exit 1
-$MOL test
-```
-
-`find-pve-host-for-vm.sh` env: `PVE_NODE_PREFIX` (default `pve-`) — the prefix
-this site's SSH targets carry that the node names the Proxmox API reports do
-not. It is applied once to BOTH API-derived answers (`ha-manager status` and
-`pvesh get /cluster/resources` report the same bare node identifier); the
-per-host `qm status` scan is exempt, since that branch returns a target from the
-caller's own list. Set it to `""` when the two already agree; leaving it at the
-default on a site whose nodes are named otherwise returns a hostname that does
-not resolve.
-
-### `wait-for-reloader-roll.sh`
-
-Waits for Reloader to pick up a patched ConfigMap and bump a Deployment's
-generation. Takes the namespace, the deployment, the generation read **before**
-the patch, then an optional timeout (60s) and a noun for the message.
-
-```bash
-gen=$(kubectl get deployment app -n ns -o jsonpath='{.metadata.generation}')
-# patch the ConfigMap here
-scripts/wait-for-reloader-roll.sh ns app "$gen" 60 provider
-```
-
-- **A generation that has not moved when the timeout expires is a FAILURE.** The
-  caller's own `kubectl rollout status` would otherwise run against the
-  unchanged generation and report success before the pod adopts the value.
-- An unreadable generation reads as unchanged, so an API blip keeps polling and
-  the deadline fails loudly instead of reporting a roll never observed.
-- **Env:** `RELOADER_POLL_INTERVAL` (2) — the deadline is wall-clock, so `0`
-  still terminates.
-- The failure message's remedy deletes the pod rather than running `rollout
-  restart`: the `restartedAt` annotation reads as drift to the
-  kustomize-controller, which reverts it and undoes the restart.
-
----
-
-## Shared assets outside `scripts/`
-
-| Path | What it is |
-|---|---|
-| `kubernetes/reapers/kube_reaper.py` | the shared half of a pod-reaper CronJob program (kube-apiserver client, paging, age arithmetic, uid-preconditioned deletes, config validation, entry point). Stdlib only; mounted beside the app script so `import kube_reaper` resolves from the same directory |
-| `tests/copier_render.py` | copier render harness for a template repo's own suite: `copy_source`, `copier_argv`, `render`, `cli_main`, `check_registered_copies`. Every per-repo value is a parameter; pass `check_registered_copies(..., ref=...)` the consumer's own `WEISSSRV_LIB_REF` so the engine compares against the pinned release instead of the library working tree |
-| `lint/gitattributes` | the line-ending policy, vendored as a consumer's `.gitattributes` |
-
----
-
-## Extraction queue
-
-These scripts exist in both `weisssrv/scripts/` and the cluster template's
-`template/scripts/` without being offered here, so every fix has to be made
-twice and nothing notices when it is not. The count is the diff between the two
-consumer copies, as a measure of how far the forks have already travelled; a
-large one means reconciling two behaviours, not copying a file.
-
-Two of them need no extraction — the library already offers the gate under
-another name, so each is a **consumer-adoption item** (include the offered
-gate, delete the fork), not library work, and neither should be rediscovered as
-an extraction next release:
-
-- `check-kustomization-coverage.py` → [`check-kustomization.py`](#check-kustomizationpy-pyyaml),
-  which walks the reference graph from a root directory rather than flat-walking
-  the tree, and already reports an unlisted manifest, a reference to nothing, an
-  emptied manifest and an inert kustomization or Component.
-- `flux-corpus-gates.sh` → [`run-render-gates.sh`](#run-render-gatessh) plus the
-  consumer's own `render-gates.conf`. The hand-written gate list, the per-gate
-  flags and the corpus appends are exactly what the config file holds, and the
-  driver keeps the rc-2-is-not-a-finding rule both forks implement by hand.
-
-The rest, with what has to become a flag or a config key before each can ship
-from here:
-
-| Script | Diff lines between the two copies | Site data to lift out |
-|---|---|---|
-| `deploy-verify.sh` | 246 | the probe list; [`deploy-verify-lib.sh`](#shell-helpers) already holds the readiness classifiers, so only the driver is left |
-| `check-tenant-wiring.py` | 233 (template copy is a `.jinja`) | the tenant list and the confinement set each tenant must carry |
-| `bootstrap-proxmox-host.sh` | 204 (template copy is a `.jinja`) | repository URLs, pool names and the package set |
-| `check-cluster-literals.py` | 132 (template copy is a `.jinja`) | the literal patterns and the trees exempted because a tool parses them before Flux substitutes |
-| `maintenance-lib.sh` | 93 (template copy is a `.jinja`) | the host and guest lists; pairs with `maintenance-run-with-verify.sh`, already offered |
-| `check-upstream-rule-mirror.py` | 83 | the chart-version source file and the mirror locations |
-| `generate-host-log-staleness.py` | 70 | the inventory group, the rule file path and the thresholds |
-| `post-maintenance-verify.sh` | 43 | the probe list, as for `deploy-verify.sh` |
-| `diagnose-network-issues.sh` | 32 (template copy is a `.jinja`) | the addresses and interfaces it probes |
-| `check-role-default-flips.py` | 27 | the collection name and the two refs to compare |
-| `check-integration-matrix-coverage.py` | 21 | the integration-test directory and the matrix job name; near-neighbour of `check-molecule-matrix-coverage.sh` |
-| `check-ansible-service-names.py` | 21 | nothing — it reads the playbook tree and a unit-suffix list |
-| `check-unmanaged-secrets.py` | 19 | the owner allowlist; reads live `kubectl get -o json`, so it wants `gate_common.load_live_items` |
-| `check-skill-refs.py` | 16 | the skill directory; near-neighbour of `check-doc-links.py`, which cannot see a backticked path |
-| `check-tenant-traefik-isolation.py` | 8 (template copy is a `.jinja`) | the tenant namespaces and the Traefik deployment path |
-| `check-ci-pin-parity.sh` | 4 | the pin names written twice; near-neighbour of `check-lib-pins.py` |
-| `check-deploy-host-coverage.py` | 2 | the inventory, playbook and CI paths |
-
-A script a consumer owns on purpose is not on this queue: `collect-state.sh`,
-the per-guest smoke scripts and `version-registry.py` are site data by
-definition, and the library ships their shared halves
-(`collect-state-lib.sh`, `smoke-lib.sh`, `version-registry.example.py`).
-
----
-
-## Linters the family runs from a template, not a script
-
-`tflint` has no script here: it ships as the CI template
-[`ci/lint/terraform-tflint.yml`](INCLUDE-CONTRACT.md#cilintterraform-tflintyml),
-which consumers include instead of carrying a local job. It catches deprecated
-syntax, unused declarations and provider-specific rules that `terraform
-validate` does not. Run it by hand against a module when a plan surprises you.
+- It reads every role's defaults at both refs with `git`: `defaults/main.yml`,
+  `main.yaml` or the files under `defaults/main/`. It reports each bool,
+  number, string or list default that both refs ship and that changed.
+  Mappings, and keys new on the `--to` side, are out of scope.
+- A flip the inventory declares nowhere fails with exit 1, unless `--allow`
+  names it.
+- The inventory is read by structure: `vars:` mappings and inline host
+  mappings in any root inventory file, plus `group_vars` and `host_vars` files
+  or directories in `.yml` or `.yaml`.
+- The hosts a role reaches come from the plays under `--playbooks`, including
+  roles pulled in through another role's `meta/main.yml` dependencies. A flip
+  declared for only some of those hosts is listed with the hosts it misses and
+  fails with exit 1. `--allow-partial` reports it without failing.
+- `--lib` defaults to `$WEISSSRV_LIB_PATH`, then `../weisssrv-lib`.
+- **Exit codes:** 0 clean, 1 on an undeclared flip, 2 for no collection, an
+  unknown ref, an unreadable defaults file, an inventory with no variables, or
+  a group cycle.
+- **Vendoring:** imports `inventory_tree.py` from its own directory. Vendor the
+  pair.
 
 ### `check-ci-include-job-names.py` (PyYAML)
 
@@ -3078,106 +3269,160 @@ scripts/check-include-contract.py --lib-path ../weisssrv-lib
   a missing `--ci-file` or included file, an unparseable file, a `project:`
   include with no library checkout, or nothing inspected.
 
-### `check-helm-values-coverage.py` (PyYAML)
+## Object storage
 
-Holds the helm-values release registry to the HelmReleases on disk. The registry
-drives `validate-helm-values.py`, so a release missing from it is rendered by
-nothing and a `spec.values` typo there reaches the cluster.
+### `b2-bucket-drift.py`
 
-```
-scripts/check-helm-values-coverage.py --releases scripts/helm-values-releases.yaml
-```
+Codified settings for a Backblaze B2 bucket (type, SSE, lifecycle rules,
+retention) with a drift check and a supervised `--apply` (interactive
+confirmation required; a bad lifecycle rule can expire the only offsite copy).
 
-- `--repo-root`, `--releases` (default
-  `<repo-root>/scripts/helm-values-releases.yaml`), `--manifest-dir`
-  (repeatable, default `kubernetes`).
-- Each `releases:` entry needs `name`, `manifest` and `chart`, an existing
-  manifest holding a HelmRelease, and a `chart`/`repo_name` pair matching that
-  manifest's own `spec.chart.spec`. A duplicate name or manifest is a finding.
-- Coverage runs both ways: a HelmRelease neither listed nor in the `excluded:`
-  map fails, an `excluded:` entry naming no HelmRelease is stale, an exclusion
-  with no reason fails, and a path both listed and excluded fails.
-- **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error — an empty or
-  malformed registry, a missing manifest directory, or no HelmRelease found.
+- **Config:** `--config` (default `b2-bucket.json`): `account_id`, `bucket_id`,
+  `bucket_name`, `desired`.
+- **Env:** `B2_APPLICATION_KEY_ID`, `B2_APPLICATION_KEY`.
+- **The raw API, not a Terraform provider.** The Backblaze provider reads back
+  empty `bucket_type`, SSE and lifecycle attributes, so a plan never converges.
+  The raw API reads and writes those settings correctly.
+- **Optimistic concurrency.** `--apply` sends the `revision` read from
+  `b2_list_buckets` as `ifRevisionIs`, so a change made in the B2 console
+  between the read and the write loses the write rather than being clobbered. B2
+  answers a stale revision with HTTP 409; the script prints "the bucket changed
+  since it was read; re-run the drift check" and exits 2.
+- **Example:** [`b2-bucket.example.json`](../examples/b2-bucket.example.json).
 
-### `check-prometheus-rule-coverage.py` (PyYAML)
+### `unifi-settings-drift.py`
 
-Accounts for every shipped alert against the promtool unit tests, so the gap
-between what fires in production and what is ever evaluated is recorded rather
-than discovered during an incident.
-
-```
-scripts/check-prometheus-rule-coverage.py --tests-dir tests/prometheus-rules \
-  --release kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml
-```
-
-- `--tests-dir` (required), `--repo-root`, `--manifest-dir` (repeatable,
-  default `kubernetes`), `--loki-rules-dir` (repeatable).
-- The corpus is the release's `additionalPrometheusRulesMap`, every
-  PrometheusRule CR under the walked trees, and the bare `groups:` Loki ruler
-  files. Pass exactly one of `--release <manifest>` or `--no-release`: an unset
-  release would silently drop every inline rule group.
-- A test counts an alert as covered when any `*.test.yaml` (or `.test.yaml.jinja`)
-  under `--tests-dir` names it in an `alertname:` key.
-- `--untested ALERTNAME=REASON` records a deliberate gap. An entry a test now
-  covers, or one no rule declares, is a finding — as is a test naming an alert
-  no rule declares, which passes against nothing.
-- **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error — an empty
-  corpus, a missing tests directory, or a missing release manifest.
-
-### `check-rule-windows.py` (PyYAML)
-
-Fails an alert whose `for:` hold is at or past the lookback window its own
-expression accumulates over. `count_over_time` and `increase` decay out of their
-window, so the expression goes false on the evaluation where the hold would
-elapse and a single burst never notifies.
+Fails when a UniFi settings section the console owns drifts from its codified
+expectation. Terraform sets such a section once and then ignores it, so the only
+record of the intent is this config and nothing else notices a console edit.
 
 ```
-scripts/check-rule-windows.py kubernetes/infrastructure/observability \
-  --allow SomeAlert=the burst repeats until it is cleared
+scripts/unifi-settings-drift.py [--config FILE]
 ```
 
-- Takes rule files, or directories searched for `*.yaml` and `*.yml`. Both
-  PrometheusRule CRs and plain `groups:` ruler files are read.
-- Only accumulating functions are checked: `count_over_time`,
-  `sum_over_time`, `increase`, `delta`, `idelta`, `changes` and `resets`. A
-  `rate` or an `avg_over_time` expresses a sustained condition, where a longer
-  hold is the point.
-- The tightest window in the expression bounds the hold. For a subquery
-  `[range:step]` only the range counts, and quoted spans are skipped so a Loki
-  line filter is not read as a range selector.
-- `--allow ALERT=REASON` exempts an alert whose hold is deliberately at or past
-  its window; repeatable. The reason is mandatory and printed.
-- **Exit codes:** 0 clean, 1 on a hold that outlasts its window, 2 on an
-  operator error — a missing path, an unparseable file or duration, an
-  exemption with no reason, or a scan that examined no alert with both a hold
-  and an accumulating lookback.
-- **Vendoring:** offered in `scripts/vendorable-paths.yml`. Vendor
-  `tests/test_check_rule_windows.py` with it to keep the negative cases.
+- **Config** (default `unifi-settings.json` beside the script): `site`,
+  `desired` (a non-empty object of the keys to pin), and `section` (one path
+  segment, default `ips`). Only the declared keys are compared, so the volatile
+  ones the controller maintains are left unread.
+- **Env:** `UNIFI_API_URL`, `UNIFI_API_KEY`. `UNIFI_ALLOW_INSECURE=1` turns TLS
+  verification off and says so on stderr.
+- **Only the section-addressed `/get/setting/<section>` is read.** The
+  unsectioned `/rest/setting` returns the device SSH password, its hash and the
+  site API token in cleartext, so the response body is never printed and every
+  reported value is truncated.
+- A list is compared order-insensitively, since the controller reorders one
+  freely.
+- **Exit codes:** 0 clean, 1 on drift naming each key with the live value first,
+  2 on an operator error (bad or missing config, missing credentials, a failed
+  read reported by exception type rather than by body).
+- **Example:** [`unifi-settings.example.json`](../examples/unifi-settings.example.json).
 
-### `check-secret-rotation-coverage.py` (PyYAML)
+---
 
-Fails an ESO-managed credential that no document says how to rotate. Both the
-vault item titles (`remoteRef.key`, `extract`, `find`) and the ExternalSecrets
-themselves are checked, so a write-capable token cannot ship with no rotation
-path.
+## Shell helpers
+
+| Script | Contract |
+|---|---|
+| `shell-lib.sh` | function-only, safe to source under `set -e`. `timeout_cmd <secs> <cmd…>` bounds a command. With neither `timeout` nor `gtimeout` on `PATH` it warns once per shell on stderr that probes run unbounded. `ssh_probe <target> <cmd>` is a bounded, non-interactive ssh. `kubectl_read <args…>` reads one object as JSON: 0 with the JSON on stdout, 3 when kubectl reports `(NotFound)`, 1 with kubectl's stderr for any other failure. stdout carries only the JSON; warnings from a successful read go to stderr. `captured_match <value> <bre>` tests a value already in hand through a here-string, so no `pipefail` SIGPIPE can turn a match into a failure. `url_contains <url> <bre>` and `ssh_contains <target> <cmd> <bre>` fetch, then test: 0 on a match, 1 on none, 2 when the fetch failed. `SHELL_LIB_CURL_MAX_TIME` bounds the fetch, default 10s |
+| `smoke-lib.sh` | the probe half of a per-guest smoke script. The script stays consumer-owned, because its endpoint list is site data. `http_status <url>` prints a HEAD request's status, or `000` when nothing answered, and always returns 0 so an errexit caller reaches the classifier. `check_http_ok` takes 2xx and 3xx. `check_registry_ok` also takes 401, because a registry answering without credentials is up. `check_http_below_500` takes anything below 500. `check_tcp_port <host> <port>` is a bounded `nc` probe. `smoke_url_contains` and `smoke_ssh_contains` test a literal needle; `smoke_ssh_matches` takes an ERE. All three return 0 on a match, 1 on none and 2 when the fetch failed. Their ssh is non-interactive and bounded by `SMOKE_LIB_SSH_MAX_TIME`, default 30s. `SMOKE_LIB_CURL_MAX_TIME` bounds every fetch. `smoke_check <label> <cmd…>` and `smoke_optional <label> <reason> <cmd…>` keep the `SMOKE_PASS` / `SMOKE_FAIL` ledger, and `smoke_summary` prints it and is the script's exit status |
+| `ci-run-check.sh` | function-only driver a consolidated gate job sources. `run_check <name> <cmd…>` runs one check in a `set -eo pipefail` subshell, so a helper failing mid-body fails the check. errexit is off only around that subshell and is restored to the state the caller had, so a failure records itself in `overall` / `failed` and the next check still runs. Each check gets a collapsible log section when `GITLAB_CI` is set and a plain `== name` heading elsewhere. `run_check_summary [label]` names every failure and returns the job's status |
+| `deploy-verify-lib.sh` | function-only readiness classifiers a consumer's `deploy-verify.sh` sources; each reads kubectl output on stdin and needs `jq` or `awk`. `count_not_ready` prints how many list items are not Ready, or 999 when jq fails. `not_ready_ns_names` and `helmreleases_not_ready_names` print the not-Ready items, and `helmreleases_hard_failed` the HelmReleases with a terminal failure reason or a non-zero failure count; all three return non-zero on a jq failure, so an unknown list never reads as empty. `steady_state <count>` prints `true` only at exactly 0. `nodes_not_ready_count`, `pods_not_running_or_completed`, `pods_non_transient` and `pods_running_unready` read `--no-headers` rows |
+| `find-reachable-host.sh` | prints the first reachable SSH target from its args, exit 1 if none |
+| `find-pve-host-for-vm.sh` | prints which Proxmox host runs a VMID (ha-manager → `pvesh /cluster/resources` → per-host `qm status`) |
+| `resolve-tool.sh` | prints how to invoke a Python dev tool (`PATH` → `python3 -m <module>` → validated pyenv glob) |
+| `cluster-config-value.sh` | prints one or more `data:` values from the cluster-config ConfigMap, space-separated; fails on an absent key rather than printing nothing. `$CLUSTER_CONFIG` overrides the path |
+| `collect-state-lib.sh` | function-only helpers a consumer's `collect-state.sh` sources: `REDACT_PATTERNS` + `redact_file`, the `cs_capped` / `cs_emit` section emitters, `warning_events_filter`, `coerce_int`, and the `classify_regular` / `regular_failing_predicates` / `classify_json` verdicts. Detail below |
+| `taskfile_tree.py` | importable flattener for a `Taskfile.yml` `includes:` tree (PyYAML): `include_paths(repo)` reads both entry shapes (a bare path and a `taskfile:` mapping), `taskfile_paths` prepends the root file, `load_tasks` returns every task keyed by the name `task <name>` would run with each `- task:`/`deps:` reference rewritten fully qualified (a leading colon is root-relative, a bare name resolves inside its namespace), and `task_names` drops `internal: true` templates. Rewriting is done on a copy, so two namespaces including one fragment do not qualify each other's |
+| `inventory_tree.py` | importable Ansible-inventory resolver (PyYAML): `group_index(inventory)` indexes every group that carries content, merged across occurrences; `resolve_hosts(name, index)` expands a group in inventory order with children depth first, deduped, and terminates on a cycle (`strict=True` raises `InventoryCycle`); `declared_groups` also counts a null-bodied placeholder; `host_vars` merges a host's vars across every group listing it; `all_hosts`, `hosts_by_address` and `addresses_by_host` read off that. `generate-hosts-env.py` imports it from its own directory: vendor the pair |
+| `ci_playbook_invocations.py` | importable argv walk over a job script's `ansible-playbook` calls: `parse_invocations(text)` returns one dict per call (`inventory`, `playbook`, `limit`, `tags`, `skip_tags`, `argv`). Every call is returned, so two chained on one script line are two invocations, and `--skip-tags` is kept out of `tags` so a gate never reads a skip as a selection. Stdlib only. `check-deploy-preflight.py` imports it from its own directory: vendor the pair |
+| `ci_yaml.py` | importable loader for a `.gitlab-ci.yml` that uses GitLab's `!` tags: `CILoader` preserves a tagged node's structure and turns `!reference` into a resolvable `Reference`, `NullTagCILoader` collapses every tagged node to None; plus `load_ci`, `parse_ci`, `jobs`, `script_lines`, and `split_header` / `spec_inputs` for a file whose first document is a `spec:` header (every other reader gets the body). Both subclass SafeLoader and neither registers a constructor globally. **Forge: gitlab-only** |
+
+### `collect-state-lib.sh`
+
+The pure-logic half of a cluster-state collector. The collector itself stays
+consumer-owned, because its section list is site data; what is shared is the
+redaction guard, the output emitters and the verdict ladder.
+
+- **Redaction:** `REDACT_PATTERNS` is a sed-program array and `redact_file
+  <in> <out>` applies it, then collapses whole PEM private-key blocks in a
+  second awk pass. POSIX character classes throughout, so it behaves the same
+  on BSD and GNU sed. A consumer adds its own patterns by appending to the
+  array after sourcing.
+- **Emitters:** `cs_capped <cap> <fallback>` prints at most `cap` stdin lines
+  (`0` uncapped), the fallback when stdin was empty, and an explicit truncation
+  marker when the cap clipped; it consumes the whole stream so the producer
+  never takes SIGPIPE. `cs_emit <fallback>` is the uncapped form. They replace
+  the `producer | head -N || echo MSG` idiom, which can never print `MSG`
+  because the pipeline exits with `head`'s status.
+- **`coerce_int <value> <fallback>`** is the probe contract: a probe that could
+  not answer returns a non-numeric value, and this coerces it to the caller's
+  fallback — `1` for a verdict input, so an unaskable query degrades instead of
+  reading as a clean zero, and `null` for JSON output, so a consumer can tell
+  "none" from "could not ask". **A probe must never return 0 for "unknown".**
+- **`warning_events_filter <cutoff>`** counts Warning events at or after an
+  RFC3339 cutoff from `kubectl get events -o json` on stdin, and echoes
+  `unknown` when jq could not parse the input. The counting rule is
+  `WARNING_EVENTS_JQ`, a readable constant rather than a line inside a remote
+  body; a consumer narrows it there.
+- **Verdicts:** `classify_regular` / `regular_failing_predicates` (the console
+  OK / PARTIAL / FAILED ladder, the second naming which predicates failed) and
+  `classify_json` (healthy / degraded / catastrophic). The two read the same
+  signals, so a signal added to one is added to the other.
+- Function-only and safe to source under `set -e`. Requires `jq` only for
+  `warning_events_filter`.
+
+### `find-pve-host-for-vm.sh`
 
 ```
-scripts/check-secret-rotation-coverage.py --doc docs/CREDENTIALS.md
+find-pve-host-for-vm.sh <vmid> <host1> [host2 ...]
 ```
 
-- `--doc` (required, repeatable), `--repo-root`, `--manifest-dir` (repeatable,
-  default `kubernetes`).
-- A `ClusterExternalSecret` is keyed by the `spec.externalSecretName` it fans
-  out, which is the name an operator rotates; a namespaced ExternalSecret is
-  keyed `namespace/name`. A namespace-less ExternalSecret is reported, because
-  coverage for one including namespace would silently stand for the rest.
-- Matching is whole-name, so `alpha-secret-v2` in the document does not cover
-  `alpha-secret`.
-- `--declared-manual NAME=REASON` exempts a secret rotated outside the document.
-  A reason is mandatory, and an entry no ExternalSecret declares is a finding.
-- **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error — a missing
-  manifest directory, an unreadable document, or no ExternalSecret found.
+Exit 0 with the host name on stdout; exit 1 with diagnostics on stderr.
+
+Env: `PVE_NODE_PREFIX`, default `pve-`. It is the prefix this site's SSH
+targets carry and the Proxmox API node names do not. It is applied to both
+API-derived answers, `ha-manager status` and `pvesh get /cluster/resources`,
+which report the same bare node name. The per-host `qm status` scan is exempt,
+because it returns a target from the caller's own list. Set it to `""` when the
+two already agree. A wrong prefix returns a hostname that does not resolve.
+
+### `resolve-tool.sh`
+
+```
+resolve-tool.sh <tool> [python-module]
+```
+
+Prints the invocation — possibly multi-word (`python3 -m molecule`) or an
+absolute pyenv path — or exits 1. **Callers must invoke the result UNQUOTED** so
+a multi-word form word-splits:
+
+```bash
+MOL=$(scripts/resolve-tool.sh molecule molecule) || exit 1
+$MOL test
+```
+
+### `wait-for-reloader-roll.sh`
+
+Waits for Reloader to pick up a patched ConfigMap and bump a Deployment's
+generation. Takes the namespace, the deployment, the generation read **before**
+the patch, then an optional timeout (60s) and a noun for the message.
+
+```bash
+gen=$(kubectl get deployment app -n ns -o jsonpath='{.metadata.generation}')
+# patch the ConfigMap here
+scripts/wait-for-reloader-roll.sh ns app "$gen" 60 provider
+```
+
+- **A generation that has not moved when the timeout expires is a FAILURE.** The
+  caller's own `kubectl rollout status` would otherwise run against the
+  unchanged generation and report success before the pod adopts the value.
+- An unreadable generation reads as unchanged, so an API blip keeps polling and
+  the deadline fails loudly instead of reporting a roll never observed.
+- **Env:** `RELOADER_POLL_INTERVAL` (2) — the deadline is wall-clock, so `0`
+  still terminates.
+- The failure message's remedy deletes the pod rather than running `rollout
+  restart`: the `restartedAt` annotation reads as drift to the
+  kustomize-controller, which reverts it and undoes the restart.
 
 ### `supervised-apply-guard.sh`
 
@@ -3198,6 +3443,88 @@ scripts/supervised-apply-guard.sh unifi:apply "the UniFi network" "$@"
   then approve.
 - **Exit codes:** 0 confirmed, 1 the operator declined, 2 a refusal — no
   terminal, `-auto-approve`, too few arguments, or an empty confirm word.
+
+---
+
+## Shared assets outside `scripts/`
+
+| Path | What it is |
+|---|---|
+| `kubernetes/ddns/cloudflare-ddns.py` | a Cloudflare dynamic-DNS CronJob program. See [`cloudflare-ddns.py`](#cloudflare-ddnspy) |
+| `kubernetes/reapers/kube_reaper.py` | the shared half of a pod-reaper CronJob program (kube-apiserver client, paging, age arithmetic, uid-preconditioned deletes, config validation, entry point). Stdlib only; mounted beside the app script so `import kube_reaper` resolves from the same directory |
+| `tests/copier_render.py` | copier render harness for a template repo's own suite: `copy_source`, `copier_argv`, `render`, `cli_main`, `check_registered_copies`. Every per-repo value is a parameter; pass `check_registered_copies(..., ref=...)` the consumer's own `WEISSSRV_LIB_REF` so the engine compares against the pinned release instead of the library working tree |
+| `lint/gitattributes` | the line-ending policy, vendored as a consumer's `.gitattributes` |
+
+### `cloudflare-ddns.py`
+
+Points a Cloudflare zone's A records at the site's current public IPv4. It is a
+CronJob program, mounted through a `configMapGenerator` beside the consumer's
+kustomization, because kustomize refuses sources outside its root.
+
+- **Environment:** `CF_API_TOKEN`, `DDNS_ZONE` and `DDNS_RECORDS`.
+- `DDNS_ZONE` is a cluster-config placeholder. An empty or unsubstituted value
+  fails the run.
+- `DDNS_RECORDS` is a comma list of `label[:proxied]`. `@` is the apex and
+  `:false` turns the proxy off. `proxied` seeds a created record only. A full
+  name given as a label is rejected.
+- Two IP providers must report the same address before it is published, so one
+  wrong answer cannot repoint the records.
+- Terraform owns every record field but `content`.
+- Stdlib-only. **Exit codes:** 0, or 1 on any failure.
+
+---
+
+## Extraction queue
+
+These scripts exist in both cluster repos without being offered here, so every
+fix has to be made twice and nothing notices when one copy is missed. Where the
+two copies differ, extracting one means reconciling two behaviours, not copying
+a file.
+
+One of them needs no extraction. The library already offers the gate under
+another name, so it is a consumer-adoption item, not library work:
+
+- `flux-corpus-gates.sh` → [`run-render-gates.sh`](#run-render-gatessh) plus the
+  consumer's own `render-gates.conf`. The config file holds the gate list, the
+  per-gate flags and the corpus appends, and the driver keeps the rule that
+  exit 2 is not a finding.
+
+The rest, with what has to become a flag or a config key before each can ship
+from here:
+
+| Script | Site data to lift out |
+|---|---|
+| `audit-tenant-admission.sh` | nothing: byte-identical in both cluster repos, so it can be offered as it stands |
+| `bootstrap-proxmox-host.sh` | repository URLs, pool names and the package set |
+| `check-ansible-service-names.py` | nothing — it reads the playbook tree and a unit-suffix list |
+| `check-ci-pin-parity.sh` | the pin names written twice; near-neighbour of `check-lib-pins.py` |
+| `check-cluster-literals.py` | the literal patterns and the trees exempted because a tool parses them before Flux substitutes |
+| `check-collection-pin-trigger.py` | the CI file and the requirements path the deploy jobs must trigger on |
+| `check-deploy-host-coverage.py` | the inventory, playbook and CI paths |
+| `check-grafana-sidecar-init.py` | nothing: byte-identical in both cluster repos, so it can be offered as it stands |
+| `check-integration-matrix-coverage.py` | the integration-test directory and the matrix job name; near-neighbour of `check-molecule-matrix-coverage.sh` |
+| `check-unmanaged-secrets.py` | the owner allowlist; reads live `kubectl get -o json`, so it wants `gate_common.load_live_items` |
+| `check-upstream-rule-mirror.py` | the chart-version source file and the mirror locations |
+| `deploy-verify.sh` | the probe list; [`deploy-verify-lib.sh`](#shell-helpers) already holds the readiness classifiers, so only the driver is left |
+| `diagnose-network-issues.sh` | the addresses and interfaces it probes |
+| `flux-rotate-db-password.sh` | the role list, the 1Password item names and the workloads it restarts |
+| `maintenance-lib.sh` | the host and guest lists; pairs with `maintenance-run-with-verify.sh`, already offered |
+| `post-maintenance-verify.sh` | the probe list, as for `deploy-verify.sh` |
+
+A script a consumer owns on purpose is not on this queue: `collect-state.sh`,
+the per-guest smoke scripts and `version-registry.py` are site data by
+definition, and the library ships their shared halves
+(`collect-state-lib.sh`, `smoke-lib.sh`, `version-registry.example.py`).
+
+---
+
+## Linters the family runs from a template, not a script
+
+`tflint` has no script here: it ships as the CI template
+[`ci/lint/terraform-tflint.yml`](INCLUDE-CONTRACT.md#cilintterraform-tflintyml),
+which consumers include instead of carrying a local job. It catches deprecated
+syntax, unused declarations and provider-specific rules that `terraform
+validate` does not. Run it by hand against a module when a plan surprises you.
 
 ---
 

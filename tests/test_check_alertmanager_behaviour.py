@@ -71,8 +71,22 @@ class TestLoadConfig:
             mod.load_config(_config(tmp_path, {"upstream_alerts": ["X"]}))
 
     def test_a_case_without_a_receiver_is_rejected(self, tmp_path):
-        with pytest.raises(ValueError, match="receiver \\+ labels"):
+        with pytest.raises(ValueError, match="one of receiver / receivers"):
             mod.load_config(_config(tmp_path, {"route_cases": [{"labels": ["alertname=X"]}]}))
+
+    @pytest.mark.parametrize("receivers", [
+        {"receiver": "a", "receivers": ["a", "b"]},
+        {"receivers": []},
+    ])
+    def test_a_case_needs_exactly_one_receiver_key(self, tmp_path, receivers):
+        case = {**receivers, "labels": ["alertname=X"]}
+        with pytest.raises(ValueError, match="one of receiver / receivers"):
+            mod.load_config(_config(tmp_path, {"route_cases": [case]}))
+
+    def test_a_case_may_list_every_receiver_a_continue_route_reaches(self, tmp_path):
+        case = {"receivers": ["audit", "page"], "labels": ["alertname=X"]}
+        config = mod.load_config(_config(tmp_path, {"route_cases": [case]}))
+        assert config.route_cases == [(("audit", "page"), ["alertname=X"])]
 
     def test_optional_sets_default_to_empty(self, tmp_path):
         config = mod.load_config(
@@ -178,8 +192,7 @@ class TestInhibits:
         assert any("plain alternation" in p for p in problems)
 
     def test_a_dead_name_in_a_first_negated_matcher_is_reported(self):
-        """Keyed by label only the last alertname matcher survived, so a stale
-        name written before another one exempted nothing and said nothing."""
+        """Every negated alertname matcher is checked, not only the last one on the label."""
         doc = self._am(
             [
                 {
@@ -194,6 +207,18 @@ class TestInhibits:
         )
         problems = mod.check_inhibits(doc, {"A", "B"}, set())
         assert any("exempts alertname(s) ['Typoed']" in p for p in problems)
+
+    def test_contradictory_positive_alertname_matchers_are_reported(self):
+        doc = self._am(
+            [
+                {
+                    "source_matchers": ['alertname="A"'],
+                    "target_matchers": ['alertname="B"', 'alertname="C"'],
+                }
+            ],
+        )
+        problems = mod.check_inhibits(doc, {"A", "B", "C"}, set())
+        assert any("target alertname matchers are contradictory" in p for p in problems)
 
     def test_a_redundant_equal_label_is_reported_beside_a_narrowing_matcher(self):
         doc = self._am(
@@ -236,6 +261,11 @@ class TestRepeatedMatchers:
         parsed = self._parse('alertname=~"A|B"', 'alertname!~"B"')
         assert mod._exact_alertnames(parsed) == (["A", "B"], None)
         assert mod._negated_alertnames(parsed) == (["B"], None)
+
+    def test_an_unparseable_entry_is_a_problem_not_a_matcher(self):
+        problems: list[str] = []
+        assert mod._parse_matchers(['"alertname"="A"'], 3, "source", problems) == []
+        assert problems == ["rule 3: unparseable source matcher '\"alertname\"=\"A\"'"]
 
     def test_a_negated_member_subtracts_from_the_covered_set(self):
         parsed = self._parse('alertname=~"A|B"', 'alertname!="A"')
@@ -982,8 +1012,8 @@ class TestOperatorErrors:
 
 
 class TestRoutes:
-    """check_routes' own contribution is the exact first-token comparison and the
-    fail-loud handling of a broken amtool; a scripted stub covers both."""
+    """check_routes compares amtool's comma-joined receiver line exactly and
+    fails loud on a broken amtool; a scripted stub covers both."""
 
     CONFIG = "route:\n  receiver: default\n"
 
@@ -994,29 +1024,37 @@ class TestRoutes:
 
     def test_the_resolved_receiver_matches(self, tmp_path, stub_amtool):
         stub_amtool(output="heartbeat")
-        assert mod.check_routes(self._am(tmp_path), [("heartbeat", ['alertname="W"'])]) == []
+        assert mod.check_routes(self._am(tmp_path), [(("heartbeat",), ['alertname="W"'])]) == []
 
     def test_a_different_receiver_is_reported(self, tmp_path, stub_amtool):
         stub_amtool(output="default")
-        problems = mod.check_routes(self._am(tmp_path), [("heartbeat", ['alertname="W"'])])
+        problems = mod.check_routes(self._am(tmp_path), [(("heartbeat",), ['alertname="W"'])])
         assert problems and "heartbeat" in problems[0]
 
-    def test_only_the_first_token_of_a_tree_is_the_resolution(self, tmp_path, stub_amtool):
-        stub_amtool(output="critical-page\ncritical")
-        assert mod.check_routes(self._am(tmp_path), [("critical-page", ['alertname="X"'])]) == []
+    def test_a_continue_route_resolves_to_every_receiver_it_reaches(self, tmp_path, stub_amtool):
+        stub_amtool(output="audit,critical-page")
+        am = self._am(tmp_path)
+        assert mod.check_routes(am, [(("audit", "critical-page"), ['alertname="X"'])]) == []
+
+    def test_naming_only_one_receiver_of_a_continue_route_is_reported(
+        self, tmp_path, stub_amtool
+    ):
+        stub_amtool(output="audit,critical-page")
+        problems = mod.check_routes(self._am(tmp_path), [(("critical-page",), ['alertname="X"'])])
+        assert problems and "'audit,critical-page'" in problems[0]
 
     def test_a_receiver_that_merely_shares_a_prefix_is_not_a_match(self, tmp_path, stub_amtool):
         """`critical-page` must not satisfy an expected `critical` — a prefix
         comparison passes exactly the misroute this gate exists to catch."""
         stub_amtool(output="critical-page")
-        assert mod.check_routes(self._am(tmp_path), [("critical", ['alertname="X"'])])
+        assert mod.check_routes(self._am(tmp_path), [(("critical",), ['alertname="X"'])])
 
     def test_a_failing_amtool_raises_rather_than_reporting_a_misroute(
         self, tmp_path, stub_amtool
     ):
         stub_amtool(output="amtool: error: unknown flag --config.file", rc=1, on_stderr=True)
         with pytest.raises(mod.ExtractionError, match="amtool"):
-            mod.check_routes(self._am(tmp_path), [("heartbeat", ['alertname="W"'])])
+            mod.check_routes(self._am(tmp_path), [(("heartbeat",), ['alertname="W"'])])
 
     def test_a_failing_amtool_exits_two_from_main(self, tmp_path, capsys, stub_amtool):
         stub_amtool(output="amtool: error: cannot load config", rc=1, on_stderr=True)
@@ -1061,8 +1099,33 @@ class TestRoutesWithRealAmtool:
                 """
             )
         )
-        assert mod.check_routes(config, [("heartbeat", ['alertname="Watchdog"'])]) == []
-        assert mod.check_routes(config, [("default", ['alertname="Watchdog"'])])
+        assert mod.check_routes(config, [(("heartbeat",), ['alertname="Watchdog"'])]) == []
+        assert mod.check_routes(config, [(("default",), ['alertname="Watchdog"'])])
+
+    def test_a_continue_route_resolves_to_every_receiver(self, tmp_path):
+        config = tmp_path / "alertmanager.yaml"
+        config.write_text(
+            textwrap.dedent(
+                """
+                route:
+                  receiver: default
+                  routes:
+                    - receiver: audit
+                      matchers: ['severity="critical"']
+                      continue: true
+                    - receiver: page
+                      matchers: ['severity="critical"']
+                receivers:
+                  - name: default
+                  - name: audit
+                  - name: page
+                """
+            )
+        )
+        labels = ['severity="critical"']
+        assert mod.check_routes(config, [(("audit", "page"), labels)]) == []
+        assert mod.check_routes(config, [(("audit",), labels)])
+        assert mod.check_routes(config, [(("page", "audit"), labels)])
 
 
 INFO_RULES = {
@@ -1108,6 +1171,13 @@ class TestEqualLabelScope:
         problems = mod.check_equal_label_scope(_info_inhibit(), INFO_RULES)
         assert len(problems) == 1
         assert "NotificationsDropping" in problems[0]
+
+    def test_a_contradictory_target_matches_nothing_to_scope(self):
+        inhibit = _info_inhibit()
+        inhibit["inhibit_rules"][0]["target_matchers"] += [
+            'alertname="PodInfo"', 'alertname="NotificationsDropping"',
+        ]
+        assert mod.check_equal_label_scope(inhibit, INFO_RULES) == []
 
     def test_naming_it_in_the_exemption_matcher_clears_it(self):
         inhibit = _info_inhibit(exempt="NotificationsDropping")
@@ -1174,6 +1244,11 @@ class TestSideAdmits:
     def test_a_pin_with_another_matcher_needs_a_declaration(self):
         parsed = self._parsed('alertname="Upstream"', 'component="storage"')
         assert not mod._side_admits(parsed, "Upstream", {})
+
+    def test_contradictory_pins_admit_no_alert(self):
+        parsed = self._parsed('alertname="EndpointDown"', 'alertname="DiskUsage"')
+        assert not mod._side_admits(parsed, "EndpointDown", self.RULES)
+        assert not mod._side_admits(parsed, "DiskUsage", self.RULES)
 
     def test_one_of_two_declared_severities_admits(self):
         """The critical declaration produces the instance the side pins."""
@@ -1341,7 +1416,7 @@ class TestMatcherValueParity:
         assert mod.check_matcher_value_parity(am, self.RULES, ("instance",)) == []
 
     def test_a_second_regex_matcher_on_the_label_is_checked_too(self):
-        """Keyed by label only one of the pair was compared with the expr."""
+        """Every regex matcher on a parity label is compared with the expr."""
         am = self._am('instance=~"a.example|b.example"')
         am["inhibit_rules"][0]["target_matchers"].append('instance!~"drifted"')
         (problem,) = mod.check_matcher_value_parity(am, self.RULES, ("instance",))

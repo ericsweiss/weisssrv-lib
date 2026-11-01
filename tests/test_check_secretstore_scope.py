@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import io
 
+import pytest
+
 from script_loader import load_script
 
 mod = load_script("check-secretstore-scope.py")
@@ -241,7 +243,7 @@ def test_a_catch_all_namespace_regex_is_not_a_scope(monkeypatch, capsys):
     - namespaceRegexes: [{pattern}]
 """)
         assert _run(catch_all + EXTERNAL_SECRET, monkeypatch) == 1, pattern
-        capsys.readouterr()
+        assert "admits every namespace" in capsys.readouterr().err, pattern
 
 
 def test_an_anchored_namespace_regex_is_still_a_scope(monkeypatch):
@@ -360,3 +362,66 @@ spec:
 """
     assert _run(SCOPED + NAMESPACES + ces, monkeypatch) == 1
     assert "unmodelled key(s) matchLables" in capsys.readouterr().err
+
+
+# --- the apiserver-set kubernetes.io/metadata.name label ----------------------
+
+
+NAME_SELECTOR_STORE = _store("""  conditions:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: apps}
+""")
+
+
+@pytest.mark.parametrize("namespaces", [NAMESPACES, ""], ids=["in-corpus", "outside-corpus"])
+def test_a_name_label_selector_admits_its_namespace(monkeypatch, namespaces):
+    """A namespace created by Flux or Helm still carries its name label."""
+    assert _run(NAME_SELECTOR_STORE + namespaces + EXTERNAL_SECRET, monkeypatch) == 0
+
+
+def test_the_name_label_follows_the_namespace_name_not_the_manifest(monkeypatch):
+    """The apiserver overwrites a hand-written name label with the real name."""
+    spoofed = NAMESPACES.replace(
+        "metadata: {name: other}",
+        "metadata: {name: other, labels: {kubernetes.io/metadata.name: apps}}",
+    )
+    stray = EXTERNAL_SECRET.replace("namespace: apps", "namespace: other")
+    assert _run(NAME_SELECTOR_STORE + spoofed + stray, monkeypatch) == 1
+
+
+def test_a_name_label_selector_scopes_cluster_external_secret_fan_out(monkeypatch):
+    ces = """
+---
+apiVersion: external-secrets.io/v1
+kind: ClusterExternalSecret
+metadata: {name: by-name}
+spec:
+  namespaceSelectors:
+    - matchLabels: {kubernetes.io/metadata.name: other}
+  externalSecretSpec:
+    secretStoreRef: {kind: ClusterSecretStore, name: onepassword-homelab}
+"""
+    # The fan-out reaches `other`, which SCOPED does not admit.
+    assert _run(SCOPED + NAMESPACES + ces, monkeypatch) == 1
+    other_only = _store("""  conditions:
+    - namespaces: [other]
+""")
+    assert _run(other_only + NAMESPACES + ces, monkeypatch) == 0
+
+
+# --- a selector that admits every namespace is not a scope --------------------
+
+
+def test_a_selector_admitting_every_namespace_is_not_a_scope(monkeypatch, capsys):
+    """Exists on the name label, or NotIn on a label nothing carries, is universal."""
+    for expression in (
+        "{key: kubernetes.io/metadata.name, operator: Exists}",
+        '{key: example.test/unused, operator: NotIn, values: ["x"]}',
+    ):
+        store = _store(f"""  conditions:
+    - namespaceSelector:
+        matchExpressions:
+          - {expression}
+""")
+        assert _run(store + NAMESPACES + EXTERNAL_SECRET, monkeypatch) == 1, expression
+        assert "admits every namespace" in capsys.readouterr().err, expression

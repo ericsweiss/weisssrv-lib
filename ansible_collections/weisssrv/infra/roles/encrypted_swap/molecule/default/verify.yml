@@ -25,7 +25,6 @@
       register: systemd_cryptsetup_installed
       failed_when: systemd_cryptsetup_installed.changed
 
-    # The role must purge /usr/local/sbin/encrypted-swap-switch.sh if present.
     - name: Assert the obsolete live-switch script is absent
       ansible.builtin.stat:
         path: /usr/local/sbin/encrypted-swap-switch.sh

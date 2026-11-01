@@ -20,8 +20,7 @@
           - "'nameserver 192.0.2.11' in resolv_conf_text"
         fail_msg: "resolv.conf is missing expected nameservers"
 
-    # An empty list must leave both lines out entirely: a bare `search ` would
-    # still be parsed by the resolver, so the check greps the rendered file.
+    # An empty list must leave both lines out of the rendered file entirely.
     - name: Verify no `search` line is present
       ansible.builtin.assert:
         that:

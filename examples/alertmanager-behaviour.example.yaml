@@ -1,7 +1,7 @@
 ---
 # Routing expectations for scripts/check-alertmanager-behaviour.py (--config).
-# route_cases: one case per receiver the config should reach. Only the first
-# matching receiver delivers, so `receiver` is compared against the first line.
+# route_cases: the receivers amtool resolves for each label set. `receiver`
+# names one; `receivers` lists every receiver a `continue: true` route reaches.
 route_cases:
   # A dead-man's-switch alert carries severity=none and must beat a
   # severity=none null route declared after it.

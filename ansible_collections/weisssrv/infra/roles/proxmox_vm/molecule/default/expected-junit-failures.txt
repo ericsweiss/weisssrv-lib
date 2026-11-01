@@ -9,3 +9,6 @@ Assert the additional-disk backend is implemented
 Fail when no Proxmox host answered the cluster-resource query
 Ensure the guest NIC has the firewall flag
 Reconcile VM memory allocation
+Import cloud image disk
+Fail loud on an existing VM its create left half-built ::3
+Start VM

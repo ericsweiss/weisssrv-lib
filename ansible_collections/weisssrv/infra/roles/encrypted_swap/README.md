@@ -86,7 +86,7 @@ comments the plaintext line out, so later boots are clean.
   |---|---|
   | `encrypted_swap_mapper_active` | `1` when the dm-crypt mapper is the active swap device, `0` when the plaintext fallback is. |
   | `encrypted_swap_any_swap_active` | `1` when the host has any swap at all. `0` means the plaintext restore failed and the host is swapless. |
-| `encrypted_swap_finalize_last_run_seconds` | Unix time the finalize unit last ran. |
+  | `encrypted_swap_finalize_last_run_seconds` | Unix time the finalize unit last ran. |
 
   Alert on `encrypted_swap_mapper_active == 0`: the at-rest control this role
   exists to provide is off. The gauge is absent when

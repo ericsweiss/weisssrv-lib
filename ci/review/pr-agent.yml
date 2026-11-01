@@ -5,7 +5,6 @@ spec:
     stage:
       default: ai-review
     image:
-      # Ships from `pragent/`; the `codiumai/` namespace is FROZEN at 0.34.
       # Digest-pinned because the job handles a GitLab PAT and a model API key,
       # on the multi-arch INDEX digest so the pin stays portable.
       default: pragent/pr-agent:0.48.0@sha256:12d8c67f11d034ed046085ed09f14fdb25ababc29acb66c071d1c3d511d4fee2
@@ -27,10 +26,9 @@ spec:
     reasoning_effort:
       default: "high"
       description: >-
-        low | medium | high | xhigh. `high` reviews a large diff in minutes;
-        `xhigh` (pr-agent's ceiling) takes 40m-75m on the same diff and often
-        exhausts the job timeout with no output at all. An unrecognised value
-        (e.g. gpt-5.6's `max`) silently downgrades to medium.
+        low | medium | high | xhigh. Any other value silently downgrades to
+        medium. `xhigh` can outrun the job timeout on a large diff and post
+        nothing.
     max_model_tokens:
       default: "900000"
       description: >-
@@ -74,18 +72,11 @@ spec:
       default: "env"
       options: ["env", "1password"]
       description: >-
-        `env` — the two keys come from CI/CD variables (works on the non-root
-        shared runner). `1password` — they are read with `op` at job time, which
-        needs a root runner AND the consumer adding
-        `before_script: [!reference [.install-1password, before_script]]`
-        (this template defines no before_script, so that override is additive).
-        The two modes differ in BLAST RADIUS, not just plumbing: this job runs on
-        `merge_request_event` with CI config the branch under review supplies, so
-        in `1password` mode the `op` session it opens is reachable from that
-        config and reaches every item the service account can see — not just the
-        two below. Scope the service account to a vault holding only these two
-        items, or stay on `env`, where the exposure is capped at the two masked
-        variables.
+        `env` reads the two keys from CI/CD variables and works on the non-root
+        shared runner. `1password` reads them with `op` at job time; it needs a
+        root runner and `before_script: [!reference [.install-1password,
+        before_script]]`. The modes differ in blast radius:
+        docs/INCLUDE-CONTRACT.md § ci/review/pr-agent.yml.
     openai_key:
       default: "$OPENAI__KEY"
       description: >-

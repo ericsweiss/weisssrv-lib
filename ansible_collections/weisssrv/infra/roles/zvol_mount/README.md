@@ -8,8 +8,8 @@ disk (database volumes, repository storage, hostPath PV backing).
 by `zvol_mount_device_id_prefix` + its SCSI slot, formats it once (only when
 `lsblk -d` shows neither a filesystem nor a partition table), then writes
 `UUID=<id>` entries to `/etc/fstab` so mounts survive device renumbering. It
-also detects and corrects disks mounted at the wrong location
-(`zvol_mount_fix_wrong_locations`, default `true`).
+also detects and corrects disks mounted or listed in fstab at the wrong
+location (`zvol_mount_fix_wrong_locations`, default `true`).
 
 ## Inputs
 
@@ -51,15 +51,19 @@ Per entry:
 
 ## Safety
 
-- Refuses to format a disk that already has a filesystem (unless overridden)
+- Never formats a disk that already has a filesystem, and refuses one whose
+  filesystem differs from the entry's `fstype`
 - Refuses a disk that has no filesystem but does carry a partition table, since
   it was used for something; `wipefs -a <device>` is the deliberate override
 - Writes fstab entries by UUID, never by `/dev/sdX`
 - Runs the format step only when not in `--check` mode
-- Refuses to continue when two attached disks share a filesystem UUID (common
-  after a zvol clone or `zfs send | receive` from a formatted snapshot), because
-  `UUID=<x>` would then be an ambiguous mount source. Fix it on the Proxmox
-  host with `tune2fs -U random <dev>` for ext4, then re-run the role
+- Refuses to continue when two attached disks share a filesystem UUID, because
+  `UUID=<x>` would then be an ambiguous mount source. A zvol clone or a
+  `zfs send | receive` of a formatted snapshot causes this. Give the duplicate a
+  new UUID on the Proxmox host, with `tune2fs -U random <dev>` for ext4 or
+  `xfs_admin -U generate <dev>` for xfs, then re-run the role
+- Removes any fstab line that mounts a managed disk's UUID at another path,
+  whether or not the disk is mounted there
 
 ## See also
 

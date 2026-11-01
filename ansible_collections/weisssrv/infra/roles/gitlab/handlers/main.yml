@@ -8,9 +8,8 @@
     name: "{{ gitlab_ssh_service_name }}"
     state: restarted
 
-# ansible.posix.sysctl is idempotent against the file the preceding copy: task
-# wrote (same key, same value) and additionally applies the knob at runtime, so
-# a fresh guest does not wait for a reboot.
+# Applies the knob the sysctl drop-in sets at runtime, so a fresh guest does
+# not wait for a reboot; idempotent against that file.
 - name: Reload sysctl gitlab-redis
   ansible.posix.sysctl:
     name: vm.overcommit_memory

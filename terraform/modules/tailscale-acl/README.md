@@ -52,22 +52,10 @@ terraform {
 `acl_id`, `split_dns_nameservers` (domain → resolved nameserver IPs, with device
 hostnames already looked up).
 
-## Why `split_dns` has no default
+## `split_dns` is required
 
-A gated, defaulted-off Split-DNS variable (`enable_split_dns = false` + `count`)
-is a trap: once the entry exists, every plan or apply that does not set the flag
-computes `count = 0` and **plans a destroy of live production DNS**.
-`prevent_destroy` turns that into a hard plan error rather than a silent
-deletion — it rejects any plan that destroys the instance, count-driven removals
-included, and only dropping the resource or module block from configuration
-bypasses it. But the error is the failure mode: every plan that forgets the flag
-fails, a scheduled drift-plan job fails with it, and real drift is masked behind
-a permanently red gate.
-
-Making the input required removes that: an unset value fails at the variable
-instead of somewhere inside the module, plan and apply always see the same
-value, and staging is a code change rather than an environment variable. The
-two-phase rollout still works —
+The input has no default, so plan and apply always see the same value. Pass
+`{}` for no Split-DNS entries. Roll out in two phases:
 
 1. **Phase A**: `split_dns = {}`, apply the ACL alone.
 2. **Phase B**: once the resolver device is registered
@@ -75,17 +63,17 @@ two-phase rollout still works —
    console-created entry first with
    `terraform import 'module.tailnet.tailscale_dns_split_nameservers.this["internal.example.com"]' internal.example.com`.
 
-Resolving a nameserver by `device_hostname` derives the 100.x address at plan
-time, so a rebuilt device self-heals instead of leaving a stale literal. The
-module picks the device's single non-IPv6 tailnet address rather than
-`addresses[0]` — the API's ordering is convention, not contract, and an IPv6
-nameserver here breaks resolution for every tailnet client of the domain. A
-device that exposes no IPv4, or more than one, fails the plan with a
-precondition naming the domain and the device instead of programming a bad
-nameserver; pass `nameservers` explicitly for such a device. The lookup waits up
-to 60s for the device to appear; that duration is a literal rather than an input
-because the provider parses it during `terraform validate`, where a variable
-reference is still unknown.
+A nameserver given as `device_hostname` resolves to its 100.x address at plan
+time, so a rebuilt device self-heals. The module picks the device's single
+non-IPv6 tailnet address, because the API's address ordering is not a contract
+and an IPv6 nameserver breaks resolution for every tailnet client of the domain.
+A device with no IPv4, or more than one, fails the plan with a precondition
+naming the domain and the device. Pass `nameservers` explicitly for such a
+device.
+
+The lookup waits up to 60s for the device to appear. The duration is a literal
+because the provider parses it during `terraform validate`, where a variable is
+still unknown.
 
 ## Apply is supervised
 
@@ -93,45 +81,36 @@ A bad ACL can sever tailnet and SSH access to every node. Apply it
 interactively, never with `-auto-approve`, and keep a non-tailnet path (console
 access or a LAN session) open until the post-apply checks pass.
 
-Three guardrails are hardcoded, and none is an input — `lifecycle` blocks cannot
-take variables, so unlike `cloudflare-zone`'s per-record `protected` flag there
-is no per-consumer switch to route. Two are on the ACL resource:
+Three guardrails are hardcoded. `lifecycle` blocks take no variables, so none of
+them is an input:
 
-- `reset_acl_on_destroy = false` — destroying the resource must not revert the
-  tailnet to the default allow-all policy. That is a silent security
-  regression, not a rollback.
-- `lifecycle { prevent_destroy = true }` — any plan that would destroy the ACL
-  resource errors out instead.
+- `reset_acl_on_destroy = false` on the ACL: destroying the resource leaves the
+  tailnet policy as it is, never the default allow-all.
+- `prevent_destroy = true` on the ACL: any plan that destroys it errors out.
+- `prevent_destroy = true` on `tailscale_dns_split_nameservers.this`:
+  destroying a Split-DNS entry silences that domain for the whole tailnet.
 
-The third is on `tailscale_dns_split_nameservers.this`: it also carries
-`prevent_destroy = true`, because destroying a Split-DNS entry silences that
-domain for the whole tailnet.
+### Stop managing the ACL
 
-Because the module is sourced at a pinned `?ref=`, a consumer **cannot** remove
-that block. To stop managing the ACL, drop it from state and then delete the
-module block:
+Drop it from state, then delete the module block:
 
 ```bash
 terraform state rm 'module.<name>.tailscale_acl.this'
 ```
 
-The live tailnet policy is left exactly as it is — `reset_acl_on_destroy =
-false` means a destroy would not have reverted it either, so this loses nothing
-but the state entry. Re-adopt it later with `terraform import`. The only other
-path is vendoring the module source into the consumer repo and editing it
-there.
+The live tailnet policy stays exactly as it is. Re-adopt it later with
+`terraform import`.
 
-Removing an entry from `split_dns` is **not** a plain code edit either — the
-`prevent_destroy` above turns it into a hard plan error. Drop it from state
-first, then delete the key:
+### Remove a Split-DNS entry
+
+Drop it from state first, then delete the key:
 
 ```bash
 terraform state rm 'module.<name>.tailscale_dns_split_nameservers.this["internal.example.com"]'
 ```
 
-The live Split-DNS mapping survives that, so resolution keeps working; delete
-the entry in the Tailscale admin console as well if the mapping should really go
-away.
+The live Split-DNS mapping survives that, so resolution keeps working. Delete
+the entry in the Tailscale admin console as well if the mapping should go away.
 
 ## Tests
 

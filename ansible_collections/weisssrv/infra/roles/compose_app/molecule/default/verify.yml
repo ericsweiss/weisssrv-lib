@@ -1,5 +1,6 @@
 ---
-# Verify the shared compose unit (both shapes) + the write_prom_metrics library.
+# Verify the compose unit (both shapes), the backup-metrics library with its
+# landing-zone guard, and the host-nginx flow.
 - name: Verify
   hosts: all
   become: true

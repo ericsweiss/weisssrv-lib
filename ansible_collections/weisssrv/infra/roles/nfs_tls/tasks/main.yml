@@ -1,6 +1,6 @@
 ---
 # Installs and configures tlshd (kernel TLS handshake daemon) for use
-# by NFSv4's xprtsec=tls/mtls. Idempotent; safe to re-run.
+# by NFSv4's xprtsec=tls/mtls.
 - name: Install ktls-utils (provides tlshd)
   ansible.builtin.apt:
     name:
@@ -16,8 +16,8 @@
     - nfs_tls_enabled | default(false)
     - ansible_facts['os_family'] == "Debian"
 
-# Refuse to start tlshd before the cert files exist: it would either crash-loop
-# or return the wrong handshake at the next NFS mount.
+# Refuse to start tlshd before the cert files exist, so a missing distribution
+# fails here rather than at the next NFS mount.
 - name: Verify cert + key + truststore are present before starting tlshd
   ansible.builtin.stat:
     path: "{{ item }}"

@@ -130,9 +130,8 @@ run "allow_unbound_declares_an_open_tile_deliberate" {
   }
 }
 
-# An application may be a plain launch tile with no provider. This run holds the
-# precondition to its conditional form: `||` evaluates both operands, which would
-# interpolate the null and fail the plan.
+# An application may be a plain launch tile with no provider; the precondition
+# must not interpolate the null provider and fail the plan.
 run "an_application_with_no_provider_plans" {
   command = plan
 
@@ -375,8 +374,7 @@ run "rejects_an_empty_provider_type" {
 }
 
 # An empty provider_key passes the "set both or neither" validation, so the
-# precondition catches it — and its message has to print rather than fail
-# evaluating, which a coalesce() around either half would do.
+# precondition catches it, and its message must render with the empty key.
 run "an_empty_provider_key_reports_the_missing_reference" {
   command = plan
 

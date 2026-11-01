@@ -72,13 +72,26 @@ posture.
 | `account_id` | string | — | 32 hex chars; scopes the zone lookup so a like-named zone in another account cannot be picked up. |
 | `zone_name` | string | — | Bare FQDN. |
 | `manage_zone_settings` | bool | `true` | `false` skips the settings override (DNS-only token). Flipping `true → false` on a managed zone is a plan error — the override carries `prevent_destroy`; see below. |
-| `zone_settings` | object | hardened baseline | `ssl=strict`, `always_use_https=on`, `min_tls_version=1.2`, `tls_1_3=on`, `http3=on`, `brotli=on`, `cache_level=aggressive`, `browser_cache_ttl=14400`, HSTS on for 1 year with subdomains, `preload=false`. Enum values (`ssl`, `min_tls_version`, `cache_level`, `tls_1_3`, the on/off toggles) are validated at plan time — Cloudflare rejects a bad one mid-apply. The two numeric settings are bounded instead: `browser_cache_ttl` to 0-31536000, and `hsts.max_age` to > 0 while `hsts.enabled` (0 is how HSTS is withdrawn), rising to >= 31536000 with `include_subdomains` when `preload = true` — the browser preload lists refuse anything shorter. `include_subdomains` is on by default and covers the WHOLE zone for `max_age`: every browser that has seen one response refuses plain HTTP to any name under it, and the only withdrawal is `max_age = 0` plus waiting the issued pins out. |
+| `zone_settings` | object | hardened baseline | `ssl=strict`, `always_use_https=on`, `min_tls_version=1.2`, `tls_1_3=on`, `http3=on`, `brotli=on`, `cache_level=aggressive`, `browser_cache_ttl=14400`, HSTS on for 1 year with subdomains, `preload=false`. Validation: [Zone settings validation](#zone-settings-validation). |
 | `records` | map(object) | `{}` | See below. |
 
 Each `records` entry: `name`, `type` (A/AAAA/CNAME/TXT/MX/NS/CAA), exactly one
 of `content` or `record_data` (`{flags, tag, value}` for CAA), plus optional
 `priority` (required for MX), `proxied`, `ttl` (must be `1` when proxied),
 `comment`, and the two lifecycle flags below.
+
+### Zone settings validation
+
+- Enum values are validated at plan time: `ssl`, `min_tls_version`,
+  `cache_level`, `tls_1_3` and the on/off toggles. Cloudflare rejects a bad one
+  mid-apply.
+- `browser_cache_ttl` is bounded to 0-31536000.
+- `hsts.max_age` must be > 0 while `hsts.enabled`. 0 is how HSTS is withdrawn.
+- `preload = true` needs `max_age` >= 31536000 and `include_subdomains`. The
+  browser preload lists refuse anything shorter.
+- `include_subdomains` covers the WHOLE zone for `max_age`. Every browser that
+  has seen one response refuses plain HTTP to any name under it. The only
+  withdrawal is `max_age = 0` plus waiting the issued pins out.
 
 ## Outputs
 
@@ -113,10 +126,10 @@ resources by its flags:
   separate applied step first — `prevent_destroy` blocks the destroy half).
 
 `prevent_destroy` covers the records you remembered to flag. Nothing covers the
-ones you did not: a pipeline that applies this module unattended is the place to
-add a delete-count gate over `terraform show -json` (fail when the plan deletes
-anything unless an override variable is set), and neither this library nor its
-consumers ship one today — the shared CI templates validate but never plan.
+ones you did not. `ci/validate/terraform-drift-plan.yml` plans read-only and has
+no delete-count gate. A pipeline that applies this module unattended adds one
+over `terraform show -json`: fail when the plan deletes anything unless an
+override variable is set.
 
 ## Turning zone settings off
 

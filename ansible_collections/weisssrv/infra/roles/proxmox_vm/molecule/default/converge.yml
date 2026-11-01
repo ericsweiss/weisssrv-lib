@@ -104,12 +104,15 @@
         importdisk=$(grep -c -- '^qm importdisk ' "$log" || true)
         ciuser=$(grep -c -- '--ciuser ' "$log" || true)
         start=$(grep -c -- '^qm start ' "$log" || true)
-        # Emitted as four printfs (stdout concatenates into the registered
+        marked=$(grep -c -- '^qm create 999 .*--tags weisssrv-create-incomplete ' "$log" || true)
+        cleared=$(grep -c -- '^qm set 999 --delete tags$' "$log" || true)
+        # Emitted as five printfs (stdout concatenates into the registered
         # result) so no single line exceeds the 160-char lint cap.
         printf '{"machine": %s, "ovmf": %s, "ostype": %s, "efidisk": %s,' "$machine" "$ovmf" "$ostype" "$efidisk"
         printf ' "tpm": %s, "bootdisk": %s, "install_iso": %s,' "$tpm" "$bootdisk" "$install_iso"
         printf ' "virtio_iso": %s, "vga": %s, "bootorder": %s,' "$virtio_iso" "$vga" "$bootorder"
-        printf ' "cloudinit": %s, "importdisk": %s, "ciuser": %s, "start": %s}\n' "$cloudinit" "$importdisk" "$ciuser" "$start"
+        printf ' "cloudinit": %s, "importdisk": %s, "ciuser": %s, "start": %s,' "$cloudinit" "$importdisk" "$ciuser" "$start"
+        printf ' "marked": %s, "cleared": %s}\n' "$marked" "$cleared"
       args:
         executable: /bin/bash
       register: win_scan
@@ -185,7 +188,17 @@
         # One `qm set` carries both flags, indexed by list position.
         both=$(grep -c -- '^qm set 999 --hostpci0 0000:01:00 --hostpci1 0000:01:00.1$' "$log" || true)
         any=$(grep -c -- '^qm set 999 --hostpci' "$log" || true)
-        printf '{"indexed_pair": %s, "any_hostpci": %s}\n' "$both" "$any"
+        marked=$(grep -c -- '^qm create 999 .*--tags weisssrv-create-incomplete ' "$log" || true)
+        cleared=$(grep -c -- '^qm set 999 --delete tags$' "$log" || true)
+        # The marker is cleared after the PCI attach and the start.
+        pci_at=$(grep -n -- '^qm set 999 --hostpci' "$log" | tail -n 1 | cut -d: -f1)
+        start_at=$(grep -n -- '^qm start 999$' "$log" | tail -n 1 | cut -d: -f1)
+        clear_at=$(grep -n -- '^qm set 999 --delete tags$' "$log" | tail -n 1 | cut -d: -f1)
+        after=$([ "${clear_at:-0}" -gt "${pci_at:-0}" ] && echo true || echo false)
+        after_start=$([ "${clear_at:-0}" -gt "${start_at:-0}" ] && echo true || echo false)
+        printf '{"indexed_pair": %s, "any_hostpci": %s, "marked": %s,' "$both" "$any" "$marked"
+        printf ' "cleared": %s, "cleared_after_pci": %s,' "$cleared" "$after"
+        printf ' "cleared_after_start": %s}\n' "$after_start"
       args:
         executable: /bin/bash
       register: hostpci_scan
@@ -242,6 +255,182 @@
             content: |
               {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
 
+    # 4h. A create that fails after `qm create` stops, keeps the create marker
+    # and never destroys the VM; no later create step runs.
+    - name: Arm an importdisk failure for the half-built create case
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: qm.log, content: ""}
+        - {name: vm_importdisk_fail, content: "1\n"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Half-built create (expect failure)
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Run the Linux create with importdisk failing
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_vm
+          vars:
+            proxmox_storage: ssd
+      rescue:
+        - name: Record the half-built failure
+          ansible.builtin.debug:
+            msg: "{{ ansible_failed_result.msg }}"
+
+    - name: Scan the half-built create qm.log and disarm the failure
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/qm.log
+        rm -f /tmp/molecule-stub-state/vm_importdisk_fail
+        create=$(grep -c '^qm create 999 ' "$log" || true)
+        later=$(grep -c -E '^qm (resize|start) |^qm set 999 --(scsihw|ide2|boot) ' "$log" || true)
+        destroy=$(grep -c '^qm destroy ' "$log" || true)
+        marked=$(grep -c '^qm create 999 .*--tags weisssrv-create-incomplete ' "$log" || true)
+        cleared=$(grep -c '^qm set 999 --delete tags$' "$log" || true)
+        printf '{"create": %s, "later_steps": %s, "destroy": %s,' "$create" "$later" "$destroy"
+        printf ' "marked": %s, "cleared": %s}\n' "$marked" "$cleared"
+      args:
+        executable: /bin/bash
+      register: half_built_scan
+      changed_when: false
+
+    - name: Capture half-built create result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/18-half-built.json
+        mode: "0644"
+        content: "{{ half_built_scan.stdout }}"
+
+    # 4s. A create whose `qm start` fails keeps the create marker, and the
+    # next run, seeing the marked VM, refuses it instead of reporting it ok.
+    - name: Arm a start failure for the failed-start create case
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: qm.log, content: ""}
+        - {name: vm_start_fail, content: "1\n"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Failed-start create (expect failure)
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Run the Linux create with qm start failing
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_vm
+          vars:
+            proxmox_storage: ssd
+        - name: Should not reach here
+          ansible.builtin.set_fact:
+            start_fail_task: ""
+      rescue:
+        - name: Record the failed-start task
+          ansible.builtin.set_fact:
+            start_fail_task: "{{ ansible_failed_task.name }}"
+
+    # The stub mirrors Proxmox: after the first run the VM exists and keeps
+    # whatever tag that run left on it.
+    - name: Scan the failed-start qm.log and stub the VM it left behind
+      ansible.builtin.shell: |
+        set -o pipefail
+        state=/tmp/molecule-stub-state
+        log="$state/qm.log"
+        rm -f "$state/vm_start_fail"
+        start=$(grep -c '^qm start 999$' "$log" || true)
+        marked=$(grep -c '^qm create 999 .*--tags weisssrv-create-incomplete ' "$log" || true)
+        cleared=$(grep -c '^qm set 999 --delete tags$' "$log" || true)
+        echo exists > "$state/vm_exists_state"
+        if [ "$marked" -gt 0 ] && [ "$cleared" -eq 0 ]; then
+          echo weisssrv-create-incomplete > "$state/vm_tags_override"
+        fi
+        : > "$log"
+        printf '{"start": %s, "marked": %s, "cleared": %s}\n' "$start" "$marked" "$cleared"
+      args:
+        executable: /bin/bash
+      register: start_fail_scan
+      changed_when: false
+
+    - name: Re-run against the VM the failed start left (expect failure)
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Run the role against the VM the failed start left
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_vm
+          vars:
+            proxmox_storage: ssd
+        - name: Should not reach here
+          ansible.builtin.set_fact:
+            start_fail_rerun_msg: ""
+      rescue:
+        - name: Record the re-run failure message
+          ansible.builtin.set_fact:
+            start_fail_rerun_msg: "{{ ansible_failed_result.msg }}"
+
+    - name: Count the re-run's qm mutations and reset the stub
+      ansible.builtin.shell: |
+        set -o pipefail
+        state=/tmp/molecule-stub-state
+        mutations=$(grep -v -c '^qm config ' "$state/qm.log" || true)
+        rm -f "$state/vm_tags_override"
+        echo missing > "$state/vm_exists_state"
+        echo "{\"mutations\": ${mutations}}"
+      args:
+        executable: /bin/bash
+      register: start_fail_rerun_scan
+      changed_when: false
+
+    - name: Capture the failed-start result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/20-start-fail.json
+        mode: "0644"
+        content: >-
+          {{ (start_fail_scan.stdout | from_json)
+             | combine({'failed_task': start_fail_task,
+                        'rerun': (start_fail_rerun_scan.stdout | from_json)
+                                 | combine({'msg': start_fail_rerun_msg})}) | to_json }}
+
+    # 4u. A tag set during the create window survives the marker's removal.
+    - name: Stub a new VM that gains a tag during its create
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: qm.log, content: ""}
+        - {name: vm_tags_override, content: "prod;weisssrv-create-incomplete\n"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Create a VM that gains a tag during its create
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_vm
+      vars:
+        proxmox_storage: ssd
+
+    - name: Scan the tag-keeping create qm.log and reset the stub
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/qm.log
+        rm -f /tmp/molecule-stub-state/vm_tags_override
+        kept=$(grep -c '^qm set 999 --tags prod$' "$log" || true)
+        deleted=$(grep -c '^qm set 999 --delete tags$' "$log" || true)
+        printf '{"kept": %s, "deleted": %s}\n' "$kept" "$deleted"
+      args:
+        executable: /bin/bash
+      register: clear_keeps_scan
+      changed_when: false
+
+    - name: Capture the tag-keeping create result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/22-clear-keeps-tags.json
+        mode: "0644"
+        content: "{{ clear_keeps_scan.stdout }}"
+
     # 5. Existence guard — when the VM exists and its NIC, agent, onboot and
     # startup already match inventory, the only qm activity allowed is read-only
     # `qm config` probes. No mutations.
@@ -296,6 +485,96 @@
           {"qm_calls": {{ (qm_lines.stdout | from_json).qm_calls }},
            "qm_config_calls": {{ (qm_lines.stdout | from_json).qm_config_calls }},
            "reconcile_changed": {{ proxmox_vm_net0_firewall.changed | to_json }}}
+
+    # 5i. A VM still carrying the create marker, alone or beside another tag,
+    # fails by name before any reconcile mutates it.
+    - name: Stub a VM carrying the create marker (alone)
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: qm.log, content: ""}
+        - {name: vm_tags_override, content: "weisssrv-create-incomplete\n"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Existing VM carrying the create marker (alone, expect failure)
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Run the role against a VM carrying the create marker (alone)
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_vm
+          vars:
+            proxmox_storage: ssd
+            proxmox_vm_skip_create: false
+        - name: Should not reach here
+          ansible.builtin.set_fact:
+            marker_alone_msg: ""
+      rescue:
+        - name: Record the create-marker failure message (alone)
+          ansible.builtin.set_fact:
+            marker_alone_msg: "{{ ansible_failed_result.msg }}"
+
+    - name: Count create-marker qm mutations and remove the stub (alone)
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/qm.log
+        rm -f /tmp/molecule-stub-state/vm_tags_override
+        mutations=$(grep -v -c '^qm config ' "$log" || true)
+        echo "{\"mutations\": ${mutations}}"
+      args:
+        executable: /bin/bash
+      register: marker_alone_scan
+      changed_when: false
+
+    - name: Stub a VM carrying the create marker (beside a tag)
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: qm.log, content: ""}
+        - {name: vm_tags_override, content: "prod;weisssrv-create-incomplete\n"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Existing VM carrying the create marker (beside a tag, expect failure)
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Run the role against a VM carrying the create marker (beside a tag)
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_vm
+          vars:
+            proxmox_storage: ssd
+            proxmox_vm_skip_create: false
+        - name: Should not reach here
+          ansible.builtin.set_fact:
+            marker_tagged_msg: ""
+      rescue:
+        - name: Record the create-marker failure message (beside a tag)
+          ansible.builtin.set_fact:
+            marker_tagged_msg: "{{ ansible_failed_result.msg }}"
+
+    - name: Count create-marker qm mutations and remove the stub (beside a tag)
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/qm.log
+        rm -f /tmp/molecule-stub-state/vm_tags_override
+        mutations=$(grep -v -c '^qm config ' "$log" || true)
+        echo "{\"mutations\": ${mutations}}"
+      args:
+        executable: /bin/bash
+      register: marker_tagged_scan
+      changed_when: false
+
+    - name: Capture the create-marker result
+      ansible.builtin.copy:
+        dest: /tmp/molecule-results/19-create-marker.json
+        mode: "0644"
+        content: >-
+          {{ {'alone': (marker_alone_scan.stdout | from_json) | combine({'msg': marker_alone_msg}),
+              'tagged': (marker_tagged_scan.stdout | from_json) | combine({'msg': marker_tagged_msg})} | to_json }}
 
     # 6. Firewall reconcile — existing VM whose NIC predates firewall=1
     # must get exactly one `qm set … --net0 …,firewall=1` repair call.
@@ -435,11 +714,11 @@
             state: absent
 
     # 7b. Agent flag drift — existing VM whose `qm config` reports agent
-    # enabled=0 must get exactly one `qm set 999 --agent 1` reconcile call.
-    - name: Stub agent disabled (enabled=0)
+    # enabled=0 gets exactly one `qm set --agent` that keeps its sub-options.
+    - name: Stub agent disabled (enabled=0) with a sub-option
       ansible.builtin.copy:
         dest: /tmp/molecule-stub-state/vm_agent_override
-        content: "enabled=0"
+        content: "enabled=0,fstrim_cloned_disks=1"
         mode: "0644"
 
     - name: Reset qm.log for agent-drift case
@@ -462,7 +741,7 @@
     - name: Count agent-drift qm calls
       ansible.builtin.shell: |
         set -o pipefail
-        applied=$(grep -c '^qm set 999 --agent 1$' /tmp/molecule-stub-state/qm.log || true)
+        applied=$(grep -c '^qm set 999 --agent enabled=1,fstrim_cloned_disks=1$' /tmp/molecule-stub-state/qm.log || true)
         echo "{\"agent_set\": ${applied}}"
       args:
         executable: /bin/bash

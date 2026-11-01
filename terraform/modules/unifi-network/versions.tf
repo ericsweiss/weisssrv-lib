@@ -1,6 +1,5 @@
 terraform {
-  # Floor is the test harness's (mock_provider), not the configuration's — see
-  # ../README.md.
+  # The test harness's floor (mock_provider): ../README.md.
   required_version = ">= 1.7, < 2.0"
 
   required_providers {

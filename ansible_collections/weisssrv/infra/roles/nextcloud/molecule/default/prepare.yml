@@ -30,15 +30,39 @@
         state: directory
         mode: "0755"
 
+    # app:list answers for the SSO cases; the disabled map of an install with
+    # no disabled app is a JSON list, as PHP encodes an empty array.
+    - name: Write the app:list fixtures for the SSO cases
+      ansible.builtin.copy:
+        dest: "/tmp/nextcloud-applist-{{ item.key }}.json"
+        mode: "0644"
+        content: "{{ item.value | to_json }}"
+      loop: "{{ nextcloud_applist_fixtures | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      vars:
+        nextcloud_applist_fixtures:
+          enabled: {enabled: {files: "2.0.0", user_oidc: "7.1.0"}, disabled: []}
+          disabled: {enabled: {files: "2.0.0"}, disabled: {user_oidc: "7.1.0"}}
+          absent: {enabled: {files: "2.0.0"}, disabled: []}
+
     # Mock `docker` so the wrapper's pg_dump pipe runs on success and failure.
     # /tmp/nextcloud-backup-fail arms the failure, /tmp/nextcloud-backup-tiny a
     # truncated dump; NEXTCLOUD_INFLIGHT_PROBE snapshots the zone mid-dump.
-    - name: Install mock docker for the backup-wrapper test
+    - name: Install mock docker for the backup-wrapper and SSO tests
       ansible.builtin.copy:
         dest: /usr/local/bin/docker
         mode: "0755"
         content: |
           #!/bin/bash
+          # NEXTCLOUD_OCC_CASE logs each exec and answers app:list per case.
+          if [ "$1" = "compose" ] && [ "$2" = "exec" ] && [ -n "${NEXTCLOUD_OCC_CASE:-}" ]; then
+            printf '%s\n' "$*" >> "/tmp/nextcloud-occ-${NEXTCLOUD_OCC_CASE}.log"
+            case " $* " in
+              *" occ app:list "*) cat "/tmp/nextcloud-applist-${NEXTCLOUD_OCC_CASE}.json" ;;
+            esac
+            exit 0
+          fi
           if [ "$1" = "compose" ]; then
             for a in "$@"; do
               if [ "$a" = "pg_dump" ]; then

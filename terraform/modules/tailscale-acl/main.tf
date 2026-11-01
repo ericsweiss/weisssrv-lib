@@ -6,8 +6,7 @@ resource "tailscale_acl" "this" {
   # rollback.
   reset_acl_on_destroy = false
 
-  # Not an input — `lifecycle` blocks take no variables, so this is fixed for
-  # every consumer. Unmanaging the ACL: README.md "Apply is supervised".
+  # Unmanaging the ACL: README.md "Stop managing the ACL".
   lifecycle {
     prevent_destroy = true
   }

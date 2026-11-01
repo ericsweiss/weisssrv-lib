@@ -4,8 +4,8 @@ Installs and configures Plex Media Server on a Debian guest — typically an
 unprivileged LXC with the library, config and transcode directories bind-mounted
 from the host and a GPU passed through for hardware transcoding.
 
-The role manages the guest only. Any reverse proxy / ingress in front of Plex is
-somebody else's object.
+The role manages the guest only. Reverse proxies and ingress in front of Plex are
+out of scope.
 
 ## What it manages
 
@@ -48,13 +48,13 @@ Ordering is the playbook's job — run a base role first, and create the guest
 ## Bind mounts
 
 `plex_config_dir`, `plex_transcode_dir` and `plex_media_dir` must already be
-mounted — the role fails loudly rather than creating a local directory that
-masks the mount. Existence is not enough: `tasks/assert-mounts.yml` runs
-`mountpoint -q` on all three, because a failed or removed mount leaves the
-mountpoint directory behind, and Plex would then fill the guest's root
-filesystem with a library nothing on the host backs up. `plex_skip_service`
-(a container with no real bind mounts) is the only escape from that check. It
-deliberately does **not** chown any of the three: they arrive from the host with
+mounted. `tasks/assert-mounts.yml` runs `mountpoint -q` on all three and fails
+the play otherwise. A failed or removed mount leaves the mountpoint directory
+behind, and Plex would then fill the guest's root filesystem with a library
+nothing on the host backs up. `plex_skip_service`, for a container with no real
+bind mounts, is the only escape from that check.
+
+The role does **not** chown any of the three. They arrive from the host with
 UID/GID passthrough, and chowning from inside an unprivileged container rewrites
 the host side to high-mapped UIDs, breaking access for everything else. Own them
 on the host instead (e.g. `<owner>:media`, mode `2775`).

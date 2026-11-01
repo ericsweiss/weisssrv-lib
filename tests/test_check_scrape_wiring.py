@@ -442,52 +442,9 @@ class TestPolicyPodSelectorMatchExpressions:
 
 
 class TestSelectorMatches:
-    """selector_matches against bare label maps, one operator at a time."""
+    """The gate's own wrapping of gate_common's selector helpers."""
 
     LABELS = {"app": "web", "tier": "front"}
-
-    @pytest.mark.parametrize(
-        ("selector", "expected"),
-        [
-            ({}, True),
-            ({"matchLabels": {"app": "web"}}, True),
-            ({"matchLabels": {"app": "db"}}, False),
-            ({"matchExpressions": [{"key": "app", "operator": "In", "values": ["web"]}]}, True),
-            ({"matchExpressions": [{"key": "app", "operator": "In", "values": ["db"]}]}, False),
-            ({"matchExpressions": [{"key": "zone", "operator": "In", "values": ["a"]}]}, False),
-            ({"matchExpressions": [{"key": "app", "operator": "NotIn", "values": ["db"]}]}, True),
-            ({"matchExpressions": [{"key": "app", "operator": "NotIn", "values": ["web"]}]}, False),
-            ({"matchExpressions": [{"key": "zone", "operator": "NotIn", "values": ["a"]}]}, True),
-            ({"matchExpressions": [{"key": "tier", "operator": "Exists"}]}, True),
-            ({"matchExpressions": [{"key": "zone", "operator": "Exists"}]}, False),
-            ({"matchExpressions": [{"key": "zone", "operator": "DoesNotExist"}]}, True),
-            ({"matchExpressions": [{"key": "tier", "operator": "DoesNotExist"}]}, False),
-            (
-                {
-                    "matchLabels": {"app": "web"},
-                    "matchExpressions": [{"key": "tier", "operator": "NotIn", "values": ["front"]}],
-                },
-                False,
-            ),
-        ],
-    )
-    def test_kubernetes_semantics(self, selector, expected):
-        assert gate.selector_matches(selector, self.LABELS) is expected
-
-    @pytest.mark.parametrize("values", [None, []])
-    def test_exists_accepts_absent_null_or_empty_values(self, values):
-        selector = {"matchExpressions": [{"key": "tier", "operator": "Exists", "values": values}]}
-        assert gate.selector_problem(selector) is None
-        assert gate.selector_matches(selector, self.LABELS) is True
-
-    @pytest.mark.parametrize("value", ["", "web", "a" * 63, "v1.2_rc-3", "A.b-C_d"])
-    def test_valid_label_values_are_accepted(self, value):
-        selector = {
-            "matchLabels": {"tier": value},
-            "matchExpressions": [{"key": "tier", "operator": "In", "values": [value]}],
-        }
-        assert gate.selector_problem(selector) is None
-        assert gate.selector_matches(selector, {"tier": value}) is True
 
     def test_a_whole_flux_placeholder_value_is_accepted(self):
         """Tree mode reads manifests before postBuild substitutes them."""
@@ -496,52 +453,12 @@ class TestSelectorMatches:
         assert gate.selector_matches(selector, {"app": "${APP_NAME}"}) is True
         assert gate.selector_problem({"matchLabels": {"app": "x-${APP_NAME}"}}) is not None
 
-    def test_a_63_char_prefix_segment_is_accepted(self):
-        key = "a" * 63 + ".example.com/tier"
-        assert gate.selector_problem({"matchLabels": {key: "web"}}) is None
-
-    def test_a_valid_prefixed_key_is_accepted(self):
-        labels = {"example.com/tier": "front"}
-        selector = {
-            "matchLabels": {"example.com/tier": "front"},
-            "matchExpressions": [
-                {"key": "example.com/tier", "operator": "In", "values": ["front"]}
-            ],
-        }
-        assert gate.selector_problem(selector) is None
-        assert gate.selector_matches(selector, labels) is True
-
     @pytest.mark.parametrize(
         "selector",
         [
             {"matchExpressions": [{"key": "app", "operator": "Gt", "values": ["1"]}]},
-            {"matchExpressions": [{"key": "app", "operator": "In", "values": []}]},
-            {"matchExpressions": "app"},
-            {"matchLabels": "app"},
-            {"matchLabels": []},
-            {"matchExpressions": {}},
-            {"matchExpressions": [{"key": "app", "operator": "Exists", "values": "web"}]},
-            {"matchExpressions": [{"key": "app", "operator": "Exists", "values": {"a": "b"}}]},
-            {"matchExpressions": [{"key": "app", "operator": "DoesNotExist", "values": ["web"]}]},
-            {"matchExpressions": [{"key": "app", "operator": "In", "values": "web"}]},
-            {"matchExpressions": [{"key": "app", "operator": "In", "values": [1]}]},
-            {"matchExpressions": [{"key": "app", "operator": "NotIn", "values": ["db", None]}]},
-            {"matchExpressions": [{"key": "", "operator": "NotIn", "values": ["db"]}]},
-            {"matchExpressions": [{"key": "app tier", "operator": "Exists"}]},
-            {"matchExpressions": [{"key": "a/b/c", "operator": "Exists"}]},
-            {"matchLabels": {"": "web"}},
-            {"matchLabels": {"app tier": "web"}},
             {"matchLabels": {"app": "bad value"}},
-            {"matchLabels": {"app": "db\n"}},
-            {"matchLabels": {"app\n": "db"}},
-            {"matchLabels": {"app": "a" * 64}},
-            {"matchLabels": {"app": None}},
-            {"matchExpressions": [{"key": "app", "operator": "In", "values": ["bad value"]}]},
-            {"matchExpressions": [{"key": "app", "operator": "NotIn", "values": ["a" * 64]}]},
-            {"matchExpressions": [{"key": "a" * 64 + ".example.com/tier", "operator": "Exists"}]},
-            {"matchLabels": {"a" * 64 + "/tier": "web"}},
             {"matchFields": {}},
-            {1: "web"},
         ],
     )
     def test_an_unevaluable_selector_matches_nothing_and_notes(self, selector):
@@ -564,12 +481,6 @@ class TestAPeerNarrowingTheScrapeNamespace:
         "              app.kubernetes.io/name: prometheus\n",
     )
     DECLARED = ["--prometheus-pod-label", "app.kubernetes.io/name=prometheus"]
-
-    @pytest.fixture(autouse=True)
-    def _fresh_scraper_labels(self):
-        gate.SCRAPER_LABELS.clear()
-        yield
-        gate.SCRAPER_LABELS.clear()
 
     def test_a_podselector_with_no_declared_labels_is_not_credited(self, tmp_path, capsys):
         argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, self.NARROWED)
@@ -1621,6 +1532,79 @@ class TestCorpusWideScope:
         argv = tree(tmp_path, DEPLOYMENT, SERVICE, self.ANY, policy())
         assert gate.main(argv) == 2
         assert "scopes the scrape outside this directory" in capsys.readouterr().err
+
+
+
+class TestServingContainers:
+    """Ports count only where a container serves them over TCP for the pod's life."""
+
+    @staticmethod
+    def _sidecar(restart_policy: str) -> str:
+        return DEPLOYMENT.replace(
+            "      containers:\n        - name: app\n          ports:",
+            "      containers:\n        - name: app\n"
+            "      initContainers:\n        - name: exporter\n"
+            f"          restartPolicy: {restart_policy}\n          ports:",
+        )
+
+    def test_a_native_sidecar_port_is_counted(self, tmp_path):
+        argv = tree(tmp_path, self._sidecar("Always"), SERVICE, SERVICE_MONITOR, policy())
+        assert gate.main(argv) == 0
+
+    def test_a_run_to_completion_init_container_port_is_not_counted(self, tmp_path):
+        argv = tree(tmp_path, self._sidecar("OnFailure"), SERVICE, SERVICE_MONITOR, policy())
+        assert gate.main(argv) != 0
+
+    def test_a_udp_container_port_does_not_serve_the_scrape(self, tmp_path):
+        udp = DEPLOYMENT.replace(
+            "              containerPort: 9100\n",
+            "              containerPort: 9100\n              protocol: UDP\n",
+        )
+        argv = tree(tmp_path, udp, SERVICE, SERVICE_MONITOR, policy())
+        assert gate.main(argv) != 0
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("      containers:\n        - name: app\n          ports:\n            - name: metrics\n"
+         "              containerPort: 9100\n", "      containers:\n        - app\n"),
+        ("            - name: metrics\n              containerPort: 9100\n", "            - 9100\n"),
+    ],
+    ids=["container", "port"],
+)
+def test_a_malformed_container_entry_is_an_operator_error(tmp_path, capsys, old, new):
+    argv = tree(tmp_path, DEPLOYMENT.replace(old, new), SERVICE, SERVICE_MONITOR, policy())
+    assert gate.main(argv) == 2
+    assert "is not a list of mappings" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("  ingress:\n    - from:\n", "  ingress:\n    - allow\n    - from:\n"),
+        ("    - from:\n        - namespaceSelector:\n",
+         "    - from:\n        - observability\n        - namespaceSelector:\n"),
+    ],
+    ids=["rule", "peer"],
+)
+def test_a_malformed_ingress_rule_or_peer_is_an_operator_error(tmp_path, capsys, old, new):
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy().replace(old, new))
+    assert gate.main(argv) == 2
+    assert "is not a list of mappings" in capsys.readouterr().err
+
+
+def test_an_absent_policy_types_still_reads_the_ingress_rules(tmp_path):
+    inferred = policy().replace("  policyTypes: [Ingress]\n", "")
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, inferred)
+    assert gate.main(argv) == 0
+
+
+def test_declared_scraper_labels_do_not_leak_between_runs(tmp_path):
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy())
+    assert gate.main([*argv, "--prometheus-pod-label", "app=prometheus"]) == 0
+    assert gate.main(argv) == 0
+    assert gate.SCRAPER_LABELS == {}
 
 
 if __name__ == "__main__":

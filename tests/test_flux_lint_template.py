@@ -48,11 +48,11 @@ def _before_script() -> str:
 
 
 class TestTheProgramLivesInOneFile:
-    """The strict-render gap opened because this program existed three times;
-    a second copy here would reopen it."""
+    """The render program lives in scripts/flux-lint.sh alone; a second copy
+    in the job script could drift from it."""
 
     @pytest.mark.parametrize("fragment", [
-        "flux envsubst --strict",
+        "envsubst --strict",
         "kustomize build",
         "kubeconform",
         "yaml.safe_load_all",
@@ -65,7 +65,7 @@ class TestTheProgramLivesInOneFile:
         )
 
     @pytest.mark.parametrize("fragment", [
-        "flux envsubst --strict", "kustomize build", "kubeconform",
+        '"$flux_bin" envsubst --strict', "kustomize build", "kubeconform",
     ])
     def test_the_script_does_carry_it(self, fragment):
         """Mutation guard: the assertions above pass vacuously if the program

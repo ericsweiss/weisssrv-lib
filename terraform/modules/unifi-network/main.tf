@@ -91,9 +91,7 @@ resource "unifi_network" "this" {
   internet_access = each.value.internet_access
   igmp_snooping   = each.value.igmp_snooping
 
-  # `multicast_dns` is deliberately unset: UniFi OS gateways ignore the write
-  # and store false, so declaring it either churns the plan or lies about a
-  # reflector that is actually a UI setting.
+  # multicast_dns stays unset: README "mDNS reflection".
 
   # "manual": under the provider default "auto" the controller owns
   # dhcp_server.dns_enabled, domain_name and igmp_snooping and resets them on
@@ -269,8 +267,7 @@ resource "unifi_wlan" "this" {
   # PSK only, by design: this module has no RADIUS inputs, and `security` is a
   # Required attribute with no default.
   security = "wpapsk"
-  # Index 0, not a splat: the data source is counted on this map being non-empty
-  # (above), so inside this for_each it always exists.
+  # The data source exists whenever a WLAN does (its count, above).
   user_group_id = data.unifi_client_qos_rate.default[0].id
   network_id    = lookup(local.network_ids, each.value.network, "")
   passphrase    = var.wlans[each.key].passphrase
@@ -290,8 +287,7 @@ resource "unifi_wlan" "this" {
   l2_isolation = each.value.l2_isolation
   hide_ssid    = each.value.hide
 
-  # minimum_data_rate_*_kbps are deliberately unset: they are Computed, and
-  # pinning them to a guess is how a 2.4 GHz IoT client stops associating.
+  # Minimum data rates are console-owned: README "WLAN AP-group membership".
 
   lifecycle {
     # Both are console-owned and read back on every WLAN write; re-planning
@@ -376,8 +372,7 @@ resource "unifi_port_forward" "this" {
   # WAN-side per-forward hit logging (the "Log" toggle in the UI); default off.
   logging = each.value.logging
 
-  # `enabled` is Deprecated in 0.55.0 with no documented replacement — omitted
-  # rather than pinned to a value the provider may stop sending.
+  # `enabled` stays unset: README "What this module cannot manage".
 }
 
 # One site-wide settings object; only declared blocks are written, and destroy

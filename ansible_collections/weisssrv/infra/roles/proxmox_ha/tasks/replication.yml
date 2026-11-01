@@ -1,35 +1,28 @@
 ---
-# ZFS storage replication jobs for Proxmox HA failover, with IDs of the form
-# <VMID>-<job_number>. A job's identity is (VMID, target): Proxmox permutes the
-# id<->target pairing on migration. Drift and orphan policy are in the README.
+# ZFS storage replication jobs for Proxmox HA failover, with ids of the form
+# <VMID>-<n>. A job's identity is (VMID, target): Proxmox permutes the
+# id<->target pairing on migration. The README carries the full policy.
 
-# `pvesr list` takes no --output-format, so the index comes from the API. A
-# failed read must abort — an empty index would fire create for every job and
-# the tolerated "already exists" would hide it behind a green play.
+# A failed or empty read aborts the reconcile; the README says why. A cluster
+# with no jobs answers `[]`.
 - name: Get current storage replication jobs
   ansible.builtin.command: pvesh get /cluster/replication --output-format json
   register: proxmox_ha_current_replication_jobs_raw
   changed_when: false
-  failed_when: proxmox_ha_current_replication_jobs_raw.rc != 0
-  check_mode: false  # Must run to determine current state
-  tags: [proxmox_ha_replication]
+  failed_when: >-
+    proxmox_ha_current_replication_jobs_raw.rc != 0
+    or proxmox_ha_current_replication_jobs_raw.stdout | trim | length == 0
+  check_mode: false
+  tags: [proxmox_ha, proxmox_ha_replication]
 
 - name: Parse current replication jobs
   ansible.builtin.set_fact:
     proxmox_ha_current_replication_jobs: "{{ proxmox_ha_current_replication_jobs_raw.stdout | from_json }}"
     proxmox_ha_current_replication_job_ids: "{{ (proxmox_ha_current_replication_jobs_raw.stdout | from_json) | map(attribute='id') | list }}"
-  when: proxmox_ha_current_replication_jobs_raw.stdout | trim | length > 0
-  tags: [proxmox_ha_replication]
+  tags: [proxmox_ha, proxmox_ha_replication]
 
-- name: Set empty list if no jobs exist
-  ansible.builtin.set_fact:
-    proxmox_ha_current_replication_jobs: []
-    proxmox_ha_current_replication_job_ids: []
-  when: proxmox_ha_current_replication_jobs_raw.stdout | trim | length == 0
-  tags: [proxmox_ha_replication]
-
-# The API index also carries guest, jobnum, type, and rate/disable when set;
-# only these four keys are reconciled, so the rest are dropped here.
+# The API index also carries guest, jobnum, type and rate; only the keys
+# reconciled here are kept. `disable` is present only on a disabled job.
 - name: Build detailed current jobs lookup
   ansible.builtin.set_fact:
     proxmox_ha_current_jobs_detail: >-
@@ -40,17 +33,16 @@
           | zip(
               proxmox_ha_current_replication_jobs | default([])
               | map('dict2items')
-              | map('selectattr', 'key', 'in', ['source', 'target', 'schedule', 'comment'])
+              | map('selectattr', 'key', 'in', ['source', 'target', 'schedule', 'comment', 'disable'])
               | map('items2dict')
             )
         )
       }}
-  tags: [proxmox_ha_replication]
+  tags: [proxmox_ha, proxmox_ha_replication]
 
-# The enabled jobs sourced from this node, selected once and reused by every
-# pass below. `enabled` defaults to true, so the two arms are "explicitly
-# enabled" plus "no enabled key".
-- name: Select the enabled jobs sourced from this node
+# `enabled` defaults to true, so the enabled arm is "explicitly enabled" plus
+# "no enabled key".
+- name: Select the enabled and disabled jobs sourced from this node
   ansible.builtin.set_fact:
     proxmox_ha_desired_jobs: >-
       {{
@@ -65,101 +57,132 @@
           | rejectattr('enabled', 'defined')
           | list)
       }}
-  tags: [proxmox_ha_replication]
+    proxmox_ha_disabled_jobs: >-
+      {{
+        proxmox_ha_replication_jobs | default([])
+        | selectattr('source_node', 'equalto', inventory_hostname)
+        | selectattr('enabled', 'defined')
+        | rejectattr('enabled')
+        | list
+      }}
+  tags: [proxmox_ha, proxmox_ha_replication]
 
 - name: Build list of desired job IDs for this node
   ansible.builtin.set_fact:
     proxmox_ha_desired_job_ids: "{{ proxmox_ha_desired_jobs | map(attribute='id') | list }}"
-  tags: [proxmox_ha_replication]
+  tags: [proxmox_ha, proxmox_ha_replication]
 
+# A failed qm or pct read aborts: read as "no local guests" it would skip
+# every create and update. An empty node is a successful empty read.
 - name: Get list of local VMIDs on this node
   ansible.builtin.shell: |
-    set -o pipefail
-    (qm list 2>/dev/null | awk 'NR>1 {print $1}') || true
-    (pct list 2>/dev/null | awk 'NR>1 {print $1}') || true
+    set -euo pipefail
+    qm list | awk 'NR>1 {print $1}'
+    pct list | awk 'NR>1 {print $1}'
   args:
     executable: /bin/bash
   register: proxmox_ha_local_vmids_raw
   changed_when: false
-  failed_when: false
-  check_mode: false  # Must run to determine current state
-  tags: [proxmox_ha_replication]
+  failed_when: proxmox_ha_local_vmids_raw.rc != 0
+  check_mode: false
+  tags: [proxmox_ha, proxmox_ha_replication]
 
 - name: Parse local VMIDs
   ansible.builtin.set_fact:
     proxmox_ha_local_vmids: "{{ proxmox_ha_local_vmids_raw.stdout_lines | default([]) | map('trim') | select() | list }}"
-  tags: [proxmox_ha_replication]
+  tags: [proxmox_ha, proxmox_ha_replication]
 
-# `pvesr update` cannot change a job's target: delete and recreate.
-- name: Initialize target-drift and permutation tracking
+- name: Initialize the reconcile tracking
   ansible.builtin.set_fact:
+    proxmox_ha_disabled_live_job_ids: []
     proxmox_ha_drifted_job_ids: []
     proxmox_ha_permuted_jobs: []
-  tags: [proxmox_ha_replication]
+    proxmox_ha_stale_source_job_ids: []
+    proxmox_ha_create_plan: []
+    proxmox_ha_reenabled_job_ids: []
+    proxmox_ha_orphaned_job_ids: []
+    proxmox_ha_misplaced_guest_jobs: []
+  tags: [proxmox_ha, proxmox_ha_replication]
 
-- name: Detect target drift and id permutation for each desired job
+# A disabled entry names the live job serving its (VMID, target), whatever id
+# that job carries. A target an enabled entry also wants is never removed.
+- name: Resolve disabled entries to the live jobs serving their targets
   vars:
     _vmid: "{{ item.id.split('-')[0] }}"
-    _live: "{{ proxmox_ha_current_jobs_detail.get(item.id, {}) }}"
-    # Desired vs live target SETS for this job's VMID: a per-ID mismatch is
-    # only real drift when the sets differ, otherwise it is a permutation.
-    _desired_vmid_targets: >-
-      {{
-        proxmox_ha_desired_jobs
-        | selectattr('id', 'match', _vmid ~ '-')
-        | map(attribute='target_node') | sort | list
-      }}
-    _current_vmid_targets: >-
+    _enabled_targets: >-
+      {{ proxmox_ha_desired_jobs | selectattr('id', 'match', _vmid ~ '-') | map(attribute='target_node') | list }}
+    _serving_ids: >-
       {{
         proxmox_ha_current_replication_jobs | default([])
         | selectattr('id', 'match', _vmid ~ '-')
         | selectattr('target', 'defined')
-        | map(attribute='target')
-        | sort | list
+        | selectattr('target', 'equalto', item.target_node)
+        | map(attribute='id') | list
       }}
+    _removable_ids: "{{ [] if (_enabled_targets | select('equalto', item.target_node) | list) else _serving_ids }}"
+  ansible.builtin.set_fact:
+    proxmox_ha_disabled_live_job_ids: "{{ (proxmox_ha_disabled_live_job_ids + _removable_ids) | unique }}"
+  loop: "{{ proxmox_ha_disabled_jobs }}"
+  loop_control:
+    label: "{{ item.id }} -> {{ item.target_node }}"
+  tags: [proxmox_ha, proxmox_ha_replication]
+
+- name: Drop the disabled entries' jobs from the live index
+  ansible.builtin.set_fact:
+    proxmox_ha_live_jobs: >-
+      {{
+        proxmox_ha_current_replication_jobs | default([])
+        | rejectattr('id', 'in', proxmox_ha_disabled_live_job_ids)
+        | list
+      }}
+  tags: [proxmox_ha, proxmox_ha_replication]
+
+# A live id on another target is drift only when that target is no longer
+# wanted for the guest. A wanted one is a permutation and the job is kept.
+# `pvesr update` cannot change a job's target, so drift is deleted and recreated.
+- name: Detect target drift and id permutation for each desired job
+  vars:
+    _vmid: "{{ item.id.split('-')[0] }}"
+    _live_matches: "{{ proxmox_ha_live_jobs | selectattr('id', 'equalto', item.id) | list }}"
+    _live_target: "{{ (_live_matches | first).target | default('') if (_live_matches | length > 0) else '' }}"
+    _desired_vmid_targets: >-
+      {{ proxmox_ha_desired_jobs | selectattr('id', 'match', _vmid ~ '-') | map(attribute='target_node') | list }}
     _id_mismatch: >-
       {{
-        item.id in proxmox_ha_current_replication_job_ids and
-        item.source_node == inventory_hostname and
-        (item.enabled | default(true)) and
         _vmid in proxmox_ha_local_vmids and
-        _live.target is defined and
-        _live.target != item.target_node
+        _live_target | length > 0 and
+        _live_target != item.target_node
       }}
   ansible.builtin.set_fact:
     proxmox_ha_drifted_job_ids: >-
       {{
-        proxmox_ha_drifted_job_ids | default([]) + (
-          [item.id]
-          if (_id_mismatch | bool and _desired_vmid_targets != _current_vmid_targets)
-          else []
+        proxmox_ha_drifted_job_ids + (
+          [item.id] if (_id_mismatch | bool and _live_target not in _desired_vmid_targets) else []
         )
       }}
     proxmox_ha_permuted_jobs: >-
       {{
-        proxmox_ha_permuted_jobs | default([]) + (
-          [{'id': item.id, 'live_target': _live.target | default(''),
-            'inventory_target': item.target_node}]
-          if (_id_mismatch | bool and _desired_vmid_targets == _current_vmid_targets)
-          else []
+        proxmox_ha_permuted_jobs + (
+          [{'id': item.id, 'live_target': _live_target, 'inventory_target': item.target_node}]
+          if (_id_mismatch | bool and _live_target in _desired_vmid_targets) else []
         )
       }}
-  loop: "{{ proxmox_ha_replication_jobs | default([]) }}"
+  loop: "{{ proxmox_ha_desired_jobs }}"
   loop_control:
     label: "{{ item.id }}"
-  tags: [proxmox_ha_replication]
+  tags: [proxmox_ha, proxmox_ha_replication]
 
 - name: Display jobs with target drift
   ansible.builtin.debug:
     msg: >-
       TARGET DRIFT on {{ inventory_hostname }}: jobs
-      {{ proxmox_ha_drifted_job_ids | join(', ') }} point at the wrong target and
-      will be deleted and recreated.
+      {{ proxmox_ha_drifted_job_ids | join(', ') }} point at a target no entry
+      wants and will be deleted; each missing target is then created.
   when: proxmox_ha_drifted_job_ids | length > 0
-  tags: [proxmox_ha_replication]
+  tags: [proxmox_ha, proxmox_ha_replication]
 
-# Reported once per run: the ids swapped targets but the set holds, so every
-# job is left as it is and the schedule and comment follow the live target.
+# Reported once per run: the ids swapped targets but each target is still
+# wanted, so every job is kept and its schedule and comment follow its target.
 - name: Display permuted replication job ids
   vars:
     _triples: >-
@@ -172,177 +195,221 @@
   ansible.builtin.debug:
     msg: >-
       ID PERMUTATION on {{ inventory_hostname }} (id -> live target -> inventory
-      target): {{ _triples | join(', ') }} — the target set matches, so no job
+      target): {{ _triples | join(', ') }}. Each target is still wanted, so no job
       is deleted or recreated; schedule and comment follow the live target. See
       proxmox_ha README, "Behaviour worth knowing".
-  when: proxmox_ha_permuted_jobs | default([]) | length > 0
-  tags: [proxmox_ha_replication]
+  when: proxmox_ha_permuted_jobs | length > 0
+  tags: [proxmox_ha, proxmox_ha_replication]
 
-- name: Delete replication jobs with target drift
-  ansible.builtin.command: pvesr delete {{ item }}
-  loop: "{{ proxmox_ha_drifted_job_ids | default([]) }}"
-  loop_control:
-    label: "{{ item }} (target drift correction)"
-  register: proxmox_ha_drift_delete_result
-  changed_when: proxmox_ha_drift_delete_result.rc == 0
-  failed_when:
-    - proxmox_ha_drift_delete_result.rc != 0
-    - "'does not exist' not in proxmox_ha_drift_delete_result.stderr | default('')"
-  tags: [proxmox_ha_replication]
-
-# Live job sourced elsewhere while the guest is HERE: delete and recreate.
-- name: Initialize stale-source tracking
-  ansible.builtin.set_fact:
-    proxmox_ha_stale_source_job_ids: []
-  tags: [proxmox_ha_replication]
-
-- name: Detect source drift requiring job deletion
+# A live job sourced elsewhere while the guest is here is reported and kept: the
+# PVE runner already runs it from the guest's node, and deleting it would purge
+# the replica on its target.
+- name: Detect live jobs whose source names another node
+  vars:
+    _live_matches: "{{ proxmox_ha_live_jobs | selectattr('id', 'equalto', item.id) | list }}"
+    _live_source: "{{ (_live_matches | first).source | default('') if (_live_matches | length > 0) else '' }}"
   ansible.builtin.set_fact:
     proxmox_ha_stale_source_job_ids: >-
       {{
-        proxmox_ha_stale_source_job_ids | default([]) + (
+        proxmox_ha_stale_source_job_ids + (
           [item.id] if (
-            item.id in proxmox_ha_current_replication_job_ids and
-            item.source_node == inventory_hostname and
-            (item.enabled | default(true)) and
-            proxmox_ha_current_jobs_detail[item.id] is defined and
-            proxmox_ha_current_jobs_detail[item.id].source is defined and
-            proxmox_ha_current_jobs_detail[item.id].source != item.source_node and
+            _live_source | length > 0 and
+            _live_source != inventory_hostname and
+            item.id not in proxmox_ha_drifted_job_ids and
             item.id.split('-')[0] in proxmox_ha_local_vmids
           ) else []
         )
       }}
-  loop: "{{ proxmox_ha_replication_jobs | default([]) }}"
+  loop: "{{ proxmox_ha_desired_jobs }}"
   loop_control:
     label: "{{ item.id }}"
-  tags: [proxmox_ha_replication]
+  tags: [proxmox_ha, proxmox_ha_replication]
 
 - name: Display jobs with source drift
   ansible.builtin.debug:
     msg: >-
       STALE SOURCE on {{ inventory_hostname }}: jobs
-      {{ proxmox_ha_stale_source_job_ids | join(', ') }} live on another node
-      while the guest is here, so they are deleted and recreated here.
-  when: proxmox_ha_stale_source_job_ids | default([]) | length > 0
-  tags: [proxmox_ha_replication]
+      {{ proxmox_ha_stale_source_job_ids | join(', ') }} name another node as
+      their source while the guest is here. The PVE runner already runs them
+      from the guest's node, so they are kept.
+  when: proxmox_ha_stale_source_job_ids | length > 0
+  tags: [proxmox_ha, proxmox_ha_replication]
 
-# Must run BEFORE the create pass: job IDs are cluster-unique.
-- name: Delete stale replication jobs with source drift
-  ansible.builtin.command: pvesr delete {{ item }}
-  loop: "{{ proxmox_ha_stale_source_job_ids | default([]) }}"
+# One delete pass for every reason, before the create pass: job ids are
+# cluster-unique.
+- name: Delete the disabled and target-drifted replication jobs
+  ansible.builtin.command:
+    argv: [pvesr, delete, "{{ item[0] }}"]
+  loop: >-
+    {{ (proxmox_ha_disabled_live_job_ids | product(['disabled entry']) | list)
+       + (proxmox_ha_drifted_job_ids | product(['target drift']) | list) }}
   loop_control:
-    label: "{{ item }} (source drift correction)"
-  register: proxmox_ha_source_drift_delete_result
-  changed_when: proxmox_ha_source_drift_delete_result.rc == 0
+    label: "{{ item[0] }} ({{ item[1] }})"
+  register: proxmox_ha_replication_job_delete_result
+  changed_when: proxmox_ha_replication_job_delete_result.rc == 0
   failed_when:
-    - proxmox_ha_source_drift_delete_result.rc != 0
-    - "'does not exist' not in proxmox_ha_source_drift_delete_result.stderr | default('')"
-  tags: [proxmox_ha_replication]
+    - proxmox_ha_replication_job_delete_result.rc != 0
+    - "'does not exist' not in proxmox_ha_replication_job_delete_result.stderr | default('')"
+  tags: [proxmox_ha, proxmox_ha_replication]
 
-# Creates jobs that are absent cluster-wide plus the ones the drift passes above
-# just deleted. Gated on the guest residing here: `pvesr create-local-job` can
-# only be run from the node the guest is on.
+- name: Keep the live jobs the delete pass left
+  ansible.builtin.set_fact:
+    proxmox_ha_kept_jobs: >-
+      {{
+        proxmox_ha_live_jobs
+        | rejectattr('id', 'in', proxmox_ha_drifted_job_ids)
+        | list
+      }}
+  tags: [proxmox_ha, proxmox_ha_replication]
+
+# One create per wanted target no kept job serves. The entry's id is used when
+# free, otherwise the lowest free <VMID>-<n>. `pvesr delete` only marks a job
+# for removal, so every id in the pre-delete index counts as taken.
+- name: Plan the replication jobs to create
+  vars:
+    _vmid: "{{ item.id.split('-')[0] }}"
+    _served: >-
+      {{
+        (proxmox_ha_kept_jobs | selectattr('id', 'match', _vmid ~ '-')
+          | selectattr('target', 'defined') | map(attribute='target') | list)
+        + (proxmox_ha_create_plan | selectattr('id', 'match', _vmid ~ '-')
+          | map(attribute='target_node') | list)
+      }}
+    _taken: >-
+      {{ proxmox_ha_current_replication_job_ids + (proxmox_ha_create_plan | map(attribute='id') | list) }}
+    _free_ids: >-
+      {{ range(0, 100) | map('string') | map('regex_replace', '^', _vmid ~ '-') | reject('in', _taken) | list }}
+    _id: "{{ (_free_ids | first) if (_taken | select('equalto', item.id) | list) else item.id }}"
+    _needs_create: >-
+      {{ (proxmox_ha_local_vmids | select('equalto', _vmid) | list | length > 0)
+         and (_served | select('equalto', item.target_node) | list | length == 0) }}
+    _planned: "{{ [item | combine({'id': _id})] if (_needs_create | bool) else [] }}"
+  ansible.builtin.set_fact:
+    proxmox_ha_create_plan: "{{ proxmox_ha_create_plan + _planned }}"
+  loop: "{{ proxmox_ha_desired_jobs }}"
+  loop_control:
+    label: "{{ item.id }} -> {{ item.target_node }}"
+  tags: [proxmox_ha, proxmox_ha_replication]
+
+# `pvesr create-local-job` only runs on the node the guest is on. A create
+# never reuses an id pending removal, so only a concurrent run's same-id create
+# is tolerated; a create blocked by another job to the same target fails.
 - name: Create storage replication jobs
-  ansible.builtin.command: >-
-    pvesr create-local-job {{ item.id }} {{ item.target_node }}
-    --schedule "{{ item.schedule }}"
-    {% if item.comment is defined %}--comment "{{ item.comment }}"{% endif %}
-  when:
-    - >-
-      (item.id not in proxmox_ha_current_replication_job_ids) or
-      (item.id in proxmox_ha_drifted_job_ids | default([])) or
-      (item.id in proxmox_ha_stale_source_job_ids | default([]))
-    - item.enabled | default(true)
-    - inventory_hostname == item.source_node
-    - item.id.split('-')[0] in proxmox_ha_local_vmids
-  loop: "{{ proxmox_ha_replication_jobs | default([]) }}"
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ['pvesr', 'create-local-job', item.id, item.target_node, '--schedule', item.schedule]
+        + (['--comment', item.comment] if item.comment is defined else [])
+        + (['--disable', '1'] if item.paused | default(false) | bool else [])
+      }}
+  loop: "{{ proxmox_ha_create_plan }}"
   loop_control:
     label: "{{ item.id }} ({{ item.source_node }} -> {{ item.target_node }})"
   register: proxmox_ha_replication_job_add_result
   changed_when: proxmox_ha_replication_job_add_result.rc == 0
   failed_when:
     - proxmox_ha_replication_job_add_result.rc != 0
-    - "'already exists' not in proxmox_ha_replication_job_add_result.stderr | default('')"
-  tags: [proxmox_ha_replication]
+    - ("replication job '" ~ item.id ~ "' already exists") not in proxmox_ha_replication_job_add_result.stderr | default('')
+  tags: [proxmox_ha, proxmox_ha_replication]
 
-# The entry reconciled here is the one naming the LIVE target, not the one
-# carrying this id: a permuted id would otherwise have a comment stamped on it
-# naming a node it does not replicate to.
-- name: Update storage replication jobs
+# A live-disabled job whose entry lacks `paused: true` is re-enabled by the
+# update pass below; the banner names each one first.
+- name: Detect disabled jobs the update pass re-enables
   vars:
-    _current: "{{ proxmox_ha_current_jobs_detail.get(item.id, {}) }}"
-    _live_target: "{{ _current.target | default(item.target_node) }}"
-    _live_entry_matches: >-
+    _vmid: "{{ item.id.split('-')[0] }}"
+    _serving: >-
       {{
-        proxmox_ha_desired_jobs
-        | selectattr('id', 'match', item.id.split('-')[0] ~ '-')
-        | selectattr('target_node', 'equalto', _live_target)
-        | list
+        proxmox_ha_kept_jobs | selectattr('id', 'match', _vmid ~ '-')
+        | selectattr('target', 'defined')
+        | selectattr('target', 'equalto', item.target_node) | list
       }}
-    _live_entry: "{{ (_live_entry_matches | first) if (_live_entry_matches | length > 0) else item }}"
-    _desired_schedule: "{{ _live_entry.schedule }}"
-    _desired_comment: "{{ _live_entry.comment | default('') }}"
-    _current_schedule: "{{ _current.schedule | default('') }}"
-    _current_comment: "{{ _current.comment | default('') }}"
-    # Only schedule and comment are updatable in place.
-    _has_drift: >-
-      {{ _desired_schedule != _current_schedule or
-         _desired_comment != _current_comment }}
-    # An empty --comment is required to CLEAR a comment; omitting it keeps
-    # the old one and the drift check never converges.
-    _needs_comment_arg: "{{ (_live_entry.comment is defined) or (_current_comment | length > 0) }}"
-  ansible.builtin.command: >-
-    pvesr update {{ item.id }}
-    --schedule "{{ _desired_schedule }}"
-    {% if _needs_comment_arg %}--comment "{{ _desired_comment }}"{% endif %}
-  when:
-    - item.id in proxmox_ha_current_replication_job_ids
-    - item.id not in proxmox_ha_drifted_job_ids | default([])
-    - item.id not in proxmox_ha_stale_source_job_ids | default([])
-    - item.enabled | default(true)
-    - inventory_hostname == item.source_node
-    - item.id.split('-')[0] in proxmox_ha_local_vmids
-    - _has_drift | bool
-  loop: "{{ proxmox_ha_replication_jobs | default([]) }}"
-  loop_control:
-    label: "{{ item.id }} ({{ item.source_node }} -> {{ _live_target }})"
-  register: proxmox_ha_replication_job_update_result
-  changed_when: proxmox_ha_replication_job_update_result.rc == 0
-  tags: [proxmox_ha_replication]
-
-- name: Remove disabled storage replication jobs
-  ansible.builtin.command: pvesr delete {{ item.id }}
-  when:
-    - item.id in proxmox_ha_current_replication_job_ids
-    - not (item.enabled | default(true))
-    - inventory_hostname == item.source_node
-  loop: "{{ proxmox_ha_replication_jobs | default([]) }}"
+    _job_id: "{{ (_serving | first).id if (_serving | length > 0) else '' }}"
+    _is_disabled: "{{ (proxmox_ha_current_jobs_detail.get(_job_id, {}).disable | default(0) | int) != 0 }}"
+  ansible.builtin.set_fact:
+    proxmox_ha_reenabled_job_ids: >-
+      {{
+        proxmox_ha_reenabled_job_ids + (
+          [_job_id] if (
+            _job_id | length > 0 and
+            _vmid in proxmox_ha_local_vmids and
+            _is_disabled | bool and
+            not (item.paused | default(false) | bool)
+          ) else []
+        )
+      }}
+  loop: "{{ proxmox_ha_desired_jobs }}"
   loop_control:
     label: "{{ item.id }}"
-  register: proxmox_ha_replication_job_remove_result
-  changed_when: proxmox_ha_replication_job_remove_result.rc == 0
-  failed_when:
-    - proxmox_ha_replication_job_remove_result.rc != 0
-    - "'does not exist' not in proxmox_ha_replication_job_remove_result.stderr | default('')"
-  tags: [proxmox_ha_replication]
+  tags: [proxmox_ha, proxmox_ha_replication]
 
-# The API index is cluster-wide; orphan detection considers only jobs this node sources.
-- name: Build list of current job IDs originating from this node
-  ansible.builtin.set_fact:
-    proxmox_ha_current_local_job_ids: >-
+- name: Display jobs the update pass re-enables
+  ansible.builtin.debug:
+    msg: >-
+      RE-ENABLE on {{ inventory_hostname }}: jobs
+      {{ proxmox_ha_reenabled_job_ids | join(', ') }} are disabled live, but their
+      entries carry no `paused: true`, so they get `--disable 0`. Set
+      `paused: true` on an entry to keep its job disabled.
+  when: proxmox_ha_reenabled_job_ids | length > 0
+  tags: [proxmox_ha, proxmox_ha_replication]
+
+# Each entry reconciles the kept job serving its target, whatever id it has, so
+# a comment never names a node its job does not replicate to. An empty
+# --comment clears a live one; `--disable` follows the entry's `paused`.
+- name: Update storage replication jobs
+  vars:
+    _vmid: "{{ item.id.split('-')[0] }}"
+    _serving: >-
       {{
-        proxmox_ha_current_replication_jobs | default([])
-        | selectattr('source', 'defined')
-        | selectattr('source', 'equalto', inventory_hostname)
-        | map(attribute='id')
-        | list
+        proxmox_ha_kept_jobs | selectattr('id', 'match', _vmid ~ '-')
+        | selectattr('target', 'defined')
+        | selectattr('target', 'equalto', item.target_node) | list
       }}
-  tags: [proxmox_ha_replication]
+    _job_id: "{{ (_serving | first).id if (_serving | length > 0) else '' }}"
+    _current: "{{ proxmox_ha_current_jobs_detail.get(_job_id, {}) }}"
+    _desired_comment: "{{ item.comment | default('') }}"
+    _current_comment: "{{ _current.comment | default('') }}"
+    _needs_comment_arg: "{{ (item.comment is defined) or (_current_comment | length > 0) }}"
+    _is_disabled: "{{ (_current.disable | default(0) | int) != 0 }}"
+    _want_disabled: "{{ item.paused | default(false) | bool }}"
+    _has_drift: >-
+      {{ item.schedule != (_current.schedule | default('')) or
+         _desired_comment != _current_comment or
+         _is_disabled | bool != _want_disabled | bool }}
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ['pvesr', 'update', _job_id, '--schedule', item.schedule]
+        + (['--comment', _desired_comment] if _needs_comment_arg | bool else [])
+        + (['--disable', _want_disabled | bool | ternary('1', '0')]
+           if _is_disabled | bool != _want_disabled | bool else [])
+      }}
+  when:
+    - _job_id | length > 0
+    - _vmid in proxmox_ha_local_vmids
+    - _has_drift | bool
+  loop: "{{ proxmox_ha_desired_jobs }}"
+  loop_control:
+    label: "{{ item.id }} ({{ item.source_node }} -> {{ item.target_node }})"
+  register: proxmox_ha_replication_job_update_result
+  changed_when: proxmox_ha_replication_job_update_result.rc == 0
+  tags: [proxmox_ha, proxmox_ha_replication]
 
+# An orphan is a job sourced here whose (VMID, target) no enabled entry names.
 - name: Find orphaned replication jobs on this node
+  vars:
+    _vmid: "{{ item.id.split('-')[0] }}"
+    _wanted: >-
+      {{
+        proxmox_ha_desired_jobs | selectattr('id', 'match', _vmid ~ '-')
+        | selectattr('target_node', 'equalto', item.target | default('')) | list
+      }}
   ansible.builtin.set_fact:
-    proxmox_ha_orphaned_job_ids: "{{ proxmox_ha_current_local_job_ids | default([]) | difference(proxmox_ha_desired_job_ids | default([])) }}"
-  tags: [proxmox_ha_replication]
+    proxmox_ha_orphaned_job_ids: "{{ proxmox_ha_orphaned_job_ids + ([item.id] if _wanted | length == 0 else []) }}"
+  loop: >-
+    {{ proxmox_ha_kept_jobs | selectattr('source', 'defined') | selectattr('source', 'equalto', inventory_hostname) | list }}
+  loop_control:
+    label: "{{ item.id }}"
+  tags: [proxmox_ha, proxmox_ha_replication]
 
 - name: Display orphaned jobs (if any)
   ansible.builtin.debug:
@@ -351,33 +418,22 @@
       {{ proxmox_ha_orphaned_job_ids | join(', ') }} exist in Proxmox but not in
       proxmox_ha_replication_jobs — see proxmox_ha README, "Behaviour worth knowing".
   when: proxmox_ha_orphaned_job_ids | length > 0
-  tags: [proxmox_ha_replication]
+  tags: [proxmox_ha, proxmox_ha_replication]
 
-# A job configured here whose guest lives elsewhere cannot run — report it so
-# the inventory or the guest gets moved back.
-# Job configured here while the guest is NOT here: report only.
-- name: Initialize migrated-guest reporting
-  ansible.builtin.set_fact:
-    proxmox_ha_misplaced_guest_jobs: []
-  tags: [proxmox_ha_replication]
-
+# A job configured here whose guest lives elsewhere cannot run: report only.
 - name: Detect source drift for jobs configured on this node
   ansible.builtin.set_fact:
     proxmox_ha_misplaced_guest_jobs: >-
       {{
-        proxmox_ha_misplaced_guest_jobs | default([]) + (
+        proxmox_ha_misplaced_guest_jobs + (
           [{'id': item.id, 'vmid': item.id.split('-')[0], 'configured_source': item.source_node, 'target': item.target_node}]
-          if (
-            item.source_node == inventory_hostname and
-            (item.enabled | default(true)) and
-            item.id.split('-')[0] not in proxmox_ha_local_vmids
-          ) else []
+          if item.id.split('-')[0] not in proxmox_ha_local_vmids else []
         )
       }}
-  loop: "{{ proxmox_ha_replication_jobs | default([]) }}"
+  loop: "{{ proxmox_ha_desired_jobs }}"
   loop_control:
     label: "{{ item.id }}"
-  tags: [proxmox_ha_replication]
+  tags: [proxmox_ha, proxmox_ha_replication]
 
 - name: Display source drift warning
   ansible.builtin.debug:
@@ -388,20 +444,22 @@
       {{ proxmox_ha_misplaced_guest_jobs | map(attribute='id') | join(', ') }}
       cannot run — see proxmox_ha README, "Behaviour worth knowing".
   when: proxmox_ha_misplaced_guest_jobs | length > 0
-  tags: [proxmox_ha_replication]
+  tags: [proxmox_ha, proxmox_ha_replication]
 
+# Jobs the STALE SOURCE banner already named are not reported again.
 - name: Detect jobs running from unexpected source nodes
   ansible.builtin.set_fact:
     proxmox_ha_unexpected_source_jobs: >-
       {{
-        proxmox_ha_current_replication_jobs | default([])
+        proxmox_ha_live_jobs
         | selectattr('source', 'defined')
         | selectattr('source', 'ne', inventory_hostname)
         | map(attribute='id')
         | select('in', proxmox_ha_desired_job_ids)
+        | reject('in', proxmox_ha_stale_source_job_ids)
         | list
       }}
-  tags: [proxmox_ha_replication]
+  tags: [proxmox_ha, proxmox_ha_replication]
 
 - name: Display unexpected source warning
   ansible.builtin.debug:
@@ -411,4 +469,4 @@
       {{ inventory_hostname }} but run from another node — the guest migrated; see
       proxmox_ha README, "Behaviour worth knowing".
   when: proxmox_ha_unexpected_source_jobs | length > 0
-  tags: [proxmox_ha_replication]
+  tags: [proxmox_ha, proxmox_ha_replication]

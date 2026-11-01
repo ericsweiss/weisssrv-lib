@@ -3,9 +3,7 @@
 # (jobs.cfg), reconciled via pvesh. Both files live on the clustered /etc/pve
 # filesystem, so wire this role into a play that targets a single node.
 
-# Named here rather than as a Jinja undefined error from inside a pvesh
-# argument list, which surfaces after the reads have already run and names a
-# variable instead of the offending entry.
+# Fails before any read, naming the offending entry.
 - name: Assert every storage entry carries its required keys
   ansible.builtin.assert:
     that:

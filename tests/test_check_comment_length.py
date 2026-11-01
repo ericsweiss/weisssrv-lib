@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from script_loader import load_script
 
 ccl = load_script("check-comment-length.py")
@@ -318,6 +320,17 @@ class TestSelection:
         write(tmp_path, "src/a.sh", "# a\n# b\n# c\n# d\n")
         assert run(str(tmp_path)).returncode == 1
 
+    def test_default_excludes_skip_python_tool_caches(self, tmp_path):
+        # pytest and ruff write these; a repo cannot edit a banner it did not
+        # author.
+        write(tmp_path, ".pytest_cache/a.py", "# a\n# b\n# c\n# d\n")
+        write(tmp_path, ".ruff_cache/b.py", "# a\n# b\n# c\n# d\n")
+        write(tmp_path, "pkg.egg-info/c.py", "# a\n# b\n# c\n# d\n")
+        write(tmp_path, "ok.sh", "echo hi\n")
+        assert run(str(tmp_path)).returncode == 0
+        write(tmp_path, "src/d.py", "# a\n# b\n# c\n# d\n")
+        assert run(str(tmp_path)).returncode == 1
+
     def test_a_single_file_argument_is_scanned(self, tmp_path):
         bad = write(tmp_path, "a.sh", "# a\n# b\n# c\n# d\necho hi\n")
         assert run(str(bad)).returncode == 1
@@ -332,17 +345,6 @@ class TestConfig:
             json.dumps({"paths": [str(tmp_path)], "max_lines": 4, "critical_max_lines": 9}),
         )
         assert run("--config", str(config)).returncode == 0
-
-    def test_default_excludes_skip_python_tool_caches(self, tmp_path):
-        # pytest and ruff write these; a repo cannot edit a banner it did not
-        # author.
-        write(tmp_path, ".pytest_cache/a.py", "# a\n# b\n# c\n# d\n")
-        write(tmp_path, ".ruff_cache/b.py", "# a\n# b\n# c\n# d\n")
-        write(tmp_path, "pkg.egg-info/c.py", "# a\n# b\n# c\n# d\n")
-        write(tmp_path, "ok.sh", "echo hi\n")
-        assert run(str(tmp_path)).returncode == 0
-        write(tmp_path, "src/d.py", "# a\n# b\n# c\n# d\n")
-        assert run(str(tmp_path)).returncode == 1
 
     def test_config_exclude_is_honoured(self, tmp_path):
         write(tmp_path, "vendor/a.sh", "# a\n# b\n# c\n# d\necho hi\n")
@@ -416,7 +418,7 @@ def test_the_gate_is_clean_on_its_own_source():
 
 
 class TestBashParameterExpansionIsNotAJinjaComment:
-    """`${#arr[@]}` in a .j2 shell template opened a block that ran to EOF."""
+    """`${#arr[@]}` in a .j2 shell template does not open a Jinja comment."""
 
     def _template(self, tmp_path):
         path = tmp_path / "script.sh.j2"
@@ -838,3 +840,81 @@ class TestJinjaPythonTemplates:
     def test_bash_array_length_is_not_a_jinja_comment(self):
         text = 'run("${#ARR[@]}")  #}\n'
         assert ccl._neutralize_jinja(text) == text
+
+
+class TestJinjaStatementLines:
+    """A statement line that renders to nothing joins the comments around it."""
+
+    SPLIT = "# a\n# b\n{% if x %}\n# c\n# d\n{% else %}\n# e\n{% endif %}\necho hi\n"
+
+    def test_a_j2_block_split_by_statements_is_counted_whole(self, tmp_path):
+        write(tmp_path, "unit.sh.j2", self.SPLIT)
+        proc = run(str(tmp_path))
+        assert proc.returncode == 1
+        assert "unit.sh.j2:1: comment block is 4 content lines" in proc.stdout
+
+    def test_exclusive_branches_count_as_the_longest_one(self, tmp_path):
+        """One render emits one branch: 2 + max(1, 1) is three lines."""
+        body = "# a\n# b\n{% if x %}\n# c\n{% elif y %}\n# d\n{% else %}\n# e\n{% endif %}\n"
+        write(tmp_path, "unit.sh.j2", body + "echo hi\n")
+        assert run(str(tmp_path)).returncode == 0
+
+    def test_an_if_opened_before_the_run_closes_inside_it(self, tmp_path):
+        body = "{% if x %}\necho\n# a\n# b\n{% else %}\n# c\n# d\n{% endif %}\n# e\n# f\n"
+        write(tmp_path, "unit.sh.j2", body)
+        proc = run(str(tmp_path))
+        assert proc.returncode == 1
+        assert "unit.sh.j2:3: comment block is 4 content lines" in proc.stdout
+
+    def test_a_split_critical_block_over_eight_fails(self, tmp_path):
+        body = "# CRITICAL: x\n" + "".join(
+            "{%% if v%d %%}\n# l%d\n{%% endif %%}\n" % (n, n) for n in range(8)
+        ) + "echo hi\n"
+        write(tmp_path, "unit.sh.j2", body)
+        proc = run(str(tmp_path))
+        assert proc.returncode == 1
+        assert "9 content lines (limit 8)" in proc.stdout
+
+    def test_a_statement_line_does_not_open_a_run(self, tmp_path):
+        write(tmp_path, "unit.sh.j2", "echo hi\n{% if x %}\n# a\n# b\n# c\n{% endif %}\n")
+        assert run(str(tmp_path)).returncode == 0
+
+    def test_a_blank_line_still_ends_the_run(self, tmp_path):
+        write(tmp_path, "unit.sh.j2", "# a\n# b\n{% if x %}\n\n# c\n# d\n{% endif %}\n")
+        assert run(str(tmp_path)).returncode == 0
+
+    def test_a_copier_statement_renders_as_a_blank_line(self, tmp_path):
+        """Copier leaves trim_blocks off, so an untrimmed tag ends the run."""
+        write(tmp_path, "unit.sh.jinja", self.SPLIT)
+        assert run(str(tmp_path)).returncode == 0
+
+    def test_a_trimmed_copier_statement_joins_the_run(self, tmp_path):
+        write(tmp_path, "unit.sh.jinja", self.SPLIT.replace("{% ", "{%- "))
+        proc = run(str(tmp_path))
+        assert proc.returncode == 1
+        assert "unit.sh.jinja:1: comment block is 4 content lines" in proc.stdout
+
+    def test_a_plain_file_is_not_read_as_a_template(self, tmp_path):
+        write(tmp_path, "unit.sh", self.SPLIT)
+        assert run(str(tmp_path)).returncode == 0
+
+    def test_a_j2_fence_joins_statement_lines_to_the_run(self, tmp_path):
+        doc = _doc(tmp_path, "Intro\n\n```j2\n" + self.SPLIT + "```\n")
+        proc = run("--scan-fenced-code", str(doc))
+        assert proc.returncode == 1
+        assert "ONBOARDING.md:4: comment block is 4 content lines" in proc.stdout
+
+
+@pytest.mark.parametrize(
+    ("name", "body"),
+    [
+        ("policy.hujson", "{\n// a\n// b\n// c\n// d\n}\n"),
+        ("policy.hujson", "{\n/* a\n b\n c\n d */\n}\n"),
+        (".dockerignore", "# a\n# b\n# c\n# d\n.git\n"),
+    ],
+)
+def test_further_formats_are_scanned(tmp_path, name, body):
+    write(tmp_path, name, body)
+    proc = run(str(tmp_path))
+    assert proc.returncode == 1
+    assert f"{name}:" in proc.stdout

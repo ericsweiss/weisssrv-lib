@@ -122,9 +122,10 @@ never in the Proxmox group's vars: `proxmox_firewall_security_groups`,
 `_dns_admin_ports`, `_dns_client_sources`, `_k3s_ingress_int_sources`,
 `_metrics_scrape_ports`, `_host_egress_extra_ports`, `_smtp_relay_sources`,
 `_smtp_relay_extra_egress_ports`, `_wan_wireguard_vips`,
-`_insecure_migration_ports` and `_cluster_rules` (the `sg-host-egress` group
-itself lives in cluster.fw; only the flag that references it is per host). The role asserts this against the delegate's own scope and
-fails loudly, naming the variable.
+`_insecure_migration_ports` and `_cluster_rules`. The `sg-host-egress` group
+itself lives in cluster.fw; only the flag that references it is per host. The
+role asserts this against the delegate's own scope and fails loudly, naming the
+variable.
 
 Only host-scope inputs belong in the Proxmox group's vars:
 `proxmox_firewall_egress_filtering`, `_host_rules`, `_log_level_in`,
@@ -201,10 +202,11 @@ a credentialed surface, and a relay's log sink is site data:
   ingress (`:80`/`:443` in `sg-k3s-ingress-int`) — take their client scope from
   `proxmox_firewall_dns_client_sources` and
   `proxmox_firewall_k3s_ingress_int_sources`. Both default to
-  `[admin_ts, admin_lan]`, so a site that leaves them alone renders what it
-  always did. On a segmented network they are what lets `admin_lan` shrink to
-  the management subnet without taking DNS or the apps down with it: declare the
-  client subnets as their own IPSets and name them here.
+  `[admin_ts, admin_lan]`, so a site that leaves them alone serves both
+  surfaces to the admin sets. On a segmented network they are what lets
+  `admin_lan` shrink to the management subnet without taking DNS or the apps
+  down with it: declare the client subnets as their own IPSets and name them
+  here.
 
   ```yaml
   firewall_ipset_special_entries:
@@ -224,9 +226,8 @@ a credentialed surface, and a relay's log sink is site data:
   client scope must not widen the credentialed API with it. Every name must be
   a set the site actually declares: a `+dc/` naming an undeclared IPSet makes
   pve-firewall refuse the whole datacenter ruleset after the role has already
-  written the file. pve-firewall picks up `/etc/pve` changes on its own, so the
-  refusal shows up only in `pve-firewall compile` or the service log — which is
-  why the role runs that compile itself after every changed publish.
+  written the file. The role's compile gate reports it; see
+  [Writing into pmxcfs](#writing-into-pmxcfs).
 - All four hand-authored lists share one schema, asserted at role entry. On the
   port lists `port` is required and `sources` must be a non-empty **list**; the
   two client-scope lists must themselves be non-empty lists. A bare scalar
@@ -326,14 +327,12 @@ and `unsafe_writes` does not route around it on ansible-core 2.20+.
 publishes it with a plain `cp` — no metadata syscalls — only when the live
 content differs.
 
-A changed publish runs `pve-firewall compile` on the writing node. The role also
+A changed publish runs `pve-firewall compile` on the writing node and fails the
+play when it refuses the ruleset. pve-firewall picks up `/etc/pve` changes on its
+own, so without that gate a refusal shows only in the service log. The role also
 runs one unconditional `pve-firewall compile` at the end, so a ruleset that is
 already live and uncompilable fails every run instead of only the run that
 introduced it.
-
-## Dependencies
-
-None — foundational role.
 
 ## Firewall implementation
 
@@ -381,15 +380,16 @@ Rolling it out — a missing allowlist entry can cut a node off:
 1. Enable it on one non-critical node first, deploy, then check
    `pve-firewall compile`, that the node stays reachable, that it still shows in
    `pvecm status`, and that it can reach apt and the overlay network.
-2. The `OUT DROP` rule logs at `info`: review the kernel log for drops and extend
-   `sg-host-egress` for any legitimate egress that was missed.
+2. The `OUT DROP` rule logs at `info`. `pvefw-logger` writes those drops to
+   `/var/log/pve-firewall.log`, which the GUI firewall log also shows; the
+   kernel log and `journalctl -u pve-firewall` do not carry them. Review that
+   file and extend `sg-host-egress` for any legitimate egress that was missed.
 3. Once stable, enable it for the rest of the nodes in `group_vars`.
 
 ## Testing
 
-Every changed publish runs `pve-firewall compile` on the node that wrote the
-file and fails the play when it refuses the ruleset, so a bad rule stops the run
-instead of sitting unnoticed. Ad-hoc checks:
+The role's own compile gate is described under
+[Writing into pmxcfs](#writing-into-pmxcfs). Ad-hoc checks:
 
 ```bash
 pve-firewall status          # service + compiled ruleset state
@@ -410,3 +410,7 @@ asserts the rule lines section by section, the schema guards failing closed
 egress-filtering branch, the nftables option, the storage-role seam and its
 extra group references, the cross-play run-once guard and that every `+dc/`
 reference resolves to a declared IPSet.
+
+## Dependencies
+
+None. This is a foundational role.

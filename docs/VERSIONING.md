@@ -65,18 +65,21 @@ commit, the scripts against `tests/`.
 
 The pairs that need an explicit act are the published images, because they live
 in a registry rather than in git. The release pipeline's `publish-image-tags`
-job runs after `semantic-release` and retags the `molecule-ci` /
-`molecule-test` / `ansible-deploy` images this pipeline built to `:vX.Y.Z`,
-appending that tag↔image pair to the registry. The two molecule images are
-*exercised* by the pipeline that cuts the tag, so a consumer that pins
-`ref: vX.Y.Z` can pin `…/molecule-test:vX.Y.Z` and know the two were run against
-each other. `ansible-deploy` is retagged for pin alignment only — no job in
-this pipeline runs it; what holds it to the tag is
-`tests/test_ansible_deploy_image.py`, a static assertion that
-`docker/ansible-deploy/requirements.txt`'s `ansible==` pin equals the
-`ansible_version` default in `ci/deploy/deploy-base.yml`. The job is a no-op
-when no release was cut, and warns rather than reddening when an image was
-never pushed at all.
+job runs after `semantic-release`. It retags the `molecule-ci`, `molecule-test`
+and `ansible-deploy` images this pipeline built to `:vX.Y.Z`.
+
+- The two molecule images are exercised by the pipeline that cuts the tag. A
+  consumer that pins `ref: vX.Y.Z` can pin `…/molecule-test:vX.Y.Z` and know
+  the two ran against each other.
+- `ansible-deploy` is retagged for pin alignment only. No job in this pipeline
+  runs it. `tests/test_ansible_deploy_image.py` holds its `ansible==` pin equal
+  to the `ansible_version` default in `ci/deploy/deploy-base.yml`.
+- The job retags the image built from this commit, else `:latest`. Only an
+  absent tag falls through to the next source. Any other pull failure fails
+  the job rather than publishing a stale image.
+- With no image to retag, the job warns on the first release of a fresh repo.
+  On any later release it fails, because a tag would ship without its image.
+- The job is a no-op when no release was cut.
 
 **A consumer's molecule scenarios carry no image literal.** Each platform reads
 the bare `image: "${MOLECULE_TEST_IMAGE}"`, and the consumer's Taskfile wrapper
@@ -93,14 +96,10 @@ vars:
 
 CI already sets `MOLECULE_TEST_IMAGE` from `WEISSSRV_LIB_REF`, which reads the
 same input, so a local run and a pipeline run pull the same image by
-construction. A `${MOLECULE_TEST_IMAGE:-…:vX.Y.Z}` fallback would be a second
-pin that only a local run reads — green pipeline, stale local image — which is
-why the layout removes it rather than gating it. The library's OWN scenarios
-keep a `:latest` fallback: it names no release, so no bump reaches it.
-
-`:vX.Y.Z` image tags exist only from the first release that carried that job,
-and `ansible-deploy:vX.Y.Z` only from the release that added that image —
-before either, pin `:latest` or an immutable `:<short-sha>`.
+construction. A consumer scenario carries no `${MOLECULE_TEST_IMAGE:-…}`
+fallback, because that would be a second pin only a local run reads. The
+library's own scenarios keep a `:latest` fallback: it names no release, so no
+bump reaches it.
 
 ## No changelog file
 
@@ -227,7 +226,7 @@ five in one MR:
 | 4 | **Vendored scripts** (and the lint profiles, vendored suites and workflows alongside them) | the consumer's `scripts/`, plus the paths its own `scripts/vendored-manifest.yml` records | `scripts/check-vendored-copies.py` — manifest-driven, run from the consumer against a library checkout at its pinned `--ref`; fails on drift in either direction, on a converged fork, on a fork whose library side moved since its `reconciled_sha256`, and on a manifest entry outside the library's offer list (`scripts/vendorable-paths.yml`) |
 | 5 | CLI install spec | wherever `pipx install …@<tag>` is written | a `lib-ref-sites.yml` entry, when the consumer declares one |
 
-Which of the five a given consumer has is that consumer's own record — the
+Which of the five a given consumer has is that consumer's own record. The
 library keeps no registry of its consumers. Each consumer's gates catch a
 missed pin at ITS next bump; the library-side release checklist below covers
 only library-owned state. A generated cluster is the easy case: all of its
@@ -239,21 +238,20 @@ The procedure:
    generates them per tag; this repo keeps no CHANGELOG file.
 2. `scripts/check-lib-pins.py --bump vX.Y.Z` in one MR — surfaces 1, 2 and 3 in
    one command. Re-run the gate to see the count it rewrote.
-3. **Re-vendor the scripts** the consumer copies. All three consumers gate
-   byte-identity against the library at their pinned ref (see "A vendored
-   script is a pin too" in [INCLUDE-CONTRACT.md](INCLUDE-CONTRACT.md)), so
-   skipping this fails their pipeline rather than quietly leaving them on last
-   release's gate under this release's template.
+3. **Re-vendor the scripts** the consumer copies. A consumer that gates
+   byte-identity against the library at its pinned ref fails its pipeline when
+   this is skipped. See "A vendored script is a pin too" in
+   [INCLUDE-CONTRACT.md](INCLUDE-CONTRACT.md).
 4. If a template's inputs changed, update the consumer's `inputs:` accordingly —
    read the parity note per template in
    [INCLUDE-CONTRACT.md](INCLUDE-CONTRACT.md). A role variable that the tag
    renames or removes is `| default(...)`-guarded, so the inventory edit lands
    in the SAME MR as the pin bump — a missed one takes the role default
    silently instead of failing.
-5. For weisssrv specifically, prove pipeline parity before merging (merged-YAML
-   diff + per-pipeline-type job-set enumeration) so no coverage is lost. A
-   manual run overriding the `lib_ref` input resolves the whole pipeline at the
-   candidate tag without a commit, which is the cheap half of that check.
+5. Prove pipeline parity before merging: diff the merged YAML and enumerate
+   the job set per pipeline type, so no coverage is lost. A manual run
+   overriding the `lib_ref` input resolves the whole pipeline at the candidate
+   tag without a commit, which is the cheap half of that check.
 
 ## Release checklist (this repo)
 
@@ -304,12 +302,12 @@ Before merging the MR that will cut a tag:
 ## Pinned tool versions inside templates
 
 Tool pins (kubeconform, kustomize, helm, docker CLI, buildx, yamllint, ruff,
-ansible-lint, pytest, …) are **inputs** with defaults set to weisssrv's current
-values. Bumping a tool is therefore either a library change (move the default +
-re-verify the sha256, cut a MINOR/MAJOR tag) or a per-consumer override
-(`inputs:`), never an unpinned moving target. Each downloaded binary is
-sha256-verified before use; service and job images are digest-pinned where they
-carry privilege (the DinD service, the AI-review image).
+ansible-lint, pytest, …) are **inputs** with pinned defaults. Bumping a tool is
+therefore either a library change (move the default + re-verify the sha256, cut
+a MINOR/MAJOR tag) or a per-consumer override (`inputs:`), never an unpinned
+moving target. Each downloaded binary is sha256-verified before use; service and
+job images are digest-pinned where they carry privilege (the DinD service, the
+AI-review image).
 
 ### Pins asserted across files
 
@@ -392,11 +390,3 @@ alters what a play does are all breaking. Three additions:
 
 Widening a `galaxy.yml` dependency to a new collection major is at least MINOR
 too: the consumer resolves it against its own environment.
-
-## CI Catalog (future)
-
-The instance (GitLab 19.2) supports CI Catalog components, which would add a
-versioned UI + `include: component:` semver resolution. This library starts with
-plain tag-pinned `include: project:` for simplicity; promoting it to a catalog
-resource is a later, additive step and does not change the pinning discipline
-above.

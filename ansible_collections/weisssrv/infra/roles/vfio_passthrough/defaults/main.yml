@@ -13,9 +13,9 @@ vfio_passthrough_manage_absent: true
 # consumer's `ansible_managed`. A hand-written file is reported and kept.
 vfio_passthrough_managed_marker: "managed by weisssrv.infra.vfio_passthrough"
 
-# Extra ownership markers accepted by the removal arm. A drop-in written before
-# the literal above shipped carries only the `ansible_managed` header, so the
-# defaults are its stable prefix. An empty entry is ignored, never matched.
+# Extra ownership markers accepted by the removal arm, for a drop-in carrying
+# only the `ansible_managed` header; the defaults are that header's stable
+# prefix from the config and from the variable. An empty entry is ignored.
 vfio_passthrough_legacy_markers:
   - >-
     {{ lookup('ansible.builtin.config', 'DEFAULT_MANAGED_STR', on_missing='skip')

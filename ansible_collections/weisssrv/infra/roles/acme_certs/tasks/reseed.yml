@@ -1,0 +1,99 @@
+---
+# Re-seed entry point for the cert authority host (tasks_from: reseed). Re-pins
+# the distribution key on every target acme_certs_reseed_hosts selects, then
+# reports each one it could not pin. Run it after an authorized_keys rewrite.
+
+- name: Re-seed the cert-distribution targets
+  when: acme_certs_enabled | bool
+  block:
+    - name: Select the targets to re-seed
+      ansible.builtin.set_fact:
+        acme_certs_reseed_targets: >-
+          {{ acme_certs_distribution_targets | default([])
+             | selectattr('host', 'in', acme_certs_reseed_hosts) | list }}
+        acme_certs_reseed_unknown: >-
+          {{ acme_certs_reseed_hosts
+             | difference(acme_certs_distribution_targets | default([]) | map(attribute='host')) }}
+        # An ssh_no_sudo target keeps an operator-managed authorized_keys, so a
+        # request for one is reported as a miss rather than dropped.
+        acme_certs_reseed_no_sudo: "{{ acme_certs_reseed_hosts | select('in', _acme_certs_no_sudo_hosts) | list }}"
+        acme_certs_unseeded_reasons: {}
+
+    # The role wrote the pubkey file on its last full run, so a job whose
+    # environment lacks the public key can still re-seed.
+    - name: Read the distribution pubkey from this host
+      ansible.builtin.slurp:
+        src: "{{ acme_certs_ssh_key_path }}.pub"
+      register: acme_certs_reseed_pubkey_file
+      failed_when: false
+      when: acme_certs_ssh_public_key | default('') | length == 0
+
+    - name: Select the pubkey to re-seed with
+      ansible.builtin.set_fact:
+        acme_certs_reseed_public_key: >-
+          {{ acme_certs_ssh_public_key | default('', true)
+             or (acme_certs_reseed_pubkey_file.content | default('') | b64decode | trim) }}
+
+    - name: Seed each selected target
+      ansible.builtin.include_tasks: seed-target.yml
+      loop: "{{ acme_certs_reseed_targets }}"
+      loop_control:
+        loop_var: acme_certs_target
+        label: "{{ acme_certs_target.host }}"
+      vars:
+        acme_certs_ssh_public_key: "{{ acme_certs_reseed_public_key }}"
+      when:
+        - not (acme_certs_target.ssh_no_sudo | default(false))
+        - acme_certs_reseed_public_key | length > 0
+
+    # A requested host outside acme_certs_distribution_targets is a miss too:
+    # a typo or a target dropped for want of a host_key re-pins nothing.
+    - name: Collect the targets left without the pinned key
+      vars:
+        _acme_certs_reseed_seedable: >-
+          {{ acme_certs_reseed_targets | map(attribute='host')
+             | reject('in', acme_certs_reseed_no_sudo) | list }}
+        # A missing file means no key; any other read error is named.
+        _acme_certs_reseed_pubkey_reason: >-
+          neither acme_certs_ssh_public_key nor {{ acme_certs_ssh_key_path }}.pub on
+          {{ inventory_hostname }} holds the distribution pubkey{{
+          ('; reading it failed: ' ~ acme_certs_reseed_pubkey_file.msg)
+          if ('not found' not in acme_certs_reseed_pubkey_file.msg | default('not found')) else '' }}
+        _acme_certs_reasons: >-
+          {{ dict(acme_certs_reseed_unknown
+                  | zip(['not in acme_certs_distribution_targets'] * (acme_certs_reseed_unknown | length)))
+             | combine(dict(acme_certs_reseed_no_sudo
+                  | zip(['ssh_no_sudo: authorized_keys is operator-managed, never seeded']
+                        * (acme_certs_reseed_no_sudo | length))))
+             | combine(dict(_acme_certs_reseed_seedable
+                            | zip([_acme_certs_reseed_pubkey_reason] * (_acme_certs_reseed_seedable | length)))
+                       if (acme_certs_reseed_public_key | length == 0)
+                       else acme_certs_unseeded_reasons) }}
+      ansible.builtin.set_fact:
+        acme_certs_reseed_missed_reasons: "{{ _acme_certs_reasons }}"
+        acme_certs_reseed_report: "{{ _acme_certs_reasons_report }}"
+
+# A re-seed with the role off pins nothing, so it is a miss like any other.
+- name: Report the targets the re-seed left unpinned
+  when: >-
+    not (acme_certs_enabled | bool)
+    or (acme_certs_reseed_missed_reasons | default({}) | length > 0)
+  vars:
+    _acme_certs_reseed_miss_msg: >-
+      {{ ('acme_certs_enabled is false on ' ~ inventory_hostname
+          ~ '; the reseed entry point re-pins nothing.')
+         if not (acme_certs_enabled | bool)
+         else ('Not re-seeded: ' ~ acme_certs_reseed_report ~ '. Their next cert push'
+               ~ ' fails until this entry point or the full role runs against them again.') }}
+  block:
+    - name: Warn about the targets the re-seed left unpinned
+      ansible.builtin.debug:
+        msg: "{{ _acme_certs_reseed_miss_msg }}"
+      when: not (acme_certs_reseed_fail_on_miss | bool)
+
+    - name: Fail when the re-seed left targets unpinned
+      ansible.builtin.fail:
+        msg: >-
+          {{ _acme_certs_reseed_miss_msg }} Set acme_certs_reseed_fail_on_miss to
+          false to report this as a warning instead.
+      when: acme_certs_reseed_fail_on_miss | bool

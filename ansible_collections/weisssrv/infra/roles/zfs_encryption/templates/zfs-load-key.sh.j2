@@ -1,8 +1,7 @@
 #!/bin/bash
 # {{ ansible_managed }}
-#
 # zfs-load-key.sh <pool> [<item-locator> [field]]
-#
+
 {% if zfs_encryption_key_command %}
 # Loads a ZFS pool passphrase from zfs_encryption_key_command via
 # `zfs load-key`. Mounting is zfs-mount-encrypted.service's job; boot
@@ -12,9 +11,8 @@
 # bearer token at {{ zfs_encryption_token_path }} reaches curl on stdin (`-H @-`),
 # never argv. Mounting and boot ordering: role README.
 {% endif %}
-#
-# CRITICAL: zfs-load-key@.service lists 1/3/4/7 in RestartPreventExitStatus,
-# so renumbering these exit codes changes retry behaviour.
+
+# CRITICAL: zfs-load-key@.service stops retrying on 1/3/4/7; never renumber.
 #   0 — key loaded, or already loaded
 #   1 — config / arg / token error
 {% if zfs_encryption_key_command %}
@@ -25,8 +23,7 @@
 #   3 — vault, item or field not found
 {% endif %}
 #   4 — `zfs load-key` failed
-#   5 — pool not imported in time, absent, or its roots could not be
-#       enumerated (retryable; not in RestartPreventExitStatus)
+#   5 — pool not imported in time, absent, or its roots not enumerable (retried)
 {% if not zfs_encryption_key_command %}
 #   7 — Connect returned 401/403 (auth failure; no point retrying)
 {% endif %}
@@ -50,6 +47,13 @@ FETCH_TIMEOUT="{{ zfs_encryption_fetch_timeout_seconds }}"
 RETRY_SLEEP="{{ zfs_encryption_fetch_retry_seconds }}"
 
 log() { logger -t "zfs-load-key[${POOL}]" -s -- "$*"; }
+
+# Jittered so a cold-cluster boot does not synchronize hosts against the key
+# source; floored at 1 so a RETRY_SLEEP of 0 cannot busy-loop.
+retry_sleep() {
+    local base=$(( RETRY_SLEEP > 1 ? RETRY_SLEEP : 1 ))
+    sleep "$(( base + RANDOM % base ))"
+}
 
 {% if not zfs_encryption_key_command %}
 # Connect response bodies land in a /dev/shm temp file, and the item fetch's
@@ -90,9 +94,7 @@ until zpool list -H -o name "$POOL" >/dev/null 2>&1; do
         log "pool $POOL not imported after ${FETCH_TIMEOUT}s — check zfs_encryption_pools naming and zfs-import.target ordering"
         exit 5
     fi
-    sleep_base=$(( RETRY_SLEEP > 1 ? RETRY_SLEEP : 1 ))
-    jitter=$(( RANDOM % sleep_base ))
-    sleep "$(( sleep_base + jitter ))"
+    retry_sleep
 done
 
 # Already loaded? Skip silently — makes the unit safe to re-run.
@@ -161,16 +163,13 @@ else
         esac
 
         if [[ -z "$VAULT" ]]; then
-            sleep_base=$(( RETRY_SLEEP > 1 ? RETRY_SLEEP : 1 ))
-            jitter=$(( RANDOM % sleep_base ))
-            sleep "$(( sleep_base + jitter ))"
+            retry_sleep
         fi
     done
     unset body
 fi
 
-# Resolve 1P item ID from title (Connect requires ID for the field
-# fetch endpoint). Use jq for url-encoding (already required).
+# Connect's item endpoint takes an ID, so resolve the item title to one first.
 encoded=$(jq -rn --arg t "$ITEM_TITLE" '$t | @uri')
 LIST_PATH="/v1/vaults/${VAULT}/items?filter=title%20eq%20%22${encoded}%22"
 
@@ -207,12 +206,7 @@ while [[ -z "$ITEM_ID" ]]; do
     esac
 
     if [[ -z "$ITEM_ID" ]]; then
-        # Spread retries across hosts so a cold-cluster boot doesn't
-        # synchronize traffic against Connect. Floor RETRY_SLEEP at 1
-        # so an operator override of 0 doesn't busy-loop with sleep 0.
-        sleep_base=$(( RETRY_SLEEP > 1 ? RETRY_SLEEP : 1 ))
-        jitter=$(( RANDOM % sleep_base ))
-        sleep "$(( sleep_base + jitter ))"
+        retry_sleep
     fi
 done
 
@@ -242,9 +236,7 @@ while :; do
             ;;
         *)
             log "Connect HTTP $http fetching item $ITEM_ID; will retry"
-            sleep_base=$(( RETRY_SLEEP > 1 ? RETRY_SLEEP : 1 ))
-            jitter=$(( RANDOM % sleep_base ))
-            sleep "$(( sleep_base + jitter ))"
+            retry_sleep
             ;;
     esac
 done

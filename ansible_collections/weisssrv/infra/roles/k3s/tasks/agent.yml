@@ -43,7 +43,6 @@
   ansible.builtin.include_tasks: gpu.yml
   when: k3s_gpu_node | default(false)
 
-# Version detection + install-script staging (shared with server.yml)
 - name: Detect k3s version and stage install script
   ansible.builtin.include_tasks: install-script.yml
 

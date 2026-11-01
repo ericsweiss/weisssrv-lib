@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Fail a comment block over three content lines (eight when it opens "CRITICAL:").
 
-Scans the paths given, else the config's `paths`, else the working directory; exits 0
-clean, 1 on an over-long block, 2 on an operator error. Contract: docs/SCRIPTS.md.
+Scans the paths given, else the config's `paths`, else the working directory. Exits 0
+clean, 1 on an over-long block, 2 on operator error. weisssrv-lib docs/SCRIPTS.md.
 """
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ LINE_MARKERS = {
     ".conf": ("#",),
     ".go": ("//",),
     ".hcl": ("#", "//"),
+    ".hujson": ("//",),
     ".ini": ("#",),
     # A .j2 renders into whatever language its consumer needs, so both markers.
     ".j2": ("#", "//"),
@@ -42,6 +43,7 @@ LINE_MARKERS = {
 BLOCK_DELIMITERS = {
     ".go": (("/*", "*/"),),
     ".hcl": (("/*", "*/"),),
+    ".hujson": (("/*", "*/"),),
     ".j2": (("{#", "#}"),),
     ".js": (("/*", "*/"),),
     ".tf": (("/*", "*/"),),
@@ -53,6 +55,7 @@ BLOCK_DELIMITERS = {
 NAME_MARKERS = {
     ".ansible-lint": ("#",),
     ".ansible-lint-ignore": ("#",),
+    ".dockerignore": ("#",),
     ".editorconfig": ("#",),
     ".gitattributes": ("#",),
     ".gitignore": ("#",),
@@ -118,6 +121,10 @@ FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)")
 # block beneath them. The format allows them only at the top of the file.
 PARSER_DIRECTIVE = re.compile(r"^#\s*(?:syntax|escape)\s*=", re.IGNORECASE)
 JINJA_TAG_LINE = re.compile(r"^\{[%#].*[%#]\}$")
+# A line holding only `{% %}` statements renders to nothing when the engine
+# trims blocks, so the comment lines on either side render as one block.
+JINJA_STATEMENT_LINE = re.compile(r"^(?:\{%.*?%\}\s*)+$")
+JINJA_KEYWORD = re.compile(r"\{%-?\s*(\w+)")
 
 
 def _rendered_name(path: Path) -> Path:
@@ -151,6 +158,25 @@ def takes_parser_directives(path: Path) -> bool:
     as parser directives rather than as comments."""
     name = _rendered_name(path).name
     return name == "Dockerfile" or name.startswith("Dockerfile.")
+
+
+def jinja_trims_blocks(path: Path):
+    """How a statement-only line renders: True for an Ansible `.j2` (trim_blocks
+    on), False for a copier `.jinja` (trim_blocks off), None for no template."""
+    if path.name.endswith(TEMPLATE_SUFFIX):
+        return False
+    if _rendered_name(path).suffix == ".j2":
+        return True
+    return None
+
+
+def _jinja_transparent(stripped: str, trim_blocks) -> bool:
+    """Whether a statement-only line vanishes from the render, joining the
+    comment lines around it. Without trim_blocks only a `-` trim marker does."""
+    if trim_blocks is None or not JINJA_STATEMENT_LINE.match(stripped):
+        return False
+    return trim_blocks or stripped.startswith("{%-") or stripped.endswith("-%}")
+
 
 # Tool caches, scratch trees and third-party trees a repo does not author.
 # Written without a leading `*/` so they also match at the root of a relative
@@ -208,24 +234,72 @@ def _strip_markers(text: str, markers: tuple) -> str:
     return stripped
 
 
-def _record(findings: list, path: Path, line: int, body: list, limits: Limits) -> None:
+def _record(
+    findings: list,
+    path: Path,
+    line: int,
+    body: list,
+    limits: Limits,
+    length: int | None = None,
+) -> None:
     content = [ln for ln in body if ln]
     first = content[0] if content else ""
     limit = limits.limit_for(first)
-    if len(content) > limit:
-        findings.append(Finding(path, line, len(content), limit, first))
+    length = len(content) if length is None else length
+    if length > limit:
+        findings.append(Finding(path, line, length, limit, first))
+
+
+class _BranchCount:
+    """Content lines of one run, where an if/elif/else chain counts as its
+    longest branch, the most any single render can emit."""
+
+    def __init__(self):
+        self.total = 0
+        self.frames: list = []
+
+    def add(self, lines: int) -> None:
+        if self.frames:
+            self.frames[-1][1] += lines
+        else:
+            self.total += lines
+
+    def statement(self, keyword: str) -> None:
+        if keyword == "if":
+            self.frames.append([0, 0])
+        elif keyword in ("elif", "else"):
+            if not self.frames:
+                # The `if` opened before this run, so the run so far is one branch.
+                self.frames.append([self.total, 0])
+                self.total = 0
+            else:
+                frame = self.frames[-1]
+                frame[0], frame[1] = max(frame), 0
+        elif keyword == "endif" and self.frames:
+            self.add(max(self.frames.pop()))
+
+    def close(self) -> int:
+        while self.frames:
+            self.add(max(self.frames.pop()))
+        return self.total
 
 
 def line_comment_findings(
-    path: Path, text: str, markers: tuple, limits: Limits, directives: bool = False
+    path: Path,
+    text: str,
+    markers: tuple,
+    limits: Limits,
+    directives: bool = False,
+    trim_blocks=None,
 ) -> list:
     """Runs of whole-line comments longer than their limit.
 
-    A trailing comment on a code line is one line by construction, so only
-    lines that are comments end to end are grouped into a run.
+    Only whole-line comments group into a run. A jinja statement line that
+    renders to nothing neither ends a run nor counts toward it.
     """
     findings: list = []
     run: list = []
+    count = _BranchCount()
     start = 0
     preamble = directives
     before_body = True
@@ -242,16 +316,22 @@ def line_comment_findings(
             is_comment = False
         if stripped and not JINJA_TAG_LINE.match(stripped):
             before_body = False
+        if run and _jinja_transparent(stripped, trim_blocks):
+            for keyword in JINJA_KEYWORD.findall(stripped):
+                count.statement(keyword)
+            continue
         if is_comment:
             if not run:
                 start = number
             run.append(_strip_markers(stripped, markers))
+            count.add(1 if run[-1] else 0)
             continue
         if run:
-            _record(findings, path, start, run, limits)
+            _record(findings, path, start, run, limits, count.close())
             run = []
+            count = _BranchCount()
     if run:
-        _record(findings, path, start, run, limits)
+        _record(findings, path, start, run, limits, count.close())
     return findings
 
 
@@ -455,8 +535,12 @@ def fenced_findings(path: Path, text: str, limits: Limits) -> list:
             continue
         snippet = "\n".join(body)
         if markers:
+            trim = True if suffix == ".j2" else None
             findings += _shift(
-                line_comment_findings(path, snippet, markers, limits), start
+                line_comment_findings(
+                    path, snippet, markers, limits, trim_blocks=trim
+                ),
+                start,
             )
         if delimiters:
             findings += _shift(
@@ -499,7 +583,12 @@ def check_file(
     if markers:
         findings.extend(
             line_comment_findings(
-                path, text, markers, limits, takes_parser_directives(path)
+                path,
+                text,
+                markers,
+                limits,
+                takes_parser_directives(path),
+                jinja_trims_blocks(path),
             )
         )
     if delimiters:
@@ -575,7 +664,10 @@ def main(argv=None) -> int:
             "what ends a block: a bare '#' keeps the same block going. A block "
             "whose first line starts with 'CRITICAL:' may run to eight. A "
             "Dockerfile's leading '# syntax=' / '# escape=' parser directives "
-            "are not comments. A .py.jinja template has its jinja tags "
+            "are not comments. A line of only '{% %}' statements in a .j2, or "
+            "in a .jinja with a '-' trim marker, renders to nothing: it neither "
+            "ends nor counts toward a block, and an if/else chain counts as its "
+            "longest branch. A .py.jinja template has its jinja tags "
             "neutralized before it is parsed, and one that still does not "
             "parse is a warning unless --strict-jinja. Markdown is scanned "
             "only with --scan-fenced-code, "

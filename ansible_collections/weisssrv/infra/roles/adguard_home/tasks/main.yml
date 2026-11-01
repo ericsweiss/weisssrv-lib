@@ -136,10 +136,9 @@
         group: root
         mode: "0700"
 
-    # CRITICAL: feeds the trust assert below, and `stat` must stay at its
-    # default follow: false. Following reports the target's ownership, while
-    # the replaceable symlink itself is what an attacker repoints. Unfollowed,
-    # a symlinked cache directory stats as woth and the assert denies it.
+    # Feeds the trust assert below; `stat` stays at follow: false, so a
+    # symlinked cache directory stats as the replaceable link itself and the
+    # assert denies it.
     - name: Look for the staged-archive cache directory
       ansible.builtin.stat:
         path: "{{ adguard_home_archive_cache_dir }}"
@@ -166,11 +165,8 @@
         - adguard_home_staged_archive.stat.exists | default(false)
         - adguard_home_archive_sha256 | length == 0
 
-    # CRITICAL: a digest is only as trustworthy as the directory holding it,
-    # since whoever can swap the archive can swap the checksums.txt beside it.
-    # The cache directory and every staged file must be root-owned and closed
-    # to group and other writers. This runs before the slurp so an untrusted
-    # checksums.txt is never read. See the README, security notes.
+    # A digest is only as trustworthy as the directory holding it. Runs before
+    # the slurp, so an untrusted checksums.txt is never read (README, Security).
     - name: Assert the staged-archive cache is a root-owned trust boundary
       ansible.builtin.assert:
         that:
@@ -420,8 +416,7 @@
     stdin: "{{ adguard_home_admin_password }}"
     stdin_add_newline: false
   register: adguard_home_hash_result
-  # Compared exactly, NOT with the `'CHANGED' in ...` idiom used elsewhere: the
-  # negative verdict is UNCHANGED, which contains CHANGED.
+  # Compared exactly: the negative verdict UNCHANGED contains CHANGED.
   changed_when: adguard_home_hash_result.stdout | default('') | trim == 'CHANGED'
   when:
     - adguard_home_config.stat.exists

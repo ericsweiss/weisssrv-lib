@@ -4,9 +4,9 @@
 # extras in the job's before_script.
 
 collections:
-  # Major-line ranges, not the exact pins requirements.txt uses; docker/README.md
-  # says why. tests/test_ansible_collection.py gates them by CONTAINMENT, so the
-  # last two entries may be test-only. Bump a shared range in all three at once.
+  # Major-line ranges (docker/README.md). Each galaxy.yml dependency must appear
+  # here and in the collection's requirements.yml with the same range; crypto and
+  # docker are test-only. tests/test_ansible_collection.py gates it.
   - name: ansible.posix
     version: ">=2.1.0,<3.0.0"
   - name: community.general

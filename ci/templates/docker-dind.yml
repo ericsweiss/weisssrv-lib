@@ -14,8 +14,8 @@ spec:
         not exceed the pod interface MTU (1420 on flannel over WireGuard or
         VXLAN); the 1500 default black-holes large TLS frames and shows up as
         connection resets on fetches from the job's containers. `--mtu` covers
-        the default bridge, the default-network-opt the user-defined networks
-        molecule and compose create.
+        the default bridge; `--default-network-opt` covers the user-defined
+        networks molecule and compose create.
     docker_cli_version:
       default: "27.5.1"
       description: >-

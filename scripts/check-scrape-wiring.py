@@ -19,6 +19,24 @@ except ImportError:
     print("ERROR: PyYAML required: pip install pyyaml", file=sys.stderr)
     raise SystemExit(2) from None
 
+_HERE = str(pathlib.Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+try:
+    from gate_common import (  # noqa: E402  (resolved from this script's own directory)
+        NAME_LABEL,
+        label_selector_problem,
+        policy_types,
+        selector_matches as label_selector_matches,
+    )
+except ImportError:
+    print(
+        "ERROR: gate_common.py must be vendored beside this gate "
+        "(see scripts/vendorable-paths.yml)", file=sys.stderr,
+    )
+    raise SystemExit(2) from None
+
 DEFAULT_OBSERVABILITY_NS = "observability"
 DEFAULT_TREE = "kubernetes/flux"
 WORKLOAD_KINDS = ("Deployment", "StatefulSet", "DaemonSet")
@@ -120,75 +138,14 @@ def mapping(value: object, subject: str, field: str) -> dict:
     return value
 
 
-SELECTOR_OPERATORS = ("In", "NotIn", "Exists", "DoesNotExist")
-
-# A Kubernetes label key: an optional DNS-subdomain prefix (63-char segments) and
-# "/", then a name of 1-63 alphanumerics, `-`, `_` or `.`, alphanumeric at both ends.
-_DNS_LABEL = r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?"
-LABEL_KEY = re.compile(
-    rf"^(?:(?=.{{1,253}}/){_DNS_LABEL}(?:\.{_DNS_LABEL})*/)?"
-    r"(?=.{1,63}$)[A-Za-z0-9](?:[-A-Za-z0-9_.]*[A-Za-z0-9])?$"
-)
-
-
-# A label value is empty or a name of the same 1-63 character shape.
-LABEL_VALUE = re.compile(r"^(?:[A-Za-z0-9](?:[-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?)?$")
-
-
-def label_key(key: object) -> bool:
-    """Is `key` a valid Kubernetes label key?"""
-    return isinstance(key, str) and LABEL_KEY.fullmatch(key) is not None
-
-
-def label_value(value: object) -> bool:
-    """Is `value` a valid Kubernetes label value, or a whole Flux placeholder?
-
-    An unrendered tree carries `${name}` where postBuild later writes the value.
-    """
-    return isinstance(value, str) and (
-        LABEL_VALUE.fullmatch(value) is not None or SUBSTITUTION.fullmatch(value) is not None
-    )
-
-
-NAME_LABEL = "kubernetes.io/metadata.name"
-
-
 def selector_problem(selector: object) -> str | None:
-    """Why `selector` is not a LabelSelector this gate can evaluate, or None."""
+    """Why `selector` is not a LabelSelector this gate can evaluate, or None.
+
+    An unrendered tree carries a whole `${name}` where postBuild writes a value.
+    """
     if not isinstance(selector, dict):
         return "is not a mapping"
-    unknown = sorted(str(k) for k in set(selector) - {"matchLabels", "matchExpressions"})
-    if unknown:
-        return f"carries {', '.join(unknown)}"
-    # Checked before any `or` default: an empty list or mapping of the wrong
-    # type is malformed, not an absent term.
-    if selector.get("matchLabels") is not None and not isinstance(selector["matchLabels"], dict):
-        return "has a matchLabels that is not a mapping"
-    for key, value in (selector.get("matchLabels") or {}).items():
-        if not label_key(key):
-            return f"has a matchLabels key {key!r} that is not a valid label key"
-        if not label_value(value):
-            return f"has a matchLabels value {value!r} that is not a valid label value"
-    expressions = selector.get("matchExpressions")
-    if expressions is not None and not isinstance(expressions, list):
-        return "has a matchExpressions that is not a list"
-    for entry in expressions or []:
-        if not isinstance(entry, dict) or not label_key(entry.get("key")):
-            return f"has a malformed matchExpressions entry {entry!r}"
-        operator, values = entry.get("operator"), entry.get("values")
-        if operator not in SELECTOR_OPERATORS:
-            return f"has a matchExpressions operator {operator!r} this gate does not know"
-        # The API requires a non-empty list of label values for In/NotIn, and no
-        # values (absent, null or []) for Exists/DoesNotExist.
-        if operator in ("In", "NotIn"):
-            wellformed = (
-                isinstance(values, list) and bool(values) and all(label_value(v) for v in values)
-            )
-        else:
-            wellformed = values is None or values == []
-        if not wellformed:
-            return f"has a malformed matchExpressions entry {entry!r}"
-    return None
+    return label_selector_problem(selector, placeholders=True)
 
 
 def selector_matches(selector: dict, labels: dict, subject: str = "a selector") -> bool:
@@ -200,22 +157,7 @@ def selector_matches(selector: dict, labels: dict, subject: str = "a selector") 
     if problem:
         note(f"{subject}: its selector {problem}, so it is not credited with a match")
         return False
-    for key, value in (selector.get("matchLabels") or {}).items():
-        if key not in labels or labels[key] != value:
-            return False
-    for entry in selector.get("matchExpressions") or []:
-        key, operator = entry["key"], entry["operator"]
-        present = key in labels
-        listed = present and labels[key] in (entry.get("values") or [])
-        # NotIn and DoesNotExist hold for a pod that lacks the key altogether.
-        if (
-            (operator == "In" and not listed)
-            or (operator == "NotIn" and listed)
-            or (operator == "Exists" and not present)
-            or (operator == "DoesNotExist" and present)
-        ):
-            return False
-    return True
+    return label_selector_matches(selector, labels, placeholders=True)
 
 
 def shown(selector: dict) -> dict:
@@ -294,16 +236,35 @@ def selected_workloads(documents: list[dict], pods: dict) -> list[Workload]:
         pod = mapping(template.get("spec"), subject, "spec.template.spec")
         names: dict[str, int] = {}
         numbers: set[int] = set()
-        for container in pod.get("containers") or []:
-            for port in container.get("ports") or []:
+        for container in serving_containers(pod, subject):
+            for port in entries(container.get("ports"), subject, "a container's ports"):
                 number = port.get("containerPort")
-                if not number:
+                # Prometheus scrapes over TCP, so a UDP or SCTP port serves nothing.
+                if not number or (port.get("protocol") or "TCP") != "TCP":
                     continue
                 numbers.add(number)
                 if port.get("name"):
                     names[port["name"]] = number
         selected.append(Workload(dict(labels), names, numbers, subject))
     return selected
+
+
+def entries(value: object, subject: str, field: str) -> list[dict]:
+    """A list the gate walks entry by entry; a non-mapping entry cannot be checked."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(e, dict) for e in value):
+        raise GateError(f"{subject}: {field} is not a list of mappings")
+    return value
+
+
+def serving_containers(pod: dict, subject: str) -> list[dict]:
+    """The containers that serve for the pod's lifetime, native sidecars included."""
+    sidecars = [
+        c for c in entries(pod.get("initContainers"), subject, "spec.template.spec.initContainers")
+        if c.get("restartPolicy") == "Always"
+    ]
+    return entries(pod.get("containers"), subject, "spec.template.spec.containers") + sidecars
 
 
 def spellings(number: int, names: dict[str, int]) -> set[int | str]:
@@ -623,11 +584,8 @@ SCRAPER_LABELS: dict[str, str] = {}
 def admits(policy: dict, pods: dict, accepted: set[int | str], scrape_ns: str) -> bool:
     """Does this NetworkPolicy let the observability namespace in on the port?"""
     spec = mapping(policy.get("spec"), describe(policy), "spec")
-    rules = spec.get("ingress") or []
-    declared = spec.get("policyTypes")
-    # The API infers Ingress from the presence of `ingress:` when policyTypes is
-    # absent, and an empty list round-trips as absent, so it infers too.
-    if not ("Ingress" in declared if declared else bool(rules)):
+    rules = entries(spec.get("ingress"), describe(policy), "spec.ingress")
+    if "Ingress" not in policy_types(spec):
         return False
     selected = mapping(spec.get("podSelector"), describe(policy), "spec.podSelector")
     name = (policy.get("metadata") or {}).get("name")
@@ -635,7 +593,7 @@ def admits(policy: dict, pods: dict, accepted: set[int | str], scrape_ns: str) -
     if not selector_matches(selected, pods, name):
         return False
     for rule in rules:
-        peers = rule.get("from") or []
+        peers = entries(rule.get("from"), describe(policy), "an ingress rule's from")
         # An absent or empty `from` matches every source, observability included.
         scoped = not peers
         for peer in peers:
@@ -1074,6 +1032,7 @@ def main(argv: list[str] | None = None) -> int:
              "so a monitor's matchNames resolves against it",
     )
     arguments = parser.parse_args(argv)
+    SCRAPER_LABELS.clear()
     for item in arguments.prometheus_pod_label:
         key, sep, value = item.partition("=")
         if not sep or not key:

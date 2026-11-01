@@ -1,7 +1,7 @@
 ---
 # Render/contract scenario: nextcloud_skip_install skips everything needing a
-# Docker daemon, so the compose file, .env, systemd units, nginx site and backup
-# wrapper are rendered and asserted. occ and SSO wiring is lint-checked only.
+# Docker daemon, so the rendered artefacts are asserted. The SSO pass runs
+# against a mock occ; the SMTP occ wiring is lint-checked only.
 provisioner:
   playbooks:
     prepare: prepare.yml

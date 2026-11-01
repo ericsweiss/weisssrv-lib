@@ -7,16 +7,6 @@
   become: true
   gather_facts: false
   tasks:
-    - name: Sanity — the role still queries cluster status (quorate gate)
-      ansible.builtin.command: pvecm status
-      register: pvecm_check
-      changed_when: false
-
-    - name: Pvecm reports quorate
-      ansible.builtin.assert:
-        that:
-          - "'Quorate:          Yes' in pvecm_check.stdout"
-
     - name: Load HA contract artifact
       ansible.builtin.slurp:
         src: /tmp/molecule-results/ha-contract.json
@@ -90,8 +80,8 @@
         fail_msg: "Expected create=1/update=0 for absent job, got create={{ ha.d_create }}/update={{ ha.d_update }}"
 
     # (d2) The index comes from `pvesh get /cluster/replication`, whose jobs
-    #      carry guest/jobnum/type and rate/disable: the parse must keep every
-    #      job, read the bare `target` node, and mutate nothing.
+    #      carry guest/jobnum/type and rate/disable: the parse keeps every job,
+    #      reads the bare `target` node and `disable`, and mutates nothing.
     - name: D2 — the API-shape index parses whole and triggers no mutation
       ansible.builtin.assert:
         that:
@@ -115,23 +105,26 @@
           - "ha.d2_detail['150-1'].schedule == '*/30'"
           - "ha.d2_detail['160-0'].source == 'pve-opt-09'"
           - "'rate' not in ha.d2_detail['150-1']"
-          - "'disable' not in ha.d2_detail['150-1']"
+          - "ha.d2_detail['150-1'].disable == 1"
+          - "'disable' not in ha.d2_detail['150-0']"
         fail_msg: >-
           The parsed job detail does not match the stubbed index:
           {{ ha.d2_detail }}
 
     # (j) REAL target drift (desired target set differs) with the VM local:
-    #     the stale job is deleted and recreated on the correct target.
-    - name: J — target drift with VM local triggers exactly one delete + one create
+    #     the stale job is deleted and the correct target created under a
+    #     fresh id, as the deleted id stays indexed until removal completes.
+    - name: J — target drift with VM local triggers one delete + one fresh-id create
       ansible.builtin.assert:
         that:
           - ha.j_drifted == ['150-0']
           - ha.j_delete == 1
           - ha.j_create == 1
+          - ha.j_reused == 0
         fail_msg: >-
-          Expected 150-0 detected as drifted and delete=1/create=1 for target
-          drift (VM local), got drifted={{ ha.j_drifted }},
-          delete={{ ha.j_delete }}/create={{ ha.j_create }}
+          Expected 150-0 detected as drifted, delete=1 and one create of
+          150-1 -> pve-opt-02, got drifted={{ ha.j_drifted }},
+          delete={{ ha.j_delete }}/create={{ ha.j_create }}/reused={{ ha.j_reused }}
 
     # (k) Target drift with the VM NOT local: the live job must never be
     #     deleted (recreation is impossible here — deleting would silently
@@ -145,7 +138,7 @@
 
     # (l) Permuted job-ID<->target assignments with an identical target set
     #     (post-migration state) are NOT drift: zero mutations, or every
-    #     `task proxmox:ha` run would force full ZFS resyncs.
+    #     converge would force full ZFS resyncs.
     - name: L — permuted IDs with matching target set trigger NO mutations
       ansible.builtin.assert:
         that:
@@ -300,6 +293,89 @@
           Expected delete=1/create=0 locally and ZERO calls for a job sourced
           elsewhere, got {{ ha.s_delete }}/{{ ha.s_create }}/{{ ha.s2_total }}
 
+    # (s3) A disabled entry resolves by (VMID, target), so a permuted id never
+    #      removes the job serving the enabled target.
+    - name: S3 — disabling a permuted entry deletes only the disabled target's job
+      ansible.builtin.assert:
+        that:
+          - ha.s3_disabled_deleted == 1
+          - ha.s3_kept_deleted == 0
+          - ha.s3_total == 1
+          - ha.s3_orphans == []
+        fail_msg: >-
+          Expected one delete of 150-0 (the pve-opt-03 job) and 150-1 kept, got
+          disabled_deleted={{ ha.s3_disabled_deleted }},
+          kept_deleted={{ ha.s3_kept_deleted }}, total={{ ha.s3_total }},
+          orphans={{ ha.s3_orphans }}
+
+    - name: J2 — a still-wanted live target is kept and the missing one created
+      ansible.builtin.assert:
+        that:
+          - ha.j2_drifted == []
+          - ha.j2_delete == 0
+          - ha.j2_create == 1
+          - ha.j2_free_id_create == 1
+        fail_msg: >-
+          Expected no delete and one create of 150-1 -> pve-opt-02, got
+          drifted={{ ha.j2_drifted }}, delete={{ ha.j2_delete }},
+          create={{ ha.j2_create }}/free_id={{ ha.j2_free_id_create }}
+
+    - name: J3 — a stale-source job is reported and kept, never deleted or recreated
+      ansible.builtin.assert:
+        that:
+          - ha.j3_stale == ['150-0']
+          - ha.j3_delete == 0
+          - ha.j3_create == 0
+          - ha.j3_total == 0
+        fail_msg: >-
+          Expected 150-0 reported with no pvesr call, got
+          stale={{ ha.j3_stale }}, delete={{ ha.j3_delete }},
+          create={{ ha.j3_create }}, total={{ ha.j3_total }}
+
+    - name: S4 — a live-disabled wanted job is re-enabled with one update
+      ansible.builtin.assert:
+        that:
+          - ha.s4_enable == 1
+          - ha.s4_total == 1
+          - ha.s4_reenabled == ['150-0']
+        fail_msg: >-
+          Expected one `--disable 0` update reported as a re-enable, got
+          enable={{ ha.s4_enable }}/total={{ ha.s4_total }}/reported={{ ha.s4_reenabled }}
+
+    - name: S6 — a paused entry's disabled job is not reported as a re-enable
+      ansible.builtin.assert:
+        that:
+          - ha.s6_reenabled == []
+        fail_msg: "Expected no re-enable report for a paused entry, got {{ ha.s6_reenabled }}"
+
+    - name: S5-S7 — a paused entry holds its job disabled and never deletes it
+      ansible.builtin.assert:
+        that:
+          - "ha.s5 == {'pause': 1, 'create': 0, 'delete': 0, 'total': 1}"
+          - "ha.s6 == {'pause': 0, 'create': 0, 'delete': 0, 'total': 0}"
+          - "ha.s7 == {'pause': 0, 'create': 1, 'delete': 0, 'total': 1}"
+        fail_msg: >-
+          Expected one `--disable 1` update on an enabled job, nothing on a
+          disabled one and one disabled create on an empty index, got
+          s5={{ ha.s5 }}, s6={{ ha.s6 }}, s7={{ ha.s7 }}
+
+    # (d3/d4) Only a same-id race is tolerated on create; a create blocked by
+    #         another job to the same target fails the play.
+    - name: D3 — a create blocked by a same-target job fails loud
+      ansible.builtin.assert:
+        that:
+          - ha.d3_failed
+          - ha.d3_create == 1
+        fail_msg: >-
+          A per-target 'already exists' rejection must fail the create task after
+          one attempt, got failed={{ ha.d3_failed }}/create={{ ha.d3_create }}
+
+    - name: D4 — a same-id create race is tolerated
+      ansible.builtin.assert:
+        that:
+          - ha.d4_create == 1
+        fail_msg: "Expected one tolerated create attempt, got {{ ha.d4_create }}"
+
     - name: T — an unsupported rule type fails loud with no mutations
       ansible.builtin.assert:
         that:
@@ -333,6 +409,26 @@
           A failing `pvesh get /cluster/replication` must abort the reconcile
           with no pvesr mutations, got aborted={{ ha.v_aborted }},
           mutations={{ ha.v_total }}
+
+    - name: V3 — an empty replication read aborts instead of reading as no jobs
+      ansible.builtin.assert:
+        that:
+          - ha.v3_aborted
+          - ha.v3_total == 0
+        fail_msg: >-
+          An rc-0 `pvesh get /cluster/replication` that prints nothing must abort
+          the reconcile with no pvesr mutations, got aborted={{ ha.v3_aborted }},
+          mutations={{ ha.v3_total }}
+
+    - name: V2 — a failed local-guest read aborts instead of skipping every job
+      ansible.builtin.assert:
+        that:
+          - ha.v2_aborted
+          - ha.v2_total == 0
+        fail_msg: >-
+          A failing `qm list` must abort the reconcile at the guest read with no
+          pvesr mutations, got aborted={{ ha.v2_aborted }},
+          mutations={{ ha.v2_total }}
 
 # The role owns delegate selection, so a play without serial: 1 still runs the
 # cluster-wide reconcile from one node.

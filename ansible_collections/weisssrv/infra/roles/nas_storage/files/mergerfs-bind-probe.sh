@@ -55,13 +55,15 @@ command -v ss >/dev/null 2>&1 || {
   exit 3
 }
 
+# With one state filter ss drops the State column and its header starts at
+# Recv-Q, so -H removes the header instead of a pattern that misses it.
 rc=0
-ss_out="$(ss -tn state established '( sport = :2049 )' 2>/dev/null)" || rc=$?
+ss_out="$(ss -Htn state established '( sport = :2049 )' 2>/dev/null)" || rc=$?
 if [ "$rc" -ne 0 ]; then
   echo >&2 "$0: ss failed (rc=$rc); active NFS clients cannot be resolved"
   exit 3
 fi
-nfs_connections="$(printf '%s\n' "$ss_out" | grep -v '^State' | head -5 || true)"
+nfs_connections="$(printf '%s\n' "$ss_out" | head -5 || true)"
 if [ -n "$nfs_connections" ]; then
   echo "ACTIVE_NFS_CLIENTS:"
   echo "$nfs_connections"

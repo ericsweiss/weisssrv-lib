@@ -62,3 +62,271 @@
     - name: Re-run acme_certs with the default CA
       ansible.builtin.include_role:
         name: weisssrv.infra.acme_certs
+
+    # Re-seed entry point. The target never answers, and the job carries no
+    # public key, so the pubkey comes from the file the role wrote above. An
+    # explicit ssh connection keeps the delegate off the container's own driver.
+    - name: Add a distribution target that never answers
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.add_host:
+        name: reseed-down.invalid
+        ansible_connection: ssh
+        ansible_ssh_common_args: -o ConnectTimeout=5
+      changed_when: false
+
+    # Answers the connection but cannot run a module, so the probe fails
+    # without the target being unreachable.
+    - name: Add a distribution target whose probe fails
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.add_host:
+        name: reseed-broken.invalid
+        ansible_connection: local
+        ansible_python_interpreter: /nonexistent/python3
+      changed_when: false
+
+    - name: Re-seed with the warn-only report
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.include_role:
+        name: weisssrv.infra.acme_certs
+        tasks_from: reseed
+      vars:
+        acme_certs_ssh_public_key: ""
+        acme_certs_reseed_fail_on_miss: false
+        acme_certs_reseed_hosts: [reseed-down.invalid, reseed-broken.invalid, reseed-nosudo.invalid, not-a-target]
+        acme_certs_distribution_targets: &acme_certs_reseed_targets
+          - host: reseed-down.invalid
+            ip: 192.0.2.1
+            host_key: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMOLECULEPLACEHOLDERKEYFOROFFLINETESTONLY
+            cert_dir: /opt/AdGuardHome/certs
+            owner: root
+            group: root
+            cert_mode: '0644'
+            key_mode: '0600'
+            restart_service: AdGuardHome
+          - host: reseed-broken.invalid
+            ip: 192.0.2.2
+            host_key: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMOLECULEPLACEHOLDERKEYFOROFFLINETESTONLY
+            cert_dir: /opt/AdGuardHome/certs
+            owner: root
+            group: root
+            cert_mode: '0644'
+            key_mode: '0600'
+            restart_service: AdGuardHome
+          # Never contacted: the entry point reports an ssh_no_sudo target unseeded.
+          - host: reseed-nosudo.invalid
+            ip: 192.0.2.3
+            host_key: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMOLECULEPLACEHOLDERKEYFOROFFLINETESTONLY
+            ssh_no_sudo: true
+            cert_dir: /opt/AdGuardHome/certs
+            owner: root
+            group: root
+            cert_mode: '0644'
+            key_mode: '0600'
+            restart_service: AdGuardHome
+
+    - name: Assert the re-seed fell back to the pubkey file and reported the target
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.assert:
+        that:
+          - acme_certs_reseed_public_key == (acme_certs_ssh_public_key | trim)
+          - >-
+            acme_certs_reseed_missed_reasons | list | sort
+            == ['not-a-target', 'reseed-broken.invalid', 'reseed-down.invalid', 'reseed-nosudo.invalid']
+          - acme_certs_reseed_missed_reasons['not-a-target'] is search('not in acme_certs_distribution_targets')
+          - acme_certs_reseed_missed_reasons['reseed-down.invalid'] == 'did not answer the probe'
+          - acme_certs_reseed_missed_reasons['reseed-broken.invalid'] is search('^the probe failed')
+          - acme_certs_reseed_missed_reasons['reseed-nosudo.invalid'] is search('^ssh_no_sudo')
+          - "'reseed-nosudo.invalid (ssh_no_sudo' in acme_certs_reseed_report"
+        fail_msg: >-
+          The re-seed read pubkey {{ acme_certs_reseed_public_key | to_json }} and
+          reported {{ acme_certs_reseed_missed_reasons | to_json }}, not the key
+          file's pubkey with the unknown host, the dead target, the broken probe
+          and the ssh_no_sudo target.
+        success_msg: "The re-seed falls back to the pubkey file and reports each miss with its reason"
+
+    # No public key in the job and no pubkey file: nothing is probed, and each
+    # requested sudo target is reported for the missing key.
+    - name: Re-seed with no distribution pubkey anywhere
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.include_role:
+        name: weisssrv.infra.acme_certs
+        tasks_from: reseed
+      vars:
+        acme_certs_ssh_public_key: ""
+        acme_certs_ssh_key_path: /nonexistent/id_ed25519_certs
+        acme_certs_reseed_fail_on_miss: false
+        acme_certs_reseed_hosts: [reseed-down.invalid, reseed-nosudo.invalid]
+        acme_certs_distribution_targets: *acme_certs_reseed_targets
+
+    - name: Assert the re-seed reports the missing pubkey without seeding
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.assert:
+        that:
+          - acme_certs_reseed_public_key == ''
+          - acme_certs_unseeded_reasons == {}
+          - acme_certs_reseed_missed_reasons | list | sort == ['reseed-down.invalid', 'reseed-nosudo.invalid']
+          - >-
+            acme_certs_reseed_missed_reasons['reseed-down.invalid']
+            is search('^neither acme_certs_ssh_public_key nor /nonexistent/id_ed25519_certs.pub on .* holds the distribution pubkey$')
+          - acme_certs_reseed_missed_reasons['reseed-nosudo.invalid'] is search('^ssh_no_sudo')
+        fail_msg: >-
+          With no pubkey the re-seed read {{ acme_certs_reseed_public_key | to_json }},
+          attempted {{ acme_certs_unseeded_reasons | to_json }} and reported
+          {{ acme_certs_reseed_missed_reasons | to_json }}, not the missing-key reason.
+        success_msg: "The re-seed reports a missing pubkey for each sudo target and seeds none"
+
+    - name: Re-seed with the default failing report
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Include the re-seed entry point against the dead target
+          ansible.builtin.include_role:
+            name: weisssrv.infra.acme_certs
+            tasks_from: reseed
+          vars:
+            acme_certs_distribution_targets: *acme_certs_reseed_targets
+
+        - name: Record that the dead target passed the re-seed
+          ansible.builtin.set_fact:
+            acme_certs_reseed_refused: false
+      rescue:
+        # Pinned to the report task, so an unrelated error cannot pass as it.
+        - name: Record which task failed the re-seed
+          ansible.builtin.set_fact:
+            acme_certs_reseed_refused: >-
+              {{ ansible_failed_task.name is search('Fail when the re-seed left targets unpinned')
+                 and 'reseed-down.invalid' in ansible_failed_result.msg
+                 and 'reseed-nosudo.invalid' not in ansible_failed_result.msg }}
+
+    - name: Assert the default re-seed fails on a target it could not pin
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.assert:
+        that:
+          - acme_certs_reseed_refused | bool
+        fail_msg: >-
+          The re-seed entry point left reseed-down.invalid unpinned without
+          failing the play, though acme_certs_reseed_fail_on_miss is true, or its
+          default host list requested the ssh_no_sudo target.
+        success_msg: "The default re-seed fails on a target it could not pin"
+
+    - name: Re-seed a host that is not a distribution target
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Include the re-seed entry point for an unknown host
+          ansible.builtin.include_role:
+            name: weisssrv.infra.acme_certs
+            tasks_from: reseed
+          vars:
+            acme_certs_reseed_hosts: [not-a-target]
+            acme_certs_distribution_targets: *acme_certs_reseed_targets
+
+        - name: Record that the unknown host passed the re-seed
+          ansible.builtin.set_fact:
+            acme_certs_reseed_unknown_refused: false
+      rescue:
+        - name: Record which task failed the unknown-host re-seed
+          ansible.builtin.set_fact:
+            acme_certs_reseed_unknown_refused: >-
+              {{ ansible_failed_task.name is search('Fail when the re-seed left targets unpinned')
+                 and 'not-a-target' in ansible_failed_result.msg }}
+
+    - name: Assert the default re-seed fails on a host it does not know
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.assert:
+        that:
+          - acme_certs_reseed_unknown_refused | bool
+        fail_msg: >-
+          A re-seed for a host outside acme_certs_distribution_targets re-pinned
+          nothing and still passed, though acme_certs_reseed_fail_on_miss
+          is true.
+        success_msg: "The default re-seed fails on a host it does not know"
+
+    # Positive path: a target on the container's own connection answers the
+    # probe, so it gets the receiver, the sudoers rule and the pinned key, and
+    # the default failing report stays quiet.
+    - name: Add a distribution target that answers
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.add_host:
+        name: reseed-ok.invalid
+        ansible_connection: "{{ ansible_connection }}"
+        ansible_host: "{{ ansible_host | default(inventory_hostname) }}"
+      changed_when: false
+
+    - name: Re-seed a target that answers
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.include_role:
+        name: weisssrv.infra.acme_certs
+        tasks_from: reseed
+      vars:
+        acme_certs_ssh_public_key: ""
+        acme_certs_reseed_hosts: [reseed-ok.invalid]
+        acme_certs_distribution_targets:
+          - host: reseed-ok.invalid
+            ip: 192.0.2.4
+            host_key: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMOLECULEPLACEHOLDERKEYFOROFFLINETESTONLY
+            cert_dir: /opt/AdGuardHome/certs
+            owner: root
+            group: root
+            cert_mode: '0644'
+            key_mode: '0600'
+            restart_service: AdGuardHome
+
+    - name: Read the re-seeded authorized_keys
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.slurp:
+        src: /home/eric/.ssh/authorized_keys
+      register: acme_certs_reseed_ok_keys
+
+    - name: Stat the re-seeded sudoers drop-in
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.stat:
+        path: /etc/sudoers.d/cert-receive
+      register: acme_certs_reseed_ok_sudoers
+
+    - name: Assert the re-seed pinned the key on the target that answered
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.assert:
+        that:
+          - acme_certs_reseed_missed_reasons == {}
+          - acme_certs_reseed_report == ''
+          - acme_certs_reseed_ok_sudoers.stat.exists
+          - >-
+            ('command="sudo /usr/local/sbin/cert-receive",restrict '
+             ~ (acme_certs_ssh_public_key.split()[:2] | join(' ')))
+            in (acme_certs_reseed_ok_keys.content | b64decode)
+        fail_msg: >-
+          The re-seed of a reachable target reported
+          {{ acme_certs_reseed_missed_reasons | to_json }}, or left
+          /etc/sudoers.d/cert-receive or the forced-command key unpinned.
+        success_msg: "The re-seed pins the key on a target that answers and reports nothing"
+
+    # The role is off on this host, so the entry point has nothing to pin and
+    # the default report fails rather than passing green.
+    - name: Re-seed with acme_certs disabled
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Include the re-seed entry point with the role disabled
+          ansible.builtin.include_role:
+            name: weisssrv.infra.acme_certs
+            tasks_from: reseed
+          vars:
+            acme_certs_enabled: false
+
+        - name: Record that the disabled re-seed passed
+          ansible.builtin.set_fact:
+            acme_certs_reseed_disabled_refused: false
+      rescue:
+        - name: Record which task failed the disabled re-seed
+          ansible.builtin.set_fact:
+            acme_certs_reseed_disabled_refused: >-
+              {{ ansible_failed_task.name is search('Fail when the re-seed left targets unpinned')
+                 and 'acme_certs_enabled is false' in ansible_failed_result.msg }}
+
+    - name: Assert the disabled re-seed fails instead of passing green
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.assert:
+        that:
+          - acme_certs_reseed_disabled_refused | bool
+        fail_msg: >-
+          The re-seed entry point passed on a host with acme_certs_enabled false,
+          though it re-pinned nothing and acme_certs_reseed_fail_on_miss is true.
+        success_msg: "The disabled re-seed fails instead of passing green"

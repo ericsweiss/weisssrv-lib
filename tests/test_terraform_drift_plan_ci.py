@@ -19,6 +19,9 @@ TEMPLATE = REPO / "ci" / "validate" / "terraform-drift-plan.yml"
 ci_yaml = load_path(SCRIPTS / "ci_yaml.py")
 
 GUARD = "$[[ inputs.secrets_guard ]]"
+POST_MERGE_GUARD = "$[[ inputs.post_merge_guard ]]"
+SCHEDULE = '$CI_PIPELINE_SOURCE == "schedule"'
+DEFAULT_BRANCH = '$CI_COMMIT_BRANCH == "$[[ inputs.default_branch ]]"'
 
 
 def _job(text: str) -> dict:
@@ -46,6 +49,22 @@ def test_the_merge_request_assertion_is_load_bearing() -> None:
 
 def test_every_rule_is_secrets_gated() -> None:
     assert _ungated_rules(_job(TEMPLATE.read_text())["rules"]) == []
+
+
+def test_the_post_merge_guard_spares_the_schedule() -> None:
+    """The schedule is the detector, so only the post-merge rule takes it."""
+    rules = _job(TEMPLATE.read_text())["rules"]
+    schedule = [r for r in rules if r["if"].startswith(SCHEDULE)]
+    post_merge = [r for r in rules if r["if"].startswith(DEFAULT_BRANCH)]
+    assert len(schedule) == 1 and len(post_merge) == 1
+    assert POST_MERGE_GUARD not in schedule[0]["if"]
+    assert POST_MERGE_GUARD in post_merge[0]["if"]
+
+
+def test_the_runner_default_can_run_the_root_installer() -> None:
+    """`apk add` needs root; an empty default lands on any runner."""
+    spec = ci_yaml.parse_ci(TEMPLATE.read_text().split("\n---\n")[0])
+    assert spec["spec"]["inputs"]["tags"]["default"] != []
 
 
 def test_there_are_rules_to_check() -> None:

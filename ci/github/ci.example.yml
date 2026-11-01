@@ -68,8 +68,7 @@ jobs:
           persist-credentials: false
       - name: Install yamllint
         # pipx ships in the GitHub-hosted runner image and puts the console
-        # script on PATH. (Ubuntu's system Python is externally managed, so a
-        # plain `pip install --user` would refuse.)
+        # script on PATH; Ubuntu's system Python is externally managed.
         run: pipx install "yamllint==${YAMLLINT_VERSION}"
       - name: Lint
         run: yamllint -c lint/yamllint-relaxed.yml .

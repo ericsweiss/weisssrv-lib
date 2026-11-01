@@ -29,7 +29,7 @@ Two pairs must be vendored together or they do nothing:
   repo root is ignored — `SECRET_DETECTION_RULESET_PATH` is not a supported
   variable. The ruleset file at `.gitlab/secret-detection-ruleset.toml` is what
   points the analyzer at your gitleaks config. Vendoring only the first gives a
-  scan with none of your allowlist entries, which now **fails** the job
+  scan with none of your allowlist entries, which **fails** the job
   (`allow_failure: false`).
   `secret-detection-ruleset.toml` is the only forge-coupled file in this
   directory: it exists to configure GitLab's managed analyzer. A GitHub
@@ -130,10 +130,8 @@ offer list, [`../scripts/vendorable-paths.yml`](../scripts/vendorable-paths.yml)
 and checked by `scripts/check-vendored-copies.py`: a `vendored` entry must stay
 byte-identical, and a `forked` entry must still differ AND carry a
 `reconciled_sha256` of the library side, so a change made here fails the fork
-until someone absorbs it. The one exception is `yamllint-relaxed.yml`: the copies
-in both templates (root and `template/`) are unregistered, so a change to it reds
-nothing and must be propagated by hand until they are registered. Register a new
-profile there in the same MR that adds it, or it reaches no consumer.
+until someone absorbs it. Register a new profile there in the same MR that adds
+it, or it reaches no consumer.
 
 The library's own application is uneven, which matters when judging whether a
 change here has been exercised:

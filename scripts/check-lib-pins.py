@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Assert every weisssrv-lib pin derives from one declared release tag.
 
-The tag is `spec.inputs.lib_ref.default` in the pipeline's header document and
-every other pin reads it; `--fix`/`--bump` rewrite them. docs/INCLUDE-CONTRACT.md.
+The tag is the header's `spec.inputs.lib_ref.default`; every other pin reads it
+and `--fix`/`--bump` rewrite them. Contract: weisssrv-lib docs/INCLUDE-CONTRACT.md.
 """
 
 from __future__ import annotations
@@ -39,7 +39,14 @@ def _header(text: str) -> str:
 
 def print_declared_ref(argv: list[str]) -> int:
     """`--print` without PyYAML: the header's input default, or exit 2."""
-    ci = Path(".gitlab-ci.yml")
+    if any(a in ("--fix", "--bump") or a.startswith("--bump=") for a in argv):
+        print("ERROR: --print reads the declared ref; it takes no --fix or --bump",
+              file=sys.stderr)
+        return 2
+    if argv and argv[-1] in ("--ci-file", "--input"):
+        print(f"ERROR: {argv[-1]} needs a value", file=sys.stderr)
+        return 2
+    ci = Path(__file__).resolve().parent.parent / ".gitlab-ci.yml"
     for i, a in enumerate(argv):
         if a == "--ci-file" and i + 1 < len(argv):
             ci = Path(argv[i + 1])
@@ -65,7 +72,10 @@ def print_declared_ref(argv: list[str]) -> int:
             print(found.group(2))
             return 0
         break
-    print(f"ERROR: {ci}: no spec.inputs.{want}.default release tag in the header", file=sys.stderr)
+    print(
+        f"ERROR: {ci}: spec.inputs.{want}.default in the header is not a release tag (vX.Y.Z)",
+        file=sys.stderr,
+    )
     return 2
 
 
@@ -409,7 +419,7 @@ def _ref_key_lines(text: str, project: str) -> set[int]:
         # YAML keeps the LAST duplicate key, which is the one check() reads.
         # Rewriting a different block would leave the verification passing
         # against the wrong one, so refuse instead.
-        raise SystemExit(
+        raise OperatorError(
             "multiple top-level `include:` keys make the rewrite ambiguous "
             "(YAML keeps the last, so the others are silently ignored); "
             "merge them into one block and retry"
@@ -443,7 +453,7 @@ def _ref_key_lines(text: str, project: str) -> set[int]:
         # An anchor defined here can be referenced from outside the block.
         defines_anchor = not is_alias and getattr(event, "anchor", None)
         if is_alias or defines_anchor:
-            raise SystemExit(
+            raise OperatorError(
                 "the `include:` block contains a YAML anchor or alias, which "
                 "may share configuration with the rest of the file; refusing "
                 "to rewrite it. Update the pins by hand."
@@ -492,14 +502,14 @@ def plan_fix(
         # The conversion reads the layout being replaced: the literal variable.
         target = (doc.get("variables") or {}).get(ref_var)
     if target is None:
-        raise SystemExit(
+        raise OperatorError(
             f"{path}: neither spec.inputs.{input_name}.default nor "
             f"variables.{ref_var} names a ref to convert from; nothing to sync"
         )
     # Validated BEFORE anything is written: a branch ref would otherwise be
     # propagated to every pin and only then reported.
     if not isinstance(target, str) or TAG_RE.fullmatch(target) is None:
-        raise SystemExit(
+        raise OperatorError(
             f"{path}: the declared ref must be a release tag (vX.Y.Z), got "
             f"{target!r}; file left unchanged"
         )
@@ -507,7 +517,7 @@ def plan_fix(
     has_header = _spec_node(text) is not None
     default_line = _header_default_line(text, input_name)
     if has_header and default_line is None:
-        raise SystemExit(
+        raise OperatorError(
             f"{path}: the `spec:` header declares no `{input_name}:` input with a "
             "`default:`; add it by hand and re-run"
         )
@@ -544,7 +554,7 @@ def plan_fix(
         reparsed = parse_ci(updated)
         landed_ref = declared_ref(updated, input_name)
     except yaml.YAMLError as exc:
-        raise SystemExit(
+        raise OperatorError(
             f"{path}: rewrite would produce invalid YAML ({exc}); "
             "file left unchanged"
         ) from exc
@@ -564,7 +574,7 @@ def plan_fix(
             # --fix cannot add an absent ref or variable, or reach a pin outside
             # `include:`; reporting 0 for either would hand the caller a clean
             # result over an unrepaired file.
-            raise SystemExit(
+            raise OperatorError(
                 f"{path}: --fix could not repair this file; fix it by hand:\n  "
                 + "\n  ".join(remaining)
             )
@@ -578,7 +588,7 @@ def plan_fix(
     landed = [entry.get("ref") for entry in project_includes]
     landed.append((reparsed.get("variables") or {}).get(ref_var))
     if any(ref != marker for ref in landed):
-        raise SystemExit(
+        raise OperatorError(
             f"{path}: rewrite did not land cleanly (pins parsed back as "
             f"{landed!r}, wanted {marker!r}); file left unchanged"
         )
@@ -669,6 +679,18 @@ def _collection_version(text: str, project: str) -> tuple[int, str] | None:
     return None
 
 
+def _requirements_text(req: Path) -> str:
+    """requirements.yml's text, or an OperatorError that names that file."""
+    try:
+        text = req.read_text(encoding="utf-8")
+        _collection_entries(text)
+    except (OSError, UnicodeDecodeError) as exc:
+        raise OperatorError(f"could not read {req}: {exc}") from exc
+    except yaml.YAMLError as exc:
+        raise OperatorError(f"{req} is not valid YAML: {exc}") from exc
+    return text
+
+
 def check_requirements(
     ci_file: Path, want: str, project: str = LIB_PROJECT, ref_var: str = REF_VAR
 ) -> list[str]:
@@ -678,7 +700,7 @@ def check_requirements(
     req = requirements_path(ci_file)
     if not req.is_file():
         return []
-    text = req.read_text(encoding="utf-8")
+    text = _requirements_text(req)
     found = _collection_version(text, project)
     if found is None:
         entries = _collection_entries(text)
@@ -717,7 +739,7 @@ def plan_fix_requirements(
     req = requirements_path(ci_file)
     if not req.is_file():
         return None
-    text = req.read_text(encoding="utf-8")
+    text = _requirements_text(req)
     found = _collection_version(text, project)
     if found is None or found[1] == want:
         return None
@@ -725,7 +747,7 @@ def plan_fix_requirements(
     lines = text.splitlines(keepends=True)
     rewritten = _rewrite_scalar_line(lines[line_no], "version", want)
     if rewritten is None:
-        raise SystemExit(
+        raise OperatorError(
             f"{req}: could not rewrite the {project} collection version: line; "
             "fix it by hand"
         )
@@ -733,7 +755,7 @@ def plan_fix_requirements(
     updated = "".join(lines)
     landed = _collection_version(updated, project)
     if landed is None or landed[1] != want:
-        raise SystemExit(
+        raise OperatorError(
             f"{req}: rewrite did not land cleanly (version parsed back as "
             f"{(landed[1] if landed else None)!r}, wanted {want!r}); file left unchanged"
         )
@@ -762,22 +784,31 @@ def sites_path(ci_file: Path) -> Path:
     return ci_file.parent / _SITES_REL
 
 
+def _site_doc(ci_file: Path) -> dict | None:
+    """The parsed site list, or None when the repo declares none."""
+    path = sites_path(ci_file)
+    if not path.is_file():
+        return None
+    try:
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise OperatorError(f"{path}: {exc}") from exc
+    if doc is None:
+        return None
+    if not isinstance(doc, dict):
+        raise OperatorError(f"{path}: the document must be a mapping with `sites:`")
+    return doc
+
+
 def load_sites(ci_file: Path) -> list[tuple[str, re.Pattern]]:
     """[(glob, compiled pattern)] from the optional site list.
 
     Each pattern carries exactly ONE capture group: the ref it must hold.
     """
     path = sites_path(ci_file)
-    if not path.is_file():
-        return []
-    try:
-        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
-        raise OperatorError(f"{path}: {exc}") from exc
+    doc = _site_doc(ci_file)
     if doc is None:
         return []
-    if not isinstance(doc, dict):
-        raise OperatorError(f"{path}: the document must be a mapping with `sites:`")
     sites = doc.get("sites")
     if sites is None:
         return []
@@ -834,22 +865,37 @@ def site_files(root: Path, glob: str, where: str) -> Iterator[Path]:
         yield path
 
 
+class HandFix(str):
+    """A finding --fix refuses, so the report points at the site list instead."""
+
+
+def _unpinned(path: Path, glob: str) -> str:
+    return HandFix(
+        f"{path}: site {glob!r} finds no release-tag pin in this file — a branch "
+        "or sha ref, or a pin the pattern no longer matches"
+    )
+
+
 def check_sites(ci_file: Path, want: str) -> list[str]:
     """Every ref a declared site holds must equal the single source.
 
-    A site that matches nothing is reported too: the pin would go unchecked.
+    Each matched file must hold a pin, and a site matching no file is reported
+    too: in either case a pin would go unchecked.
     """
     root = ci_file.parent
     problems: list[str] = []
     for glob, pattern in load_sites(ci_file):
         seen = 0
         for path in site_files(root, glob, str(sites_path(ci_file))):
+            seen += 1
             try:
                 text = path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError) as exc:
                 raise OperatorError(f"{path}: {exc}") from exc
-            for match in pattern.finditer(text):
-                seen += 1
+            matches = list(pattern.finditer(text))
+            if not matches:
+                problems.append(_unpinned(path, glob))
+            for match in matches:
                 if match.group(1) != want:
                     line = text.count("\n", 0, match.start(1)) + 1
                     problems.append(
@@ -857,10 +903,10 @@ def check_sites(ci_file: Path, want: str) -> list[str]:
                         f"ref is {want!r}"
                     )
         if not seen:
-            problems.append(
-                f"{sites_path(ci_file)}: site {glob!r} matched no ref — the glob "
-                "or the pattern is stale, so that pin is going unchecked"
-            )
+            problems.append(HandFix(
+                f"{sites_path(ci_file)}: site {glob!r} matched no file — the glob "
+                "is stale, so that pin is going unchecked"
+            ))
     return problems
 
 
@@ -881,6 +927,8 @@ def plan_fix_sites(ci_file: Path, want: str) -> list[tuple[Path, str]]:
             except (OSError, UnicodeDecodeError) as exc:
                 raise OperatorError(f"{path}: {exc}") from exc
             before = sum(1 for _ in pattern.finditer(text))
+            if not before:
+                raise OperatorError(_unpinned(path, glob) + "; nothing written")
             seen += before
             updated = _sub_group(pattern, text, want)
             if updated != text:
@@ -898,8 +946,8 @@ def plan_fix_sites(ci_file: Path, want: str) -> list[tuple[Path, str]]:
                 writes.append((path, updated))
         if not seen:
             raise OperatorError(
-                f"{where}: site {glob!r} matched no ref — the glob or the "
-                "pattern is stale, so that pin would go unrewritten"
+                f"{where}: site {glob!r} matched no file — the glob is stale, "
+                "so that pin would go unrewritten"
             )
     return writes
 
@@ -977,6 +1025,9 @@ def _one_write_per_file(writes: list[tuple[Path, str]]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if "--print" in argv:
+        return print_declared_ref(argv)
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -1019,12 +1070,12 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     # Unreadable or malformed input is operator error, not a pin finding: exit 2
-    # so CI can tell them apart. Wrapping the real calls, not a preflight read,
-    # keeps the guard around every read.
+    # so CI can tell them apart. Each message names the file that failed.
     try:
         return _run(args)
     except (OSError, UnicodeDecodeError) as exc:
-        print(f"ERROR: could not read {args.ci_file}: {exc}", file=sys.stderr)
+        where = getattr(exc, "filename", None) or args.ci_file
+        print(f"ERROR: could not read {where}: {exc}", file=sys.stderr)
         return 2
     except yaml.YAMLError as exc:
         print(f"ERROR: {args.ci_file} is not valid YAML: {exc}", file=sys.stderr)
@@ -1044,15 +1095,6 @@ def _report(problems: list[str], headline: str) -> int:
 def _run(args: argparse.Namespace) -> int:
     text = args.ci_file.read_text(encoding="utf-8")
     want = declared_ref(text, args.input)
-
-    if args.print_ref:
-        if not isinstance(want, str) or TAG_RE.fullmatch(want) is None:
-            raise OperatorError(
-                f"{args.ci_file}: spec.inputs.{args.input}.default is {want!r}, "
-                "which is not a release tag (vX.Y.Z)"
-            )
-        print(want)
-        return 0
 
     if args.bump is not None and TAG_RE.fullmatch(args.bump) is None:
         raise OperatorError(f"--bump takes a release tag (vX.Y.Z), got {args.bump!r}")
@@ -1085,11 +1127,19 @@ def _run(args: argparse.Namespace) -> int:
         ) + check_sites(args.ci_file, want)
     if problems:
         _report(problems, "check-lib-pins: FAILED")
-        print(
-            "\nFix with: scripts/check-lib-pins.py --fix  (or --bump vX.Y.Z to "
-            "move the declared ref)",
-            file=sys.stderr,
-        )
+        if any(not isinstance(p, HandFix) for p in problems):
+            print(
+                "\nFix with: scripts/check-lib-pins.py --fix  (or --bump vX.Y.Z to "
+                "move the declared ref)",
+                file=sys.stderr,
+            )
+        if any(isinstance(p, HandFix) for p in problems):
+            print(
+                f"\nFix by hand: {sites_path(args.ci_file)} names a site whose file "
+                "holds no release-tag pin or whose glob matches nothing. Restore the "
+                "pin, or narrow the glob to the files that carry one; --fix refuses it.",
+                file=sys.stderr,
+            )
         return 1
 
     doc = parse_ci(text)

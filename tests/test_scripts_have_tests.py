@@ -36,10 +36,11 @@ def collect(root: Path) -> List[Path]:
     return found
 
 
-# Executable code ships from two roots: scripts/, and the reaper modules a
-# CronJob mounts beside its app script.
+# Executable code ships from scripts/ and from the CronJob programs under
+# kubernetes/ a consumer mounts into its cluster.
 REAPERS = REPO / "kubernetes" / "reapers"
-SHIPPED_ROOTS = ((SCRIPTS, SCRIPTS), (REAPERS, REAPERS))
+DDNS = REPO / "kubernetes" / "ddns"
+SHIPPED_ROOTS = ((SCRIPTS, SCRIPTS), (REAPERS, REAPERS), (DDNS, DDNS))
 SHIPPED = [path for root, _ in SHIPPED_ROOTS for path in collect(root)]
 
 # Role `files/` scripts run on a real host (as root, in several cases), so they
@@ -97,7 +98,7 @@ def _suite_for(script: Path) -> Path:
     The directory is part of the key, so `scripts/lib/helper.sh` does not share
     a suite with `scripts/helper.sh`. The `.py`/`.sh` suffix is dropped.
     """
-    root = REAPERS if REAPERS in script.parents else SCRIPTS
+    root = next(r for r, _ in SHIPPED_ROOTS if r in script.parents)
     rel = script.relative_to(root).as_posix()
     for suffix in (".py", ".sh"):
         rel = rel.removesuffix(suffix)
@@ -121,9 +122,10 @@ def test_there_are_scripts_to_check():
     assert len(SHIPPED) > 20
 
 
-def test_there_are_reaper_scripts_to_check():
-    """Guard the guard: the reapers root ships code and must be walked."""
-    assert len(collect(REAPERS)) >= 1
+@pytest.mark.parametrize("root", [REAPERS, DDNS], ids=["reapers", "ddns"])
+def test_there_are_cronjob_programs_to_check(root: Path):
+    """Guard the guard: each CronJob program root ships code and must be walked."""
+    assert len(collect(root)) >= 1
 
 
 def test_no_two_scripts_share_a_suite():

@@ -374,8 +374,8 @@
     - proxmox_lxc_nameserver | default('') | length > 0
 
 # Shared with proxmox_vm: the startup canonicalisation must not drift between
-# guest types. (idmap, bind mounts and GPU passthrough below stay create-time
-# only — see the NOTE there.)
+# guest types. idmap, bind mounts and GPU passthrough stay create-time only
+# (README § Reconciliation vs. create-time-only).
 - name: Reconcile LXC autostart and boot order on existing container
   ansible.builtin.include_role:
     name: weisssrv.infra.proxmox_vm
@@ -648,8 +648,7 @@
         echo "DNS resolution failed even with public DNS"
         exit 1
       register: proxmox_lxc_dns_check
-      # The task mutates resolv.conf on the fallback path; report that honestly
-      # rather than declaring itself unconditionally unchanged.
+      # Changed only when the fallback path rewrote resolv.conf.
       changed_when: "'FALLBACK_DNS_APPLIED' in (proxmox_lxc_dns_check.stdout_lines | default([]))"
 
     - name: Install required packages in container
@@ -755,9 +754,8 @@
     # don't pct exec a non-existent container (skip-create / molecule-stub runs).
     - proxmox_lxc_exists.rc == 0 or not (proxmox_lxc_skip_create | default(false))
 
-# The reconcile above already owns .ssh and authorized_keys (install -d -m 700
-# -o <user>, chmod 600 + chown before the atomic move). This only sweeps the
-# rest of the freshly-created home directory.
+# Sweeps the rest of the freshly-created home directory; the reconcile above
+# owns .ssh and authorized_keys.
 - name: Set ownership on the admin home directory
   delegate_to: "{{ proxmox_host }}"
   become: true
@@ -786,7 +784,7 @@
         tmp="$(mktemp /etc/sudoers.d/.staged.XXXXXX)"
         printf "%s ALL=(ALL) NOPASSWD: ALL\n" "$user" > "$tmp"
         chmod 440 "$tmp"
-        # visudo is absent until the sudo package lands; validate when we can.
+        # visudo ships with the sudo package; validate whenever it is present.
         if command -v visudo >/dev/null 2>&1; then
           visudo -cf "$tmp" >/dev/null
         fi

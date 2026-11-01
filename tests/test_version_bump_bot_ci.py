@@ -170,14 +170,24 @@ def test_artifacts_publish_nothing_by_default() -> None:
     assert inputs["artifact_expire_in"]["default"] == "30 days"
 
 
+_ARTIFACTS = {
+    "paths": "$[[ inputs.artifact_paths ]]",
+    "expire_in": "$[[ inputs.artifact_expire_in ]]",
+    "when": "always",
+}
+
+
+def _artifact_violations(text: str) -> list[str]:
+    """Artifact keys that are not the input-driven values above."""
+    _, body = _documents(text)
+    artifacts = body["$[[ inputs.job_name ]]"]["artifacts"]
+    return [key for key, want in _ARTIFACTS.items() if artifacts.get(key) != want]
+
+
 def test_the_artifacts_block_is_driven_by_the_inputs() -> None:
     """A hardcoded path or retention would make the seam unreachable, and
     `when: always` is what publishes the report of the run that failed."""
-    _, body = _documents(TEMPLATE.read_text())
-    artifacts = body["$[[ inputs.job_name ]]"]["artifacts"]
-    assert artifacts["paths"] == "$[[ inputs.artifact_paths ]]"
-    assert artifacts["expire_in"] == "$[[ inputs.artifact_expire_in ]]"
-    assert artifacts["when"] == "always"
+    assert _artifact_violations(TEMPLATE.read_text()) == []
 
 
 @pytest.mark.parametrize(("key", "ref"), [
@@ -187,8 +197,14 @@ def test_the_artifacts_block_is_driven_by_the_inputs() -> None:
 def test_a_hardcoded_artifact_value_is_caught(key: str, ref: str) -> None:
     """Mutation check: the assertion above is load-bearing, not vacuous."""
     mutated = TEMPLATE.read_text().replace(ref, "version-report.json")
-    _, body = _documents(mutated)
-    assert body["$[[ inputs.job_name ]]"]["artifacts"][key] == "version-report.json"
+    assert _artifact_violations(mutated) == [key]
+
+
+def test_the_template_defines_no_before_script() -> None:
+    """A consumer installs its secrets CLI in a same-named job's before_script,
+    which stays additive only while the template sets none."""
+    _, body = _documents(TEMPLATE.read_text())
+    assert "before_script" not in body["$[[ inputs.job_name ]]"]
 
 
 @pytest.mark.parametrize("dropped", [GATE, BRANCH_PIN])

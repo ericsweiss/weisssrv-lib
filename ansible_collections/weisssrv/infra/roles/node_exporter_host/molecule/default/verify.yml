@@ -660,9 +660,8 @@
       ansible.builtin.command: /usr/local/sbin/node-exporter-healthcheck.sh --probe-only 9101
       changed_when: false
 
-    # The negative case: a port nothing is listening on must be detected, not
-    # silently passed. Without this, a probe that always succeeds (wrong URL,
-    # swallowed curl error) would look identical to a working gate.
+    # A port nothing listens on must fail the probe, so a probe that always
+    # succeeds cannot pass for a working gate.
     - name: Probe-only run against a dead port must fail
       ansible.builtin.command: /usr/local/sbin/node-exporter-healthcheck.sh --probe-only 19999
       register: healthcheck_dead_port

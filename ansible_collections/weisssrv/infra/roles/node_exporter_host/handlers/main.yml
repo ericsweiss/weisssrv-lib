@@ -12,7 +12,3 @@
     name: node-exporter-healthcheck.timer
     state: restarted
     daemon_reload: true
-
-# The corosync, zpool, slabinfo and smartmon collector timers are restarted on
-# a unit change by weisssrv.infra.textfile_collector, so no per-collector
-# handler lives here.

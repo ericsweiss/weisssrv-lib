@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
-# Guest-smoke helpers a consumer's per-guest verify-*.sh sources. Function-only
-# apart from the two counters, so sourcing is safe under a caller's `set -e`.
+# Guest-smoke helpers a consumer's per-guest verify-*.sh sources. Apart from the
+# two counters, sourcing only loads shell-lib.sh from the same directory.
 # Contract: weisssrv-lib docs/SCRIPTS.md - Shell helpers.
+
+# shell-lib.sh supplies the ssh bound and its warning. A parameter expansion finds
+# this file's directory, so sourcing runs no external tool.
+_smoke_lib_dir="${BASH_SOURCE[0]%/*}"
+[ "$_smoke_lib_dir" != "${BASH_SOURCE[0]}" ] || _smoke_lib_dir=.
+# shellcheck source=scripts/shell-lib.sh
+. "$_smoke_lib_dir/shell-lib.sh" || {
+    echo "smoke-lib.sh: shell-lib.sh must sit in the same directory" >&2
+    return 2
+}
 
 SMOKE_PASS=0
 SMOKE_FAIL=0
@@ -41,27 +51,35 @@ check_tcp_port() {
     nc -z -w 5 "$1" "$2" 2>/dev/null
 }
 
-# CRITICAL: capture then test. `| grep -q` exits on the first match and the
-# writer's SIGPIPE would invert a PASS into a FAIL under pipefail. Needles are
-# literal, unlike shell-lib.sh's url_contains/ssh_contains, so a `.` or `[` in
-# one cannot match output the caller did not mean.
+# Bounded, non-interactive ssh: a stalled guest or a prompt fails the probe.
+# SMOKE_LIB_SSH_MAX_TIME bounds the whole command when timeout or gtimeout exists.
+_smoke_ssh() {
+    timeout_cmd "${SMOKE_LIB_SSH_MAX_TIME:-30}" ssh -o ConnectTimeout=5 -o BatchMode=yes \
+        -o ServerAliveInterval=5 -o ServerAliveCountMax=2 "$@"
+}
+
+# Needles are literal, unlike shell-lib.sh's BRE url_contains/ssh_contains. Each
+# helper returns 0 on a match, 1 on none and 2 when the fetch, connection or
+# command failed; a here-string read means no SIGPIPE can invert a match.
 smoke_url_contains() {
     local out
-    out=$(curl -s --max-time "${SMOKE_LIB_CURL_MAX_TIME:-10}" "$1" 2>/dev/null) || return 1
-    printf '%s' "$out" | grep -qF -- "$2"
+    out=$(curl -s --max-time "${SMOKE_LIB_CURL_MAX_TIME:-10}" "$1" 2>/dev/null) || return 2
+    grep -qF -- "$2" <<<"$out"
 }
 
 smoke_ssh_contains() {
     local out
-    out=$(ssh "$1" "$2" 2>/dev/null) || return 1
-    printf '%s' "$out" | grep -qF -- "$3"
+    shell_lib_warn_unbounded
+    out=$(_smoke_ssh "$1" "$2" 2>/dev/null) || return 2
+    grep -qF -- "$3" <<<"$out"
 }
 
 # smoke_ssh_contains with a deliberate extended regex, for an anchored needle.
 smoke_ssh_matches() {
     local out
-    out=$(ssh "$1" "$2" 2>/dev/null) || return 1
-    printf '%s' "$out" | grep -qE -- "$3"
+    shell_lib_warn_unbounded
+    out=$(_smoke_ssh "$1" "$2" 2>/dev/null) || return 2
+    grep -qE -- "$3" <<<"$out"
 }
 
 smoke_check() {

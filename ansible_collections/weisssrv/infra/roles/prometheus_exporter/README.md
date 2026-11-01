@@ -14,14 +14,9 @@ Backs **`zfs_exporter`** (tarball) and **`unbound_exporter`** (deb). Both are
 thin wrappers that pass their specifics as `vars` and keep their own
 `templates/<name>.service.j2` unit file.
 
-**`adguard_sync`** (adguardhome-sync) is a partial consumer: it runs only the
-**install** half (tarball + `checksums.txt`), then manages its own oneshot
-service and timer directly. The `service` half is unused — adguardhome-sync is
-timer-driven, not a long-running listener, so there is no port to health-check.
-It reuses the shared `Restart prometheus exporter` handler but points
-`prometheus_exporter_service_name` at `adguardhome-sync.timer`, so a fresh
-binary is picked up on the timer's next tick instead of by (re)starting a
-daemon.
+- **`adguard_sync`** runs the **install** half only and manages its own
+  timer-driven oneshot. It points `prometheus_exporter_service_name` at
+  `adguardhome-sync.timer`, so the shared handler restarts the timer.
 
 ## Roles that stay standalone
 
@@ -32,8 +27,7 @@ Two exporter-adjacent roles deliberately do not use this pipeline:
   applies.
 - `adguard_home` downloads a tarball but must stop the running service
   mid-pipeline before swapping the binary, which this role's install-then-start
-  flow cannot express. `adguard_sync` has no such need and reuses the install
-  half.
+  flow cannot express.
 
 ## How wrappers invoke it
 

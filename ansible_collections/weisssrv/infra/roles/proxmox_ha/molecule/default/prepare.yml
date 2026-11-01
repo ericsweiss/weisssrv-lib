@@ -108,6 +108,8 @@
       become: true
 
     # pvesr: logs every mutating call; `list` models the real CLI's options.
+    # pvesr_create_reject holds the stderr a logged create-local-job fails with.
+    # A delete only marks a job for removal, so a create of an indexed id fails.
     - name: Pvesr stub (logs mutations, rejects --output-format on list)
       ansible.builtin.copy:
         dest: /usr/local/bin/pvesr
@@ -132,10 +134,23 @@
             exit 0
           fi
           echo "pvesr $*" >> "$LOG"
+          if [ "$1" = "create-local-job" ] && [ -f "$STATE/pvesr_create_reject" ]; then
+            cat "$STATE/pvesr_create_reject" >&2
+            exit 255
+          fi
+          if [ "$1" = "create-local-job" ] && python3 -c '
+          import json, sys
+          ids = {job["id"] for job in json.load(open(sys.argv[2]))}
+          sys.exit(0 if sys.argv[1] in ids else 1)
+          ' "$2" "$STATE/pvesh_replication" 2>/dev/null; then
+            echo "replication job '$2' already exists" >&2
+            exit 255
+          fi
           exit 0
       become: true
 
     # qm: `list` reports configurable local VMIDs (header + one row per id).
+    # qm_list_fail makes it fail as it does with pve-cluster down.
     - name: Qm stub (configurable local VMIDs)
       ansible.builtin.copy:
         dest: /usr/local/bin/qm
@@ -143,6 +158,10 @@
         content: |
           #!/bin/bash
           STATE=/tmp/molecule-stub-state
+          if [ "$1" = "list" ] && [ -f "$STATE/qm_list_fail" ]; then
+            echo "ipcc_send_rec[1] failed: Connection refused" >&2
+            exit 1
+          fi
           if [ "$1" = "list" ]; then
             echo "      VMID NAME                 STATUS"
             while read -r vmid; do

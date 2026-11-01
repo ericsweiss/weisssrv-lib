@@ -26,17 +26,93 @@
           ansible.builtin.set_fact:
             zvol_mount_pt_guard_refused: false
       rescue:
-        - name: Record that the partition-table guard refused
+        # Pinned to the guard's task, so an unrelated error cannot pass as it.
+        - name: Record which task refused the partitioned disk
           ansible.builtin.set_fact:
-            zvol_mount_pt_guard_refused: true
+            zvol_mount_pt_guard_refused: >-
+              {{ ansible_failed_task.name is search('Assert a blank-looking disk carries no partition table either') }}
 
-    # Same tag: the replay skips the block above, so the marker fact it sets
+    # Negative path: a disk holding xfs where ext4 is declared must be refused
+    # before anything formats or mounts it.
+    - name: Run the role against a disk holding the wrong filesystem
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Include the role for the fstype guard
+          ansible.builtin.include_role:
+            name: weisssrv.infra.zvol_mount
+          vars:
+            zvol_mount_disks:
+              - name: fstype-guard
+                mount_point: /mnt/fstype-guard
+                fstype: ext4
+                scsi_slot: 10
+
+        - name: Record that the role accepted the wrong filesystem
+          ansible.builtin.set_fact:
+            zvol_mount_fstype_guard_refused: false
+      rescue:
+        - name: Record which task refused the wrong filesystem
+          ansible.builtin.set_fact:
+            zvol_mount_fstype_guard_refused: >-
+              {{ ansible_failed_task.name is search('Assert existing filesystem matches expected type') }}
+
+    # Negative path: two disks sharing one filesystem UUID make `UUID=<x>` an
+    # ambiguous mount source, so neither may be mounted.
+    - name: Run the role against two disks sharing one filesystem UUID
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Include the role for the duplicate-UUID guard
+          ansible.builtin.include_role:
+            name: weisssrv.infra.zvol_mount
+          vars:
+            zvol_mount_disks:
+              - name: dup-guard-a
+                mount_point: /mnt/dup-guard-a
+                fstype: ext4
+                scsi_slot: 11
+              - name: dup-guard-b
+                mount_point: /mnt/dup-guard-b
+                fstype: ext4
+                scsi_slot: 12
+
+        - name: Record that the role accepted the duplicate UUID
+          ansible.builtin.set_fact:
+            zvol_mount_uuid_guard_refused: false
+      rescue:
+        - name: Record which task refused the duplicate UUID
+          ansible.builtin.set_fact:
+            zvol_mount_uuid_guard_refused: >-
+              {{ ansible_failed_task.name is search('Assert additional-disk filesystem UUIDs are unique') }}
+
+    # Same tag: the replay skips the blocks above, so the marker facts they set
     # would be undefined here.
-    - name: Assert the partition-table guard refused the disk
+    - name: Assert each disk guard refused its disk
       tags: [molecule-idempotence-notest]
       ansible.builtin.assert:
         that:
-          - zvol_mount_pt_guard_refused
+          - zvol_mount_pt_guard_refused | bool
+          - zvol_mount_fstype_guard_refused | bool
+          - zvol_mount_uuid_guard_refused | bool
         fail_msg: >-
-          zvol_mount accepted a disk carrying only a partition table; the PTTYPE
-          guard regressed and the next converge would reformat it.
+          A disk guard accepted its disk or failed on another task: partition
+          table {{ zvol_mount_pt_guard_refused }}, fstype
+          {{ zvol_mount_fstype_guard_refused }}, duplicate UUID
+          {{ zvol_mount_uuid_guard_refused }}. The next converge would format or
+          mount a disk it must refuse.
+
+    # A stale fstab line for the managed disk at another path must go, even
+    # while the disk is not mounted there.
+    - name: Plant a stale fstab entry for the managed disk
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.shell: |
+        set -euo pipefail
+        uuid=$(blkid -s UUID -o value /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi1)
+        printf 'UUID=%s /mnt/stale-location ext4 defaults 0 0\n' "$uuid" >> /etc/fstab
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Re-run the role over the stale fstab entry
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.include_role:
+        name: weisssrv.infra.zvol_mount

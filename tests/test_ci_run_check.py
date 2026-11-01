@@ -6,16 +6,21 @@ real gate job uses, then drives run_check with synthetic checks.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 LIB = Path(__file__).resolve().parent.parent / "scripts" / "ci-run-check.sh"
 
 
-def _run(body: str) -> subprocess.CompletedProcess:
+def _run(body: str, **env: str) -> subprocess.CompletedProcess:
     """Source the driver under a gate job's own `set -euo pipefail` and run body."""
     script = f"set -euo pipefail\n. {LIB}\n{body}\n"
-    return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    environ = {k: v for k, v in os.environ.items() if k != "GITLAB_CI"}
+    environ.update(env)
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=environ)
 
 
 def test_a_passing_check_leaves_the_job_green():
@@ -58,6 +63,19 @@ def test_a_check_crashing_mid_pipeline_is_a_failure_not_a_pass():
     assert "FAILED: piped" in res.stdout
 
 
+def test_a_check_failing_mid_body_is_a_failure_even_if_it_ends_green():
+    """The case the driver exists for: the last command succeeding must not
+    hide an earlier failure inside the check."""
+    res = _run(
+        'bad() { false; echo after; }\n'
+        'run_check bad bad\n'
+        'run_check_summary'
+    )
+    assert res.returncode == 1
+    assert "FAILED: bad (rc=1)" in res.stdout
+    assert "after" not in res.stdout
+
+
 def test_errexit_is_restored_after_a_failing_check():
     """A check must not leave the job running with errexit off."""
     res = _run(
@@ -73,3 +91,12 @@ def test_a_missing_check_command_fails_rather_than_passing_silently():
     res = _run('run_check absent ./no-such-command\nrun_check_summary')
     assert res.returncode == 1
     assert "FAILED: absent" in res.stdout
+
+
+@pytest.mark.parametrize(("gitlab", "marked"), [("true", True), ("", False)])
+def test_section_markers_are_gitlab_only(gitlab, marked):
+    res = _run("run_check first true\nrun_check_summary", GITLAB_CI=gitlab)
+    assert res.returncode == 0
+    assert ("section_start:" in res.stdout) is marked
+    assert ("section_end:" in res.stdout) is marked
+    assert "== first" in res.stdout

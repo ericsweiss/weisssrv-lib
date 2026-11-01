@@ -213,9 +213,8 @@
           non-GiB disk size, and an EXISTING container to reconcile without
           either — got {{ create_inputs }}.
 
-    # A key the role does not manage — the cert-distribution forced command is
-    # the one that stranded renewals — must survive the reconcile, and the
-    # replay must not churn the file.
+    # A key the role does not manage, such as a cert-distribution forced
+    # command, must survive the reconcile, and the replay must not churn it.
     - name: Authorized-keys reconcile preserves entries it does not manage
       ansible.builtin.assert:
         that:

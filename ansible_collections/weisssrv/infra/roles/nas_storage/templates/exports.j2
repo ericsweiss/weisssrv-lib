@@ -2,6 +2,7 @@
 # {{ ansible_managed }}
 # NFS exports - see exports(5). An export-level xprtsec applies to every client
 # line and a per-client value overrides it. Contract: nas_storage README.
+
 {% for export in nas_storage_exports %}
 {% set export_xprtsec = export.xprtsec | default('') %}
 # {{ export.path }}{{ ' (xprtsec=' ~ export_xprtsec ~ ')' if export_xprtsec else '' }}

@@ -8,9 +8,9 @@ for a LAN-facing filtering resolver (`weisssrv.infra.adguard_home`).
 ## What it manages
 
 - The role-owned drop-in `/etc/unbound/unbound.conf.d/<unbound_dropin_name>`:
-  listen addresses, cache/threading tuning, privacy hardening, DNSSEC
-  validation, private-address rebinding protection, access control, and the
-  DoT forward zone.
+  listen addresses, cache/threading tuning, extended statistics, privacy
+  hardening, DNSSEC validation, private-address rebinding protection, access
+  control, and the DoT forward zone.
 - `/etc/unbound/unbound.conf.d/remote-control.conf`: `unbound-control` over the
   local Unix socket `/run/unbound.ctl` with `control-use-cert: no`, which is why
   no control certificate pair is generated. `weisssrv.infra.unbound_exporter`
@@ -30,7 +30,7 @@ for a LAN-facing filtering resolver (`weisssrv.infra.adguard_home`).
 | `unbound_interface` | `127.0.0.1` | Readiness-probe target and sole default listen address |
 | `unbound_interfaces` | `[unbound_interface]` | Full listen list; add `::1` here to also serve IPv6 loopback |
 | `unbound_probe_name` | `google.com` | Name the readiness probe resolves; point it at a name the configured forwarders answer when the host has no public egress |
-| `unbound_access_control` | `["127.0.0.0/8 allow"]` | ACL lines; must cover what `unbound_interfaces` serves — every other netblock is refused |
+| `unbound_access_control` | `["127.0.0.0/8 allow"]` | ACL lines; must cover what `unbound_interfaces` serves. Unlisted netblocks take unbound's default: localhost is allowed, everything else is refused. |
 | `unbound_dropin_name` | `managed.conf` | Filename of the role-owned drop-in |
 | `unbound_legacy_dropins` | `[]` | Drop-in names removed on every run; unbound merges the directory with a **sorted** glob, so a survivor that sorts after the managed file wins every duplicated scalar |
 | `unbound_forwarders` | Cloudflare / Quad9 / Google, port 853 | DoT upstreams (`addr`, `port`, `name`); `forward-tls-upstream` is always on |
@@ -42,10 +42,12 @@ for a LAN-facing filtering resolver (`weisssrv.infra.adguard_home`).
 | `unbound_aggressive_nsec` | `true` | |
 | `unbound_edns_buffer_size` | `1232` | |
 | `unbound_skip_validate` | `false` | Skip the pre-write `unbound-checkconf`. Only for hosts without the binary |
-| `unbound_use_caps_for_id` | `true` | 0x20 randomization; redundant behind DoT and a SERVFAIL source against upstreams that normalize case — set `false` if an upstream misbehaves |
+| `unbound_use_caps_for_id` | `true` | 0x20 DNS-name randomization. Set `false` when an upstream changes the query name's case, which unbound then answers with SERVFAIL |
 
-`cache-min-ttl` (60s), `cache-max-ttl` (86400s), `prefetch`, and the
-`private-address` list are fixed in the template, not variables.
+`cache-min-ttl` (60s), `cache-max-ttl` (86400s), `prefetch`,
+`extended-statistics` and the `private-address` list are fixed in the template,
+not variables. `weisssrv.infra.unbound_exporter` emits
+`unbound_answer_rcodes_total` only with extended statistics on.
 
 ## Query path
 

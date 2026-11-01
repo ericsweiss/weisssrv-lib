@@ -8,14 +8,20 @@ spec:
     stage:
       default: validate
     image:
-      default: "hashicorp/terraform:1.15.9"
+      default: "hashicorp/terraform:1.16.5@sha256:c7926feace05d0f7e73542842bf3945924e955a1f782cf000ccbb8d18fa42d77"
       description: >-
-        Terraform image, entrypoint cleared for shell scripts. Alpine-based, so
-        the before_script uses the apk 1Password installer.
+        Terraform image, entrypoint cleared for shell scripts. Digest-pinned on
+        the same release as ci/validate/terraform.yml, so the plan runs the
+        Terraform the gate parsed. Alpine-based, so the before_script uses the
+        apk 1Password installer.
     tags:
       type: array
-      default: []
-      description: Runner tag(s); the default runs on any runner.
+      default: ["infrastructure"]
+      description: >-
+        Runner tag(s). The 1Password installer runs `apk add`, so the runner
+        must allow root. The shared non-root tenant runner cannot run this job.
+        A consumer without a runner carrying these tags passes its own;
+        otherwise the job stays pending and GitLab fails it as stuck.
     module_dir:
       description: >-
         Module directory the plan runs in, repo-root relative
@@ -52,12 +58,18 @@ spec:
     secrets_guard:
       default: "true"
       description: >-
-        Rule expression that must be truthy for the job to run at all. The
-        default always runs the job, so a missing credential reds it rather than
-        removing it. CRITICAL: a falsy guard REMOVES the job, so a consumer that
-        wants the fork-safe skip passes secrets_guard:
-        "$OP_SERVICE_ACCOUNT_TOKEN" and accepts that a scheduled detector then
-        stops silently.
+        Rule expression that must be truthy for the job to exist. The default
+        always runs it, so a missing credential reds the job. A falsy guard
+        REMOVES the job; the fork-safe `"$OP_SERVICE_ACCOUNT_TOKEN"` guard can
+        silence a scheduled detector. docs/INCLUDE-CONTRACT.md has the trade-off.
+    post_merge_guard:
+      default: "true"
+      description: >-
+        Rule expression ANDed into the post-merge rule only. The schedule keeps
+        running when it is falsy. Pass "$OP_SERVICE_ACCOUNT_TOKEN" to skip the
+        post-merge plan where the vault is out of reach while the schedule still
+        reds on a lost credential. It sits inside a single-quoted `rules:if`, so
+        it must contain no single quote.
 ---
 # Read-only `terraform plan` reporting drift between a module and the live
 # provider. Never applies; reconciling stays a supervised, interactive apply.
@@ -103,5 +115,5 @@ spec:
     # out-of-band console edits when nothing in-repo changed.
     - if: '$CI_PIPELINE_SOURCE == "schedule" && $[[ inputs.secrets_guard ]]'
     # Post-merge, before the supervised apply.
-    - if: '$CI_COMMIT_BRANCH == "$[[ inputs.default_branch ]]" && $[[ inputs.secrets_guard ]]'
+    - if: '$CI_COMMIT_BRANCH == "$[[ inputs.default_branch ]]" && $[[ inputs.secrets_guard ]] && $[[ inputs.post_merge_guard ]]'
       changes: $[[ inputs.changes ]]

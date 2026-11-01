@@ -15,8 +15,8 @@
     - name: Gather facts
       ansible.builtin.setup:
 
-    # Synthetic cert files so the role's preflight assertion passes.
-    # In production these are written by acme_certs's homelab-cert-reload.sh.
+    # Synthetic cert files so the role's preflight assertion passes; a site
+    # distributes the real ones.
     - name: Ensure /etc/ssl/private exists
       ansible.builtin.file:
         path: /etc/ssl/private

@@ -223,9 +223,8 @@
       ansible.builtin.include_role:
         name: weisssrv.infra.vfio_passthrough
 
-    # A drop-in written before the role-owned literal shipped carries only the
-    # ansible_managed header. The legacy markers keep it removable, or the GPU
-    # stays captured on a host whose gate is flipped off at the bump.
+    # A drop-in carrying only the ansible_managed header stays removable through
+    # the legacy markers, so the GPU is released when the gate is flipped off.
     - name: Seed a legacy vfio.conf carrying only the ansible_managed header
       tags: [molecule-idempotence-notest]
       ansible.builtin.copy:

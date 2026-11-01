@@ -1,7 +1,6 @@
 ---
-# kmod ships /etc/modprobe.d on a Debian/Proxmox host, but a minimal image
-# (a container, a debootstrap chroot) may not carry it, and the template below
-# does not create its own parent. Idempotent, so it is a no-op everywhere else.
+# A minimal image may lack /etc/modprobe.d, and the template below does not
+# create its own parent.
 - name: Ensure the modprobe.d directory exists
   ansible.builtin.file:
     path: /etc/modprobe.d
@@ -54,8 +53,7 @@
     executable: /bin/bash
   register: zfs_arc_cap_runtime
   changed_when: "'CHANGED' in zfs_arc_cap_runtime.stdout"
-  # No check_mode:false — this writes /sys, so a dry-run (task infra:check) must
-  # skip it rather than mutate the running kernel on a live host.
+  # Writes /sys, so a dry run skips it rather than mutate the running kernel.
   when:
     - zfs_arc_cap_max_bytes | default('') | string | length > 0
     - zfs_arc_cap_param.stat.exists | default(false)

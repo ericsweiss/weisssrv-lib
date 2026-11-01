@@ -3,8 +3,8 @@
 # warning level) with line-length off outright, document-start back on as a
 # warning, and the rules ansible-lint's yaml rule requires. See lint/README.md.
 
-# CRITICAL: never vendor this as a repo-root `.yamllint`. ansible-lint discovers
-# one there and merges it over its own yaml[*] rules.
+# Never vendor this as a repo-root `.yamllint`: ansible-lint discovers one there
+# and merges it over its own yaml[*] rules.
 extends: relaxed
 
 rules:

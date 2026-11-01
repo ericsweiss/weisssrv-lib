@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Assert what the Alertmanager config DOES, not just that it parses.
 
-Resolves each --config route case with amtool (required on PATH) and checks
-every inhibit rule; exits 0 clean, 1 finding, 2 error. Contract: docs/SCRIPTS.md.
+Resolves each --config route case with amtool (on PATH), checks every inhibit
+rule; exits 0 clean, 1 finding, 2 error. Contract: weisssrv-lib docs/SCRIPTS.md.
 """
 from __future__ import annotations
 
@@ -14,14 +14,22 @@ import sys
 import tempfile
 from pathlib import Path
 
+_HERE = str(Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
 try:
-    import yaml
+    from gate_common import (  # noqa: E402  (resolved from this script's own directory)
+        parse_alertmanager_matchers,
+    )
 except ImportError:
-    print("ERROR: PyYAML required: pip install pyyaml", file=sys.stderr)
+    print(
+        "ERROR: gate_common.py must be vendored beside check-alertmanager-behaviour.py "
+        "(see scripts/vendorable-paths.yml)", file=sys.stderr,
+    )
     raise SystemExit(2) from None
 
-MATCHER_RE = re.compile(r'^\s*(\w+)\s*(=~|!~|!=|=)\s*"?(.*?)"?\s*$')
-
+import yaml  # noqa: E402  (gate_common exits 2 when PyYAML is absent)
 
 DEFAULT_ESCALATION_SUFFIXES = ("Prolonged", "Critical")
 
@@ -84,9 +92,20 @@ def load_config(path) -> Config:
         raise ValueError(f"{path}: `route_cases` must be a non-empty list")
     cases = []
     for case in raw_cases:
-        if not isinstance(case, dict) or not case.get("receiver") or not case.get("labels"):
-            raise ValueError(f"{path}: route case needs receiver + labels: {case!r}")
-        cases.append((str(case["receiver"]), [str(label) for label in case["labels"]]))
+        # `receivers` lists every receiver a `continue: true` route also reaches.
+        if not isinstance(case, dict) or ("receiver" in case) == ("receivers" in case):
+            receivers = ()
+        elif "receiver" in case:
+            receivers = (str(case["receiver"]),) if case["receiver"] else ()
+        else:
+            raw = case["receivers"]
+            ok = isinstance(raw, list) and raw and all(raw)
+            receivers = tuple(str(r) for r in raw) if ok else ()
+        if not receivers or not case.get("labels"):
+            raise ValueError(
+                f"{path}: route case needs labels and one of receiver / receivers: {case!r}"
+            )
+        cases.append((receivers, [str(label) for label in case["labels"]]))
     suffixes = doc.get("escalation_suffixes")
     if suffixes is None:
         suffixes = list(DEFAULT_ESCALATION_SUFFIXES)
@@ -196,14 +215,16 @@ def check_routes(am_config: Path, route_cases) -> list[str]:
                 f"amtool config routes test failed for [{' '.join(labels)}]:\n"
                 f"{run.stdout}{run.stderr}"
             )
-        got = " ".join((run.stdout + run.stderr).split())
-        # amtool can print several matching receivers in tree order, so only
-        # the first token is the resolution, compared exactly. A prefix test
-        # would pass `critical-page` for an expected `critical`.
-        tokens = got.split()
-        first = tokens[0] if tokens else ""
-        if first != want:
-            problems.append(f"[{' '.join(labels)}] expected receiver {want!r}, resolved {got!r}")
+        # amtool prints every matched receiver on its first line, comma-joined in
+        # tree order; a `continue: true` route adds the later ones. The list is
+        # compared whole and exactly, so `critical-page` never passes `critical`.
+        lines = run.stdout.strip().splitlines()
+        got = tuple(r.strip() for r in lines[0].split(",")) if lines else ()
+        if got != want:
+            problems.append(
+                f"[{' '.join(labels)}] expected receiver(s) {','.join(want)!r}, "
+                f"resolved {','.join(got)!r}"
+            )
     return problems
 
 
@@ -217,11 +238,10 @@ def _parse_matchers(
     """
     out = []
     for raw in matchers or []:
-        m = MATCHER_RE.match(raw)
-        if not m:
+        try:
+            out += parse_alertmanager_matchers(raw)
+        except ValueError:
             problems.append(f"rule {index}: unparseable {side} matcher {raw!r}")
-            continue
-        out.append((m.group(1), m.group(2), m.group(3)))
     return out
 
 
@@ -234,7 +254,7 @@ def _exact_alertnames(parsed) -> tuple[list[str], str | None]:
     """Return (alertnames the matcher set pins, why it could not be validated).
 
     Exactly one of the two is meaningful. A regex that is not a plain
-    alternation returns a reason, never an empty list. See docs/SCRIPTS.md.
+    alternation, or positive matchers that pin disjoint names, return a reason.
     """
     names: list[str] | None = None
     for op, val in _matchers_for(parsed, "alertname"):
@@ -248,7 +268,15 @@ def _exact_alertnames(parsed) -> tuple[list[str], str | None]:
             continue
         # Matchers are ANDed, so each positive one narrows the pinned set.
         names = members if names is None else [n for n in names if n in members]
+    if names == []:
+        return [], CONTRADICTORY_ALERTNAMES
     return names or [], None
+
+
+CONTRADICTORY_ALERTNAMES = (
+    "alertname matchers are contradictory: the positive matchers share no "
+    "name, so the side matches no alert. Keep one alertname matcher."
+)
 
 
 def _negated_alertnames(parsed) -> tuple[list[str], str | None]:
@@ -615,6 +643,7 @@ def check_inhibits(am_doc: dict, known: set[str], upstream: set[str]) -> list[st
                 )
     return problems
 
+
 _BY_RE = re.compile(r"\bby\s*\(([^)]*)\)")
 _NEGATIVE_SELECTOR_RE = re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:!~|!=)")
 
@@ -668,8 +697,9 @@ def check_equal_label_scope(am_doc: dict, rules_doc: dict) -> list[str]:
             continue
         discard: list[str] = []
         tgt = _parse_matchers(rule.get("target_matchers"), index, "target", discard)
-        if not tgt or _exact_alertnames(tgt)[0]:
-            # A target pinned to exact alertnames is a deliberate pair, not a scope.
+        pinned, why = _exact_alertnames(tgt)
+        if not tgt or pinned or why == CONTRADICTORY_ALERTNAMES:
+            # A pinned target is a deliberate pair; a contradictory one matches nothing.
             continue
         exempt, unreadable = _negated_alertnames(tgt)
         # An unreadable exemption regex leaves the spared set unknown.
@@ -739,7 +769,11 @@ def main(argv: list[str] | None = None) -> int:
         description="Assert what the Alertmanager config does, not just that it parses.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--config", required=True, help="route cases + alert sets (see docstring)")
+    parser.add_argument(
+        "--config", required=True,
+        help="route cases + alert sets (weisssrv-lib docs/SCRIPTS.md, "
+             "examples/alertmanager-behaviour.example.yaml)",
+    )
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     parser.add_argument(
         "--extract-script",

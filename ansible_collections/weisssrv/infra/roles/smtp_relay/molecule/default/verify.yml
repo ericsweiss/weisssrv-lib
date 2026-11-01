@@ -196,6 +196,40 @@
         fail_msg: "Rotating smtp_relay_sasl_password left the fingerprint unchanged"
         success_msg: "Rotating the relay credential changes the recorded fingerprint"
 
+    # The existence probe compares the whole user@realm, so a longer name that
+    # contains the relay user is not mistaken for it.
+    - name: Probe | swap the relay user for a decoy whose name contains it
+      ansible.builtin.shell: |
+        set -o pipefail
+        saslpasswd2 -d -u smtp-relay.test.local testrelay
+        printf '%s' decoypass | saslpasswd2 -p -c -u smtp-relay.test.local xtestrelay
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Probe | re-run the role with only the decoy in sasldb
+      ansible.builtin.include_role:
+        name: weisssrv.infra.smtp_relay
+
+    - name: Probe | the decoy does not count as the relay user
+      ansible.builtin.assert:
+        that:
+          - smtp_relay_sasl_user_check.rc != 0
+        fail_msg: "The SASL user probe matched xtestrelay as testrelay"
+        success_msg: "The SASL user probe matches the exact user@realm only"
+
+    - name: Probe | remove the decoy
+      ansible.builtin.command: saslpasswd2 -d -u smtp-relay.test.local xtestrelay
+      changed_when: true
+
+    - name: Probe | the role re-created the relay user
+      ansible.builtin.shell: |
+        set -o pipefail
+        sasldblistusers2 | awk -F': ' '$1 == "testrelay@smtp-relay.test.local" { f = 1 } END { exit !f }'
+      args:
+        executable: /bin/bash
+      changed_when: false
+
     - name: Check if SASL password file has correct permissions
       ansible.builtin.stat:
         path: /etc/postfix/sasl_passwd

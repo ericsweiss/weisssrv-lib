@@ -1,5 +1,6 @@
 ---
-# NAS storage role: ZFS, NFS, MergerFS, Samba, media-mover
+# Entry point. Each component is gated on its own inventory; README.md lists
+# them with their variables.
 
 # Pure inventory validation, so it runs before anything is written: every export
 # bind source and every boot-ordered MergerFS union must be classified
@@ -91,6 +92,9 @@
 
     - name: Assert the archive exclusion list is well formed
       ansible.builtin.include_tasks: assert_archive_exclude.yml
+
+    - name: Assert the archive retention overrides are well formed
+      ansible.builtin.include_tasks: assert_archive_retention.yml
 
     - name: Include archive backup tasks
       ansible.builtin.include_tasks: archive_backup.yml

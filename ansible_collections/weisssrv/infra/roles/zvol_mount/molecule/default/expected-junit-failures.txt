@@ -2,3 +2,5 @@
 # CI's sanitize-junit step downgrades EXACTLY these names, and ` ::<n>` is
 # hosts x cases.
 Assert a blank-looking disk carries no partition table either
+Assert existing filesystem matches expected type
+Assert additional-disk filesystem UUIDs are unique

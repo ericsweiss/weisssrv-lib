@@ -11,8 +11,9 @@ stages:
   - release
 
 workflow:
-  # Cancel superseded MR pipelines even once a non-interruptible image build has
-  # started, so their molecule jobs release the privileged runner.
+  # MR pipelines cancel on a new commit so their molecule jobs release the
+  # privileged runner. Main never cancels: the release job tags whatever main
+  # holds, so every main commit must finish its own gates.
   auto_cancel:
     on_new_commit: interruptible
   rules:
@@ -20,10 +21,14 @@ workflow:
     # molecule matrix (molecule-tests below is its sole job). It is matched
     # before the branch rule, which a schedule on main would otherwise satisfy.
     - if: '$CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "full-matrix"'
+      auto_cancel:
+        on_new_commit: none
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
+      auto_cancel:
+        on_new_commit: none
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 # Makes the auto_cancel above reach the included lint/test jobs, none of which
@@ -323,6 +328,7 @@ publish-image-tags:
       # notes body is a single escaped JSON string and cannot match.
       released=$(sed -n 's/^  "released": \([a-z]*\),*$/\1/p' release.json | head -n1)
       tag=$(sed -n 's/^  "tag": "\([^"]*\)",*$/\1/p' release.json | head -n1)
+      previous=$(sed -n 's/^  "previous_tag": "\([^"]*\)",*$/\1/p' release.json | head -n1)
       if [ "$released" != "true" ]; then
         echo "no release cut in this pipeline — nothing to retag"; exit 0
       fi
@@ -337,13 +343,21 @@ publish-image-tags:
       echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
       for img in molecule-ci molecule-test ansible-deploy; do
         ref="${CI_REGISTRY_IMAGE}/${img}"
-        if docker pull "${ref}:${CI_COMMIT_SHORT_SHA}" >/dev/null 2>&1; then
-          src="${ref}:${CI_COMMIT_SHORT_SHA}"
-        elif docker pull "${ref}:latest" >/dev/null 2>&1; then
-          src="${ref}:latest"
-        else
-          # First release of a fresh repo: the images have never been pushed.
-          # Warn instead of reddening the pipeline that already cut the tag.
+        src=""
+        # Only an absent tag falls through to the next source; any other pull
+        # failure stops the job rather than publishing a stale image.
+        for cand in "${ref}:${CI_COMMIT_SHORT_SHA}" "${ref}:latest"; do
+          if out=$(docker pull "$cand" 2>&1); then src="$cand"; break; fi
+          case "$out" in
+            *"manifest unknown"*|*"not found"*) ;;
+            *) echo "$out" >&2; echo "ERROR: pulling ${cand} failed" >&2; exit 1 ;;
+          esac
+        done
+        if [ -z "$src" ]; then
+          # Only the first release of a fresh repo may lack an image to retag.
+          if [ -n "$previous" ]; then
+            echo "ERROR: no ${ref} image to retag for ${tag}" >&2; exit 1
+          fi
           echo "WARNING: no ${ref} image to retag — ${tag} not published for ${img}"
           continue
         fi

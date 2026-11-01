@@ -45,16 +45,10 @@ adguard_sync_replicas:
     password: "{{ dns_03_sync_password }}"
 ```
 
-Fronting the two endpoints with an ingress proxy gives you TLS and is the
-recommended shape. It makes the sync timer depend on that proxy being up, but
-DNS resolution itself is unaffected (each instance serves port 53 directly):
-what stops during such an outage is drift correction, and the next tick after
-recovery catches up.
-
-Pointing the URLs at the instances' plain HTTP ports removes that dependency at
-the cost of putting the AdGuard **admin** credential on the wire in cleartext on
-every tick — take the shortcut only where an eavesdropper on that LAN segment is
-an accepted risk.
+Front the two endpoints with an ingress proxy for TLS. The sync timer then
+depends on that proxy. DNS resolution does not, because each instance serves
+port 53 directly. A proxy outage stops drift correction only, and the next tick
+after recovery catches up. Plain HTTP URLs: see Security.
 
 ## What is and is not synced
 
@@ -78,8 +72,7 @@ node_exporter textfile on every run (`ExecStopPost=+…-metrics.sh`, under
 - `adguardhome_sync_last_success_timestamp_seconds` — preserved across failures, so
   a staleness alert measures time-since-last-success
 
-(The metric names keep the upstream tool's `adguardhome_sync_` prefix; only the
-role variables are `adguard_sync_`.)
+The metrics keep the upstream tool's `adguardhome_sync_` prefix.
 
 The role creates that directory itself, so the metric is published on a host
 where `node_exporter_host` has not run. If the directory is missing anyway, the
@@ -116,5 +109,5 @@ curl -u "$user:$pass" "$replica/control/dns_info"
 - credentials come from the site's secret store, never from git; the tasks that
   touch them use `no_log`
 - the sync authenticates with HTTP Basic on every tick, so an `http://` replica
-  URL sends the admin credential in cleartext — use `https://` endpoints unless
-  that exposure is accepted
+  URL sends the AdGuard **admin** credential in cleartext. Use `https://`
+  endpoints unless an eavesdropper on that segment is an accepted risk.

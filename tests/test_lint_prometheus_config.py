@@ -26,6 +26,7 @@ FAKE_PROMTOOL = """\
 printf 'promtool %%s\\n' "$*" >> "$TRACE"
 if [ "$1" = "test" ]; then
     cp "${3%%/*}/rules.yaml" "$STRIPPED"
+    exit "${PROMTOOL_TEST_RC:-0}"
 fi
 exit "${PROMTOOL_RC:-0}"
 """ % BASH
@@ -195,16 +196,28 @@ def test_a_missing_tool_fails_before_any_extraction(run, tool):
     assert calls == []
 
 
+# ALLOW_NO_RULE_TESTS=1 and a distinct exit code: the empty rule-tests dir
+# exits 1 on its own, so only the tool's own status can produce rc 3.
 def test_a_rules_check_failure_is_not_swallowed(run):
-    proc, _ = run(PROMTOOL_RC=1)
-    assert proc.returncode != 0
+    proc, calls = run(PROMTOOL_RC=3, ALLOW_NO_RULE_TESTS=1)
+    assert proc.returncode == 3
+    assert [c.split()[0:2] for c in calls] == [["promtool", "check"]]
     assert "valid" not in proc.stdout
 
 
 def test_an_alertmanager_check_failure_is_not_swallowed(run):
-    proc, _ = run(AMTOOL_RC=1)
-    assert proc.returncode != 0
+    proc, calls = run(AMTOOL_RC=3, ALLOW_NO_RULE_TESTS=1)
+    assert proc.returncode == 3
+    assert calls[-1].startswith("amtool check-config ")
     assert "valid" not in proc.stdout
+
+
+def test_a_unit_test_failure_is_not_swallowed(run):
+    (run.tests_dir / "alerts.test.yaml").write_text(RULE_TEST)
+    proc, calls = run(PROMTOOL_TEST_RC=3)
+    assert proc.returncode == 3
+    assert calls[-1].startswith("promtool test rules ")
+    assert "alert unit tests pass" not in proc.stdout
 
 
 def test_an_extraction_failure_is_not_swallowed(run, tmp_path):

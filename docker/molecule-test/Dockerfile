@@ -90,8 +90,7 @@ RUN ARCH=$(dpkg --print-architecture) \
     && cp checksums.txt /var/cache/adguard-home/checksums.txt \
     && cd / && rm -rf /tmp/agh
 
-# Pre-create the ansible tmp directory (avoids "Failed to create
-# temporary directory" errors during molecule prepare)
+# Pre-create the ansible tmp directory that molecule prepare writes into.
 RUN mkdir -p /root/.ansible/tmp && chmod 700 /root/.ansible/tmp
 
 # Roles must be what enables these: a package that auto-starts its service makes

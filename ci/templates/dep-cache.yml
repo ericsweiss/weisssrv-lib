@@ -16,9 +16,8 @@ spec:
         Cached directories. Must match the two variables below if either is
         overridden on the consuming job.
 ---
-# Shared pip + ansible-galaxy cache fragment. `key_files` are CONSUMER paths, or
-# the bump-busts-the-cache guarantee does not hold; GitLab caps `cache:key:files`
-# at two entries. Usage: docs/INCLUDE-CONTRACT.md.
+# Shared pip + ansible-galaxy cache fragment, keyed on the consumer's pin
+# files. Usage: docs/INCLUDE-CONTRACT.md.
 .dep-cache:
   variables:
     PIP_CACHE_DIR: "${CI_PROJECT_DIR}/.cache/pip"

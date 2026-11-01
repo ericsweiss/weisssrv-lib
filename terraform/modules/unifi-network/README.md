@@ -98,28 +98,27 @@ terraform {
 }
 ```
 
-`unifi_api_key` and every WLAN passphrase are injected as `TF_VAR_*` from
-1Password at apply time (`op run`), never defaulted and never committed to git.
+`unifi_api_key` and every WLAN passphrase are injected as `TF_VAR_*` from the
+caller's secrets backend at apply time, never defaulted and never committed to
+git.
 A key that resolves to an empty string authenticates as nobody and the plan
 fails at the first data read — declare the variables `sensitive` with a
 non-emptiness validation in the root, so the failure names the missing item.
 
 The provider does persist `passphrase` in Terraform state. **Treat the state
 backend as secret material**: whoever can read the state can read every WLAN
-key. The provider's write-only alternative, `passphrase_wo`, is not used here —
-0.55.0 ships no matching version trigger, so a rotated PSK would produce no plan
-diff.
+key.
 
 ## Inputs
 
 | Input | Type | Default | Notes |
 |---|---|---|---|
-| `networks` | map(object) | — | Keyed by identity string; the key is what every other input references. `subnet` is gateway form (`10.0.30.1/24`), validated against the network-address form. The built-in Default network is keyed **`default`**, and that key is the only entry allowed to omit `vlan`; vlan ids and names must be unique, and no two subnets may overlap. `purpose` is `corporate` or `guest` — `vlan-only` is rejected (`subnet` is required here), and a `guest`-purpose network may not be a member of any `zones` entry (it only keeps that purpose inside the controller's own Hotspot zone). `dhcp = {enabled, start, stop, dns_servers, leasetime}`; a non-empty `dns_servers` sets `dns_enabled`, `start` must not be above `.stop` and both bounds must lie inside this network's own `subnet` without covering the gateway address, `leasetime` is a Go duration string (write the normalized `24h0m0s` form, which is what the controller reads back), and omitting `dhcp` writes no `dhcp_server` at all. |
+| `networks` | map(object) | — | Keyed by identity string; the key is what every other input references. `subnet` is gateway form (`10.0.30.1/24`). The built-in Default network is keyed **`default`**. Field rules: the variable description in `variables.tf`. |
 | `reserved_cidrs` | list(string) | `[]` | Ranges outside this controller's own networks that no managed network may overlap: the k3s pod and service CIDRs, and any neighbouring site's range. The LAN is itself a `networks` entry, so the overlap rule on that variable already covers it. Checked on `unifi_network`, which names the colliding pair, because a variable validation cannot read another variable at this module's Terraform floor. |
 | `zones` | map(object) | `{}` | Custom firewall zones keyed by DISPLAY NAME; `networks` lists `networks` keys, each of which may appear in at most one zone, and every member must be a `corporate` network. Membership is a full replacement on every apply. The key may not be a name reserved for a built-in — `Internal`, `External`, `Gateway`, `Hotspot`, `Vpn`, `Dmz`, or any name `builtin_zone_names` declares. |
 | `builtin_zone_names` | map(string) | `{internal="Internal", external="External", gateway="Gateway"}` | Short name → the controller's display name. Only the entries a policy endpoint actually names are read, so an unused one costs nothing; confirm the display names of the ones you use against the live controller. |
-| `policies` | list(object) | `[]` | `name` (unique — it is the resource key), `action` (`ALLOW`), `protocol` (`all`), `source`/`destination` `{zone, ips, networks, port}`, `create_allow_respond` (`true`, honoured for `ALLOW` only), `logging`. A `port` requires a tcp/udp/tcp_udp `protocol`. An endpoint sets at most one of `ips`/`networks` and neither may be empty — omit both for "any host in that zone", and any `networks` it does name must belong to that endpoint's own zone. `port` takes 1-65535, ascending ranges only. `zone` resolves against `zones` **and** `builtin_zone_names`. |
-| `wlans` | map(object) | `{}` | **sensitive**, and persisted in Terraform state (see "Consuming it"). `{ssid, network, passphrase, wpa3, l2_isolation, allow_2ghz_high_perf, hide, bands}`. `security = "wpapsk"` is fixed. `passphrase` is required and must be 8-63 printable ASCII (the WPA-PSK rule); it is `optional` in the type only, so a later non-PSK `security` input is an additive change. `bands` decides who owns the band set — see below. |
+| `policies` | list(object) | `[]` | `name` (unique — it is the resource key), `action` (`ALLOW`), `protocol` (`all`), `source`/`destination` `{zone, ips, networks, port}`, `create_allow_respond`, `logging`. `zone` resolves against `zones` **and** `builtin_zone_names`. Field rules: `variables.tf`. |
+| `wlans` | map(object) | `{}` | **sensitive**, and persisted in Terraform state (see "Consuming it"). `{ssid, network, passphrase, wpa3, l2_isolation, allow_2ghz_high_perf, hide, bands}`. `security = "wpapsk"` is fixed. `bands` decides who owns the band set — see below. Field rules: `variables.tf`. |
 | `qos_rate_name` | string | `"Default"` | Client QoS rate (old "user group") every WLAN is assigned to; `unifi_wlan.user_group_id` is Required with no default. Read only when `wlans` is non-empty, so a gateway-only site never fails a plan on a rate name it does not use. |
 | `clients` | map(object) | `{}` | `{mac (colon form), name, fixed_ip, network, note}`. `fixed_ip` requires `network`, must lie inside that network's SUBNET and must sit OUTSIDE its DHCP pool. Both are plan-time errors on `unifi_client`: the controller leases the pool out dynamically, so a reservation inside it races those leases. |
 | `port_forwards` | map(object) | `{}` | `{protocol, wan_interface, wan_port, ip, port, logging}`; ports are strings, so ranges and lists work — each port 1-65535, each range ascending. `wan_interface` is `wan` (default), `wan2` or `both`; any source. `logging` (default `false`) toggles the gateway's per-forward WAN hit logging. |
@@ -141,11 +140,7 @@ Computed, so the console keeps whatever bands it has and a band enabled in the
 UI survives every apply. Give it a list and terraform owns the set instead,
 re-asserting it on every apply and reverting a UI change.
 
-That is what makes 6 GHz reachable at all. `6g` is a legal element here, but
-including it in a written set fails WLAN **creation** on provider releases still
-carrying #406, so a 6 GHz SSID today is one that leaves `bands` unset and is
-toggled in the console. Once the provider fix ships, `bands = ["2g","5g","6g"]`
-becomes the way to hold it in code.
+Leaving `bands` unset is how a 6 GHz SSID works: see "6 GHz, in code" below.
 
 `site_settings.igmp_snooping_networks` is opt-in, not a toggle: a non-empty list
 writes the `igmp_snooping` block and enables snooping for exactly those
@@ -186,19 +181,23 @@ policies reference, in the one namespace policies resolve against), `wlan_ids`.
 
 The provider's own limits at v0.55.0. Everything here is a UI step or a runbook
 step in the consuming repo — none of it is drift this module will report.
+Issue and PR numbers refer to the
+[ubiquiti-community/terraform-provider-unifi](https://github.com/ubiquiti-community/terraform-provider-unifi/issues)
+tracker.
 
 | Not managed | Why |
 |---|---|
-| **Policy ORDER** | `unifi_firewall_policy.index` is read-only; the controller appends every new policy to the end of its zone-pair and the Integration API exposes no reorder (upstream #407). The zone-per-network model is what makes that safe: entries are allowances against a default deny, not a first-match list. |
+| **Policy ORDER** | `unifi_firewall_policy.index` is read-only; the controller appends every new policy to the end of its zone-pair and the Integration API exposes no reorder (provider issue 407). The zone-per-network model is what makes that safe: entries are allowances against a default deny, not a first-match list. |
 | **mDNS reflection** | `unifi_network.multicast_dns` is ignored by UniFi OS gateways, which always store `false`. The module leaves it unset rather than planning a lie; enable the reflector per network in the UI. |
-| **Devices, ports, native/tagged VLAN per port** | `unifi_device` cannot create anything (adoption only), and its `port_override` block is unsafe at 0.55.0: zero blocks wipes live overrides (#438), a `op_mode: switch` port strips fields from every port on the device (#430), and unset Optional+Computed attributes fail the apply (#431). Port layout is a documented physical map, not code. |
-| **6 GHz, in code** | Including `6g` in a band set this module WRITES fails WLAN creation (#406). Enable it in the console and leave `wlans[*].bands` unset — the module then writes no band set, so the console's stays (Inputs, above). |
-| **Per-SSID band steering** | `bandsteering_mode` is a device attribute, not a WLAN one (#388). `allow_2ghz_high_perf` is the closest per-SSID control. |
-| **A network's zone from the network side** | `unifi_network` has no `firewall_zone_id` (#417); zone membership is set only from `zones`. |
-| **Built-in zones as resources** | v0.55.0 cannot import one by name (upstream PR #401 is not in the pinned release), and managing one would fight the controller for membership. They are read through `data.unifi_firewall_zone`. |
+| **Devices, ports, native/tagged VLAN per port** | `unifi_device` cannot create anything (adoption only), and its `port_override` block is unsafe at 0.55.0: zero blocks wipes live overrides (provider issue 438), a `op_mode: switch` port strips fields from every port on the device (provider issue 430), and unset Optional+Computed attributes fail the apply (provider issue 431). Port layout is a documented physical map, not code. |
+| **6 GHz, in code** | Including `6g` in a band set this module WRITES fails WLAN creation (provider issue 406). Enable it in the console and leave `wlans[*].bands` unset — the module then writes no band set, so the console's stays (Inputs, above). |
+| **Per-SSID band steering** | `bandsteering_mode` is a device attribute, not a WLAN one (provider issue 388). `allow_2ghz_high_perf` is the closest per-SSID control. |
+| **A network's zone from the network side** | `unifi_network` has no `firewall_zone_id` (provider issue 417); zone membership is set only from `zones`. |
+| **Built-in zones as resources** | v0.55.0 cannot import one by name (provider PR 401 is not in the pinned release), and managing one would fight the controller for membership. They are read through `data.unifi_firewall_zone`. |
 | **WLAN AP-group membership** | The controller assigns the default AP group on every WLAN write and reads it back. The module never sets `ap_group_ids` and `ignore_changes`es it, along with `minrate_setting_preference`. Set AP groups and minimum data rates in the console. |
 | **Virtual-network overrides on the default network** | The controller rejects them (`api.err.VirtualNetworkOverrideUnsupportedForDefaultNetwork`), so a client whose `network` is the `default` key is written as a bare fixed-IP reservation with no override. Clients on any other network still steer. |
-| **An empty DHCP DNS list** | Written as `[]` the controller never converges it (#429), so an empty `dhcp.dns_servers` sends null and leaves clients on the gateway's own resolver. |
+| **An empty DHCP DNS list** | Written as `[]` the controller never converges it (provider issue 429), so an empty `dhcp.dns_servers` sends null and leaves clients on the gateway's own resolver. |
+| **`unifi_port_forward.enabled`** | Deprecated in provider 0.55.0 with no replacement, so the module leaves it unset. A forward exists while its `port_forwards` entry does. |
 | **Day-2 IPS mode** | `lifecycle { ignore_changes = [ips] }` on `unifi_setting.site` makes the whole `ips` block create-time intent: an imported site never receives it, and changing `site_settings.ips_mode` plans nothing. Set it in the console ("Apply is supervised"). |
 
 Two behaviours to verify on the controller rather than assume:
@@ -229,7 +228,7 @@ Two behaviours to verify on the controller rather than assume:
 
 ## Changing a client
 
-Upstream #428: every in-place UPDATE of a `unifi_client` fails with
+Provider issue 428: every in-place UPDATE of a `unifi_client` fails with
 `inconsistent result after apply: .last_ip`. Renaming a reservation or moving
 its address is therefore a replace:
 
@@ -322,11 +321,10 @@ or the object's URL in the UI. Built-in zones are never imported.
 
 ## Provider pin
 
-`~> 0.55.0`. This is a pre-1.0 provider and a ground-up rewrite of the
-abandoned `paultyng/unifi` one: 0.52 → 0.55 made firewall-policy `index`
-read-only, added `unifi_network.purpose`, and changed endpoint match lists to
-Computed. Pin the minor here and the exact build in the caller's lockfile; treat
-a minor bump as its own change, re-reading the release notes for schema moves.
+`~> 0.55.0`, pinned to the minor as [../README.md](../README.md) describes. The
+provider is a rewrite of `paultyng/unifi`. Its 0.52 → 0.55 schema moves made
+firewall-policy `index` read-only, added `unifi_network.purpose`, and changed
+endpoint match lists to Computed.
 
 ## Tests
 
@@ -336,13 +334,10 @@ terraform init -backend=false
 terraform test
 ```
 
-The module's `required_version` floor is the test harness's, not the
-configuration's: the tests need `mock_provider` (1.7) while the configuration
-itself needs 1.5 (`../README.md`).
+The `required_version` floor is the test harness's: [../README.md](../README.md).
 
 `tests/validation.tftest.hcl` covers every variable validation and every
-cross-map precondition — verified by mutation, neutering each one in turn and
-confirming a run goes red — plus the derived attributes that have no other
+cross-map precondition, plus the derived attributes that have no other
 guard: `matching_target` and `port_matching_type` on **both** endpoints, the
 ALLOW-only `create_allow_respond`, `dhcp_server.dns_enabled` and the DHCP
 start/stop pair, the pinned `setting_preference`, zone `network_ids`
@@ -359,6 +354,5 @@ A new `validation` block or `precondition` needs a new `run` in the same change:
 nothing else in the repo can execute one, and a mock plan is the only place a
 derived attribute is observable before it reaches a controller.
 
-Variable validation cannot reference `locals` at this floor, so the port-list
-and bare-IPv4 regexes are written out in every validation that needs them. A
-mutation pass has to neuter each copy separately (`../README.md`).
+The port-list and bare-IPv4 regexes are repeated in every validation that needs
+them; [../README.md](../README.md) explains why. Edit every copy together.

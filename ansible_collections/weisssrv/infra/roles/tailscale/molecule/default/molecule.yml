@@ -21,9 +21,9 @@ provisioner:
   inventory:
     group_vars:
       all:
-        # tailscale_version is unset, so the scenario installs the shipped
-        # default and a default upstream stops publishing fails here rather than
-        # on a consumer's host. Sites pin their own version.
+        # tailscale_version stays unset, so the scenario installs the shipped
+        # default, and a default that upstream stops publishing fails here
+        # rather than on a consumer host.
         tailscale_enabled: true
         tailscale_accept_routes: false
         tailscale_accept_dns: false

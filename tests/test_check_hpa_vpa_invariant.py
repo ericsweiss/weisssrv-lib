@@ -61,7 +61,7 @@ spec:
 """
 
 
-def test_memory_only_vpa_with_cpu_hpa_passes(monkeypatch, policy_file):
+def test_memory_only_vpa_with_cpu_hpa_passes(monkeypatch):
     assert _run(CPU_HPA + "---" + _vpa("memory"), monkeypatch) == 0
 
 
@@ -126,7 +126,7 @@ def test_two_vpas_one_cpu_one_memory_fails(monkeypatch):
 
 
 def test_update_mode_off_vpa_does_not_clash(monkeypatch):
-    """A recommend-only (Off) VPA never mutates pods — coredns pattern."""
+    """A recommend-only (Off) VPA never mutates pods, so it pairs with any HPA."""
     off_vpa = """
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
@@ -497,8 +497,12 @@ def _capped_vpa(
     update_mode: str = "Auto",
     container_mode: str | None = None,
     container_name: str = "*",
+    request: str | None = None,
 ) -> str:
-    """A Deployment with a memory limit plus a VPA capping it."""
+    """A Deployment with a memory limit plus a VPA capping it.
+
+    The request defaults to the limit, where the 0.8x-the-limit shorthand holds.
+    """
     policy_lines = [f'      - containerName: "{container_name}"']
     if controlled_values:
         policy_lines.append(f"        controlledValues: {controlled_values}")
@@ -516,7 +520,7 @@ spec:
       containers:
         - name: app
           resources:
-            requests: {{memory: 256Mi}}
+            requests: {{memory: {request or limit}}}
             limits: {{memory: {limit}}}
 ---
 apiVersion: autoscaling.k8s.io/v1
@@ -645,7 +649,8 @@ def test_cap_integrated_fails_with_flag(monkeypatch, policy_file):
 
 
 def test_cap_integrated_passes_with_flag(monkeypatch, policy_file):
-    stream = _chart_native_vpa("memory") + "\n---\n" + _capped_vpa("819Mi", limit="1Gi")
+    capped = _capped_vpa("204Mi", limit="1Gi", request="256Mi")
+    stream = _chart_native_vpa("memory") + "\n---\n" + capped
     assert _run_flag(stream, monkeypatch, policy_file) == 0
 
 
@@ -657,7 +662,8 @@ def test_cap_integrated_allowlisted_passes(monkeypatch, tmp_path):
             {"vpa_cap_allowlist": {"ns/VerticalPodAutoscaler/app": "cap re-derivation pending"}}
         )
     )
-    assert _run_flag(_capped_vpa("2Gi", limit="1Gi"), monkeypatch, p) == 0
+    capped = _capped_vpa("2Gi", limit="1Gi", request="256Mi")
+    assert _run_flag(capped, monkeypatch, p) == 0
 
 
 def test_cap_not_checked_without_flag(monkeypatch):
@@ -710,6 +716,25 @@ def test_policy_config_incomplete_target_raises(tmp_path):
     p.write_text("chart_native_hpa_targets:\n  - {namespace: ns, kind: Deployment}\n")
     with pytest.raises(ValueError, match="missing"):
         mod.load_policy(p)
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["chart_native_hpa_targets: [ns/Deployment/app]\n",
+     "chart_native_hpa_targets: {ns: app}\n"],
+)
+def test_policy_config_misshaped_targets_raise(tmp_path, body):
+    p = tmp_path / "policy.yaml"
+    p.write_text(body)
+    with pytest.raises(ValueError, match="chart"):
+        mod.load_policy(p)
+
+
+def test_a_misshaped_target_list_is_an_operator_error(tmp_path, monkeypatch, capsys):
+    p = tmp_path / "policy.yaml"
+    p.write_text("chart_native_hpa_targets: [ns/Deployment/app]\n")
+    assert _run_flag(UNRELATED, monkeypatch, p) == 2
+    assert "--policy-config" in capsys.readouterr().err
 
 
 def test_policy_config_non_mapping_raises(tmp_path):
@@ -787,9 +812,146 @@ def test_exact_container_policy_overrides_the_wildcard():
     assert mod.vpa_cap_violations(_docs(_PRECEDENCE_DOCS)) == []
 
 
+def test_a_named_off_policy_overrides_the_wildcard():
+    """A named `mode: Off` policy shields its container from the wildcard's cap."""
+    off = _PRECEDENCE_DOCS.replace("controlledValues: RequestsOnly", 'mode: "Off"')
+    assert 'mode: "Off"' in off
+    assert mod.vpa_cap_violations(_docs(off)) == []
+
+
+def test_a_named_off_policy_overrides_the_wildcard_in_the_ratio_arm():
+    docs = _ratio_capped("512Mi", "1Gi", "819Mi")
+    assert mod.vpa_cap_violations(docs)
+    docs[1]["spec"]["resourcePolicy"]["containerPolicies"].insert(
+        0, {"containerName": "app", "mode": "Off"}
+    )
+    assert mod.vpa_cap_violations(docs) == []
+
+
 def test_wildcard_still_judged_for_uncovered_containers():
     docs = _PRECEDENCE_DOCS.replace('containerName: "app"', 'containerName: "other"')
     assert mod.vpa_cap_violations(_docs(docs))
+
+
+# --- caps scaled through the request:limit ratio ------------------------------
+
+
+def _ratio_capped(
+    request: str,
+    limit: str | None,
+    cap: str,
+    resource: str = "memory",
+    controlled_values: str | None = None,
+    controlled_resources: str | None = None,
+    update_mode: str = "Auto",
+    container_mode: str | None = None,
+) -> list:
+    """A Deployment whose request sits below its limit, plus a VPA capping it.
+
+    A `limit` of None leaves the container with requests and no limits.
+    """
+    lines = ['      - containerName: "*"']
+    if controlled_values:
+        lines.append(f"        controlledValues: {controlled_values}")
+    if controlled_resources:
+        lines.append(f"        controlledResources: [{controlled_resources}]")
+    if container_mode:
+        lines.append(f'        mode: "{container_mode}"')
+    lines.append(f"        maxAllowed: {{{resource}: {cap}}}")
+    policy = "\n".join(lines)
+    limits = "" if limit is None else f"\n            limits: {{{resource}: {limit}}}"
+    return _docs(f"""
+apiVersion: apps/v1
+kind: Deployment
+metadata: {{name: app, namespace: ns}}
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          resources:
+            requests: {{{resource}: {request}}}{limits}
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata: {{name: app, namespace: ns}}
+spec:
+  targetRef: {{apiVersion: apps/v1, kind: Deployment, name: app}}
+  updatePolicy: {{updateMode: "{update_mode}"}}
+  resourcePolicy:
+    containerPolicies:
+{policy}
+""")
+
+
+class TestRatioScaledCap:
+    """The admission controller keeps request:limit, so the limit reaches cap x limit / request."""
+
+    @pytest.mark.parametrize(
+        ("request_", "limit", "cap", "resource", "phrases"),
+        [
+            ("512Mi", "1Gi", "819Mi", "memory",
+             ("to 1638Mi", "0.8 x limit x (request / limit) = 409Mi", "RequestsOnly")),
+            ("100m", "500m", "200m", "cpu", ("maxAllowed.cpu 200m", "to 1000m", "= 80m")),
+        ],
+    )
+    def test_a_cap_scaled_past_the_limit_is_flagged(self, request_, limit, cap, resource, phrases):
+        (found,) = mod.vpa_cap_violations(_ratio_capped(request_, limit, cap, resource=resource))
+        assert "ns/VerticalPodAutoscaler/app" in found
+        assert all(phrase in found for phrase in phrases)
+
+    @pytest.mark.parametrize(
+        ("args", "kwargs"),
+        [
+            (("512Mi", "1Gi", "409Mi"), {}),
+            (("512Mi", "1Gi", "512Mi"), {}),
+            (("100m", "500m", "80m"), {"resource": "cpu"}),
+            (("500m", "500m", "1"), {"resource": "cpu"}),
+            (("512Mi", "1Gi", "819Mi"), {"controlled_values": "RequestsOnly"}),
+            (("512Mi", "1Gi", "819Mi"), {"controlled_resources": "cpu"}),
+            (("512Mi", "1Gi", "819Mi"), {"update_mode": "Off"}),
+            (("512Mi", "1Gi", "819Mi"), {"container_mode": "Off"}),
+        ],
+        ids=["general-form", "cap-at-request", "cpu-general-form", "cpu-one-to-one",
+             "requests-only", "uncontrolled-resource", "vpa-off", "policy-off"],
+    )
+    def test_a_cap_the_ratio_keeps_within_the_limit_passes(self, args, kwargs):
+        assert mod.vpa_cap_violations(_ratio_capped(*args, **kwargs)) == []
+
+    @pytest.mark.parametrize("request_", ["512Mi", "1Gi"])
+    def test_a_cap_above_the_limit_is_reported_once(self, request_):
+        (found,) = mod.vpa_cap_violations(_ratio_capped(request_, "1Gi", "2Gi"))
+        assert "is above the 1Gi limit" in found
+
+    def test_a_cap_equal_to_the_limit_is_reported_once(self):
+        (found,) = mod.vpa_cap_violations(_ratio_capped("512Mi", "1Gi", "1Gi"))
+        assert "equals the limit" in found
+
+    @pytest.mark.parametrize("resource", ["memory", "cpu"])
+    def test_a_container_with_requests_and_no_limits_is_not_judged(self, resource):
+        docs = _ratio_capped("512Mi" if resource == "memory" else "100m", None,
+                             "819Mi" if resource == "memory" else "200m", resource=resource)
+        assert mod.vpa_cap_violations(docs) == []
+
+    @pytest.mark.parametrize(
+        ("zero", "limit", "cap", "resource"),
+        [("0", "1Gi", "819Mi", "memory"), ("0m", "500m", "200m", "cpu")],
+    )
+    def test_a_zero_request_is_not_judged(self, zero, limit, cap, resource):
+        """No ratio exists to scale through, so the arm skips rather than divide by zero."""
+        assert mod.vpa_cap_violations(_ratio_capped(zero, limit, cap, resource=resource)) == []
+
+    def test_an_allowlisted_vpa_is_exempt(self):
+        docs = _ratio_capped("512Mi", "1Gi", "819Mi")
+        assert mod.vpa_cap_violations(docs, {"ns/VerticalPodAutoscaler/app"}) == []
+
+    def test_the_gate_fails_and_names_the_general_form(self, monkeypatch, policy_file, capsys):
+        stream = "\n---\n".join(
+            yaml.safe_dump(d) for d in _ratio_capped("512Mi", "1Gi", "819Mi")
+        )
+        assert _run_flag(_chart_native_vpa("memory") + "\n---\n" + stream,
+                         monkeypatch, policy_file) == 1
+        assert "cap at most 0.8 x limit x (request / limit)" in capsys.readouterr().err
 
 
 # --- memory requests == limits under a limit-rewriting VPA -------------------
@@ -974,13 +1136,8 @@ def test_a_namespaceless_workload_is_keyed_default(monkeypatch, tmp_path):
     assert mod.cpu_limit_violations(_docs(namespaceless), {"default/Deployment/app"}) == []
 
 
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-v"]))
-
-
 def test_an_empty_corpus_is_an_operator_error(monkeypatch, capsys):
     """A gate that passes on nothing is not a gate."""
-    monkeypatch.setattr("sys.stdin", io.StringIO(""))
     assert _run("", monkeypatch) == 2
     assert "empty corpus" in capsys.readouterr().err
 
@@ -1001,11 +1158,32 @@ spec:
 
 
 def test_an_unrendered_target_is_reported_as_not_judged():
-    """The silent skip is how a cap at double the real limit passed review."""
+    """A cap with no limit to compare against is named, never skipped in silence."""
     (unjudged,) = mod.vpa_cap_unjudged(_docs(UNRENDERED_CAP))
     assert "observability/VerticalPodAutoscaler/alloy" in unjudged
     assert "observability/DaemonSet/alloy" in unjudged
     assert mod.vpa_cap_violations(_docs(UNRENDERED_CAP)) == []
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("  resourcePolicy:", '  updatePolicy: {updateMode: "Off"}\n  resourcePolicy:'),
+        ('containerName: "*"', 'containerName: "*"\n        mode: "Off"'),
+    ],
+    ids=["vpa-off", "policy-off"],
+)
+def test_an_off_cap_on_an_unrendered_target_is_not_reported_as_not_judged(old, new):
+    """An Off VPA or policy never applies its cap, so there is nothing left to judge."""
+    assert mod.vpa_cap_unjudged(_docs(UNRENDERED_CAP.replace(old, new))) == []
+
+
+def test_a_live_policy_beside_an_off_one_is_still_reported_as_not_judged():
+    mixed = UNRENDERED_CAP + """      - containerName: sidecar
+        mode: "Off"
+        maxAllowed: {memory: 2Gi}
+"""
+    assert len(mod.vpa_cap_unjudged(_docs(mixed))) == 1
 
 
 def test_a_capless_vpa_on_an_unrendered_target_is_not_reported():
@@ -1019,9 +1197,14 @@ def test_an_allowlisted_vpa_is_not_reported_as_not_judged():
     assert mod.vpa_cap_unjudged(_docs(UNRENDERED_CAP), allowed) == []
 
 
+UNRENDERED_REQUESTS_ONLY = UNRENDERED_CAP.replace(
+    'containerName: "*"', 'containerName: "*"\n        controlledValues: RequestsOnly'
+)
+
+
 def test_a_declared_limit_makes_the_cap_judgeable_and_catches_it():
     declared = {"observability/DaemonSet/alloy": {"alloy": "512Mi"}}
-    docs = _docs(UNRENDERED_CAP)
+    docs = _docs(UNRENDERED_REQUESTS_ONLY)
     assert mod.vpa_cap_unjudged(docs, None, declared) == []
     (violation,) = mod.vpa_cap_violations(docs, None, declared)
     assert "1Gi is above the 512Mi limit" in violation
@@ -1029,9 +1212,37 @@ def test_a_declared_limit_makes_the_cap_judgeable_and_catches_it():
 
 def test_a_declared_limit_above_the_cap_passes():
     declared = {"observability/DaemonSet/alloy": {"alloy": "2Gi"}}
-    docs = _docs(UNRENDERED_CAP)
+    docs = _docs(UNRENDERED_REQUESTS_ONLY)
     assert mod.vpa_cap_violations(docs, None, declared) == []
     assert mod.vpa_cap_unjudged(docs, None, declared) == []
+
+
+def test_a_declared_limit_leaves_a_limit_controlling_ratio_unjudged():
+    """A declared limit carries no request, so the ratio rule still has nothing to read."""
+    declared = {"observability/DaemonSet/alloy": {"alloy": "2Gi"}}
+    docs = _docs(UNRENDERED_CAP)
+    assert mod.vpa_cap_violations(docs, None, declared) == []
+    (note,) = mod.vpa_cap_unjudged(docs, None, declared)
+    assert "maxAllowed.memory controls limits" in note
+    assert "ratio rule was not applied" in note
+
+
+def test_an_unrendered_cpu_cap_that_controls_limits_is_reported_as_not_judged():
+    docs = _docs(UNRENDERED_CAP.replace("maxAllowed: {memory: 1Gi}", "maxAllowed: {cpu: 500m}"))
+    (note,) = mod.vpa_cap_unjudged(docs)
+    assert "maxAllowed.cpu controls limits" in note
+    assert "observability/DaemonSet/alloy" in note
+
+
+@pytest.mark.parametrize(
+    "extra",
+    ["controlledValues: RequestsOnly", "controlledResources: [memory]", 'mode: "Off"'],
+)
+def test_an_unrendered_cpu_cap_that_cannot_move_a_limit_is_not_reported(extra):
+    docs = _docs(
+        UNRENDERED_CAP.replace("maxAllowed: {memory: 1Gi}", f"{extra}\n        maxAllowed: {{cpu: 500m}}")
+    )
+    assert mod.vpa_cap_unjudged(docs) == []
 
 
 def test_a_rendered_limit_wins_over_a_declared_one():
@@ -1040,9 +1251,10 @@ def test_a_rendered_limit_wins_over_a_declared_one():
     assert mod.vpa_cap_violations(_docs(_capped_vpa("2Gi", limit="1Gi")), None, declared)
 
 
-def test_the_gate_fails_on_an_unjudged_cap_unless_acknowledged(monkeypatch):
+def test_the_gate_fails_on_an_unjudged_cap_unless_acknowledged(monkeypatch, capsys):
     argv = ["--require-chart-native-vpas"]
     assert _run(UNRENDERED_CAP, monkeypatch, argv) == 1
+    assert "controlledValues: RequestsOnly" in capsys.readouterr().err
     assert _run(UNRENDERED_CAP, monkeypatch, argv + ["--allow-unjudged-vpa-caps"]) == 0
 
 
@@ -1162,6 +1374,17 @@ class TestPdbFloor:
         )
         assert _run(corpus, monkeypatch) == 0
 
+    def test_a_match_expressions_budget_is_matched(self, monkeypatch):
+        budget = BLOCKING_PDB.replace(
+            "matchLabels: {app: web}",
+            "matchExpressions: [{key: app, operator: In, values: [web]}]",
+        )
+        assert _run(FLOOR_HPA + FLOOR_WORKLOAD + budget, monkeypatch) == 1
+
+    def test_an_empty_selector_budget_covers_every_pod(self, monkeypatch):
+        budget = BLOCKING_PDB.replace("  selector:\n    matchLabels: {app: web}", "  selector: {}")
+        assert _run(FLOOR_HPA + FLOOR_WORKLOAD + budget, monkeypatch) == 1
+
     def test_a_chart_rendered_target_is_not_judged(self, monkeypatch):
         """Without the pod template the budget cannot be matched to the HPA."""
         assert _run(FLOOR_HPA + BLOCKING_PDB, monkeypatch) == 0
@@ -1271,3 +1494,7 @@ class TestRequestAboveLimit:
         ).replace("memory: 512Mi}", "memory: 128Mi}")
         assert _run(corpus, monkeypatch) == 1
         assert "container 'web'" in capsys.readouterr().err
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-v"]))

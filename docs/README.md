@@ -17,9 +17,8 @@
 - [DATABASE-CONTRACT.md](DATABASE-CONTRACT.md) — the connection-Secret contract
   for CloudNativePG consumers: Secret names, keys, delivery as files,
   privileges and rotation.
-- Consumer pins are recorded consumer-side — this library does not keep a
-  registry of who pins it. What it publishes is the vendorable offer list,
-  [../scripts/vendorable-paths.yml](../scripts/vendorable-paths.yml).
+- [../scripts/vendorable-paths.yml](../scripts/vendorable-paths.yml) — the
+  files a consumer may vendor byte-identically.
 
 Vendored surfaces document themselves next to the files:
 [../lint/README.md](../lint/README.md) states the copy-into-consumer contract

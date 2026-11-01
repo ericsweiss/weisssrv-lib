@@ -38,22 +38,24 @@ placement.
 - Node label application
 - Node taint application
 - kube-apiserver audit logging (opt-in, servers only) — see below
-- Off-node etcd snapshot copy (opt-in, servers only): a systemd timer that
-  copies the newest local etcd snapshot to an NFS export (by hostname, over
-  TLS) and emits an `etcd_snapshot_last_copy_timestamp_seconds`
-  textfile metric for the `EtcdSnapshotStale` alert (the copy script keeps its
-  own metric writer: these names predate the `compose_app` helper's prefix
-  convention and the alert rules select on them) — off by default via
-  `k3s_etcd_snapshot_offnode_enabled` (see defaults for the companion NFS export
-  + `node_exporter_host` + `nfs_tls`/tlshd on the servers it needs — the
-  `xprtsec=tls` mount hangs without the TLS handshake daemon). The copy script
-  runs without `set -e` so the metric is published even when the copy fails,
-  preserving the previous success timestamp rather than resetting it.
+- Off-node etcd snapshot copy (opt-in, servers only) — see below
 
 Both opt-in features **converge on opt-out**: setting the flag back to `false`
 stops and disables the snapshot timer, drops its NFS mount and removes its units
 and script, and removes the audit policy file. Otherwise a flag flip would leave
 the feature running.
+
+### Off-node etcd snapshot copy
+
+`k3s_etcd_snapshot_offnode_enabled` (off by default) installs a systemd timer
+that copies the newest local etcd snapshot to an NFS export, by hostname, over
+TLS. It emits `etcd_snapshot_last_copy_timestamp_seconds` as a textfile metric
+for the `EtcdSnapshotStale` alert; the alert rules select on that name.
+
+The servers need the companion NFS export, `node_exporter_host`, and
+`nfs_tls`/tlshd. The `xprtsec=tls` mount hangs without the TLS handshake
+daemon. The copy script runs without `set -e`, so a failed copy still publishes
+the metric and keeps the previous success timestamp.
 
 ## Firewall expectations
 
@@ -86,21 +88,21 @@ drift. These are asserted, so a dropped inventory var fails the run.
 | `k3s_gpu_*` (4 pins) | `nvidia_*` | GPU agents | see the GPU section |
 
 Everything else has a working default. The ones a site almost always sets:
-`k3s_agent_token` (falls back to `k3s_token`, which is fine for a test run and
-wrong for production — an agent token cannot promote a node),
-`k3s_kube_vip_interface` (alias `kube_vip_interface`, default `eth0`) — the
-kube-vip DaemonSet is rendered once, on the first server, and runs on all of
-them, so every server must name the SAME interface; the role asserts both that
-the NIC exists per host and that the servers agree — the agreement check runs on
-EVERY server, because role defaults are absent from `hostvars` and the first
-server alone cannot see that its peers resolved a different default,
-`k3s_registry_host_pins` / `k3s_storage_host_pins` (both `[]`),
-`k3s_kube_vip_host_kubeconfig` (`false`: kube-vip authenticates with its
-ServiceAccount token and the shipped ClusterRole; `true` mounts the node's
-cluster-admin kubeconfig instead, for a kube-vip build that needs it),
-`k3s_etcd_snapshot_nfs_server` (empty; asserted once the off-node copy is on,
-and it must be a hostname — the TLS mount verifies a cert with no IP SAN),
-`k3s_disable`, `k3s_labels`, `k3s_taints`.
+
+| Variable | Default | Note |
+|---|---|---|
+| `k3s_agent_token` | `k3s_token` | A secret from the site's store. The fallback suits a test run only: an agent token cannot promote a node. |
+| `k3s_kube_vip_interface` | `eth0` (alias `kube_vip_interface`) | Every server must name the SAME interface. See below. |
+| `k3s_registry_host_pins`, `k3s_storage_host_pins` | `[]` | `/etc/hosts` pins. |
+| `k3s_kube_vip_host_kubeconfig` | `false` | kube-vip authenticates with its ServiceAccount token and the shipped ClusterRole. `true` mounts the node's cluster-admin kubeconfig for a kube-vip build that needs it. |
+| `k3s_etcd_snapshot_nfs_server` | empty | Asserted once the off-node copy is on. Must be a hostname: the TLS mount verifies a cert with no IP SAN. |
+| `k3s_disable`, `k3s_labels`, `k3s_taints` | see defaults | |
+
+The kube-vip DaemonSet is rendered once, on the first server, and runs on all
+of them. The role asserts per host that the NIC exists, and on EVERY server that
+the servers agree on `k3s_kube_vip_interface`. Role defaults are absent from
+`hostvars`, so the first server alone cannot see that a peer resolved a
+different default.
 
 The agreement check also asserts the host is a MEMBER of `k3s_server_group`,
 because a misnamed group resolves to an empty list and an empty set trivially
@@ -195,10 +197,6 @@ backend rather than plaintext `vxlan`. Rolling back to `vxlan` is a
 cluster-wide change: the node's flannel interface is recreated, so open the
 VXLAN port (UDP/8472) in the site firewall and expect stale `flannel.1` routes
 on nodes that carried the previous backend.
-
-Both join tokens are secrets: supply them from the site's secret store.
-`k3s_agent_token` falls back to `k3s_token` when unset, which is convenient for
-a test run and wrong for production — an agent token cannot promote a node.
 
 ## NVIDIA GPU agents (`k3s_gpu_node`)
 
@@ -312,8 +310,8 @@ asserts `k3s_audit_policy` is an `audit.k8s.io/v1` `Policy` with at least one
 rule before writing it — a malformed override should fail the play, not roll the
 control plane into a crash loop.
 
-Turning it back off removes the args from the config (another restart) and
-leaves the now-unreferenced policy file behind, inert.
+Turning it back off removes the args from the config, which is another
+restart, and deletes the policy file. The log directory and existing logs stay.
 
 ## Files
 
@@ -345,7 +343,7 @@ node labels and taints are applied at the end of those.
 ## Companion roles
 
 Applied by the caller's playbook, not as meta dependencies:
-`weisssrv.infra.base`, `weisssrv.infra.postfix_null_client`,
+`weisssrv.infra.base`, `weisssrv.infra.qol`, `weisssrv.infra.postfix_null_client`,
 `weisssrv.infra.alloy_host`, `weisssrv.infra.nfs_tls`,
 `weisssrv.infra.proxmox_firewall`.
 

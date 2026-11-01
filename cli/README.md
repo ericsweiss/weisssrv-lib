@@ -30,7 +30,7 @@ pipx run --spec 'git+https://git.ericsweiss.com/eric/weisssrv-lib.git@v0.23.0#su
   weisssrv-new-project --help
 
 # Install the console script. The spec is POSITIONAL: `pipx install --spec …`
-# fails with "unrecognized arguments: --spec" (pipx dropped that flag).
+# fails with "unrecognized arguments: --spec".
 pipx install 'git+https://git.ericsweiss.com/eric/weisssrv-lib.git@v0.23.0#subdirectory=cli'
 
 # …with the copier extra, which rendering needs:
@@ -94,16 +94,16 @@ python3 -m pytest cli/tests -q
 ```
 
 The suite renders `tests/fixtures/copier-template`, a miniature local copier
-template, so it needs no network and no install. The render tests skip without
-the `cluster` extra; everything else (argument parsing, source/destination
-validation, the missing-copier hint) runs unconditionally.
+template, so it needs no network. It needs pytest and PyYAML, which the `test`
+extra installs. The render tests skip without copier. Argument parsing,
+source/destination validation and the missing-copier hint run without it.
 
 ## Python floor
 
 `requires-python = ">=3.9"` is what pip enforces on an installing machine. CI
-runs the suite on one Python (the image's 3.14), so the floor is held here by
-`tests/test_python_floor.py`, which parses every module and rejects both an
-annotated module without `from __future__ import annotations` and any 3.10+
-syntax. That covers
-the constructs that actually break a 3.9 install; a 3.10-only stdlib call would
-still get through, so a dependency-free package is part of the promise.
+runs the suite on one Python, so `tests/test_python_floor.py` holds the floor.
+It parses every module and rejects 3.10+ syntax and an annotated module without
+`from __future__ import annotations`.
+
+The test cannot catch a call to a 3.10-only stdlib API. Keeping the package
+dependency-free is part of the floor promise.

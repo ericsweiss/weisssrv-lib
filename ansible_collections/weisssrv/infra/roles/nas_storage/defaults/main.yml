@@ -90,10 +90,17 @@ nas_storage_archive_backup_exclude_destroy_ok: false
 # The one dataset receiving cluster-wide vzdump writes, snapshotted only once
 # writes under its mountpoint have quiesced. Empty disables the guard.
 nas_storage_archive_backup_vzdump_target: ""
+# Quiet period, in minutes, that counts as quiesced, and the wait after which
+# the target is deferred to the next run.
+nas_storage_archive_backup_vzdump_quiesce_min: 10
+nas_storage_archive_backup_vzdump_max_wait_min: 30
 # Per-dataset retention on the destination pool: the newest N snapshots, plus
 # the newest of each of the last M calendar months.
 nas_storage_archive_backup_keep_recent: 3
 nas_storage_archive_backup_keep_monthly: 6
+# Per-dataset monthly count, keyed by a source or a descendant of one, e.g.
+# `tank/proxmox: 0` for a dump target whose own pruning already keeps monthlies.
+nas_storage_archive_backup_keep_monthly_overrides: {}
 # The in-script quiesce guard defers the vzdump target if the overnight backup
 # window overruns this.
 nas_storage_archive_backup_schedule: "*-*-* 06:30:00"
@@ -183,8 +190,8 @@ nas_storage_zfs_bind_source_pattern: >-
   {{ ('^(' ~ (nas_storage_zfs_mount_roots | map('regex_escape') | join('|')) ~ ')/')
      if (nas_storage_zfs_mount_roots | length > 0) else '^(?!)' }}
 
-# Nightly swap reset. Every knob is declared here rather than left as a template
-# fallback — this mechanism gracefully stops production guests.
+# Nightly swap reset. It gracefully stops production guests, so every knob is
+# declared here.
 nas_storage_swap_clean_enabled: false
 # Runs after the overnight backup jobs so it reclaims the swap they caused; pin
 # it per host if the window differs.
@@ -219,6 +226,10 @@ nas_storage_backup_artifact_metrics_dir: >-
 # MergerFS fstab options the health probe requires. Empty derives them per union
 # from its own `options`; a non-empty list overrides that for EVERY union.
 nas_storage_mergerfs_required_opts: []
+
+# Export bind sources on encrypted datasets: they get the late mount anchor and
+# the nfsd ordering drop-in.
+nas_storage_encrypted_bind_sources: []
 
 # NFSv4 delegations. true persists fs.leases-enable=0 so nfsd grants no new
 # delegations; false leaves kernel behaviour alone. Cost: lock-heavy NFS

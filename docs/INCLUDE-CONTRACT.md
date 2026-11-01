@@ -35,12 +35,9 @@ verbatim (see [README § Local gates](../README.md#local-gates)).
 
 Both templates are copier templates, so each has TWO pipelines: the one CI runs
 on the template repo itself, and the one it RENDERS. The consumer columns below
-are the **rendered** pipelines — that is the surface an input default reaches at
-scale. Each template repo's own pipeline is its own record (its `.gitlab-ci.yml`
-against the rendered one), and they are NOT the same set: the app template's
-own pipeline includes `ci/test/python-tests.yml` (its copier-schema and render
-suite) and neither `flux-lint` nor `docker-build`, the reverse of its tenant
-column here.
+are the **rendered** pipelines, the surface an input default reaches at scale.
+Each template repo's own pipeline is a different set, recorded in its own
+`.gitlab-ci.yml`.
 
 | Template | lib (self) | weisssrv | app-template (tenant) | cluster-template (cluster) |
 | --- | :-: | :-: | :-: | :-: |
@@ -53,7 +50,7 @@ column here.
 | [`ci/lint/python-lint.yml`](#cilintpython-lintyml) | ● | ● | ● | ● |
 | [`ci/lint/ansible-lint.yml`](#cilintansible-lintyml) | ● | ● | | ● |
 | [`ci/validate/terraform.yml`](#civalidateterraformyml) | ● | ● | | ● |
-| [`ci/validate/terraform-drift-plan.yml`](#civalidateterraform-drift-planyml) | | ● | | ○ |
+| [`ci/validate/terraform-drift-plan.yml`](#civalidateterraform-drift-planyml) | | ● | | ● |
 | [`ci/validate/cluster-drift-plan.yml`](#civalidatecluster-drift-planyml) | | ○ | | ○ |
 | [`ci/validate/flux-lint.yml`](#civalidateflux-lintyml) | | ● | ● | ● |
 | [`ci/security/secret-detection.yml`](#cisecuritysecret-detectionyml) | ● | ● | ● | ● |
@@ -74,14 +71,12 @@ column here.
 ●‡ = three separate `docker-build` entries, one per published image
 (molecule-ci, molecule-test, ansible-deploy).
 ●* = copier-gated on `enable_semantic_release` (cluster template only).
-†  = copier-gated on `enable_image_build` (app template). The other 18
-cluster-template entries and 8 app-template entries are unconditional; the app
-template has no `enable_semantic_release` question, so its tenant always gets
-the release job.
+†  = copier-gated on `enable_image_build` (app template). Every other entry
+is unconditional. The app template has no `enable_semantic_release` question,
+so its tenant always gets the release job.
 ○ = extracted here, not yet adopted. Every ○ in the table is one of these:
 weisssrv runs the runbook-anchors gate from its own consolidated gate job and
-the cluster template runs no equivalent; the cluster template carries a local
-`.terraform-drift-plan` rather than including this one; the tenant extends
+the cluster template runs no equivalent; the tenant extends
 `ci/build/docker-build.yml` directly instead of `ci/templates/docker-dind.yml`;
 and no consumer takes `cluster-verify-base`, `cluster-drift-plan`,
 `terraform-tflint` or the `ansible-deploy` job template yet. Until a consumer
@@ -98,20 +93,8 @@ templates a tenant never includes. It runs
 copier-gated files, so they are either in that one build or not generated at
 all.
 
-weisssrv includes most of this library. Its `include:` block takes the three
-`ci/templates/*` fragments at their defaults; every other entry passes its own
-`inputs:` — `secret-detection` included, because `cpu_selector` has no default
-and GitLab rejects a pipeline that omits it. Inputs bind per ENTRY and therefore
-need an entry each (the block in weisssrv's `.gitlab-ci.yml` is the current
-shape — this page deliberately keeps no count).
-
-Outside weisssrv's rendered pipeline: `docker-build`, `semantic-release` and
-`version-bump-bot` (weisssrv runs a local version-bump job and cuts no
-releases), `ci/internal/molecule-matrix.gitlab-ci.yml`, which drives this
-library's own per-role matrix, and the ○ rows above, which are extracted but not
-yet adopted there. Everything else in this library is live in the cluster repo,
-so treat an input-default change as consumer-visible there by default —
-`pr-agent`, `python-lint` and `ansible-lint` included.
+A consumer's own `include:` block is the record of which inputs it passes.
+Inputs bind per entry, so a template included twice needs two entries.
 
 **A GitHub-hosted consumer includes nothing.** Actions has no equivalent of
 `include: project:` for a private library, so such a consumer (the app
@@ -301,11 +284,11 @@ the release retag need privileged Docker-in-Docker and are tagged
 `infrastructure`, which is a PROJECT runner: it must be enabled for the project
 (Settings > CI/CD > Runners) or every tagged job sits pending.
 
-The tag-less fan-out is shaped by `needs:` chains in `.gitlab-ci.yml` because
-the shared runner's namespace quota admits roughly seven concurrent job pods
-while the pipeline creates about twelve tag-less jobs; a burst past the quota
-surfaces as `runner_system_failure` at pod creation. Re-measure before trusting
-those numbers. A new tag-less job goes on one of the chains.
+The tag-less fan-out is shaped by `needs:` chains in `.gitlab-ci.yml`, because
+the pipeline creates more tag-less jobs than the shared runner's namespace
+quota admits at once. A burst past the quota surfaces as
+`runner_system_failure` at pod creation. A new tag-less job goes on one of the
+chains.
 
 The release retag republishes each built image under the tag semantic-release
 just cut, so a consumer pins images at the same ref as the templates. It pulls
@@ -430,8 +413,8 @@ the heaviest scenarios run 8-11 minutes per attempt.
   matches `scripts/test_check_doc_links.py`, so an MR touching only the
   checker's test does not fire the job.
 - Tenants vendor the stdlib-only checker from `scripts/check-doc-links.py` (no
-  network, no dependencies). Re-vendor it at each tag bump — all three consumers
-  now FAIL their own test suite on a drifted copy (see "A vendored script is a
+  network, no dependencies). Re-vendor it at each tag bump. A consumer that
+  gates its vendored copies fails on a drifted one (see "A vendored script is a
   pin too" below), so a skipped re-vendor is loud rather than silent.
 - **Tenant:** `inputs: { tags: [] }` (after vendoring the script).
 
@@ -509,13 +492,10 @@ the heaviest scenarios run 8-11 minutes per attempt.
 
 ## ci/lint/python-lint.yml
 
-- **Reproduces:** nothing — no consumer carries a local Python-lint job; this
-  template is the only one. This library self-applies it; weisssrv includes it over `scripts/`
-  with the shared profile vendored to its repo root as `ruff.toml`; the app
-  template includes it over `scripts tests` with the same profile vendored to
-  its root (no `config:` input, so ruff's discovery finds it — which is what
-  makes the GitLab job, the `github` shape's step and `task python-lint` report
-  identically); and the cluster template includes it.
+- **Reproduces:** nothing; this template is the family's only Python-lint job.
+  A consumer vendors `lint/ruff.toml` to its repo root and passes no `config:`
+  input, so ruff's discovery finds the profile. The GitLab job, a `github`
+  shape's step and a local `task python-lint` then report identically.
 - **Inputs** — the three resource inputs every job template takes are in
   [Conventions shared by every template](#conventions-shared-by-every-template).
 
@@ -540,12 +520,10 @@ the heaviest scenarios run 8-11 minutes per attempt.
 
 ## ci/lint/ansible-lint.yml
 
-- **Reproduces:** weisssrv's inline `ansible-lint` job, which now includes this
-  template instead (`targets: ansible/`, `galaxy_requirements:
-  ansible/requirements.yml` so the collection the playbooks address by FQCN is
-  installed first). This library also self-applies it over the `weisssrv.infra`
-  collection, and the cluster template includes it for the generated repo's own
-  `ansible/` tree.
+- **Reproduces:** a cluster repo's `ansible-lint` job. A cluster repo passes
+  `targets: ansible/` and `galaxy_requirements: ansible/requirements.yml`, so
+  the collection its playbooks address by FQCN is installed first. This library
+  self-applies it over the `weisssrv.infra` collection.
 - **Inputs** — the three resource inputs every job template takes are in
   [Conventions shared by every template](#conventions-shared-by-every-template).
 
@@ -782,8 +760,8 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `terraform-drift-plan` |  |
 | `stage` | `validate` |  |
-| `image` | `hashicorp/terraform:1.15.9` |  |
-| `tags` | `[]` | tag-less by default; it needs only terraform and the op CLI |
+| `image` | `hashicorp/terraform:1.16.5@sha256:…` | digest-pinned on the same release as `ci/validate/terraform.yml`, so the plan runs the Terraform the gate parsed |
+| `tags` | `["infrastructure"]` | the 1Password installer runs `apk add`, so the runner must allow root; the shared non-root tenant runner cannot run this job |
 | `module_dir` | **required** | the root module to plan |
 | `state_name` | **required** | the HTTP backend state this module owns |
 | `state_base` | the project's terraform state API base | the three `TF_HTTP_*ADDRESS` values are derived from it |
@@ -791,6 +769,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `changes` | `["terraform/**/*"]` |  |
 | `default_branch` | `main` |  |
 | `secrets_guard` | `"true"` | the expression that must be non-empty for the job to be created. The default always creates it, so a missing credential reds the job. Falsy means no job, not a failed job, so pass `"$OP_SERVICE_ACCOUNT_TOKEN"` only where a fork-safe skip matters more than the detector. Drift itself surfaces as an allowed failure (exit code 2), which GitLab does not notify on: enable pipeline-failure notifications on the schedule, or set `allow_failure: false` on the job where drift should page |
+| `post_merge_guard` | `"true"` | an expression ANDed into the post-merge rule only; the schedule runs whatever it holds. Pass `"$OP_SERVICE_ACCOUNT_TOKEN"` to skip the post-merge plan where the vault is out of reach, while the schedule still reds on a lost credential. It sits inside a single-quoted `rules:if`, so it must contain no single quote |
 
 - **Include it once per module**, each with its own `job_name`, `module_dir` and
   `state_name`. It requires `.terraform-http-backend` and
@@ -881,7 +860,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 - **Reproduces:** the DinD `build_and_push` mechanics from weisssrv's
   `.build-molecule-base` (static docker CLI sha-pinned, dind wait, registry layer
   cache + inline cache, bounded retry, `:<sha>` always + `:latest` on the default
-  branch). weisssrv itself does NOT include it — only the app template does.
+  branch). Consumers that build images include it; see the adoption table.
 - **Inputs** — the three resource inputs every job template takes are in
   [Conventions shared by every template](#conventions-shared-by-every-template).
 
@@ -1022,7 +1001,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
   relies on both. The default `changes` is the generic subset only.
   **weisssrv's suite is mostly drift guards that read files outside
   `scripts/`**, so with the default list a guard could not fire on its own
-  subject; weisssrv passes a ~28-entry `changes` covering the ansible,
+  subject; weisssrv passes its own `changes` list covering the ansible,
   kubernetes, terraform, docs and Taskfile paths its tests read. Defaults are
   NOT byte-identical for this job. Derive such a list by tracing what the suite
   opens, not by reasoning about what it "should" read.
@@ -1046,12 +1025,11 @@ the heaviest scenarios run 8-11 minutes per attempt.
 
 ## ci/review/pr-agent.yml
 
-- **Reproduces:** the `pr-agent-review` job in all three consumers. Runs
-  `pragent/pr-agent:0.48.0` on gpt-5.6 / `high` with committable inline
-  suggestions (`PR_CODE_SUGGESTIONS__DUAL_PUBLISHING_SCORE_THRESHOLD`,
-  `CONFIG__PERSISTENT_INLINE_COMMENTS`); `allow_failure: true`, the schedule
-  exclusion and the MR-only token-gated rule are baked in. weisssrv
-  passes `secrets_source: env`, its own `gate` and a lint-only `needs` list.
+- **Reproduces:** the `pr-agent-review` job the consumers run, with the image
+  and model in the table below and committable inline suggestions
+  (`PR_CODE_SUGGESTIONS__DUAL_PUBLISHING_SCORE_THRESHOLD`,
+  `CONFIG__PERSISTENT_INLINE_COMMENTS`). `allow_failure: true`, the schedule
+  exclusion and the MR-only token-gated rule are baked in.
 - **Inputs** — the three resource inputs every job template takes are in
   [Conventions shared by every template](#conventions-shared-by-every-template).
 
@@ -1078,9 +1056,13 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `op_gitlab_token_ref` | `""` | 1password mode; required there, consumer data |
 | `gate` | `$OPENAI__KEY` | the raw `rules:if` expression, unquoted |
 
-- **`gate` takes single quotes.** It lands in a `rules:if` expression; write it
-  as the raw expression (`$OPENAI__KEY && $GITLAB__PERSONAL_ACCESS_TOKEN`), not
-  pre-quoted.
+- **`gate` must contain no single quote.** It is interpolated inside a
+  single-quoted `rules:if`, so write the raw expression unquoted:
+  `$OPENAI__KEY && $GITLAB__PERSONAL_ACCESS_TOKEN`.
+- **`reasoning_effort`** takes `low`, `medium`, `high` or `xhigh`. pr-agent
+  reads any other value as `medium`, without a warning. `high` reviews a large
+  diff in minutes. `xhigh` takes far longer on the same diff and can outrun
+  `ai_timeout` and the job `timeout`, posting nothing. Raise `timeout` with it.
 - **Secrets:** `secrets_source: env` reads the two keys from CI/CD variables
   (works on the non-root shared runner). `secrets_source: 1password` reads them
   with `op` at job time and needs a root runner **plus** the op CLI, which the
@@ -1102,8 +1084,8 @@ the heaviest scenarios run 8-11 minutes per attempt.
   In `env` mode the exposure is capped at the two masked variables; in
   `1password` mode the `op` session is reachable from that branch-supplied
   config and reaches **every item the service account can see**. Scope the
-  service account to a vault holding only these two items, or stay on `env` —
-  which is why both this library and weisssrv do.
+  service account to a vault holding only these two items, or stay on `env`,
+  as this library does.
 - **Token scope — never an admin PAT.** The GitLab credential (either path)
   should be a **project access token on the reviewed project with the
   `api` scope and the Developer role** — enough to post discussions, apply
@@ -1285,7 +1267,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `gate` | `$VERSION_BUMP_BOT_TOKEN` | must be non-empty for the job to be created |
 
 - **`resource_group` + `interruptible: false`.** A schedule and a manual web run
-  can no longer race each other on the same force-pushed branch and MR.
+  cannot race each other on the same force-pushed branch and MR.
 - **Token:** a PAT with `api` + `write_repository` — `CI_JOB_TOKEN` cannot push
   and cannot write the Merge requests API. It must be masked AND protected:
   protection is what keeps it out of scope on an unprotected ref, masking only
@@ -1374,11 +1356,10 @@ byte-identically to what they replaced.
 
 ## Deploy templates (ci/deploy/)
 
-The Ansible-deploy toolchain, extracted from the two cluster pipelines that had
-copied it. **Root runner only** — every file here apt-installs or writes
-`/usr/local/bin`.
+The Ansible-deploy toolchain the cluster pipelines share. **Root runner only** —
+every file here apt-installs or writes `/usr/local/bin`.
 
-**One secrets seam.** `secrets_source: 1password` is the default and unchanged:
+**One secrets seam.** `secrets_source: 1password` is the default:
 `op read` for the SSH key and the kubeconfig, `op run --` around the playbook.
 `secrets_source: env` takes the SSH key from `$SSH_PRIVATE_KEY` and the
 kubeconfig from `$KUBECONFIG_B64` (masked CI variables), and
@@ -1558,10 +1539,10 @@ canonical-copy header naming its source.
 
 The copy relationship is recorded in each consumer's
 `scripts/vendored-manifest.yml` and checked by
-`scripts/check-vendored-copies.py` — the older per-consumer gates iterate
-`scripts/` only and cannot see `.github/`. An example a consumer copies
-without a manifest entry is a manual walk at bump time; the offer list
-(`scripts/vendorable-paths.yml`) is what marks these files as vendorable.
+`scripts/check-vendored-copies.py`, which reaches past `scripts/` to `.github/`.
+An example a consumer copies without a manifest entry is a manual walk at bump
+time; the offer list (`scripts/vendorable-paths.yml`) is what marks these files
+as vendorable.
 
 ---
 
@@ -1669,14 +1650,8 @@ reviewable — nothing resolves off a local `roles/` path:
     - role: weisssrv.infra.zfs_encryption
 ```
 
-**Iterating on an unmerged collection change:** point Ansible at a checkout
-instead of the installed copy — this repo already uses the
-`ansible_collections/<ns>/<name>` layout, so the repo root *is* a valid
-collections path:
-
-```bash
-ANSIBLE_COLLECTIONS_PATH=~/src/weisssrv-lib ansible-playbook site.yml
-```
+**Iterating on an unmerged collection change:** see the collection README's
+[Developing against an unmerged checkout](../ansible_collections/weisssrv/infra/README.md#developing-against-an-unmerged-checkout).
 
 The role table and the inventory-wide alias table are in the
 [collection README](../ansible_collections/weisssrv/infra/README.md); per-role
@@ -1698,9 +1673,9 @@ Two role-level contracts worth knowing before writing a play against them:
 Each scenario's platform image is `${MOLECULE_TEST_IMAGE:-…}` — a FULL image
 ref. The scenarios' built-in fallback points at this project's own registry and
 its locally-built `:latest` tag; a consumer exports `MOLECULE_TEST_IMAGE` with a
-full image ref instead of patching every scenario. From this release the library publishes `molecule-ci` and
-`molecule-test` at `:vX.Y.Z` on each release, so a consumer can pin the images
-to the same tag it pins the templates to — see
+full image ref instead of patching every scenario. The library publishes
+`molecule-ci` and `molecule-test` at `:vX.Y.Z` on each release, so a consumer
+can pin the images to the same tag it pins the templates to — see
 [`docker/README.md`](../docker/README.md). Cross-project registry pulls require
 the consumer to be on this project's CI/CD job-token allowlist.
 

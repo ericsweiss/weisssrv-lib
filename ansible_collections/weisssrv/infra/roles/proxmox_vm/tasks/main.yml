@@ -93,6 +93,32 @@
       proxmox_host ({{ proxmox_host }}), which may not hold the VM.
   when: proxmox_vm_exists.rc == 0
 
+# A VM still carrying the create marker stopped mid-create.
+- name: Read the existing VM's config
+  delegate_to: "{{ proxmox_vm_reconcile_host }}"
+  become: true
+  ansible.builtin.command:
+    argv: [qm, config, "{{ proxmox_vm_id }}"]
+  register: proxmox_vm_existing_config
+  changed_when: false
+  check_mode: false
+  when: proxmox_vm_exists.rc == 0
+
+- name: Fail loud on an existing VM its create left half-built
+  vars:
+    _proxmox_vm_config_lines: "{{ proxmox_vm_existing_config.stdout_lines }}"
+  ansible.builtin.assert:
+    that:
+      - _proxmox_vm_create_marker not in _proxmox_vm_config_tags
+    fail_msg: >-
+      VM {{ proxmox_vm_id }} on {{ proxmox_vm_reconcile_host }} carries the
+      `{{ _proxmox_vm_create_marker }}` tag: its create stopped after `qm
+      create`. Destroy it with `qm destroy {{ proxmox_vm_id }}` and re-run. If
+      the VM was finished by hand, clear the tag with `qm set {{ proxmox_vm_id }}
+      {{ _proxmox_vm_marker_clear_args | map('quote') | join(' ') }}` instead.
+    quiet: true
+  when: proxmox_vm_exists.rc == 0
+
 - name: Validate storage and resource pools on the target node
   ansible.builtin.include_tasks: assert-target-pools.yml
   vars:
@@ -139,27 +165,135 @@
   retries: 3
   delay: 5
 
-- name: Create VM
-  delegate_to: "{{ proxmox_host }}"
-  become: true
-  ansible.builtin.shell: |
-    qm create {{ proxmox_vm_id }} \
-      --name {{ inventory_hostname | quote }} \
-      --memory {{ proxmox_vm_memory }}{{ ' --balloon ' + (proxmox_vm_balloon | string) if proxmox_vm_balloon is defined else '' }} \
-      --cores {{ proxmox_vm_cores }} \
-      --cpu {{ proxmox_vm_cpu_type | quote }} \
-      --net0 virtio,bridge={{ proxmox_vm_bridge }},firewall=1 \
-      --ostype {{ proxmox_vm_ostype | quote }} \
-      --agent enabled={{ proxmox_vm_agent_enabled | ternary(1, 0) }}{{ ' --pool ' + proxmox_resource_pool if proxmox_resource_pool is defined else '' }}
+# An empty key would still provision a VM that is unreachable over SSH. Checked
+# before `qm create`, as is every other create input.
+- name: Assert SSH public key is available for cloud-init
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY') | length > 0
+    fail_msg: >-
+      SSH_PUBLIC_KEY is empty. Run via the task wrapper (op run) so
+      cloud-init gets an authorized key.
   when:
     - not ansible_check_mode
     - proxmox_vm_exists.rc != 0
     - not _proxmox_vm_is_windows
-  changed_when: true
+    - not (proxmox_vm_skip_create | default(false))
 
-# Windows guest: the VM shell is created here so the shared NIC and agent
-# reconciles see a created VM for both guest types. Media is validated before
-# `qm create`, or a failure after it strands a bare shell every rerun skips.
+# Every step after `qm create` is create-time only. A failure after `qm create`
+# leaves the create marker set, which later runs refuse.
+- name: Create the Linux VM
+  delegate_to: "{{ proxmox_host }}"
+  become: true
+  when:
+    - not ansible_check_mode
+    - proxmox_vm_exists.rc != 0
+    - not _proxmox_vm_is_windows
+  block:
+    - name: Create VM
+      ansible.builtin.command:
+        argv: "{{ _proxmox_vm_create_common_argv + ['--ostype', proxmox_vm_ostype] }}"
+      register: _proxmox_vm_qm_create
+      changed_when: true
+
+    - name: Import cloud image disk
+      ansible.builtin.command:
+        argv:
+          - qm
+          - importdisk
+          - "{{ proxmox_vm_id }}"
+          - "{{ proxmox_vm_cloud_image_dir }}/{{ proxmox_vm_cloud_image_name }}"
+          - "{{ _proxmox_vm_effective_storage }}"
+      changed_when: true
+
+    - name: Attach disk to VM
+      ansible.builtin.command:
+        argv:
+          - qm
+          - set
+          - "{{ proxmox_vm_id }}"
+          - --scsihw
+          - virtio-scsi-pci
+          - --scsi0
+          - "{{ _proxmox_vm_effective_storage }}:vm-{{ proxmox_vm_id }}-disk-0"
+      changed_when: true
+
+    - name: Resize disk
+      ansible.builtin.command:
+        argv: [qm, resize, "{{ proxmox_vm_id }}", scsi0, "{{ proxmox_vm_disk_size }}"]
+      changed_when: true
+
+    - name: Configure cloud-init drive
+      ansible.builtin.command:
+        argv: [qm, set, "{{ proxmox_vm_id }}", --ide2, "{{ _proxmox_vm_effective_storage }}:cloudinit"]
+      changed_when: true
+
+    - name: Configure boot order
+      ansible.builtin.command:
+        argv: [qm, set, "{{ proxmox_vm_id }}", --boot, c, --bootdisk, scsi0]
+      changed_when: true
+
+    # Attaching a device needs the guest stopped, so an existing guest that gains
+    # proxmox_vm_hostpci needs a manual `qm set` in a stop/start window. Each
+    # entry maps to --hostpci<index> verbatim.
+    - name: Attach PCI passthrough devices (create-time)
+      ansible.builtin.command:
+        argv: >-
+          {{
+            ['qm', 'set', proxmox_vm_id | string]
+            + (range(proxmox_vm_hostpci | length) | map('string') | map('regex_replace', '^', '--hostpci')
+               | zip(proxmox_vm_hostpci) | flatten)
+          }}
+      when: proxmox_vm_hostpci | default([]) | length > 0
+      changed_when: true
+
+    # The key is staged in a private temp file (0600, random suffix), consumed
+    # by `qm set --sshkeys`, and removed in `always`.
+    - name: Stage and consume the cloud-init SSH public key
+      block:
+        - name: Create private temp file for cloud-init SSH key
+          ansible.builtin.tempfile:
+            state: file
+            prefix: "ssh_key_{{ proxmox_vm_id }}_"
+            suffix: ".pub"
+          register: _proxmox_vm_ci_ssh_key_tmp
+
+        - name: Deploy SSH public key for cloud-init
+          ansible.builtin.copy:
+            content: "{{ ssh_public_key }}"
+            dest: "{{ _proxmox_vm_ci_ssh_key_tmp.path }}"
+            mode: "0600"
+          vars:
+            ssh_public_key: "{{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY') }}"
+
+        # Needs a real guest to consume the key; stubbed runs skip it.
+        - name: Configure cloud-init settings
+          ansible.builtin.command:
+            argv:
+              - qm
+              - set
+              - "{{ proxmox_vm_id }}"
+              - --ciuser
+              - "{{ proxmox_vm_cloudinit_user }}"
+              - --sshkeys
+              - "{{ _proxmox_vm_ci_ssh_key_tmp.path }}"
+              - --ipconfig0
+              - "ip={{ proxmox_vm_target_ip }}/{{ proxmox_vm_cloudinit_prefix_len }},gw={{ proxmox_vm_cloudinit_gateway }}"
+              - --nameserver
+              - "{{ proxmox_vm_cloudinit_dns | join(' ') }}"
+          when: not (proxmox_vm_skip_create | default(false))
+          changed_when: true
+      always:
+        - name: Clean up the cloud-init SSH key temp file (even on failure)
+          ansible.builtin.file:
+            path: "{{ _proxmox_vm_ci_ssh_key_tmp.path }}"
+            state: absent
+          when:
+            - _proxmox_vm_ci_ssh_key_tmp is defined
+            - _proxmox_vm_ci_ssh_key_tmp.path is defined
+
+# Windows media is validated before `qm create`, so a missing ISO never
+# strands a bare VM.
 - name: Assert the Windows install ISO is specified
   ansible.builtin.assert:
     that:
@@ -221,8 +355,8 @@
     - _proxmox_vm_is_windows
     - not (proxmox_vm_skip_create | default(false))
 
-# Download BEFORE create (see block header). Idempotent + checksum-verified
-# against the caller's proxmox_vm_virtio_win_version/_checksum pins.
+# Downloaded before `qm create` for the same reason. Checksum-verified against
+# the caller's proxmox_vm_virtio_win_version/_checksum pins.
 - name: Download the VirtIO driver ISO to the Proxmox ISO store
   delegate_to: "{{ proxmox_host }}"
   become: true
@@ -246,26 +380,69 @@
   retries: 3
   delay: 5
 
-- name: Create Windows VM
+# Windows firmware (EFI vars, TPM 2.0), empty boot disk and install CD-ROMs.
+# Create-time only, so an existing Windows VM is never re-clobbered; a failure
+# after `qm create` leaves the create marker set like the Linux path.
+- name: Create the Windows VM
   delegate_to: "{{ proxmox_host }}"
   become: true
-  ansible.builtin.shell: |
-    qm create {{ proxmox_vm_id }} \
-      --name {{ inventory_hostname | quote }} \
-      --memory {{ proxmox_vm_memory }}{{ ' --balloon ' + (proxmox_vm_balloon | string) if proxmox_vm_balloon is defined else '' }} \
-      --cores {{ proxmox_vm_cores }} \
-      --machine {{ proxmox_vm_windows_machine }} \
-      --bios ovmf \
-      --cpu {{ proxmox_vm_cpu_type | quote }} \
-      --ostype {{ proxmox_vm_windows_ostype | quote }} \
-      --scsihw virtio-scsi-pci \
-      --net0 virtio,bridge={{ proxmox_vm_bridge }},firewall=1 \
-      --agent enabled={{ proxmox_vm_agent_enabled | ternary(1, 0) }}{{ ' --pool ' + proxmox_resource_pool if proxmox_resource_pool is defined else '' }}
   when:
     - not ansible_check_mode
     - proxmox_vm_exists.rc != 0
     - _proxmox_vm_is_windows
-  changed_when: true
+  block:
+    - name: Create Windows VM
+      ansible.builtin.command:
+        argv: >-
+          {{
+            _proxmox_vm_create_common_argv
+            + ['--machine', proxmox_vm_windows_machine,
+               '--bios', 'ovmf',
+               '--ostype', proxmox_vm_windows_ostype,
+               '--scsihw', 'virtio-scsi-pci']
+          }}
+      register: _proxmox_vm_qm_create
+      changed_when: true
+
+    # efidisk0/tpmstate0 take `<storage>:1`, a placeholder size Proxmox replaces.
+    # pre-enrolled-keys=1 ships Microsoft's Secure Boot keys for Win11's check.
+    # The boot disk is an empty zvol.
+    - name: Configure Windows EFI vars disk, TPM 2.0, and boot disk
+      ansible.builtin.command:
+        argv:
+          - qm
+          - set
+          - "{{ proxmox_vm_id }}"
+          - --efidisk0
+          - "{{ _proxmox_vm_effective_storage }}:1,efitype=4m,pre-enrolled-keys=1"
+          - --tpmstate0
+          - "{{ _proxmox_vm_effective_storage }}:1,version=v2.0"
+          - --scsi0
+          - "{{ _proxmox_vm_effective_storage }}:{{ proxmox_vm_disk_size | string | regex_replace('[Gg]$', '') }},discard=on,ssd=1"
+      changed_when: true
+
+    # Each inventory-supplied ISO filename is one literal argv token, so a space
+    # or metacharacter in it can neither break qm's parsing nor inject a command.
+    - name: Attach Windows install + VirtIO driver CDROMs and set VGA
+      ansible.builtin.command:
+        argv:
+          - qm
+          - set
+          - "{{ proxmox_vm_id }}"
+          - --ide2
+          - "{{ proxmox_vm_iso_storage }}:iso/{{ proxmox_vm_install_iso }},media=cdrom"
+          - --ide0
+          - "{{ proxmox_vm_iso_storage }}:iso/{{ proxmox_vm_virtio_iso }},media=cdrom"
+          - --vga
+          - "{{ proxmox_vm_windows_vga }}"
+      changed_when: true
+
+    # The install CD boots first. After the install, flip it by hand with
+    # `qm set <id> --boot order=scsi0` so the VM boots from disk.
+    - name: Configure Windows boot order (install CD first)
+      ansible.builtin.command:
+        argv: [qm, set, "{{ proxmox_vm_id }}", --boot, "order=ide2;scsi0"]
+      changed_when: true
 
 - name: Ensure VM NIC has the guest firewall flag
   ansible.builtin.include_tasks: guest-nic-firewall.yml
@@ -284,16 +461,19 @@
   when: proxmox_vm_guest_nic_firewall_result is defined
 
 # Reconcile the ballooning floor when proxmox_vm_balloon changes. `qm set
-# --balloon` takes effect live on a guest with the balloon driver. Guests
-# without the variable defined are never ballooned.
+# --balloon` takes effect live on a guest with the balloon driver. Without the
+# variable the role leaves `balloon` unmanaged.
 - name: Reconcile VM memory ballooning floor
   delegate_to: "{{ proxmox_vm_reconcile_host }}"
   become: true
+  environment:
+    VM_ID: "{{ proxmox_vm_id }}"
+    BALLOON: "{{ proxmox_vm_balloon }}"
   ansible.builtin.shell: |
     set -euo pipefail
-    current=$(qm config {{ proxmox_vm_id }} | sed -n 's/^balloon: //p')
-    if [ "$current" != "{{ proxmox_vm_balloon }}" ]; then
-      qm set {{ proxmox_vm_id }} --balloon {{ proxmox_vm_balloon }}
+    current=$(qm config "$VM_ID" | sed -n 's/^balloon: //p')
+    if [ "$current" != "$BALLOON" ]; then
+      qm set "$VM_ID" --balloon "$BALLOON"
       echo CHANGED
     fi
   args:
@@ -311,22 +491,24 @@
 - name: Reconcile VM memory allocation
   delegate_to: "{{ proxmox_vm_reconcile_host }}"
   become: true
+  environment:
+    VM_ID: "{{ proxmox_vm_id }}"
   ansible.builtin.shell: |
     set -euo pipefail
-    current=$(qm config {{ proxmox_vm_id }} | sed -n 's/^memory: //p')
+    current=$(qm config "$VM_ID" | sed -n 's/^memory: //p')
     desired={{ proxmox_vm_memory | int }}
     if [ "$current" = "$desired" ]; then exit 0; fi
     case "$current" in
       ''|*[!0-9]*) ;;
       *)
         if [ "$desired" -lt "$current" ] && [ "{{ 'yes' if (proxmox_vm_memory_shrink_ok | bool) else 'no' }}" = "no" ]; then
-          echo "REFUSING to shrink VM {{ proxmox_vm_id }} from ${current} MiB to ${desired} MiB." >&2
+          echo "REFUSING to shrink VM ${VM_ID} from ${current} MiB to ${desired} MiB." >&2
           echo "Set proxmox_vm_memory_shrink_ok: true to accept it, or restore proxmox_vm_memory in inventory." >&2
           exit 1
         fi
         ;;
     esac
-    qm set {{ proxmox_vm_id }} --memory "$desired"
+    qm set "$VM_ID" --memory "$desired"
     echo CHANGED
   args:
     executable: /bin/bash
@@ -336,211 +518,24 @@
     - not ansible_check_mode
     - proxmox_vm_exists.rc == 0 or not (proxmox_vm_skip_create | default(false))
 
-- name: Import cloud image disk
-  delegate_to: "{{ proxmox_host }}"
-  become: true
-  ansible.builtin.shell: |
-    qm importdisk {{ proxmox_vm_id }} \
-      {{ proxmox_vm_cloud_image_dir }}/{{ proxmox_vm_cloud_image_name }} \
-      {{ _proxmox_vm_effective_storage }}
-  when:
-    - not ansible_check_mode
-    - proxmox_vm_exists.rc != 0
-    - not _proxmox_vm_is_windows
-  changed_when: true
-
-- name: Attach disk to VM
-  delegate_to: "{{ proxmox_host }}"
-  become: true
-  ansible.builtin.shell: |
-    qm set {{ proxmox_vm_id }} \
-      --scsihw virtio-scsi-pci \
-      --scsi0 {{ _proxmox_vm_effective_storage }}:vm-{{ proxmox_vm_id }}-disk-0
-  when:
-    - not ansible_check_mode
-    - proxmox_vm_exists.rc != 0
-    - not _proxmox_vm_is_windows
-  changed_when: true
-
-- name: Resize disk
-  delegate_to: "{{ proxmox_host }}"
-  become: true
-  ansible.builtin.shell: |
-    qm resize {{ proxmox_vm_id }} scsi0 {{ proxmox_vm_disk_size | quote }}
-  when:
-    - not ansible_check_mode
-    - proxmox_vm_exists.rc != 0
-    - not _proxmox_vm_is_windows
-  changed_when: true
-
-- name: Configure cloud-init drive
-  delegate_to: "{{ proxmox_host }}"
-  become: true
-  ansible.builtin.shell: |
-    qm set {{ proxmox_vm_id }} --ide2 {{ _proxmox_vm_effective_storage }}:cloudinit
-  when:
-    - not ansible_check_mode
-    - proxmox_vm_exists.rc != 0
-    - not _proxmox_vm_is_windows
-  changed_when: true
-
-- name: Configure boot order
-  delegate_to: "{{ proxmox_host }}"
-  become: true
-  ansible.builtin.shell: |
-    qm set {{ proxmox_vm_id }} --boot c --bootdisk scsi0
-  when:
-    - not ansible_check_mode
-    - proxmox_vm_exists.rc != 0
-    - not _proxmox_vm_is_windows
-  changed_when: true
-
-# PCI passthrough, create-time only: attaching a device requires the guest
-# stopped, so an existing guest that gains proxmox_vm_hostpci needs a manual `qm
-# set` in a stop/start window. Each entry maps to --hostpci<index> verbatim.
-- name: Attach PCI passthrough devices (create-time)
-  delegate_to: "{{ proxmox_host }}"
-  become: true
-  ansible.builtin.shell: |
-    qm set {{ proxmox_vm_id | quote }}{% for pci in proxmox_vm_hostpci %} --hostpci{{ loop.index0 }} {{ pci | quote }}{% endfor %}
-  when:
-    - not ansible_check_mode
-    - proxmox_vm_exists.rc != 0
-    - not _proxmox_vm_is_windows
-    - proxmox_vm_hostpci | default([]) | length > 0
-  changed_when: true
-
-# Windows firmware (EFI vars, TPM 2.0), empty boot disk and install CDROMs.
-# Boot order is the install CD first; the post-install flip to `order=scsi0` is
-# manual. Create-time only, so an existing Windows VM is never re-clobbered.
-- name: Configure Windows EFI vars disk, TPM 2.0, and boot disk
-  delegate_to: "{{ proxmox_host }}"
-  become: true
-  # efidisk0/tpmstate0 take `<storage>:1`, a placeholder size Proxmox replaces.
-  # pre-enrolled-keys=1 ships Microsoft's Secure Boot keys for Win11's check.
-  # The boot disk is an empty zvol.
-  ansible.builtin.shell: |
-    qm set {{ proxmox_vm_id }} \
-      --efidisk0 {{ _proxmox_vm_effective_storage }}:1,efitype=4m,pre-enrolled-keys=1 \
-      --tpmstate0 {{ _proxmox_vm_effective_storage }}:1,version=v2.0 \
-      --scsi0 {{ _proxmox_vm_effective_storage }}:{{ proxmox_vm_disk_size | regex_replace('[Gg]$', '') }},discard=on,ssd=1
-  when:
-    - not ansible_check_mode
-    - proxmox_vm_exists.rc != 0
-    - _proxmox_vm_is_windows
-  changed_when: true
-
-- name: Attach Windows install + VirtIO driver CDROMs and set VGA
-  delegate_to: "{{ proxmox_host }}"
-  become: true
-  # command + argv, not shell: each inventory-supplied ISO filename is one
-  # literal argv token, so a space or metacharacter in it can neither break qm's
-  # parsing nor inject a command on the delegated host.
-  ansible.builtin.command:
-    argv:
-      - qm
-      - set
-      - "{{ proxmox_vm_id }}"
-      - --ide2
-      - "{{ proxmox_vm_iso_storage }}:iso/{{ proxmox_vm_install_iso }},media=cdrom"
-      - --ide0
-      - "{{ proxmox_vm_iso_storage }}:iso/{{ proxmox_vm_virtio_iso }},media=cdrom"
-      - --vga
-      - "{{ proxmox_vm_windows_vga }}"
-  when:
-    - not ansible_check_mode
-    - proxmox_vm_exists.rc != 0
-    - _proxmox_vm_is_windows
-  changed_when: true
-
-- name: Configure Windows boot order (install CD first)
-  delegate_to: "{{ proxmox_host }}"
-  become: true
-  # order=ide2;scsi0 is quoted so the shell doesn't split on the semicolon.
-  # Post-install, flip to `qm set {{ proxmox_vm_id }} --boot order=scsi0` by hand
-  # so the VM boots from disk instead of the installer.
-  ansible.builtin.shell: |
-    qm set {{ proxmox_vm_id }} --boot 'order=ide2;scsi0'
-  when:
-    - not ansible_check_mode
-    - proxmox_vm_exists.rc != 0
-    - _proxmox_vm_is_windows
-  changed_when: true
-
-# An empty key would still "provision successfully" — and leave the VM
-# unreachable over SSH.
-- name: Assert SSH public key is available for cloud-init
-  ansible.builtin.assert:
-    that:
-      - lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY') | length > 0
-    fail_msg: >-
-      SSH_PUBLIC_KEY is empty. Run via the task wrapper (op run) so
-      cloud-init gets an authorized key.
-  when:
-    - not ansible_check_mode
-    - proxmox_vm_exists.rc != 0
-    - not _proxmox_vm_is_windows
-    - not (proxmox_vm_skip_create | default(false))
-
-# The key is staged in a private temp file (0600, random suffix, so it is no
-# clobber target on a shared Proxmox host), consumed by `qm set --sshkeys`, and
-# removed in `always`.
-- name: Stage and consume the cloud-init SSH public key
-  delegate_to: "{{ proxmox_host }}"
-  become: true
-  when:
-    - not ansible_check_mode
-    - proxmox_vm_exists.rc != 0
-    - not _proxmox_vm_is_windows
-  block:
-    - name: Create private temp file for cloud-init SSH key
-      ansible.builtin.tempfile:
-        state: file
-        prefix: "ssh_key_{{ proxmox_vm_id }}_"
-        suffix: ".pub"
-      register: _proxmox_vm_ci_ssh_key_tmp
-
-    - name: Deploy SSH public key for cloud-init
-      ansible.builtin.copy:
-        content: "{{ ssh_public_key }}"
-        dest: "{{ _proxmox_vm_ci_ssh_key_tmp.path }}"
-        mode: "0600"
-      vars:
-        ssh_public_key: "{{ lookup('ansible.builtin.env', 'SSH_PUBLIC_KEY') }}"
-
-    - name: Configure cloud-init settings
-      ansible.builtin.shell: |
-        qm set {{ proxmox_vm_id }} \
-          --ciuser {{ proxmox_vm_cloudinit_user | quote }} \
-          --sshkeys {{ _proxmox_vm_ci_ssh_key_tmp.path | quote }} \
-          --ipconfig0 ip={{ proxmox_vm_target_ip }}/{{ proxmox_vm_cloudinit_prefix_len }},gw={{ proxmox_vm_cloudinit_gateway }} \
-          --nameserver "{{ proxmox_vm_cloudinit_dns | join(' ') }}"
-      # Needs a real guest to consume the key; stubbed runs skip it.
-      when: not (proxmox_vm_skip_create | default(false))
-      changed_when: true
-  always:
-    - name: Clean up the cloud-init SSH key temp file (even on failure)
-      ansible.builtin.file:
-        path: "{{ _proxmox_vm_ci_ssh_key_tmp.path }}"
-        state: absent
-      when:
-        - _proxmox_vm_ci_ssh_key_tmp is defined
-        - _proxmox_vm_ci_ssh_key_tmp.path is defined
-
-# Reconcile the QEMU guest-agent flag on existing VMs too (it's metadata-only —
-# controls host-side polling, never touches the running guest). Idempotent:
-# re-sets only when live `qm config` differs from the desired flag.
+# The QEMU guest-agent flag is metadata-only: it controls host-side polling and
+# never touches the running guest. It is set only when `qm config` differs.
 - name: Ensure VM QEMU agent flag matches inventory
   delegate_to: "{{ proxmox_vm_reconcile_host }}"
   become: true
+  environment:
+    VM_ID: "{{ proxmox_vm_id }}"
   ansible.builtin.shell: |
     set -euo pipefail
     want="{{ proxmox_vm_agent_enabled | default(true) | ternary(1, 0) }}"
-    # `agent:` may be "1", "0", or "enabled=1,..." — extract the leading enabled bit.
-    cur=$(qm config {{ proxmox_vm_id }} | sed -n 's/^agent: //p' | sed -E 's/^enabled=//; s/,.*$//')
+    # `agent:` is "1", "0" or "[enabled=]1,<sub-options>"; only the enabled bit
+    # is reconciled and the sub-options are written back unchanged.
+    raw=$(qm config "$VM_ID" | sed -n 's/^agent: //p')
+    cur=$(printf '%s' "$raw" | sed -E 's/^enabled=//; s/,.*$//')
     cur=${cur:-0}
+    rest=$(printf '%s' "$raw" | sed -nE 's/^[^,]*(,.*)$/\1/p')
     if [ "$cur" != "$want" ]; then
-      qm set {{ proxmox_vm_id }} --agent "$want"
+      qm set "$VM_ID" --agent "enabled=${want}${rest}"
       echo CHANGED
     fi
   args:
@@ -594,16 +589,20 @@
 - name: Configure VM autostart and boot order
   delegate_to: "{{ proxmox_host }}"
   become: true
-  ansible.builtin.shell: |
-    qm set {{ proxmox_vm_id }} \
-      --onboot {{ proxmox_autostart_enabled | default(true) | ternary(1, 0) }} \
-      --startup order={{ proxmox_startup_order | default(100) }},up={{ proxmox_startup_delay | default(0) }}
+  ansible.builtin.command:
+    argv:
+      - qm
+      - set
+      - "{{ proxmox_vm_id }}"
+      - --onboot
+      - "{{ proxmox_autostart_enabled | default(true) | ternary(1, 0) }}"
+      - --startup
+      - "order={{ proxmox_startup_order | default(100) }},up={{ proxmox_startup_delay | default(0) }}"
   when:
     - not ansible_check_mode
     - proxmox_vm_exists.rc != 0
-    # Skipped under skip_create with the cloud-init `qm set`. NOT every
-    # create-path task honours the flag — `qm create`, the disk import/attach/
-    # resize and the boot-order sets run against the molecule stubs on purpose.
+    # Skipped under skip_create with the cloud-init `qm set`; the other create
+    # steps run against the molecule stubs.
     - not (proxmox_vm_skip_create | default(false))
   changed_when: true
 
@@ -671,8 +670,8 @@
 - name: Start VM
   delegate_to: "{{ proxmox_host }}"
   become: true
-  ansible.builtin.shell: |
-    qm start {{ proxmox_vm_id }}
+  ansible.builtin.command:
+    argv: [qm, start, "{{ proxmox_vm_id }}"]
   when:
     - not ansible_check_mode
     - proxmox_vm_exists.rc != 0
@@ -691,6 +690,32 @@
     - proxmox_vm_exists.rc != 0
     - not _proxmox_vm_is_windows
     - not (proxmox_vm_skip_create | default(false))
+
+# The create's last step, after the disks, the start and the SSH wait, so a
+# guest that never attached its disks or never booted keeps the marker.
+- name: Read the new VM's tags
+  delegate_to: "{{ proxmox_host }}"
+  become: true
+  ansible.builtin.command:
+    argv: [qm, config, "{{ proxmox_vm_id }}"]
+  register: _proxmox_vm_created_config
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - proxmox_vm_exists.rc != 0
+
+# Drops only the marker, so a tag set during the create window survives.
+- name: Clear the create marker
+  delegate_to: "{{ proxmox_host }}"
+  become: true
+  ansible.builtin.command:
+    argv: "{{ ['qm', 'set', proxmox_vm_id | string] + _proxmox_vm_marker_clear_args }}"
+  vars:
+    _proxmox_vm_config_lines: "{{ _proxmox_vm_created_config.stdout_lines }}"
+  when:
+    - not ansible_check_mode
+    - proxmox_vm_exists.rc != 0
+  changed_when: true
 
 - name: Display VM creation status
   vars:

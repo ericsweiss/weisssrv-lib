@@ -57,12 +57,35 @@ def _fixture_config():
 
 
 @pytest.fixture(autouse=True)
-def _cache_dir_is_disposable(tmp_path_factory):
-    """No test writes a lookup cache into the fixture tree."""
+def _cache_dir_is_disposable(tmp_path_factory, monkeypatch):
+    """No test writes a lookup cache into the fixture tree.
+
+    main() reloads the config, which re-points CACHE_DIR, so the reload is
+    wrapped to point it back at the disposable directory.
+    """
+    cache_dir = tmp_path_factory.mktemp("version-cache")
+    real_load = check_versions.load_config
+
+    def load_then_point(*args, **kwargs):
+        cfg = real_load(*args, **kwargs)
+        check_versions.CACHE_DIR = cache_dir
+        return cfg
+
     original = check_versions.CACHE_DIR
-    check_versions.CACHE_DIR = tmp_path_factory.mktemp("version-cache")
+    check_versions.CACHE_DIR = cache_dir
+    monkeypatch.setattr(check_versions, "load_config", load_then_point)
     yield
     check_versions.CACHE_DIR = original
+
+
+def mock_response(body: bytes, content_type: str = "text/plain"):
+    """A urlopen-style response usable as a context manager."""
+    resp = MagicMock()
+    resp.read.return_value = body
+    resp.headers = {"Content-Type": content_type}
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
 
 
 def write_tmp_vars(content: str) -> Path:
@@ -74,8 +97,7 @@ def write_tmp_vars(content: str) -> Path:
 
 
 class TestCategoryFilterFailsClosed:
-    """A typo'd --category selected zero services and exited 0 — a clean
-    report for a check that never ran."""
+    """An unknown --category is an error, never an empty clean report."""
 
     def test_unknown_category_raises(self):
         with pytest.raises(ValueError, match="no services match category"):
@@ -97,29 +119,8 @@ class TestCategoryFilterFailsClosed:
         assert len(out) == 1
 
 
-class TestAptRepoKeyNames:
-    """The published schema and the shipped example use `apt_url`; the
-    function was written against `apt_index_url`. Both must work."""
-
-    def _index(self, monkeypatch):
-        monkeypatch.setattr(
-            check_versions, "_urlopen_with_retry",
-            lambda req, timeout=30: b"Package: tailscale\nVersion: 1.80.0\n\n")
-
-    def test_apt_url_is_accepted(self, monkeypatch):
-        self._index(monkeypatch)
-        svc = {"apt_url": "https://x/Packages.gz", "apt_package": "tailscale"}
-        assert check_versions.fetch_apt_repo_version(svc) == "1.80.0"
-
-    def test_apt_index_url_still_accepted(self, monkeypatch):
-        self._index(monkeypatch)
-        svc = {"apt_index_url": "https://x/Packages.gz", "apt_package": "tailscale"}
-        assert check_versions.fetch_apt_repo_version(svc) == "1.80.0"
-
-
 class TestTagRegexWithoutCaptureGroup:
-    r"""The shipped example configs use capture-group-less regexes like
-    r"^\d+\.\d+\.\d+$"; group(1) on those raises IndexError."""
+    """A tag_regex without a capture group selects the whole tag."""
 
     def _pages(self, *tags):
         return {"results": [{"name": t} for t in tags], "next": None}
@@ -264,6 +265,12 @@ class TestLsioTagWindow:
         with pytest.raises(RuntimeError, match="lsio_name_filter"):
             check_versions.fetch_lsio_version(svc)
 
+    def test_a_bare_tag_scheme_reports_the_highest_tag(self, monkeypatch):
+        monkeypatch.setattr(check_versions, "_make_request", self._pages("5.1.3", "5.1.4", "latest"))
+        svc = {"docker_image": "linuxserver/qbittorrent",
+               "lsio_version_regex": r"^(\d+\.\d+\.\d+)$"}
+        assert check_versions.fetch_lsio_version(svc) == "5.1.4"
+
     @pytest.mark.parametrize("current", ["unknown", "latest", ""])
     def test_a_pin_that_is_not_a_version_is_not_compared(self, monkeypatch, current):
         monkeypatch.setattr(check_versions, "_make_request",
@@ -398,20 +405,17 @@ class TestPinnedImageVersionTracking(unittest.TestCase):
 
 
 class TestVersionParsing(unittest.TestCase):
-    """Tests for version string parsing and comparison."""
+    """Version string parsing and comparison."""
 
     def test_parse_simple_version(self):
-        """Simple X.Y.Z versions parse to (type_rank, value) tuples."""
         assert parse_version_tuple("1.2.3") == ((0, 1), (0, 2), (0, 3))
         assert parse_version_tuple("10.20.30") == ((0, 10), (0, 20), (0, 30))
 
     def test_parse_version_with_v_prefix(self):
-        """Test parsing versions with 'v' prefix."""
         assert parse_version_tuple("v1.2.3") == ((0, 1), (0, 2), (0, 3))
         assert parse_version_tuple("v10.0.1") == ((0, 10), (0, 0), (0, 1))
 
     def test_parse_k3s_version(self):
-        """Test parsing k3s-style versions with +k3sN suffix."""
         # v1.35.2+k3s1 -> ((0,1), (0,35), (0,2), (1,"k"), (0,3), (1,"s"), (0,1))
         result = parse_version_tuple("v1.35.2+k3s1")
         assert result[0:3] == ((0, 1), (0, 35), (0, 2))
@@ -420,37 +424,28 @@ class TestVersionParsing(unittest.TestCase):
         v2 = parse_version_tuple("v1.35.2+k3s9")
         assert v1 > v2, "k3s10 should be greater than k3s9"
 
-    def test_parse_four_part_version(self):
-        """Test parsing four-part versions (like Sonarr/Radarr builds)."""
+    def test_parse_four_part_build_version(self):
         assert parse_version_tuple("4.0.16.2944") == ((0, 4), (0, 0), (0, 16), (0, 2944))
 
-    def test_parse_plex_version(self):
-        """Test parsing Plex-style versions with hash suffix."""
-        # Plex: 1.43.0.10492-121068a07
+    def test_parse_build_with_hash_suffix(self):
         result = parse_version_tuple("1.43.0.10492-121068a07")
-        # Should parse numeric parts correctly (first 4 elements are the version numbers)
         assert result[0:4] == ((0, 1), (0, 43), (0, 0), (0, 10492))
 
-    def test_parse_gitlab_version(self):
-        """Test parsing GitLab-style versions."""
-        # GitLab: 18.9.1-ee.0
+    def test_parse_edition_suffix(self):
         result = parse_version_tuple("18.9.1-ee.0")
         assert result[0:3] == ((0, 18), (0, 9), (0, 1))
 
     def test_version_greater_simple(self):
-        """Test version comparison with simple versions."""
         assert version_greater("2.0.0", "1.9.9")
         assert version_greater("1.10.0", "1.9.0")
         assert not version_greater("1.0.0", "1.0.0")
         assert not version_greater("1.0.0", "2.0.0")
 
     def test_version_greater_with_prefix(self):
-        """Test version comparison with v prefix."""
         assert version_greater("v2.0.0", "v1.9.9")
         assert version_greater("v1.10.0", "v1.9.0")
 
     def test_version_greater_k3s(self):
-        """Test version comparison with k3s-style versions."""
         assert version_greater("v1.35.2+k3s10", "v1.35.2+k3s9")
         assert version_greater("v1.35.2+k3s1", "v1.35.1+k3s1")
         assert not version_greater("v1.35.2+k3s1", "v1.35.2+k3s2")
@@ -530,13 +525,27 @@ Description: GitLab Runner
                           return_value=self.PLEX_PACKAGES_CONTENT):
             assert check_versions.fetch_apt_repo_version(svc) == "1.43.0.10492-121068a07"
 
+    TAILSCALE_PACKAGES = (
+        "Package: tailscale\nVersion: 1.80.0\nArchitecture: amd64\n\n"
+        "Package: tailscale\nVersion: 1.82.3\nArchitecture: amd64\n\n"
+        "Package: other\nVersion: 9.9.9\nArchitecture: amd64\n"
+    )
+
+    def test_either_url_key_reaches_the_index(self):
+        for key in ("apt_url", "apt_index_url"):
+            svc = {key: "https://example.com/Packages", "apt_package": "tailscale"}
+            with self.subTest(key=key), patch.object(
+                check_versions, "_urlopen_with_retry", return_value=self.TAILSCALE_PACKAGES.encode()
+            ):
+                self.assertEqual(check_versions.fetch_apt_repo_version(svc), "1.82.3")
+
     def test_missing_package_raises(self):
         svc = {"apt_url": "https://example.com/Packages", "apt_package": "plexmediaserver"}
         with patch.object(check_versions, "_fetch_packages_index",
                           return_value="Package: someother\nVersion: 1.0.0\n"):
             with self.assertRaises(RuntimeError) as ctx:
                 check_versions.fetch_apt_repo_version(svc)
-            self.assertIn("plexmediaserver", str(ctx.exception))
+            self.assertIn("package 'plexmediaserver' not found", str(ctx.exception))
 
     def test_exclude_regex_skips_prereleases(self):
         """apt_exclude_regex is how a consumer drops rc/beta stanzas."""
@@ -614,111 +623,53 @@ class TestFetchPackagesIndex(unittest.TestCase):
 
 
 class TestFetchAptPackages(unittest.TestCase):
-    """Tests for fetch_apt_packages.
-
-    It calls urllib.request.urlopen directly for header and compression
+    """fetch_apt_packages calls urlopen directly for header and compression
     access, so these tests mock urlopen rather than _make_request.
     """
 
-    def _create_mock_response(self, content: bytes, content_type: str = "text/plain"):
-        """Helper to create a mock urllib response with proper context manager support."""
-        mock_response = MagicMock()
-        mock_response.read.return_value = content
-        mock_response.headers = {"Content-Type": content_type}
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
-        return mock_response
-
     def test_fetch_uncompressed(self):
-        """Test fetching uncompressed Packages file."""
         mock_content = b"Package: test\nVersion: 1.0.0\n"
 
         with patch('urllib.request.urlopen') as mock_urlopen:
-            mock_urlopen.return_value = self._create_mock_response(mock_content)
+            mock_urlopen.return_value = mock_response(mock_content)
 
             result = fetch_apt_packages("https://example.com/Packages")
 
             assert result == mock_content.decode("utf-8")
             assert mock_urlopen.call_count == 1
             call_args = mock_urlopen.call_args
-            request_obj = call_args[0][0]  # First positional arg
+            request_obj = call_args[0][0]
             assert request_obj.full_url == "https://example.com/Packages"
 
-    def test_fetch_compressed_fallback(self):
-        """Test fallback to .gz compressed file when uncompressed fails."""
+    PAYLOAD = b"Package: test\nVersion: 1.0.0\n"
 
-        mock_content = b"Package: test\nVersion: 1.0.0\n"
-        compressed = io.BytesIO()
-        with gzip.GzipFile(fileobj=compressed, mode='wb') as gz:
-            gz.write(mock_content)
-        compressed_bytes = compressed.getvalue()
+    def _fallback_after(self, first):
+        """Fetch with `first` answering the plain URL and a gzip body the `.gz` one."""
+        calls = []
 
-        call_count = [0]
+        def urlopen(req, timeout=None):
+            calls.append(req.full_url)
+            if len(calls) == 1:
+                return first(req.full_url)
+            return mock_response(gzip.compress(self.PAYLOAD), "application/gzip")
 
-        def mock_urlopen_side_effect(req, timeout=None):
-            call_count[0] += 1
-            url = req.full_url if hasattr(req, 'full_url') else str(req)
-            if call_count[0] == 1:
-                raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
-            else:
-                return self._create_mock_response(compressed_bytes, "application/gzip")
-
-        with patch('urllib.request.urlopen', side_effect=mock_urlopen_side_effect):
+        with patch("urllib.request.urlopen", side_effect=urlopen):
             result = fetch_apt_packages("https://example.com/Packages")
+        assert result == self.PAYLOAD.decode("utf-8")
+        assert calls == ["https://example.com/Packages", "https://example.com/Packages.gz"]
 
-            assert result == mock_content.decode("utf-8")
-            assert call_count[0] == 2  # Verify both calls were made
+    def test_fetch_compressed_fallback(self):
+        def not_found(url):
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+        self._fallback_after(not_found)
 
     def test_fetch_empty_content_falls_back(self):
-        """Test that empty response triggers fallback to .gz."""
-
-        mock_content = b"Package: test\nVersion: 1.0.0\n"
-        compressed = io.BytesIO()
-        with gzip.GzipFile(fileobj=compressed, mode='wb') as gz:
-            gz.write(mock_content)
-        compressed_bytes = compressed.getvalue()
-
-        call_count = [0]
-
-        def mock_urlopen_side_effect(req, timeout=None):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return self._create_mock_response(b"")
-            else:
-                return self._create_mock_response(compressed_bytes, "application/gzip")
-
-        with patch('urllib.request.urlopen', side_effect=mock_urlopen_side_effect):
-            result = fetch_apt_packages("https://example.com/Packages")
-
-            assert result == mock_content.decode("utf-8")
-            assert call_count[0] == 2  # Verify fallback was triggered
+        self._fallback_after(lambda url: mock_response(b""))
 
     def test_fetch_html_error_page_falls_back(self):
-        """Test that HTML error pages trigger fallback to .gz."""
-
-        mock_content = b"Package: test\nVersion: 1.0.0\n"
-        compressed = io.BytesIO()
-        with gzip.GzipFile(fileobj=compressed, mode='wb') as gz:
-            gz.write(mock_content)
-        compressed_bytes = compressed.getvalue()
-
-        call_count = [0]
-
-        def mock_urlopen_side_effect(req, timeout=None):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return self._create_mock_response(
-                    b"<!DOCTYPE html><html><body>Error</body></html>",
-                    "text/html"
-                )
-            else:
-                return self._create_mock_response(compressed_bytes, "application/gzip")
-
-        with patch('urllib.request.urlopen', side_effect=mock_urlopen_side_effect):
-            result = fetch_apt_packages("https://example.com/Packages")
-
-            assert result == mock_content.decode("utf-8")
-            assert call_count[0] == 2  # Verify fallback was triggered
+        self._fallback_after(lambda url: mock_response(
+            b"<!DOCTYPE html><html><body>Error</body></html>", "text/html"))
 
 
 class TestGetDeployCommand(unittest.TestCase):
@@ -830,7 +781,6 @@ class TestLoadConfig(unittest.TestCase):
         check_versions.load_config(FIXTURE_CONFIG, repo_root=FIXTURE_REPO)
 
     def test_json_config_supported(self):
-
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "registry.json"
             path.write_text(json.dumps({
@@ -843,7 +793,6 @@ class TestLoadConfig(unittest.TestCase):
         self.assertEqual(check_versions.DEFAULT_DEPLOY_COMMAND, "make deploy")
 
     def test_bare_service_registry_module_supported(self):
-
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "registry.py"
             path.write_text(
@@ -854,23 +803,21 @@ class TestLoadConfig(unittest.TestCase):
         self.assertEqual([s["var_name"] for s in check_versions.SERVICE_REGISTRY], ["x_version"])
 
     def test_empty_services_rejected(self):
-
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "registry.json"
             path.write_text(json.dumps({"services": []}))
-            with self.assertRaises(SystemExit):
+            with self.assertRaisesRegex(SystemExit, "non-empty list"):
                 check_versions.load_config(path, repo_root=Path(d))
 
     def test_service_without_var_name_rejected(self):
-
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "registry.json"
             path.write_text(json.dumps({"services": [{"name": "X"}]}))
-            with self.assertRaises(SystemExit):
+            with self.assertRaisesRegex(SystemExit, "name \\+ var_name"):
                 check_versions.load_config(path, repo_root=Path(d))
 
     def test_unsupported_suffix_rejected(self):
-        with self.assertRaises(SystemExit):
+        with self.assertRaisesRegex(SystemExit, "unsupported config format"):
             check_versions.load_config(FIXTURE_DIR / "registry.toml")
 
     def test_resolve_config_prefers_explicit_then_env(self):
@@ -881,16 +828,15 @@ class TestLoadConfig(unittest.TestCase):
             self.assertEqual(check_versions.resolve_config_path(), Path("/tmp/env.json"))
 
     def test_resolve_config_errors_when_absent(self):
-
         with tempfile.TemporaryDirectory() as d, \
              patch.dict(os.environ, {}, clear=False):
             os.environ.pop("CHECK_VERSIONS_CONFIG", None)
-            with self.assertRaises(SystemExit):
+            with self.assertRaisesRegex(SystemExit, "no version-registry config found"):
                 check_versions.resolve_config_path(repo_root=Path(d))
 
 
 class TestDebianVersionCompare(unittest.TestCase):
-    """debian_version_compare ordering rules (referenced by its docstring)."""
+    """Debian version ordering: epoch, tilde pre-release, revision tail."""
 
     def setUp(self):
         self.cmp = check_versions.debian_version_compare
@@ -950,7 +896,7 @@ class TestHelmIndexParser(unittest.TestCase):
 
     # A chart entry with a dependencies: sub-block whose dependency version
     # outranks the chart's own version. The parser must NOT collect the
-    # dependency version (real index.yaml shape: e.g. authentik's postgresql dep).
+    # dependency version.
     INDEX_WITH_DEPENDENCY = (
         "apiVersion: v1\n"
         "entries:\n"
@@ -1005,7 +951,7 @@ class TestDockerhubMajorPinAndPrefix(unittest.TestCase):
         return {"results": [{"name": t} for t in tags]}
 
     def test_pin_major_confines_to_current_major(self):
-        # postgres pins its major so a DB-breaking major bump is never proposed.
+        # A pinned major never proposes the next major.
         svc = {
             "docker_image": "library/postgres",
             "tag_regex": r"^(\d+(?:\.\d+)?)-trixie$",
@@ -1018,7 +964,7 @@ class TestDockerhubMajorPinAndPrefix(unittest.TestCase):
             self.assertEqual(check_versions.fetch_dockerhub_version(svc), "17.2-trixie")
 
     def test_version_prefix_confines_to_series(self):
-        # Meilisearch is held to its 1.15.x series via version_prefix.
+        # version_prefix holds the entry to one minor series.
         svc = {
             "docker_image": "getmeili/meilisearch",
             "tag_regex": r"^v(\d+\.\d+\.\d+)$",
@@ -1080,33 +1026,6 @@ class TestVersionTupleGreaterRules(unittest.TestCase):
     def test_numeric_minor_beats_string_suffix(self):
         self.assertTrue(self.gt("17.1-trixie", "17-trixie"))
         self.assertTrue(self.gt("18-trixie", "17.1-trixie"))
-
-
-class TestFetchAptRepoVersion(unittest.TestCase):
-    """fetch_apt_repo_version parses plain and gzip Packages payloads."""
-
-    PACKAGES = (
-        "Package: tailscale\nVersion: 1.80.0\nArchitecture: amd64\n\n"
-        "Package: tailscale\nVersion: 1.82.3\nArchitecture: amd64\n\n"
-        "Package: other\nVersion: 9.9.9\nArchitecture: amd64\n"
-    )
-
-    def test_plain_packages(self):
-        svc = {"apt_index_url": "https://example.com/Packages", "apt_package": "tailscale"}
-        with patch.object(check_versions, "_urlopen_with_retry", return_value=self.PACKAGES.encode()):
-            self.assertEqual(check_versions.fetch_apt_repo_version(svc), "1.82.3")
-
-    def test_gzip_packages(self):
-        svc = {"apt_index_url": "https://example.com/Packages.gz", "apt_package": "tailscale"}
-        with patch.object(check_versions, "_urlopen_with_retry",
-                          return_value=gzip.compress(self.PACKAGES.encode())):
-            self.assertEqual(check_versions.fetch_apt_repo_version(svc), "1.82.3")
-
-    def test_missing_package_raises(self):
-        svc = {"apt_index_url": "https://example.com/Packages", "apt_package": "nope"}
-        with patch.object(check_versions, "_urlopen_with_retry", return_value=self.PACKAGES.encode()):
-            with self.assertRaises(RuntimeError):
-                check_versions.fetch_apt_repo_version(svc)
 
 
 class TestUpdateVersionInFile(unittest.TestCase):
@@ -1175,7 +1094,7 @@ class TestUpdateVersionInFile(unittest.TestCase):
 
 
 class TestHeldUpdateGuard(unittest.TestCase):
-    """A held service must never be written by --update-all (the MetalLB hold)."""
+    """A held service is never written by --update-all."""
 
     def test_held_registry_entry_is_honored(self):
         held = [s for s in check_versions.SERVICE_REGISTRY if s.get("held")]
@@ -1185,9 +1104,9 @@ class TestHeldUpdateGuard(unittest.TestCase):
 
     def test_update_all_skips_held(self):
         SV = check_versions.ServiceVersion
-        held = SV(name="MetalLB", category="helm", current_version="0.15.3",
+        held = SV(name="HeldChart", category="helm", current_version="0.15.3",
                   latest_version="0.16.0", update_available=True,
-                  var_name="helm_chart_versions.metallb", held=True)
+                  var_name="helm_chart_versions.held_chart", held=True)
         normal = SV(name="Foo", category="helm", current_version="1.0",
                     latest_version="1.1", update_available=True, var_name="foo_version")
         with patch.object(check_versions, "check_all", return_value=[held, normal]), \
@@ -1199,7 +1118,7 @@ class TestHeldUpdateGuard(unittest.TestCase):
                 check_versions.main()
         written_vars = [call.args[0] for call in muf.call_args_list]
         self.assertIn("foo_version", written_vars)
-        self.assertNotIn("helm_chart_versions.metallb", written_vars)
+        self.assertNotIn("helm_chart_versions.held_chart", written_vars)
 
     def test_json_reports_a_held_update_as_not_available(self):
         """A held service reports `update_available: false` in the JSON.
@@ -1208,16 +1127,16 @@ class TestHeldUpdateGuard(unittest.TestCase):
         stays visible through the `held` and `latest_version` fields.
         """
         SV = check_versions.ServiceVersion
-        held = SV(name="MetalLB", category="helm", current_version="0.15.3",
+        held = SV(name="HeldChart", category="helm", current_version="0.15.3",
                   latest_version="0.16.0", update_available=True,
-                  var_name="helm_chart_versions.metallb", held=True)
+                  var_name="helm_chart_versions.held_chart", held=True)
         normal = SV(name="Foo", category="helm", current_version="1.0",
                     latest_version="1.1", update_available=True, var_name="foo_version")
         data = json.loads(check_versions.format_json([held, normal]))
         by_name = {s["name"]: s for s in data["services"]}
-        self.assertFalse(by_name["MetalLB"]["update_available"])
-        self.assertTrue(by_name["MetalLB"]["held"])
-        self.assertEqual(by_name["MetalLB"]["latest_version"], "0.16.0")
+        self.assertFalse(by_name["HeldChart"]["update_available"])
+        self.assertTrue(by_name["HeldChart"]["held"])
+        self.assertEqual(by_name["HeldChart"]["latest_version"], "0.16.0")
         self.assertTrue(by_name["Foo"]["update_available"])
         self.assertEqual(data["summary"]["updates_available"], 1)
         self.assertEqual(data["summary"]["updates_held"], 1)
@@ -1229,7 +1148,8 @@ class TestHeldUpdateGuard(unittest.TestCase):
         independent code path from --update-all.
         """
         SV = check_versions.ServiceVersion
-        held = SV(name="MetalLB", category="helm", current_version="0.15.3",
+        # --update resolves the name against the fixture registry.
+        held = SV(name="HeldChart", category="helm", current_version="0.15.3",
                   latest_version="0.16.0", update_available=True,
                   var_name="helm_chart_versions.metallb", held=True)
         with patch.object(check_versions, "check_service", return_value=held), \
@@ -1251,14 +1171,6 @@ class TestMakeRequestRetry(unittest.TestCase):
     on 4xx, and re-raise the last exception once attempts are exhausted.
     """
 
-    def _ok_response(self, body: bytes):
-        """A urlopen-style success response usable as a context manager."""
-        resp = MagicMock()
-        resp.read.return_value = body
-        resp.__enter__ = MagicMock(return_value=resp)
-        resp.__exit__ = MagicMock(return_value=False)
-        return resp
-
     def _http_error(self, code: int):
         return urllib.error.HTTPError(
             "https://example.com", code, "boom", {}, None
@@ -1272,7 +1184,7 @@ class TestMakeRequestRetry(unittest.TestCase):
             calls[0] += 1
             if calls[0] <= 2:
                 raise urllib.error.URLError("temporary failure in name resolution")
-            return self._ok_response(b'{"tag_name": "v1.2.3"}')
+            return mock_response(b'{"tag_name": "v1.2.3"}')
 
         with patch("urllib.request.urlopen", side_effect=side_effect), \
              patch.object(check_versions.time, "sleep"):  # don't actually back off
@@ -1290,7 +1202,7 @@ class TestMakeRequestRetry(unittest.TestCase):
             calls[0] += 1
             if calls[0] == 1:
                 raise http.client.IncompleteRead(b"partial", expected=1000)
-            return self._ok_response(b'{"tag_name": "v9.9.9"}')
+            return mock_response(b'{"tag_name": "v9.9.9"}')
 
         with patch("urllib.request.urlopen", side_effect=side_effect), \
              patch.object(check_versions.time, "sleep"):
@@ -1307,7 +1219,7 @@ class TestMakeRequestRetry(unittest.TestCase):
             calls[0] += 1
             if calls[0] == 1:
                 raise socket.timeout("timed out")
-            return self._ok_response(b"plain text body")
+            return mock_response(b"plain text body")
 
         with patch("urllib.request.urlopen", side_effect=side_effect), \
              patch.object(check_versions.time, "sleep"):
@@ -1470,17 +1382,7 @@ class TestFetchGithubReleaseLatest(unittest.TestCase):
 
 
 class TestFetchAptPackagesRetry(unittest.TestCase):
-    """fetch_apt_packages now routes through the bounded retry helper (Plex /
-    GitLab fetch via it), so a transient 5xx on the uncompressed URL retries
-    instead of immediately falling back / failing."""
-
-    def _ok_response(self, body: bytes, content_type: str = "text/plain"):
-        resp = MagicMock()
-        resp.read.return_value = body
-        resp.headers = {"Content-Type": content_type}
-        resp.__enter__ = MagicMock(return_value=resp)
-        resp.__exit__ = MagicMock(return_value=False)
-        return resp
+    """A transient 5xx on the uncompressed Packages URL is retried before falling back."""
 
     def test_transient_5xx_then_success_on_uncompressed(self):
         calls = [0]
@@ -1492,7 +1394,7 @@ class TestFetchAptPackagesRetry(unittest.TestCase):
                 raise urllib.error.HTTPError(
                     "https://example.com/Packages", 503, "boom", {}, None
                 )
-            return self._ok_response(body)
+            return mock_response(body)
 
         with patch("urllib.request.urlopen", side_effect=side_effect), \
              patch.object(check_versions.time, "sleep"):
@@ -1521,7 +1423,7 @@ class TestMakeRequestErrorTagging(unittest.TestCase):
 
 
 class TestUpdateVersionInFileUnquoted(unittest.TestCase):
-    """The unquoted-value write branch (uses_quotes=False) was untested."""
+    """An unquoted pin is rewritten unquoted."""
 
     def test_unquoted_value_stays_unquoted(self):
         path = write_tmp_vars("foo_version: 1.2.3\nbar_version: 4.5.6\n")
@@ -1634,6 +1536,33 @@ class TestReadCurrentVersions(unittest.TestCase):
         self.assertNotIn("nested_version", versions)
         self.assertEqual(versions.get("gitlab_version"), "17.0.0")
 
+    def test_reads_the_same_values_as_the_partner_pin_parser(self):
+        """read_current_versions and stale_partner_pins share one line parser."""
+        text = (
+            'a_version: "1.2" # x\n'
+            "b_version: '3.4'  # \"q\"\n"
+            "lxc_template: debian-13.tar.zst  # pinned\n"
+            "helm_chart_versions:\n"
+            '  traefik: "40.0.0" # c\n'
+            "  # commented: 9\n"
+        )
+        registry = [{"name": "lxc", "var_name": "lxc_template"}]
+        path = write_tmp_vars(text)
+        try:
+            with patch.object(check_versions, "VARS_FILE", path), \
+                 patch.object(check_versions, "SERVICE_REGISTRY", registry), \
+                 patch.object(check_versions, "read_pinned_image_versions", return_value={}):
+                versions = check_versions.read_current_versions()
+        finally:
+            os.unlink(path)
+        pins = check_versions._top_level_pins(text)
+        self.assertEqual(versions, {k: pins[k] for k in versions})
+        self.assertEqual(versions, {
+            "a_version": "1.2", "b_version": "3.4",
+            "lxc_template": "debian-13.tar.zst",
+            "helm_chart_versions.traefik": "40.0.0",
+        })
+
 
 class TestAnnotateLatestResolution(unittest.TestCase):
     """_annotate_latest_resolution surfaces the resolved version in notes only
@@ -1742,7 +1671,6 @@ class TestConsumerConfigFlags(unittest.TestCase):
         self.assertEqual(code, 0)
 
     def test_config_still_requires_a_value(self):
-
         res = subprocess.run(
             [sys.executable, str(script_path), "--config"], capture_output=True, text=True,
         )
@@ -1821,38 +1749,9 @@ class TestFetchGithubReleaseTagFilter(unittest.TestCase):
             self.assertEqual(check_versions.fetch_github_release(svc), "1.2.3")
 
 
-class TestFetchLsioVersion(unittest.TestCase):
-    """fetch_lsio_version returns the captured version group, stripping the
-    `version-` prefix."""
-
-    @staticmethod
-    def _payload(*tags):
-        return {"results": [{"name": t} for t in tags]}
-
-    def test_version_prefix_stripped_from_capture(self):
-        svc = {
-            "docker_image": "linuxserver/sonarr",
-            "lsio_version_regex": r"^version-(\d+\.\d+\.\d+\.\d+)$",
-        }
-        payload = self._payload("version-4.0.15.2941", "version-4.0.16.2944", "latest")
-        with patch.object(check_versions, "_make_request", return_value=payload):
-            # Captured version, prefix stripped — not the full "version-..." tag.
-            self.assertEqual(check_versions.fetch_lsio_version(svc), "4.0.16.2944")
-
-    def test_bare_tag_regex_empty_prefix(self):
-        # qBittorrent-style bare tags (no version- prefix).
-        svc = {
-            "docker_image": "linuxserver/qbittorrent",
-            "lsio_version_regex": r"^(\d+\.\d+\.\d+)$",
-        }
-        payload = self._payload("5.1.3", "5.1.4", "latest")
-        with patch.object(check_versions, "_make_request", return_value=payload):
-            self.assertEqual(check_versions.fetch_lsio_version(svc), "5.1.4")
-
-
 class TestFetchGhcrVersion(unittest.TestCase):
-    """fetch_ghcr_version (the gluetun-exporter tracker): anonymous pull-token
-    flow, tag_filter matching, and highest-version selection — untested until now."""
+    """fetch_ghcr_version: anonymous pull-token flow, tag_filter matching,
+    highest-version selection."""
 
     @staticmethod
     def _dispatch(token_resp, tags_resp):
@@ -1929,9 +1828,9 @@ class TestFormatJson(unittest.TestCase):
     def test_summary_counts_and_held_flag(self):
         SV = check_versions.ServiceVersion
         results = [
-            SV(name="MetalLB", category="helm", current_version="0.15.3",
+            SV(name="HeldChart", category="helm", current_version="0.15.3",
                latest_version="0.16.0", update_available=True,
-               var_name="helm_chart_versions.metallb", held=True),
+               var_name="helm_chart_versions.held_chart", held=True),
             SV(name="Foo", category="helm", current_version="1.0",
                latest_version="1.1", update_available=True, var_name="foo_version"),
             SV(name="Bar", category="github", current_version="1.0",
@@ -1943,13 +1842,13 @@ class TestFormatJson(unittest.TestCase):
         self.assertEqual(data["summary"], {
             "total": 4,
             "up_to_date": 1,
-            "updates_available": 1,   # only Foo — the held MetalLB is excluded
-            "updates_held": 1,        # MetalLB
+            "updates_available": 1,   # only Foo; the held chart is excluded
+            "updates_held": 1,
             "updates_current_unreadable": 0,
             "errors": 1,
         })
-        metallb = next(s for s in data["services"] if s["name"] == "MetalLB")
-        self.assertIs(metallb.get("held"), True)
+        held = next(s for s in data["services"] if s["name"] == "HeldChart")
+        self.assertIs(held.get("held"), True)
 
 
 class TestUnreadableCurrentPin(unittest.TestCase):
@@ -1961,7 +1860,7 @@ class TestUnreadableCurrentPin(unittest.TestCase):
             SV(name="PR Agent", category="dockerhub", current_version="unknown",
                latest_version="0.39", update_available=True,
                var_name="pr_agent_version", unreadable_current=True,
-               notes="pinned in weisssrv-lib ci/review/pr-agent.yml"),
+               notes="pinned in another repository's CI template"),
             SV(name="Foo", category="helm", current_version="1.0",
                latest_version="1.1", update_available=True, var_name="foo_version"),
         ]
@@ -1985,7 +1884,7 @@ class TestUnreadableCurrentPin(unittest.TestCase):
             report = check_versions.format_table(self._results())
         self.assertIn("CURRENT UNREADABLE", report)
         self.assertIn("0.39", report)
-        self.assertIn("pinned in weisssrv-lib ci/review/pr-agent.yml", report)
+        self.assertIn("pinned in another repository's CI template", report)
 
     def test_without_the_flag_the_same_entry_reports_an_update_forever(self):
         # The negative case the flag exists for: an unreadable pin otherwise
@@ -2048,8 +1947,12 @@ class TestCheckService(unittest.TestCase):
             r = check_versions.check_service(self.SVC, {"fake_version": "latest"}, use_cache=False)
         self.assertFalse(r.update_available)
 
+    def _cache(self, version, current):
+        check_versions._write_cache(
+            self.SVC["name"], version, check_versions.cache_fingerprint(self.SVC, current))
+
     def test_cache_hit_drives_update_available(self):
-        check_versions._write_cache(self.SVC["name"], "3.0.0")
+        self._cache("3.0.0", "2.0.0")
         # A cache hit must return before any fetch.
         with patch.object(check_versions, "fetch_github_release",
                           side_effect=AssertionError("must not fetch on cache hit")):
@@ -2058,9 +1961,51 @@ class TestCheckService(unittest.TestCase):
         self.assertTrue(r.update_available)
 
     def test_cache_hit_no_update_when_not_greater(self):
-        check_versions._write_cache(self.SVC["name"], "2.0.0")
-        r = check_versions.check_service(self.SVC, {"fake_version": "2.0.0"}, use_cache=True)
+        self._cache("2.0.0", "2.0.0")
+        with patch.object(check_versions, "fetch_github_release",
+                          side_effect=AssertionError("must not fetch on cache hit")):
+            r = check_versions.check_service(self.SVC, {"fake_version": "2.0.0"}, use_cache=True)
         self.assertFalse(r.update_available)
+
+    def test_an_edited_registry_entry_misses_the_cache(self):
+        self._cache("3.0.0", "2.0.0")
+        edited = {**self.SVC, "tag_filter": r"^v2\."}
+        with patch.object(check_versions, "fetch_github_release", return_value="2.5.0") as fetch:
+            r = check_versions.check_service(edited, {"fake_version": "2.0.0"}, use_cache=True)
+        fetch.assert_called_once()
+        self.assertEqual(r.latest_version, "2.5.0")
+
+    def test_a_moved_pin_misses_the_cache(self):
+        """The window check runs again once the pin moves past the cached lookup."""
+        self._cache("3.0.0", "2.0.0")
+        with patch.object(check_versions, "fetch_github_release",
+                          side_effect=RuntimeError("window ended before the pin")) as fetch:
+            r = check_versions.check_service(self.SVC, {"fake_version": "4.0.0"}, use_cache=True)
+        fetch.assert_called_once()
+        self.assertEqual(r.error, "window ended before the pin")
+
+    def test_two_ghcr_entries_for_one_package_keep_separate_caches(self):
+        a = {"name": "Tool A", "var_name": "a_version", "category": "ghcr",
+             "ghcr_image": "one/tool"}
+        b = {"name": "Tool B", "var_name": "b_version", "category": "ghcr",
+             "ghcr_image": "two/tool"}
+        with patch.object(check_versions, "fetch_ghcr_version", return_value="1.0.0"):
+            check_versions.check_service(a, {"a_version": "1.0.0"}, use_cache=True)
+        with patch.object(check_versions, "fetch_ghcr_version", return_value="2.0.0") as fetch:
+            r = check_versions.check_service(b, {"b_version": "1.0.0"}, use_cache=True)
+        fetch.assert_called_once()
+        self.assertEqual(r.latest_version, "2.0.0")
+        self.assertEqual(r.source_url, "https://github.com/two/tool/pkgs/container/tool")
+        self.assertTrue(check_versions._cache_key("Tool B").exists())
+        self.assertFalse(check_versions._cache_key("tool").exists())
+
+    def test_a_nested_ghcr_package_links_its_encoded_package_page(self):
+        svc = {"name": "Nested", "var_name": "n_version", "category": "ghcr",
+               "ghcr_image": "owner/repo/sub"}
+        with patch.object(check_versions, "fetch_ghcr_version", return_value="1.0.0"):
+            r = check_versions.check_service(svc, {"n_version": "1.0.0"}, use_cache=False)
+        self.assertEqual(r.source_url,
+                         "https://github.com/owner/repo/pkgs/container/repo%2Fsub")
 
     def test_runtimeerror_surfaced_verbatim(self):
         with patch.object(check_versions, "fetch_github_release",
@@ -2091,9 +2036,9 @@ class TestMainExitCodes(unittest.TestCase):
 
     def test_held_only_and_clean_exits_0(self):
         SV = check_versions.ServiceVersion
-        held = SV(name="MetalLB", category="helm", current_version="0.15.3",
+        held = SV(name="HeldChart", category="helm", current_version="0.15.3",
                   latest_version="0.16.0", update_available=True,
-                  var_name="helm_chart_versions.metallb", held=True)
+                  var_name="helm_chart_versions.held_chart", held=True)
         clean = SV(name="Foo", category="helm", current_version="1.0",
                    latest_version="1.0", var_name="foo_version")
         self.assertEqual(self._run_main_with([held, clean]), 0)
@@ -2109,10 +2054,6 @@ class TestMainExitCodes(unittest.TestCase):
         err = SV(name="Bar", category="github", current_version="1.0",
                  var_name="bar_version", error="boom")
         self.assertEqual(self._run_main_with([err]), 2)
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-v"]))
 
 
 class TestDockerhubPageSize(unittest.TestCase):
@@ -2301,11 +2242,11 @@ class TestCompanionPins(unittest.TestCase):
     def _result(self, **overrides):
         SV = check_versions.ServiceVersion
         base = dict(
-            name="Hermes", category="github", current_version="2026.8.1",
+            name="Tool", category="github", current_version="2026.8.1",
             latest_version="2026.9.1", update_available=True,
-            var_name="hermes_version",
-            revision_var="hermes_image_version",
-            sha_var={"var": "hermes_git_sha", "repo": "https://example.test/h.git",
+            var_name="tool_version",
+            revision_var="tool_image_version",
+            sha_var={"var": "tool_git_sha", "repo": "https://example.test/tool.git",
                      "ref": "refs/tags/v{version}"},
         )
         base.update(overrides)
@@ -2326,15 +2267,27 @@ class TestCompanionPins(unittest.TestCase):
         with self._ls_remote(self.LS_REMOTE):
             pairs = check_versions.companion_pins(self._result())
         self.assertEqual(pairs, [
-            ("hermes_image_version", "2026.9.1-r1"),
-            ("hermes_git_sha", "2" * 40),
+            ("tool_image_version", "2026.9.1-r1"),
+            ("tool_git_sha", "2" * 40),
         ])
+
+    def test_ls_remote_is_bounded_and_never_prompts(self):
+        with self._ls_remote(self.LS_REMOTE) as run:
+            check_versions.resolve_tag_sha("https://example.test/tool.git", "refs/tags/v2026.9.1")
+        self.assertEqual(run.call_args.kwargs["timeout"], check_versions.GIT_TIMEOUT)
+        self.assertEqual(run.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
+
+    def test_an_ls_remote_timeout_raises(self):
+        timeout = subprocess.TimeoutExpired(cmd="git", timeout=1)
+        with patch.object(check_versions.subprocess, "run", side_effect=timeout):
+            with self.assertRaisesRegex(RuntimeError, "timed out"):
+                check_versions.resolve_tag_sha("https://example.test/tool.git", "refs/tags/v1")
 
     def test_the_query_keeps_the_peel_visible(self):
         """`git ls-remote <repo> refs/tags/<tag>` alone hides the `^{}` line."""
         with self._ls_remote(self.LS_REMOTE) as run:
             check_versions.resolve_tag_sha(
-                "https://example.test/h.git", "refs/tags/v2026.9.1"
+                "https://example.test/tool.git", "refs/tags/v2026.9.1"
             )
         self.assertEqual(run.call_args.args[0][-1], "refs/tags/v2026.9.1*")
 
@@ -2342,7 +2295,7 @@ class TestCompanionPins(unittest.TestCase):
         plain = "3333333333333333333333333333333333333333\trefs/tags/v2026.9.1\n"
         with self._ls_remote(plain):
             pairs = check_versions.companion_pins(self._result())
-        self.assertEqual(pairs[1], ("hermes_git_sha", "3" * 40))
+        self.assertEqual(pairs[1], ("tool_git_sha", "3" * 40))
 
     def test_an_unresolvable_ref_raises_rather_than_writing_an_empty_sha(self):
         with self._ls_remote(""):
@@ -2356,7 +2309,7 @@ class TestCompanionPins(unittest.TestCase):
                 check_versions.companion_pins(self._result())
 
     def test_a_sha_var_without_a_repo_raises(self):
-        result = self._result(sha_var={"var": "hermes_git_sha"})
+        result = self._result(sha_var={"var": "tool_git_sha"})
         with self.assertRaises(RuntimeError) as ctx:
             check_versions.companion_pins(result)
         self.assertIn("no `repo`", str(ctx.exception))
@@ -2369,10 +2322,10 @@ class TestCompanionPins(unittest.TestCase):
         with self._ls_remote(self.LS_REMOTE), \
              patch.object(check_versions, "update_version_in_file", return_value=True) as muf:
             written = check_versions.write_companion_pins(self._result())
-        self.assertEqual(written, ["hermes_image_version", "hermes_git_sha"])
+        self.assertEqual(written, ["tool_image_version", "tool_git_sha"])
         self.assertEqual([c.args for c in muf.call_args_list], [
-            ("hermes_image_version", "2026.9.1-r1"),
-            ("hermes_git_sha", "2" * 40),
+            ("tool_image_version", "2026.9.1-r1"),
+            ("tool_git_sha", "2" * 40),
         ])
 
     def test_a_companion_pin_missing_from_the_vars_file_raises(self):
@@ -2380,17 +2333,17 @@ class TestCompanionPins(unittest.TestCase):
              patch.object(check_versions, "update_version_in_file", return_value=False):
             with self.assertRaises(RuntimeError) as ctx:
                 check_versions.write_companion_pins(self._result())
-        self.assertIn("hermes_image_version", str(ctx.exception))
+        self.assertIn("tool_image_version", str(ctx.exception))
 
     def test_a_companion_pin_is_not_reported_as_untracked(self):
         registry = [{
-            "name": "Hermes", "var_name": "hermes_version", "category": "github",
-            "revision_var": "hermes_image_version",
-            "sha_var": {"var": "hermes_git_sha", "repo": "https://example.test/h.git"},
+            "name": "Tool", "var_name": "tool_version", "category": "github",
+            "revision_var": "tool_image_version",
+            "sha_var": {"var": "tool_git_sha", "repo": "https://example.test/tool.git"},
         }]
         versions = {
-            "hermes_version": "1", "hermes_image_version": "1-r1",
-            "hermes_git_sha": "a" * 40, "loose_version": "2",
+            "tool_version": "1", "tool_image_version": "1-r1",
+            "tool_git_sha": "a" * 40, "loose_version": "2",
         }
         with patch.object(check_versions, "SERVICE_REGISTRY", registry), \
              patch.object(check_versions, "read_current_versions", return_value=versions):
@@ -2421,6 +2374,54 @@ class TestStalePartnerPins(unittest.TestCase):
         stale = check_versions.stale_partner_pins(self.BASE, head)
         self.assertEqual(len(stale), 1)
         self.assertIn("coupled_tool_checksum", stale[0])
+
+    def test_a_coupled_pin_whose_partner_is_missing_is_reported(self):
+        head = self.BASE.replace('coupled_tool_checksum: "aaa"\n', "")
+        stale = check_versions.stale_partner_pins(self.BASE, head)
+        self.assertEqual(len(stale), 1)
+        self.assertIn("coupled_tool_checksum not found", stale[0])
+
+    def test_a_renamed_coupled_pin_is_reported(self):
+        head = self.BASE.replace("coupled_tool_version:", "renamed_tool_version:")
+        stale = check_versions.stale_partner_pins(self.BASE, head)
+        self.assertEqual(len(stale), 1)
+        self.assertIn("is not a pin in the vars file", stale[0])
+
+    OPERATOR = [{
+        "name": "Operator", "var_name": "operator_version", "category": "github",
+        "coupled_vars": ["helm_chart_versions.operator_crds"],
+    }]
+
+    def test_a_helm_chart_partner_is_read(self):
+        base = 'operator_version: "1.0"\nhelm_chart_versions:\n  operator_crds: "5.0"\n'
+        with patch.object(check_versions, "SERVICE_REGISTRY", self.OPERATOR):
+            moved_alone = check_versions.stale_partner_pins(
+                base, base.replace('"1.0"', '"1.1"'))
+            moved_both = check_versions.stale_partner_pins(
+                base, base.replace('"1.0"', '"1.1"').replace('"5.0"', '"5.1"'))
+        self.assertEqual(len(moved_alone), 1)
+        self.assertIn("helm_chart_versions.operator_crds", moved_alone[0])
+        self.assertEqual(moved_both, [])
+
+    def test_a_partner_nested_under_another_block_is_not_the_helm_pin(self):
+        text = ('operator_version: "1.0"\nother:\n  operator_crds: "5.0"\n'
+                'helm_chart_versions:\n  unrelated: "1.0"\n')
+        with patch.object(check_versions, "SERVICE_REGISTRY", self.OPERATOR):
+            stale = check_versions.stale_partner_pins(text, text)
+        self.assertEqual(len(stale), 1)
+        self.assertIn("helm_chart_versions.operator_crds not found", stale[0])
+
+    def test_a_commented_helm_entry_is_not_the_partner(self):
+        text = ('operator_version: "1.0"\nhelm_chart_versions:\n'
+                '  # operator_crds: "5.0"\n  unrelated: "1.0"\n')
+        pins = check_versions._top_level_pins(text)
+        self.assertEqual(
+            set(pins), {"operator_version", "helm_chart_versions",
+                        "helm_chart_versions.unrelated"})
+        with patch.object(check_versions, "SERVICE_REGISTRY", self.OPERATOR):
+            stale = check_versions.stale_partner_pins(text, text)
+        self.assertEqual(len(stale), 1)
+        self.assertIn("helm_chart_versions.operator_crds not found", stale[0])
 
     def test_moving_both_is_clean(self):
         head = self.BASE.replace('"1.0.0"', '"1.1.0"').replace('"aaa"', '"bbb"')
@@ -2454,8 +2455,7 @@ class TestRunCheckPartnerPins(unittest.TestCase):
         check_versions.SERVICE_REGISTRY = self.REGISTRY
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
-        self.vars_file = self.root / "ansible/inventories/prod/group_vars/all.yml"
-        self.vars_file.parent.mkdir(parents=True)
+        self.vars_file = self.root / "vars.yml"
         self.vars_file.write_text(self.BASE)
         self._git("init", "-q", "-b", "main")
         self._git("add", "-A")
@@ -2474,14 +2474,13 @@ class TestRunCheckPartnerPins(unittest.TestCase):
                        capture_output=True, env=env)
 
     @contextlib.contextmanager
-    def _driver(self, base_ref="HEAD"):
+    def _driver(self):
         out, err = io.StringIO(), io.StringIO()
         with patch.object(check_versions, "REPO_ROOT", self.root), \
              patch.object(check_versions, "VARS_FILE", self.vars_file), \
              contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
              self.assertRaises(SystemExit) as raised:
             yield raised, out, err
-        self._exit = raised
 
     def test_a_pin_moved_without_its_partner_exits_one(self):
         self.vars_file.write_text(self.BASE.replace('"1.0.0"', '"1.1.0"'))
@@ -2528,3 +2527,128 @@ class TestReadRegistry(unittest.TestCase):
             path.write_text("services: []\n", encoding="utf-8")
             with self.assertRaises(ValueError):
                 check_versions.read_registry(path)
+
+
+class TestOperatorErrorsExit2(unittest.TestCase):
+    """A broken checker exits 2, never 1, which the CI job reads as "updates available"."""
+
+    def _run(self, config, repo_root, *args):
+        return subprocess.run(
+            [sys.executable, str(script_path), "--config", str(config),
+             "--repo-root", str(repo_root), *args],
+            capture_output=True, text=True,
+        )
+
+    def test_divergent_multifile_pins_exit_2(self):
+        res = self._run(FIXTURE_DIR / "registry-divergent.py", FIXTURE_REPO)
+        self.assertEqual(res.returncode, 2, res.stderr)
+        self.assertIn("pins diverge", res.stderr)
+        self.assertNotIn("Traceback", res.stderr)
+
+    def test_a_missing_vars_file_exits_2(self):
+        with tempfile.TemporaryDirectory() as d:
+            config = Path(d) / "registry.json"
+            config.write_text(json.dumps({
+                "vars_file": "absent.yml",
+                "services": [{"name": "X", "var_name": "x_version", "category": "manual"}],
+            }))
+            res = self._run(config, d)
+        self.assertEqual(res.returncode, 2, res.stderr)
+        self.assertIn("FileNotFoundError", res.stderr)
+
+    def test_a_service_without_a_category_exits_2(self):
+        with tempfile.TemporaryDirectory() as d:
+            config = Path(d) / "registry.json"
+            config.write_text(json.dumps({"services": [{"name": "X", "var_name": "x_version"}]}))
+            res = self._run(config, d)
+        self.assertEqual(res.returncode, 2, res.stderr)
+        self.assertIn("needs a `category`", res.stderr)
+
+    def test_a_service_filter_matching_nothing_exits_2(self):
+        res = self._run(FIXTURE_CONFIG, FIXTURE_REPO, "--service", "no-such-service")
+        self.assertEqual(res.returncode, 2)
+        self.assertIn("No services matching", res.stderr)
+
+    def test_an_unexpected_exception_exits_2(self):
+        err = io.StringIO()
+        with patch.object(check_versions, "check_all", side_effect=KeyError("category")), \
+             patch.object(check_versions.sys, "argv", ["check-versions.py"]), \
+             contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit) as cm:
+                check_versions.main()
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("KeyError", err.getvalue())
+
+
+class TestSummaryBuckets(unittest.TestCase):
+    """Each result counts in exactly one bucket, the same in the table and JSON."""
+
+    def _results(self):
+        SV = check_versions.ServiceVersion
+        return [
+            SV(name="HeldAndErrored", category="helm", current_version="1",
+               update_available=True, held=True, var_name="a_version", error="boom"),
+            SV(name="HeldAndUnreadable", category="helm", current_version="unknown",
+               latest_version="2", update_available=True, held=True,
+               unreadable_current=True, var_name="b_version"),
+            SV(name="Current", category="helm", current_version="1",
+               latest_version="1", var_name="c_version"),
+        ]
+
+    def test_json_buckets_partition_the_results(self):
+        summary = json.loads(check_versions.format_json(self._results()))["summary"]
+        self.assertEqual(summary, {
+            "total": 3, "up_to_date": 1, "updates_available": 0,
+            "updates_held": 0, "updates_current_unreadable": 1, "errors": 1,
+        })
+
+    def test_the_table_agrees_with_the_json(self):
+        with patch.object(check_versions, "should_use_color", lambda: False):
+            report = check_versions.format_table(self._results())
+        self.assertIn("Up to date:     1", report)
+        self.assertIn("Pin elsewhere:  1", report)
+        self.assertIn("Errors:         1", report)
+        self.assertNotIn("Held:", report)
+
+
+class TestDigestPinnedUpdates(unittest.TestCase):
+    """A digest-pinned update is a manual edit, never a write failure."""
+
+    def _pinned(self):
+        return check_versions.ServiceVersion(
+            name="PR Agent", category="dockerhub", current_version="0.30",
+            latest_version="0.31", update_available=True, var_name="pr_agent_version")
+
+    def test_update_all_lists_it_and_exits_0(self):
+        out = io.StringIO()
+        with patch.object(check_versions, "check_all", return_value=[self._pinned()]), \
+             patch.object(check_versions.sys, "argv", ["check-versions.py", "--update-all"]), \
+             contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as cm:
+                check_versions.main()
+        self.assertEqual(cm.exception.code, 0)
+        self.assertIn("digest-pinned update(s) need a manual edit", out.getvalue())
+        self.assertIn("in .gitlab-ci.yml", out.getvalue())
+        self.assertNotIn("Could not find", out.getvalue())
+        self.assertNotIn("All services are up to date!", out.getvalue())
+
+    def test_single_update_prints_the_manual_step_and_exits_0(self):
+        out = io.StringIO()
+        with patch.object(check_versions, "check_service", return_value=self._pinned()), \
+             patch.object(check_versions.sys, "argv",
+                          ["check-versions.py", "--update", "pr_agent_version"]), \
+             contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as cm:
+                check_versions.main()
+        self.assertEqual(cm.exception.code, 0)
+        self.assertIn("digest-pinned in .gitlab-ci.yml", out.getvalue())
+
+    def test_the_location_follows_the_consumer_alias(self):
+        aliases = {"ci": check_versions.REPO_ROOT / "ci/pipeline.yml"}
+        with patch.object(check_versions, "VERSION_FILE_ALIASES", aliases):
+            self.assertEqual(check_versions.version_file_display("ci"), "ci/pipeline.yml")
+            self.assertEqual(check_versions.version_file_display(["a.yml", "b.yml"]), "a.yml, b.yml")
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-v"]))

@@ -8,7 +8,7 @@ advertised subnet routes, ACL tags) on every run.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `tailscale_enabled` | `true` | Role switch — `false` skips every task (honored by the role itself). |
+| `tailscale_enabled` | `true` | `false` skips every task. |
 | `tailscale_version` | pinned | installed exactly, then `dpkg` held — the upstream repo continuously serves newer builds. Override wherever the consumer keeps its version pins; the role default moves only on a collection release. |
 | `tailscale_gpg_fingerprint` | upstream primary key | the downloaded key is verified against this **before** it is trusted |
 | `tailscale_accept_routes` | `false` | keep `false` on a subnet router, or its own advertised routes loop back |
@@ -56,20 +56,29 @@ forwarding until reboot.
 
 ## Subnet router on a bridging host (local-guest reachability)
 
-A route-advertising node ALSO gets `/usr/local/sbin/tailscale-bridge-masq-fix`,
-a `tailscaled.service` `ExecStartPost` drop-in that runs it, and
-`tailscale-bridge-masq-fix.timer`, which re-runs it every minute. Without it, a
-subnet router that is also a hypervisor (Proxmox, bridged guests) can forward
-tailnet traffic to guests on **other** hosts but not to guests hosted on
-**itself**: `net.bridge.bridge-nf-call-iptables=1` makes the packet re-traverse
-`nat POSTROUTING` at the guest's fw-bridge, and Tailscale's mark-based masquerade
-(`0x40000`) fires a **second** time, rewriting the source to the router's own
-tailnet IP so the guest's reply is absorbed by the router. The script installs
-one rule — `-m physdev --physdev-is-bridged -m mark --mark 0x40000/0xff0000 -j
-ACCEPT`, **above** the `-j ts-postrouting` jump — that skips that second
-masquerade for bridged-local delivery so the correct first (LAN) masquerade
-survives. It is NAT-table only (it changes source translation, not the FILTER
-firewall, so it opens no access) and a no-op on a router with no bridged guests.
+A route-advertising node ALSO gets:
+
+- `/usr/local/sbin/tailscale-bridge-masq-fix`;
+- a `tailscaled.service` `ExecStartPost` drop-in that runs it;
+- `tailscale-bridge-masq-fix.timer`, which re-runs it every minute.
+
+Without it, a subnet router that is also a hypervisor can forward tailnet
+traffic to guests on **other** hosts but not to guests hosted on **itself**.
+`net.bridge.bridge-nf-call-iptables=1` makes the packet re-traverse
+`nat POSTROUTING` at the guest's fw-bridge. Tailscale's mark-based masquerade
+(`0x40000`) then fires a **second** time and rewrites the source to the router's
+own tailnet IP, so the router absorbs the guest's reply.
+
+The script installs one rule **above** the `-j ts-postrouting` jump. It skips
+the second masquerade for bridged-local delivery, so the first (LAN) masquerade
+survives:
+
+```
+-m physdev --physdev-is-bridged -m mark --mark 0x40000/0xff0000 -j ACCEPT
+```
+
+The rule is NAT-table only, so it changes source translation and opens no
+access. It is a no-op on a router with no bridged guests.
 
 Staying **above** `ts-postrouting` is why this is a script, not a one-line
 `ExecStartPost`: on restart Tailscale removes and re-inserts its own jump at
@@ -97,8 +106,7 @@ line above `-A POSTROUTING -j ts-postrouting`.
 
 **Prerequisite:** Tailscale must be in **iptables** netfilter mode, not nftables
 — the `ts-postrouting` chain and the `xt_physdev` match are iptables constructs.
-Under nftables mode the script's wait times out and its rule does not apply (and
-is not needed the same way). The current fleet runs iptables mode.
+Under nftables mode the script's wait times out and its rule does not apply.
 
 ## ACL tags
 

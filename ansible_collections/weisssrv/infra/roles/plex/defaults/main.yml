@@ -16,7 +16,7 @@ plex_media_group: media
 plex_media_gid: 2000
 
 # Paths as seen by Plex. On an LXC these are the container-side bind-mount
-# targets; the role fails loudly when config or transcode is not mounted.
+# targets; the role fails loudly when any of the three is not mounted.
 plex_config_dir: /config
 plex_transcode_dir: /transcode
 plex_media_dir: /media
@@ -59,8 +59,8 @@ plex_gpu_driver_packages:
 # false when the driver packages come from main or a vendor repo.
 plex_gpu_nonfree_repos: true
 
-# deb822 sources file whose Components line carries non-free (where the Intel
-# media driver lives). A host without it falls back to one-line entries.
+# deb822 sources file whose Components line carries non-free. A host without
+# it falls back to one-line entries.
 plex_debian_sources_path: /etc/apt/sources.list.d/debian.sources
 
 # Skip the enable/start/readiness steps (a container with no working systemd).

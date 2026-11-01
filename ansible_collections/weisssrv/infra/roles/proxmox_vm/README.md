@@ -200,31 +200,66 @@ Companion roles — none is a `meta` dependency, all are composed by the play:
 
 ## Reconciliation vs. create-time-only
 
-The role distinguishes settings it converges on **every** run from settings
-applied **only at VM creation**:
+The role converges some settings on every run and applies others only when it
+creates the VM.
 
-| Setting | Behaviour |
-|---------|-----------|
-| `onboot` / `startup` (order, delay) | **Reconciled** on existing VMs — editing `proxmox_autostart_enabled` / `proxmox_startup_order` / `proxmox_startup_delay` and re-running applies them via an idempotent `qm set`. These are metadata-only (next-boot), so converging a live VM is safe. |
-| QEMU guest-agent flag (`proxmox_vm_agent_enabled`) | **Reconciled** on existing VMs (metadata-only `qm set --agent`). |
-| NIC `firewall=1` flag | **Reconciled** on existing VMs (one-time repair of legacy NICs). A guest whose config carries no `net0` fails the task by name (`NONET0`) instead of reporting ok, because every per-guest `.fw` security group on it would stay inert. |
-| `proxmox_vm_memory` | **Reconciled** on existing VMs via `qm set --memory`, which writes the config and takes effect at the guest's **next start** — the task never restarts anything. Draining and restarting the guest stays an operator step. The role **defaults** this to 2048 MiB and the reconcile participates, so a guest that loses its inventory key would be resized down to the default: a shrink fails the task unless `proxmox_vm_memory_shrink_ok: true` names it. |
-| `proxmox_vm_balloon` | **Reconciled** on existing VMs when defined; `qm set --balloon` takes effect live. |
-| Cloud-init network — `ipconfig0` (`proxmox_vm_target_ip`/`proxmox_vm_cloudinit_prefix_len`/`proxmox_vm_cloudinit_gateway`) and `nameserver` (`proxmox_vm_cloudinit_dns`) | **Reconciled** on existing Linux VMs via an idempotent `qm set --ipconfig0 --nameserver` (skipped for Windows guests and under `proxmox_vm_skip_create`). Metadata-only: it regenerates the cloud-init drive, applied once per instance, so a running guest is untouched. |
-| Cloud-init user + SSH key, cores, disk size, `proxmox_vm_cpu_type`, boot disk, `proxmox_vm_hostpci` | **Create-time only.** Changing these in inventory does not reconcile onto an existing VM — recreate the VM (or `qm set …` by hand in a stop/start window for PCI). Persistent zvols are matched idempotently by stable SCSI slot and survive recreation. |
+Reconciled on existing VMs:
 
-Why reconcile these at all: Proxmox stores the guest's DNS and network config
-itself and re-applies it on start, so an inventory address change that is not
-converged is silently re-applied from the stale stored value.
+- **`onboot` and `startup`** from `proxmox_autostart_enabled`,
+  `proxmox_startup_order` and `proxmox_startup_delay`. These are metadata for
+  the next boot, so a live VM is safe to converge.
+- **The QEMU guest-agent flag** from `proxmox_vm_agent_enabled`. Only the
+  enabled bit changes. Agent sub-options such as `fstrim_cloned_disks` are kept.
+- **The NIC `firewall=1` flag.** A guest with no `net0` fails the task by name
+  (`NONET0`), because every per-guest `.fw` security group on it would stay
+  inert.
+- **`proxmox_vm_memory`** through `qm set --memory`. It takes effect at the
+  guest's next start and the task never restarts anything. The role defaults
+  this to 2048 MiB, so a shrink fails unless `proxmox_vm_memory_shrink_ok: true`
+  names it.
+- **`proxmox_vm_balloon`** when defined. `qm set --balloon` takes effect live.
+- **Cloud-init network** on Linux VMs: `ipconfig0` from `proxmox_vm_target_ip`,
+  `proxmox_vm_cloudinit_prefix_len` and `proxmox_vm_cloudinit_gateway`, and
+  `nameserver` from `proxmox_vm_cloudinit_dns`. It is skipped for Windows and
+  under `proxmox_vm_skip_create`. It only regenerates the cloud-init drive, so a
+  running guest is untouched.
+
+Create-time only:
+
+- The cloud-init user and SSH key, cores, disk size, `proxmox_vm_cpu_type`, the
+  boot disk and `proxmox_vm_hostpci`. An inventory change does not reach an
+  existing VM. Recreate the VM, or run `qm set` by hand in a stop/start window
+  for PCI. Persistent zvols match by SCSI slot and survive recreation.
+
+Proxmox stores the guest's DNS and network config and re-applies it on start.
+An inventory address change that is not converged is re-applied from the stale
+stored value, which is why the cloud-init network is reconciled.
+
+## A failed create
+
+Every create input is asserted before `qm create`: the cloud-init gateway and
+DNS, `SSH_PUBLIC_KEY`, and the Windows media. The role never destroys a VM.
+
+`qm create` tags the VM `weisssrv-create-incomplete`. The create's last step
+removes that tag and keeps any other, after the additional disks, the start
+and the SSH wait. A later run refuses an existing VM that still carries it,
+before any reconcile, and names `qm destroy <id>` and a re-run as the recovery. For a VM finished
+by hand, the refusal names the `qm set` command that drops only the marker.
+
+`qm destroy` leaves the additional disks in place. They attach by their
+`/dev/zvol` path, which no Proxmox storage owns, so a data zvol survives the
+destroy and reattaches on the re-run.
+
+The refusal reads only the tag, so a hand-built or restored VM can be adopted
+into inventory.
 
 ## Notes
 
 - `proxmox_vm_ssh_wait_delegate` (default `localhost`) names the host that runs
   the post-create SSH reachability wait; set it to a Proxmox host when the
   controller is off-LAN.
-- Additional disks are ZFS-only today: the backend is selected by
-  `proxmox_vm_additional_disk_backend` (`zfs`), and another backend means adding
-  `tasks/disks-<backend>.yml`.
+- Additional disks are ZFS-only. `proxmox_vm_additional_disk_backend` selects
+  the backend, `zfs`. Another backend means adding `tasks/disks-<backend>.yml`.
 - The cloud-init user is `proxmox_vm_cloudinit_user` (defaults to the
   inventory-wide `admin_user`), authorized with `SSH_PUBLIC_KEY`.
 - Networking is static via cloud-init `--ipconfig0`
@@ -254,16 +289,16 @@ green having reconciled nothing.
 
 ## Shared with proxmox_lxc
 
-`tasks/guest-nic-firewall.yml` (the `firewall=1` NIC repair),
-`tasks/guest-startup.yml` (the onboot/startup reconcile with its startup-string
-canonicalisation), `tasks/assert-target-pools.yml` (the create-path storage and
-resource-pool guards) and the `probe-cluster-resources` pair are guest-type
-agnostic: `proxmox_lxc` includes them with `tasks_from:`. Edit them here, and
-keep both roles' molecule scenarios green.
+`proxmox_lxc` includes three task files from this role with `tasks_from:`:
 
-They stay here rather than moving into a shared `proxmox_common` role. A new
-role costs a CI matrix entry and its own scenario, and these files already have
-one owner and two callers, so there is no drift for it to prevent.
+- `tasks/guest-nic-firewall.yml`, the `firewall=1` NIC repair.
+- `tasks/guest-startup.yml`, the onboot and startup reconcile with its
+  startup-string canonicalisation.
+- `tasks/assert-target-pools.yml`, the create-path storage and resource-pool
+  guards.
+
+They are guest-type agnostic. Edit them here and keep both roles' molecule
+scenarios green.
 
 ## Storage the role does not own
 
@@ -273,8 +308,9 @@ auditing a host reads `qm config` rather than expecting this role to list it.
 
 ## Molecule
 
-`molecule test -s default` from the role directory (CI runs the same scenario).
-`qm`, `pvesh`, `pvesm` and `zfs` are stubbed and every mutation is logged, so
-the cases assert the exact commands issued: storage selection, the pool and
-slot asserts, the existence guard, the Windows and PCI-passthrough create
-paths, zvol creation, and each reconcile converging once and then no-op'ing.
+CI runs `molecule test -s default` from the role directory. `qm`, `pvesh`,
+`pvesm` and `zfs` are stubbed and every mutation is logged. The cases assert the
+exact commands issued: storage selection, the pool and slot asserts, the
+existence guard, the Windows and PCI-passthrough create paths, a create that
+fails after `qm create`, the create marker on new and existing VMs, zvol
+creation, and each reconcile converging once and then doing nothing.

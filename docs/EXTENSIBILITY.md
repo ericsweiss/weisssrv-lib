@@ -3,14 +3,14 @@
 How a consumer that is **not** weisssrv adopts this library: a different secrets
 backend, storage that is not ZFS, a forge that is not GitLab.
 
-Nothing here is an alternative implementation — the library ships one of each
-today. What it ships is the **seams**: named variables whose default is the
-current behaviour, and a layout that lets an alternative live beside the
-existing one instead of forking it.
+Nothing here is an alternative implementation. The library ships one of each.
+What it ships is the **seams**: named variables whose default is the current
+behaviour, and a layout that lets an alternative live beside the existing one
+instead of forking it.
 
 Two rules govern every seam:
 
-- **The default is today's behaviour.** Setting no new variable produces a
+- **The default is the shipped behaviour.** Setting no new variable produces a
   byte-identical result. A seam is never a migration.
 - **Site data is an input, not a seam.** Domains, IPs, pool names and
   credentials are already inputs (collection
@@ -26,34 +26,38 @@ library change.
 
 ## Seam map
 
-| Axis | Today | Seam | Where |
+| Axis | Default | Seam | Where |
 | --- | --- | --- | --- |
 | Secrets, host-side | values resolved by the caller (`op run --`, any `op://` reference) before Ansible starts | none needed — roles take **values**, never references | all roles |
 | Secrets, at boot | `zfs_encryption` fetches pool passphrases from 1Password Connect | `zfs_encryption_key_command` (empty = Connect), plus `zfs_encryption_token_path` | [`zfs_encryption`](../ansible_collections/weisssrv/infra/roles/zfs_encryption/README.md) |
-| Secrets, CI-side | `ci/deploy/*` resolve credentials with the 1Password CLI | `secrets_source` (`1password` \| `env`) on `deploy-base` and `kubectl-setup`, `secret_runner` on `ansible-deploy`; `ci/review/pr-agent.yml` branches on its own `secrets_source`. `env` mode reads `$SSH_PRIVATE_KEY` / `$KUBECONFIG_B64` from masked CI variables and `secret_runner: ""` drops the `op run --` wrapper. A third backend supplies those two variables from its own `before_script`, or replaces the include as the cluster template's `secret_read()` / `secret_runner()` macros do. In `env` mode the `LOKI_PUSH_*` `op://` values must be overridden per job. | `ci/deploy/`, `ci/review/` |
+| Secrets, CI-side | `ci/deploy/*` resolve credentials with the 1Password CLI | `secrets_source` (`1password` \| `env`) on `deploy-base`, `kubectl-setup` and `ci/review/pr-agent.yml`; `secret_runner` on `ansible-deploy`. Gaps below | `ci/deploy/`, `ci/review/` |
 | Secrets, in-cluster | External Secrets Operator with the 1Password Connect provider | not in this library — manifests live in the cluster template | — |
 | Storage, guest placement | Proxmox storage picked from the host's `proxmox_role` | `proxmox_storage_defaults` (role → storage id), `proxmox_storage` / `proxmox_lxc_storage` per guest | `proxmox_vm`, `proxmox_lxc` |
+| Storage, guest additional disks | zvols created for a VM's `vm_additional_disks` | `proxmox_vm_additional_disk_backend`; `zfs` is the only backend implemented | `proxmox_vm` |
 | Storage, guest disks | zvols attached at a QEMU SCSI by-id path | `zvol_mount_device_id_prefix` — the role itself is UUID/fstab based, not ZFS-aware | `zvol_mount` |
 | Storage, backup source | restic walks a ZFS snapshot, discovered and cloned with `zfs` | none — `restic_offsite_bind_mode` (`bind` binds the `.zfs/snapshot` subtree, `direct` reads the mountpoint as-is) is a test-harness switch, not a storage-backend seam; see the role README under ## Tunables (Paths and layout). A non-ZFS consumer needs a sibling role | `restic_offsite` |
 | Storage, offsite target | rclone remote of type `b2` (Backblaze) | `restic_offsite_rclone_remote_type` + `restic_offsite_rclone_remote_options` (rendered verbatim as `key = value`); only `b2` has named credential variables | `restic_offsite` |
 | Storage, metrics | `zpool status` collector ships with the Proxmox collectors | `node_exporter_host_zpool_collector` (defaults to `node_exporter_host_proxmox`) | `node_exporter_host` |
 | Certificates | acme.sh DNS-01 via Cloudflare | `acme_certs_dns_hook` — any dnsapi hook the pinned tarball ships; `acme_certs_ca_server` — any CA acme.sh accepts (letsencrypt, zerossl, google, buypass, or a CA directory URL) | `acme_certs` |
 | Forge | GitLab CI templates, GitLab release/MR APIs | `--platform {gitlab,github}` on `semantic-release.py`; the three vendorable Actions workflows (`ci/github/`, `ci/release/*.example.yml`) | `ci/`, `scripts/` |
+| Terraform state | every Terraform root uses GitLab-managed HTTP state, the forge seam's current backend | `ci/templates/terraform-http-backend.yml` sets the `TF_HTTP_*` variables; another forge or backend replaces that fragment and the root's `backend` block | `ci/templates/`, `ci/validate/terraform-drift-plan.yml` |
+| Internal DNS | AdGuard Home serves clients and forwards to a local Unbound, which resolves over DNS-over-TLS forwarders | `adguard_home_upstream_dns` points AdGuard at any resolver, so Unbound is optional; `unbound_forwarders` picks Unbound's upstreams | [`adguard_home`](../ansible_collections/weisssrv/infra/roles/adguard_home/README.md), [`unbound`](../ansible_collections/weisssrv/infra/roles/unbound/README.md) |
 | DNS / tailnet / IdP / LAN, as code | one Terraform module per provider: Cloudflare, Tailscale, Authentik, UniFi | none — an alternative provider is a **sibling module**, not a flag (below) | `terraform/modules/` |
 | Template source | `new-cluster` / `new-app` default to the published GitLab template URLs | the `source` positional takes any copier template — a VCS URL on any host, or a local path — and `--vcs-ref` picks the tag | `cli/weisssrv_lib_cli/templates.py` |
 | Host firewall implementation | iptables `pve-firewall` | `proxmox_firewall_nftables` renders `nftables: 1` into the node's `host.fw`, selecting the nftables `proxmox-firewall`; omitted when false | [`proxmox_firewall`](../ansible_collections/weisssrv/infra/roles/proxmox_firewall/README.md) |
 
 ### Known gaps in the CI secrets seam
 
-`secrets_source: env` covers the SSH key and the kubeconfig, and two couplings
-stay the consumer's to handle:
+`secrets_source: env` reads `$SSH_PRIVATE_KEY` and `$KUBECONFIG_B64` from
+masked CI variables, and `secret_runner: ""` drops the `op run --` wrapper. A
+third backend supplies those two variables from its own `before_script`, or
+replaces the include, as the cluster template's `secret_read()` and
+`secret_runner()` macros do. Two couplings stay the consumer's to handle:
 
 - `LOKI_PUSH_USER` / `LOKI_PUSH_PASSWORD` are `op://` strings only `op run`
   resolves, so `env` mode overrides them on the job.
-- `deploy-base` still extends `.install-1password`, so the CLI is installed even
-  when nothing calls it. Removing that would mean a `*_ref` / `base_fragments`
-  input on every deploy template, a larger breaking change than the seam is
-  worth today.
+- `deploy-base` extends `.install-1password`, so the CLI is installed even
+  when nothing calls it.
 
 `ci/deploy/ansible-deploy.yml` is shipped but adopted by no consumer: a real
 deploy job carries site-specific `--limit` and `--tags` the template does not
@@ -96,7 +100,7 @@ consumer with no tailnet, an IdP that is not Authentik, or a gateway that is
 not UniFi, simply calls fewer modules: each root is a thin caller holding only
 site data, and no module includes another.
 The one seam inside a module is the usual defaults rule — a new variable
-defaults to today's rendered plan, proven by a zero-diff `terraform plan`. The
+defaults to the shipped plan, proven by a zero-diff `terraform plan`. The
 floor and provider-pinning policy every module follows is
 [../terraform/modules/README.md](../terraform/modules/README.md).
 
@@ -112,11 +116,11 @@ the playbook decides which runs.
 What makes that work, and must keep working:
 
 - No role includes another role from a different backend family. Every
-  cross-role include today targets either a backend-neutral role (the list
-  above) or a role in the same family — `nas_storage` → `zfs_arc_cap`,
-  `proxmox_lxc` → `proxmox_vm` and `compose_app` → `docker_engine` are the
-  three same-family cases. Adding an include whose target is neither is the one
-  change that breaks a side-by-side family.
+  cross-role include targets either a backend-neutral role (the list above) or a
+  role in the same family. `nas_storage` → `zfs_arc_cap` and `proxmox_lxc` →
+  `proxmox_vm` are the two same-family cases; `compose_app` → `docker_engine`
+  targets a backend-neutral role. Adding an include whose target is neither is
+  the one change that breaks a side-by-side family.
 - Inventory-wide aliases (`internal_domain`, `zfs_arc_max_bytes`, …) are read
   with `| default(...)`, so a host that runs none of a family never trips on an
   undefined variable.
@@ -172,7 +176,7 @@ mapping.
 
 | Cluster template | App template | Same thing? |
 |---|---|---|
-| `metallb_internal_vip` | `internal_vip` | Yes — the same LAN-only ingress VIP. The rename is deferred to the next app-template MAJOR, because every existing tenant must edit `.copier-answers.yml` before its next `copier update`. |
+| `metallb_internal_vip` | `internal_vip` | Yes — the same LAN-only ingress VIP. A rename is an app-template MAJOR, because every existing tenant must then edit `.copier-answers.yml`. |
 | `git_backend` (`gitlab_selfhosted`, `github`) | `ci_shape` (`gitlab_selfhosted`, `github`, `none`) | No — deliberately distinct. `git_backend` is the forge the cluster repo lives on; `ci_shape` is the pipeline the tenant repo renders, and `none` renders no pipeline at all. |
 | `secrets_backend` (`onepassword`) | `secrets_backend` (`onepassword`, `gitlab`, `none`) | Same name, different scope. The cluster answer covers host tooling and in-cluster secrets; the tenant answer covers in-cluster only. The cluster template's tenants README shows a 1Password ClusterSecretStore only, so the operator side of the tenant `gitlab` backend has no worked example yet. |
 

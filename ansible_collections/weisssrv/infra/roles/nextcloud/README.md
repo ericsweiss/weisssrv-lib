@@ -22,6 +22,8 @@ a host nginx that terminates TLS and proxies to the loopback-bound web port.
    the site's cert distributor (`acme_certs`) delivers the real certificate.
 5. **`occ` configuration** — the serverinfo token the exporter authenticates
    with, outgoing SMTP (when a relay host is set), and OIDC SSO (when enabled).
+   The SSO pass installs `user_oidc` when it is absent and runs `app:enable`
+   when it is installed but disabled, as after an upgrade.
 6. **Backups** — a nightly `pg_dump` timer whose wrapper emits
    `nextcloud_backup_*` node_exporter textfile metrics through `compose_app`'s
    shared `write_prom_metrics` helper.
@@ -61,7 +63,7 @@ a host nginx that terminates TLS and proxies to the loopback-bound web port.
 | `nextcloud_smtp_host` | Relay host; empty skips the whole mail pass | no (`""`) |
 | `nextcloud_smtp_enabled` | Resolved mail gate, true when a relay host is set | no (derived) |
 | `nextcloud_smtp_port`, `nextcloud_smtp_secure`, `nextcloud_mail_from_address`, `nextcloud_mail_domain` | Outgoing mail details | when SMTP |
-| `nextcloud_smtp_user`, `nextcloud_smtp_password` | SASL credentials for an authenticated submission relay (587 + `_smtp_secure: tls`). Both set turns `mail_smtpauth` on; both empty (default) keeps the network-trusted posture, and removal converges auth back OFF | no (`""`) |
+| `nextcloud_smtp_user`, `nextcloud_smtp_password` | SASL credentials for a submission relay on 587 with `_smtp_secure: tls`. Both set turns `mail_smtpauth` on. Both empty keeps the network-trusted posture and turns auth off | no (`""`) |
 | `nextcloud_backup_enabled`, `nextcloud_backup_keep_days`, `nextcloud_backup_oncalendar` | Nightly dump timer | no (`true`, `3`, `02:30`) |
 | `nextcloud_backup_metrics_dir` | Where the wrapper writes `nextcloud_backup.prom`; aliases `node_exporter_host_textfile_dir` | no |
 | `nextcloud_backup_lib_path` | Where `compose_app`'s `write_prom_metrics` helper lands | no |
@@ -73,7 +75,6 @@ a host nginx that terminates TLS and proxies to the loopback-bound web port.
 The readiness gate requires `needsDbUpgrade: false` and `maintenance: false`,
 not just `installed: true` — a recreated container answers `installed: true`
 while a migration is still pending, and the next `occ` call fails.
-
 
 ### Worked example
 

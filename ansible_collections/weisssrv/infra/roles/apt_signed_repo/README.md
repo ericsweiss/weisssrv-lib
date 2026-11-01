@@ -1,11 +1,10 @@
 # weisssrv.infra.apt_signed_repo
 
-Shared pipeline to add a **fingerprint-verified signed APT repository**. It owns
-the boilerplate that drifted across the roles that install upstream packages
-from a vendor apt repo: ensure the keyring dir, stat the keyring, (optionally)
-install gnupg, download the signing key, verify its **primary-key fingerprint**
-exactly, dearmor it into a binary keyring, clean up, then add the `deb
-[signed-by=...]` source.
+Shared pipeline to add a **fingerprint-verified signed APT repository** for the
+roles that install upstream packages from a vendor apt repo. It ensures the
+keyring dir, stats the keyring, optionally installs gnupg, downloads the signing
+key, verifies its **primary-key fingerprint** exactly, dearmors it into a binary
+keyring, cleans up, then adds the `deb [signed-by=...]` source.
 
 Callers in this collection: **`alloy_host`** (Grafana), **`docker_engine`**
 (Docker CE), **`gitlab`** (Omnibus), **`k3s`** (the NVIDIA container toolkit)
@@ -19,14 +18,8 @@ cleanup sub-sequence is gated on its absence so the role is idempotent. Callers
 do their own legacy-keyring cleanup (old `.asc`/`.list` files) before the
 include.
 
-## Roles that stay standalone
-
-**`tailscale`** shares only the fingerprint-verify snippet and is intentionally
-**not** converted. It force-refetches a pre-dearmored `.noarmor.gpg` into a
-staging path on every run (so a rotated upstream key is picked up without manual
-file removal), verifies the fingerprint, then copies it into the trusted keyring
-— a different rotation model than this role's stat-gated download. Folding it in
-would regress that behavior.
+`tailscale` uses its own refetch-and-verify flow, which picks up a rotated
+upstream key on every run.
 
 ## How callers invoke it
 
@@ -62,7 +55,7 @@ would regress that behavior.
 
 | `tasks_from` | What it does | Inputs |
 |---|---|---|
-| `enable-components.yml` | Rewrites every `Components:` line in a deb822 sources file to one canonical set, idempotently and from any partial state, then refreshes the apt cache | `apt_signed_repo_sources_path` (default `/etc/apt/sources.list.d/debian.sources`), `apt_signed_repo_components` (default `main contrib non-free non-free-firmware`, and it must be non-empty), `apt_signed_repo_update_cache` (default `true`) |
+| `enable-components.yml` | Rewrites every `Components:` line in a deb822 sources file to one canonical set | `apt_signed_repo_sources_path` (default `/etc/apt/sources.list.d/debian.sources`), `apt_signed_repo_components` (default `main contrib non-free non-free-firmware`), `apt_signed_repo_update_cache` (default `true`) |
 
 ```yaml
 - name: Enable contrib/non-free/non-free-firmware components
@@ -74,16 +67,17 @@ would regress that behavior.
     apt_signed_repo_components: main contrib non-free non-free-firmware
 ```
 
-The entry point fails when `apt_signed_repo_components` is empty, when the
-sources file does not exist, and when the file carries no `Components:` line for
-the rewrite to land on. Each of those would otherwise surface much later as an
-opaque "Unable to locate package" in the calling role. That last check reads the
-file *before* the rewrite, so a dry run asserts the same precondition instead of
-reading back a write it was never allowed to make — `--check`, and equally a
-caller that wraps the include in its own `check_mode: true` block. It refreshes
-the apt cache itself on a real rewrite, unless `apt_signed_repo_update_cache` is
-false. A host still on the one-line sources format needs `apt_repository`
-instead.
+`enable-components.yml`:
+
+- fails on an empty `apt_signed_repo_components`, a missing sources file, or a
+  file with no `Components:` line. Each would otherwise surface later as an
+  opaque "Unable to locate package" in the calling role;
+- is idempotent from any partial state, and check-mode safe: it reads the file
+  before the rewrite, under `--check` or a caller's `check_mode: true`;
+- refreshes the apt cache on a real rewrite unless
+  `apt_signed_repo_update_cache` is false;
+- handles deb822 only. A host on the one-line sources format needs
+  `apt_repository`.
 
 ## Key rotation
 
@@ -98,8 +92,7 @@ When a vendor genuinely rotates its signing key, the play is:
 2. Remove `apt_signed_repo_keyring_path` on the affected hosts.
 3. Bump `apt_signed_repo_key_url` and `apt_signed_repo_fingerprint`, and re-run.
 
-The caller roles that pass their own key pins list the same play in their own
-READMEs.
+Caller roles link here rather than restating the play.
 
 ## Staging path
 

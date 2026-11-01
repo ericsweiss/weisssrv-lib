@@ -51,9 +51,8 @@ ci/            GitLab CI templates (include:project + spec:inputs)
                copy, vendored not included)
   maintenance/ version-check (read-only report) + version-bump-bot (one bump MR,
                never auto-merged)
-  deploy/      the deploy toolchain: deploy-base and kubectl-setup adopted;
-               cluster-verify-base and ansible-deploy shipped unadopted —
-               adoption per template is docs/INCLUDE-CONTRACT.md
+  deploy/      the deploy toolchain: deploy-base, kubectl-setup,
+               cluster-verify-base and ansible-deploy
   github/      ci.example.yml + build-image.example.yml (Actions reference
                copies, vendored not included)
   templates/   shared fragments: dep-cache, install-1password,
@@ -75,6 +74,8 @@ scripts/       the gates + generators CI jobs run: version tracking, deploy/
 kubernetes/reapers/
                stdlib programs mounted into a consumer's CronJob beside its app
                script
+kubernetes/ddns/
+               the Cloudflare dynamic-DNS CronJob program a consumer mounts
 docker/        published per release: the two molecule test/CI images for the
                collection + ansible-deploy (the pre-baked deploy job image)
 examples/      copy-and-edit config files for the helper scripts
@@ -110,11 +111,9 @@ An input interpolates before `include:` resolves, where `variables:` does not
 exist yet, so one in-git line pins every entry — see
 [The library pin](docs/INCLUDE-CONTRACT.md#the-library-pin).
 
-The library is **internal** visibility, so any authenticated instance user (and
-therefore every repo `eric` owns) can resolve `include: project:`.
-`include: project:` is resolved with the pipeline creator's read access at
-pipeline-creation time — not `CI_JOB_TOKEN` — so it "just works" for
-eric-triggered pipelines.
+GitLab resolves `include: project:` with the pipeline creator's read access at
+pipeline-creation time, not with `CI_JOB_TOKEN`. The library is internal, so
+any pipeline an authenticated instance user creates can include it.
 
 Every CI template's inputs, defaults, and consumer wiring are documented in
 [docs/INCLUDE-CONTRACT.md](docs/INCLUDE-CONTRACT.md); the helper scripts those
@@ -281,36 +280,24 @@ pool names, credentials — those are inputs), Kubernetes manifests (they live i
 the cluster template so a cluster is self-contained, with no remote kustomize
 bases), and weisssrv's own pipeline glue (`validation-gate`, its hand-written
 per-playbook deploy jobs, `repo-sync`/`repo-policy` checks). The reusable half
-of that deploy layer **is** here, as `ci/deploy/*` — shipped and versioned,
-with `deploy-base` and `kubectl-setup` adopted so far. There is **no Renovate**
-anywhere — version bumps come from `ci/maintenance/version-bump-bot.yml`, which
-each CONSUMER schedules against its own version-check command and config. This
-library ships the template but does not run it on itself: it tracks no upstream
-versions of its own.
+of that deploy layer **is** here, as `ci/deploy/*`, shipped and versioned;
+which consumer takes which template is the include contract's table. There is
+**no Renovate** anywhere — version bumps come from
+`ci/maintenance/version-bump-bot.yml`, which each CONSUMER schedules against its
+own version-check command and config. This library ships the template but does
+not run it on itself: it tracks no upstream versions of its own.
 
 A consumer whose backends differ from weisssrv's — Ceph instead of ZFS, a
 secrets store other than 1Password, GitHub instead of GitLab — is meant to be
 served by the same tag. Roles that *are* a backend are skipped and replaced by a
 sibling family in the same flat FQCN namespace; roles that merely use one carry
-a seam variable defaulting to today's behaviour, and the CI scripts keep their
-forge calls behind a `--platform` flag. The seam map and the contract for adding
-an alternative are in [docs/EXTENSIBILITY.md](docs/EXTENSIBILITY.md).
+a seam variable defaulting to the shipped behaviour, and the CI scripts keep
+their forge calls behind a `--platform` flag. The seam map and the contract for
+adding an alternative are in [docs/EXTENSIBILITY.md](docs/EXTENSIBILITY.md).
 
 The application-guest roles (`gitlab`, `plex`, `nextcloud`, `immich`,
-`immich_ml`, `home_assistant`) **are** in scope as of this release. They were
-held back as "eric-specific" while they still carried site data in their
-defaults; every domain, IP and credential is now an asserted input, so a second
-cluster can run them unchanged.
+`immich_ml`, `home_assistant`) are in scope. Every domain, IP and credential they
+need is an asserted input, so a second cluster can run them unchanged.
 
 Full per-item detail, including which weisssrv job each template reproduces, is
 in [docs/INCLUDE-CONTRACT.md](docs/INCLUDE-CONTRACT.md).
-
-## Queued for the next release
-
-**Split `scripts/check-versions.py`.** It is one ~1,900-line file covering
-seven registry categories (six with a fetcher), the pin writer and the report
-renderer. Splitting it lands in its own MR because it moves code across files
-that two gates pin by name: the new modules each need a
-`scripts/vendorable-paths.yml` entry, a `docs/SCRIPTS.md` row
-(`tests/test_scripts_have_tests.py` fails otherwise), and their own suite. The
-CLI surface and the registry schema do not change.

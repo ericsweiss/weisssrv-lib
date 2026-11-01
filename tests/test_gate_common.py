@@ -1,8 +1,4 @@
-"""Tests for scripts/gate_common.py.
-
-The helpers the corpus gates share: every one of them decides a verdict, so each
-case below is written as the mistake it must not make.
-"""
+"""Tests for scripts/gate_common.py, the helpers the corpus gates share."""
 from __future__ import annotations
 
 import io
@@ -64,6 +60,16 @@ def test_doc_key_is_the_allowlist_spelling():
     ) == "ns/Deployment/app"
 
 
+@pytest.mark.parametrize(("api_version", "group"), [
+    ("v1", ""),
+    (None, ""),
+    ("apps/v1", "apps"),
+    ("cert-manager.io/v1", "cert-manager.io"),
+])
+def test_api_group_is_the_group_half_of_apiversion(api_version, group):
+    assert mod.api_group({"apiVersion": api_version}) == group
+
+
 # --- policy_types ------------------------------------------------------------
 
 
@@ -105,6 +111,161 @@ def test_every_empty_spelling_selects_everything(selector):
 )
 def test_narrowing_and_invalid_selectors_do_not_select_everything(selector):
     assert mod.selects_all_pods(selector) is False
+
+
+# --- selector_matches / label_selector_problem -----------------------------
+
+POD = {"app": "web", "tier": "front"}
+
+
+def _expr(key: str, operator: str, values: list | None = None) -> dict:
+    expr = {"key": key, "operator": operator}
+    if values is not None:
+        expr["values"] = values
+    return expr
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        {},
+        {"matchLabels": {}},
+        {"matchLabels": {"app": "web"}},
+        {"matchLabels": {"app": "web", "tier": "front"}},
+        {"matchExpressions": [_expr("app", "In", ["web", "api"])]},
+        {"matchExpressions": [_expr("app", "NotIn", ["db"])]},
+        {"matchExpressions": [_expr("missing", "NotIn", ["db"])]},
+        {"matchExpressions": [_expr("tier", "Exists")]},
+        {"matchExpressions": [_expr("tier", "Exists", [])]},
+        {"matchExpressions": [_expr("missing", "DoesNotExist")]},
+        {"matchLabels": {"app": "web"}, "matchExpressions": [_expr("tier", "In", ["front"])]},
+    ],
+)
+def test_a_selector_matching_the_labels_matches(selector):
+    assert mod.selector_matches(selector, POD) is True
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        {"matchLabels": {"app": "api"}},
+        {"matchLabels": {"missing": ""}},
+        {"matchExpressions": [_expr("app", "In", ["api"])]},
+        {"matchExpressions": [_expr("missing", "In", ["web"])]},
+        {"matchExpressions": [_expr("app", "NotIn", ["web"])]},
+        {"matchExpressions": [_expr("missing", "Exists")]},
+        {"matchExpressions": [_expr("app", "DoesNotExist")]},
+        # Terms are ANDed: one failing term fails the selector.
+        {"matchLabels": {"app": "web"}, "matchExpressions": [_expr("tier", "In", ["back"])]},
+    ],
+)
+def test_a_selector_missing_the_labels_does_not_match(selector):
+    assert mod.selector_matches(selector, POD) is False
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        None,
+        "not-a-mapping",
+        {"matchLables": {"app": "web"}},
+        {"matchLabels": [["app", "web"]]},
+        {"matchLabels": {"app": 1}},
+        {"matchLabels": {"-app": "web"}},
+        {"matchExpressions": {"key": "app"}},
+        {"matchExpressions": ["app"]},
+        {"matchExpressions": [_expr("app", "In", [])]},
+        {"matchExpressions": [_expr("app", "In")]},
+        {"matchExpressions": [_expr("app", "NotIn", "db")]},
+        {"matchExpressions": [_expr("missing", "DoesNotExist", ["x"])]},
+        {"matchExpressions": [_expr("app", "Gt", ["1"])]},
+        {"matchExpressions": [{**_expr("app", "In", ["web"]), "value": "web"}]},
+    ],
+)
+def test_an_absent_or_api_invalid_selector_never_matches(selector):
+    """The apiserver rejects these, so crediting a match would pass a broken manifest."""
+    assert mod.selector_matches(selector, POD) is False
+
+
+@pytest.mark.parametrize(
+    ("selector", "labels"),
+    [
+        ({"matchLabels": {"-app": "web"}}, {**POD, "-app": "web"}),
+        ({"matchLabels": {"app": "web "}}, {**POD, "app": "web "}),
+        ({"matchExpressions": [_expr("-bad", "DoesNotExist")]}, POD),
+        ({"matchExpressions": [_expr("app", "In", ["web", "-bad"])]}, POD),
+        ({"matchExpressions": [_expr("app", "NotIn", ["db", "-bad"])]}, POD),
+    ],
+)
+def test_an_invalid_selector_never_matches_labels_it_would_otherwise_match(selector, labels):
+    """Plain matching credits each of these, so only validation returns False."""
+    assert mod.selector_matches(selector, labels) is False
+
+
+def test_an_absent_selector_is_valid_but_matches_nothing():
+    assert mod.label_selector_problem(None) is None
+    assert mod.selector_matches(None, POD) is False
+
+
+@pytest.mark.parametrize(
+    ("key", "valid"),
+    [
+        ("app", True),
+        ("app.kubernetes.io/name", True),
+        ("kubernetes.io/metadata.name", True),
+        ("", False),
+        ("/name", False),
+        ("Upper.Example/name", False),
+        ("a" * 64, False),
+        (1, False),
+        (".".join(["a" * 63] * 3) + "." + "a" * 61 + "/x", True),
+        (".".join(["a" * 63] * 3) + "." + "a" * 62 + "/x", False),
+    ],
+)
+def test_label_keys_follow_the_apiserver_rules(key, valid):
+    assert mod.label_key_is_valid(key) is valid
+
+
+@pytest.mark.parametrize(
+    ("value", "valid"),
+    [("", True), ("web-1", True), ("a" * 63, True), ("a" * 64, False), ("-web", False), (1, False)],
+)
+def test_label_values_follow_the_apiserver_rules(value, valid):
+    assert mod.label_value_is_valid(value) is valid
+
+
+@pytest.mark.parametrize(
+    ("selector", "reason"),
+    [
+        ("app", "is not a mapping"),
+        ({"matchFields": {}}, "carries matchFields"),
+        ({"matchLabels": []}, "has a matchLabels that is not a mapping"),
+        ({"matchLabels": {"app tier": "web"}}, "that is not a valid label key"),
+        ({"matchLabels": {"app": "bad value"}}, "that is not a valid label value"),
+        ({"matchExpressions": {}}, "has a matchExpressions that is not a list"),
+        ({"matchExpressions": [_expr("app", "Gt", ["1"])]}, "operator 'Gt'"),
+        ({"matchExpressions": [_expr("app", "In", [])]}, "malformed matchExpressions entry"),
+    ],
+)
+def test_the_problem_names_why_a_selector_is_invalid(selector, reason):
+    problem = mod.label_selector_problem(selector)
+    assert problem is not None and reason in problem
+
+
+def test_a_valid_selector_has_no_problem():
+    assert mod.label_selector_problem({"matchLabels": {"app": "web"}}) is None
+
+
+def test_a_whole_placeholder_value_passes_only_when_placeholders_are_allowed():
+    """An unrendered tree carries `${name}` where postBuild later writes a value."""
+    selector = {
+        "matchLabels": {"app": "${APP_NAME}"},
+        "matchExpressions": [_expr("tier", "In", ["${TIER:=front}"])],
+    }
+    labels = {"app": "${APP_NAME}", "tier": "${TIER:=front}"}
+    assert mod.selector_matches(selector, labels) is False
+    assert mod.selector_matches(selector, labels, placeholders=True) is True
+    assert mod.label_value_is_valid("x-${APP_NAME}", placeholders=True) is False
 
 
 # --- CIDR arithmetic ---------------------------------------------------------
@@ -335,6 +496,49 @@ def test_a_non_string_value_is_stringified_rather_than_raising():
     assert mod.substitute(None, {}) == ""
 
 
+class TestLoadExempt:
+    """`namespace/Kind/name=REASON` exemptions from flags and YAML files."""
+
+    def test_flags_and_files_merge_trimmed(self, tmp_path):
+        path = tmp_path / "exempt.yaml"
+        path.write_text('"apps/IngressRoute/b": from the file\n')
+        got = mod.load_exempt([" apps/IngressRoute/a = a reason "], [str(path)])
+        assert got == {"apps/IngressRoute/a": "a reason", "apps/IngressRoute/b": "from the file"}
+
+    @pytest.mark.parametrize("raw", ["apps/IngressRoute/a", "apps/a=reason", "apps/IngressRoute/a= "])
+    def test_a_malformed_flag_is_an_operator_error(self, raw):
+        with pytest.raises(mod.OperatorError, match="namespace/Kind/name=REASON"):
+            mod.load_exempt([raw], [])
+
+    @pytest.mark.parametrize("body", ['"apps/a": reason\n', '"apps/IngressRoute/a": ""\n'])
+    def test_a_malformed_file_entry_names_the_file(self, tmp_path, body):
+        path = tmp_path / "exempt.yaml"
+        path.write_text(body)
+        with pytest.raises(mod.OperatorError, match=f"--exempt-file {path}"):
+            mod.load_exempt([], [str(path)])
+
+    @pytest.mark.parametrize("body", [None, "a: [unclosed\n"])
+    def test_an_unreadable_file_names_the_file(self, tmp_path, body):
+        path = tmp_path / "exempt.yaml"
+        if body is not None:
+            path.write_text(body)
+        with pytest.raises(mod.OperatorError, match=f"--exempt-file {path}"):
+            mod.load_exempt([], [str(path)])
+
+
+class TestReportExemptions:
+    """Exercised exemptions print with their reason; the rest are listed as unused."""
+
+    def test_used_and_unused_are_reported(self, capsys):
+        exempt = {"apps/IngressRoute/b": "second", "apps/IngressRoute/a": "first", "x/K/gone": "g"}
+        mod.report_exemptions(exempt, {"apps/IngressRoute/b", "apps/IngressRoute/a"})
+        assert capsys.readouterr().out.splitlines() == [
+            "  apps/IngressRoute/a: exempt (first)",
+            "  apps/IngressRoute/b: exempt (second)",
+            "(exemptions declared but not exercised by this corpus: x/K/gone)",
+        ]
+
+
 class TestMissingPyYaml:
     """A job image without PyYAML is an operator error, never a policy finding."""
 
@@ -351,3 +555,58 @@ class TestMissingPyYaml:
         assert proc.returncode == 2, proc.stderr
         assert "PyYAML required" in proc.stderr
         assert "Traceback" not in proc.stderr
+
+
+@pytest.mark.parametrize(
+    ("condition", "admitted"),
+    [
+        ({"namespaces": ["demo"]}, True),
+        ({"namespaces": ["other"]}, False),
+        ({"namespaceRegexes": ["^de"]}, True),
+        ({"namespaceRegexes": ["^x"]}, False),
+        ({"namespaceSelector": {"matchLabels": {"team": "a"}}}, True),
+        ({"namespaceSelector": {"matchLabels": {"team": "b"}}}, False),
+        ({"namespaceSelector": {"matchExpressions": [
+            {"key": "team", "operator": "NotIn", "values": ["b"]}]}}, True),
+        ({"namespaceSelector": {"matchExpressions": [
+            {"key": "gone", "operator": "DoesNotExist"}]}}, True),
+        ({}, False),
+        ("demo", False),
+        # Only a list is a namespace list: a scalar is never matched by substring.
+        ({"namespaces": "my-demo-x"}, False),
+        ({"namespaces": 7}, False),
+        ({"namespaceRegexes": "^de"}, False),
+    ],
+)
+def test_condition_admits_follows_eso_condition_semantics(condition, admitted):
+    assert mod.condition_admits(condition, "demo", {"team": "a"}) is admitted
+
+
+def test_condition_admits_collects_an_uncompilable_regex():
+    bad: list = []
+    assert mod.condition_admits({"namespaceRegexes": ["("]}, "demo", {}, bad) is False
+    assert [pattern for pattern, _ in bad] == ["("]
+
+
+# --- parse_alertmanager_matchers --------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected"),
+    [
+        ('alertname="A"', [("alertname", "=", "A")]),
+        ("severity=~warning|info", [("severity", "=~", "warning|info")]),
+        ('{a="x", b!~"y"}', [("a", "=", "x"), ("b", "!~", "y")]),
+        (r'a="x\"y"', [("a", "=", 'x"y')]),
+        ('a=""', [("a", "=", "")]),
+    ],
+)
+def test_alertmanager_matchers_parse(entry, expected):
+    assert mod.parse_alertmanager_matchers(entry) == expected
+
+
+@pytest.mark.parametrize("entry", ["", "{}", '"a"="x"', "a", 'a="x" junk"'])
+def test_an_unusable_alertmanager_matcher_raises(entry):
+    with pytest.raises(ValueError, match="matcher"):
+        mod.parse_alertmanager_matchers(entry)
+

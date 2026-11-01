@@ -264,7 +264,7 @@ spec:
       }
       # build_and_push: builds ${ref}:<short-sha>, pushes it (and :latest on
       # main when publish_on_main), seeding a registry layer cache except on a
-      # schedule. The bounded retry covers a transient pull, not a build error.
+      # schedule. The bounded retry reruns any failed build or push.
       build_and_push() {
         img="$1"
         ref="$(image_ref "$img")"
@@ -291,8 +291,8 @@ spec:
           fi
           echo "build/push attempt $((attempt-1)) failed; retrying (${attempt}/${max})..."
           # 10-29s backoff, jittered per job+attempt from the PID so parallel
-          # image builds do not re-collide. POSIX: $RANDOM is a bashism and the
-          # `image` input may be a dash-only base.
+          # image builds do not re-collide. Plain POSIX arithmetic: the `image`
+          # input may be a dash-only base.
           sleep $(( 10 + ($$ + attempt * 7) % 20 ))
         done
         # :latest only on the default branch — MR pipelines use SHA tags so they

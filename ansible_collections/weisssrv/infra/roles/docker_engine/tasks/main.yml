@@ -58,8 +58,7 @@
     # through the hold, and the Hold task re-applies it at the new version.
     allow_change_held_packages: true
     # The pins are authoritative in BOTH directions, so a host that drifted above
-    # the pin converges down instead of failing every deploy. live-restore keeps
-    # containers running across the engine restart.
+    # the pin converges down instead of failing every deploy.
     allow_downgrade: true
   when: not (docker_engine_skip_install | default(false))
 
@@ -82,8 +81,6 @@
 
 - name: Deploy Docker daemon configuration (journald log driver)
   ansible.builtin.copy:
-    # journald so container stdout/stderr lands in the systemd journal, which
-    # alloy_host already ships to Loki (no docker-specific log pipeline needed).
     content: "{{ docker_engine_daemon_config | to_nice_json }}\n"
     dest: /etc/docker/daemon.json
     owner: root

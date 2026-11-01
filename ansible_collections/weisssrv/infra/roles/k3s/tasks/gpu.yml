@@ -49,7 +49,7 @@
 # The CUDA repo's signing key ships only in NVIDIA's cuda-keyring package, whose
 # maintainer scripts run as root, so it is downloaded against a pinned SHA256
 # and installed from the verified local file. apt verifies InRelease from there.
-- name: Remove the stale hand-rolled NVIDIA CUDA repo (superseded by cuda-keyring)
+- name: Remove hand-written NVIDIA CUDA repo files that conflict with cuda-keyring
   ansible.builtin.file:
     path: "{{ item }}"
     state: absent

@@ -1,7 +1,7 @@
 ---
-# Node Exporter (host-level) -- hardware metrics from bare-metal Proxmox hosts
-# Installs from Debian packages and runs on port 9101 to avoid conflicting
-# with the k3s DaemonSet node-exporter on port 9100.
+# Node Exporter (host-level), installed from Debian packages on
+# node_exporter_host_port; the hardware collectors run only on bare-metal
+# Proxmox hosts (README).
 
 - name: Install prometheus-node-exporter
   ansible.builtin.apt:
@@ -155,7 +155,7 @@
       # An empty list publishes the success sentinel and no per-cache series,
       # which reads as "the leak stopped" instead of "nothing was measured".
       - not (node_exporter_host_slabinfo_collector | bool)
-        or (node_exporter_host_slab_caches | default([]) | length) > 0
+        or (node_exporter_host_slab_caches | length) > 0
     fail_msg: >-
       node_exporter_host_slabinfo_collector is true but
       node_exporter_host_proxmox is false (the slabinfo collector ships inside
@@ -163,7 +163,7 @@
       node_exporter_host_slab_caches lists a cache twice, or
       node_exporter_host_slab_caches is empty while the collector is enabled, so
       it would publish only its success sentinel and no per-cache series:
-      {{ node_exporter_host_slab_caches | default([]) }}.
+      {{ node_exporter_host_slab_caches }}.
     success_msg: "The slabinfo collector's host gate and cache list are consistent"
 
 # Textfile collectors (Proxmox hosts only)
@@ -319,9 +319,8 @@
             path: /etc/systemd/system/zpool-status-collector.timer
           register: node_exporter_host_zpool_leftover_timer
 
-        # Gated on the unit file rather than failed_when: false, which would
-        # also swallow a D-Bus error or a typo'd unit name and then delete the
-        # files out from under a timer that is still running.
+        # Gated on the unit file, so a D-Bus error or a typo'd unit name fails
+        # the play instead of the files vanishing under a running timer.
         - name: Stop + disable the zpool collector timer
           ansible.builtin.systemd:
             name: zpool-status-collector.timer
@@ -359,9 +358,8 @@
             path: /etc/systemd/system/corosync-health-collector.timer
           register: node_exporter_host_corosync_leftover_timer
 
-        # Gated on the unit file rather than failed_when: false, which would
-        # also swallow a D-Bus error or a typo'd unit name and then delete the
-        # files out from under a timer that is still running.
+        # Gated on the unit file, so a D-Bus error or a typo'd unit name fails
+        # the play instead of the files vanishing under a running timer.
         - name: Stop + disable the corosync collector timer
           ansible.builtin.systemd:
             name: corosync-health-collector.timer
@@ -425,7 +423,3 @@
           when:
             - node_exporter_host_slabinfo_leftover_timer.stat.exists
             - not ansible_check_mode
-
-# No auto-clean when node_exporter_host_proxmox flips to false: a wrong cleanup
-# on a real Proxmox host is worse than stale files on a demoted one. Remove the
-# collector scripts and their units by hand in that case.

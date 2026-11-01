@@ -11,16 +11,14 @@ Foundational system configuration applied to all managed hosts. Provides essenti
 - Core system packages (curl, wget, neovim, htop, tmux, git, jq, unzip, rsync, net-tools, dnsutils, ca-certificates, gnupg, lsb-release, sudo)
 - VM-specific packages (qemu-guest-agent) -- automatically detected and installed only on KVM guests
 - Apt cache updates with 1-hour validity window
-- unattended-upgrades disabled on VMs and containers (updates are managed via
-  controlled Task/Ansible workflows instead)
+- unattended-upgrades disabled on VMs and containers (see System Configuration below)
 
 ### User Management
 - Admin user creation and configuration
 - Sudo group membership
 - Passwordless sudo via `/etc/sudoers.d/` (validated with visudo)
 - SSH authorized keys, optionally with `from=` network restrictions. The whole
-  list is deployed in ONE `authorized_key` call (newline-joined) — a looped
-  `exclusive: true` would leave only the last key on the host
+  list is deployed exclusively in ONE newline-joined `authorized_key` call
 - Home directory and `.ssh` directory creation with correct permissions
 
 ### SSH Hardening
@@ -35,8 +33,7 @@ Foundational system configuration applied to all managed hosts. Provides essenti
   (first-match-wins, so it beats cloud-init drop-ins)
 - Validated before install: the candidate is rendered into a temp dir, merged
   with the host's real config there and checked with `sshd -t`, so a bad value
-  never lands on disk. Validating after install would leave the broken file
-  behind for the next sshd restart
+  never lands on disk
 - Asserted effective afterwards with `sshd -T`. `Port` is additive in
   sshd_config, so the assert requires exactly one distinct port line: a stale
   `Port` from the monolithic config or another drop-in would otherwise keep the
@@ -76,9 +73,10 @@ Foundational system configuration applied to all managed hosts. Provides essenti
 - VM guest agent enablement (qemu-guest-agent service)
 - openipmi.service masked on hosts without IPMI hardware (its LSB init script
   otherwise fails at boot and leaves systemd degraded)
-- unattended-upgrades turned off on any hypervisor's guest and on containers
-  (`base_is_virtual_machine` is `virtualization_role == 'guest'`; the guest
-  agent is gated on the narrower KVM-only `base_is_kvm_guest`) — the
+- unattended-upgrades turned off on any hypervisor's guest and on containers,
+  where updates run through the Task/Ansible workflows.
+  `base_is_virtual_machine` is `virtualization_role == 'guest'`; the guest
+  agent is gated on the narrower KVM-only `base_is_kvm_guest`. The
   `/etc/apt/apt.conf.d/20auto-upgrades` knobs are written whether or not the
   package is installed, so a later `apt install unattended-upgrades` cannot
   come up enabled
@@ -103,9 +101,8 @@ fails the play instead of staging a file that no boot loader reads. The
 parameters apply at the next reboot; the role prints a reboot warning and never
 reboots.
 
-> **NIC offloads are not this role's business.** They are owned by
-> **`weisssrv.infra.nic_tuning`** (declarative `nic_tuning_overrides`), and a
-> host needing the e1000e TSO/GSO/GRO workaround declares it there.
+> **NIC offloads belong to `weisssrv.infra.nic_tuning`** (declarative
+> `nic_tuning_overrides`).
 
 ## Configuration
 
@@ -203,16 +200,6 @@ input, so a site can set either name.
 | `base_skip_timezone_config` | Skip the timezone | `false` |
 | `base_skip_sudoers_validation` | Skip `visudo -cf` on the admin sudoers file | `false` |
 
-## Scope
-
-Apply it to every managed host. It gives them:
-1. Consistent package sets
-2. Hardened SSH configuration
-3. Fail2ban intrusion prevention
-4. Correct admin user setup
-5. Proper DNS resolution
-6. Correct timezone
-
 ## Task Flow
 
 ```
@@ -233,7 +220,8 @@ Apply it to every managed host. It gives them:
     ├─ Probe the local resolver on a resolver host (keep 127.0.0.1 when healthy)
     ├─ Determine DNS servers
     └─ Include resolv_conf role (writes file, manages immutable flag)
-11. Include fail2ban tasks (install, jail.local, filters, service)
+11. Include kernel command-line tasks (grub drop-in, reboot warning)
+12. Include fail2ban tasks (install, jail.local, filters, service)
 ```
 
 ## Files

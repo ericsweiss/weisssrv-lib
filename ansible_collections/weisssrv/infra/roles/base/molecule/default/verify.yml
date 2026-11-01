@@ -55,9 +55,8 @@
         src: /home/testuser/.ssh/authorized_keys
       register: auth_keys_content
 
-    # The whole key list is deployed in ONE authorized_key call, joined by
-    # newlines (a looped exclusive: true would leave only the last key), so a
-    # broken join shows up as one malformed line rather than two keys.
+    # The whole key list is deployed in ONE newline-joined authorized_key call,
+    # so a broken join shows up as one malformed line rather than two keys.
     - name: Verify the additive path lands every key on its own line
       vars:
         # splitlines(), not split('\n'): ansible-core does not unescape a Jinja
@@ -523,6 +522,6 @@
              | default('')) is search('/etc/kernel/cmdline')
         fail_msg: >-
           The role accepted a multi-token base_kernel_cmdline_args entry, or
-          staged the drop-in on a host carrying /etc/kernel/cmdline, so a
-          parameter the alerting depends on would never reach the kernel.
+          staged the drop-in on a host carrying /etc/kernel/cmdline, so the
+          parameter would never reach the kernel.
         success_msg: "Both kernel cmdline guards rejected their input"

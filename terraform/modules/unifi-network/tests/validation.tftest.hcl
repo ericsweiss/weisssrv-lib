@@ -201,7 +201,7 @@ run "a_whole_site_plans_clean" {
   }
 
   # A DHCP DNS list is the only thing that turns the option on; an empty list
-  # is sent as null, which the provider can converge (upstream #429).
+  # is sent as null, which the provider can converge (provider issue 429).
   assert {
     condition     = unifi_network.this["iot"].dhcp_server.dns_enabled
     error_message = "A non-empty dhcp.dns_servers must set dhcp_server.dns_enabled."
@@ -1052,8 +1052,8 @@ run "rejects_a_policy_port_above_the_range" {
   expect_failures = [var.policies]
 }
 
-# A descending range is the transposition an author makes copying two ports out
-# of a runbook; the controller stores an empty range rather than complaining.
+# The controller stores a descending range as an empty one rather than
+# complaining.
 run "rejects_a_descending_policy_port_range" {
   command = plan
 
@@ -1071,8 +1071,8 @@ run "rejects_a_descending_policy_port_range" {
   expect_failures = [var.policies]
 }
 
-# The forms the site data actually uses must survive the bounds check: a comma
-# list and an ascending range, on both a policy and a forward.
+# Comma lists and ascending ranges pass the bounds check on both a policy and
+# a forward.
 run "accepts_port_lists_and_ascending_ranges" {
   command = plan
 
@@ -1217,8 +1217,8 @@ run "accepts_a_wlan_with_no_band_set" {
   }
 }
 
-# 6g is allowed in an enforced set; upstream #406 fails it provider-side, which
-# is the caller's bargain.
+# 6g passes module validation; ubiquiti-community/terraform-provider-unifi
+# issue 406 owns the provider-side failure.
 run "accepts_six_gigahertz_in_an_enforced_band_set" {
   command = plan
 
@@ -1235,7 +1235,7 @@ run "accepts_six_gigahertz_in_an_enforced_band_set" {
 
   assert {
     condition     = unifi_wlan.this["iot"].wlan_bands == toset(["2g", "5g", "6g"])
-    error_message = "Module validation must not block 6g — the upstream provider (#406) owns that failure — and an enforced band set must reach the WLAN as written."
+    error_message = "Module validation must not block 6g — provider issue 406 owns that failure — and an enforced band set must reach the WLAN as written."
   }
 }
 
@@ -1324,8 +1324,8 @@ run "rejects_a_long_passphrase" {
   expect_failures = [var.wlans]
 }
 
-# Eleven characters, so the length bound alone accepted it: WPA-PSK is
-# printable ASCII octets, and the sensitive diff hides which SSID broke.
+# Eleven characters but not ASCII: only the charset rule rejects it. WPA-PSK
+# is printable ASCII octets, and the sensitive diff hides which SSID broke.
 run "rejects_a_non_ascii_passphrase" {
   command = plan
 
@@ -1584,6 +1584,51 @@ run "rejects_an_unknown_ips_mode" {
   }
 
   expect_failures = [var.site_settings]
+}
+
+run "accepts_ips_mode_ips" {
+  command = plan
+
+  variables {
+    site_settings = {
+      ips_mode = "ips"
+    }
+  }
+
+  assert {
+    condition     = unifi_setting.site.ips.ips_mode == "ips"
+    error_message = "site_settings.ips_mode = \"ips\" must pass validation and reach the site setting as written."
+  }
+}
+
+run "accepts_ips_mode_ips_inline" {
+  command = plan
+
+  variables {
+    site_settings = {
+      ips_mode = "ipsInline"
+    }
+  }
+
+  assert {
+    condition     = unifi_setting.site.ips.ips_mode == "ipsInline"
+    error_message = "site_settings.ips_mode = \"ipsInline\" must pass validation and reach the site setting as written."
+  }
+}
+
+run "accepts_ips_mode_disabled" {
+  command = plan
+
+  variables {
+    site_settings = {
+      ips_mode = "disabled"
+    }
+  }
+
+  assert {
+    condition     = unifi_setting.site.ips.ips_mode == "disabled"
+    error_message = "site_settings.ips_mode = \"disabled\" must pass validation and reach the site setting as written."
+  }
 }
 
 run "rejects_igmp_snooping_on_an_unknown_network" {

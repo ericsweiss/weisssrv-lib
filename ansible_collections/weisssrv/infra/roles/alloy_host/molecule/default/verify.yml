@@ -174,15 +174,18 @@
         fail_msg: "https render is missing the basic_auth/wal production config"
         success_msg: "https render contains basic_auth with expected creds"
 
-    # Verify service is enabled (may not be actively running in Docker)
+    # Converge starts Alloy and waits for /-/ready, so it must still be running.
     - name: Check service status
       ansible.builtin.systemd:
         name: alloy
       register: service_status
 
-    - name: Verify service is enabled
+    - name: Verify service is enabled and running
       ansible.builtin.assert:
         that:
           - service_status.status.UnitFileState == 'enabled'
-        fail_msg: "alloy service is not enabled"
-        success_msg: "alloy service is enabled"
+          - service_status.status.ActiveState == 'active'
+        fail_msg: >-
+          alloy is {{ service_status.status.UnitFileState }} /
+          {{ service_status.status.ActiveState }}, not enabled and active
+        success_msg: "alloy service is enabled and running"

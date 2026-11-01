@@ -10,7 +10,7 @@ half.
 | Baked | Pin |
 | --- | --- |
 | base | `python:3.14-slim`, manifest-list digest |
-| 1Password CLI (`op`) | version + per-arch sha256 in the Dockerfile (only the amd64 one is exercised — see Architecture) |
+| 1Password CLI (`op`) | version + per-arch sha256 in the Dockerfile |
 | `ansible` | `requirements.txt` (exact `==` pin) |
 | `git`, `openssh-client`, `jq`, `curl`, `ca-certificates`, `unzip` | apt, unpinned (Debian stable) |
 | python3 + pip | from the base |
@@ -35,13 +35,7 @@ for the `op` download), but the **published tag is amd64-only**:
 `ci/build/docker-build.yml` runs a plain `docker build` on the amd64
 `infrastructure` runner, with no `buildx --platform` and no manifest list. So an
 arm64 runner pulling the published tag gets a no-matching-manifest failure, and
-the Dockerfile's arm64 `op` sha256 is never verified by CI — it is kept for a
-future multi-arch build.
-
-The library's other 1Password install path is arch-portable too:
-[`ci/templates/install-1password.yml`](../../ci/templates/install-1password.yml)
-derives `arch="$(dpkg --print-architecture)"` and uses it for both the apt
-`arch=` field and the repo path. The amd64 coupling is the published tag alone.
+CI never verifies the Dockerfile's arm64 `op` sha256.
 
 ## Adopting it
 

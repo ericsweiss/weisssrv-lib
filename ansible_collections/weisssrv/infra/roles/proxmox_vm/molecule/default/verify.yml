@@ -26,6 +26,10 @@
         - 15-zvol-create.json
         - 16-disk-backend.json
         - 17-cluster-probe.json
+        - 18-half-built.json
+        - 19-create-marker.json
+        - 20-start-fail.json
+        - 22-clear-keeps-tags.json
       register: artifacts
 
     - name: Decode artifacts
@@ -48,6 +52,65 @@
         zvol_create: "{{ artifacts.results[15].content | b64decode | from_json }}"
         disk_backend: "{{ artifacts.results[16].content | b64decode | from_json }}"
         cluster_probe: "{{ artifacts.results[17].content | b64decode | from_json }}"
+        half_built: "{{ artifacts.results[18].content | b64decode | from_json }}"
+        create_marker: "{{ artifacts.results[19].content | b64decode | from_json }}"
+        start_fail: "{{ artifacts.results[20].content | b64decode | from_json }}"
+        clear_keeps: "{{ artifacts.results[21].content | b64decode | from_json }}"
+
+    - name: A create failing after `qm create` stops and keeps the marked VM
+      ansible.builtin.assert:
+        that:
+          - half_built.create == 1
+          - half_built.later_steps == 0
+          - half_built.destroy == 0
+          - half_built.marked == 1
+          - half_built.cleared == 0
+        fail_msg: >-
+          A failed create step must stop the run, keep the create marker, run no
+          later step and destroy nothing, got {{ half_built }}
+        success_msg: "a half-built create stops and keeps the marked VM"
+
+    - name: Clearing the create marker keeps every other tag
+      ansible.builtin.assert:
+        that:
+          - clear_keeps.kept == 1
+          - clear_keeps.deleted == 0
+        fail_msg: >-
+          The create's last step must drop only the marker and keep a tag set
+          during the create, got {{ clear_keeps }}
+        success_msg: "the marker clear keeps the VM's other tags"
+
+    - name: A create whose start fails keeps the marker and the re-run refuses it
+      ansible.builtin.assert:
+        that:
+          - start_fail.failed_task is search('Start VM$')
+          - start_fail.start == 1
+          - start_fail.marked == 1
+          - start_fail.cleared == 0
+          - start_fail.rerun.mutations == 0
+          - "'weisssrv-create-incomplete' in start_fail.rerun.msg"
+          - "'qm destroy 999' in start_fail.rerun.msg"
+        fail_msg: >-
+          A failed `qm start` must leave the create marker set so the next run
+          refuses the VM instead of reporting it as existing, got {{ start_fail }}
+        success_msg: "a never-started VM keeps its marker and the re-run refuses it"
+
+    - name: A VM carrying the create marker fails before any mutation
+      ansible.builtin.assert:
+        that:
+          - create_marker[item.name].mutations == 0
+          - "'weisssrv-create-incomplete' in create_marker[item.name].msg"
+          - "'qm destroy 999' in create_marker[item.name].msg"
+          - "item.clear in create_marker[item.name].msg"
+        fail_msg: >-
+          A VM tagged with the create marker must fail by name with zero qm
+          mutations and keep its other tags, got {{ create_marker[item.name] }}
+        success_msg: "a marked VM ({{ item.name }}) fails by name"
+      loop:
+        - {name: alone, clear: "qm set 999 --delete tags`"}
+        - {name: tagged, clear: "qm set 999 --tags prod`"}
+      loop_control:
+        label: "{{ item.name }}"
 
     - name: A guest with no net0 fails rather than reporting ok
       ansible.builtin.assert:
@@ -170,7 +233,7 @@
     - name: Agent/memory/onboot/startup drift each triggers exactly one qm set
       ansible.builtin.assert:
         that:
-          # 7b: agent enabled=0 -> exactly one `qm set --agent 1`
+          # 7b: agent enabled=0 -> exactly one `qm set --agent` keeping sub-options
           - meta_drift.agent_set == 1
           # 7b-ii: stub reports memory 1024 against the desired 2048 -> exactly
           #        one `qm set --memory 2048` (growth arm; shrink is 7b-iii).
@@ -200,6 +263,8 @@
           - windows.bootorder == 1
           # Negative: no Linux cloud-init path, and the VM is left STOPPED
           - windows.cloudinit == 0
+          - windows.marked == 1
+          - windows.cleared == 1
           - windows.importdisk == 0
           - windows.ciuser == 0
           - windows.start == 0
@@ -237,6 +302,11 @@
         that:
           - hostpci.indexed_pair == 1
           - hostpci.any_hostpci == 1
+          # qm create sets the create marker and the last create step clears it
+          - hostpci.marked == 1
+          - hostpci.cleared == 1
+          - hostpci.cleared_after_pci
+          - hostpci.cleared_after_start
         fail_msg: >-
           proxmox_vm_hostpci must emit one `qm set` carrying --hostpci0 and
           --hostpci1 in list order, verbatim — got
@@ -256,7 +326,7 @@
 
     # Escalation must be declared, not inherited: a consumer driving Proxmox
     # over `ansible_connection: local` can then set `ansible_become: false` and
-    # keep the delegated qm/pveum writes running as root.
+    # keep the delegated qm and pvesh writes running as root.
     - name: Read the role's delegated task files  # noqa: no-relative-paths
       ansible.builtin.set_fact:
         proxmox_vm_all_tasks: >-
@@ -264,7 +334,22 @@
              + (lookup('file', playbook_dir ~ '/../../tasks/disks-zfs.yml') | from_yaml)
              + (lookup('file', playbook_dir ~ '/../../tasks/guest-nic-firewall.yml') | from_yaml)
              + (lookup('file', playbook_dir ~ '/../../tasks/guest-startup.yml') | from_yaml)
-             + (lookup('file', playbook_dir ~ '/../../tasks/probe-cluster-resources-one.yml') | from_yaml) }}
+             + (lookup('file', playbook_dir ~ '/../../tasks/probe-cluster-resources-one.yml') | from_yaml)
+             + (lookup('file', playbook_dir ~ '/../../tasks/assert-target-pools.yml') | from_yaml) }}
+
+    # Two levels of block nesting, so a delegated task inside a block is checked.
+    - name: Flatten the block, rescue and always sections
+      vars:
+        _level1: >-
+          {{ (proxmox_vm_all_tasks | selectattr('block', 'defined') | map(attribute='block') | flatten(1) | list)
+             + (proxmox_vm_all_tasks | selectattr('rescue', 'defined') | map(attribute='rescue') | flatten(1) | list)
+             + (proxmox_vm_all_tasks | selectattr('always', 'defined') | map(attribute='always') | flatten(1) | list) }}
+      ansible.builtin.set_fact:
+        proxmox_vm_all_tasks: >-
+          {{ proxmox_vm_all_tasks + _level1
+             + (_level1 | selectattr('block', 'defined') | map(attribute='block') | flatten(1) | list)
+             + (_level1 | selectattr('rescue', 'defined') | map(attribute='rescue') | flatten(1) | list)
+             + (_level1 | selectattr('always', 'defined') | map(attribute='always') | flatten(1) | list) }}
 
     - name: Every delegated task escalates explicitly
       vars:

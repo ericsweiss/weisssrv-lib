@@ -63,8 +63,7 @@
 
 - name: Verify downloaded signing key fingerprint (primary key must match exactly)
   ansible.builtin.shell: |
-    # set -e, not just pipefail: with pipefail alone a bare failing test is
-    # ignored and the guards below become no-ops.
+    # set -e makes a bare failing test below abort the script.
     set -eo pipefail
     primary_fpr=$(gpg --show-keys --with-colons {{ apt_signed_repo_tmp_key | quote }} 2>/dev/null \
         | awk -F: '/^pub/{p=1; next} p && /^fpr/{print $10; exit}')

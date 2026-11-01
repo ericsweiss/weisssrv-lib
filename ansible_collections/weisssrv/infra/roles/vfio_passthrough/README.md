@@ -7,24 +7,20 @@ stages the config, with it off the role removes the three files again, so a host
 that is no longer a passthrough host releases the card on its next boot. It
 **stages** config and **prints a reboot-required warning**; it **never
 reboots** — the operator applies it in a maintenance window. Compose it into the
-play unconditionally, or a host turned off never gets reconciled off.
+play that covers the Proxmox hosts unconditionally, or a host turned off never
+gets reconciled off.
 
 ## What it does (only when `vfio_passthrough_enabled`)
 
-1. Writes `/etc/default/grub.d/vfio-iommu.cfg` — a GRUB drop-in that appends the
-   IOMMU kernel params (`intel_iommu=on iommu=pt`) **and** `vfio-pci.ids=<functions>`
-   without editing the main grub file → notifies **Update GRUB for VFIO**. The
-   cmdline `ids=` is the *primary, earliest* bind — vfio-pci grabs the functions
-   the instant it loads in the initramfs, ahead of any host driver.
-2. Writes `/etc/modprobe.d/vfio.conf` — `options vfio-pci ids=<functions>` (the
-   redundant modprobe.d twin of the cmdline bind), plus `blacklist <mod>` for each
-   hard-blacklisted VGA driver (default `nouveau`) and `softdep <mod> pre: vfio-pci`
-   for each host driver that *does* load at boot but must yield its function
-   (default `snd_hda_intel`, `xhci_hcd`) → notifies **Rebuild initramfs for VFIO**.
-3. Writes `/etc/modules-load.d/vfio-pci.conf` — force-loads `vfio-pci` at real-root
-   boot as a belt-and-suspenders fallback to the cmdline bind, in case nothing else
-   pulls it in (a blacklisted `nouveau` never loads, so its softdep can't) →
-   notifies **Rebuild initramfs for VFIO**.
+1. Writes `/etc/default/grub.d/vfio-iommu.cfg`, a GRUB drop-in that appends the
+   IOMMU kernel params **and** `vfio-pci.ids=<functions>` → notifies **Update
+   GRUB for VFIO**.
+2. Writes `/etc/modprobe.d/vfio.conf`: `options vfio-pci ids=<functions>`,
+   `blacklist <mod>` per hard-blacklisted driver and `softdep <mod> pre:
+   vfio-pci` per host driver that must yield its function → notifies **Rebuild
+   initramfs for VFIO**.
+3. Writes `/etc/modules-load.d/vfio-pci.conf`, which force-loads `vfio-pci` at
+   real-root boot → notifies **Rebuild initramfs for VFIO**.
 4. Prints **reboot-required** (a `debug` handler, fired only on a real change).
    Never reboots.
 
@@ -35,13 +31,11 @@ every listed function as soon as it loads in the initramfs. The modprobe.d
 `ids=`/`blacklist`/`softdep` (step 2, baked into the initramfs) and the
 modules-load.d force-load (step 3) are belt-and-suspenders — they keep the host
 drivers off the card and guarantee vfio-pci loads even if the coldplug order
-changes. Together they make vfio-pci claim all of a multifunction card's
-functions (on an NVIDIA GPU: VGA + HD-audio + USB-C xHCI + UART) after a host
-reboot. PVE would also bind vfio-pci at `qm start`, but boot-time binding keeps
-the host drivers off the card cleanly.
-
-This is the one statement of the argument — the templates and `defaults` point
-here rather than restating it.
+changes. A blacklisted `nouveau` never loads, so its softdep cannot pull
+vfio-pci in; the force-load covers that. Together they make vfio-pci claim all
+of a multifunction card's functions (on an NVIDIA GPU: VGA + HD-audio + USB-C
+xHCI + UART) after a host reboot. PVE would also bind vfio-pci at `qm start`,
+but boot-time binding keeps the host drivers off the card cleanly.
 
 ## Variables
 
@@ -82,18 +76,6 @@ Confirm no host in the play boots in systemd-boot mode
 (`test -f /etc/kernel/cmdline` over the group). One that does fails the
 preflight, which is the intended outcome, but finding it in a deploy run costs a
 maintenance window.
-
-## Where it runs
-
-Compose it into the play that covers the Proxmox hosts, unconditionally. The
-role acts in both directions: with the gate on it stages the three files, with
-it off it removes them and the host releases the card on its next boot. The
-apply (reboot) is always operator-driven.
-
-Comment-only edits to the three templates still notify the GRUB/initramfs
-rebuild handlers and the reboot-required warning, so a release that rewords them
-regenerates the boot artifacts once on an enabled host — the binding itself is
-unchanged.
 
 ## Molecule
 

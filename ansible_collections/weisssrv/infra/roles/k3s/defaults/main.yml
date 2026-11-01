@@ -15,9 +15,8 @@ k3s_inotify_tuning: true
 k3s_inotify_max_user_instances: 8192
 k3s_inotify_max_user_watches: 1048576
 
-# k3s_version is required and has no default here: a role-local pin duplicates
-# the site's version block and deploys the stale value when the group_var is
-# dropped. server.yml and agent.yml assert it instead.
+# k3s_version is required site data with no default; server.yml and agent.yml
+# assert it.
 
 # Molecule/check-mode escape hatch: render the config without installing k3s.
 k3s_skip_install: false

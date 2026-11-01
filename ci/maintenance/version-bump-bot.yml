@@ -23,7 +23,12 @@ spec:
         scripts/version-bump-mr.py — stdlib only, no extra deps).
     setup_command:
       default: "true"
-      description: Shell command run before the check (tool install); default is a no-op.
+      description: >-
+        Shell command run in the job shell before the check, for tool installs
+        and exports such as `export NO_COLOR=1`. The default is a no-op. A
+        secrets CLI that needs a `!reference`, such as `.install-1password`,
+        goes in a same-named job's `before_script` instead: this template sets
+        none, so that override is additive and runs first.
     check_command:
       description: >-
         REQUIRED. Shell command that rewrites the repo's version pins in place
@@ -31,7 +36,9 @@ spec:
         untracked is ignored; only tracked changes under `paths` are committed.
         A checker that signals "updates found" with a non-zero rc names that rc
         in `check_soft_fail_exit_codes`; every other non-zero status fails the
-        job.
+        job. A checker that can ship partial results maps its own outcomes:
+        exit 1 when the pins changed, and a code off the soft-fail list when it
+        failed and changed nothing.
     check_soft_fail_exit_codes:
       default: "1"
       description: >-
@@ -123,11 +130,9 @@ spec:
     # the value can collide with YAML flow syntax.
     - |
       $[[ inputs.setup_command ]]
-    # CRITICAL: only the listed exit codes are "updates found". Capturing rc
-    # without an AND-OR list is what keeps errexit on inside the subshell: on
-    # the left of `||` bash suspends it even for the inner `set -e`, so a
-    # multi-step checker's early failure reads as an empty run and the MR
-    # manager closes the standing bot MR.
+    # Only the listed exit codes count as "updates found". No `||` here: bash
+    # suspends errexit on its left even for the inner `set -e`, so a checker's
+    # early failure would read as an empty run and close the standing bot MR.
     - |
       set +e
       ( set -e; $[[ inputs.check_command ]] )

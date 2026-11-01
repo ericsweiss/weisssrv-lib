@@ -176,9 +176,9 @@ and never put a credential in one (any authentik admin can read the body).
 
 ## Destroy protection
 
-Applications, all three provider kinds, groups, the custom scope mappings and
-the embedded outpost carry `lifecycle { prevent_destroy = true }`. Destroying
-any of them is a live outage — a slug *is* the OIDC issuer path, a group
+Applications, all three provider kinds, groups, managed users, the custom scope
+mappings and the embedded outpost carry `lifecycle { prevent_destroy = true }`.
+Destroying any of them is a live outage — a slug *is* the OIDC issuer path, a group
 destroy takes its memberships and every binding pointing at it, and the outpost
 is authentik's own object. Policy bindings are deliberately exempt: they are
 cheap to recreate, and they are the supported way to widen or narrow access.
@@ -297,13 +297,16 @@ import {
 ```
 
 `authentik_group` names are **not unique** server-side and applications' slugs
-**are**, so a disaster-recovery apply against a live server with an empty state
-silently duplicates groups and hard-fails on applications. If you rely on
-re-import for DR, keep the import blocks complete: enumerate the live pks/uuids
-after every apply that creates objects (the `policy_binding_ids`,
-`custom_scope_mapping_ids` and `*_provider_ids` outputs give you the
-identifiers) rather than assuming an import file written at adoption time still
-covers everything.
+**are**. A disaster-recovery apply against a live server with an empty state
+therefore duplicates groups silently and hard-fails on applications.
+
+If you rely on re-import for DR, keep the import blocks complete. After every
+apply that creates objects, record the live identifiers:
+
+- `policy_binding_ids` and `custom_scope_mapping_ids`;
+- the `*_provider_ids` outputs;
+- `group_ids` and `application_uuids`;
+- the pk of each managed user, which no output exposes.
 
 ## Tests
 
@@ -321,6 +324,5 @@ plan-only against a `mock_provider`, so they need no credentials and create no
 state. CI runs the same command through `ci/validate/terraform.yml` with
 `test: true`.
 
-The module requires Terraform >= 1.11 because this suite uses
-`override_during = plan`; the configuration itself needs 1.9 for its
-cross-variable validations.
+The Terraform floor is set by this suite:
+[../README.md](../README.md) has the policy.

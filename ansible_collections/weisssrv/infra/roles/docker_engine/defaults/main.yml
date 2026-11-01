@@ -30,9 +30,9 @@ docker_engine_hold_packages:
   - docker-buildx-plugin
   - docker-compose-plugin
 
-# journald log driver so container stdout/stderr lands in the systemd journal
-# (alloy_host ships it to Loki); live-restore keeps containers running across a
-# daemon restart.
+# journald log driver so container stdout/stderr lands in the systemd journal.
+# live-restore keeps containers running across a daemon restart, except those a
+# unit with Requires=docker.service (compose_app's) stops alongside it.
 docker_engine_daemon_config:
   log-driver: journald
   live-restore: true

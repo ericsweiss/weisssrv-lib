@@ -62,17 +62,16 @@ The role only handles the daemon. The handshake itself is triggered by:
 Under `xprtsec=tls` the authentication is **server-only**: the client validates
 the server against the truststore and presents nothing. A client therefore never
 needs the server's private key — which, for a wildcard cert, can impersonate
-every internal service. The role reflects that: `[authenticate.client]` ships
-the key only when `nfs_tls_client_cert: true`, and on a host that is neither a
-server nor an mTLS client it can also **remove** a `fullchain.pem`/`privkey.pem`
-a previous rollout staged. Keep such hosts out of the cert-distribution target
-list entirely; add one back only when migrating an export to `xprtsec=mtls`.
+every internal service. `[authenticate.client]` therefore ships the key only
+when `nfs_tls_client_cert: true`. Keep a plain TLS client out of the
+cert-distribution target list; it needs the cert only for an `xprtsec=mtls`
+export.
 
-That removal is opt-in (`nfs_tls_scrub_client_cert: true`) and deletes
-`nfs_tls_cert_path` and `nfs_tls_key_path`, whose defaults are also where
-`weisssrv.infra.acme_certs` installs a cert locally. Leave it off on a host that
-legitimately holds a local cert *and* mounts NFS over TLS, or the two roles
-delete and reinstall the same files on alternate converges.
+`nfs_tls_scrub_client_cert: true` deletes `nfs_tls_cert_path` and
+`nfs_tls_key_path` on a host that is neither a server nor an mTLS client. Their
+defaults are also where `weisssrv.infra.acme_certs` installs a cert locally.
+Leave the scrub off on a host that holds a local cert *and* mounts NFS over TLS,
+or the two roles delete and reinstall the same files on alternate converges.
 
 ## Rollout order
 

@@ -67,9 +67,9 @@ yet. Turn it on once the cert has been distributed to `/ssl`.
 home_assistant_host: 10.0.0.154
 home_assistant_host_key: "ssh-ed25519 AAAAC3Nza...example..."
 home_assistant_trusted_proxies:
-  - 10.0.0.0/24     # LAN — the ingress node handling traffic can change
-  - 10.42.0.0/16       # k3s pod network
-  - 10.43.0.0/16       # k3s service network
+  - 10.0.0.0/24      # LAN — the ingress node handling traffic can change
+  - 10.42.0.0/16     # k3s pod network
+  - 10.43.0.0/16     # k3s service network
 home_assistant_oidc_configure_url: >-
   https://auth.example.com/application/o/home/.well-known/openid-configuration
 home_assistant_ssl_enabled: true
@@ -112,15 +112,20 @@ be reviewable.
 `configuration.yaml.j2` renders the `http:` block (X-Forwarded-For + trusted
 proxies, optional TLS), the `openid:` SSO block, `prometheus:`,
 `default_config:`, `tts:` and the `automation`/`script`/`scene` includes. The
-last four are opinionated defaults, not fixtures: `home_assistant_enable_
-prometheus`, `_enable_default_config`, `_tts_platforms` and `_includes` each
-omit their block when disabled or emptied, which matters because
-`home_assistant_extra_config` can only append and `ha core check` fails the
-deploy when an `!include` target does not exist on the host.
+last four are opinionated defaults. Each omits its block when disabled or
+emptied:
+
+- `home_assistant_enable_prometheus`
+- `home_assistant_enable_default_config`
+- `home_assistant_tts_platforms`
+- `home_assistant_includes`
+
+`home_assistant_extra_config` can only append. `ha core check` fails the deploy
+when an `!include` target does not exist on the host.
+
 Anything else belongs in `home_assistant_extra_config` or in HA's own UI
-storage. SMTP notifications in particular are no longer YAML: the `smtp` notify
-platform was removed in HA 2027.1.0 and lives in a UI config entry (kept in
-HAOS `.storage`, captured by HA backups).
+storage. SMTP notifications are a UI config entry, kept in HAOS `.storage` and
+captured by HA backups, not YAML.
 
 `secrets.yaml.j2` renders `oidc_client_id` / `oidc_client_secret`, each passed
 through `to_json` so a value containing `:` or `[` stays valid YAML.

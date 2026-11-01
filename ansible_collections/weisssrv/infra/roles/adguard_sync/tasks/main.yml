@@ -74,8 +74,8 @@
       register: adguard_sync_state_dir_stat
 
     # StateDirectory= + DynamicUser=yes manage /var/lib/adguardhome-sync as a
-    # symlink into /var/lib/private; a plain root-owned directory left by older
-    # deploys blocks unit startup. Its contents are disposable sync state.
+    # symlink into /var/lib/private; a plain root-owned directory there blocks
+    # unit startup. Its contents are disposable sync state.
     - name: Remove legacy root-owned sync home directory
       ansible.builtin.file:
         path: /var/lib/adguardhome-sync

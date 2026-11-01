@@ -326,11 +326,10 @@ variable "applications" {
     Applications keyed by slug. `provider_type` + `provider_key` reference one of
     the provider maps; leave both null for an application with no provider.
 
-    Each application must be named by at least one ENABLED `policy_bindings`
-    entry or the plan fails — an unbound application is open to every
-    authenticated user, and a disabled binding is not evaluated by the policy
-    engine. `allow_unbound = true` declares that deliberate (a tile everyone may
-    reach).
+    Each application must be named by at least one enabled, non-negated
+    `policy_bindings` entry or the plan fails. An unbound application is open
+    to every authenticated user, and the policy engine never evaluates a
+    disabled binding. `allow_unbound = true` declares a tile everyone may reach.
   EOT
   type = map(object({
     name               = string
@@ -349,8 +348,7 @@ variable "applications" {
   default = {}
 
   validation {
-    # `provider_type` bare, not coalesced: the empty string must fail this enum
-    # rather than be defaulted.
+    # The empty string fails this enum; it is not treated as unset.
     condition = alltrue([
       for slug, a in var.applications :
       a.provider_type == null || contains(["oauth2", "proxy", "saml"], a.provider_type)

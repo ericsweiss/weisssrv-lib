@@ -18,9 +18,9 @@ platforms:
       - /tmp
 provisioner:
   playbooks:
-    # Role-specific prepare: seed /etc/modprobe.d (absent in the minimal image)
-    # on top of the shared systemd-wait prep. Re-points playbooks.prepare off the
-    # inherited prepare-common.yml (deep-merge keeps converge/verify from base).
+    # Role-specific prepare on top of the shared systemd-wait prep; it leaves
+    # /etc/modprobe.d unseeded. Re-points playbooks.prepare off the inherited
+    # prepare-common.yml (deep-merge keeps converge/verify from base).
     prepare: prepare.yml
   inventory:
     group_vars:

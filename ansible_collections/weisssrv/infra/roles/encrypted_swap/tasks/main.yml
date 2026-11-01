@@ -33,9 +33,9 @@
         success_msg: "Backing swap device {{ encrypted_swap_source_device }} present"
       when: encrypted_swap_require_source_device | bool
 
-    # CRITICAL: a host whose backing device is gone still carries the crypttab
-    # and fstab entries an earlier converge wrote, and systemd-cryptsetup@<mapper>
-    # then fails every boot. The self-skip arm reconciles them away.
+    # A host whose backing device is gone would keep its crypttab and fstab
+    # entries, and systemd-cryptsetup@<mapper> would fail every boot. The
+    # self-skip arm reconciles them away.
     - name: Remove the encrypted-swap crypttab entry when the backing device is absent
       ansible.builtin.lineinfile:
         path: /etc/crypttab

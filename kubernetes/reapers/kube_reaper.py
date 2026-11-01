@@ -83,8 +83,8 @@ def creation_age_minutes(obj: dict, now: datetime) -> Optional[int]:
 def terminal_age_minutes(pod: dict, now: datetime) -> Optional[int]:
     """Age from the newest terminated.finishedAt across all container statuses.
 
-    An unparseable finishedAt keeps the pod when the container started and is
-    skipped when it never did. There is no startTime fallback.
+    A missing finishedAt keeps the pod if its container started, else is ignored.
+    An unparseable finishedAt keeps the pod; there is no startTime fallback.
     """
     status = pod.get("status", {})
     statuses = (status.get("initContainerStatuses", [])

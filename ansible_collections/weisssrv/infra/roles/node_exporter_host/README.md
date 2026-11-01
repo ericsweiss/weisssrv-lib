@@ -142,8 +142,9 @@ textfile collector by name in consumer docs and alerts.
 
 Off by default (`node_exporter_host_slabinfo_collector`), and the cache list
 (`node_exporter_host_slab_caches`) is empty, because each cache adds scrape
-series. Set both on the host being investigated. It ships inside the Proxmox-host textfile collectors, so
-`node_exporter_host_proxmox` must be true as well; the role fails the play if it
+series. Set both on the host being investigated. It ships inside the
+Proxmox-host textfile collectors, so `node_exporter_host_proxmox` must be true
+as well; the role fails the play if it
 is not, rather than converging green and installing nothing. An empty
 `node_exporter_host_slab_caches` with the collector enabled fails the play for
 the same reason: it would publish only the collector sentinel.
@@ -273,10 +274,12 @@ These metrics drive three alerts worth wiring up:
   succeeded in over five minutes; the other two alerts on this host
   are now serving stale data.
 
-## vzdump metrics hook (Proxmox hosts only)
+## vzdump backup metrics
 
-`vzdump-metrics-hook.sh` is deployed to every Proxmox host and wired into the
-backup job's `script` property. It writes one textfile after each job:
+`files/vzdump-metrics-hook.sh` is deployed to every Proxmox host and wired
+through the `jobs.cfg` `script` property. A cluster-wide `all` job runs on each
+node for its local guests, and a node missing the hook aborts its own backups.
+It writes one textfile after each job:
 
 | Metric | Meaning |
 |--------|---------|
@@ -296,29 +299,18 @@ that with `vzdump_backup_last_run_success == 1`. Without the second arm, a node
 whose last run both failed and started no guest is permanently exempt from
 escalation.
 
+The `job-end` phase fires even when individual guests failed, so a per-run
+marker records any abort and downgrades the job-end verdict.
+
 vzdump owns the hookscript's first argument (the phase), so the output
 directory travels in `/etc/default/vzdump-metrics-hook`, rendered from
 `node_exporter_host_textfile_dir`.
 
 ## Configuration
 
-Defaults (`defaults/main.yml`):
-
-```yaml
-node_exporter_host_port: 9101              # 9101 to avoid a k3s DaemonSet on 9100
-node_exporter_host_bind_address: ""        # "" = all interfaces
-node_exporter_host_textfile_dir: /var/lib/node_exporter
-node_exporter_host_proxmox: false          # true on bare-metal Proxmox hosts
-node_exporter_host_healthcheck_interval: 5min   # liveness-gate probe period
-node_exporter_host_zpool_collector: "{{ node_exporter_host_proxmox }}"
-node_exporter_host_corosync_collector: "{{ node_exporter_host_proxmox }}"
-node_exporter_host_slabinfo_collector: false
-node_exporter_host_slab_caches: []          # names come from /proc/slabinfo
-node_exporter_host_systemd_collector: true
-node_exporter_host_systemd_unit_include: ".+[.](service|timer)"
-node_exporter_host_systemd_unit_exclude: ".+[.](automount|device|mount|scope|slice)"
-node_exporter_host_processes_collector: false   # node_processes_* (walks /proc)
-```
+Every default lives in `defaults/main.yml`. `node_exporter_host_port` defaults
+to 9101 because the in-cluster node-exporter DaemonSet owns 9100 on the same
+hosts.
 
 The exporter serves unauthenticated plaintext HTTP.
 `node_exporter_host_bind_address` narrows the listener: leave it empty to listen
@@ -344,6 +336,18 @@ than fixed) and reconcile a previously deployed collector away when turned off. 
 SMART and vzdump collectors stay on the plain `node_exporter_host_proxmox`
 gate.
 
+Flipping `node_exporter_host_proxmox` to false cleans nothing up, because a
+wrong cleanup on a real Proxmox host is worse than stale files on a demoted
+one. Remove the collector scripts and their units by hand in that case.
+
+## Installation
+
+The `prometheus-node-exporter` package is installed unpinned from the Debian
+repo, with an apt cache refresh when the cache is over an hour old.
+
+Scraping it needs a ServiceMonitor or equivalent with per-host Endpoints on the
+exporter port.
+
 ## systemd collector
 
 node_exporter's systemd collector is **default-off upstream**, so a cluster that
@@ -367,25 +371,6 @@ scopes, devices, sockets — which is a large, churny label set with no alerting
 value. The default keeps `*.service` and `*.timer`; widen it deliberately if a
 rule needs sockets or targets. `node_exporter_host_systemd_unit_exclude` mirrors
 upstream's own default as a second guard (both filters are applied).
-
-## processes collector
-
-`node_exporter_host_processes_collector` (default `false`) passes
-`--collector.processes`, the only source of `node_processes_*`. The in-cluster
-node-exporter DaemonSet usually enables it, so the node-exporter-full
-dashboard's System Processes rows are populated for `job=node-exporter` but
-empty for this role's job until the flag is set. The reverse holds for the
-Systemd rows, which only this role emits.
-
-| Metric | Use |
-|---|---|
-| `node_processes_pids` | processes currently running |
-| `node_processes_state{state}` | per-state process counts |
-| `node_processes_threads` | threads currently running |
-| `node_processes_max_processes` | kernel pid limit |
-
-It is off by default because the collector walks every entry under `/proc` on
-each scrape, which is a real cost on a busy Proxmox host.
 
 Both patterns use `[.]` instead of `\.`: the value is written into a systemd
 `ExecStart=` line, where a backslash opens a C escape sequence and an
@@ -411,20 +396,21 @@ Two layers close that:
   for ~30m at `warning`. It is the only per-collector failure signal node_exporter
   emits, and it names the collector, so it survives relabelling.
 
-The `prometheus-node-exporter` package is installed with `state: present`
-(unpinned) and `update_cache: true` (with `cache_valid_time: 3600` to skip a
-redundant apt refresh when the cache is under an hour old), so it tracks
-whatever the Debian repo currently ships — there is deliberately no version pin.
+## processes collector
 
-Scraping it needs a ServiceMonitor (or equivalent) with per-host Endpoints on
-port 9101 in the cluster.
+`node_exporter_host_processes_collector` (default `false`) passes
+`--collector.processes`, the only source of `node_processes_*`. The in-cluster
+node-exporter DaemonSet usually enables it, so the node-exporter-full
+dashboard's System Processes rows are populated for `job=node-exporter` but
+empty for this role's job until the flag is set. The reverse holds for the
+Systemd rows, which only this role emits.
 
-## vzdump backup metrics
+| Metric | Use |
+|---|---|
+| `node_processes_pids` | processes currently running |
+| `node_processes_state{state}` | per-state process counts |
+| `node_processes_threads` | threads currently running |
+| `node_processes_max_processes` | kernel pid limit |
 
-`files/vzdump-metrics-hook.sh` publishes `vzdump_backup_last_run_success`,
-`vzdump_backup_last_success_timestamp_seconds` and `vzdump_backup_guests` to the
-textfile collector. It is wired through the `jobs.cfg` `script` property but is
-deployed to every Proxmox host, because a cluster-wide `all` job runs on each
-node for its local guests and a node missing the hook aborts its own backups.
-The `job-end` phase fires even when individual guests failed, so a per-run
-marker records any abort and downgrades the job-end verdict.
+It is off by default because the collector walks every entry under `/proc` on
+each scrape, which is a real cost on a busy Proxmox host.

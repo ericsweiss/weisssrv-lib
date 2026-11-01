@@ -1,0 +1,12 @@
+---
+# Internal, not consumer API. The distribution targets that are never seeded:
+# an ssh_no_sudo target keeps an operator-managed authorized_keys.
+_acme_certs_no_sudo_hosts: >-
+  {{ acme_certs_distribution_targets | default([]) | selectattr('ssh_no_sudo', 'defined')
+     | selectattr('ssh_no_sudo') | map(attribute='host') | list }}
+
+# Renders the {host: reason} map a task passes as _acme_certs_reasons as
+# "host (reason), host (reason)" for the unseeded and not-re-seeded reports.
+_acme_certs_reasons_report: >-
+  {{ (_acme_certs_reasons | default({})).items() | map('join', ' (')
+     | map('regex_replace', '$', ')') | join(', ') }}

@@ -32,9 +32,8 @@ to the *included* role.
 
 The site is rendered to a temp dir and checked with `nginx -t` against a copy of
 `nginx.conf` whose `sites-enabled` include points at that temp dir; only a
-candidate that passes is copied into `sites-available`. Validating after install
-would leave a broken `.conf` enabled, so the next nginx start (a reboot, or a
-coordinated reboot controller) could not bring the guest back. A whole-config
+candidate that passes is copied into `sites-available`, so a broken `.conf` is
+never enabled and the next nginx start can always bring the guest back. A whole-config
 `nginx -t` still runs after the site is enabled and the default vhost removed.
 
 Under `compose_app_skip_install` the validation step is skipped (no nginx
@@ -42,11 +41,9 @@ binary), but the candidate is still rendered and installed.
 
 ### Backup metrics library
 
-`tasks/backup_lib.yml` installs the backup-freshness metric emitter used by the
-compose app guests: `gitlab`, `immich` and `nextcloud` include it. Roles whose
-wrappers emit a richer or differently-shaped metric set (`restic_offsite`,
-`nas_storage`, `k3s`, `acme_certs`) keep their own emitter. The library is
-sourced, and everything variable is a call argument:
+`tasks/backup_lib.yml` installs a backup-freshness metric emitter that any role
+may include with `tasks_from`. The library is sourced, and everything variable
+is a call argument:
 
 ```bash
 source /usr/local/lib/<app>-backup-lib.sh
@@ -103,16 +100,10 @@ A site that terminates TLS for a wildcard hostname should set
 ## Molecule
 
 `molecule/default` is a contract scenario. Under `compose_app_skip_install:
-true` it renders the compose unit for **both** the `RequiresMountsFor`-present
-and `-absent` cases, renders the `write_prom_metrics` lib and runs it end-to-end
-(success, failure/preserve-timestamp, newest-artefact fallback, unwritable
-path), and runs the host-nginx flow to assert the `creates:` cert guard, the
-deployed + enabled site and the removed default vhost.
-
-It then installs nginx and runs the host-nginx flow again with validation on: a
-valid candidate must pass `nginx -t` and land in `sites-available`, and a
-candidate with an unknown directive must fail the play and leave the installed
-site untouched. `expected-junit-failures.txt` declares that deliberate failure.
+true` it renders the compose unit and the backup-metrics library and runs the
+host-nginx flow. It then installs nginx and repeats the flow with validation
+on. `converge.yml` and `verify.yml` list each case, and
+`expected-junit-failures.txt` declares the deliberate failures.
 
 ## Related
 

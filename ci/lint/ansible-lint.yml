@@ -13,8 +13,8 @@ spec:
       type: array
       default: ["infrastructure"]
       description: >-
-        Runner tag(s). Default targets weisssrv's privileged runner; pass `[]`
-        for the shared tag-less tenant runner.
+        Runner tag(s). The default targets a privileged runner tagged
+        `infrastructure`; pass `[]` for the shared tag-less tenant runner.
     ansible_lint_version:
       default: "26.10.1"
       description: >-

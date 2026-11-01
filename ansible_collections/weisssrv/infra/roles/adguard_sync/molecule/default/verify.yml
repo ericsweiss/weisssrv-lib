@@ -125,7 +125,7 @@
         fail_msg: "Service file missing expected configuration"
         success_msg: "Service file has correct configuration (sandboxed DynamicUser + metrics ExecStopPost)"
 
-    # Failure-signal metrics writer (closes the silent-sync-failure gap).
+    # The metrics writer publishes the failure signal on every run.
     - name: Check the adguardhome-sync metrics writer is installed
       ansible.builtin.stat:
         path: /usr/local/bin/adguardhome-sync-metrics.sh

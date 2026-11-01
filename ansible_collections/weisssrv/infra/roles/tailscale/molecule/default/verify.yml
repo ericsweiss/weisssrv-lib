@@ -217,11 +217,15 @@
       ansible.builtin.assert:
         that:
           - bridge_masq_marker.stat.exists
+          # The rule probes keep iptables' own stderr out of the per-minute journal.
+          - >-
+            (bridge_masq_script_content.content | b64decode).count('-C POSTROUTING -j ts-postrouting')
+            == (bridge_masq_script_content.content | b64decode).count('-C POSTROUTING -j ts-postrouting 2>/dev/null')
           - "'logger -t tailscale-bridge-masq-fix --' in (bridge_masq_script_content.content | b64decode)"
           - "'logger -t tailscale-bridge-masq-fix -s' not in (bridge_masq_script_content.content | b64decode)"
         fail_msg: >-
           The deferral branch logs on every timer tick, which buries the one
-          occurrence that matters under ~2880 journal entries a day.
+          occurrence that matters under ~1440 journal entries a day.
         success_msg: "the deferral branch marks state and logs once"
 
     # The ExecStartPost alone only re-applies the rule on a tailscaled restart,

@@ -1,6 +1,6 @@
 # Every `prevent_destroy` below protects an object whose destroy+create is a
 # user-visible outage, so removing one is a two-step change — see README
-# "Removing an object". Each lifecycle block states only the outage it prevents.
+# "Removing an object".
 
 # Stock objects authentik creates and owns. Read by stable identifier, never
 # managed.
@@ -275,8 +275,8 @@ resource "authentik_group" "this" {
     : data.authentik_user.member[username].pk
   ]
 
-  # null, not `jsonencode({})`, for a group with no attributes: encoding an empty
-  # object asserts a value, which diffs against an adopted group that carries any.
+  # null for a group with no attributes: an encoded empty object diffs against
+  # an adopted group that carries any.
   attributes = (
     length(local.group_attributes[each.key]) == 0
     ? null
@@ -328,22 +328,20 @@ resource "authentik_application" "this" {
     # provider_type/provider_key resolve through a map, so a typo would
     # otherwise surface as a bare "Invalid index" naming neither.
     precondition {
-      # Conditional, not `||`: both halves must stay unevaluated when the
-      # application names no provider.
+      # The conditional leaves the lookup unevaluated when the application
+      # names no provider; Terraform's `||` evaluates both operands.
       condition = (
         each.value.provider_type == null
         ? true
         : contains(keys(local.provider_ids), "${each.value.provider_type}/${each.value.provider_key}")
       )
-      # error_message is evaluated eagerly, so each half is null-guarded; a
-      # conditional rather than coalesce, which would also rewrite the empty
-      # string.
+      # error_message is evaluated eagerly, so each half is null-guarded and an
+      # empty string prints as itself.
       error_message = "applications[\"${each.key}\"] references provider \"${each.value.provider_type == null ? "<unset>" : each.value.provider_type}/${each.value.provider_key == null ? "<unset>" : each.value.provider_key}\", which is not a key of the matching provider map (oauth2_providers, proxy_providers or saml_providers)."
     }
 
-    # An unbound application is reachable by every authenticated user and
-    # otherwise plans cleanly. A precondition, not a `check` block: check
-    # assertions are only warnings, and this has to fail the plan.
+    # An unbound application is reachable by every authenticated user, so
+    # this fails the plan, including a read-only drift plan.
     precondition {
       condition = (
         each.value.allow_unbound ||

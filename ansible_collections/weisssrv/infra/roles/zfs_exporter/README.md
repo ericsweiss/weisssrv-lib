@@ -31,6 +31,6 @@ The exporter discovers pools automatically — there is no pool allowlist.
 ## Scraping and alerting
 
 Nothing in this role registers a scrape target; add one on the Prometheus side
-(a static target / `Endpoints` object pointing at `<host>:9134`). Useful series:
+(a static target / `Endpoints` object pointing at `<host>:<zfs_exporter_port>`). Useful series:
 `zfs_pool_state` (non-zero = degraded) and the pool usage gauges — the usual
 alerts are pool-degraded plus usage warning/critical thresholds.

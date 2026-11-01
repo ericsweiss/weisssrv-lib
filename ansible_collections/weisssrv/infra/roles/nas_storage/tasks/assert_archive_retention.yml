@@ -1,0 +1,39 @@
+---
+# An override key outside every source silently keeps the global window, and a
+# malformed or zero vzdump bound makes the quiesce probe find nothing, so the
+# snapshot runs mid-dump. Split out so the negative cases run from test inventory.
+
+- name: Assert every keep-monthly override names a replicated dataset and a count
+  ansible.builtin.assert:
+    that:
+      - nas_storage_archive_backup_keep_monthly_overrides | default({}, true) is mapping
+      - (nas_storage_archive_backup_keep_monthly_overrides | default({}, true)).keys() | list
+        | reject('match', '^(' ~ (nas_storage_archive_backup_sources | default([])
+          | map('regex_escape') | join('|')) ~ ')(/|$)')
+        | list | length == 0
+      - (nas_storage_archive_backup_keep_monthly_overrides | default({}, true)).values() | list
+        | map('string') | reject('match', '^[0-9]+$') | list | length == 0
+    fail_msg: >-
+      nas_storage_archive_backup_keep_monthly_overrides must map a
+      nas_storage_archive_backup_sources entry, or a descendant of one, to a
+      non-negative integer; got
+      {{ nas_storage_archive_backup_keep_monthly_overrides | default({}, true) }}
+    quiet: true
+
+- name: Assert the vzdump quiesce bounds are positive whole minutes in order
+  ansible.builtin.assert:
+    that:
+      - >-
+        [nas_storage_archive_backup_vzdump_quiesce_min,
+         nas_storage_archive_backup_vzdump_max_wait_min]
+        | map('string') | reject('match', '^[1-9][0-9]*$') | list | length == 0
+      - >-
+        nas_storage_archive_backup_vzdump_quiesce_min | int
+        <= nas_storage_archive_backup_vzdump_max_wait_min | int
+    fail_msg: >-
+      nas_storage_archive_backup_vzdump_quiesce_min and
+      nas_storage_archive_backup_vzdump_max_wait_min must be positive integers
+      of minutes, the first no larger than the second; got
+      {{ nas_storage_archive_backup_vzdump_quiesce_min }} and
+      {{ nas_storage_archive_backup_vzdump_max_wait_min }}
+    quiet: true

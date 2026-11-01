@@ -120,9 +120,8 @@ spec:
         # shellcheck disable=SC2086  # intentional word-split of the package list
         apt-get update -qq && apt-get install -y -qq --no-install-recommends $APT_PACKAGES
       fi
-    # Consumer setup hook (default no-op) — e.g. cloning a sibling repo a
-    # cross-repo test asserts against. AFTER the apt install, whose default
-    # `git jq` is exactly what such a hook needs on the slim default image.
+    # After the apt install, so setup_command can use the apt_packages tools
+    # (`git jq` by default).
     - $[[ inputs.setup_command ]]
     # `--user` + `python -m pytest`: the shared NON-ROOT runner cannot write
     # system site-packages, and ~/.local/bin is off PATH on python:*-slim.

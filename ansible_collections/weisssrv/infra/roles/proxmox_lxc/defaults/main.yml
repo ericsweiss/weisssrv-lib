@@ -4,9 +4,8 @@
 # proxmox_lxc_exists.rc, so a test rig stubs `pvesh` to report it existing.
 proxmox_lxc_skip_create: false
 
-# IP handed to the role's pct-create and SSH-wait logic. Molecule overrides it
-# so ansible_host can stay pointed at the container while --net0 still gets a
-# realistic per-container address.
+# IP handed to the role's pct-create and SSH-wait logic; it may differ from
+# the ansible_host the play connects through.
 proxmox_lxc_target_ip: "{{ ansible_host }}"
 
 # Container resource defaults

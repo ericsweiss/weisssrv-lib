@@ -133,9 +133,9 @@ spec:
       description: >-
         (substitute=true) extra shell injected after flux-lint.sh, with
         $RENDER_ALL / $K8S_VER / $FAILED and the ConfigMap exports in scope.
-        The supported shape is a
-        consumer gate chain listed in scripts/render-gates.conf and run by
-        scripts/run-render-gates.sh, so the value stays one line:
+        The supported shape is a consumer gate chain listed in
+        scripts/render-gates.conf and run by scripts/run-render-gates.sh, so the
+        value stays one line:
         `bash scripts/run-render-gates.sh --flux-env scripts/flux-env.sh`. The
         runner honours the same RENDER_ALL / VERSIONS_CONFIGMAP contract and
         exits non-zero on a failing gate. Any other shell still works.
@@ -309,9 +309,7 @@ spec:
         --crd-catalog-ref "$CRD_CATALOG_REF" \
         --render-all "$RENDER_ALL" || FAILED=1
 
-      # Consumer-injected extra validation (e.g. an HPA/VPA invariant or a
-      # helm-values check). Runs with $RENDER_ALL / $K8S_VER / $FAILED in
-      # scope; no-op by default, and references consumer-local scripts.
+      # Consumer-injected validation: the extra_validation input.
       $[[ inputs.extra_validation ]]
 
       exit $FAILED

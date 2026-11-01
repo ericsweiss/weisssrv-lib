@@ -1,6 +1,6 @@
 # zfs_arc_cap
 
-Caps the ZFS ARC on the **compute** Proxmox hosts (`proxmox_role: compute`).
+Caps the ZFS ARC on Proxmox hosts that run guests.
 
 This is the one implementation of the ARC cap in the collection:
 `nas_storage` includes this role on the NAS host rather than carrying its own
@@ -9,7 +9,7 @@ make it load-bearing on a compute host:
 
 - **VFIO passthrough**: a GPU guest's RAM is host-pinned/mlock'd and therefore
   non-reclaimable, so the ~½-RAM default ARC collides with the pinned VM and
-  thrashes (e.g. ~31 GiB ARC + a 30 GiB pinned guest on a 62 GiB host).
+  thrashes.
 - **Small hosts**: on a 14–16 GiB node the default ceiling is *not* harmless —
   the ARC will happily sit at several GiB while the host swaps. Override the
   group value per host (2 GiB is a workable floor for a `local-ssd` root pool).
@@ -46,13 +46,10 @@ The role renders the whole of `/etc/modprobe.d/zfs.conf`, so any other
 `options zfs ...` parameter placed in that file is discarded on the next
 converge. Keep other module parameters in their own `modprobe.d` file.
 
+A `zfs_arc_max` in a **differently-named** `/etc/modprobe.d/*.conf` makes the
+load-time value ambiguous; remove it by hand. The sysfs task still makes the
+running value authoritative.
+
 Clearing `zfs_arc_cap_max_bytes` makes the role a no-op; it does not remove an
 existing cap. Retiring one is a manual step: delete the file and rebuild the
 initramfs.
-
-## Runtime cleanup note
-
-If a host carried a manual `zfs_arc_max` in a **differently-named**
-`/etc/modprobe.d/*.conf`, remove it by hand once this role owns `zfs.conf` —
-otherwise two files set the parameter and the *load-time* value is ambiguous
-(the running value is still made authoritative by the sysfs task).
