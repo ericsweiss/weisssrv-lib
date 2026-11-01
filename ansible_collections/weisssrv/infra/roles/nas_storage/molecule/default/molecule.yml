@@ -138,6 +138,10 @@ provisioner:
         nas_storage_archive_backup_enabled: true
         nas_storage_archive_backup_pool: archive
         nas_storage_archive_backup_vzdump_target: tank/proxmox
+        # verify.yml renders the archive script outside the role, where these
+        # defaults are not loaded.
+        nas_storage_archive_backup_vzdump_quiesce_min: 10
+        nas_storage_archive_backup_vzdump_max_wait_min: 30
         nas_storage_archive_backup_sources:
           - tank/share
           - tank/backups

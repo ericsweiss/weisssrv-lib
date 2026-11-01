@@ -101,14 +101,14 @@
           - create_marker[item.name].mutations == 0
           - "'weisssrv-create-incomplete' in create_marker[item.name].msg"
           - "'qm destroy 999' in create_marker[item.name].msg"
-          - "item.clear in create_marker[item.name].msg"
+          - "item.clear_cmd in create_marker[item.name].msg"
         fail_msg: >-
           A VM tagged with the create marker must fail by name with zero qm
           mutations and keep its other tags, got {{ create_marker[item.name] }}
         success_msg: "a marked VM ({{ item.name }}) fails by name"
       loop:
-        - {name: alone, clear: "qm set 999 --delete tags`"}
-        - {name: tagged, clear: "qm set 999 --tags prod`"}
+        - {name: alone, clear_cmd: "qm set 999 --delete tags`"}
+        - {name: tagged, clear_cmd: "qm set 999 --tags prod`"}
       loop_control:
         label: "{{ item.name }}"
 

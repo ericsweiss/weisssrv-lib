@@ -48,9 +48,10 @@ shift
 exec "$@"
 """ % BASH
 
-# An early match followed by ~200 KiB: past any pipe buffer, so a piped
-# `grep -q` that stops at the match leaves its writer to take SIGPIPE.
-LARGE_TAIL = ("0" * 100 + "\n") * 2000
+# An early match followed by ~100 KiB: past the 64 KiB pipe buffer, so a piped
+# `grep -q` that stops at the match leaves its writer to take SIGPIPE, and under
+# Linux's 128 KiB single-argument limit, since the stubs take it from the env.
+LARGE_TAIL = ("0" * 100 + "\n") * 1000
 
 SSH_OPTS = (
     "-o ConnectTimeout=5 -o BatchMode=yes "
