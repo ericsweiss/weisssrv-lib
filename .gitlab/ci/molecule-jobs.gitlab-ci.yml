@@ -123,9 +123,9 @@
     reports:
       junit: junit/*.xml
       dotenv: molecule-retry.env
-  # Only setup stages retry (molecule-retry.sh, up to 4 attempts), so 30m holds
-  # one full ~8-11m run plus the short pre-converge retries before it.
-  timeout: 30m
+  # Only setup stages retry (molecule-retry.sh, up to 4 attempts). The longest
+  # scenario takes ~25m when the shared runner is also serving another project.
+  timeout: 45m
 
 .molecule-test-job:
   extends: .molecule-base
