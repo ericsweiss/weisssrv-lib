@@ -60,6 +60,9 @@
             printf '%s\n' "$*" >> "/tmp/nextcloud-occ-${NEXTCLOUD_OCC_CASE}.log"
             case " $* " in
               *" occ app:list "*) cat "/tmp/nextcloud-applist-${NEXTCLOUD_OCC_CASE}.json" ;;
+              # The provider command is fed its secret on stdin; drain it so the
+              # writer never sees a closed pipe.
+              *"user_oidc:provider"*) cat >/dev/null ;;
             esac
             exit 0
           fi
