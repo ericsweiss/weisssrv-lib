@@ -28,36 +28,3 @@
       vars:
         base_admin_user: keyexcl
         base_ssh_authorized_keys_exclusive: true
-
-    # Negative test: an entry carrying whitespace would silently become two
-    # kernel parameters, so the token assert must reject it.
-    - name: Re-apply with a multi-token kernel cmdline entry (expect failure)
-      tags: [molecule-idempotence-notest]
-      block:
-        - name: Include base with a kernel cmdline entry holding a space
-          ansible.builtin.include_role:
-            name: weisssrv.infra.base
-          vars:
-            base_kernel_cmdline_args:
-              - "slub_nomerge nosmt"
-
-        - name: Kernel cmdline token assert failed to trigger
-          ansible.builtin.copy:
-            dest: /tmp/base-kernel-cmdline-token-assert.json
-            content: '{"failed": false}'
-            mode: "0644"
-      rescue:
-        # A LOOPED assert reports "One or more items failed" at the top level and
-        # keeps the guard's own message per item, so read the items first and
-        # fall back to the top-level message.
-        - name: Kernel cmdline token assert correctly rejected the entry
-          vars:
-            base_token_failure: >-
-              {{ ansible_failed_result.results | default([])
-                 | selectattr('msg', 'defined') | map(attribute='msg') | join(' ')
-                 | default(ansible_failed_result.msg | default(''), true) }}
-          ansible.builtin.copy:
-            dest: /tmp/base-kernel-cmdline-token-assert.json
-            mode: "0644"
-            content: |
-              {"failed": true, "msg": {{ base_token_failure | to_json }}}

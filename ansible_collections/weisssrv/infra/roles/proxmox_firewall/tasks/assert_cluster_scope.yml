@@ -10,6 +10,7 @@
       - proxmox_firewall_smb_client_cidrs
       - proxmox_firewall_extra_aliases
       - proxmox_firewall_wan_wireguard_vips
+      - proxmox_firewall_k3s_public_vips
       - proxmox_firewall_dns_admin_ports
       - proxmox_firewall_dns_client_sources
       - proxmox_firewall_k3s_ingress_int_sources

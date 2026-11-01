@@ -1,7 +1,7 @@
 ---
 # Render/contract scenario: nextcloud_skip_install skips everything needing a
-# Docker daemon, so the compose file, .env, systemd units, nginx site and backup
-# wrapper are rendered and asserted. occ and SSO wiring is lint-checked only.
+# Docker daemon, so the rendered artefacts are asserted. The SSO pass runs
+# against a mock occ; the SMTP occ wiring is lint-checked only.
 provisioner:
   playbooks:
     prepare: prepare.yml
@@ -22,11 +22,6 @@ provisioner:
         # Redis rides the shared redis_version pin via the role's alias.
         redis_version: "8.8.0-alpine"
         nextcloud_exporter_version: "0.9.1"
-        # Consumed by docker_engine, which is skipped here — representative only.
-        docker_engine_ce_version: "5:29.6.1-1~debian.13~trixie"
-        docker_engine_containerd_version: "2.2.6-1~debian.13~trixie"
-        docker_engine_buildx_plugin_version: "0.35.0-1~debian.13~trixie"
-        docker_engine_compose_plugin_version: "5.3.1-1~debian.13~trixie"
         # TEST-NET-1 stand-ins for the site's ingress node addresses.
         nextcloud_nginx_real_ip_trusted_addresses:
           - 192.0.2.11

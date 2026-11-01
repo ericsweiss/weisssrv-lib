@@ -128,6 +128,7 @@ class TestFluxLintEmptyRender:
             K8S_VERSION_OVERRIDE="1.36.0",
             ALLOWED_SKIPS=allowed_skips,
             CRD_CATALOG_REF=_workflow_env("CRD_CATALOG_REF"),
+            MANIFEST_ROOT=_workflow_env("MANIFEST_ROOT"),
         )
 
     def test_fails_when_kubeconform_skipped_a_resource(self, tmp_path):
@@ -201,9 +202,37 @@ class TestFluxLintEmptyRender:
             K8S_VERSION_OVERRIDE="",
             ALLOWED_SKIPS="0",
             CRD_CATALOG_REF=_workflow_env("CRD_CATALOG_REF"),
+            MANIFEST_ROOT=_workflow_env("MANIFEST_ROOT"),
         )
         assert result.returncode == 0, result.stderr
         assert "K8S_VERSION not set" in result.stdout
+
+    def test_renders_the_manifest_root(self, tmp_path):
+        """flux-lint and manifest-gates read one tree, so a tenant that moves
+        MANIFEST_ROOT moves both."""
+        bin_dir = _stub_bin(tmp_path, "kubeconform")
+        kustomize = bin_dir / "kustomize"
+        kustomize.write_text(
+            '#!/bin/sh\n[ "$2" = "deploy/tree" ] || exit 9\nprintf "kind: ConfigMap\\n"\n'
+        )
+        kustomize.chmod(0o755)
+        runner_temp = tmp_path / "runner"
+        runner_temp.mkdir()
+        result = _bash(
+            _run_script(*self.SCRIPT),
+            tmp_path,
+            bin_dir,
+            RUNNER_TEMP=str(runner_temp),
+            K8S_VERSION="1.36.0",
+            K8S_VERSION_OVERRIDE="1.36.0",
+            ALLOWED_SKIPS="0",
+            CRD_CATALOG_REF=_workflow_env("CRD_CATALOG_REF"),
+            MANIFEST_ROOT="deploy/tree",
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_the_fallback_root_is_the_gates_default(self):
+        assert _workflow_env("MANIFEST_ROOT") == "kubernetes/flux"
 
 
 class TestManifestGatesFloor:
@@ -314,3 +343,31 @@ class TestScrapeWiringNamespace:
         )
         assert result.returncode == 0, result.stderr
         assert "--namespace-from-tree kubernetes/flux" in result.stdout
+
+
+class TestDocLinksJob:
+    """CHECK_DOC_LINKS_PATHS turns on the backticked repo-path pass, so a doc
+    citing a deleted path fails CI."""
+
+    SCRIPT = ("lint-docs-links", "Check relative doc links")
+
+    def _step_env(self) -> dict:
+        steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["lint-docs-links"]["steps"]
+        (step,) = [s for s in steps if s.get("name") == self.SCRIPT[1]]
+        return step.get("env") or {}
+
+    def test_the_path_pass_is_on(self):
+        assert self._step_env().get("CHECK_DOC_LINKS_PATHS") == "1"
+
+    def test_the_switch_reaches_the_checker(self, tmp_path):
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "check-doc-links.py").write_text(
+            "import os\nprint(os.environ.get('CHECK_DOC_LINKS_PATHS', ''))\n"
+        )
+        result = _bash(
+            _run_script(*self.SCRIPT), tmp_path, _stub_bin(tmp_path, "true"),
+            **self._step_env(),
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "1"

@@ -2,18 +2,9 @@
 # Optional inputs. The required ones have no default and are supplied by the
 # caller via include_role vars; the README variables table lists them.
 
-# Extra gate threaded through every task, so a caller can pass its own skip
-# condition (e.g. its own <role>_skip_install) without wrapping the include.
-apt_signed_repo_when: true
-
 # Install gnupg on every run, for callers with no other guarantee it is present.
 # Not gated on key absence: the existing-keyring re-verification needs gpg too.
 apt_signed_repo_install_gnupg: false
-
-# Keyring mode, pinned rather than left at gpg --dearmor's umask-dependent
-# output: apt reports "unverifiable signature" on a keyring it cannot read.
-# Empty skips the permission task.
-apt_signed_repo_keyring_mode: "0644"
 
 # CRITICAL: staging area for the downloaded key between verification and
 # dearmor. It must be a root-owned 0700 directory under a non-world-writable

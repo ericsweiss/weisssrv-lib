@@ -85,9 +85,11 @@
           ansible.builtin.set_fact:
             restic_offsite_padded_refused: false
       rescue:
-        - name: Record that the padded password was refused
+        # Pinned to the guard's task, so an unrelated error cannot pass as it.
+        - name: Record which task refused the padded password
           ansible.builtin.set_fact:
-            restic_offsite_padded_refused: true
+            restic_offsite_padded_refused: >-
+              {{ ansible_failed_task.name is search('Refuse secret values the env file and restic would read differently') }}
 
     - name: Assert a padded repository password is refused
       tags: [molecule-idempotence-notest]
@@ -105,8 +107,8 @@
       ansible.builtin.include_role:
         name: weisssrv.infra.restic_offsite
 
-    # Interlock guard: swap-clean enabled on the same host without
-    # restic-offsite.service in its conflict list must fail the play.
+    # Interlock guard, swap-clean side: swap-clean enabled on the same host
+    # without restic-offsite.service in its conflict list must fail the play.
     - name: Re-apply the role with swap-clean enabled and no interlock
       tags: [molecule-idempotence-notest]
       block:
@@ -121,9 +123,10 @@
           ansible.builtin.set_fact:
             restic_offsite_interlock_refused: false
       rescue:
-        - name: Record that the missing interlock was refused
+        - name: Record which task refused the missing interlock
           ansible.builtin.set_fact:
-            restic_offsite_interlock_refused: true
+            restic_offsite_interlock_refused: >-
+              {{ ansible_failed_task.name is search('Assert swap-clean is interlocked against the offsite run') }}
 
     - name: Assert a swap-clean host with no interlock is refused
       tags: [molecule-idempotence-notest]
@@ -135,6 +138,67 @@
           restic-offsite.service in nas_storage_swap_clean_conflicting_units, so
           swap-clean can stop the guests whose zvol clones restic is reading.
         success_msg: "A swap-clean host with no interlock is refused"
+
+    # Interlock guard, offsite side: swap-clean names the offsite run, but the
+    # offsite run does not name swap-clean.service, so it must still fail.
+    - name: Re-apply the role with only the swap-clean half of the interlock
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: Run the role with an empty offsite conflict list
+          ansible.builtin.include_role:
+            name: weisssrv.infra.restic_offsite
+          vars:
+            nas_storage_swap_clean_enabled: true
+            nas_storage_swap_clean_conflicting_units: [restic-offsite.service]
+            restic_offsite_conflicting_units: []
+
+        - name: Record that the one-sided interlock was accepted
+          ansible.builtin.set_fact:
+            restic_offsite_reverse_interlock_refused: false
+      rescue:
+        - name: Record which task refused the one-sided interlock
+          ansible.builtin.set_fact:
+            restic_offsite_reverse_interlock_refused: >-
+              {{ ansible_failed_task.name is search('Assert the offsite run is interlocked against swap-clean') }}
+
+    - name: Assert a one-sided interlock is refused
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.assert:
+        that:
+          - restic_offsite_reverse_interlock_refused | bool
+        fail_msg: >-
+          The role accepted nas_storage_swap_clean_enabled with no
+          swap-clean.service in restic_offsite_conflicting_units, so a swap-clean
+          night that starts after the offsite run took the lock stops guests
+          underneath it.
+        success_msg: "A one-sided swap-clean interlock is refused"
+
+    # Both halves present: the role converges and the offsite run skips while
+    # swap-clean runs.
+    - name: Re-apply the role with the interlock complete on both sides
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.include_role:
+        name: weisssrv.infra.restic_offsite
+      vars:
+        nas_storage_swap_clean_enabled: true
+        nas_storage_swap_clean_conflicting_units: [restic-offsite.service]
+        restic_offsite_conflicting_units: [swap-clean.service]
+
+    - name: Read the conflict list the control script carries
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.command: grep -E '^CONFLICTING_UNITS=' /usr/local/sbin/restic-offsitectl
+      register: restic_offsite_interlock_rendered
+      changed_when: false
+
+    - name: Assert the complete interlock converged into the control script
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.assert:
+        that:
+          - restic_offsite_interlock_rendered.stdout == 'CONFLICTING_UNITS="swap-clean.service"'
+        fail_msg: >-
+          With both halves of the interlock set the control script carries
+          {{ restic_offsite_interlock_rendered.stdout }}, not swap-clean.service.
+        success_msg: "A complete swap-clean interlock converges"
 
     # Off-switch: the units AND the .prom go, or a frozen
     # backup_restore_drill_last_success_seconds keeps a staleness alert firing.

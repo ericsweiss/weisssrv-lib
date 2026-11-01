@@ -1,7 +1,7 @@
 ---
-# Seed ONE cert-distribution target: probe it, then (only if it answered)
-# install the forced-command receiver, its sudoers rule and the pinned pubkey.
-# Included once per target from main.yml, never looped over delegates.
+# Seed ONE cert-distribution target: probe it, then (only if it answered) install
+# the forced-command receiver, its sudoers rule and the pinned pubkey. Included once
+# per target, by main.yml and by the reseed entry point, never looped over delegates.
 
 - name: Probe for reachability — {{ acme_certs_target.host }}
   ansible.builtin.ping:
@@ -13,10 +13,13 @@
   changed_when: false
   register: acme_certs_probe
 
-- name: Record as unreachable — {{ acme_certs_target.host }}
+# acme_certs_unseeded_reasons maps every target left unseeded to why.
+- name: Record as unseeded — {{ acme_certs_target.host }}
   ansible.builtin.set_fact:
-    acme_certs_unreachable_targets: >-
-      {{ acme_certs_unreachable_targets + [acme_certs_target.host] }}
+    acme_certs_unseeded_reasons: >-
+      {{ acme_certs_unseeded_reasons | default({}) | combine({acme_certs_target.host:
+           'did not answer the probe' if acme_certs_probe is unreachable
+           else 'the probe failed: ' ~ (acme_certs_probe.msg | default('no pong'))}) }}
   when: acme_certs_probe.ping | default('') != 'pong'
 
 # The receiver and its sudoers rule must exist BEFORE the key is pinned:
@@ -25,7 +28,7 @@
 - name: Seed the reachable target
   when: acme_certs_probe.ping | default('') == 'pong'
   # A target that answered the probe and then went away must not take this host
-  # out of the play — the same failure mode the probe exists to prevent.
+  # out of the play. Each step runs only while the target still answers.
   ignore_unreachable: true
   block:
     - name: Deploy the cert-receive forced-command receiver — {{ acme_certs_target.host }}
@@ -36,14 +39,14 @@
         group: root
         mode: "0500"
       delegate_to: "{{ acme_certs_target.host }}"
+      register: acme_certs_seed_receiver
 
     # Scopes the escalation: this rule permits the receiver and nothing else, so
     # it survives the login user's broader sudo being tightened.
     - name: Deploy the cert-receive sudoers drop-in — {{ acme_certs_target.host }}
+      when: acme_certs_seed_receiver is not unreachable
       ansible.builtin.copy:
-        # Static marker, not {{ ansible_managed }}: the copy module (unlike
-        # template) does not inject it, so referencing it here is undefined on
-        # modern ansible-core and aborts the task.
+        # Static marker: the copy module does not define ansible_managed.
         content: |
           # Ansible managed - acme_certs cert-receive sudoers drop-in
           {{ acme_certs_target.ssh_user | default(acme_certs_ssh_user) }} ALL=(root) NOPASSWD: {{ acme_certs_receiver_path }}
@@ -54,8 +57,12 @@
         mode: "0440"
         validate: "visudo -cf %s"
       delegate_to: "{{ acme_certs_target.host }}"
+      register: acme_certs_seed_sudoers
 
     - name: Pin the cert-distribution pubkey in authorized_keys — {{ acme_certs_target.host }}
+      when:
+        - acme_certs_seed_receiver is not unreachable
+        - acme_certs_seed_sudoers is not unreachable
       ansible.posix.authorized_key:
         user: "{{ acme_certs_target.ssh_user | default(acme_certs_ssh_user) }}"
         state: present
@@ -68,3 +75,14 @@
           {{ (('from="' ~ acme_certs_key_from ~ '",') if (acme_certs_key_from | default('') | length > 0) else '')
              ~ 'command="sudo ' ~ acme_certs_receiver_path ~ '",restrict' }}
       delegate_to: "{{ acme_certs_target.host }}"
+      register: acme_certs_seed_key
+
+- name: Record as unseeded after the probe — {{ acme_certs_target.host }}
+  ansible.builtin.set_fact:
+    acme_certs_unseeded_reasons: >-
+      {{ acme_certs_unseeded_reasons | default({}) | combine({acme_certs_target.host:
+           'it answered the probe, then dropped while being seeded'}) }}
+  when:
+    - acme_certs_probe.ping | default('') == 'pong'
+    - (acme_certs_seed_receiver is unreachable) or (acme_certs_seed_sudoers is unreachable)
+      or (acme_certs_seed_key is unreachable)

@@ -16,6 +16,13 @@ from script_loader import load_script
 
 mod = load_script("check-vendored-copies.py")
 
+FORK = {
+    "lib": "lint/ruff.toml",
+    "consumer": "ruff.toml",
+    "reason": "narrower target set",
+    "reconciled_sha256": mod._sha(b"profile\n"),
+}
+
 
 @pytest.fixture()
 def world(tmp_path):
@@ -46,21 +53,7 @@ def world(tmp_path):
     )
 
     manifest = consumer / "scripts" / "vendored-manifest.yml"
-    manifest.write_text(
-        yaml.safe_dump(
-            {
-                "vendored": ["scripts/tool.py"],
-                "forked": [
-                    {
-                        "lib": "lint/ruff.toml",
-                        "consumer": "ruff.toml",
-                        "reason": "narrower target set",
-                        "reconciled_sha256": mod._sha(b"profile\n"),
-                    }
-                ],
-            }
-        )
-    )
+    manifest.write_text(yaml.safe_dump({"vendored": ["scripts/tool.py"], "forked": [FORK]}))
     return lib, consumer, manifest
 
 
@@ -164,13 +157,6 @@ class TestForked:
         (lib / "lint" / "ruff.toml").write_text("profile v2\n")
         assert _run(world) == 0
 
-    def test_a_reasonless_fork_entry_is_an_operator_error(self, world, capsys):
-        _, _, manifest = world
-        doc = yaml.safe_load(manifest.read_text())
-        del doc["forked"][0]["reason"]
-        manifest.write_text(yaml.safe_dump(doc))
-        assert _run(world) == 2
-        assert "no `reason:`" in capsys.readouterr().err
 
 
 class TestProseOnlyFork:
@@ -236,20 +222,6 @@ class TestProseOnlyFork:
         )
         assert _run(world) == 0
 
-    def test_a_non_boolean_comment_only_is_an_operator_error(self, world, capsys):
-        self._fork(world, "shared\n", "# x\nshared\n", comment_only="yes")
-        assert _run(world) == 2
-        assert "non-boolean `comment_only:`" in capsys.readouterr().err
-
-    def test_comment_only_is_rejected_on_a_vendored_entry(self, world, capsys):
-        _, _, manifest = world
-        manifest.write_text(
-            yaml.safe_dump(
-                {"vendored": [{"lib": "scripts/tool.py", "comment_only": True}]}
-            )
-        )
-        assert _run(world) == 2
-        assert "unknown keys" in capsys.readouterr().err
 
 
 class TestOffer:
@@ -266,16 +238,12 @@ class TestOffer:
         assert _run(world) == 1
         assert "not in the library's" in capsys.readouterr().err
 
-    def test_a_ref_predating_the_offer_list_skips_the_arm(self, world, capsys):
-        """History is not failed retroactively: at a pin cut before the offer
-        list existed, the membership arm skips — and says so — while the
-        byte-identity arms still run."""
+    def test_a_ref_without_the_offer_list_is_an_operator_error(self, world, capsys):
         lib, _, _ = world
         (lib / "scripts" / "vendorable-paths.yml").unlink()
-        _seed_git(lib)  # committed WITHOUT an offer list
-        _offer(lib, [])  # working tree regains one afterwards, deliberately empty
-        assert _run(world, ["--ref", "HEAD"]) == 0
-        assert "predates the offer list" in capsys.readouterr().err
+        _seed_git(lib)
+        assert _run(world, ["--ref", "HEAD"]) == 2
+        assert "missing from the library at HEAD" in capsys.readouterr().err
 
     def test_a_missing_working_tree_offer_list_is_an_operator_error(self, world, capsys):
         """No ref means the compare target is the working tree, and a tree that
@@ -284,31 +252,11 @@ class TestOffer:
         lib, _, _ = world
         (lib / "scripts" / "vendorable-paths.yml").unlink()
         assert _run(world) == 2
-        assert "missing from the library working tree" in capsys.readouterr().err
+        assert "missing from the library at the working tree" in capsys.readouterr().err
 
-    def test_a_malformed_offer_list_is_an_operator_error(self, world, capsys):
-        """Every malformed shape reports cleanly — a top-level list or scalar
-        must not surface as an AttributeError traceback."""
-        lib, _, _ = world
-        for malformed in ("vendorable: not-a-list\n", "- a\n- list\n", "scalar\n"):
-            (lib / "scripts" / "vendorable-paths.yml").write_text(malformed)
-            assert _run(world) == 2
-            assert "needs a `vendorable:` list" in capsys.readouterr().err
 
 
 class TestCli:
-    def test_a_missing_manifest_is_an_operator_error(self, world, capsys):
-        _, consumer, manifest = world
-        manifest.unlink()
-        assert _run(world) == 2
-        assert "vendored-manifest.yml" in capsys.readouterr().err
-
-    def test_an_empty_manifest_gates_nothing_and_says_so(self, world, capsys):
-        _, _, manifest = world
-        manifest.write_text("{}\n")
-        assert _run(world) == 2
-        assert "gates nothing" in capsys.readouterr().err
-
     def test_explicit_manifest_path_overrides_the_convention(self, world, tmp_path):
         lib, consumer, manifest = world
         moved = tmp_path / "elsewhere.yml"
@@ -406,46 +354,77 @@ class TestCli:
         assert "no longer ships scripts/tool.py" in capsys.readouterr().err
 
 
+def _vendoring(*extra) -> dict:
+    return {"vendored": ["scripts/tool.py", *extra], "forked": [FORK]}
+
+
+def _fork_without(key: str, **extra) -> dict:
+    return {k: v for k, v in FORK.items() if k != key} | extra
+
+
+@pytest.mark.parametrize("manifest_text,needle", [
+    pytest.param(None, "vendored-manifest.yml", id="missing_manifest"),
+    pytest.param("{}\n", "gates nothing", id="empty_manifest"),
+    pytest.param({"vendoerd": ["scripts/tool.py"], "forked": [FORK]}, "unknown keys: vendoerd",
+                 id="misspelled_section_key"),
+    pytest.param({"vendored": {"scripts/tool.py": True}, "forked": [FORK]},
+                 "needs `vendored:` to be a list", id="non_list_section"),
+    pytest.param("- just\n- a\n- list\n", "must contain a mapping", id="non_mapping_manifest"),
+    pytest.param(_vendoring({"lib": "scripts/tool.py", "consumer": "../outside.py"}),
+                 "canonical repo-relative path", id="dotdot_path"),
+    pytest.param(_vendoring({"lib": "scripts/tool.py", "consumer": "/etc/passwd"}),
+                 "canonical repo-relative path", id="absolute_path"),
+    # pathlib collapses `.` segments, so an alias would dodge the duplicate check.
+    *(pytest.param({"vendored": [{"lib": "scripts/tool.py", "consumer": alias}], "forked": [FORK]},
+                   "canonical repo-relative path", id=f"non_canonical_alias_{n}")
+      for n, alias in enumerate(("scripts/./tool.py", "scripts//tool.py", "scripts/tool.py\x00"))),
+    # Two entries writing one destination both pass while matching either upstream.
+    pytest.param(_vendoring({"lib": "lint/ruff.toml", "consumer": "scripts/tool.py"}),
+                 "more than once", id="duplicate_consumer_destination"),
+    # PyYAML keeps only the last key, silently ungating every entry in the first.
+    pytest.param("vendored:\n  - scripts/tool.py\nvendored:\n  - lint/ruff.toml\n",
+                 "duplicate mapping key", id="duplicate_yaml_key"),
+    pytest.param("? [a, list, key]\n: x\nvendored:\n  - scripts/tool.py\n",
+                 "unhashable mapping key", id="unhashable_yaml_key"),
+    # A typo like reconciled_sha265 would silently disarm the guard it meant to arm.
+    pytest.param({"forked": [_fork_without("reconciled_sha256", reconciled_sha265="x")]},
+                 "unknown keys: reconciled_sha265", id="unknown_entry_key"),
+    pytest.param({"forked": [FORK, "lint/editorconfig"]}, "must be a mapping with a `reason:`",
+                 id="string_form_forked_entry"),
+    pytest.param({"forked": [_fork_without("reason")]}, "no `reason:`", id="reasonless_fork_entry"),
+    pytest.param({"forked": [{"lib": "scripts/tool.py", "reason": "r", "comment_only": "yes"}]},
+                 "non-boolean `comment_only:`", id="non_boolean_comment_only"),
+    pytest.param({"vendored": [{"lib": "scripts/tool.py", "comment_only": True}]},
+                 "unknown keys", id="comment_only_on_a_vendored_entry"),
+])
+def test_an_unusable_manifest_is_an_operator_error(world, capsys, manifest_text, needle):
+    manifest = world[2]
+    if manifest_text is None:
+        manifest.unlink()
+    else:
+        manifest.write_text(
+            manifest_text if isinstance(manifest_text, str) else yaml.safe_dump(manifest_text)
+        )
+    assert _run(world) == 2
+    assert needle in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("offer_text,needle", [
+    pytest.param("vendorable:\n  - ../outside.py\n", "canonical repo-relative path",
+                 id="escaping_offer_path"),
+    pytest.param("vendorable:\n  - scripts/tool.py\nvendorable:\n  - lint/ruff.toml\n",
+                 "duplicate mapping key", id="duplicate_offer_key"),
+    *(pytest.param(text, "needs a `vendorable:` list", id=f"malformed_offer_{n}")
+      for n, text in enumerate(("vendorable: not-a-list\n", "- a\n- list\n", "scalar\n"))),
+])
+def test_an_unusable_offer_list_is_an_operator_error(world, capsys, offer_text, needle):
+    (world[0] / "scripts" / "vendorable-paths.yml").write_text(offer_text)
+    assert _run(world) == 2
+    assert needle in capsys.readouterr().err
+
+
 class TestManifestSafety:
     """The manifest gates the repo it lives in — nothing outside it."""
-
-    def test_a_misspelled_section_key_is_an_operator_error(self, world, capsys):
-        _, _, manifest = world
-        doc = yaml.safe_load(manifest.read_text())
-        doc["vendoerd"] = doc.pop("vendored")
-        manifest.write_text(yaml.safe_dump(doc))
-        assert _run(world) == 2
-        assert "unknown keys: vendoerd" in capsys.readouterr().err
-
-    def test_a_non_list_section_is_an_operator_error(self, world, capsys):
-        _, _, manifest = world
-        doc = yaml.safe_load(manifest.read_text())
-        doc["vendored"] = {"scripts/tool.py": True}
-        manifest.write_text(yaml.safe_dump(doc))
-        assert _run(world) == 2
-        assert "needs `vendored:` to be a list" in capsys.readouterr().err
-
-    def test_a_non_mapping_manifest_is_an_operator_error(self, world, capsys):
-        _, _, manifest = world
-        manifest.write_text("- just\n- a\n- list\n")
-        assert _run(world) == 2
-        assert "must contain a mapping" in capsys.readouterr().err
-
-    def test_a_dotdot_path_is_rejected_at_parse(self, world, capsys):
-        _, _, manifest = world
-        doc = yaml.safe_load(manifest.read_text())
-        doc["vendored"].append({"lib": "scripts/tool.py", "consumer": "../outside.py"})
-        manifest.write_text(yaml.safe_dump(doc))
-        assert _run(world) == 2
-        assert "canonical repo-relative path" in capsys.readouterr().err
-
-    def test_an_absolute_path_is_rejected_at_parse(self, world, capsys):
-        _, _, manifest = world
-        doc = yaml.safe_load(manifest.read_text())
-        doc["vendored"].append({"lib": "scripts/tool.py", "consumer": "/etc/passwd"})
-        manifest.write_text(yaml.safe_dump(doc))
-        assert _run(world) == 2
-        assert "canonical repo-relative path" in capsys.readouterr().err
 
     def test_an_escaping_symlink_is_a_finding(self, world, tmp_path, capsys):
         """Parse-clean but resolving outside the repo: the symlink variant is
@@ -461,81 +440,6 @@ class TestManifestSafety:
         _offer(lib, ["scripts/tool.py", "lint/ruff.toml"])
         assert _run(world) == 1
         assert "is a symlink" in capsys.readouterr().err
-
-    def test_a_duplicate_consumer_destination_is_an_operator_error(self, world, capsys):
-        """Two entries writing one destination describe an ambiguous copy
-        relationship — both could pass while the bytes match either upstream."""
-        _, _, manifest = world
-        doc = yaml.safe_load(manifest.read_text())
-        doc["vendored"].append({"lib": "lint/ruff.toml", "consumer": "scripts/tool.py"})
-        manifest.write_text(yaml.safe_dump(doc))
-        assert _run(world) == 2
-        assert "more than once" in capsys.readouterr().err
-
-    def test_an_escaping_offer_path_is_an_operator_error(self, world, capsys):
-        lib, _, _ = world
-        _offer(lib, ["../outside.py"])
-        assert _run(world) == 2
-        assert "canonical repo-relative path" in capsys.readouterr().err
-
-    def test_a_duplicate_yaml_key_is_an_operator_error(self, world, capsys):
-        """A duplicate `vendored:` key is an operator error: PyYAML keeps only
-        the last, silently ungating every entry in the first."""
-        _, _, manifest = world
-        manifest.write_text(
-            "vendored:\n  - scripts/tool.py\nvendored:\n  - lint/ruff.toml\n"
-        )
-        assert _run(world) == 2
-        assert "duplicate mapping key" in capsys.readouterr().err
-
-    def test_an_unknown_entry_key_is_an_operator_error(self, world, capsys):
-        """A typo like reconciled_sha265 would silently disarm the guard it
-        meant to arm."""
-        _, _, manifest = world
-        doc = yaml.safe_load(manifest.read_text())
-        doc["forked"][0]["reconciled_sha265"] = doc["forked"][0].pop("reconciled_sha256")
-        manifest.write_text(yaml.safe_dump(doc))
-        assert _run(world) == 2
-        assert "unknown keys: reconciled_sha265" in capsys.readouterr().err
-
-    def test_a_string_form_forked_entry_is_an_operator_error(self, world, capsys):
-        """The short form cannot carry the mandatory reason."""
-        _, _, manifest = world
-        doc = yaml.safe_load(manifest.read_text())
-        doc["forked"].append("lint/editorconfig")
-        manifest.write_text(yaml.safe_dump(doc))
-        assert _run(world) == 2
-        assert "must be a mapping with a `reason:`" in capsys.readouterr().err
-
-    def test_an_unhashable_yaml_key_is_an_operator_error(self, world, capsys):
-        _, _, manifest = world
-        manifest.write_text("? [a, list, key]\n: x\nvendored:\n  - scripts/tool.py\n")
-        assert _run(world) == 2
-        assert "unhashable mapping key" in capsys.readouterr().err
-
-    def test_a_release_shipping_the_engine_without_the_offer_is_broken(self, world, capsys):
-        """A release that names the engine without shipping the offer list is
-        an error, not history: skipping would certify unoffered paths."""
-        lib, _, _ = world
-        (lib / "scripts" / "vendorable-paths.yml").unlink()
-        (lib / "scripts" / "check-vendored-copies.py").write_text(
-            "# fake engine that reads scripts/vendorable-paths.yml\n"
-        )
-        _seed_git(lib)
-        _offer(lib, ["scripts/tool.py", "lint/ruff.toml"])  # working tree fine
-        assert _run(world, ["--ref", "HEAD"]) == 2
-        assert "broken release" in capsys.readouterr().err
-
-    def test_a_non_canonical_path_alias_is_an_operator_error(self, world, capsys):
-        """pathlib collapses `.` segments, so `scripts/./tool.py` would count
-        as a second destination and dodge the duplicate check."""
-        _, _, manifest = world
-        for alias in ("scripts/./tool.py", "scripts//tool.py", "scripts/tool.py\x00"):
-            doc = yaml.safe_load(manifest.read_text())
-            doc["vendored"] = [{"lib": "scripts/tool.py", "consumer": alias}]
-            manifest.write_text(yaml.safe_dump(doc))
-            assert _run(world) == 2, f"alias {alias!r} was accepted"
-            assert "canonical repo-relative path" in capsys.readouterr().err
 
     def test_an_in_repo_symlink_is_a_finding_too(self, world, capsys):
         """An in-repo symlink is a finding too: read_bytes() follows the link
@@ -588,14 +492,6 @@ class TestManifestSafety:
         err = capsys.readouterr().err
         assert "git show could not serve it" in err
 
-    def test_a_duplicate_offer_key_is_an_operator_error(self, world, capsys):
-        lib, _, _ = world
-        (lib / "scripts" / "vendorable-paths.yml").write_text(
-            "vendorable:\n  - scripts/tool.py\nvendorable:\n  - lint/ruff.toml\n"
-        )
-        assert _run(world) == 2
-        assert "duplicate mapping key" in capsys.readouterr().err
-
     def test_a_lib_path_that_is_not_a_library_checkout_is_an_operator_error(
         self, world, capsys, tmp_path
     ):
@@ -634,78 +530,3 @@ class TestManifestSafety:
         _offer(lib, ["scripts/tool.py", "lint/ruff.toml", "scripts/reflink.py"])
         assert _run(world, ["--ref", "HEAD"]) == 1
         assert "committed symlink" in capsys.readouterr().err
-
-
-class TestUnregisteredTwinScan:
-    """The per-path arms judge only what the manifest declares, so a subtree
-    nobody registered is invisible without --scan."""
-
-    def _molecule_twin(self, world, relpath: str = "prepare-common.yml") -> Path:
-        lib, consumer, _manifest = world
-        shared = lib / "ansible_collections" / "weisssrv" / "infra" / "molecule-shared"
-        shared.mkdir(parents=True, exist_ok=True)
-        (shared / relpath).parent.mkdir(parents=True, exist_ok=True)
-        (shared / relpath).write_text("scaffolding\n")
-        _offer(
-            lib,
-            [
-                "scripts/tool.py",
-                "lint/ruff.toml",
-                f"ansible_collections/weisssrv/infra/molecule-shared/{relpath}",
-            ],
-        )
-        local = consumer / "ansible" / "molecule" / relpath
-        local.parent.mkdir(parents=True, exist_ok=True)
-        local.write_text("scaffolding\n")
-        return local
-
-    SCAN = (
-        "--scan",
-        "ansible/molecule=ansible_collections/weisssrv/infra/molecule-shared",
-    )
-
-    def test_unregistered_twin_fails(self, world, capsys):
-        self._molecule_twin(world)
-        assert _run(world, self.SCAN) == 1
-        err = capsys.readouterr().err
-        assert "ansible/molecule/prepare-common.yml" in err
-        assert "is in no manifest entry" in err
-
-    def test_the_same_tree_passes_without_the_scan(self, world):
-        """Without --scan the copy is invisible, which is the gap being closed."""
-        self._molecule_twin(world)
-        assert _run(world) == 0
-
-    def test_registered_twin_passes(self, world):
-        lib, consumer, manifest = world
-        self._molecule_twin(world)
-        doc = yaml.safe_load(manifest.read_text())
-        doc["vendored"].append(
-            {
-                "lib": "ansible_collections/weisssrv/infra/molecule-shared/"
-                       "prepare-common.yml",
-                "consumer": "ansible/molecule/prepare-common.yml",
-            }
-        )
-        manifest.write_text(yaml.safe_dump(doc))
-        assert _run(world, self.SCAN) == 0
-
-    def test_nested_twin_is_found(self, world, capsys):
-        self._molecule_twin(world, "tasks/prepare-base.yml")
-        assert _run(world, self.SCAN) == 1
-        assert "ansible/molecule/tasks/prepare-base.yml" in capsys.readouterr().err
-
-    def test_file_with_no_offered_twin_is_left_alone(self, world):
-        lib, consumer, _manifest = world
-        local = consumer / "ansible" / "molecule" / "site-only.yml"
-        local.parent.mkdir(parents=True, exist_ok=True)
-        local.write_text("site data\n")
-        assert _run(world, self.SCAN) == 0
-
-    def test_missing_scan_dir_exits_2(self, world, capsys):
-        assert _run(world, self.SCAN) == 2
-        assert "which is not a directory" in capsys.readouterr().err
-
-    def test_malformed_scan_argument_exits_2(self, world, capsys):
-        assert _run(world, ["--scan", "ansible/molecule"]) == 2
-        assert "CONSUMER_DIR=LIB_PREFIX" in capsys.readouterr().err

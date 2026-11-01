@@ -56,14 +56,12 @@
     url: "{{ prometheus_exporter_download_url }}"
     dest: "{{ prometheus_exporter_tmp_dir }}/{{ prometheus_exporter_download_url | basename }}"
     mode: "0644"
-    # Empty checksum omits the param entirely; both wrappers pin a sha256 in
-    # all.yml, so this is just the generic fallback for a checksumless caller.
+    # An empty checksum omits the param for a checksumless caller.
     checksum: "{{ prometheus_exporter_checksum | default(omit, true) }}"
     # get_url's 10s default expires mid-handshake against a release mirror.
     timeout: 60
   when: prometheus_exporter_needs_install
-  # Release artifacts are fetched from GitHub, whose TLS handshakes/connections
-  # intermittently reset from CI runners — retry before failing the play.
+  # Bounded retry for a transient reset from the release host.
   register: prometheus_exporter_download
   until: prometheus_exporter_download is succeeded
   retries: 3

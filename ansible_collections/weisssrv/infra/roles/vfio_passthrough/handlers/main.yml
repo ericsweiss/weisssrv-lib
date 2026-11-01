@@ -14,8 +14,8 @@
   changed_when: true
   when: not (vfio_passthrough_skip_boot_update | default(false))
 
-# vfio.conf is a load-time module config; the pools/drivers are decided during
-# the initramfs at early boot, so bake it in there. Skipped under molecule.
+# vfio.conf is a load-time module config read from the initramfs at early boot,
+# so it is baked in there. Skipped under molecule.
 - name: Rebuild initramfs for VFIO
   ansible.builtin.command: update-initramfs -u
   changed_when: true

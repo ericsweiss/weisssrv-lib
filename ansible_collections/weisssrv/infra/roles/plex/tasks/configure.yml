@@ -23,8 +23,8 @@
   notify: Restart plex
 
 # The render group only exists where a DRM render node is present. Probing it
-# keeps a genuine failure (e.g. a missing plex user) visible, which a blanket
-# failed_when: false would have hidden while GPU transcode silently degraded.
+# first keeps a genuine failure on the user task, such as a missing plex user,
+# visible.
 - name: Check whether the render group exists
   ansible.builtin.command: getent group render
   register: plex_render_group
@@ -38,10 +38,6 @@
     append: true
   notify: Restart plex
   when: plex_render_group.rc == 0
-
-# The bind-mounted directories are deliberately NOT chowned: they arrive with
-# UID/GID passthrough, and chowning from inside an unprivileged container
-# rewrites the host side to high-mapped UIDs.
 
 # Custom-certificate hook: an external distributor drops fullchain.pem +
 # privkey.pem into plex_cert_dir, and plex-cert-reload.sh converts the pair into

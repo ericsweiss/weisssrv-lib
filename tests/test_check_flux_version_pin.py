@@ -53,20 +53,6 @@ def test_gotk_disagreeing_with_ci_fails(tmp_path):
     assert "gotk-components.yaml" in "\n".join(report)
 
 
-def test_a_runbook_is_named_in_the_re_export_line(tmp_path):
-    """The doc that owns the upgrade is consumer site data, so it is an input."""
-    code, report = gate.check(_repo(tmp_path, gotk="2.6.0"),
-                              runbook="docs/flux-operations.md")
-    assert code == 1
-    assert "(see docs/flux-operations.md)" in "\n".join(report)
-
-
-def test_without_a_runbook_the_line_names_no_doc(tmp_path):
-    code, report = gate.check(_repo(tmp_path, gotk="2.6.0"))
-    assert code == 1
-    assert "(see " not in "\n".join(report)
-
-
 def test_a_changed_component_set_fails(tmp_path):
     """A distribution change is not a version bump: it needs --components."""
     code, report = gate.check(_repo(tmp_path, components="source-controller"))

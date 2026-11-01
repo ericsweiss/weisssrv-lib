@@ -71,32 +71,6 @@ def test_a_host_outside_the_lan_fails(tmp_path, capsys):
     assert "outside cluster_lan_cidr" in capsys.readouterr().err
 
 
-MULTI_VLAN_CONFIG = CONFIG.replace(
-    '  cluster_k3s_api_vip', '  cluster_storage_cidr: "10.0.20.0/24"\n  cluster_k3s_api_vip'
-)
-
-
-def test_a_host_inside_a_second_declared_lan_cidr_passes(tmp_path):
-    hosts = HOSTS.replace("ansible_host: 10.0.10.152", "ansible_host: 10.0.20.152")
-    argv = _files(tmp_path, hosts, MULTI_VLAN_CONFIG)
-    assert gate.main(argv + ["--lan-cidr-key", "cluster_lan_cidr",
-                             "--lan-cidr-key", "cluster_storage_cidr"]) == 0
-
-
-def test_a_host_outside_every_declared_lan_cidr_still_fails(tmp_path, capsys):
-    hosts = HOSTS.replace("ansible_host: 10.0.10.152", "ansible_host: 10.0.99.152")
-    argv = _files(tmp_path, hosts, MULTI_VLAN_CONFIG)
-    assert gate.main(argv + ["--lan-cidr-key", "cluster_lan_cidr",
-                             "--lan-cidr-key", "cluster_storage_cidr"]) == 1
-    assert "cluster_storage_cidr" in capsys.readouterr().err
-
-
-def test_no_named_lan_key_is_declared_is_an_operator_error(tmp_path, capsys):
-    argv = _files(tmp_path)
-    assert gate.main(argv + ["--lan-cidr-key", "cluster_absent_cidr"]) == 2
-    assert "cluster_absent_cidr" in capsys.readouterr().err
-
-
 def test_a_host_named_rather_than_addressed_is_left_alone(tmp_path):
     hosts = HOSTS.replace("ansible_host: 10.0.10.152", "ansible_host: plex.example.test")
     assert gate.main(_files(tmp_path, hosts)) == 0
@@ -111,180 +85,57 @@ def test_a_host_in_two_groups_is_not_a_duplicate_of_itself(tmp_path):
     assert gate.main(_files(tmp_path, hosts)) == 0
 
 
-def test_an_empty_inventory_is_an_operator_error(tmp_path):
-    assert gate.main(_files(tmp_path, "---\nall:\n  children: {}\n")) == 2
-
-
-def test_a_config_declaring_no_vip_is_an_operator_error(tmp_path):
-    config = CONFIG.replace('  cluster_k3s_api_vip: "10.0.10.161"\n', "")
-    config = config.replace('  cluster_metallb_public_vip: "10.0.10.100"\n', "")
-    config = config.replace('  cluster_metallb_internal_vip: "10.0.10.101"\n', "")
-    assert gate.main(_files(tmp_path, config=config)) == 2
-
-
-def test_a_missing_inventory_is_an_operator_error(tmp_path):
-    assert gate.main(["--hosts", str(tmp_path / "nope.yml")]) == 2
-
-
-def test_a_missing_cluster_config_is_an_operator_error(tmp_path, capsys):
-    (tmp_path / "hosts.yml").write_text(HOSTS, encoding="utf-8")
-    assert gate.main(["--hosts", str(tmp_path / "hosts.yml"),
-                      "--cluster-config", str(tmp_path / "absent.yaml")]) == 2
-    assert "--allow-missing-cluster-config" in capsys.readouterr().err
-
-
-def test_a_missing_cluster_config_passes_when_the_flag_allows_it(tmp_path, capsys):
-    (tmp_path / "hosts.yml").write_text(HOSTS, encoding="utf-8")
-    assert gate.main(["--hosts", str(tmp_path / "hosts.yml"),
-                      "--cluster-config", str(tmp_path / "absent.yaml"),
-                      "--allow-missing-cluster-config"]) == 0
-    assert "VIP and LAN arm(s) skipped by request" in capsys.readouterr().out
-
-
 def test_a_host_on_an_undeclared_vip_key_is_caught(tmp_path, capsys):
     config = CONFIG + '  cluster_syslog_vip: "10.0.10.152"\n'
     assert gate.main(_files(tmp_path, config=config)) == 1
     assert "cluster_syslog_vip" in capsys.readouterr().err
 
 
-def test_an_explicit_vip_key_list_replaces_the_declared_keys(tmp_path):
-    """--vip-key names the keys to check, so a VIP under another key is ignored."""
-    config = CONFIG + '  cluster_syslog_vip: "10.0.10.152"\n'
-    args = _files(tmp_path, config=config)
-    assert gate.main(args) == 1
-    assert gate.main(args + ["--vip-key", "cluster_k3s_api_vip"]) == 0
+def _two_hosts(pve_01: str, pve_02: str) -> str:
+    return (
+        "---\nall:\n  children:\n    pve:\n      hosts:\n"
+        "        pve-01:\n          %s\n        pve-02:\n          %s\n"
+        % (pve_01, pve_02)
+    )
 
 
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-v"]))
+NO_VIP_CONFIG = CONFIG.split("  cluster_k3s_api_vip")[0]
 
 
-def test_a_config_with_no_lan_cidr_is_an_operator_error(tmp_path, capsys):
-    """A misspelled --lan-cidr-key would otherwise leave the arm permanently green."""
-    argv = _files(tmp_path, config=CONFIG.replace("cluster_lan_cidr", "cluster_lan_net"))
+@pytest.mark.parametrize(
+    "hosts, config, needle",
+    [
+        ("---\nall:\n  children: {}\n", CONFIG, "declares no hosts"),
+        (_two_hosts("ansible_host: 10.0.10.102", "ansible_host: 10.0.10.103"),
+         CONFIG, "duplicate-vmid arm"),
+        (_two_hosts("vmid: 102", "vmid: 103"), CONFIG, "duplicate-ansible_host arm"),
+        (_two_hosts("{ansible_host: pve-01.example.test, vmid: 102}",
+                    "{ansible_host: pve-02.example.test, vmid: 103}"),
+         CONFIG, "IP-literal ansible_host"),
+        (HOSTS, NO_VIP_CONFIG, "VIP arm"),
+        (HOSTS, CONFIG.replace("cluster_lan_cidr", "cluster_lan_net"), "cluster_lan_cidr"),
+        (HOSTS, None, "no cluster config"),
+    ],
+    ids=["no-hosts", "no-vmid", "no-ansible-host", "named-only", "no-vip",
+         "no-lan-cidr", "no-cluster-config"],
+)
+def test_an_arm_examining_nothing_is_an_operator_error(tmp_path, capsys, hosts, config, needle):
+    argv = _files(tmp_path, hosts, config or CONFIG)
+    if config is None:
+        argv[-1] = str(tmp_path / "absent.yaml")
     assert gate.main(argv) == 2
-    assert "cluster_lan_cidr" in capsys.readouterr().err
+    assert needle in capsys.readouterr().err
 
 
-def test_a_config_with_no_lan_cidr_passes_when_the_flag_allows_it(tmp_path, capsys):
-    argv = _files(tmp_path, config=CONFIG.replace("cluster_lan_cidr", "cluster_lan_net"))
-    assert gate.main(argv + ["--allow-missing-lan-cidr"]) == 0
-    assert "LAN arm(s) skipped by request" in capsys.readouterr().out
-
-
-NO_VMID = """---
-all:
-  children:
-    pve:
-      hosts:
-        pve-01:
-          ansible_host: 10.0.10.102
-        pve-02:
-          ansible_host: 10.0.10.103
-"""
-
-
-def test_an_inventory_with_no_vmid_is_an_operator_error(tmp_path, capsys):
-    """An inventory keeping vmid in host_vars would leave the arm green forever."""
-    assert gate.main(_files(tmp_path, hosts=NO_VMID)) == 2
-    assert "--allow-missing-vmid" in capsys.readouterr().err
-
-
-def test_an_inventory_with_no_vmid_passes_when_the_flag_allows_it(tmp_path, capsys):
-    assert gate.main(_files(tmp_path, hosts=NO_VMID) + ["--allow-missing-vmid"]) == 0
-    assert "skipped by request" in capsys.readouterr().out
-
-
-NO_ANSIBLE_HOST = """---
-all:
-  children:
-    pve:
-      hosts:
-        pve-01:
-          vmid: 102
-        pve-02:
-          vmid: 103
-"""
-
-
-def test_an_inventory_with_no_ansible_host_is_an_operator_error(tmp_path, capsys):
-    """An inventory resolving hosts by DNS would leave the arm green forever."""
-    assert gate.main(_files(tmp_path, hosts=NO_ANSIBLE_HOST)) == 2
-    assert "--allow-missing-ansible-host" in capsys.readouterr().err
-
-
-def test_an_inventory_with_no_ansible_host_passes_when_the_flag_allows_it(
-    tmp_path, capsys
-):
-    assert gate.main(
-        _files(tmp_path, hosts=NO_ANSIBLE_HOST) + ["--allow-missing-ansible-host"]
-    ) == 0
-    assert "skipped by request" in capsys.readouterr().out
-
-
-NO_VIP_CONFIG = """---
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: cluster-config
-data:
-  cluster_lan_cidr: "10.0.10.0/24"
-"""
-
-
-def test_a_config_with_no_vip_is_an_operator_error(tmp_path, capsys):
-    assert gate.main(_files(tmp_path, config=NO_VIP_CONFIG)) == 2
-    assert "--allow-missing-vip" in capsys.readouterr().err
-
-
-def test_a_config_with_no_vip_passes_when_the_flag_allows_it(tmp_path, capsys):
-    """A single-node or external-load-balancer cluster declares no VIP."""
-    assert gate.main(
-        _files(tmp_path, config=NO_VIP_CONFIG) + ["--allow-missing-vip"]
-    ) == 0
-    assert "VIP arm(s) skipped by request" in capsys.readouterr().out
-
-
-def test_the_vip_opt_out_does_not_suppress_a_real_collision(tmp_path, capsys):
-    hosts = HOSTS.replace("ansible_host: 10.0.10.152", "ansible_host: 10.0.10.161")
-    assert gate.main(_files(tmp_path, hosts=hosts) + ["--allow-missing-vip"]) == 1
-    assert "cluster VIP" in capsys.readouterr().err
-
-
-NAMED_HOSTS = """---
-all:
-  children:
-    pve:
-      hosts:
-        pve-01:
-          ansible_host: pve-01.example.test
-          vmid: 102
-        pve-02:
-          ansible_host: pve-02.example.test
-          vmid: 103
-"""
-
-
-def test_an_inventory_addressed_only_by_name_is_an_operator_error(tmp_path, capsys):
-    """The LAN arm compared nothing, so OK would certify a check it never ran."""
-    assert gate.main(_files(tmp_path, hosts=NAMED_HOSTS)) == 2
-    assert "--allow-missing-lan-addresses" in capsys.readouterr().err
-
-
-def test_an_inventory_addressed_only_by_name_passes_when_the_flag_allows_it(
-    tmp_path, capsys
-):
-    assert gate.main(
-        _files(tmp_path, hosts=NAMED_HOSTS) + ["--allow-missing-lan-addresses"]
-    ) == 0
-    assert "LAN addresses" in capsys.readouterr().out
+def test_a_missing_inventory_is_an_operator_error(tmp_path):
+    assert gate.main(["--hosts", str(tmp_path / "nope.yml")]) == 2
 
 
 def test_a_malformed_inventory_is_an_operator_error(tmp_path, capsys):
     """A parse failure is not `the inventory has a duplicate address`."""
     hosts = tmp_path / "hosts.yml"
     hosts.write_text("all:\n  hosts: [unclosed\n", encoding="utf-8")
-    assert gate.main(["--hosts", str(hosts), "--allow-missing-cluster-config"]) == 2
+    assert gate.main(["--hosts", str(hosts)]) == 2
     err = capsys.readouterr().err
     assert str(hosts) in err
     assert "Traceback" not in err

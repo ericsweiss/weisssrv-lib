@@ -75,6 +75,10 @@ def test_jobs_drops_templates_and_reserved_keys():
     assert set(ci_yaml.jobs(ci_yaml.parse_ci(PIPELINE))) == {"build"}
 
 
+def test_no_reserved_keyword_is_a_job():
+    assert ci_yaml.jobs({key: {"script": ["true"]} for key in ci_yaml.RESERVED_KEYS}) == {}
+
+
 def test_a_non_mapping_document_is_an_empty_mapping_not_a_crash():
     assert ci_yaml.parse_ci("- one\n- two\n") == {}
 

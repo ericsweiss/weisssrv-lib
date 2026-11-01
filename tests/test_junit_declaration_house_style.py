@@ -1,5 +1,6 @@
-"""House style for every scenario's junit declarations: the tag a converge-driven
-negative case carries, and the ` ::<n>` count its guard records in one run.
+"""House style for scenario junit declarations: the tag a converge-driven negative
+case carries, and the ` ::<n>` count its guard records in one run. A case is a
+block/rescue, since one under `ignore_errors` records a pass and is never declared.
 """
 from __future__ import annotations
 
@@ -31,24 +32,19 @@ class RunOnce(NamedTuple):
 # Converge and verify cases count the same: once per host per case, unless the
 # guard is wrapped in RunOnce.
 CASES = {
-    "adguard_sync/default": {
-        "Validate every entry in adguard_sync_replicas carries a URL": 1,
+    "acme_certs/default": {
+        # A target that was not pinned, a host that is not a target, and the role off.
+        "Fail when the re-seed left targets unpinned": 3,
     },
     "alloy_host/default": {
         "Assert Loki push credentials are present": 1,
     },
     "apt_signed_repo/default": {
-        # The wrong fingerprint, then the bundled second key.
-        "Verify downloaded signing key fingerprint": 2,
-        "Verify existing signing keyring fingerprint": 1,
+        # The wrong fingerprint, the bundled second key, the drifted keyring.
+        "Verify signing key fingerprint": 3,
         "Assert a component set was requested": 1,
         "Fail when the deb822 sources file is absent": 1,
         "Assert the sources file carries a Components line to rewrite": 1,
-    },
-    "base/default": {
-        "Assert every kernel cmdline argument is a single bare token": 1,
-        # Verify-driven: the systemd-boot command line.
-        "Assert the host takes its kernel command line from GRUB": 1,
     },
     "compose_app/default": {
         # The broken candidate, then the partial sites-enabled merge.
@@ -78,6 +74,26 @@ CASES = {
     "k3s/agent": {
         "Validate required k3s variables": 1,
     },
+    "nas_storage/default": {
+        # Verify-driven throughout. An orphan entry, then an entry equal to a source.
+        "Assert every excluded dataset sits under a replicated source": 2,
+        "Assert the swap-clean stop-guest entries are vmid:name:timeout": 1,
+        "Assert every export bind source is classified ZFS-backed or not": 1,
+        # Branches that are the roots, then a root-branched union with no anchor.
+        "Assert every MergerFS union is classified ZFS-backed or not": 2,
+        # An empty string, then a typo on an in-root export.
+        "Assert every declared export `zfs:` is a boolean": 2,
+        "Assert every declared MergerFS union `zfs:` is a boolean": 1,
+        "Assert every declared component path is a regular file": 1,
+        "Assert the managed-file marker is usable": 1,
+        "Assert the component named something to de-provision": 1,
+        "Assert every busy-mount probe that ran produced a result": 1,
+        "Assert every MergerFS status check that ran produced a result": 1,
+        # An override outside every source, then a negative count.
+        "Assert every keep-monthly override names a replicated dataset and a count": 2,
+        # A unit-suffixed quiet period, then a quiet period longer than the wait.
+        "Assert the vzdump quiesce bounds are positive whole minutes in order": 2,
+    },
     "node_exporter_host/default": {
         "Assert the slabinfo collector inputs are consistent": 1,
     },
@@ -90,14 +106,16 @@ CASES = {
         "Assert create-fixed storage properties have not drifted": 2,
     },
     "proxmox_firewall/default": {
-        # A mapping `sources`, then an entry with no sources key.
-        "Assert the sg-dns admin-port entries carry a port and a list of sources": 2,
-        # A scalar `sources`, then a valueless `port`.
-        "Assert the sg-metrics scrape-port entries carry a port and a list of sources": 2,
+        # sg-dns: a mapping `sources`, an entry with no sources key; sg-metrics:
+        # a scalar `sources`, a valueless `port`.
+        "Assert the sg-dns and sg-metrics port entries carry a port and a list of sources": 4,
         # A scalar list, two empty lists, a null and an empty-string element,
         # a punctuated name and a name under the ipset grammar's minimum.
         "Assert the client-scope source lists are non-empty lists of set names": 7,
         "Assert the smtp-relay client scope is a list of set names": 1,
+        # A scalar k3s list, a blank, a null and a bare-colon element, a scalar
+        # WireGuard list and a WireGuard address with an out-of-range octet.
+        "Assert the public VIP lists are lists of addresses": 6,
         # The relay egress entry with no port, then the host egress entry with
         # no proto: one guard covers both inputs.
         "Assert the extra egress ports carry a port and a protocol": 2,
@@ -115,15 +133,18 @@ CASES = {
         # The role's own publish task, driven against a pve-firewall stub that
         # prints a parse error and exits 0; no run_once on it.
         "Validate the compiled ruleset after publishing": 1,
-        # Converge-driven; guest.yml carries no run_once.
-        "Assert a relay guest has a client scope for sg-smtp-relay": 1,
     },
     "proxmox_ha/default": {
         # run_once on the assert itself; main.yml includes rules.yml under it.
         "Assert a reachable Proxmox node was found for the reconcile": RunOnce(1),
         "Assert every HA rule is a supported type": RunOnce(1),
         "Ensure we're running on a Proxmox VE cluster": 1,
-        "Get current storage replication jobs": 1,
+        # Cases V and V3: a failed read, and an rc-0 read that prints nothing.
+        "Get current storage replication jobs": 2,
+        # Case V2: a failed qm list.
+        "Get list of local VMIDs on this node": 1,
+        # Case D3: a create blocked by another job to the same target.
+        "Create storage replication jobs": 1,
     },
     "proxmox_lxc/default": {
         "Validate resource pool is in standard list": 1,
@@ -141,20 +162,25 @@ CASES = {
         "Fail when no Proxmox host answered the cluster-resource query": 1,
         "Ensure the guest NIC has the firewall flag": 1,
         "Reconcile VM memory allocation": 1,
+        # A create failing after `qm create`.
+        "Import cloud image disk": 1,
+        # The create marker alone, beside another tag, and left by a failed start.
+        "Fail loud on an existing VM its create left half-built": 3,
+        # A create whose `qm start` fails.
+        "Start VM": 1,
     },
     "restic_offsite/default": {
         "Refuse secret values the env file and restic would read differently": 1,
         "Assert swap-clean is interlocked against the offsite run": 1,
+        "Assert the offsite run is interlocked against swap-clean": 1,
     },
     "tailscale/default": {
         "Fail when a Tailscale join is required but TAILSCALE_AUTH_KEY is unset": 1,
     },
-    "vfio_passthrough/default": {
-        "Assert the kernel-cmdline method is implemented": 1,
-        "Assert the managed-file marker is usable": 1,
-    },
     "zvol_mount/default": {
         "Assert a blank-looking disk carries no partition table either": 1,
+        "Assert existing filesystem matches expected type": 1,
+        "Assert additional-disk filesystem UUIDs are unique": 1,
     },
 }
 
@@ -367,9 +393,6 @@ def run_once_for(scenario: str, pattern: str) -> bool | None:
     return reaching.pop()
 
 
-# A case driven under `ignore_errors` is recorded as PASSED, so the sanitizer
-# never observes it and it is never declared. Drive a negative case with
-# block/rescue instead.
 def declared(scenario: str) -> dict[str, int]:
     path = scenario_dir(scenario) / "expected-junit-failures.txt"
     expectations = _SANITIZE.load_expectations(path)
@@ -548,7 +571,7 @@ def test_every_run_once_marker_is_confirmed_not_merely_unrefuted():
 
 
 def test_the_declarations_cover_exactly_the_guards_named_here():
-    """A new negative case must land in CASES, not only in the scenario."""
+    """A declared guard the table omits, or a table guard the file drops, fails."""
     for scenario, guards in CASES.items():
         assert set(declared(scenario)) == set(guards), scenario
 

@@ -37,8 +37,6 @@ restic_offsite_rclone_remote_options: {}
 # optimization re-read only changed files instead of re-hashing everything.
 restic_offsite_bind_root: /mnt/restic-src
 restic_offsite_zvol_mount_root: /run/restic-offsite
-# bind (real host: mount --bind the .zfs snapshot) | direct (molecule: no ZFS).
-restic_offsite_bind_mode: bind
 restic_offsite_zvol_clone_suffix: b2walk
 
 # Throttles, kept deferential under I/O contention. The WAN upload is the real

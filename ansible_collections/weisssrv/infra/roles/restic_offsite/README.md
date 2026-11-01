@@ -82,7 +82,6 @@ Paths and layout:
 | `restic_offsite_excludes_file` | `<config_dir>/excludes.txt` | Rendered exclude file. |
 | `restic_offsite_restore_base` | `/mnt/restore/restic` | Default target for `restore`. |
 | `restic_offsite_snap_prefix` | `archsync` | Snapshot name prefix the freshness guard and the bind step look for. |
-| `restic_offsite_bind_mode` | `bind` | `bind` binds the `.zfs/snapshot` subtree; `direct` reads the mountpoint as-is — the molecule/test path, not a non-ZFS seam (docs/EXTENSIBILITY.md). |
 
 Remaining knobs: see `defaults/main.yml`.
 
@@ -436,7 +435,7 @@ architecture means a second pinned checksum and a matching artefact name.
 
 ## Molecule
 
-Hermetic: a **local restic file repo** (no B2/network), `bind_mode: bind`
+Hermetic: a **local restic file repo** (no B2/network), the bind step
 against a fake `.zfs/snapshot` tree, and no zvol sources (no ZFS in the
 container). Exercises a real `run` (freshness guard → backup → metrics), the
 already-uploaded skip and its `--force` override, a restore round-trip, the

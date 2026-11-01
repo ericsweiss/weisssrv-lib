@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -55,28 +56,11 @@ def _ci(
     )
 
 
-def _literal_ci(
-    declared: str = "v0.4.0", refs: tuple[str, ...] = ("v0.4.0", "v0.4.0")
-) -> str:
-    """The layout --fix converts from: a literal tag repeated on every pin."""
-    return textwrap.dedent(
-        f"""\
-        ---
-        # A consumer pipeline with no `spec:` header.
-        variables:
-          WEISSSRV_LIB_REF: "{declared}"
-        include:
-          - project: eric/weisssrv-lib
-            ref: {refs[0]}
-            file: /ci/lint/docs-link-check.yml
-          - project: eric/weisssrv-lib
-            ref: {refs[1]}
-            file:
-              - /ci/lint/yaml-lint.yml
-              - /ci/lint/shellcheck.yml
-          - local: .gitlab/ci/molecule-jobs.gitlab-ci.yml
-        """
-    )
+# The header layout with literal pins, which --fix rewrites to the interpolation.
+_LITERAL = _ci(refs=("v0.4.0", "v0.4.0"), variable='"v0.4.0"')
+_NO_HEADER = _ci().split("---\n", 1)[1]
+# Prepended to a hand-written pipeline body that --fix is driven over.
+_HEADER = "spec:\n  inputs:\n    lib_ref:\n      default: v0.5.0\n---\n"
 
 
 def _write(tmp_path: Path, content: str) -> Path:
@@ -89,12 +73,12 @@ def _write(tmp_path: Path, content: str) -> Path:
 # The declared ref lives in the header document.
 
 
-def test_the_declared_ref_is_the_header_default(tmp_path: Path) -> None:
+def test_the_declared_ref_is_the_header_default() -> None:
     assert clp.declared_ref(_ci("v0.4.0")) == "v0.4.0"
 
 
-def test_a_file_without_a_header_declares_nothing(tmp_path: Path) -> None:
-    assert clp.declared_ref(_literal_ci()) is None
+def test_a_file_without_a_header_declares_nothing() -> None:
+    assert clp.declared_ref(_NO_HEADER) is None
 
 
 def test_the_header_is_not_mistaken_for_the_pipeline_body(tmp_path: Path) -> None:
@@ -157,7 +141,7 @@ def test_an_absent_variable_fails(tmp_path: Path) -> None:
 
 
 def test_a_missing_header_is_reported(tmp_path: Path) -> None:
-    problems = clp.check(_write(tmp_path, _literal_ci()))
+    problems = clp.check(_write(tmp_path, _NO_HEADER))
     assert len(problems) == 1
     assert "spec.inputs.lib_ref.default is not set" in problems[0]
 
@@ -197,8 +181,8 @@ def test_reference_tag_does_not_break_parsing(tmp_path: Path) -> None:
     assert clp.check(_write(tmp_path, content)) == []
 
 
-def test_project_and_ref_var_are_overridable(tmp_path: Path) -> None:
-    """A consumer pinning a fork, or naming its variable differently."""
+def test_project_is_overridable(tmp_path: Path) -> None:
+    """A consumer pinning a fork."""
     content = textwrap.dedent(
         f"""\
         spec:
@@ -207,7 +191,7 @@ def test_project_and_ref_var_are_overridable(tmp_path: Path) -> None:
               default: v1.2.3
         ---
         variables:
-          MY_LIB_REF: {MARKER}
+          WEISSSRV_LIB_REF: {MARKER}
         include:
           - project: acme/my-lib
             ref: {MARKER}
@@ -218,42 +202,14 @@ def test_project_and_ref_var_are_overridable(tmp_path: Path) -> None:
         """
     )
     p = _write(tmp_path, content)
-    # Scoped to the fork + its own variable: clean, and the OTHER project's
-    # literal ref is none of this invocation's business.
-    assert clp.check(p, project="acme/my-lib", ref_var="MY_LIB_REF") == []
+    # Scoped to the fork: clean, and the OTHER project's literal ref is none of
+    # this invocation's business.
+    assert clp.check(p, project="acme/my-lib") == []
     assert clp.check(p) != []
 
 
 # ---------------------------------------------------------------------------
-# --fix converts the literal layout, and stays put once converted.
-
-
-def test_fix_converts_a_literal_file_and_is_idempotent(tmp_path: Path) -> None:
-    p = _write(tmp_path, _literal_ci())
-    assert clp.fix(p) > 0
-    assert clp.check(p) == []
-    assert clp.declared_ref(p.read_text()) == "v0.4.0"
-    assert clp.fix(p) == 0  # nothing left to change
-
-
-def test_fix_keeps_the_leading_document_marker_as_the_separator(
-    tmp_path: Path,
-) -> None:
-    """A second `---` would open an empty document between header and body."""
-    p = _write(tmp_path, _literal_ci())
-    clp.fix(p)
-    text = p.read_text()
-    assert text.startswith("spec:\n")
-    assert text.count("---\n") == 1
-    assert "# A consumer pipeline with no `spec:` header." in text
-
-
-def test_fix_adds_the_separator_when_the_file_has_none(tmp_path: Path) -> None:
-    content = _literal_ci().replace("---\n", "", 1)
-    p = _write(tmp_path, content)
-    clp.fix(p)
-    assert clp.check(p) == []
-    assert p.read_text().startswith("spec:\n")
+# --fix rewrites every pin from the header default.
 
 
 def test_fix_moves_only_the_default_once_the_header_exists(tmp_path: Path) -> None:
@@ -278,7 +234,7 @@ def test_fix_leaves_non_lib_includes_alone(tmp_path: Path) -> None:
             file: /ci/thing.yml
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     clp.fix(p)
     refs = {
         i["project"]: i["ref"]
@@ -308,7 +264,7 @@ def test_fix_does_not_rewrite_a_project_whose_path_merely_ends_with_ours(
             file: /ci/lint/shellcheck.yml
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     clp.fix(p)
     refs = {
         i["project"]: i["ref"]
@@ -335,7 +291,7 @@ def test_fix_matches_a_quoted_or_commented_project_value(tmp_path: Path) -> None
             file: /ci/lint/shellcheck.yml
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     clp.fix(p)
     assert clp.check(p) == []
 
@@ -348,54 +304,26 @@ def test_fix_refuses_a_branch_source_without_touching_the_file(
     The rewrite cannot repair a branch, so propagating it to every entry and
     only then reporting would leave the CI file worse than it found it.
     """
-    p = _write(tmp_path, _literal_ci("main"))
+    p = _write(tmp_path, _ci("main"))
     before = p.read_text()
-    with pytest.raises(SystemExit) as excinfo:
+    with pytest.raises(clp.OperatorError) as excinfo:
         clp.fix(p)
     assert "must be a release tag" in str(excinfo.value)
     assert p.read_text() == before
 
 
-def test_fix_refuses_a_file_declaring_no_ref_at_all(tmp_path: Path) -> None:
-    """With no header and no variable there is nothing to convert from."""
-    content = textwrap.dedent(
-        """\
-        include:
-          - project: eric/weisssrv-lib
-            ref: v0.3.2
-            file: /ci/lint/yaml-lint.yml
-        """
-    )
-    p = _write(tmp_path, content)
+@pytest.mark.parametrize(
+    "header",
+    ["", "spec:\n  inputs:\n    env:\n      default: prod\n---\n"],
+    ids=["no-header", "header-without-lib-ref"],
+)
+def test_fix_refuses_a_file_declaring_no_lib_ref_default(tmp_path: Path, header) -> None:
+    """Writing a header or inventing an input in one is not a line rewrite."""
+    p = _write(tmp_path, header + _NO_HEADER)
     before = p.read_text()
-    with pytest.raises(SystemExit) as excinfo:
+    with pytest.raises(clp.OperatorError) as excinfo:
         clp.fix(p)
-    assert "nothing to sync" in str(excinfo.value)
-    assert p.read_text() == before
-
-
-def test_fix_refuses_a_header_that_declares_no_lib_ref_input(tmp_path: Path) -> None:
-    """Inventing an input inside someone else's header is not a line rewrite."""
-    content = textwrap.dedent(
-        f"""\
-        spec:
-          inputs:
-            env:
-              default: prod
-        ---
-        variables:
-          WEISSSRV_LIB_REF: "v0.5.0"
-        include:
-          - project: eric/weisssrv-lib
-            ref: {MARKER}
-            file: /ci/lint/yaml-lint.yml
-        """
-    )
-    p = _write(tmp_path, content)
-    before = p.read_text()
-    with pytest.raises(SystemExit) as excinfo:
-        clp.fix(p)
-    assert "declares no `lib_ref:` input" in str(excinfo.value)
+    assert "declares no spec.inputs.lib_ref.default" in str(excinfo.value)
     assert p.read_text() == before
 
 
@@ -419,7 +347,7 @@ def test_fix_ignores_project_ref_pairs_outside_the_include_block(
             - echo "$ref"
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     clp.fix(p)
     doc = clp.load_ci(p)
     assert doc["include"][0]["ref"] == MARKER
@@ -430,7 +358,7 @@ def test_fix_ignores_project_ref_pairs_outside_the_include_block(
 def test_fix_rewrites_an_empty_ref_without_corrupting_the_line(
     tmp_path: Path,
 ) -> None:
-    """`line.replace("", want, 1)` would insert at column 0 and mangle the file."""
+    """An empty `ref:` is filled in place and the rest of the line is kept."""
     content = textwrap.dedent(
         """\
         variables:
@@ -441,7 +369,7 @@ def test_fix_rewrites_an_empty_ref_without_corrupting_the_line(
             file: /ci/lint/yaml-lint.yml
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     clp.fix(p)
     assert f"    ref: {MARKER}\n" in p.read_text()
     assert clp.check(p) == []
@@ -458,7 +386,7 @@ def test_fix_preserves_a_trailing_comment_on_the_ref_line(tmp_path: Path) -> Non
             file: /ci/lint/yaml-lint.yml
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     clp.fix(p)
     assert f"ref: {MARKER}  # one of the lint templates" in p.read_text()
 
@@ -477,7 +405,7 @@ def test_fix_leaves_a_nested_inputs_ref_alone(tmp_path: Path) -> None:
               ref: some-user-value
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     clp.fix(p)
     doc = clp.load_ci(p)
     assert doc["include"][0]["ref"] == MARKER
@@ -503,9 +431,9 @@ def test_fix_refuses_a_block_scalar_ref_and_leaves_the_file_alone(
             file: /ci/lint/yaml-lint.yml
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     before = p.read_text()
-    with pytest.raises(SystemExit) as excinfo:
+    with pytest.raises(clp.OperatorError) as excinfo:
         clp.fix(p)
     assert "did not land cleanly" in str(excinfo.value)
     assert p.read_text() == before
@@ -521,9 +449,9 @@ def test_fix_refuses_a_flow_style_entry_it_cannot_rewrite(tmp_path: Path) -> Non
           - {project: eric/weisssrv-lib, ref: v0.3.2, file: /ci/lint/yaml-lint.yml}
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     before = p.read_text()
-    with pytest.raises(SystemExit) as excinfo:
+    with pytest.raises(clp.OperatorError) as excinfo:
         clp.fix(p)
     assert "did not land cleanly" in str(excinfo.value)
     assert p.read_text() == before
@@ -609,9 +537,9 @@ def test_fix_refuses_an_entry_with_no_ref_to_rewrite(tmp_path: Path) -> None:
             file: /ci/lint/yaml-lint.yml
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     before = p.read_text()
-    with pytest.raises(SystemExit) as excinfo:
+    with pytest.raises(clp.OperatorError) as excinfo:
         clp.fix(p)
     assert "did not land cleanly" in str(excinfo.value)
     assert p.read_text() == before
@@ -637,9 +565,9 @@ def test_fix_ignores_a_ref_reached_through_an_alias_outside_include(
           - *shared
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     before = p.read_text()
-    with pytest.raises(SystemExit) as excinfo:
+    with pytest.raises(clp.OperatorError) as excinfo:
         clp.fix(p)
     assert "anchor or alias" in str(excinfo.value)
     assert p.read_text() == before  # the anchor is untouched
@@ -670,9 +598,9 @@ def test_fix_refuses_an_alias_anchored_inside_the_include_block(
               reused: *shared
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     before = p.read_text()
-    with pytest.raises(SystemExit) as excinfo:
+    with pytest.raises(clp.OperatorError) as excinfo:
         clp.fix(p)
     assert "anchor or alias" in str(excinfo.value)
     assert p.read_text() == before
@@ -697,9 +625,9 @@ def test_fix_refuses_an_anchor_defined_inside_the_include_block(
           copy: *entry
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     before = p.read_text()
-    with pytest.raises(SystemExit) as excinfo:
+    with pytest.raises(clp.OperatorError) as excinfo:
         clp.fix(p)
     assert "anchor or alias" in str(excinfo.value)
     assert p.read_text() == before
@@ -724,7 +652,7 @@ def test_fix_still_works_with_an_alias_outside_the_include_block(
             file: /ci/lint/yaml-lint.yml
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     assert clp.fix(p) > 0
     assert clp.check(p) == []
 
@@ -745,11 +673,11 @@ def test_fix_refuses_duplicate_top_level_include_keys(tmp_path: Path) -> None:
             file: /ci/live.yml
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     before = p.read_text()
-    with pytest.raises(SystemExit) as excinfo:
+    with pytest.raises(clp.OperatorError) as excinfo:
         clp.fix(p)
-    # The message matters: a different SystemExit would let this pass.
+    # The message matters: a different refusal would let this pass.
     assert "multiple top-level `include:`" in str(excinfo.value)
     assert p.read_text() == before
 
@@ -837,11 +765,213 @@ def test_print_writes_the_declared_ref_and_nothing_else(tmp_path, capsys) -> Non
 
 def test_print_refuses_a_file_declaring_no_tag(tmp_path, capsys) -> None:
     """Exporting a garbage image tag is worse than failing the command."""
-    ci = _write(tmp_path, _literal_ci())
+    ci = _write(tmp_path, _NO_HEADER)
     assert clp.main(["--ci-file", str(ci), "--print"]) == 2
     out = capsys.readouterr()
     assert out.out == ""
     assert "not a release tag" in out.err
+
+
+def _run(*args: str, script: Path = _SCRIPT, **kwargs) -> subprocess.CompletedProcess:
+    """The script in a subprocess, the way a Taskfile var reads it."""
+    kwargs.setdefault("timeout", 60)
+    return subprocess.run(
+        [sys.executable, str(script), *args], capture_output=True, text=True, **kwargs
+    )
+
+
+def _print(ci: Path, *extra: str, **kwargs) -> subprocess.CompletedProcess:
+    return _run("--print", "--ci-file", str(ci), *extra, **kwargs)
+
+
+def _copied_script(tmp_path: Path, ref: str) -> Path:
+    """The script inside a repo whose own pipeline declares `ref`."""
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    shutil.copy(_SCRIPT, repo / "scripts" / _SCRIPT.name)
+    _write(repo, _ci(ref))
+    return repo / "scripts" / _SCRIPT.name
+
+
+def test_print_needs_no_pyyaml(tmp_path: Path) -> None:
+    """A Taskfile var reads --print from a shell whose python may lack PyYAML."""
+    ci = _write(tmp_path, _ci())
+    env = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(tmp_path / "no-yaml")}
+    (tmp_path / "no-yaml" / "yaml").mkdir(parents=True)
+    (tmp_path / "no-yaml" / "yaml" / "__init__.py").write_text("raise ImportError('stub')\n")
+    proc = _print(ci, env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == clp.declared_ref(ci.read_text())
+    proc = _run("--ci-file", str(ci), env=env)
+    assert proc.returncode == 2 and "PyYAML required" in proc.stderr
+
+
+class TestPrintPaths:
+    def test_print_from_a_foreign_cwd_reads_the_scripts_own_repo(self, tmp_path) -> None:
+        """--print and the full gate default to the same pipeline file."""
+        script = _copied_script(tmp_path, "v0.7.1")
+        _write(tmp_path, _ci("v0.1.0"))
+        proc = _run("--print", script=script, cwd=tmp_path)
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout == "v0.7.1\n"
+
+    def test_print_on_an_unreadable_pipeline_file_exits_two(self, tmp_path) -> None:
+        """A Taskfile reading --print must never get an empty tag with exit 0."""
+        proc = _print(tmp_path / "absent.yml")
+        assert proc.returncode == 2
+        assert proc.stdout == ""
+        assert "absent.yml" in proc.stderr
+
+    def test_print_refuses_a_ci_file_with_no_value(self, tmp_path) -> None:
+        """A valueless flag fails even where the default pipeline file resolves."""
+        script = _copied_script(tmp_path, "v0.7.1")
+        proc = _run("--print", "--ci-file", script=script, cwd=tmp_path)
+        assert proc.returncode == 2
+        assert proc.stdout == ""
+        assert "--ci-file needs a value" in proc.stderr
+        assert "Traceback" not in proc.stderr
+
+    @pytest.mark.parametrize("extra", [["--fix"], ["--bump", "v0.6.0"], ["--bump=v0.6.0"]])
+    def test_print_refuses_a_rewrite_flag(self, tmp_path, extra) -> None:
+        ci = _write(tmp_path, _ci())
+        before = ci.read_text()
+        proc = _print(ci, *extra)
+        assert proc.returncode == 2
+        assert "takes no --fix or --bump" in proc.stderr
+        assert ci.read_text() == before
+
+
+def test_print_reads_only_the_lib_ref_stanza(tmp_path: Path) -> None:
+    """A header with several inputs must not bind lib_ref to a sibling's default."""
+    ci = tmp_path / ".gitlab-ci.yml"
+    ci.write_text(textwrap.dedent("""\
+        spec:
+          inputs:
+            k8s_version:
+              default: 1.36.0
+            lib_ref:
+              description: the library release
+              default: v0.4.0
+            other_ref:
+              default: v9.9.9
+        ---
+        variables: {}
+        """))
+    proc = _print(ci)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "v0.4.0"
+
+
+def test_print_reads_only_the_leading_document(tmp_path: Path) -> None:
+    """GitLab reads `spec:` from the first document alone, so a later document
+    must not lend the header an inputs block, whatever the separator carries."""
+    ci = tmp_path / ".gitlab-ci.yml"
+    ci.write_text(textwrap.dedent("""\
+        --- # the header
+        spec:
+          description: no inputs here
+        --- # the pipeline
+        spec:
+          inputs:
+            lib_ref:
+              default: v9.9.9
+        """))
+    proc = _print(ci)
+    assert proc.returncode == 2, proc.stdout
+    assert proc.stdout == ""
+    ci.write_text(textwrap.dedent("""\
+        spec:
+          inputs:
+            lib_ref:
+              default: v0.4.0
+        ---\t
+        variables: {}
+        """))
+    proc = _print(ci)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "v0.4.0\n"
+
+
+def test_print_reads_the_header_behind_a_preamble(tmp_path: Path) -> None:
+    """Comments, blank lines and a directive may precede the first `---`;
+    the document that follows is still the header."""
+    ci = tmp_path / ".gitlab-ci.yml"
+    ci.write_text(textwrap.dedent("""\
+        # the pipeline
+
+        %YAML 1.2
+        --- # header
+        spec:
+          inputs:
+            lib_ref:
+              default: v0.4.0
+        ---
+        variables: {}
+        """))
+    proc = _print(ci)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "v0.4.0\n"
+
+
+def test_print_never_borrows_inputs_from_a_later_root_key(tmp_path: Path) -> None:
+    """Once the document dedents out of `spec:`, a two-space `inputs:` under
+    another root key is not the header's."""
+    ci = tmp_path / ".gitlab-ci.yml"
+    ci.write_text(textwrap.dedent("""\
+        spec:
+          description: no inputs here
+        other:
+          inputs:
+            lib_ref:
+              default: v9.9.9
+        ---
+        variables: {}
+        """))
+    proc = _print(ci)
+    assert proc.returncode == 2, proc.stdout
+    assert proc.stdout == ""
+
+
+def test_print_accepts_an_indented_preamble_comment(tmp_path: Path) -> None:
+    ci = tmp_path / ".gitlab-ci.yml"
+    ci.write_text("  # indented comment\n---\nspec:\n  inputs:\n    lib_ref:\n      default: v0.4.0\n---\nvariables: {}\n")
+    proc = _print(ci)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "v0.4.0\n"
+
+
+def test_print_fails_fast_on_a_long_header_without_inputs(tmp_path: Path) -> None:
+    """Each header line must match the scan one way only, or a header with
+    no inputs block backtracks exponentially and the run's timeout fails it."""
+    ci = tmp_path / ".gitlab-ci.yml"
+    body = "".join(f"  key{i}: v{i}\n  # note {i}\n\n" for i in range(400))
+    ci.write_text(f"spec:\n{body}---\nvariables: {{}}\n")
+    proc = _print(ci)
+    assert proc.returncode == 2
+    assert proc.stdout == ""
+
+
+def test_print_requires_spec_children_to_be_indented_two_spaces(tmp_path: Path) -> None:
+    """A one-space-indented key is valid YAML but is not `spec.inputs`, so an
+    `inputs:` nested under it must not be read as the header's."""
+    ci = tmp_path / ".gitlab-ci.yml"
+    ci.write_text("spec:\n x:\n  inputs:\n    lib_ref:\n      default: v9.9.9\n---\nvariables: {}\n")
+    proc = _print(ci)
+    assert proc.returncode == 2, proc.stdout
+    assert proc.stdout == ""
+
+
+def test_print_refuses_a_default_glued_to_a_comment(tmp_path: Path) -> None:
+    """`v0.4.0#x` is one scalar to YAML, so it is no release tag; only a `#`
+    after separation whitespace is a comment."""
+    ci = tmp_path / ".gitlab-ci.yml"
+    for default, expect in (
+        ("v0.4.0#x", 2), ("v0.4.0 # x", 0), ("\"v0.4.0\"  # x", 0), ("\"v0.4.0", 2), ("'v0.4.0\"", 2)
+    ):
+        ci.write_text(f"spec:\n  inputs:\n    lib_ref:\n      default: {default}\n---\nvariables: {{}}\n")
+        proc = _print(ci)
+        assert proc.returncode == expect, (default, proc.stdout, proc.stderr)
+        assert proc.stdout == ("v0.4.0\n" if expect == 0 else "")
 
 
 def test_bump_moves_every_pin_from_one_command(tmp_path, capsys) -> None:
@@ -860,15 +990,6 @@ def test_bump_rejects_a_branch(tmp_path, capsys) -> None:
     assert clp.main(["--ci-file", str(ci), "--bump", "main"]) == 2
     assert "release tag" in capsys.readouterr().err
     assert ci.read_text() == before
-
-
-def test_fix_from_the_cli_converts_and_reports(tmp_path, capsys) -> None:
-    ci = _write(tmp_path, _literal_ci("v0.4.0", ("v0.4.0", "v0.3.2")))
-    _write_requirements(tmp_path, _requirements("v0.3.2"))
-    assert clp.main(["--ci-file", str(ci), "--fix"]) == 0
-    assert clp.check(ci) == []
-    assert clp.check_requirements(ci, "v0.4.0") == []
-    assert "rewrote" in capsys.readouterr().out
 
 
 def test_a_clean_tree_reports_what_it_inspected(tmp_path, capsys) -> None:
@@ -993,6 +1114,43 @@ def test_requirements_drift_reds_the_gate_from_the_cli(tmp_path, capsys) -> None
     assert "collection pins version 'v0.3.2'" in capsys.readouterr().err
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 file")
+@pytest.mark.parametrize("extra", [[], ["--fix"]])
+def test_unreadable_requirements_names_that_file(tmp_path, capsys, extra) -> None:
+    """A requirements.yml that cannot be read exits 2 and names itself."""
+    ci = _write(tmp_path, _ci("v0.4.0"))
+    _write_requirements(tmp_path, _requirements("v0.3.2"))
+    req = tmp_path / "ansible" / "requirements.yml"
+    req.chmod(0)
+    try:
+        assert clp.main(["--ci-file", str(ci), *extra]) == 2
+    finally:
+        req.chmod(0o644)
+    err = capsys.readouterr().err
+    assert f"could not read {req}" in err
+    assert f"could not read {ci}" not in err
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [(b"collections:\n  - name: \xff\n", "could not read"),
+     (b"collections: [\n", "is not valid YAML")],
+)
+@pytest.mark.parametrize("extra", [[], ["--fix"]])
+def test_malformed_requirements_names_that_file(
+    tmp_path, capsys, content, message, extra
+) -> None:
+    """Undecodable or unparsable requirements.yml is blamed, not the CI file."""
+    ci = _write(tmp_path, _ci("v0.4.0"))
+    req = tmp_path / "ansible" / "requirements.yml"
+    req.parent.mkdir(parents=True, exist_ok=True)
+    req.write_bytes(content)
+    assert clp.main(["--ci-file", str(ci), *extra]) == 2
+    err = capsys.readouterr().err
+    assert str(req) in err and message in err
+    assert str(ci) not in err
+
+
 def test_no_requirements_file_is_a_noop(tmp_path: Path) -> None:
     ci = _write(tmp_path, _ci())  # no ansible/requirements.yml written
     assert clp.check_requirements(ci, "v0.4.0") == []
@@ -1091,8 +1249,8 @@ def test_source_key_is_matched_like_name(tmp_path: Path) -> None:
 def test_a_fork_whose_url_contains_the_project_path_is_not_the_library(
     tmp_path: Path,
 ) -> None:
-    """A substring test counted a fork or a path-prefixed mirror as the library,
-    so its unrelated pin passed the gate instead of being unchecked."""
+    """The project path is matched whole, so a fork or path-prefixed mirror is
+    reported as an unchecked pin rather than read as the library's."""
     ci = _write(tmp_path, _ci())
     fork = (
         "git+https://git.example.com/mirrors/eric/weisssrv-lib-fork.git"
@@ -1151,25 +1309,6 @@ def _write_module(tmp_path: Path, root: str, ref: str, module: str = "cloudflare
     return path
 
 
-def test_print_needs_no_pyyaml(tmp_path: Path) -> None:
-    """A Taskfile var reads --print from a shell whose python may lack PyYAML."""
-    ci = _write(tmp_path, _ci())
-    env = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(tmp_path / "no-yaml")}
-    (tmp_path / "no-yaml" / "yaml").mkdir(parents=True)
-    (tmp_path / "no-yaml" / "yaml" / "__init__.py").write_text("raise ImportError('stub')\n")
-    proc = subprocess.run(
-        [sys.executable, str(_SCRIPT), "--print", "--ci-file", str(ci)],
-        capture_output=True, text=True, env=env,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == clp.declared_ref(ci.read_text())
-    proc = subprocess.run(
-        [sys.executable, str(_SCRIPT), "--ci-file", str(ci)],
-        capture_output=True, text=True, env=env,
-    )
-    assert proc.returncode == 2 and "PyYAML required" in proc.stderr
-
-
 def test_no_site_list_is_a_noop(tmp_path: Path) -> None:
     ci = _write(tmp_path, _ci())
     assert clp.load_sites(ci) == []
@@ -1209,7 +1348,83 @@ def test_a_site_that_matches_nothing_is_reported(tmp_path: Path) -> None:
     _write_sites(tmp_path)
     problems = clp.check_sites(ci, "v0.4.0")
     assert len(problems) == 1
-    assert "matched no ref" in problems[0]
+    assert "matched no file" in problems[0]
+
+
+@pytest.mark.parametrize("ref", ["main", "0123456789abcdef0123456789abcdef01234567"])
+def test_a_root_pinned_off_a_tag_fails_beside_a_pinned_one(tmp_path: Path, ref) -> None:
+    """The glob still matches the other roots, so only a per-file count sees it."""
+    ci = _write(tmp_path, _ci())
+    _write_sites(tmp_path)
+    _write_module(tmp_path, "cloudflare", "v0.4.0")
+    _write_module(tmp_path, "tailscale", ref, module="tailscale-acl")
+    problems = clp.check_sites(ci, "v0.4.0")
+    assert len(problems) == 1
+    assert "tailscale/main.tf" in problems[0]
+    assert "no release-tag pin" in problems[0]
+
+
+def test_fix_refuses_a_root_pinned_off_a_tag(tmp_path, capsys) -> None:
+    """--fix cannot rewrite a branch ref, so it must write nothing around it."""
+    ci = _write(tmp_path, _ci("v0.4.0"))
+    _write_sites(tmp_path)
+    tagged = _write_module(tmp_path, "cloudflare", "v0.3.2")
+    branch = _write_module(tmp_path, "tailscale", "main", module="tailscale-acl")
+    before = (ci.read_text(), tagged.read_text(), branch.read_text())
+    assert clp.main(["--ci-file", str(ci), "--fix"]) == 2
+    assert "tailscale/main.tf" in capsys.readouterr().err
+    assert (ci.read_text(), tagged.read_text(), branch.read_text()) == before
+
+
+def test_the_shipped_example_site_list_passes_a_tree_built_from_it(tmp_path, capsys) -> None:
+    """A consumer copies the example verbatim, so it must pass a realistic tree."""
+    ci = _write(tmp_path, _ci())
+    _write_sites(tmp_path, (REPO / "examples" / "lib-ref-sites.example.yml").read_text())
+    _write_module(tmp_path, "cloudflare", "v0.4.0")
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "getting-started.md").write_text(
+        "pipx install 'git+https://git.example.test/eric/"
+        "weisssrv-lib.git@v0.4.0#subdirectory=cli'\n"
+    )
+    (docs / "runbook.md").write_text("A page with no install snippet.\n")
+    assert clp.check_sites(ci, "v0.4.0") == []
+    assert clp.main(["--ci-file", str(ci)]) == 0, capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("tailscale_ref", "cloudflare_ref", "hand", "fix"),
+    [("main", "v0.4.0", True, False), ("main", "v0.3.2", True, True), (None, "v0.3.2", False, True)],
+    ids=["unpinned", "mixed", "fixable"],
+)
+def test_a_failure_names_the_remedy_that_works(
+    tmp_path, capsys, tailscale_ref, cloudflare_ref, hand, fix
+) -> None:
+    """--fix refuses an unpinned file, so it is suggested only for a fixable pin."""
+    ci = _write(tmp_path, _ci())
+    _write_sites(tmp_path)
+    _write_module(tmp_path, "cloudflare", cloudflare_ref)
+    if tailscale_ref:
+        _write_module(tmp_path, "tailscale", tailscale_ref, module="tailscale-acl")
+    assert clp.main(["--ci-file", str(ci)]) == 1
+    err = capsys.readouterr().err
+    assert ("tailscale/main.tf" in err) is hand
+    assert ("Fix by hand" in err) is hand
+    assert ("Fix with: scripts/check-lib-pins.py --fix" in err) is fix
+
+
+class TestRefusalsExitTwo:
+    """A --fix refusal is operator error (2), never a pin finding (1)."""
+
+    def test_a_duplicate_include_block_exits_two(self, tmp_path, capsys) -> None:
+        ci = _write(tmp_path, _ci() + "include:\n  - local: other.yml\n")
+        assert clp.main(["--ci-file", str(ci), "--fix"]) == 2
+        assert "multiple top-level `include:`" in capsys.readouterr().err
+
+    def test_a_branch_declared_ref_exits_two(self, tmp_path, capsys) -> None:
+        ci = _write(tmp_path, _ci("main"))
+        assert clp.main(["--ci-file", str(ci), "--fix"]) == 2
+        assert "must be a release tag" in capsys.readouterr().err
 
 
 def test_fix_syncs_every_site(tmp_path: Path) -> None:
@@ -1222,158 +1437,6 @@ def test_fix_syncs_every_site(tmp_path: Path) -> None:
     assert clp.fix_sites(ci, "v0.4.0") == 0
 
 
-def test_print_reads_only_the_requested_input_stanza(tmp_path: Path) -> None:
-    """A header with several inputs must not bind lib_ref to a sibling's default."""
-    ci = tmp_path / ".gitlab-ci.yml"
-    ci.write_text(textwrap.dedent("""\
-        spec:
-          inputs:
-            k8s_version:
-              default: 1.36.0
-            lib_ref:
-              description: the library release
-              default: v0.4.0
-            other_ref:
-              default: v9.9.9
-        ---
-        variables: {}
-        """))
-    for want, expect in (("lib_ref", "v0.4.0"), ("other_ref", "v9.9.9")):
-        proc = subprocess.run(
-            [sys.executable, str(_SCRIPT), "--print", "--ci-file", str(ci), "--input", want],
-            capture_output=True, text=True,
-        )
-        assert proc.returncode == 0, proc.stderr
-        assert proc.stdout.strip() == expect
-    proc = subprocess.run(
-        [sys.executable, str(_SCRIPT), "--print", "--ci-file", str(ci), "--input", "k8s_version"],
-        capture_output=True, text=True,
-    )
-    assert proc.returncode == 2
-
-
-def _print(ci: Path) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [sys.executable, str(_SCRIPT), "--print", "--ci-file", str(ci)],
-        capture_output=True, text=True,
-    )
-
-
-def test_print_reads_only_the_leading_document(tmp_path: Path) -> None:
-    """GitLab reads `spec:` from the first document alone, so a later document
-    must not lend the header an inputs block, whatever the separator carries."""
-    ci = tmp_path / ".gitlab-ci.yml"
-    ci.write_text(textwrap.dedent("""\
-        --- # the header
-        spec:
-          description: no inputs here
-        --- # the pipeline
-        spec:
-          inputs:
-            lib_ref:
-              default: v9.9.9
-        """))
-    proc = _print(ci)
-    assert proc.returncode == 2, proc.stdout
-    assert proc.stdout == ""
-    ci.write_text(textwrap.dedent("""\
-        spec:
-          inputs:
-            lib_ref:
-              default: v0.4.0
-        ---\t
-        variables: {}
-        """))
-    proc = _print(ci)
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout == "v0.4.0\n"
-
-
-def test_print_reads_the_header_behind_a_preamble(tmp_path: Path) -> None:
-    """Comments, blank lines and a directive may precede the first `---`;
-    the document that follows is still the header."""
-    ci = tmp_path / ".gitlab-ci.yml"
-    ci.write_text(textwrap.dedent("""\
-        # the pipeline
-
-        %YAML 1.2
-        --- # header
-        spec:
-          inputs:
-            lib_ref:
-              default: v0.4.0
-        ---
-        variables: {}
-        """))
-    proc = _print(ci)
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout == "v0.4.0\n"
-
-
-def test_print_never_borrows_inputs_from_a_later_root_key(tmp_path: Path) -> None:
-    """Once the document dedents out of `spec:`, a two-space `inputs:` under
-    another root key is not the header's."""
-    ci = tmp_path / ".gitlab-ci.yml"
-    ci.write_text(textwrap.dedent("""\
-        spec:
-          description: no inputs here
-        other:
-          inputs:
-            lib_ref:
-              default: v9.9.9
-        ---
-        variables: {}
-        """))
-    proc = _print(ci)
-    assert proc.returncode == 2, proc.stdout
-    assert proc.stdout == ""
-
-
-def test_print_accepts_an_indented_preamble_comment(tmp_path: Path) -> None:
-    ci = tmp_path / ".gitlab-ci.yml"
-    ci.write_text("  # indented comment\n---\nspec:\n  inputs:\n    lib_ref:\n      default: v0.4.0\n---\nvariables: {}\n")
-    proc = _print(ci)
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout == "v0.4.0\n"
-
-
-def test_print_fails_fast_on_a_long_header_without_inputs(tmp_path: Path) -> None:
-    """Each header line must match the scan one way only, or a header with
-    no inputs block backtracks exponentially instead of exiting 2."""
-    import time
-    ci = tmp_path / ".gitlab-ci.yml"
-    body = "".join(f"  key{i}: v{i}\n  # note {i}\n\n" for i in range(400))
-    ci.write_text(f"spec:\n{body}---\nvariables: {{}}\n")
-    started = time.monotonic()
-    proc = _print(ci)
-    assert time.monotonic() - started < 5
-    assert proc.returncode == 2
-    assert proc.stdout == ""
-
-
-def test_print_requires_spec_children_to_be_indented_two_spaces(tmp_path: Path) -> None:
-    """A one-space-indented key is valid YAML but is not `spec.inputs`, so an
-    `inputs:` nested under it must not be read as the header's."""
-    ci = tmp_path / ".gitlab-ci.yml"
-    ci.write_text("spec:\n x:\n  inputs:\n    lib_ref:\n      default: v9.9.9\n---\nvariables: {}\n")
-    proc = _print(ci)
-    assert proc.returncode == 2, proc.stdout
-    assert proc.stdout == ""
-
-
-def test_print_refuses_a_default_glued_to_a_comment(tmp_path: Path) -> None:
-    """`v0.4.0#x` is one scalar to YAML, so it is no release tag; only a `#`
-    after separation whitespace is a comment."""
-    ci = tmp_path / ".gitlab-ci.yml"
-    for default, expect in (
-        ("v0.4.0#x", 2), ("v0.4.0 # x", 0), ("\"v0.4.0\"  # x", 0), ("\"v0.4.0", 2), ("'v0.4.0\"", 2)
-    ):
-        ci.write_text(f"spec:\n  inputs:\n    lib_ref:\n      default: {default}\n---\nvariables: {{}}\n")
-        proc = _print(ci)
-        assert proc.returncode == expect, (default, proc.stdout, proc.stderr)
-        assert proc.stdout == ("v0.4.0\n" if expect == 0 else "")
-
-
 def test_a_pipeline_with_no_project_include_is_refused_before_any_write(tmp_path: Path) -> None:
     """With the variable drifted the plan has a rewrite to make, and the absent
     include must still refuse it during planning, not after the write."""
@@ -1382,7 +1445,7 @@ def test_a_pipeline_with_no_project_include_is_refused_before_any_write(tmp_path
     _write_sites(tmp_path)
     site = _write_module(tmp_path, "cloudflare", "v0.3.2")
     before = (ci.read_text(), site.read_text())
-    with pytest.raises((clp.OperatorError, SystemExit), match="include"):
+    with pytest.raises(clp.OperatorError, match="include"):
         clp.plan_fix(ci, "v0.4.0")
     assert (ci.read_text(), site.read_text()) == before
 
@@ -1473,9 +1536,8 @@ class TestSiteFilesStayInTheRepo:
     it is opened rather than followed.
     """
 
-    def _outside(self, tmp_path: Path) -> Path:
-        outside = tmp_path.parent / "outside"
-        outside.mkdir(exist_ok=True)
+    def _outside(self, tmp_path_factory) -> Path:
+        outside = tmp_path_factory.mktemp("outside")
         target = outside / "main.tf"
         target.write_text(
             'module "x" {\n  source = "git::https://git.ericsweiss.com/eric/'
@@ -1484,9 +1546,9 @@ class TestSiteFilesStayInTheRepo:
         return target
 
     def test_fix_refuses_a_symlinked_match_and_leaves_the_target_alone(
-        self, tmp_path, capsys
+        self, tmp_path, tmp_path_factory, capsys
     ) -> None:
-        target = self._outside(tmp_path)
+        target = self._outside(tmp_path_factory)
         ci = _write(tmp_path, _ci())
         _write_sites(tmp_path)
         link = tmp_path / "terraform" / "cloudflare" / "main.tf"
@@ -1497,8 +1559,10 @@ class TestSiteFilesStayInTheRepo:
         assert "matched the symlink" in err and str(link) in err
         assert "?ref=v0.1.0" in target.read_text()
 
-    def test_check_refuses_a_symlinked_match_too(self, tmp_path, capsys) -> None:
-        target = self._outside(tmp_path)
+    def test_check_refuses_a_symlinked_match_too(
+        self, tmp_path, tmp_path_factory, capsys
+    ) -> None:
+        target = self._outside(tmp_path_factory)
         ci = _write(tmp_path, _ci())
         _write_sites(tmp_path)
         link = tmp_path / "terraform" / "cloudflare" / "main.tf"
@@ -1508,10 +1572,10 @@ class TestSiteFilesStayInTheRepo:
         assert "matched the symlink" in capsys.readouterr().err
 
     def test_a_match_a_linked_directory_carries_outside_is_refused(
-        self, tmp_path, capsys
+        self, tmp_path, tmp_path_factory, capsys
     ) -> None:
         """The leaf is a real file: only resolving the whole path finds the escape."""
-        target = self._outside(tmp_path)
+        target = self._outside(tmp_path_factory)
         ci = _write(tmp_path, _ci())
         _write_sites(tmp_path)
         (tmp_path / "terraform").mkdir(parents=True, exist_ok=True)
@@ -1598,9 +1662,9 @@ class TestFixIsPlannedBeforeItWrites:
     _CLI = r"'weisssrv-lib\.git@(v\d+\.\d+\.\d+)(?=#subdirectory=cli)'"
 
     def _tree(self, tmp_path: Path, second: str) -> tuple[Path, Path]:
-        """A literal-layout repo drifted on every surface, so a working --fix
-        would rewrite all of them."""
-        ci = _write(tmp_path, _literal_ci())
+        """A repo drifted on every surface, so a working --fix would rewrite
+        all of them."""
+        ci = _write(tmp_path, _LITERAL)
         _write_requirements(tmp_path, _requirements("v0.3.2"))
         _write_sites(
             tmp_path,
@@ -1642,14 +1706,14 @@ class TestFixIsPlannedBeforeItWrites:
         ci, module = self._tree(tmp_path, self._CLI)
         before = self._snapshot(ci, module, tmp_path / "ansible" / "requirements.yml")
         assert clp.main(["--ci-file", str(ci), "--fix"]) == 2
-        assert "matched no ref" in capsys.readouterr().err
+        assert "matched no file" in capsys.readouterr().err
         self._unchanged(before)
 
     def test_a_later_symlinked_site_leaves_the_earlier_one_alone(
-        self, tmp_path, capsys
+        self, tmp_path, tmp_path_factory, capsys
     ) -> None:
         ci, module = self._tree(tmp_path, self._CLI)
-        outside = self._install_doc(tmp_path.parent / "outside", "v0.1.0")
+        outside = self._install_doc(tmp_path_factory.mktemp("outside"), "v0.1.0")
         (tmp_path / "docs").mkdir()
         (tmp_path / "docs" / "install.md").symlink_to(outside)
         before = self._snapshot(
@@ -1663,7 +1727,7 @@ class TestFixIsPlannedBeforeItWrites:
         self, tmp_path, capsys
     ) -> None:
         """Two surfaces rewriting one file would discard one of the two plans."""
-        ci = _write(tmp_path, _literal_ci())
+        ci = _write(tmp_path, _LITERAL)
         _write_sites(
             tmp_path,
             "sites:\n  - path: .gitlab-ci.yml\n"

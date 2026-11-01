@@ -19,8 +19,9 @@ spec:
         tests/test_pin_parity.py.
     tags:
       type: array
-      default: ["infrastructure"]
-      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+      default: []
+      description: >-
+        Runner tag(s). Empty runs the job on a tag-less runner.
     fmt_dir:
       default: "terraform/"
       description: Directory `terraform fmt -check -recursive` runs against.
@@ -79,7 +80,6 @@ spec:
     name: $[[ inputs.image ]]
     entrypoint: [""]
   script:
-    # Cover every module under the fmt dir, not just one.
     - terraform fmt -check -recursive $[[ inputs.fmt_dir ]]
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'

@@ -3,7 +3,7 @@
 # be a LIST and `port` non-null: the template iterates a scalar per character and
 # renders a null port as `-dport None`, which pve-firewall refuses to compile.
 
-- name: Assert the sg-dns admin-port entries carry a port and a list of sources
+- name: Assert the sg-dns and sg-metrics port entries carry a port and a list of sources
   ansible.builtin.assert:
     that:
       - item.port is defined
@@ -14,35 +14,15 @@
       - item.sources is not mapping
       - item.sources | length > 0
     fail_msg: >-
-      proxmox_firewall_dns_admin_ports entry {{ item }} is malformed: every
-      entry needs a `port` with a value and a non-empty `sources` LIST naming
-      IPSets (e.g. `- {port: 3000, sources: [admin_ts, admin_lan]}`)
-      — a bare scalar is iterated per character by the template, and an empty
-      `port` renders as `-dport None`.
+      A proxmox_firewall_dns_admin_ports or proxmox_firewall_metrics_scrape_ports
+      entry {{ item }} is malformed: every entry needs a `port` with a value and
+      a non-empty `sources` LIST naming IPSets (e.g. `- {port: 3000, sources:
+      [admin_ts, admin_lan]}`) — a bare scalar is iterated per character by the
+      template, and an empty `port` renders as `-dport None`.
     quiet: true
-  loop: "{{ proxmox_firewall_dns_admin_ports | default([]) }}"
-  loop_control:
-    label: "{{ item.port | default('?') }}"
-
-- name: Assert the sg-metrics scrape-port entries carry a port and a list of sources
-  ansible.builtin.assert:
-    that:
-      - item.port is defined
-      - item.port is not none
-      - item.sources is defined
-      - item.sources is sequence
-      - item.sources is not string
-      - item.sources is not mapping
-      - item.sources | length > 0
-    fail_msg: >-
-      proxmox_firewall_metrics_scrape_ports entry {{ item }} is malformed:
-      every entry needs a `port` with a value and a non-empty `sources` LIST
-      naming IPSets (e.g. `- {port: 32400, sources: [k3s_nodes],
-      comment: plex}`) — a bare scalar is iterated per character by the
-      template, and an empty `port` renders as `-dport None`. sg-metrics is
-      applied on EVERY node, so the scrapers are named rather than defaulted.
-    quiet: true
-  loop: "{{ proxmox_firewall_metrics_scrape_ports | default([]) }}"
+  loop: >-
+    {{ (proxmox_firewall_dns_admin_ports | default([]))
+       + (proxmox_firewall_metrics_scrape_ports | default([])) }}
   loop_control:
     label: "{{ item.port | default('?') }}"
 
@@ -59,18 +39,10 @@
       - lookup('vars', item) | select('string') | list | length == lookup('vars', item) | length
       - lookup('vars', item) | select('match', '^[A-Za-z][A-Za-z0-9_-]{1,63}\\Z') | list | length == lookup('vars', item) | length
     fail_msg: >-
-      {{ item }} must be a non-empty LIST of valid IPSet NAMES
-      (e.g. `[admin_ts, dns_clients]`) — cluster.fw.j2 renders each entry as
-      `+dc/<name>`, which resolves a datacenter IPSet only (a datacenter ALIAS
-      is `dc/<name>`, a different syntax this list does not render). A bare
-      scalar is iterated per character into rules naming sets that do not
-      exist, an empty list silently removes every rule from the surface it
-      scopes, and an element that is null or empty renders `+dc/None` or a bare
-      `+dc/`. Each name must match pve-firewall's own ipset grammar — a leading
-      letter, then 1-63 of letters, digits, `_` or `-` — so a name carrying a
-      space, a `/` or a `#` is rejected here rather than by pve-firewall refusing
-      to compile a file the role has already written — a refusal only visible
-      in `pve-firewall compile` or the service log.
+      {{ item }} must be a non-empty list of datacenter IPSet names, such as
+      `[admin_ts, dns_clients]`. Each entry renders as `+dc/<name>`. A scalar
+      renders one rule per character and an empty list closes the surface.
+      A name is a letter followed by 1 to 63 letters, digits, `_` or `-`.
     quiet: true
   loop:
     - proxmox_firewall_dns_client_sources
@@ -87,14 +59,30 @@
       - proxmox_firewall_smtp_relay_sources | select('string') | list | length == proxmox_firewall_smtp_relay_sources | length
       - proxmox_firewall_smtp_relay_sources | select('match', '^[A-Za-z][A-Za-z0-9_-]{1,63}\\Z') | list | length == proxmox_firewall_smtp_relay_sources | length
     fail_msg: >-
-      proxmox_firewall_smtp_relay_sources must be a LIST of valid IPSet NAMES
-      (e.g. `[core-cluster]`), or empty to render no rule at all —
-      cluster.fw.j2 renders each entry as `+dc/<name>`, so a bare scalar is
-      iterated per character into rules naming sets that do not exist, and an
-      element that is null or empty renders `+dc/None` or a bare `+dc/`. Each
-      name must match pve-firewall's own ipset grammar — a leading letter, then
-      1-63 of letters, digits, `_` or `-`.
+      proxmox_firewall_smtp_relay_sources must be a list of datacenter IPSet
+      names, such as `[core-cluster]`, or empty to render no rule. Each entry
+      renders as `+dc/<name>`. A scalar renders one rule per character.
+      A name is a letter followed by 1 to 63 letters, digits, `_` or `-`.
     quiet: true
+
+# The `-dest` VIP lists: a scalar renders one rule per character, and a blank
+# or null element renders a `-dest` with no address that pve-firewall refuses.
+- name: Assert the public VIP lists are lists of addresses
+  ansible.builtin.assert:
+    that:
+      - lookup('vars', item) is sequence
+      - lookup('vars', item) is not string
+      - lookup('vars', item) is not mapping
+      - lookup('vars', item) | select('string') | list | length == lookup('vars', item) | length
+      - lookup('vars', item) | select('match', _proxmox_firewall_address_re) | list | length == lookup('vars', item) | length
+    fail_msg: >-
+      {{ item }} must be a list of literal IPv4 or IPv6 addresses, each with
+      an optional prefix length, such as `[192.0.2.10]`. Aliases and IPSets
+      are refused. An empty list is legal.
+    quiet: true
+  loop:
+    - proxmox_firewall_k3s_public_vips
+    - proxmox_firewall_wan_wireguard_vips
 
 - name: Assert the extra egress ports carry a port and a protocol
   ansible.builtin.assert:

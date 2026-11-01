@@ -12,26 +12,37 @@ import sys
 from pathlib import Path
 
 import pytest
+from test_companion_vendoring import PAIRS
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "scripts"
 
 IMPORTERS = (
+    "check-alertmanager-behaviour.py",
     "check-cnpg-clusters.py",
+    "check-crd-stage-order.py",
     "check-default-deny-coverage.py",
     "check-ephemeral-storage-cap.py",
     "check-guest-endpoint-parity.py",
     "check-helmrelease-crd-safety.py",
     "check-hpa-vpa-invariant.py",
+    "check-image-gc-threshold.py",
     "check-ingressroute-backends.py",
+    "check-internal-route-allowlist.py",
     "check-issuer-refs.py",
     "check-live-cpu-limits.py",
     "check-netpol-except-parity.py",
     "check-nfs-tls.py",
     "check-pvc-storageclass.py",
     "check-scrape-netpol.py",
+    "check-scrape-wiring.py",
     "check-secretstore-scope.py",
+    "check-tenant-traefik-isolation.py",
+    "check-tenant-wiring.py",
 )
+
+# Shared modules that import gate_common in turn; a gate loading one inherits it.
+MODULE_IMPORTERS = ("tenant_common.py",)
 
 # Every shipped script, not just check-*.py: a differently named gate that
 # imports gate_common must not escape the contract below.
@@ -44,10 +55,10 @@ DERIVED = tuple(sorted(
 
 
 def test_the_importer_list_is_complete():
-    assert DERIVED == IMPORTERS
+    assert DERIVED == tuple(sorted(IMPORTERS + MODULE_IMPORTERS))
 
 
-@pytest.mark.parametrize("name", IMPORTERS)
+@pytest.mark.parametrize("name", IMPORTERS + MODULE_IMPORTERS)
 def test_the_gate_exits_two_when_gate_common_is_not_vendored(name, tmp_path):
     copy = tmp_path / name
     shutil.copy(SCRIPTS / name, copy)
@@ -65,6 +76,10 @@ def test_the_gate_imports_gate_common_when_it_is_vendored(name, tmp_path):
     copy = tmp_path / name
     shutil.copy(SCRIPTS / name, copy)
     shutil.copy(SCRIPTS / "gate_common.py", tmp_path / "gate_common.py")
+    # Every other companion is vendored too, so only gate_common can fail the import.
+    for gate, companion in PAIRS:
+        if gate == name:
+            shutil.copy(SCRIPTS / companion, tmp_path / companion)
     proc = subprocess.run(
         [sys.executable, str(copy)],
         input="", capture_output=True, text=True,
@@ -73,3 +88,4 @@ def test_the_gate_imports_gate_common_when_it_is_vendored(name, tmp_path):
     assert proc.returncode == 2, proc.stdout + proc.stderr
     assert "ModuleNotFoundError" not in proc.stderr
     assert "gate_common.py must be vendored" not in proc.stderr
+

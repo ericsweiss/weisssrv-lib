@@ -16,7 +16,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "flux-lint.sh"
-RENDER_SCRIPT = REPO / "scripts" / "flux-render.sh"
+RENDER_SCRIPT = REPO / "scripts" / "flux-env.sh"
 SKIPPED_SCRIPT = REPO / "scripts" / "kubeconform-skipped.py"
 CHILD_SCRIPT = REPO / "scripts" / "flux-child-kustomizations.py"
 
@@ -55,7 +55,7 @@ FLUX_STUB = r'''#!/bin/sh
 case "$1" in
   --version) echo "flux version ${STUB_FLUX_VERSION:-2.9.0}"; exit 0 ;;
 esac
-exec python3 -c '
+exec %(python)s -c '
 import os
 import re
 import sys
@@ -128,11 +128,14 @@ def build_tree(tmp_path: Path) -> Path:
     _write(cluster / "flux-system" / "gotk-components.yaml", NAMESPACE)
     _write(tmp_path / "kubernetes" / "infrastructure" / "sources"
            / "versions-configmap.yaml", CONFIGMAP)
+    _write(tmp_path / "kubernetes" / "infrastructure" / "sources"
+           / "cluster-config.yaml", "data:\n  cluster_domain: example.com\n")
     renders = tmp_path / "renders"
     _write(renders / "kubernetes_apps.yaml", NAMESPACE)
     _write(renders / "kubernetes_clusters_demo.yaml", NAMESPACE)
     bin_dir = tmp_path / "bin"
-    for name, body in (("flux", FLUX_STUB), ("kustomize", KUSTOMIZE_STUB),
+    flux_stub = FLUX_STUB.replace("%(python)s", sys.executable)
+    for name, body in (("flux", flux_stub), ("kustomize", KUSTOMIZE_STUB),
                        ("kubeconform", KUBECONFORM_STUB), ("envsubst", ENVSUBST_STUB)):
         _write(bin_dir / name, body, mode=0o755)
     return tmp_path
@@ -179,7 +182,7 @@ class TestTheHarnessCanBeGreen:
 
 class TestSubstitutionFloors:
     def test_a_bash_modifier_fails_the_strict_render(self, tree):
-        """The LIB-05 case: GNU envsubst ignores `${conf%/*}`, and neither
+        """GNU envsubst ignores `${conf%/*}`, and neither
         text scan can see it, so only flux's own --strict rejects it."""
         proc = run(tree, render=NAMESPACE.replace("demo", "x${conf%/*}"))
         assert proc.returncode == 1
@@ -203,6 +206,37 @@ class TestSubstitutionFloors:
         """A Grafana panel variable survives as `$${var}` and is not a key."""
         proc = run(tree, render=NAMESPACE.replace("demo", "x$${nope}"))
         assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    @pytest.mark.parametrize("name", ["HOME", "CI_PROJECT_DIR"])
+    def test_an_environment_variable_is_not_a_configmap_key(self, tree, name):
+        """kustomize-controller substitutes from the ConfigMaps alone, so a name
+        the caller's shell happens to export must still fail."""
+        proc = run(tree, env={"CI_PROJECT_DIR": "/builds/x"},
+                   render=NAMESPACE.replace("demo", "x${%s}" % name))
+        assert proc.returncode == 1
+        assert "reference keys not in versions-configmap" in proc.stdout
+        assert "- " + name in proc.stdout
+
+    @pytest.mark.parametrize("name", ["HOME", "PATH"])
+    def test_the_strict_render_sees_only_the_configmap_keys(self, tree, name):
+        """A modifier form passes the prescan, so only a strict run with no
+        inherited environment can reject it."""
+        proc = run(tree, render=NAMESPACE.replace("demo", "x${%s%%/*}" % name))
+        assert proc.returncode == 1
+        assert "fails Flux's strict substitution" in proc.stdout
+        assert "variable not set: " + name in proc.stdout
+
+    def test_a_modifier_on_a_configmap_key_passes_the_strict_render(self, tree):
+        proc = run(tree, render=NAMESPACE.replace("demo", "x${app_version%.*}"))
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    def test_a_render_script_with_no_allowlist_fails(self, tree):
+        script = _write(tree / "no-allowlist.sh",
+                        "#!/bin/sh\n[ \"$1\" = k8s-version ] && { echo 1.37.0; exit 0; }\n"
+                        "echo \"export app_version=1.2.3\"\n")
+        proc = run(tree, "--render-script", str(script), "--check-flux-version", "false")
+        assert proc.returncode == 1
+        assert "exported no FLUX_ENVSUBST_VARS" in proc.stdout
 
     def test_a_blank_value_fails(self, tree):
         """envsubst renders `image: foo:${x}` as `foo:`, which yamllint and
@@ -240,6 +274,46 @@ class TestSimpleMode:
         proc = self._run(tree)
         assert proc.returncode == 1
         assert "rendered no document" in proc.stdout
+
+    def test_a_cluster_config_key_passes(self, tree):
+        _write(tree / "renders" / "kubernetes_apps.yaml",
+               NAMESPACE.replace("demo", "x.${cluster_internal_domain}"))
+        proc = self._run(tree)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    def test_an_escaped_reference_passes(self, tree):
+        _write(tree / "renders" / "kubernetes_apps.yaml",
+               NAMESPACE.replace("demo", "x$${HOME}"))
+        proc = self._run(tree)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    @pytest.mark.parametrize("body", ["x${HOME}", "x${conf%/*}", "x${app_version}"])
+    def test_a_key_outside_cluster_config_fails(self, tree, body):
+        """The tenant reconcile substitutes from cluster-config in strict mode."""
+        _write(tree / "renders" / "kubernetes_apps.yaml", NAMESPACE.replace("demo", body))
+        proc = self._run(tree)
+        assert proc.returncode == 1
+        assert "outside cluster-config's cluster_* set" in proc.stdout
+        assert "  - " + body[3:].split("%")[0].rstrip("}") in proc.stdout
+
+    def test_a_positional_reference_fails(self, tree):
+        _write(tree / "renders" / "kubernetes_apps.yaml", NAMESPACE.replace("demo", "x${1}"))
+        proc = self._run(tree)
+        assert proc.returncode == 1
+        assert "envsubst mishandles" in proc.stdout
+
+    def test_the_default_schema_version_says_so(self, tree):
+        env = {
+            "PATH": "%s:%s:/usr/bin:/bin" % (tree / "bin", Path(sys.executable).parent),
+            "STUB_RENDERS": str(tree / "renders"),
+        }
+        proc = subprocess.run(
+            ["bash", str(SCRIPT), "--mode", "simple", "--kustomize-path", "kubernetes/apps",
+             "--crd-catalog-ref", "deadbeef"],
+            cwd=tree, env=env, capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "the script default" in proc.stdout
 
 
 class TestNothingPassesOnNothing:
@@ -471,3 +545,18 @@ def test_the_real_flux_cli_agrees_with_the_stub(body: str, rejected: bool):
                           input=NAMESPACE.replace("demo", body),
                           capture_output=True, text=True, env=env)
     assert (proc.returncode != 0) is rejected, proc.stdout + proc.stderr
+
+
+@pytest.mark.skipif(shutil.which("flux") is None, reason="no flux CLI installed")
+def test_the_real_flux_cli_needs_no_inherited_environment():
+    """flux-lint.sh runs the strict render under `env -i`, so the real CLI must
+    work there and must reject a name only the caller's shell defines."""
+    flux = shutil.which("flux")
+    ok = subprocess.run(["env", "-i", "app_version=1.2.3", flux, "envsubst", "--strict"],
+                        input=NAMESPACE.replace("demo", "x${app_version}"),
+                        capture_output=True, text=True)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    leaked = subprocess.run(["env", "-i", flux, "envsubst", "--strict"],
+                            input=NAMESPACE.replace("demo", "x${HOME}"),
+                            capture_output=True, text=True)
+    assert leaked.returncode != 0

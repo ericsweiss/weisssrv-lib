@@ -22,11 +22,6 @@ except ImportError:
     )
     raise SystemExit(2) from None
 
-# Containers permitted a live CPU limit despite the repo-wide policy, as
-# "namespace/pod-name-prefix/container". Empty by design — an entry here is a
-# claim that CFS throttling is WANTED for that container, and needs a reason.
-LIVE_CPU_LIMIT_ALLOWLIST: dict[str, str] = {}
-
 REMEDIATION = """
 Remediation depends on where the limit comes from:
   - rendered by git   -> remove it from the manifest (the static lint,
@@ -54,17 +49,8 @@ def _containers(pod: dict) -> list[dict]:
     return out
 
 
-def _allowlisted(namespace: str, pod: str, container: str) -> bool:
-    """Pods are named per-replica, so the middle segment is a NAME PREFIX."""
-    for key in LIVE_CPU_LIMIT_ALLOWLIST:
-        ns, prefix, cname = key.split("/", 2)
-        if ns == namespace and container == cname and pod.startswith(prefix):
-            return True
-    return False
-
-
 def live_cpu_limit_violations(pods: list[dict]) -> list[str]:
-    """One line per container declaring a CPU limit, allowlist applied."""
+    """One line per container declaring a CPU limit."""
     out: list[str] = []
     for pod in pods:
         meta = pod.get("metadata") or {}
@@ -74,10 +60,7 @@ def live_cpu_limit_violations(pods: list[dict]) -> list[str]:
             cpu = ((c.get("resources") or {}).get("limits") or {}).get("cpu")
             if cpu in (None, ""):
                 continue
-            cname = c.get("name", "?")
-            if _allowlisted(ns, name, cname):
-                continue
-            out.append(f"  {ns}/{name}: container {cname!r} has limits.cpu={cpu}")
+            out.append(f"  {ns}/{name}: container {c.get('name', '?')!r} has limits.cpu={cpu}")
     return sorted(out)
 
 

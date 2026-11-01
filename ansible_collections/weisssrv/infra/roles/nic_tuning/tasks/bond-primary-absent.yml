@@ -1,7 +1,7 @@
 ---
 # No pin declared: remove the persisted bond-primary lines and clear the live
 # pin, so a leg the inventory no longer names stops being forced at boot.
-# Dropping bond-primary_reselect restores the kernel default ("always").
+# Dropping bond-primary_reselect restores the kernel default at the next boot.
 - name: Stat /etc/network/interfaces for the bond primary removal
   ansible.builtin.stat:
     path: /etc/network/interfaces

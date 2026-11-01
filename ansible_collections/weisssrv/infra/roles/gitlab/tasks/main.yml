@@ -301,9 +301,8 @@
   notify: Reload systemd for THP unit
   when: gitlab_kernel_tuning_enabled | bool
 
-# Keeps the unit enabled + active on a stable host. It intentionally duplicates
-# the handler's enable/start; the handler additionally restarts on a unit-FILE
-# change, which `state: started` cannot do for an active oneshot.
+# Keeps the unit enabled + active on a stable host. The handler restarts it on
+# a unit-file change, which `state: started` cannot do for an active oneshot.
 - name: Enable + start THP-disable service (also applies at runtime)
   ansible.builtin.systemd:
     name: disable-transparent-hugepages.service
@@ -314,7 +313,7 @@
 
 # The .asc keyring form conflicts with the .gpg one ("Conflicting values set
 # for option Signed-By").
-- name: Remove old GitLab keyring files
+- name: Remove the conflicting .asc GitLab keyring files
   ansible.builtin.file:
     path: "{{ item }}"
     state: absent
@@ -327,6 +326,7 @@
 # add-repo pipeline; gnupg comes from the prerequisites task above. Rotate the
 # key by deleting the keyring first.
 - name: Add GitLab EE signed APT repository
+  when: not (gitlab_skip_install | bool)
   ansible.builtin.include_role:
     name: weisssrv.infra.apt_signed_repo
   vars:
@@ -338,7 +338,6 @@
       https://packages.gitlab.com/gitlab/gitlab-ee/debian/
       {{ ansible_facts['distribution_release'] }} main
     apt_signed_repo_filename: gitlab-ee
-    apt_signed_repo_when: "{{ not (gitlab_skip_install | bool) }}"
 
 # Env staged in a root-only file, not a task-level `environment:`, to keep the
 # root password out of /proc/<pid>/cmdline. Downgrades stay disabled (Omnibus
@@ -544,9 +543,8 @@
     compose_app_backup_lib_dest: "{{ gitlab_backup_lib_path }}"
     compose_app_backup_size_help_object: "backup tarball"
 
-# The wrapper runs the backup, copies gitlab-secrets.json + gitlab.rb on success
-# (a restore needs them to decrypt CI variables, 2FA and runner tokens), and
-# emits the node_exporter textfile metrics the backup alerts consume.
+# A restore needs gitlab-secrets.json + gitlab.rb to decrypt CI variables, 2FA
+# and runner tokens, so the wrapper copies them on success.
 - name: Deploy GitLab backup wrapper (runs backup + emits metrics)
   ansible.builtin.template:
     src: gitlab-backup-run.sh.j2
@@ -558,7 +556,7 @@
 # A timer, not root cron: the service carries RequiresMountsFor on the NFS
 # landing zone and a bounded TimeoutStartSec, and a failed run surfaces in the
 # unit's status. A root cron entry of the same name is removed so both cannot fire.
-- name: Remove the legacy GitLab backup root cron job
+- name: Remove the GitLab backup root cron job
   ansible.builtin.cron:
     name: "GitLab backup"
     state: absent
@@ -632,9 +630,8 @@
     loop_var: gitlab_ssh_redirect
     label: "{{ gitlab_ssh_redirect.chain }}"
 
-# The rules are re-applied at boot by a unit this role owns. Saving the live
-# ruleset instead would freeze fail2ban's active bans into rules.v4, where they
-# outlive their bantime and collide with fail2ban's own chain setup.
+# The rules are re-applied at boot by a unit this role owns, never from a saved
+# ruleset (README § Git SSH).
 - name: Deploy the Git SSH redirect apply script
   ansible.builtin.template:
     src: gitlab-ssh-redirect.sh.j2
@@ -694,7 +691,7 @@
 
 # The built-in sshd filter covers gitlab-shell, so a standalone filter file is
 # removed.
-- name: Remove obsolete gitlab-shell filter
+- name: Remove the standalone gitlab-shell filter
   ansible.builtin.file:
     path: /etc/fail2ban/filter.d/gitlab-shell.conf
     state: absent

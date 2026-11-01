@@ -1,7 +1,6 @@
 ---
-# CRITICAL: this profile must NOT sit at the repo root as `.yamllint`.
-# ansible-lint auto-discovers one there and merges it over its own yaml[*]
-# rules. Callers pass `-c lint/yamllint-self.yml` explicitly.
+# Not a repo-root `.yamllint` (lint/yamllint-relaxed.yml says why); callers
+# pass `-c lint/yamllint-self.yml` explicitly.
 
 # The library's OWN YAML (CI templates, lint and example configs): the
 # lint/yamllint-relaxed.yml baseline consumers vendor, with document-start off.
@@ -9,9 +8,8 @@ extends: relaxed
 
 rules:
   line-length: disable
-  # GitLab CI spec:inputs templates under ci/ must begin with `spec:` (the
-  # first YAML document is the input header), so a leading `---` is not part of
-  # GitLab's documented form and document-start is off repo-wide.
+  # ci/ spec:inputs templates must begin with `spec:` (AGENTS.md), so
+  # document-start is off repo-wide.
   document-start: disable
   # ansible-lint rejects a config it discovers without these and turns fix mode
   # off. Warning level, matching the baseline.

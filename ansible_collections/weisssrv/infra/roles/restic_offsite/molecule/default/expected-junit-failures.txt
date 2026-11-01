@@ -3,3 +3,4 @@
 # hosts x cases.
 Refuse secret values the env file and restic would read differently
 Assert swap-clean is interlocked against the offsite run
+Assert the offsite run is interlocked against swap-clean

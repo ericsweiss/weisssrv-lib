@@ -67,6 +67,27 @@
         immich_server_mem_limit: "8g"
         immich_machine_learning_mem_limit: "3g"
 
+    # DB_PASSWORD escaping: a backslash, a double quote and a `$name` must all
+    # survive the compose-go dotenv parser unchanged.
+    - name: Render the compose .env with a password needing every escape  # noqa: no-relative-paths
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/immich.env.j2"
+        dest: /tmp/immich-env-escaped.env
+        mode: "0640"
+      vars:
+        immich_db_password: 'a\b"c$HOME'
+
+    # An explicit trust list replaces the group-derived one.
+    - name: Render the nginx site with an explicit real-IP trust list  # noqa: no-relative-paths
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/immich.nginx.conf.j2"
+        dest: /tmp/immich-nginx-explicit-trust.conf
+        mode: "0644"
+      vars:
+        immich_nginx_real_ip_from:
+          - 192.0.2.7
+          - 198.51.100.0/24
+
     # Negative test: an empty real-IP trust list must fail the role. Accepting
     # it would attribute every request to the fronting proxy instead of the
     # client, silently.

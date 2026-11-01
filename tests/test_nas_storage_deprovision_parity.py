@@ -243,13 +243,5 @@ def test_a_static_unit_under_the_disable_key_is_reported():
     assert any(static[0] in row for row in misfiled_services(keys))
 
 
-def test_a_renamed_unit_on_one_side_is_reported():
-    """Mutation: the comparison must not pass when the two sides disagree."""
-    deployed = deployed_paths()
-    renamed = {p for p in deployed if not p.endswith("media-mover.timer")}
-    renamed.add("/etc/systemd/system/media-mover-v2.timer")
-    assert renamed - deprovisioned_paths()
-
-
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

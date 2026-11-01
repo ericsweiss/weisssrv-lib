@@ -132,55 +132,41 @@ class TestNetpolExceptExample:
         )
 
 
+def _pin_lines(tag: str) -> list[str]:
+    return [
+        f'source = "git::https://host/eric/weisssrv-lib.git//terraform/modules/cloudflare-zone?ref={tag}"',
+        f"pipx install 'git+https://host/eric/weisssrv-lib.git@{tag}#subdirectory=cli'",
+    ]
+
+
 class TestLibRefSitesExample:
     """examples/lib-ref-sites.example.yml -> check-lib-pins.py."""
 
-    def test_loads_through_load_sites(self, tmp_path):
-        clp = load_script("check-lib-pins.py")
+    @pytest.fixture()
+    def sites(self, tmp_path):
         (tmp_path / "scripts").mkdir()
         (tmp_path / "scripts" / "lib-ref-sites.yml").write_text(
             (EXAMPLES / "lib-ref-sites.example.yml").read_text()
         )
-        sites = clp.load_sites(tmp_path / ".gitlab-ci.yml")
+        return load_script("check-lib-pins.py").load_sites(tmp_path / ".gitlab-ci.yml")
+
+    def test_loads_through_load_sites(self, sites):
         assert sites, "the example declares no sites"
         for glob, pattern in sites:
             assert not glob.startswith("/")
             assert pattern.groups == 1
 
-    def test_every_pattern_matches_a_release_tag(self, tmp_path):
+    def test_every_pattern_matches_a_release_tag(self, sites):
         """A pattern that cannot match vX.Y.Z would fail its own vacuity guard."""
-        clp = load_script("check-lib-pins.py")
-        (tmp_path / "scripts").mkdir()
-        (tmp_path / "scripts" / "lib-ref-sites.yml").write_text(
-            (EXAMPLES / "lib-ref-sites.example.yml").read_text()
-        )
-        samples = [
-            'source = "git::https://host/eric/weisssrv-lib.git//terraform/'
-            'modules/cloudflare-zone?ref=v1.2.3"',
-            "pipx install 'git+https://host/eric/weisssrv-lib.git@v1.2.3"
-            "#subdirectory=cli'",
-        ]
-        for glob, pattern in clp.load_sites(tmp_path / ".gitlab-ci.yml"):
+        for glob, pattern in sites:
             assert any(
-                (m := pattern.search(s)) and m.group(1) == "v1.2.3" for s in samples
+                (m := pattern.search(s)) and m.group(1) == "v1.2.3" for s in _pin_lines("v1.2.3")
             ), f"no sample line matches the pattern for {glob}"
 
-
-    def test_a_pre_release_suffix_does_not_read_as_its_base_tag(self, tmp_path):
+    def test_a_pre_release_suffix_does_not_read_as_its_base_tag(self, sites):
         """Unanchored, `v1.2.3-rc1` captures as `v1.2.3` and passes the gate."""
-        clp = load_script("check-lib-pins.py")
-        (tmp_path / "scripts").mkdir()
-        (tmp_path / "scripts" / "lib-ref-sites.yml").write_text(
-            (EXAMPLES / "lib-ref-sites.example.yml").read_text()
-        )
-        samples = [
-            'source = "git::https://host/eric/weisssrv-lib.git//terraform/'
-            'modules/cloudflare-zone?ref=v1.2.3-rc1"',
-            "pipx install 'git+https://host/eric/weisssrv-lib.git@v1.2.3-rc1"
-            "#subdirectory=cli'",
-        ]
-        for glob, pattern in clp.load_sites(tmp_path / ".gitlab-ci.yml"):
-            for sample in samples:
+        for glob, pattern in sites:
+            for sample in _pin_lines("v1.2.3-rc1"):
                 assert not pattern.search(sample), f"{glob} read a pre-release"
 
 

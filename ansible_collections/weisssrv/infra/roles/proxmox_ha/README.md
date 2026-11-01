@@ -5,31 +5,32 @@ Configures Proxmox VE High Availability for VMs and containers: HA rules
 
 ## What it manages
 
-- **HA rules** (Proxmox 9+): node-affinity rules restricting which nodes may
-  run a given guest. Only `type: node-affinity` is supported — the role
-  asserts this and fails loud on any other type.
-- **HA resources**: registers guests with the HA manager (auto restart and
-  relocation on failure), reconciling `state`, `max_restart`, `max_relocate`
-  and `comment`, including fields *removed* from config.
-- **Storage replication**: `pvesr` jobs, one per `<VMID>-<n>` id, with
-  multi-target support so a guest can fail over to any node holding a replica.
-- **Cluster migration channel** (`datacenter.cfg`): pins `migration: type=` so
-  the safe default is declared rather than inherited. `insecure` sends guest RAM
-  in cleartext over TCP 60000-60050, and PVE only ever reads the live value, so
-  a one-off experiment stays in effect until something puts it back.
+- **HA rules** on Proxmox 9 and later. These are node-affinity rules that
+  restrict which nodes may run a guest. Any type other than `node-affinity`
+  fails the play.
+- **HA resources.** Guests are registered with the HA manager for automatic
+  restart and relocation. The role reconciles `state`, `max_restart`,
+  `max_relocate` and `comment`, and clears a field removed from config.
+- **Storage replication.** One `pvesr` job per `<VMID>-<n>` id. A guest can
+  have several targets and fail over to any node holding a replica.
+- **Cluster migration channel.** The role pins `migration: type=` in
+  `datacenter.cfg`. `insecure` sends guest RAM in cleartext over TCP
+  60000-60050. PVE reads only the live value, so an experiment stays in effect
+  until something resets it.
 
-The quorum gate runs per host, and the rules, resources and migration-channel
-reconciles are cluster-wide: the role probes the host group for a reachable node
-and runs them `run_once`, delegated to it. A caller is therefore a plain
-`hosts: <proxmox group>` play — no `serial: 1`, no "already applied" bookkeeping.
-Set `proxmox_ha_delegate_host` to pin a node instead; when no node answers the
-probe, the role fails rather than skipping the reconcile. Delegate resolution is
-its own entry point (`tasks_from: delegate`, result `_proxmox_ha_delegate`),
-ahead of which `main.yml` asserts this host's `proxmox_ha_host_group` membership.
+The quorum gate runs on every host. The rules, resources and migration-channel
+reconciles are cluster-wide. The role probes the host group for a reachable
+node and runs them once, delegated to that node. A caller is a plain
+`hosts: <proxmox group>` play with no `serial: 1`.
 
-Replication is **not** included there — run it in a separate play against the
-source nodes with `tasks_from: replication`, or it executes once per host in the
-group.
+Set `proxmox_ha_delegate_host` to pin the node. When no node answers the probe,
+the role fails instead of skipping the reconcile. Delegate resolution is its own
+entry point, `tasks_from: delegate`, with the result in `_proxmox_ha_delegate`.
+`main.yml` first asserts that this host is in `proxmox_ha_host_group`.
+
+`main.yml` does not include replication. Run it in a separate play against the
+source nodes with `tasks_from: replication`. Included from `main.yml`, it would
+run once per host in the group.
 
 ## Variables
 
@@ -45,6 +46,11 @@ group.
 
 Every entry supports `enabled` (default `true`); setting it to `false` removes
 the rule / resource / job.
+
+A replication entry also takes `paused` (default `false`). `paused: true` keeps
+the job and its replica and holds the job disabled with `--disable 1`. Use it to
+stop replication for maintenance on the target node. `enabled: false` deletes
+the job, and the replica goes with it.
 
 ```yaml
 # One node-affinity rule per service. Nodes may carry explicit priorities: the
@@ -81,6 +87,7 @@ proxmox_ha_replication_jobs:
     schedule: "0,15,30,45"
     comment: "dns-01 -> node-b"
     enabled: true
+    paused: false     # true: keep the job and replica, hold it disabled
 ```
 
 ## Behaviour worth knowing
@@ -89,40 +96,59 @@ proxmox_ha_replication_jobs:
   index (a `<type>:<vmid>` line plus that resource's indented properties), so
   the role reads it once per run and splits it per SID. A per-resource
   `ha-manager config <sid>` call is rejected by PVE.
-- **A job's identity is `(VMID, target)`, not its id.** Proxmox permutes
-  job-id↔target pairings when a guest migrates, so only a differing target
-  *set* is treated as drift (delete + recreate); permuted ids with an equal set
-  are reported as `ID PERMUTATION` and left alone, because churning them forces
-  a full ZFS resync per target. The report is a play-output banner,
-  `ID PERMUTATION on <host> (id -> live target -> inventory target): ...`, and
-  the `proxmox_ha_permuted_jobs` fact, a list of
-  `{id, live_target, inventory_target}` carrying the same triples. Both are
-  informational: do not edit the inventory to chase them.
-- **`schedule` and `comment` are reconciled from the entry naming the LIVE
-  target**, read from `pvesh get /cluster/replication`, not from the entry
-  carrying that id. A comment can therefore never name a node the job does not
-  replicate to, and a stale one left by an earlier run is corrected in place.
-  Write each entry's `comment` about its own `target_node` and the permutation
-  takes care of itself.
-- **Deletes only where they can be repaired.** Jobs are deleted only while the
-  guest is local, so a job that could not be recreated here is never removed.
-- **The live index is read from the API, not `pvesr`.** `pvesr list` takes no
-  `--output-format` on any PVE release, so the role reads
-  `pvesh get /cluster/replication --output-format json`, whose jobs carry a bare
-  `target` node name and a `disable` key only when disabled. A failed read
-  aborts the reconcile: an empty index would fire `create-local-job` for every
-  job and the tolerated "already exists" would hide that behind a green play.
-- **Orphans are reported, never deleted** — for replication jobs, HA rules and
-  HA resources alike. An incomplete config would otherwise destroy state that is
-  simply not codified yet, and a stale node-affinity rule silently constrains
-  placement of a resource the role believes it fully controls, so it is at least
-  named in the run output. Clean one up by hand with
-  `pvesr delete <job_id>` once you have confirmed nothing needs it.
-- **Source drift is reported, not corrected**: a guest that migrated away needs
-  either the inventory updated or the guest migrated back. The run names the
-  jobs; the repair is to point that job's `source_node` at the node the guest
-  now runs on, or migrate the guest back, then re-run the role. Replication jobs
-  can only be created on the node the guest resides on.
+- **A job's identity is `(VMID, target)`, not its id.** Proxmox permutes the
+  id-to-target pairing when a guest migrates. Every pass matches live jobs to
+  entries by target:
+  - A live job whose target no enabled entry wants is deleted, but only when
+    its id belongs to an inventory entry. Any other such job is an orphan.
+  - A live job whose target is still wanted is kept, whatever id it carries.
+    Recreating it would force a full ZFS resync.
+  - A wanted target with no live job is created. It takes the entry's id when
+    that id is free, otherwise the lowest free `<VMID>-<n>`.
+  - A recreate never reuses an id pending removal. `pvesr delete` only marks a
+    job for removal, so every id in the run's starting index counts as taken.
+  - An entry with `enabled: false` deletes the live job serving its target,
+    not the job that carries its id.
+- **Permutations are reported, not corrected.** The play prints
+  `ID PERMUTATION on <host> (id -> live target -> inventory target): ...` and
+  sets the `proxmox_ha_permuted_jobs` fact, a list of
+  `{id, live_target, inventory_target}`. Both are informational. Do not edit
+  the inventory to chase them.
+- **`schedule` and `comment` come from the entry for the job's target.** A
+  comment therefore never names a node the job does not replicate to. Write each
+  entry's `comment` about its own `target_node`.
+- **The entry's `paused` decides whether a job is disabled.** A job disabled
+  by hand under an entry without `paused: true` is re-enabled with
+  `--disable 0`. The play prints `RE-ENABLE on <host>: jobs ...` before the
+  update and sets the `proxmox_ha_reenabled_job_ids` fact. Set `paused: true`
+  to keep a job disabled across runs.
+- **Drift deletes run only while the guest is local**, so a job that could not
+  be recreated here is never removed by a drift pass.
+- **The live index is read from the API, not `pvesr`.** `pvesr list` has no
+  `--output-format`, so the role reads
+  `pvesh get /cluster/replication --output-format json`. A failed read aborts
+  the reconcile, and so does a read that prints nothing. A cluster with no
+  jobs answers `[]`. An empty index would otherwise plan a create for every
+  job.
+- **A failed local-guest read aborts too.** The role reads `qm list` and
+  `pct list` to learn which guests run here. A failed read would look like an
+  empty node and skip every create and update. An empty node still passes.
+- **Only a concurrent run's same-id create is tolerated.** PVE's
+  `replication job '<id>' already exists` passes. A create blocked by another
+  job to the same target fails the play, because the live index missed a job.
+- **Orphans are reported, never deleted.** This holds for replication jobs, HA
+  rules and HA resources. An incomplete config would otherwise destroy state
+  that is not codified yet. Clean one up by hand once nothing needs it:
+  `pvesr delete <job_id>`, `ha-manager rules remove <rule>` or
+  `ha-manager remove <sid>`.
+- **A job sourced on another node while the guest is here is kept.** The run
+  prints `STALE SOURCE` and names the job. The PVE runner already runs every
+  job from the node its guest is on. Deleting the job would purge the replica
+  on its target and force a full resync.
+- **A guest that left its configured source node is reported only.** The run
+  prints `SOURCE DRIFT` and names the jobs. Point the entry's `source_node` at
+  the node the guest runs on, or migrate the guest back, then re-run the role.
+  `pvesr create-local-job` only works on the node the guest is on.
 - **PVE9 rule normalization.** `ha-manager rules list --output-format=json`
   returns `nodes` and `resources` as hashes, not comma strings. Both sides are
   normalized to a sorted canonical string before comparison, or the rule is
@@ -145,21 +171,22 @@ proxmox_ha_replication_jobs:
 ha-manager status          # HA state of every resource
 ha-manager rules list      # current node-affinity rules
 ha-manager config          # the resource index this role parses
-ha-manager migrate ct:150 <node>
+# Drain a node before a reboot; HA moves its guests and fails them back after.
+ha-manager crm-command node-maintenance enable <node>
+ha-manager crm-command node-maintenance disable <node>
 pvesr status               # replication job health
 pvesh get /cluster/replication  # the job index this role parses
 ```
 
 ## Molecule
 
-`molecule test -s default` from the role directory (CI runs the same scenario).
-`ha-manager`, `pvesh`, `pvesr`, `qm` and `pct` are stubbed and every mutation is
-logged, so each case asserts the exact commands issued: add, update, removal
-(`enabled: false`), the permuted-target no-op, the unsupported-rule-type
-failure, orphan reporting with zero mutations, and the two permuted-comment
-cases (a live index already describing its own targets mutates nothing; a
-stale comment is rewritten to the live target, never the inventory one). The
-replication cases drive the API index in the shape the API returns, and the
-`pvesr` stub rejects `--output-format` the way the real CLI does. Delegate
-selection is driven in its own play: a mixed probe group, a non-member host,
-and — through `tasks_from: delegate` — a group where nothing answers.
+CI runs `molecule test -s default` from the role directory. `ha-manager`,
+`pvesh`, `pvesr`, `qm` and `pct` are stubbed and every mutation is logged. Each
+case asserts the exact commands issued. The replication cases cover add,
+update, re-enable, pause, removal by target, the permuted-target no-op, a
+still-wanted target kept under another id, orphan reporting and the
+permuted-comment rewrite. The `pvesr` stub keeps a deleted job in the index
+and rejects a create of any listed id, as PVE does while a removal is pending.
+It can also reject a create, which drives the fail-loud per-target conflict
+and the tolerated same-id race. Delegate selection runs in its own play: a
+mixed probe group, a non-member host, and a group where nothing answers.

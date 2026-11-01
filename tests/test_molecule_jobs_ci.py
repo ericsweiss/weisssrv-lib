@@ -1,10 +1,12 @@
-"""The molecule job passes --strict to the junit sanitizer.
+"""The molecule job's script contracts.
 
-Without it a stale expectation degrades to a warning, and every
-expected-junit-failures.txt becomes an unpoliced downgrade list.
+The junit sanitizer runs with --strict: without it a stale expectation degrades
+to a warning. The DinD wait fails the job when the sidecar never comes up.
 """
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -48,12 +50,26 @@ def test_every_sanitizer_invocation_is_strict() -> None:
     assert all("--strict" in line for line in found)
 
 
-def test_the_strict_assertion_is_load_bearing() -> None:
-    """Mutation: dropping the flag must be reported."""
-    stripped = [line.replace("--strict", "") for line in _script_lines()]
-    found = _sanitizer_invocations(stripped)
-    assert found
-    assert not all("--strict" in line for line in found)
+def _dind_wait() -> str:
+    blocks = [line for line in _script_lines() if "Waiting for DinD" in line]
+    assert len(blocks) == 1
+    return blocks[0]
+
+
+@pytest.mark.parametrize(("docker_rc", "job_rc"), [(1, 1), (0, 0)])
+def test_the_dind_wait_fails_when_the_sidecar_never_answers(
+    tmp_path: Path, docker_rc: int, job_rc: int
+) -> None:
+    for tool, rc in (("docker", docker_rc), ("sleep", 0)):
+        stub = tmp_path / tool
+        stub.write_text(f"#!/bin/sh\nexit {rc}\n")
+        stub.chmod(0o755)
+    env = {**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"}
+    result = subprocess.run(
+        ["bash", "-c", _dind_wait()], capture_output=True, text=True, env=env, check=False
+    )
+    assert result.returncode == job_rc
+    assert ("DinD sidecar not ready" in result.stderr) == bool(job_rc)
 
 
 if __name__ == "__main__":

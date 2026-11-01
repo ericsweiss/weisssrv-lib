@@ -34,6 +34,10 @@ PAIRS = (
     ("check-helm-repo-parity.py", "check-versions.py"),
     ("check-include-contract.py", "ci_yaml.py"),
     ("check-lib-pins.py", "ci_yaml.py"),
+    ("check-role-default-flips.py", "inventory_tree.py"),
+    ("check-tenant-traefik-isolation.py", "tenant_common.py"),
+    ("check-tenant-wiring.py", "tenant_common.py"),
+    ("generate-host-log-staleness.py", "inventory_tree.py"),
     ("generate-hosts-env.py", "inventory_tree.py"),
     ("validate-helm-values.py", "check-hpa-vpa-invariant.py"),
 )

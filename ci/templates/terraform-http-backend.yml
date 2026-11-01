@@ -12,11 +12,10 @@ spec:
     state_name:
       default: "cloudflare"
       description: >-
-        Terraform state name under the project (weisssrv's default). This sets
-        the pipeline's ONE default state: the hidden job's name is fixed, so a
-        second include with another `state_name` would collide. A job managing a
-        DIFFERENT state overrides the three TF_HTTP_*ADDRESS vars per-job —
-        exactly as weisssrv's tailscale-drift-plan / authentik-drift-plan do.
+        Terraform state name under the project. This sets the pipeline's ONE
+        default state: the hidden job's name is fixed, so a second include with
+        another `state_name` would collide. A job managing a DIFFERENT state
+        overrides the three TF_HTTP_*ADDRESS vars per job.
 ---
 # GitLab-managed Terraform HTTP state backend: TF_HTTP_* pointing at this
 # project's state, authenticated with CI_JOB_TOKEN. Per-job override for a

@@ -9,13 +9,10 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from script_loader import SCRIPTS, load_script  # noqa: E402
+from script_loader import SCRIPTS, load_script
 
 HELPER = SCRIPTS / "flux-secret-consumers.py"
 flux_secret_consumers = load_script("flux-secret-consumers.py")
@@ -76,6 +73,16 @@ def test_every_reference_mechanism_is_found(kwargs):
     assert rows == [("deployment/app", "other", "app.kubernetes.io/name=app")]
 
 
+@pytest.mark.parametrize("key", ["initContainers", "ephemeralContainers"])
+def test_a_reference_from_any_container_list_is_found(key):
+    workload = _workload("app", env_from=["tls"])
+    pod = workload["spec"]["template"]["spec"]
+    pod[key] = pod.pop("containers")
+    pod["containers"] = [{"name": "main"}]
+    rows = flux_secret_consumers.consumers([workload], "tls")
+    assert rows == [("deployment/app", "other", "app.kubernetes.io/name=app")]
+
+
 def test_an_unreferenced_secret_matches_nothing():
     rows = flux_secret_consumers.consumers([_workload("app", volumes=["other"])], "tls")
     assert rows == []
@@ -106,7 +113,92 @@ def test_a_consumer_without_matchlabels_is_refused():
     delete, and a silent omission would leave it running the old Secret."""
     result = _run({"items": [_workload("app", volumes=["tls"], match_labels={})]}, "tls")
     assert result.returncode == 2
-    assert "no matchLabels" in result.stderr
+    assert "cannot be written as a bounded `-l` selector" in result.stderr
+
+
+def test_a_consumer_with_an_unreadable_expression_is_refused():
+    workload = _workload("app", volumes=["tls"])
+    workload["spec"]["selector"]["matchExpressions"] = [
+        {"key": "tier", "operator": "Gt", "values": ["1"]}
+    ]
+    result = _run({"items": [workload]}, "tls")
+    assert result.returncode == 2
+    assert "a matchExpressions term kubectl cannot take" in result.stderr
+
+
+def test_every_workload_kind_is_listed_by_its_lowercased_kind():
+    result = _run(
+        {"items": [_workload("b", kind="StatefulSet", volumes=["tls"]),
+                   _workload("c", kind="DaemonSet", env_from=["tls"])]},
+        "tls",
+    )
+    assert result.returncode == 0, result.stderr
+    assert [row.split("\t")[0] for row in result.stdout.splitlines()] == [
+        "statefulset/b", "daemonset/c",
+    ]
+
+
+def test_no_consumer_prints_nothing_and_exits_0():
+    result = _run({"items": [_workload("a", volumes=["other"])]}, "tls")
+    assert result.returncode == 0 and result.stdout == ""
+
+
+def test_match_expressions_join_the_selector_in_kubectl_syntax():
+    workload = _workload("app", volumes=["tls"])
+    workload["spec"]["selector"]["matchExpressions"] = [
+        {"key": "tier", "operator": "In", "values": ["web", "api"]},
+        {"key": "canary", "operator": "NotIn", "values": ["true"]},
+        {"key": "app.kubernetes.io/part-of", "operator": "Exists"},
+        {"key": "legacy", "operator": "DoesNotExist"},
+    ]
+    rows = flux_secret_consumers.consumers([workload], "tls")
+    assert rows[0][2] == (
+        "app.kubernetes.io/name=app,tier in (web,api),canary notin (true),"
+        "app.kubernetes.io/part-of,!legacy"
+    )
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [{"key": "tier", "operator": "Gt", "values": ["1"]}, {"key": "tier", "operator": "In"}, "tier"],
+    ids=["unknown-operator", "in-without-values", "not-a-mapping"],
+)
+def test_an_unreadable_expression_makes_the_consumer_unscopable(expression):
+    workload = _workload("app", volumes=["tls"])
+    workload["spec"]["selector"]["matchExpressions"] = [expression]
+    result = _run({"items": [workload]}, "tls")
+    assert result.returncode == 2
+    assert "deployment/app" in result.stderr
+
+
+def test_match_expressions_alone_scope_the_consumer():
+    workload = _workload("app", volumes=["tls"], match_labels={})
+    workload["spec"]["selector"]["matchExpressions"] = [
+        {"key": "app", "operator": "In", "values": ["a"]}
+    ]
+    result = _run({"items": [workload]}, "tls")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "deployment/app\tother\tapp in (a)\n"
+
+
+@pytest.mark.parametrize(
+    "expressions",
+    [
+        [{"key": "canary", "operator": "DoesNotExist"}],
+        [{"key": "app", "operator": "Exists"}],
+        [{"key": "tier", "operator": "NotIn", "values": ["web"]},
+         {"key": "app", "operator": "Exists"}],
+    ],
+    ids=["does-not-exist-only", "exists-only", "notin-and-exists"],
+)
+def test_a_selector_without_a_positive_term_is_unscopable(expressions):
+    """Negative and Exists terms match every pod lacking a label, so a delete
+    on them alone reaches other workloads' pods in the namespace."""
+    workload = _workload("app", volumes=["tls"], match_labels={})
+    workload["spec"]["selector"]["matchExpressions"] = expressions
+    result = _run({"items": [workload]}, "tls")
+    assert result.returncode == 2
+    assert "deployment/app" in result.stderr and result.stdout == ""
 
 
 def test_a_payload_without_items_is_an_operator_error():

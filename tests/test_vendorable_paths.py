@@ -7,6 +7,9 @@ from pathlib import Path
 
 import yaml
 
+from script_loader import load_script
+
+engine = load_script("check-vendored-copies.py")
 REPO = Path(__file__).resolve().parent.parent
 OFFER = REPO / "scripts" / "vendorable-paths.yml"
 
@@ -30,18 +33,10 @@ def test_every_offered_path_exists():
 
 
 def test_every_offered_path_is_canonical():
-    """The engine holds manifest entries to canonical repo-relative spelling;
-    the offer must obey its own rule or a legitimate manifest could never
-    reference an offered path."""
-    bad = [
-        p for p in _offered()
-        if not p.strip()
-        or "\x00" in p
-        or Path(p).is_absolute()
-        or ".." in Path(p).parts
-        or p != Path(p).as_posix()
-    ]
-    assert not bad, "non-canonical offered paths: %s" % bad
+    """The offer obeys the engine's own path rule, or no legitimate manifest
+    could reference an offered path."""
+    for path in _offered():
+        engine._validate_relpath(path, "offered")
 
 
 def test_offer_list_is_sorted_and_unique():

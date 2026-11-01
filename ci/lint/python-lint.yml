@@ -11,10 +11,9 @@ spec:
       description: Base image (must have pip).
     tags:
       type: array
-      default: ["infrastructure"]
+      default: []
       description: >-
-        Runner tag(s). Default targets weisssrv's privileged runner; pass `[]`
-        for the shared tag-less tenant runner.
+        Runner tag(s). Empty runs the job on a tag-less runner.
     ruff_version:
       default: "0.17.3"
       description: ruff pip pin.
@@ -87,8 +86,8 @@ spec:
       set -e
       # ruff exits 0 on a path holding no Python file, so the floor is checked
       # here rather than read out of ruff's output.
-      # shellcheck disable=SC2086  # word-split the targets input
       found=0
+      # shellcheck disable=SC2086  # word-split the targets input
       for t in $[[ inputs.targets ]]; do
         if [ -f "$t" ]; then
           case "$t" in *.py) found=1 ;; esac

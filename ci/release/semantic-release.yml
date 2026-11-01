@@ -14,8 +14,9 @@ spec:
       default: python:3.14
     tags:
       type: array
-      default: ["infrastructure"]
-      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+      default: []
+      description: >-
+        Runner tag(s). Empty runs the job on a tag-less runner.
     script_path:
       default: "scripts/semantic-release.py"
       description: >-

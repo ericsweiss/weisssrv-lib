@@ -10,7 +10,7 @@ compose it into a play only where you want it.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `qol_admin_user` | `{{ admin_user }}` | User whose dotfiles the role owns. `root` self-skips every user-scoped task (packages still install). |
+| `qol_admin_user` | `{{ admin_user \| default('root') }}` | User whose dotfiles the role owns. `root` self-skips every user-scoped task (packages still install). |
 | `qol_admin_home` | `""` | Directory the dotfiles land in; empty resolves it from passwd rather than assuming `/home/<user>` |
 | `qol_admin_shell` | `/bin/zsh` | Login shell set for `qol_admin_user` |
 | `qol_packages` | zsh, neovim, fzf, ripgrep, fd-find | apt packages |
@@ -29,14 +29,13 @@ where the account and its home have to exist first.
 ## Version pins
 
 `qol_omz_commit` and `qol_vundle_version` are the role's two upstream pins. They
-are ordinary role variables, so a consumer that keeps every version in one place
-should set both there (and register them with whatever checks its pins for
-upstream releases) rather than relying on the role defaults, which move only when
-the collection is released.
+are ordinary role variables. A consumer that keeps every version in one place
+sets both there rather than relying on the role defaults, which move only when
+the collection is released. Register them with whatever checks its pins for
+upstream releases.
 
 Vundle itself is pinned, but `+PluginInstall` clones `qol_nvim_plugins` at their
-current HEAD — plugin *contents* are not reproducible across hosts or time. Pin
-via forks or explicit checkouts if that ever matters.
+current HEAD, so plugin *contents* are not reproducible across hosts or time.
 
 ## Files it owns
 

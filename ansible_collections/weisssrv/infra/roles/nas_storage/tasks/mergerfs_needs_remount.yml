@@ -3,6 +3,18 @@
 # remount cycle? Split out of mergerfs.yml so it can be driven from fabricated
 # register results in test — the live path needs FUSE and a real fileserver.
 
+# A status check with neither `skipped` nor `rc` never ran, and counting it as a
+# healthy union would leave a stale or unmounted union in place unannounced.
+- name: Assert every MergerFS status check that ran produced a result
+  ansible.builtin.assert:
+    that:
+      - nas_storage_mergerfs_status_check.results | default([]) | rejectattr('skipped', 'defined') | rejectattr('rc', 'defined') | list | length == 0
+    fail_msg: >-
+      A MergerFS status check produced no rc, so the union's health is unknown.
+      Unions checked:
+      {{ nas_storage_mergerfs_mounts | default([]) | map(attribute='name') | join(', ') }}.
+    quiet: true
+
 - name: Determine if MergerFS remount is needed
   ansible.builtin.set_fact:
     nas_storage_mergerfs_needs_remount: >-

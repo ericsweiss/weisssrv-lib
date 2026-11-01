@@ -8,10 +8,10 @@ passthrough, UID/GID mapping, and an admin user bootstrapped for Ansible.
 - Automatic storage selection based on Proxmox host role
 - Resource pool creation and validation
 - LXC container creation (Debian Trixie)
-- Unprivileged containers with security
+- Unprivileged containers by default
 - Bind mounts (media directories)
 - GPU passthrough (/dev/dri for transcoding)
-- UID/GID mapping for host file access
+- UID/GID `lxc.idmap`, written when bind mounts or GPU passthrough are set
 - Admin-user bootstrap for Ansible (`proxmox_lxc_admin_user`; its home is
   `proxmox_lxc_admin_home`, which resolves to `/root` for root and
   `/home/<user>` otherwise)
@@ -19,11 +19,9 @@ passthrough, UID/GID mapping, and an admin user bootstrapped for Ansible.
 
 ## Storage selection
 
-Storage is automatically selected based on the Proxmox host's role:
-
 `proxmox_storage_defaults` maps the Proxmox host's `proxmox_role` to a storage
 id; `local-ssd` is used when the role is unknown. Override per-container with
-`proxmox_lxc_storage`.
+`proxmox_lxc_storage`. `proxmox_vm` names its override `proxmox_storage`.
 
 ## Variables
 
@@ -34,12 +32,12 @@ id; `local-ssd` is used when the role is unknown. Override per-container with
 | `proxmox_lxc_cores` | `2` | vCPU count. |
 | `proxmox_lxc_memory` | `2048` | RAM in MiB. |
 | `proxmox_lxc_swap` | `512` | Swap in MiB. |
-| `proxmox_lxc_disk_size` | `8G` | Rootfs size; a GiB value (`8` or `8G`), asserted on the create path. |
+| `proxmox_lxc_disk_size` | `8G` | Rootfs size as a GiB value (`8` or `8G`); `pct create` takes a bare GiB count. |
 | `proxmox_lxc_bridge` | `vmbr0` | Proxmox bridge the container's NIC attaches to. |
 | `proxmox_lxc_unprivileged` | `true` | Unprivileged container, which is what makes the idmap below apply. |
 | `proxmox_lxc_template` | `debian-13-standard_13.6-1_amd64.tar.zst` | Appliance template name; Proxmox rotates builds out of the pveam index, so a 404 means bumping it. |
 | `proxmox_lxc_template_storage` | `local` | Storage holding the template cache. |
-| `proxmox_lxc_netmask_bits` | `24` | Prefix length in `--net0`; must be set on a LAN that is not a /24. |
+| `proxmox_lxc_netmask_bits` | `24` | Prefix length in `--net0`. See below. |
 | `proxmox_lxc_nameserver` | `dns_servers` | Resolvers written into the container. |
 | `proxmox_lxc_internal_domain` | `internal_domain` | Aliases the inventory-wide name; `proxmox_lxc_searchdomain` defaults to it. |
 | `proxmox_lxc_searchdomain` | `proxmox_lxc_internal_domain` | Container search domain. |
@@ -52,7 +50,7 @@ id; `local-ssd` is used when the role is unknown. Override per-container with
 | `proxmox_lxc_admin_user` | `admin_user` | User created inside the container with sudo and SSH key access. |
 | `proxmox_lxc_admin_home` | derived | `/root` for root, `/home/<user>` otherwise. |
 | `proxmox_lxc_ssh_public_keys` | `$SSH_PUBLIC_KEY` | Authorized keys for that user; asserted non-empty before create. |
-| `proxmox_lxc_ssh_authorized_keys_prune` | `false` | Delete `authorized_keys` lines outside the managed set; left false, a forced-command or `from=`-restricted key seeded outside Ansible survives the reconcile. |
+| `proxmox_lxc_ssh_authorized_keys_prune` | `false` | Delete `authorized_keys` lines outside the managed set. See Reconciliation. |
 | `proxmox_lxc_onboot` | `true` | Start the container when the node boots. |
 | `proxmox_lxc_startup_order` | `100` | Proxmox `startup` order value. |
 | `proxmox_lxc_startup_delay` | `0` | Seconds waited after this container starts. |
@@ -76,16 +74,14 @@ The inputs with no default are:
 `proxmox_lxc_netmask_bits` and `proxmox_lxc_disk_size` are asserted on the
 create path only — when the container does not already exist. A run that just
 reconciles bind mounts or startup order on an existing container reads none of
-them. `proxmox_lxc_disk_size` must be a GiB value (`8` or `8G`): `pct create`
-takes the rootfs size as a bare GiB count.
+them.
 
 The container address is written as
-`{{ proxmox_lxc_target_ip }}/{{ proxmox_lxc_netmask_bits }}`;
-`proxmox_lxc_netmask_bits` defaults to `24` and must be set on any LAN that is
-not a /24 (`proxmox_vm_cloudinit_prefix_len` is the VM counterpart). It is
-create-time only, and a wrong prefix does not fail the deploy — the SSH probe
-still succeeds from a controller inside the accidental /24 — so it surfaces
-later as hosts that are reachable only through the gateway.
+`{{ proxmox_lxc_target_ip }}/{{ proxmox_lxc_netmask_bits }}`. Set the prefix on
+any LAN that is not a /24; `proxmox_vm_cloudinit_prefix_len` is the VM
+counterpart. It is create-time only. A wrong prefix does not fail the deploy,
+because the SSH probe still succeeds from a controller inside the accidental
+/24. It surfaces later as hosts reachable only through the gateway.
 
 `proxmox_lxc_nameserver` defaults to the inventory-wide `dns_servers`, and
 `proxmox_lxc_admin_user` to `admin_user`. `proxmox_host`, `vmid`,
@@ -120,7 +116,7 @@ plex:
 | Setting | Behaviour |
 |---------|-----------|
 | `onboot` / `startup` (order, delay) | **Reconciled** on existing containers — editing `proxmox_autostart_enabled` / `proxmox_startup_order` / `proxmox_startup_delay` and re-running applies them via an idempotent `pct set` (metadata-only, next-boot). |
-| Admin SSH `authorized_keys` | **Reconciled** on every run — a rotated `SSH_PUBLIC_KEY` propagates idempotently (atomic temp-file swap, only rewrites on content change). The managed keys are written first and every other line in the file is preserved, unless `proxmox_lxc_ssh_authorized_keys_prune` is set. |
+| Admin SSH `authorized_keys` | **Reconciled** on every run — a rotated `SSH_PUBLIC_KEY` propagates idempotently through an atomic temp-file swap. Merge semantics below. |
 | Per-container DNS — `nameserver` (`proxmox_lxc_nameserver`) and `searchdomain` (`proxmox_lxc_searchdomain`) | **Reconciled** on existing containers via an idempotent `pct set --nameserver --searchdomain`, only when `proxmox_lxc_nameserver` is non-empty. `pct set` stages the change as pending; Proxmox applies it on the container's next restart, so nothing is disrupted or rebooted. |
 | NIC `firewall=1` flag | **Reconciled** on existing containers. Skipped when the container does not exist and `proxmox_lxc_skip_create` is set. |
 | Bind mounts (`proxmox_lxc_bind_mounts`), UID/GID `lxc.idmap` (`proxmox_lxc_idmap_*`), GPU `/dev/dri` passthrough | **Create-time only.** Changing them in inventory does **not** reconcile onto an existing container — live idmap/mount changes are risky and out of scope. Recreate the container, or edit `/etc/pve/lxc/<id>.conf` and `pct restart <id>` manually. |
@@ -159,9 +155,10 @@ calling play does not have to. A group driving Proxmox over
 
 ## Security
 
-- Unprivileged containers (mapped UIDs)
-- UID/GID mapping for file access
-- Admin user with sudo for Ansible
+- Containers are unprivileged by default (`proxmox_lxc_unprivileged`).
+- The standard `lxc.idmap` is written when bind mounts or GPU passthrough are
+  set, mapping `proxmox_lxc_idmap_uid`/`_gid` through 1:1.
+- The admin user gets passwordless (`NOPASSWD`) sudo for Ansible.
 
 ## Shared with proxmox_vm
 

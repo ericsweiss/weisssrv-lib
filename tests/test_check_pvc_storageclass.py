@@ -69,56 +69,56 @@ spec:
 HR_UNPINNED = HR_PINNED.replace('        storageClass: "-"\n', "")
 
 
-def test_static_pvc_passes(monkeypatch):
-    assert _run(PVC_STATIC, monkeypatch) == 0
+# The template pattern: the cluster's tenant StorageClass and a size.
+CNPG_PINNED = """
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata: {name: app-db, namespace: app}
+spec:
+  instances: 1
+  storage:
+    storageClass: tenant-local
+    size: 20Gi
+"""
+
+# `size` alone: CNPG renders a claim with no class, which the default
+# StorageClass captures exactly like an unpinned PVC.
+CNPG_UNPINNED = """
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata: {name: app-db, namespace: app}
+spec:
+  instances: 1
+  storage:
+    size: 20Gi
+"""
 
 
-def test_unpinned_pvc_fails(monkeypatch):
-    assert _run(PVC_UNPINNED, monkeypatch) == 1
+PVC_VOLUME_BOUND = """
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pg-dump
+  namespace: app
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  storageClassName: ""
+  volumeName: pg-dump-pv
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 10Gi}}
+"""
+
+PVC_VOLUME_BOUND_PRUNABLE = PVC_VOLUME_BOUND.replace(
+    "  annotations:\n    kustomize.toolkit.fluxcd.io/prune: disabled\n", ""
+)
 
 
-def test_named_class_passes(monkeypatch):
-    """An explicit named class is a deliberate choice, not a fall-through."""
-    doc = PVC_STATIC.replace('storageClassName: ""', "storageClassName: nfs-downloads")
-    assert _run(doc, monkeypatch) == 0
+PVC_NULL_CLASS = PVC_UNPINNED.replace(
+    "spec:\n", "spec:\n  storageClassName: null\n"
+)
 
-
-def test_pinned_volume_claim_template_passes(monkeypatch):
-    assert _run(STS_PINNED, monkeypatch) == 0
-
-
-def test_unpinned_volume_claim_template_fails(monkeypatch):
-    """volumeClaimTemplates are immutable — this must be caught before apply."""
-    assert _run(STS_UNPINNED, monkeypatch) == 1
-
-
-def test_helmrelease_persistence_with_class_passes(monkeypatch):
-    assert _run(HR_PINNED, monkeypatch) == 0
-
-
-def test_helmrelease_persistence_without_class_fails(monkeypatch):
-    """The chart renders the PVC server-side, so only the values can be linted."""
-    assert _run(HR_UNPINNED, monkeypatch) == 1
-
-
-def test_helmrelease_existing_claim_passes(monkeypatch):
-    """existingClaim binds a PVC this repo already pins (authentik postgres)."""
-    doc = HR_UNPINNED.replace("        size: 75Gi", "        size: 75Gi\n        existingClaim: loki-data")
-    assert _run(doc, monkeypatch) == 0
-
-
-def test_disabled_persistence_block_is_ignored(monkeypatch):
-    doc = HR_UNPINNED.replace("enabled: true", "enabled: false")
-    # PVC_STATIC carries the corpus past the zero-claims guard, so this asserts
-    # "the disabled block is not a claim", not "no claim was found anywhere".
-    assert _run(PVC_STATIC + "---\n" + doc, monkeypatch) == 0
-
-
-def test_unrelated_size_key_is_not_a_persistence_block(monkeypatch):
-    """A `size` under a non-persistence key still names no class — but the
-    block is only flagged when it is not explicitly disabled, and a values tree
-    with neither `size` nor `enabled` must never trip it."""
-    doc = """
+HR_VALUES_WITHOUT_PERSISTENCE = """
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata: {name: thing, namespace: ns}
@@ -126,27 +126,70 @@ spec:
   values:
     resources: {limits: {memory: 128Mi}}
 """
-    assert _run(PVC_STATIC + "---\n" + doc, monkeypatch) == 0
 
 
-def test_list_wrapped_resources_are_expanded(monkeypatch):
-    doc = """
-apiVersion: v1
-kind: List
-items:
-  - apiVersion: v1
-    kind: PersistentVolumeClaim
-    metadata: {name: a, namespace: ns}
-    spec:
-      resources: {requests: {storage: 1Gi}}
-"""
-    assert _run(doc, monkeypatch) == 1
+def _with_static(doc: str) -> str:
+    """PVC_STATIC carries the corpus past the zero-claims guard."""
+    return PVC_STATIC + "---\n" + doc
 
 
-def test_malformed_yaml_is_an_operator_error(monkeypatch, capsys):
-    """Exit 2, not 1 — exit 1 means "a claim is unpinned"."""
-    assert _run("a: [1,\nb: {", monkeypatch) == 2
-    assert "failed to parse YAML input" in capsys.readouterr().err
+CASES = [
+    ("static-pvc", PVC_STATIC, 0, ()),
+    ("unpinned-pvc", PVC_UNPINNED, 1, ()),
+    ("named-class", PVC_STATIC.replace('storageClassName: ""', "storageClassName: nfs-downloads"),
+     0, ()),
+    ("null-class", PVC_NULL_CLASS, 1, ("no storageClassName",)),
+    ("sts-pinned", STS_PINNED, 0, ()),
+    # volumeClaimTemplates are immutable, so this must be caught before apply.
+    ("sts-unpinned", STS_UNPINNED, 1, ()),
+    ("hr-pinned", HR_PINNED, 0, ()),
+    # The chart renders the PVC server-side, so only the values can be linted.
+    ("hr-unpinned", HR_UNPINNED, 1, ()),
+    ("hr-null-class", HR_PINNED.replace('storageClass: "-"', "storageClass: null"),
+     1, ("but no storageClass ",)),
+    ("hr-existing-claim", HR_PINNED.replace('storageClass: "-"', "existingClaim: app-data"),
+     0, ()),
+    ("hr-empty-existing-claim", HR_PINNED.replace('storageClass: "-"', 'existingClaim: ""'),
+     1, ()),
+    ("hr-disabled-persistence", _with_static(HR_UNPINNED.replace("enabled: true", "enabled: false")),
+     0, ()),
+    ("hr-no-persistence-block", _with_static(HR_VALUES_WITHOUT_PERSISTENCE), 0, ()),
+    ("cnpg-pinned", CNPG_PINNED, 0, ()),
+    ("cnpg-size-only", CNPG_UNPINNED, 1,
+     ("app/Cluster/app-db spec.storage", "name the provisioner's class")),
+    ("cnpg-static-pvc-template", CNPG_UNPINNED.replace(
+        "    size: 20Gi", '    size: 20Gi\n    pvcTemplate:\n      storageClassName: ""'), 0, ()),
+    ("cnpg-class-wins-over-template", CNPG_PINNED.replace(
+        "    size: 20Gi", "    size: 20Gi\n    pvcTemplate:\n      storageClassName: null"), 0, ()),
+    ("cnpg-wal", CNPG_PINNED + "  walStorage:\n    size: 5Gi\n", 1, ("spec.walStorage",)),
+    ("cnpg-tablespace",
+     CNPG_PINNED + "  tablespaces:\n    - name: hot\n      storage:\n        size: 1Gi\n",
+     1, ("app/Cluster/app-db tablespace 'hot'",)),
+    ("cluster-of-another-group",
+     _with_static(CNPG_UNPINNED.replace("postgresql.cnpg.io/v1", "example.com/v1")), 0, ()),
+    ("volume-bound-prune-disabled", PVC_VOLUME_BOUND, 0, ()),
+    # Pruning releases the PV, and a Released volume never rebinds unaided.
+    ("volume-bound-prunable", PVC_VOLUME_BOUND_PRUNABLE, 1,
+     ("pg-dump-pv", "kustomize.toolkit.fluxcd.io/prune")),
+    *[(f"volume-bound-prune-{value}",
+       PVC_VOLUME_BOUND.replace("prune: disabled", f"prune: {value!r}"), 1, ())
+      for value in ("enabled", "true", "Disabled", "false")],
+    *[(f"volume-name-{volume}", PVC_VOLUME_BOUND_PRUNABLE.replace(
+        "volumeName: pg-dump-pv", f"volumeName: {volume}"), 0, ())
+      for volume in ('""', "null")],
+    ("prune-and-class-both-reported",
+     PVC_VOLUME_BOUND_PRUNABLE.replace('  storageClassName: ""\n', ""), 1,
+     ("no storageClassName", "pg-dump-pv")),
+]
+
+
+@pytest.mark.parametrize("corpus, code, needles", [c[1:] for c in CASES],
+                         ids=[c[0] for c in CASES])
+def test_claim_shape(monkeypatch, capsys, corpus, code, needles):
+    assert _run(corpus, monkeypatch) == code
+    err = capsys.readouterr().err
+    for needle in needles:
+        assert needle in err
 
 
 def test_empty_corpus_is_an_operator_error(monkeypatch, capsys):
@@ -176,172 +219,3 @@ def test_the_success_line_reports_the_claims_it_checked(monkeypatch, capsys):
     """The count is what distinguishes a real pass from a vacuous one."""
     assert _run(PVC_STATIC + "---\n" + HR_PINNED, monkeypatch) == 0
     assert "2 claim(s) across 2 document(s)" in capsys.readouterr().out
-
-
-def test_an_explicit_null_storageclass_is_unpinned(monkeypatch, capsys):
-    """`storageClassName: null` deserializes as unset, so the default
-    StorageClass captures the claim exactly like a missing key."""
-    pvc_null = """
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata: {name: cache, namespace: ns}
-spec:
-  storageClassName: null
-  accessModes: [ReadWriteOnce]
-  resources: {requests: {storage: 1Gi}}
-"""
-    assert _run(pvc_null, monkeypatch) == 1
-    assert "no storageClassName" in capsys.readouterr().err
-
-
-def test_a_null_chart_storageclass_is_unpinned(monkeypatch, capsys):
-    """`storageClass: null` in chart values pins nothing — templates treat it
-    as unset and the default class captures the chart's PVC."""
-    hr_null = HR_PINNED.replace('storageClass: "-"', "storageClass: null")
-    assert _run(hr_null, monkeypatch) == 1
-    assert "but no storageClass " in capsys.readouterr().err
-
-
-def test_an_empty_existing_claim_is_unpinned(monkeypatch):
-    """`existingClaim: ""` references no claim; only a non-empty name pins."""
-    hr_empty_claim = HR_PINNED.replace('storageClass: "-"', 'existingClaim: ""')
-    assert _run(hr_empty_claim, monkeypatch) == 1
-
-
-def test_a_named_existing_claim_pins(monkeypatch):
-    hr_claim = HR_PINNED.replace('storageClass: "-"', "existingClaim: app-data")
-    assert _run(hr_claim, monkeypatch) == 0
-
-
-# The template pattern: the cluster's tenant StorageClass and a size.
-CNPG_PINNED = """
-apiVersion: postgresql.cnpg.io/v1
-kind: Cluster
-metadata: {name: app-db, namespace: app}
-spec:
-  instances: 1
-  storage:
-    storageClass: tenant-local
-    size: 20Gi
-"""
-
-# `size` alone: CNPG renders a claim with no class, which the default
-# StorageClass captures exactly like an unpinned PVC.
-CNPG_UNPINNED = """
-apiVersion: postgresql.cnpg.io/v1
-kind: Cluster
-metadata: {name: app-db, namespace: app}
-spec:
-  instances: 1
-  storage:
-    size: 20Gi
-"""
-
-
-def test_cnpg_cluster_requesting_a_storage_class_passes(monkeypatch):
-    assert _run(CNPG_PINNED, monkeypatch) == 0
-
-
-def test_cnpg_cluster_with_only_a_size_fails(monkeypatch, capsys):
-    assert _run(CNPG_UNPINNED, monkeypatch) == 1
-    err = capsys.readouterr().err
-    assert "app/Cluster/app-db spec.storage" in err
-    assert "name the provisioner's class" in err
-
-
-def test_cnpg_static_pvc_template_pins(monkeypatch):
-    doc = CNPG_UNPINNED.replace(
-        "    size: 20Gi", '    size: 20Gi\n    pvcTemplate:\n      storageClassName: ""')
-    assert _run(doc, monkeypatch) == 0
-
-
-def test_cnpg_storage_class_wins_over_the_pvc_template(monkeypatch):
-    doc = CNPG_PINNED.replace(
-        "    size: 20Gi", "    size: 20Gi\n    pvcTemplate:\n      storageClassName: null")
-    assert _run(doc, monkeypatch) == 0
-
-
-def test_cnpg_wal_storage_is_a_claim_too(monkeypatch, capsys):
-    doc = CNPG_PINNED + "  walStorage:\n    size: 5Gi\n"
-    assert _run(doc, monkeypatch) == 1
-    assert "spec.walStorage" in capsys.readouterr().err
-
-
-def test_cnpg_tablespace_storage_is_a_claim_too(monkeypatch, capsys):
-    doc = CNPG_PINNED + "  tablespaces:\n    - name: hot\n      storage:\n        size: 1Gi\n"
-    assert _run(doc, monkeypatch) == 1
-    assert "app/Cluster/app-db tablespace 'hot'" in capsys.readouterr().err
-
-
-def test_a_cluster_of_another_api_group_is_not_cnpg(monkeypatch):
-    doc = CNPG_UNPINNED.replace("postgresql.cnpg.io/v1", "example.com/v1")
-    assert _run(PVC_STATIC + "---\n" + doc, monkeypatch) == 0
-
-
-
-
-PVC_VOLUME_BOUND = """
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: pg-dump
-  namespace: app
-  annotations:
-    kustomize.toolkit.fluxcd.io/prune: disabled
-spec:
-  storageClassName: ""
-  volumeName: pg-dump-pv
-  accessModes: [ReadWriteOnce]
-  resources: {requests: {storage: 10Gi}}
-"""
-
-PVC_VOLUME_BOUND_PRUNABLE = PVC_VOLUME_BOUND.replace(
-    "  annotations:\n    kustomize.toolkit.fluxcd.io/prune: disabled\n", ""
-)
-
-
-def test_volume_bound_claim_with_prune_disabled_passes(monkeypatch):
-    assert _run(PVC_VOLUME_BOUND, monkeypatch) == 0
-
-
-def test_volume_bound_claim_without_the_annotation_fails(monkeypatch, capsys):
-    """Pruning releases the PV, and a Released volume never rebinds unaided."""
-    assert "annotations" not in PVC_VOLUME_BOUND_PRUNABLE
-    assert _run(PVC_VOLUME_BOUND_PRUNABLE, monkeypatch) == 1
-    err = capsys.readouterr().err
-    assert "pg-dump-pv" in err and "kustomize.toolkit.fluxcd.io/prune" in err
-
-
-@pytest.mark.parametrize("value", ["enabled", "true", "Disabled", "false"])
-def test_volume_bound_claim_with_any_other_prune_value_fails(monkeypatch, value):
-    doc = PVC_VOLUME_BOUND.replace("prune: disabled", f"prune: {value!r}")
-    assert _run(doc, monkeypatch) == 1
-
-
-def test_volume_bound_claim_with_prune_disabled_counts_as_inspected(monkeypatch, capsys):
-    """The vacuity guard still sees the claim: a corpus of one passes, not exit 2."""
-    assert _run(PVC_VOLUME_BOUND, monkeypatch) == 0
-    assert "1 claim(s)" in capsys.readouterr().out
-
-
-def test_a_claim_without_volume_name_is_untouched_by_the_prune_rule(monkeypatch):
-    """PVC_STATIC binds by class alone and carries no annotation."""
-    assert "volumeName" not in PVC_STATIC and "annotations" not in PVC_STATIC
-    assert _run(PVC_STATIC, monkeypatch) == 0
-
-
-@pytest.mark.parametrize("volume", ['""', "null"])
-def test_an_empty_or_null_volume_name_is_not_a_bind(monkeypatch, volume):
-    doc = PVC_VOLUME_BOUND_PRUNABLE.replace("volumeName: pg-dump-pv", f"volumeName: {volume}")
-    assert _run(doc, monkeypatch) == 0
-
-
-def test_the_prune_and_class_violations_are_both_reported(monkeypatch, capsys):
-    doc = PVC_VOLUME_BOUND_PRUNABLE.replace('  storageClassName: ""\n', "")
-    assert _run(doc, monkeypatch) == 1
-    err = capsys.readouterr().err
-    assert "no storageClassName" in err and "pg-dump-pv" in err
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-v"]))

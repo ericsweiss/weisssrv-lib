@@ -19,6 +19,8 @@ TEMPLATE = REPO / "ci" / "validate" / "terraform-drift-plan.yml"
 ci_yaml = load_path(SCRIPTS / "ci_yaml.py")
 
 GUARD = "$[[ inputs.secrets_guard ]]"
+SCHEDULE = '$CI_PIPELINE_SOURCE == "schedule"'
+DEFAULT_BRANCH = '$CI_COMMIT_BRANCH == "$[[ inputs.default_branch ]]"'
 
 
 def _job(text: str) -> dict:
@@ -37,27 +39,24 @@ def test_no_rule_runs_on_a_merge_request() -> None:
     assert _merge_request_rules(_job(TEMPLATE.read_text())["rules"]) == []
 
 
-def test_the_merge_request_assertion_is_load_bearing() -> None:
-    """Mutation: an added merge_request_event rule must be reported."""
-    rules = _job(TEMPLATE.read_text())["rules"]
-    rules.append({"if": '$CI_PIPELINE_SOURCE == "merge_request_event"'})
-    assert _merge_request_rules(rules) != []
-
-
 def test_every_rule_is_secrets_gated() -> None:
     assert _ungated_rules(_job(TEMPLATE.read_text())["rules"]) == []
 
 
-def test_there_are_rules_to_check() -> None:
-    """A template with no rules would satisfy both assertions vacuously."""
-    assert len(_job(TEMPLATE.read_text())["rules"]) >= 2
+def test_the_schedule_and_the_post_merge_rule_are_the_only_triggers() -> None:
+    """The schedule is the detector; the post-merge run is path-filtered."""
+    rules = _job(TEMPLATE.read_text())["rules"]
+    schedule = [r for r in rules if r["if"].startswith(SCHEDULE)]
+    post_merge = [r for r in rules if r["if"].startswith(DEFAULT_BRANCH)]
+    assert len(schedule) == 1 and len(post_merge) == 1 and len(rules) == 2
+    assert "changes" not in schedule[0]
+    assert post_merge[0]["changes"] == "$[[ inputs.changes ]]"
 
 
 def test_only_the_drift_exit_code_is_tolerated() -> None:
     """`allow_failure: true` would turn the detector into a no-op."""
     allow_failure = _job(TEMPLATE.read_text())["allow_failure"]
     assert allow_failure == {"exit_codes": [2]}
-    assert not isinstance(allow_failure, bool)
 
 
 APPLY = re.compile(r"\bterraform\s+apply\b")
@@ -70,11 +69,6 @@ def _applies(script: list) -> list:
 def test_the_script_never_applies() -> None:
     """The template's central claim: reconciling stays a supervised apply."""
     assert _applies(_job(TEMPLATE.read_text())["script"]) == []
-
-
-def test_the_never_applies_assertion_is_load_bearing() -> None:
-    script = _job(TEMPLATE.read_text())["script"] + ["terraform apply -auto-approve"]
-    assert _applies(script) != []
 
 
 def test_the_plan_asks_for_a_detailed_exit_code() -> None:

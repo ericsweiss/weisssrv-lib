@@ -17,7 +17,6 @@
       required (the relay to authenticate to, and the domain appended to
       inventory_hostname for myhostname/mailname).
 
-# Split from the input assert so each failure names only its own inputs.
 - name: Validate SMTP relay credentials are present
   ansible.builtin.assert:
     that:

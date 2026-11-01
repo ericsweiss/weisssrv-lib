@@ -24,8 +24,8 @@
           - bk.a_total == 2
         fail_msg: "Expected storage_create=1/job_create=1/total=2, got {{ bk.a_storage_create }}/{{ bk.a_job_create }}/{{ bk.a_total }}"
 
-    # (b) The idempotency contract: matching live state churns nothing, and
-    #     stands in for the scenario's absent `idempotence` step.
+    # The idempotency contract: matching live state churns nothing, and
+    # stands in for the scenario's absent `idempotence` step.
     - name: B — already-correct state triggers NO mutations
       ansible.builtin.assert:
         that:
@@ -46,7 +46,7 @@
           - bk.c2_total == 1
         fail_msg: "Expected job_set=1/total=1 for exclude drift, got {{ bk.c2_job_set }}/{{ bk.c2_total }}"
 
-    # (c3) Removals are reconciled, not just adds.
+    # Removals are reconciled, not just adds.
     - name: C3 — removed exclude triggers exactly one job set with --delete
       ansible.builtin.assert:
         that:
@@ -61,9 +61,9 @@
           - bk.d_total == 1
         fail_msg: "Expected storage_set=1/total=1 for content drift, got {{ bk.d_storage_set }}/{{ bk.d_total }}"
 
-    # (f) The hookscript must land BEFORE the job: pvesh rejects a missing
-    #     --script path. Its defaults file carries TEXTFILE_DIR, so both halves
-    #     of the cross-role include have to land.
+    # The hookscript must land BEFORE the job: pvesh rejects a missing
+    # --script path. Its defaults file carries TEXTFILE_DIR, so both halves
+    # of the cross-role include have to land.
     - name: F — job with script deploys the hookscript and creates the job
       ansible.builtin.assert:
         that:
@@ -88,8 +88,8 @@
           - bk.g2_total == 0
         fail_msg: "Expected 0 mutations for a matching zfspool entry, got {{ bk.g2_total }}"
 
-    # (g3) `pool` is create-fixed and decides which dataset new guest disks
-    #      inherit their properties (encryption included) from.
+    # `pool` is create-fixed and decides which dataset new guest disks
+    # inherit their properties (encryption included) from.
     - name: G3 — a zfspool id pointing at the wrong dataset fails loud
       ansible.builtin.assert:
         that:
@@ -104,7 +104,7 @@
           - bk.g4_total == 1
         fail_msg: "Expected storage_set=1/total=1 for nodes drift, got {{ bk.g4_storage_set }}/{{ bk.g4_total }}"
 
-    # (e) Create-fixed drift must fail loud: recreation is a manual step.
+    # Create-fixed drift must fail loud: recreation is a manual step.
     - name: E — fixed-property drift fails loud with NO mutations
       ansible.builtin.assert:
         that:

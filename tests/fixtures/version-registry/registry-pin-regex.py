@@ -1,7 +1,7 @@
 """Fixture consumer config for pins that are not `image:` lines.
 
 A CI variable and a `services: - name:` entry, each matched by its own
-pin_regex, plus one entry whose regex captures nothing.
+pin_regex.
 """
 
 CONFIG = {

@@ -3,8 +3,8 @@
 # seed a placeholder cert, validate and deploy the caller's site template, drop
 # the packaged default vhost, reload. Per-app values are compose_app_nginx_*.
 
-# Resolved by the CALLER (README § nginx: validated before install): an unresolved or
-# relative value reaches the template module as an opaque "src is empty".
+# Resolved by the CALLER: an unresolved or relative value reaches the template
+# module as an opaque "src is empty".
 - name: Assert the nginx site template is an absolute path
   ansible.builtin.assert:
     that:

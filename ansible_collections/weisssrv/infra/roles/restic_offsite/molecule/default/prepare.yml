@@ -1,6 +1,6 @@
 ---
 # Prepare: shared systemd/apt prep + seed fake .zfs/snapshot trees so the
-# freshness guard + direct-mode file walk have a fresh archsync snapshot to read
+# freshness guard + bind step have a fresh archsync snapshot to read
 # (no real ZFS in the container).
 - name: Prepare
   hosts: all

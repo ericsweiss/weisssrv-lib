@@ -89,5 +89,5 @@ smtp_relay_submission_config:
   smtpd_recipient_restrictions: "permit_sasl_authenticated,reject"
   milter_macro_daemon_name: "ORIGINATING"
 
-# The required credentials have no defaults, so a missing one fails loudly.
-# The README credentials table lists them.
+# smtp_relay_upstream_user/_password and smtp_relay_sasl_user/_password have
+# no defaults, so a missing one fails loudly (README credentials table).

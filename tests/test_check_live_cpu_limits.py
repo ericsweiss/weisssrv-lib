@@ -65,36 +65,6 @@ def test_violation_message_names_pod_and_container():
     assert "'manager'" in out[0] and "limits.cpu=1" in out[0]
 
 
-def test_allowlist_matches_on_pod_name_prefix(monkeypatch):
-    """Pod names carry a per-replica suffix, so the allowlist matches a prefix."""
-    monkeypatch.setattr(
-        mod, "LIVE_CPU_LIMIT_ALLOWLIST",
-        {"flux-system/helm-controller/manager": "reason"},
-    )
-    assert _run([FLUX_DRIFT], monkeypatch) == 0
-
-
-def test_allowlist_does_not_leak_across_namespaces(monkeypatch):
-    monkeypatch.setattr(
-        mod, "LIVE_CPU_LIMIT_ALLOWLIST",
-        {"other-ns/helm-controller/manager": "reason"},
-    )
-    assert _run([FLUX_DRIFT], monkeypatch) == 1
-
-
-def test_allowlist_does_not_leak_across_containers(monkeypatch):
-    monkeypatch.setattr(
-        mod, "LIVE_CPU_LIMIT_ALLOWLIST",
-        {"flux-system/helm-controller/sidecar": "reason"},
-    )
-    assert _run([FLUX_DRIFT], monkeypatch) == 1
-
-
-def test_shipped_allowlist_is_empty():
-    """The policy has no exceptions today; adding one must be a deliberate diff."""
-    assert mod.LIVE_CPU_LIMIT_ALLOWLIST == {}
-
-
 # --- memory-limit drift -------------------------------------------------------
 def _live_pod(name: str, mem: str, labels: dict | None = None) -> dict:
     return {

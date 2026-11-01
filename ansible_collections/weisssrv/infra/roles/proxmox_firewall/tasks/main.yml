@@ -171,124 +171,92 @@
 
 # Proxmox monitoring user and API token for the Prometheus exporters, created
 # once on the cluster-task delegate. See README.
-- name: Check if monitoring@pve user exists
-  ansible.builtin.command: pveum user list --output-format json
-  register: proxmox_firewall_users
-  changed_when: false
-  check_mode: false
+- name: Reconcile the monitoring@pve user and exporter token
   run_once: true
   delegate_to: "{{ _proxmox_firewall_delegate }}"
   when:
     - groups.get(proxmox_firewall_host_group, []) | length > 0
     - not (proxmox_firewall_skip_pveum | default(false))
     - not (hostvars[_proxmox_firewall_delegate]['_proxmox_firewall_pveum_done'] | default(false))
+  block:
+    - name: Check if monitoring@pve user exists
+      ansible.builtin.command: pveum user list --output-format json
+      register: proxmox_firewall_users
+      changed_when: false
+      check_mode: false
 
-- name: Create monitoring@pve user
-  ansible.builtin.command: >
-    pveum user add monitoring@pve
-    --comment 'Prometheus observability exporter'
-  changed_when: true
-  run_once: true
-  delegate_to: "{{ _proxmox_firewall_delegate }}"
-  when:
-    - groups.get(proxmox_firewall_host_group, []) | length > 0
-    # Explicit skip_pveum gate: `.stdout is defined` alone would let a cached or
-    # pre-seeded register fire pveum on a host without the binary.
-    - not (proxmox_firewall_skip_pveum | default(false))
-    - not (hostvars[_proxmox_firewall_delegate]['_proxmox_firewall_pveum_done'] | default(false))
-    - proxmox_firewall_users.stdout is defined
-    - >-
-      proxmox_firewall_users.stdout | from_json | default([]) |
-      selectattr('userid', 'equalto', 'monitoring@pve') |
-      list | length == 0
+    # Explicit skip_pveum gate on the block: `.stdout is defined` alone would let
+    # a cached or pre-seeded register fire pveum on a host without the binary.
+    - name: Create monitoring@pve user
+      ansible.builtin.command: >
+        pveum user add monitoring@pve
+        --comment 'Prometheus observability exporter'
+      changed_when: true
+      when:
+        - proxmox_firewall_users.stdout is defined
+        - >-
+          proxmox_firewall_users.stdout | from_json | default([]) |
+          selectattr('userid', 'equalto', 'monitoring@pve') |
+          list | length == 0
 
-- name: Check PVEAuditor ACL for monitoring@pve
-  ansible.builtin.command: pveum acl list --output-format json
-  register: proxmox_firewall_acls
-  changed_when: false
-  check_mode: false
-  run_once: true
-  delegate_to: "{{ _proxmox_firewall_delegate }}"
-  when:
-    - groups.get(proxmox_firewall_host_group, []) | length > 0
-    - not (proxmox_firewall_skip_pveum | default(false))
-    - not (hostvars[_proxmox_firewall_delegate]['_proxmox_firewall_pveum_done'] | default(false))
+    - name: Check PVEAuditor ACL for monitoring@pve
+      ansible.builtin.command: pveum acl list --output-format json
+      register: proxmox_firewall_acls
+      changed_when: false
+      check_mode: false
 
-- name: Assign PVEAuditor role to monitoring@pve
-  ansible.builtin.command: >
-    pveum aclmod / --users monitoring@pve --roles PVEAuditor
-  changed_when: true
-  run_once: true
-  delegate_to: "{{ _proxmox_firewall_delegate }}"
-  when:
-    - groups.get(proxmox_firewall_host_group, []) | length > 0
-    - not (proxmox_firewall_skip_pveum | default(false))
-    - not (hostvars[_proxmox_firewall_delegate]['_proxmox_firewall_pveum_done'] | default(false))
-    - proxmox_firewall_acls.stdout is defined
-    - >-
-      proxmox_firewall_acls.stdout | from_json | default([]) |
-      selectattr('ugid', 'equalto', 'monitoring@pve') |
-      selectattr('path', 'equalto', '/') |
-      selectattr('roleid', 'equalto', 'PVEAuditor') |
-      list | length == 0
+    - name: Assign PVEAuditor role to monitoring@pve
+      ansible.builtin.command: >
+        pveum aclmod / --users monitoring@pve --roles PVEAuditor
+      changed_when: true
+      when:
+        - proxmox_firewall_acls.stdout is defined
+        - >-
+          proxmox_firewall_acls.stdout | from_json | default([]) |
+          selectattr('ugid', 'equalto', 'monitoring@pve') |
+          selectattr('path', 'equalto', '/') |
+          selectattr('roleid', 'equalto', 'PVEAuditor') |
+          list | length == 0
 
-- name: Check if exporter API token exists for monitoring@pve
-  ansible.builtin.command: pveum user token list monitoring@pve --output-format json
-  register: proxmox_firewall_tokens
-  changed_when: false
-  check_mode: false
-  run_once: true
-  delegate_to: "{{ _proxmox_firewall_delegate }}"
-  when:
-    - groups.get(proxmox_firewall_host_group, []) | length > 0
-    - not (proxmox_firewall_skip_pveum | default(false))
-    - not (hostvars[_proxmox_firewall_delegate]['_proxmox_firewall_pveum_done'] | default(false))
+    - name: Check if exporter API token exists for monitoring@pve
+      ansible.builtin.command: pveum user token list monitoring@pve --output-format json
+      register: proxmox_firewall_tokens
+      changed_when: false
+      check_mode: false
 
-- name: Create exporter API token for monitoring@pve
-  ansible.builtin.command: >
-    pveum user token add monitoring@pve exporter --privsep 0
-  changed_when: true
-  no_log: true
-  register: proxmox_firewall_token_created
-  run_once: true
-  delegate_to: "{{ _proxmox_firewall_delegate }}"
-  when:
-    - groups.get(proxmox_firewall_host_group, []) | length > 0
-    - not (proxmox_firewall_skip_pveum | default(false))
-    - not (hostvars[_proxmox_firewall_delegate]['_proxmox_firewall_pveum_done'] | default(false))
-    - proxmox_firewall_tokens.stdout is defined
-    - >-
-      (proxmox_firewall_tokens.stdout | from_json | default([]) |
-      map(attribute='tokenid') | list) |
-      intersect(['exporter', 'monitoring@pve!exporter']) | length == 0
+    - name: Create exporter API token for monitoring@pve
+      ansible.builtin.command: >
+        pveum user token add monitoring@pve exporter --privsep 0
+      changed_when: true
+      no_log: true
+      register: proxmox_firewall_token_created
+      when:
+        - proxmox_firewall_tokens.stdout is defined
+        - >-
+          (proxmox_firewall_tokens.stdout | from_json | default([]) |
+          map(attribute='tokenid') | list) |
+          intersect(['exporter', 'monitoring@pve!exporter']) | length == 0
 
-- name: Notify if new API token was created
-  ansible.builtin.debug:
-    msg: >
-      API token monitoring@pve!exporter created. The secret is only printed
-      once at creation and was discarded here (no_log) — the Proxmox UI
-      cannot re-display it. Recover it as root from /etc/pve/priv/token.cfg
-      on any Proxmox node, or rotate it (`pveum user token remove
-      monitoring@pve exporter && pveum user token add monitoring@pve exporter
-      --privsep 0`) and capture the printed value, then store it in the
-      secret store the exporters read.
-  run_once: true
-  delegate_to: "{{ _proxmox_firewall_delegate }}"
-  when:
-    - proxmox_firewall_token_created is defined
-    - proxmox_firewall_token_created is changed
+    - name: Notify if new API token was created
+      ansible.builtin.debug:
+        msg: >
+          API token monitoring@pve!exporter created. The secret is only printed
+          once at creation and was discarded here (no_log) — the Proxmox UI
+          cannot re-display it. Recover it as root from /etc/pve/priv/token.cfg
+          on any Proxmox node, or rotate it (`pveum user token remove
+          monitoring@pve exporter && pveum user token add monitoring@pve exporter
+          --privsep 0`) and capture the printed value, then store it in the
+          secret store the exporters read.
+      when:
+        - proxmox_firewall_token_created is defined
+        - proxmox_firewall_token_created is changed
 
-# Recorded on the delegate (delegate_facts) so later plays that include this
-# role read it through hostvars and skip the `pveum … list` probes.
-- name: Mark pveum monitoring user/token reconcile as done for this run
-  ansible.builtin.set_fact:
-    _proxmox_firewall_pveum_done: true
-  delegate_to: "{{ _proxmox_firewall_delegate }}"
-  delegate_facts: true
-  run_once: true
-  when:
-    - groups.get(proxmox_firewall_host_group, []) | length > 0
-    - not (proxmox_firewall_skip_pveum | default(false))
+    # Recorded on the delegate (delegate_facts) so later plays that include this
+    # role read it through hostvars and skip the `pveum … list` probes.
+    - name: Mark pveum monitoring user/token reconcile as done for this run
+      ansible.builtin.set_fact:
+        _proxmox_firewall_pveum_done: true
+      delegate_facts: true
 
 # The post-publish compile only runs on a changed publish, so a ruleset that is
 # already live and uncompilable stays invisible. pve-firewall keeps serving the
@@ -299,7 +267,7 @@
   register: proxmox_firewall_compile
   changed_when: false
   check_mode: false
-  failed_when: proxmox_firewall_compile_failed | bool
+  failed_when: _proxmox_firewall_compile_failed | bool
   when:
     - proxmox_firewall_enabled | default(true)
     - inventory_hostname in groups[proxmox_firewall_host_group] | default([])

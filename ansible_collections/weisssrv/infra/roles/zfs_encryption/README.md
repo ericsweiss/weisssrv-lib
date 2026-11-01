@@ -37,11 +37,10 @@ data, nfsd's encrypted exports and the gated guests come up late.
 - `zfs-load-key@<pool>` is `After=zfs-import.target network-online.target`
   (Connect is reachable only once the network is up) and
   `WantedBy=zfs-mount-encrypted.service`.
-- It is **never** `Before=` or `RequiredBy=zfs-mount.service`. That pair closed
-  an ordering cycle (`zfs-mount` → `local-fs` → `network-online`) and put a
+- It is **never** `Before=` or `RequiredBy=zfs-mount.service`. That pair would
+  form an ordering cycle (`zfs-mount` → `local-fs` → `network-online`) and put a
   network-dependent unlock in the early boot path. Stock `zfs-mount.service`
-  still runs early; its `zfs mount -a` simply skips the locked datasets and
-  exits 0.
+  runs early; its `zfs mount -a` skips the locked datasets and exits 0.
 - `WantedBy` (not `RequiredBy`) the anchor: one pool failing to unlock must not
   fail the anchor, the other pools, or any boot target.
 - `zfs-mount-encrypted.service` is `WantedBy=multi-user.target`, `Wants=` (not
@@ -90,8 +89,6 @@ reporting a clean run that started nothing.
 Encryption protects against **disk-leaves-building** scenarios: RMA, disposal,
 theft of an offline drive. It does not protect a running system — anyone with
 root on the live host can read the Connect token and fetch the same passphrase.
-Storing the key on disk would have the same exposure with one fewer
-indirection.
 
 The token is narrower than a 1Password Service Account token: it reads only the
 configured Connect server's vault, and only where that Connect endpoint is
@@ -113,10 +110,11 @@ control, or encrypt it.
 
 ## Cold-cluster boot
 
-`zfs-mount-encrypted.service` is ordered `After=` the key-load units and is
-never `Before=` a boot target. The anchor, nfsd and the encrypted-storage guests
-order `After=` it, so an ordering edge into a boot target would deadlock the
-boot instead of letting the retry loop converge.
+`zfs-mount-encrypted.service` `Wants=` each key-load unit with no ordering edge,
+so a key-load that keeps restarting never holds it back. It is never `Before=` a
+boot target. nfsd and the encrypted-storage guests order `After=` the anchor, so
+an ordering edge into a boot target would deadlock the boot instead of letting
+the retry loop converge.
 
 If everything power-cycles together and Connect is not up yet, the per-pool
 units retry continuously and the anchor stays `activating`, so nfsd and the
@@ -204,8 +202,8 @@ access to all of it.
 Order matters, because a Connect **token** can only cover vaults the Connect
 **server** itself has access to. Minting a token against a vault the server
 cannot reach yields one that 403s, and a token that cannot read the item makes
-`zfs-load-key@<pool>.service` retry forever and drags `zfs-mount` with it — a
-failure that only shows up at the next boot. So: create the vault and move the
+`zfs-load-key@<pool>.service` retry forever, so that pool's datasets never mount.
+The failure shows up only at the next boot. So: create the vault and move the
 passphrase items into it, grant the existing Connect server access to it, mint
 the new token, set `zfs_encryption_connect_vault`, converge, prove an actual key
 load, and only then revoke the old token.

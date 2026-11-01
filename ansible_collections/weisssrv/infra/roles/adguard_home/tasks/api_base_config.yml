@@ -210,8 +210,7 @@
           port_https: "{{ adguard_home_https_port }}"
           port_dns_over_tls: "{{ adguard_home_dot_port }}"
           port_dns_over_quic: "{{ adguard_home_doq_port }}"
-          # Use certificate_path/private_key_path (file paths) instead of
-          # certificate_chain/private_key (which expect actual PEM content)
+          # File paths to the distributed PEM files.
           certificate_path: "{{ adguard_home_cert_path }}/fullchain.pem"
           private_key_path: "{{ adguard_home_cert_path }}/privkey.pem"
         status_code: 200
@@ -282,7 +281,7 @@
         success_msg: "AdGuard DHCP status read"
       when: not ansible_check_mode
 
-    - name: Disable DHCP server (router handles DHCP)
+    - name: Disable the DHCP server
       ansible.builtin.uri:
         url: "{{ _adguard_home_api_base }}/control/dhcp/set_config"
         method: POST

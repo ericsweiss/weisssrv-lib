@@ -35,9 +35,8 @@ resource "cloudflare_zone_settings_override" "this" {
     }
   }
 
-  # Destroying this override reverts ssl/HSTS/min_tls_version zone-wide, and a
-  # consumer stack may auto-apply. Disabling manage_zone_settings means
-  # `terraform state rm` first (live settings survive), then flipping it.
+  # Destroying this override reverts ssl/HSTS/min_tls_version zone-wide.
+  # Disabling it: the manage_zone_settings description.
   lifecycle {
     prevent_destroy = true
   }

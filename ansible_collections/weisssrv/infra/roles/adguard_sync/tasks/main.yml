@@ -10,26 +10,15 @@
       ansible.builtin.assert:
         that:
           - adguard_sync_version | default('') | length > 0
-          - (adguard_sync_replica | default('') | length > 0)
-            or (adguard_sync_replicas | default([]) | length > 0)
+          - adguard_sync_replica | default('') | length > 0
           - adguard_sync_origin | default('') | length > 0
           - adguard_sync_admin_user | default('') | length > 0
           - adguard_sync_admin_password | default('') | length > 0
         fail_msg: >-
-          adguard_sync_{version,origin,admin_user,admin_password} are all
-          required — the pinned release plus the origin AdGuard API endpoint
-          and the credentials shared by every endpoint — along with at least
-          one target in adguard_sync_replica or adguard_sync_replicas.
+          adguard_sync_{version,origin,replica,admin_user,admin_password} are
+          all required — the pinned release, both AdGuard API endpoints and
+          the credentials shared by both.
         quiet: true
-
-    - name: Validate every entry in adguard_sync_replicas carries a URL
-      ansible.builtin.assert:
-        that:
-          - adguard_sync_replicas | rejectattr('url', 'defined') | list | length == 0
-          - adguard_sync_replicas | map(attribute='url') | select('equalto', '') | list | length == 0
-        fail_msg: "Every adguard_sync_replicas entry needs a non-empty url."
-        quiet: true
-      when: adguard_sync_replicas | default([]) | length > 0
 
     - name: Assert this architecture has an adguardhome-sync build
       ansible.builtin.assert:
@@ -67,22 +56,6 @@
         # Not a long-running exporter: point the shared restart handler at the
         # timer — its next tick runs the oneshot on the freshly installed binary.
         prometheus_exporter_service_name: adguardhome-sync.timer
-
-    - name: Check sync state directory
-      ansible.builtin.stat:
-        path: /var/lib/adguardhome-sync
-      register: adguard_sync_state_dir_stat
-
-    # StateDirectory= + DynamicUser=yes manage /var/lib/adguardhome-sync as a
-    # symlink into /var/lib/private; a plain root-owned directory left by older
-    # deploys blocks unit startup. Its contents are disposable sync state.
-    - name: Remove legacy root-owned sync home directory
-      ansible.builtin.file:
-        path: /var/lib/adguardhome-sync
-        state: absent
-      when:
-        - adguard_sync_state_dir_stat.stat.exists
-        - not adguard_sync_state_dir_stat.stat.islnk
 
     - name: Deploy adguardhome-sync configuration
       ansible.builtin.template:

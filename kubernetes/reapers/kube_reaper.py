@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Shared half of a pod-reaper CronJob program.
+"""Shared half of a pod-reaper CronJob program: client, paging, ages, deletes.
 
-Holds the apiserver client, paging, age arithmetic, deletes and entry point; a
-reaper supplies the selector and guards. Stdlib only. Contract: docs/SCRIPTS.md.
+A reaper supplies its selectors, guards and sweep loop, and catches OSError on
+its list paths. Stdlib only. Contract: weisssrv-lib docs/SCRIPTS.md.
 """
 from __future__ import annotations
 
@@ -12,37 +12,37 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
-from typing import Iterator, Optional, Set
+from typing import Iterator, NamedTuple
 from urllib.parse import urlencode
 
 API = "https://kubernetes.default.svc"
 SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
 
+# delete_with_logging results; only FAILED should fail the Job.
+DELETED, GONE, FAILED = "deleted", "gone", "failed"
+
 
 class KubeApi:
     """kube-apiserver client on the pod's ServiceAccount credentials."""
 
-    def __init__(self, token: str, ca_file: str, timeout: int,
-                 api_base: str = API) -> None:
-        self._headers = {"Authorization": "Bearer %s" % token}
+    def __init__(self, token: str, ca_file: str, timeout: int) -> None:
+        self._headers = {"Authorization": f"Bearer {token}"}
         self._ctx = ssl.create_default_context(cafile=ca_file)
         self._timeout = timeout
-        self._api = api_base
 
     @classmethod
-    def from_service_account(cls, timeout: int, sa_dir: str = SA_DIR,
-                             api_base: str = API) -> "KubeApi":
-        with open("%s/token" % sa_dir) as fh:
+    def from_service_account(cls, timeout: int, sa_dir: str = SA_DIR) -> KubeApi:
+        with open(f"{sa_dir}/token") as fh:
             token = fh.read().strip()
-        return cls(token, "%s/ca.crt" % sa_dir, timeout, api_base)
+        return cls(token, f"{sa_dir}/ca.crt", timeout)
 
-    def request(self, method: str, path: str, body: Optional[dict] = None) -> dict:
+    def request(self, method: str, path: str, body: dict | None = None) -> dict:
         data = json.dumps(body).encode() if body is not None else None
         headers = dict(self._headers)
         if data is not None:
             headers["Content-Type"] = "application/json"
         req = urllib.request.Request(
-            self._api + path, method=method, headers=headers, data=data
+            API + path, method=method, headers=headers, data=data
         )
         with urllib.request.urlopen(req, timeout=self._timeout, context=self._ctx) as r:
             resp = r.read().decode()
@@ -56,7 +56,7 @@ def paged(api, path: str, params: dict, page: int) -> Iterator[dict]:
     """
     params = dict(params, limit=str(page))
     while True:
-        resp = api.request("GET", "%s?%s" % (path, urlencode(params)))
+        resp = api.request("GET", f"{path}?{urlencode(params)}")
         yield resp
         cont = resp.get("metadata", {}).get("continue")
         if not cont:
@@ -64,12 +64,18 @@ def paged(api, path: str, params: dict, page: int) -> Iterator[dict]:
         params["continue"] = cont
 
 
+def list_items(api, path: str, params: dict, page: int) -> Iterator[dict]:
+    """Yield every object of a paged list."""
+    for resp in paged(api, path, params, page):
+        yield from resp.get("items", [])
+
+
 def parse_ts(ts: str) -> datetime:
-    # K8s RFC3339 ends in 'Z'; fromisoformat needs +00:00.
+    # The 'Z' is normalised so pre-3.11 interpreters parse it too.
     return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
-def creation_age_minutes(obj: dict, now: datetime) -> Optional[int]:
+def creation_age_minutes(obj: dict, now: datetime) -> int | None:
     """Age from creationTimestamp; unparseable or absent -> None (KEEP)."""
     ts = obj.get("metadata", {}).get("creationTimestamp")
     if not ts:
@@ -80,12 +86,10 @@ def creation_age_minutes(obj: dict, now: datetime) -> Optional[int]:
         return None
 
 
-def terminal_age_minutes(pod: dict, now: datetime) -> Optional[int]:
-    """Age from the newest terminated.finishedAt across all container statuses.
-
-    An unparseable finishedAt keeps the pod when the container started and is
-    skipped when it never did. There is no startTime fallback.
-    """
+def terminal_age_minutes(pod: dict, now: datetime) -> int | None:
+    """Age from the newest finishedAt; None keeps the pod when none finished or a
+    started container lacks a parseable one. No startTime or creationTimestamp
+    fallback: both predate completion and would delete a just-finished job."""
     status = pod.get("status", {})
     statuses = (status.get("initContainerStatuses", [])
                 + status.get("containerStatuses", [])
@@ -107,17 +111,27 @@ def terminal_age_minutes(pod: dict, now: datetime) -> Optional[int]:
     return int((now - max(finished)).total_seconds() // 60)
 
 
+class Outcome(NamedTuple):
+    """One sweep's result; a budget stop is partial progress, not a fault."""
+    deleted: int
+    had_errors: bool
+    budget_hit: bool
+
+
 def delete_pod(api, ns: str, name: str, uid: str) -> None:
-    # uid precondition: the API rejects (409) the delete if this name now refers
-    # to a different, newer pod after a stale list.
-    api.request("DELETE", "/api/v1/namespaces/%s/pods/%s" % (ns, name),
+    """Force-delete a terminal pod: grace 0 skips shutdown, so terminal pods only.
+
+    The uid precondition makes the API reject (409) the delete when this name
+    now refers to a different, newer pod after a stale list.
+    """
+    api.request("DELETE", f"/api/v1/namespaces/{ns}/pods/{name}",
                 {"apiVersion": "v1", "kind": "DeleteOptions",
                  "gracePeriodSeconds": 0,
                  "preconditions": {"uid": uid}})
 
 
 def delete_secret(api, ns: str, name: str, uid: str) -> None:
-    api.request("DELETE", "/api/v1/namespaces/%s/secrets/%s" % (ns, name),
+    api.request("DELETE", f"/api/v1/namespaces/{ns}/secrets/{name}",
                 {"apiVersion": "v1", "kind": "DeleteOptions",
                  "preconditions": {"uid": uid}})
 
@@ -135,9 +149,9 @@ def live_pod_refs(api, ns: str, page: int, over_budget):
     CRITICAL: None means the budget ran out with pages unread, so the set is
     incomplete and must never feed deletions, or a sweep takes live credentials.
     """
-    uids: Set[str] = set()
-    pull_secrets: Set[str] = set()
-    for resp in paged(api, "/api/v1/namespaces/%s/pods" % ns, {}, page):
+    uids: set[str] = set()
+    pull_secrets: set[str] = set()
+    for resp in paged(api, f"/api/v1/namespaces/{ns}/pods", {}, page):
         for pod in resp.get("items", []):
             uid = pod.get("metadata", {}).get("uid")
             if uid:
@@ -154,33 +168,36 @@ def live_pod_refs(api, ns: str, page: int, over_budget):
 
 def require_positive(values) -> None:
     """Fail closed on nonsense knobs: a negative age makes every terminal object
-    eligible immediately, and a zero page or period disables a bound."""
+    eligible immediately, a zero page lifts the list limit, and a zero period
+    cannot rotate."""
     invalid = {name: value for name, value in values if value <= 0}
     if invalid:
-        details = ", ".join("%s=%s" % (k, v) for k, v in sorted(invalid.items()))
+        details = ", ".join(f"{k}={v}" for k, v in sorted(invalid.items()))
         raise SystemExit(
-            "invalid reaper configuration; values must be positive: %s" % details
+            f"invalid reaper configuration; values must be positive: {details}"
         )
 
 
 def delete_with_logging(delete, api, ns: str, name: str, uid: str, note: str,
-                        log=print) -> bool:
-    """-> True when the object is gone or was already gone, False on an error
-    that should fail the Job. A 404 is already gone; a 409 is a lost uid
-    precondition. Both are no-ops, not faults."""
+                        log=print, kind: str = "") -> str:
+    """-> DELETED, GONE or FAILED. A 404 or a 409 lost uid precondition is GONE;
+    any other HTTP error or transport OSError, such as a read timeout, is FAILED.
+    `kind` prefixes the object in each log line."""
+    prefix = f"{kind} " if kind else ""
+    obj = f"{prefix}{ns}/{name}"
     try:
         delete(api, ns, name, uid)
-        log("DELETE %s/%s (%s)" % (ns, name, note), flush=True)
-        return True
+        log(f"DELETE {obj} ({note})", flush=True)
+        return DELETED
     except urllib.error.HTTPError as exc:
         if exc.code in (404, 409):
-            log("GONE   %s/%s (already deleted or replaced)" % (ns, name), flush=True)
-            return True
-        log("ERROR delete %s/%s: HTTP %d" % (ns, name, exc.code), flush=True)
-        return False
-    except urllib.error.URLError as exc:
-        log("ERROR delete %s/%s: %s" % (ns, name, exc), flush=True)
-        return False
+            log(f"GONE   {obj} (already deleted or replaced)", flush=True)
+            return GONE
+        log(f"ERROR delete {obj}: HTTP {exc.code}", flush=True)
+        return FAILED
+    except OSError as exc:
+        log(f"ERROR delete {obj}: {exc!r}", flush=True)
+        return FAILED
 
 
 def rotate(items, now: datetime, period_seconds: int):

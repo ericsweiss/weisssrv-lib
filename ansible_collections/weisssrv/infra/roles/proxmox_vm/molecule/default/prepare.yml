@@ -61,9 +61,23 @@
         content: |
           #!/bin/bash
           echo "qm $*" >> /tmp/molecule-stub-state/qm.log
+          # vm_importdisk_fail fails the create path after `qm create`.
+          if [ "$1" = "importdisk" ] && [ -f /tmp/molecule-stub-state/vm_importdisk_fail ]; then
+            echo "storage 'ssd' is full" >&2
+            exit 1
+          fi
+          # vm_start_fail fails `qm start`, the create step after the block.
+          if [ "$1" = "start" ] && [ -f /tmp/molecule-stub-state/vm_start_fail ]; then
+            echo "start failed: QEMU exited with code 1" >&2
+            exit 1
+          fi
           # Default net0 already carries firewall=1 (no-op); the override file
-          # supplies the net0 value verbatim for legacy variants.
+          # supplies the net0 value verbatim for other NIC shapes.
           if [ "$1" = "config" ]; then
+            # vm_tags_override supplies the `tags` value.
+            if [ -f /tmp/molecule-stub-state/vm_tags_override ]; then
+              echo "tags: $(cat /tmp/molecule-stub-state/vm_tags_override)"
+            fi
             # vm_net0_absent stubs an adopted guest whose NIC is not net0.
             if [ -f /tmp/molecule-stub-state/vm_net0_absent ]; then
               :

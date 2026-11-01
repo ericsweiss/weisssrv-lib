@@ -41,7 +41,6 @@ def check(
     versions_configmap: str = DEFAULT_VERSIONS_CONFIGMAP,
     gotk_glob: str = DEFAULT_GOTK_GLOB,
     components: str = DEFAULT_COMPONENTS,
-    runbook: str | None = None,
 ) -> tuple[int, list[str]]:
     """(exit code, report lines). 0 agreement, 1 disagreement, 2 nothing inspected."""
     ci_text = _read(root / ci_file)
@@ -86,8 +85,7 @@ def check(
         elif header.group(1) != pinned:
             report += [
                 f"FLUX_VERSION pin ({pinned}) and {relative} ({header.group(1)}) disagree.",
-                f"Re-run `flux install --export > {relative}` with a matching CLI."
-                + (f" (see {runbook})" if runbook else ""),
+                f"Re-run `flux install --export > {relative}` with a matching CLI.",
             ]
             failed = True
         declared_components = GOTK_COMPONENTS_RE.search(text)
@@ -130,12 +128,6 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_COMPONENTS,
         help="expected gotk component set (extend for a --components-extra bootstrap)",
     )
-    parser.add_argument(
-        "--runbook",
-        default=None,
-        metavar="PATH",
-        help="consumer doc named in the re-export remediation line",
-    )
     args = parser.parse_args(argv)
 
     code, report = check(
@@ -144,7 +136,6 @@ def main(argv: list[str] | None = None) -> int:
         args.versions_configmap,
         args.gotk_glob,
         args.components,
-        args.runbook,
     )
     print("\n".join(report), file=sys.stderr if code == 2 else sys.stdout)
     return code

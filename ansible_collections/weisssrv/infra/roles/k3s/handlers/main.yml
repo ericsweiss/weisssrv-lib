@@ -63,8 +63,8 @@
     - not (k3s_skip_install | default(false))
     - groups[k3s_server_group] | default([]) | length > 0
 
-# Covers check-mode runs only; the enable+start task carries its own
-# daemon_reload.
+# Reloads systemd after the snapshot-copy units are added or removed; the
+# opt-out path has no other daemon-reload.
 - name: Reload systemd for etcd snapshot copy
   ansible.builtin.systemd:
     daemon_reload: true

@@ -46,11 +46,13 @@
           - "'dns.google' in unbound_config_text"
           - "'serve-expired: yes' in unbound_config_text"
           - "'use-caps-for-id: yes' in unbound_config_text"
+          - "'extended-statistics: yes' in unbound_config_text"
         fail_msg: "Unbound config missing expected settings"
         success_msg: "Unbound config contains all expected settings"
 
     # The listen set and the ACL set must agree: an ACL for an address nothing
-    # listens on is dead config, and the reverse silently serves clients.
+    # listens on is dead config, and a listen address with no ACL refuses its
+    # clients.
     - name: Verify the listen addresses and access-control agree
       ansible.builtin.assert:
         that:

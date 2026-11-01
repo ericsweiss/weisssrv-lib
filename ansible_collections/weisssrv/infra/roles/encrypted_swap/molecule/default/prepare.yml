@@ -21,14 +21,6 @@
         group: root
         mode: "0644"
 
-    - name: Seed the obsolete live-switch script (the role must purge it)
-      ansible.builtin.copy:
-        dest: /usr/local/sbin/encrypted-swap-switch.sh
-        content: "# obsolete live-switch script fixture\n"
-        owner: root
-        group: root
-        mode: "0755"
-
     # Backing device for the non-skip host. The role only stats it, so a loop
     # device suffices, but it must be a real block device or the guard aborts
     # converge and every assertion in verify goes untested.
@@ -47,44 +39,10 @@
           args:
             creates: /tmp/encrypted-swap-backing.img
 
-        # Loop devices are kernel-global but their /dev nodes are per-container;
-        # the script mknods the node itself and retries on contention (see
-        # zvol_mount's prepare, which carries the same recipe and rationale).
-        - name: Attach a loopback device (dynamic allocation, mknod recovery, race-safe)
-          ansible.builtin.shell: |
-            set -euo pipefail
-            # NOTE: keep these comments apostrophe-free. ansible split_args
-            # tokenizes the shell free-form value, so a stray single quote in a
-            # comment trips "unbalanced quotes" at PARSE time.
-            loop_num() { n=${1##*loop}; printf '%s' "${n%%[!0-9]*}"; }
-            node_for() {
-              n=$(loop_num "$1"); [ -n "$n" ] || return 1
-              d="/dev/loop$n"
-              rm -f "$d" 2>/dev/null || true
-              mknod "$d" b 7 "$n" 2>/dev/null || true
-              [ -b "$d" ] || return 1
-              printf '%s' "$d"
-            }
-            existing=$(losetup -j /tmp/encrypted-swap-backing.img 2>/dev/null | cut -d: -f1 | head -1 || true)
-            if [ -n "$existing" ]; then
-              d=$(node_for "$existing") && { printf '%s' "$d"; exit 0; }
-            fi
-            for _ in $(seq 1 10); do
-              raw=$(losetup -f 2>/dev/null || true)
-              [ -n "$raw" ] || { sleep 1; continue; }
-              d=$(node_for "$raw") || { sleep 1; continue; }
-              if losetup "$d" /tmp/encrypted-swap-backing.img 2>/dev/null; then
-                printf '%s' "$d"
-                exit 0
-              fi
-              sleep 1
-            done
-            echo "could not attach a loop device after 10 attempts" >&2
-            exit 1
-          args:
-            executable: /bin/bash
-          register: encrypted_swap_loop_device
-          changed_when: false
+        - name: Attach the backing image to a loop device
+          ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/attach-loop.yml
+          vars:
+            molecule_loop_images: [/tmp/encrypted-swap-backing.img]
 
         - name: Create /dev/pve
           ansible.builtin.file:
@@ -97,7 +55,7 @@
         # /dev/dm-N, and the role stats with follow: true.
         - name: Publish the loop device at the production /dev/pve/swap path
           ansible.builtin.file:
-            src: "{{ encrypted_swap_loop_device.stdout | trim }}"
+            src: "{{ molecule_loop_devices.results[0].stdout | trim }}"
             dest: /dev/pve/swap
             state: link
             force: true

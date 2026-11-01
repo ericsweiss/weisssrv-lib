@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import io
 
+import pytest
+
 from script_loader import load_script
 
 mod = load_script("check-secretstore-scope.py")
@@ -137,10 +139,6 @@ def test_unknown_store_is_a_violation(monkeypatch, capsys):
     assert "referenced but not defined in this corpus" in capsys.readouterr().err
 
 
-def test_declared_external_store_is_exempt(monkeypatch):
-    """A store genuinely managed outside the linted tree is declared, not silent."""
-    assert _run(EXTERNAL_SECRET, monkeypatch, ["--external-store", "onepassword-homelab"]) == 0
-
 
 def test_empty_corpus_is_an_operator_error(monkeypatch, capsys):
     """A broken pipe or a wrong kustomize path must not read as a pass."""
@@ -241,7 +239,7 @@ def test_a_catch_all_namespace_regex_is_not_a_scope(monkeypatch, capsys):
     - namespaceRegexes: [{pattern}]
 """)
         assert _run(catch_all + EXTERNAL_SECRET, monkeypatch) == 1, pattern
-        capsys.readouterr()
+        assert "admits every namespace" in capsys.readouterr().err, pattern
 
 
 def test_an_anchored_namespace_regex_is_still_a_scope(monkeypatch):
@@ -268,54 +266,6 @@ def test_an_unparseable_catch_all_regex_is_not_silently_scoped(monkeypatch, caps
 """)
     assert _run(broken + EXTERNAL_SECRET, monkeypatch) == 2
     assert "does not compile" in capsys.readouterr().err
-
-
-# --- the selector matcher fails CLOSED on a shape the apiserver rejects -------
-
-
-def test_an_unknown_match_expression_operator_never_admits(monkeypatch):
-    """A misspelled operator matched no arm and fell through to "admits"."""
-    for operator in ("in", "Equals", ""):
-        bad = _store(f"""  conditions:
-    - namespaceSelector:
-        matchExpressions:
-          - {{key: example.test/vault, operator: "{operator}", values: ["true"]}}
-""")
-        assert _run(bad + NAMESPACES + EXTERNAL_SECRET, monkeypatch) == 1, operator
-
-
-def test_a_string_values_match_expression_never_admits(monkeypatch):
-    """`values: "true"` would make the membership test a substring test."""
-    bad = _store("""  conditions:
-    - namespaceSelector:
-        matchExpressions:
-          - {key: example.test/vault, operator: In, values: "true"}
-""")
-    assert _run(bad + NAMESPACES + EXTERNAL_SECRET, monkeypatch) == 1
-
-
-def test_an_unknown_match_expression_key_never_admits(monkeypatch):
-    bad = _store("""  conditions:
-    - namespaceSelector:
-        matchExpressions:
-          - {key: example.test/vault, operator: Exists, valuse: []}
-""")
-    assert _run(bad + NAMESPACES + EXTERNAL_SECRET, monkeypatch) == 1
-
-
-def test_a_valid_match_expression_still_admits(monkeypatch):
-    ok = _store("""  conditions:
-    - namespaceSelector:
-        matchExpressions:
-          - {key: example.test/vault, operator: In, values: ["true"]}
-""")
-    assert _run(ok + NAMESPACES + EXTERNAL_SECRET, monkeypatch) == 0
-
-
-def test_an_unused_external_store_is_reported_not_fatal(monkeypatch, capsys):
-    argv = ["--external-store", "gone-elsewhere"]
-    assert _run(SCOPED + EXTERNAL_SECRET, monkeypatch, argv) == 0
-    assert "not referenced by this corpus: gone-elsewhere" in capsys.readouterr().out
 
 
 # --- a selector key the CRD prunes is an unmodelled grant, not a non-match ----
@@ -360,3 +310,66 @@ spec:
 """
     assert _run(SCOPED + NAMESPACES + ces, monkeypatch) == 1
     assert "unmodelled key(s) matchLables" in capsys.readouterr().err
+
+
+# --- the apiserver-set kubernetes.io/metadata.name label ----------------------
+
+
+NAME_SELECTOR_STORE = _store("""  conditions:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: apps}
+""")
+
+
+@pytest.mark.parametrize("namespaces", [NAMESPACES, ""], ids=["in-corpus", "outside-corpus"])
+def test_a_name_label_selector_admits_its_namespace(monkeypatch, namespaces):
+    """A namespace created by Flux or Helm still carries its name label."""
+    assert _run(NAME_SELECTOR_STORE + namespaces + EXTERNAL_SECRET, monkeypatch) == 0
+
+
+def test_the_name_label_follows_the_namespace_name_not_the_manifest(monkeypatch):
+    """The apiserver overwrites a hand-written name label with the real name."""
+    spoofed = NAMESPACES.replace(
+        "metadata: {name: other}",
+        "metadata: {name: other, labels: {kubernetes.io/metadata.name: apps}}",
+    )
+    stray = EXTERNAL_SECRET.replace("namespace: apps", "namespace: other")
+    assert _run(NAME_SELECTOR_STORE + spoofed + stray, monkeypatch) == 1
+
+
+def test_a_name_label_selector_scopes_cluster_external_secret_fan_out(monkeypatch):
+    ces = """
+---
+apiVersion: external-secrets.io/v1
+kind: ClusterExternalSecret
+metadata: {name: by-name}
+spec:
+  namespaceSelectors:
+    - matchLabels: {kubernetes.io/metadata.name: other}
+  externalSecretSpec:
+    secretStoreRef: {kind: ClusterSecretStore, name: onepassword-homelab}
+"""
+    # The fan-out reaches `other`, which SCOPED does not admit.
+    assert _run(SCOPED + NAMESPACES + ces, monkeypatch) == 1
+    other_only = _store("""  conditions:
+    - namespaces: [other]
+""")
+    assert _run(other_only + NAMESPACES + ces, monkeypatch) == 0
+
+
+# --- a selector that admits every namespace is not a scope --------------------
+
+
+def test_a_selector_admitting_every_namespace_is_not_a_scope(monkeypatch, capsys):
+    """Exists on the name label, or NotIn on a label nothing carries, is universal."""
+    for expression in (
+        "{key: kubernetes.io/metadata.name, operator: Exists}",
+        '{key: example.test/unused, operator: NotIn, values: ["x"]}',
+    ):
+        store = _store(f"""  conditions:
+    - namespaceSelector:
+        matchExpressions:
+          - {expression}
+""")
+        assert _run(store + NAMESPACES + EXTERNAL_SECRET, monkeypatch) == 1, expression
+        assert "admits every namespace" in capsys.readouterr().err, expression

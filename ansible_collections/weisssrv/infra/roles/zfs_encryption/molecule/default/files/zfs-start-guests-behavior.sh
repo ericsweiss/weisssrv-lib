@@ -7,29 +7,8 @@ set -euo pipefail
 SRC="${1:-/usr/local/sbin/zfs-start-encrypted-guests.sh}"
 [ -x "$SRC" ] || { echo >&2 "guest-start script not rendered at $SRC"; exit 1; }
 
-# /tmp is a noexec tmpfs in this scenario, so the stub bin dir needs a root
-# that can exec.
-work_root() {
-    local candidate probe
-    for candidate in /var/tmp /root "${TMPDIR:-/tmp}"; do
-        [ -d "$candidate" ] || continue
-        probe="$(mktemp "${candidate}/execprobe.XXXXXX" 2>/dev/null)" || continue
-        printf '#!/bin/sh\nexit 0\n' > "$probe"
-        chmod 0755 "$probe"
-        if "$probe" >/dev/null 2>&1; then
-            rm -f "$probe"
-            printf '%s' "$candidate"
-            return 0
-        fi
-        rm -f "$probe"
-    done
-    return 1
-}
-WORK_ROOT="$(work_root)" || {
-    echo >&2 "no exec-capable temp directory (every candidate is mounted noexec)"
-    exit 1
-}
-WORK="$(mktemp -d "${WORK_ROOT}/zfs-start-guests-behavior.XXXXXX")"
+# /tmp is a noexec tmpfs in this scenario; the stubs need an exec-capable dir.
+WORK="$(mktemp -d /var/tmp/zfs-start-guests-behavior.XXXXXX)"
 BIN="$WORK/bin"
 mkdir -p "$BIN"
 trap 'rm -rf "$WORK"' EXIT

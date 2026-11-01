@@ -80,11 +80,11 @@
       vars:
         tmr: "{{ timer_content.content | b64decode }}"
 
+    # systemd-analyze exits non-zero only on a real unit-file error; the
+    # collector script/service resolve, so a clean run proves the render.
     - name: Confirm systemd parses the rendered units (no bad directive)
       ansible.builtin.command: systemd-analyze verify /etc/systemd/system/molecule-test-collector.timer
       changed_when: false
-      # systemd-analyze exits non-zero only on a real unit-file error; the
-      # collector script/service resolve so a clean run proves the render is valid.
 
     # Rendering is not starting: the sandbox directives only fail when systemd
     # sets up the mount namespace, which is where a missing ReadWritePaths entry

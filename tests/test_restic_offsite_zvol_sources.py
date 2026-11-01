@@ -30,23 +30,20 @@ def _zvol_rows(rendered: str) -> list[str]:
     return [line for line in body.splitlines() if line.strip()]
 
 
-def test_the_omitted_options_default_to_an_ext4_read_only_mount() -> None:
-    rendered = _render({"name": "data", "zvol": "tank/data"})
-    assert _zvol_rows(rendered) == ['  "data tank/data ext4 ro"']
-
-
-def test_declared_options_pass_through() -> None:
-    rendered = _render(
-        {"name": "vm", "zvol": "tank/vm", "fstype": "xfs", "mount_opts": "ro,noload"}
-    )
-    assert _zvol_rows(rendered) == ['  "vm tank/vm xfs ro,noload"']
-
-
-def test_a_writable_mount_is_the_site_asking_for_it() -> None:
-    """`rw` renders only when declared, proving `ro` is the default and not a
-    hardcoded value: a writable clone is mutated during the backup walk."""
-    rendered = _render({"name": "data", "zvol": "tank/data", "mount_opts": "rw"})
-    assert _zvol_rows(rendered) == ['  "data tank/data ext4 rw"']
+@pytest.mark.parametrize(
+    ("source", "row"),
+    [
+        pytest.param({"name": "data", "zvol": "tank/data"}, "data tank/data ext4 ro", id="default-ro"),
+        pytest.param({"name": "vm", "zvol": "tank/vm", "fstype": "xfs", "mount_opts": "ro,noload"},
+                     "vm tank/vm xfs ro,noload", id="pass-through"),
+        # `rw` renders only when declared, proving `ro` is the default and not a
+        # hardcoded value: a writable clone is mutated during the backup walk.
+        pytest.param({"name": "data", "zvol": "tank/data", "mount_opts": "rw"},
+                     "data tank/data ext4 rw", id="explicit-rw"),
+    ],
+)
+def test_a_source_renders_its_row(source: dict, row: str) -> None:
+    assert _zvol_rows(_render(source)) == ['  "%s"' % row]
 
 
 def test_the_consumer_reads_the_fields_in_the_rendered_order() -> None:

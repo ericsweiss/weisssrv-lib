@@ -30,15 +30,12 @@ def _make_repo(tmp_path: Path, taskfile_text: str,
     return root
 
 
-def _run(root: Path, env: dict | None = None) -> subprocess.CompletedProcess:
-    # A CLOSED env, like the sibling shell suites: the script reads
-    # $CHECK_TASKFILE_DOTENV and $CHECK_TASKFILE_MAX_DEPTH, so an ambient one
-    # would quietly change what the default-target cases assert.
+def _run(root: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["bash", str(root / "scripts" / "check-taskfile.sh"),
          str(root / "Taskfile.yml")],
         capture_output=True, text=True,
-        env={"PATH": os.environ["PATH"], **(env or {})},
+        env={"PATH": os.environ["PATH"]},
     )
 
 
@@ -117,26 +114,6 @@ class TestHostsEnvDotenv:
         res = _run(root)
         assert res.returncode == 1
         assert "hosts.env" in res.stderr
-
-    def test_dotenv_target_is_env_overridable(self, tmp_path: Path):
-        # $CHECK_TASKFILE_DOTENV replaces the default target list, so a
-        # consumer with a differently-named dotenv file is still gated.
-        root = _make_repo(
-            tmp_path,
-            "dotenv: ['config/site.env']\ntasks:\n  a:\n    cmds:\n      - echo hi\n",
-        )
-        res = _run(root, env={"CHECK_TASKFILE_DOTENV": "config/site.env"})
-        assert res.returncode == 1
-        assert "config/site.env" in res.stderr
-
-    def test_default_target_not_required_when_overridden(self, tmp_path: Path):
-        root = _make_repo(
-            tmp_path,
-            "dotenv: ['scripts/hosts.env']\ntasks:\n  a:\n    cmds:\n      - echo hi\n",
-            hosts_env=False,
-        )
-        res = _run(root, env={"CHECK_TASKFILE_DOTENV": "config/site.env"})
-        assert res.returncode == 0, res.stderr
 
     def test_absent_but_unreferenced_passes(self, tmp_path: Path):
         # hosts.env is only required when the Taskfile references it as a
@@ -220,27 +197,25 @@ class TestIncludes:
         assert res.returncode == 1
         assert "scripts/gone.py" in res.stderr
 
+    @staticmethod
+    def _chain(tmp_path: Path, depth: int) -> Path:
+        """Taskfile.yml includes f1.yml, which includes f2.yml, ... down to f<depth>."""
+        root = _make_repo(tmp_path, "version: '3'\nincludes:\n  n: taskfiles/f1.yml\n")
+        (root / "taskfiles").mkdir()
+        for n in range(1, depth + 1):
+            include = f"includes:\n  n: f{n + 1}.yml\n" if n < depth else ""
+            (root / "taskfiles" / f"f{n}.yml").write_text(f"version: '3'\n{include}tasks: {{}}\n")
+        return root
+
     def test_a_leaf_at_the_depth_cap_is_not_an_error(self, tmp_path: Path):
         """The cap bounds recursion; a chain that ends at it is well-formed."""
-        root = self._repo(
-            tmp_path,
-            "  lint:\n    taskfile: taskfiles/lint.yml\n",
-            "tasks:\n  a:\n    cmds:\n      - bash scripts/foo.sh\n",
-            scripts=("foo.sh",),
-        )
-        res = _run(root, env={"CHECK_TASKFILE_MAX_DEPTH": "1"})
+        res = _run(self._chain(tmp_path, 10))
         assert res.returncode == 0, res.stderr
 
     def test_an_include_beyond_the_depth_cap_fails(self, tmp_path: Path):
-        root = self._repo(
-            tmp_path,
-            "  lint:\n    taskfile: taskfiles/lint.yml\n",
-            "version: '3'\nincludes:\n  deep: deeper.yml\ntasks: {}\n",
-        )
-        (root / "taskfiles" / "deeper.yml").write_text("tasks: {}\n")
-        res = _run(root, env={"CHECK_TASKFILE_MAX_DEPTH": "1"})
+        res = _run(self._chain(tmp_path, 11))
         assert res.returncode == 1
-        assert "include depth cap" in res.stderr
+        assert "include depth cap (10)" in res.stderr
 
     def test_an_includes_key_inside_a_task_is_not_followed(self, tmp_path: Path):
         """Only a column-0 `includes:` block declares fragments."""
@@ -347,13 +322,6 @@ class TestTaskReferences:
         res = _run(root)
         assert res.returncode == 0, res.stderr
 
-    def test_the_reference_arm_is_env_disableable(self, tmp_path: Path):
-        root = self._repo(
-            tmp_path, self.ROOT.replace("flux:sync", "flux:syncc"), self.FRAGMENT
-        )
-        res = _run(root, env={"CHECK_TASKFILE_REFS": "0"})
-        assert res.returncode == 0, res.stderr
-
 
 class TestOrphanFragments:
     """A fragment no include names is inert: `task --list` omits every task
@@ -386,16 +354,6 @@ class TestOrphanFragments:
         res = _run(self._repo(tmp_path, "orphan.yaml"))
         assert res.returncode == 1
         assert "taskfiles/orphan.yaml is not reached" in res.stderr
-
-    def test_the_fragment_dir_is_env_overridable(self, tmp_path: Path):
-        root = self._repo(tmp_path, "orphan.yml")
-        res = _run(root, env={"CHECK_TASKFILE_FRAGMENT_DIR": "nowhere"})
-        assert res.returncode == 0, res.stderr
-
-    def test_an_empty_fragment_dir_setting_disables_the_scan(self, tmp_path: Path):
-        root = self._repo(tmp_path, "orphan.yml")
-        res = _run(root, env={"CHECK_TASKFILE_FRAGMENT_DIR": ""})
-        assert res.returncode == 0, res.stderr
 
 
 if __name__ == "__main__":

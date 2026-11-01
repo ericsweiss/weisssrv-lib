@@ -24,3 +24,17 @@
       vars:
         nextcloud_postgres_exporter_enabled: true
         nextcloud_postgres_exporter_version: "0.19.0"
+
+    # The SSO pass against the mock occ, once per user_oidc state; verify reads
+    # each case's command log. Not idempotent by design: install and enable change.
+    - name: Run the SSO pass for each user_oidc app state
+      ansible.builtin.include_role:
+        name: weisssrv.infra.nextcloud
+        tasks_from: sso.yml
+        apply:
+          environment:
+            NEXTCLOUD_OCC_CASE: "{{ nextcloud_sso_case }}"
+      loop: [enabled, disabled, absent]
+      loop_control:
+        loop_var: nextcloud_sso_case
+      tags: [molecule-idempotence-notest]

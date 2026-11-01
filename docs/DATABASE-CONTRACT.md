@@ -33,7 +33,19 @@ the operator re-applies a rotated password, and carries exactly these keys:
 
 The server CA is the CNPG-generated Secret `<app>-db-ca`, key `ca.crt`. Clients
 mount that one key (see Delivery) and pass it as `sslrootcert`; the server
-certificate names the `<app>-db-rw` Service, so `verify-full` holds.
+certificate names the `<app>-db-rw` Service, so `verify-full` holds. A client
+that reads only `uri` sets `PGSSLROOTCERT` to the mounted `ca.crt` or appends
+`&sslrootcert=<path>`. Without it libpq looks for `~/.postgresql/root.crt` and
+`verify-full` fails.
+
+Passwords come from one secrets-backend item with fields `migrate-password`,
+`app-password` and `ro-password`. An ExternalSecret templates each into its
+Secret. The owner Secret is also `bootstrap.initdb.secret`, and the other two
+are `spec.managed.roles[].passwordSecret`. The primary's instance manager
+re-applies the owner's password whenever that Secret changes, not only at
+initdb. See the CloudNativePG
+[labels and annotations](https://cloudnative-pg.io/documentation/current/labels_annotations/)
+reference for `cnpg.io/passwordPassthrough`.
 
 ## Delivery
 
@@ -42,10 +54,10 @@ Secrets reach pods as files: mount the Secret as a volume (never with
 Each workload mounts only the role Secret it connects as, whole: migrations (a
 Job or an init container) `<app>-db-migrate`, runtime containers `<app>-db-app`,
 reporting or logical-dump Jobs `<app>-db-ro`. No container mounts a role Secret
-it does not use. The CA Secret `<app>-db-ca` also
-carries `ca.key`, the CA's signing key, which must never reach an application
-pod, so its volume projects only `ca.crt` through `items`. An `items`
-projection still updates in place on rotation; `subPath` does not.
+it does not use. The CA Secret `<app>-db-ca` also carries `ca.key`, the CA's
+signing key, which must never reach an application pod. Its volume therefore
+projects only `ca.crt` through `items`. An `items` projection still updates in
+place on rotation; `subPath` does not.
 
 ```yaml
 volumes:
@@ -56,14 +68,6 @@ volumes:
         - key: ca.crt
           path: ca.crt
 ```
-Passwords come from one secrets-backend item with fields `migrate-password`,
-`app-password` and `ro-password`, templated into the three Secrets by an
-ExternalSecret each; the owner Secret is also `bootstrap.initdb.secret`, and the
-other two are `spec.managed.roles[].passwordSecret`. `bootstrap.initdb.secret`
-is not read only at initdb: the primary's instance manager re-applies the
-owner's password whenever that Secret changes, as it does the superuser's
-(CloudNativePG 1.30, Labels and annotations, `cnpg.io/passwordPassthrough`,
-which lists the application user's Secret among those the operator consumes).
 
 ## Privileges
 

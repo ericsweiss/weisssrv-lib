@@ -1,9 +1,17 @@
 ---
 # No real SCSI in Docker: a loop device plus a symlink at the by-id path
-# (/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi1) stand in for the zvol.
+# (/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi<slot>) stands in for each zvol.
 - name: Prepare
   hosts: all
   gather_facts: false
+  vars:
+    # Slot 1 is the managed disk; 9-12 back the converge negative cases.
+    zvol_mount_test_disks:
+      - {img: /tmp/test-disk.img, size: 64M, link: scsi-0QEMU_QEMU_HARDDISK_drive-scsi1}
+      - {img: /tmp/test-disk-pt.img, size: 64M, link: scsi-0QEMU_QEMU_HARDDISK_drive-scsi9}
+      - {img: /tmp/test-disk-xfs.img, size: 320M, link: scsi-0QEMU_QEMU_HARDDISK_drive-scsi10}
+      - {img: /tmp/test-disk-dup-a.img, size: 64M, link: scsi-0QEMU_QEMU_HARDDISK_drive-scsi11}
+      - {img: /tmp/test-disk-dup-b.img, size: 64M, link: scsi-0QEMU_QEMU_HARDDISK_drive-scsi12}
   tasks:
     - name: Apply the shared systemd-wait + temp-dir prep
       ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/prepare-base.yml
@@ -21,70 +29,24 @@
           - e2fsprogs
           - fdisk
           - util-linux
+          - xfsprogs
         state: present
         update_cache: true
 
-    # Two images: the disk the role manages, and a blank-but-partitioned one
-    # that the partition-table guard must refuse.
-    - name: Create test disk images (64MB)
-      ansible.builtin.command: "dd if=/dev/zero of={{ item }} bs=1M count=64"
+    # The disk the role manages, then one disk per negative case. Sparse files:
+    # mkfs.xfs refuses a filesystem under 300 MB.
+    - name: Create test disk images
+      ansible.builtin.command: "truncate -s {{ item.size }} {{ item.img }}"
       args:
-        creates: "{{ item }}"
-      loop:
-        - /tmp/test-disk.img
-        - /tmp/test-disk-pt.img
-
-    # Loop devices are kernel-global but their /dev nodes are per-container; the
-    # script below mknods the node itself and retries on contention (see inline).
-    - name: Attach loopback devices (dynamic allocation, mknod recovery, race-safe)
-      ansible.builtin.shell: |
-        set -euo pipefail
-        # CRITICAL: keep these comments apostrophe-free. ansible split_args
-        # tokenizes the shell free-form value, so a stray single quote trips
-        # "unbalanced quotes" at parse time.
-
-        # losetup can report a device "lost" because /dev/loopN has no udev
-        # here, so trust only the loop-index digits and recreate the node.
-        loop_num() { n=${1##*loop}; printf '%s' "${n%%[!0-9]*}"; }
-        node_for() {
-          n=$(loop_num "$1"); [ -n "$n" ] || return 1
-          d="/dev/loop$n"
-          rm -f "$d" 2>/dev/null || true
-          mknod "$d" b 7 "$n" 2>/dev/null || true
-          [ -b "$d" ] || return 1   # mknod failed: do not hand back an invalid node
-          printf '%s' "$d"
-        }
-        # Reuse an existing attachment (idempotent re-run); its node may be gone too.
-        existing=$(losetup -j {{ item.img }} 2>/dev/null | cut -d: -f1 | head -1 || true)
-        if [ -n "$existing" ]; then
-          d=$(node_for "$existing") && { printf '%s' "$d"; exit 0; }
-        fi
-        # Fresh allocation: get a free number, materialize its node, attach --
-        # retry when a concurrent molecule job wins the number between our probe
-        # and our attach (loops are shared host-wide).
-        for _ in $(seq 1 10); do
-          raw=$(losetup -f 2>/dev/null || true)
-          [ -n "$raw" ] || { sleep 1; continue; }
-          d=$(node_for "$raw") || { sleep 1; continue; }
-          if losetup "$d" {{ item.img }} 2>/dev/null; then
-            printf '%s' "$d"
-            exit 0
-          fi
-          sleep 1
-        done
-        echo "could not attach a loop device for {{ item.img }} after 10 attempts" >&2
-        exit 1
-      args:
-        executable: /bin/bash
-      loop:
-        - img: /tmp/test-disk.img
-          link: scsi-0QEMU_QEMU_HARDDISK_drive-scsi1
-        - img: /tmp/test-disk-pt.img
-          link: scsi-0QEMU_QEMU_HARDDISK_drive-scsi9
+        creates: "{{ item.img }}"
+      loop: "{{ zvol_mount_test_disks }}"
       loop_control:
         label: "{{ item.img }}"
-      register: zvol_loop_devices
-      changed_when: false
+
+    - name: Attach the test disk images to loop devices
+      ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/attach-loop.yml
+      vars:
+        molecule_loop_images: "{{ zvol_mount_test_disks | map(attribute='img') | list }}"
 
     - name: Create /dev/disk/by-id directory
       ansible.builtin.file:
@@ -94,13 +56,13 @@
 
     - name: Create symlinks simulating SCSI device paths
       ansible.builtin.file:
-        src: "{{ item.stdout | trim }}"
-        dest: "/dev/disk/by-id/{{ item.item.link }}"
+        src: "{{ item.1.stdout | trim }}"
+        dest: "/dev/disk/by-id/{{ item.0.link }}"
         state: link
         force: true
-      loop: "{{ zvol_loop_devices.results }}"
+      loop: "{{ zvol_mount_test_disks | zip(molecule_loop_devices.results) | list }}"
       loop_control:
-        label: "{{ item.item.link }}"
+        label: "{{ item.0.link }}"
 
     # Blank disk carrying only a GPT label: FSTYPE is empty, PTTYPE is not.
     - name: Write a partition table with no filesystem on the guard disk
@@ -137,4 +99,72 @@
           '{{ zvol_mount_pt_guard_probe.stdout | trim }}' instead of an empty
           FSTYPE with a gpt PTTYPE, so the role would not meet a
           blank-but-partitioned disk.
+        quiet: true
+
+    # The fstype guard meets a disk already holding xfs where ext4 is expected.
+    - name: Format the fstype guard disk as xfs
+      ansible.builtin.shell: |
+        set -euo pipefail
+        dev=/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi10
+        if [ "$(blkid -p -s TYPE -o value "$dev" || true)" = xfs ]; then
+          printf 'already-formatted'
+          exit 0
+        fi
+        mkfs.xfs -f -q "$dev"
+        udevadm trigger --settle --action=change "$dev"
+        printf 'formatted'
+      args:
+        executable: /bin/bash
+      register: zvol_mount_fstype_guard_format
+      changed_when: zvol_mount_fstype_guard_format.stdout | trim == 'formatted'
+
+    # Two ext4 disks carrying one UUID, as a zvol clone of a formatted disk does.
+    - name: Format the duplicate-UUID guard disks with one shared UUID
+      ansible.builtin.shell: |
+        set -euo pipefail
+        a=/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi11
+        b=/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi12
+        ua=$(blkid -p -s UUID -o value "$a" || true)
+        ub=$(blkid -p -s UUID -o value "$b" || true)
+        if [ -n "$ua" ] && [ "$ua" = "$ub" ]; then
+          printf 'already-formatted'
+          exit 0
+        fi
+        mkfs.ext4 -F -q "$a"
+        ua=$(blkid -p -s UUID -o value "$a")
+        mkfs.ext4 -F -q -U "$ua" "$b"
+        udevadm trigger --settle --action=change "$a" "$b"
+        printf 'formatted'
+      args:
+        executable: /bin/bash
+      register: zvol_mount_uuid_guard_format
+      changed_when: zvol_mount_uuid_guard_format.stdout | trim == 'formatted'
+
+    - name: Read the staged fstype and duplicate-UUID guard disks
+      ansible.builtin.shell: |
+        set -euo pipefail
+        for slot in 10 11 12; do
+          dev=/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi$slot
+          printf '%s %s\n' "$(lsblk -dno FSTYPE "$dev")" "$(blkid -p -s UUID -o value "$dev")"
+        done
+      args:
+        executable: /bin/bash
+      register: zvol_mount_guard_disks_probe
+      changed_when: false
+
+    # Same reason as the partition-table check: a staging failure must fail
+    # here, not read as a regressed guard in converge.
+    - name: Assert the fstype and duplicate-UUID guard disks are staged
+      vars:
+        zvol_mount_staged: "{{ zvol_mount_guard_disks_probe.stdout_lines | map('split') | list }}"
+      ansible.builtin.assert:
+        that:
+          - zvol_mount_staged | length == 3
+          - zvol_mount_staged[0][0] == 'xfs'
+          - zvol_mount_staged[1][0] == 'ext4'
+          - zvol_mount_staged[2][0] == 'ext4'
+          - zvol_mount_staged[1][1] == zvol_mount_staged[2][1]
+        fail_msg: >-
+          The guard disks read {{ zvol_mount_guard_disks_probe.stdout_lines }}
+          instead of xfs on slot 10 and one shared ext4 UUID on slots 11 and 12.
         quiet: true

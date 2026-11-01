@@ -81,10 +81,6 @@
     compose_app_description: "Immich machine learning (docker compose stack)"
     compose_app_working_directory: "{{ immich_ml_compose_dir }}"
     compose_app_requires_mounts_for: []
-    compose_app_requires_mounts_comment: []
-    compose_app_reconcile_comment:
-      - "`up -d` reconciles the running stack to the rendered compose, recreating"
-      - "only the containers whose definition changed."
 
 - name: Wait for the ML service to answer /ping
   ansible.builtin.uri:

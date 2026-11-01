@@ -1,7 +1,7 @@
 """host.fw.j2's nftables option, which selects the PVE firewall implementation.
 
-It is omitted rather than written as `nftables: 0` when off, so a node keeps the
-implementation it runs today; molecule cannot prove the off arm writes nothing.
+It is omitted rather than written as `nftables: 0` when off, so the node runs the
+default iptables implementation; molecule cannot prove the off arm writes nothing.
 """
 from __future__ import annotations
 

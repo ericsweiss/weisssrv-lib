@@ -12,8 +12,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from script_loader import load_script  # noqa: E402
+from script_loader import load_script
 
 GATE = load_script("check-secret-rotation-coverage.py")
 
@@ -204,10 +203,89 @@ def test_longer_name_does_not_cover_a_shorter_one(repo: Path, capsys):
     assert "alpha/alpha-secret is reached by no rotation path" in capsys.readouterr().err
 
 
-def test_unparseable_manifest_is_reported(repo: Path, capsys):
-    _write(repo / "kubernetes" / "apps" / "broken.yaml", "a: [unclosed\n")
+@pytest.mark.parametrize("body", [b"a: [unclosed\n", b"kind: \xff\xfe\n"], ids=["yaml", "utf-8"])
+def test_an_unreadable_manifest_exits_2(repo: Path, capsys, body: bytes):
+    (repo / "kubernetes" / "apps" / "broken.yaml").write_bytes(body)
+    assert _run(repo) == 2
+    err = capsys.readouterr().err
+    assert "broken.yaml unreadable" in err and "Traceback" not in err
+
+
+BETA = """\
+    apiVersion: external-secrets.io/v1
+    kind: ExternalSecret
+    metadata:
+      name: beta-secret
+      namespace: beta
+    spec:
+      dataFrom:
+        - extract:
+            key: Beta Item
+    """
+
+
+@pytest.mark.parametrize(
+    ("name", "body", "missing"),
+    [
+        ("beta.yml", BETA, "remoteRef.key 'Beta Item'"),
+        ("beta.yaml", BETA.replace("dataFrom:\n        - extract:\n            key: Beta Item",
+                                   "template:\n        data:\n          - remoteRef:\n"
+                                   "              key: Beta Item"),
+         "remoteRef.key 'Beta Item'"),
+    ],
+    ids=["yml-manifest-extract", "nested-remote-ref"],
+)
+def test_every_spelling_and_depth_of_a_key_is_read(repo: Path, capsys, name, body, missing):
+    _write(repo / "kubernetes" / "apps" / "beta" / name, body)
+    assert _run(repo, ["--declared-manual", "beta/beta-secret=bootstrap only"]) == 1
+    assert missing in capsys.readouterr().err
+
+
+def test_a_find_read_is_a_finding_unless_declared_manual(repo: Path, capsys):
+    _write(
+        repo / "kubernetes" / "apps" / "beta" / "es.yaml",
+        BETA.replace("- extract:\n            key: Beta Item",
+                     "- find:\n            name:\n              regexp: ^beta"),
+    )
     assert _run(repo) == 1
-    assert "unparseable" in capsys.readouterr().err
+    assert "beta/beta-secret reads vault items by dataFrom.find" in capsys.readouterr().err
+    assert _run(repo, ["--declared-manual", "beta/beta-secret=pattern read"]) == 0
+
+
+SECTIONED = """\
+    # Rotation
+
+    ## Alerts
+
+    alpha/alpha-secret pages on expiry.
+
+    ## Rotating a secret
+
+    ```bash
+    # not a heading inside a fence
+    ```
+
+    ### Steps
+
+    Rotate Alpha App first.
+
+    ## Storage
+    """
+
+
+def test_a_section_scopes_the_match(repo: Path, capsys):
+    (repo / "docs" / "ROTATION.md").write_text(textwrap.dedent(SECTIONED), encoding="utf-8")
+    assert _run(repo) == 0
+    assert _run(repo, ["--section", "Rotating a secret"]) == 1
+    err = capsys.readouterr().err
+    assert "alpha/alpha-secret is reached by no rotation path" in err
+    assert "Alpha App" not in err
+    assert _run(repo, ["--section", "Rotating a secret", "--section", "Alerts"]) == 0
+
+
+def test_a_missing_section_exits_2(repo: Path, capsys):
+    assert _run(repo, ["--section", "Rotating a secret"]) == 2
+    assert "no `Rotating a secret` section (a # or ## heading)" in capsys.readouterr().err
 
 
 if __name__ == "__main__":

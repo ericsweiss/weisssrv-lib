@@ -44,9 +44,8 @@ def default_dir() -> Path:
 
 
 def _kustomizations(
-    directory: Path, exclude: Set[str] | None = None, unreadable: list | None = None
+    directory: Path, unreadable: list | None = None
 ) -> Tuple[Dict[str, Set[str]], Dict[str, str]]:
-    excluded = DEFAULT_EXCLUDE if exclude is None else exclude
     deps: Dict[str, Set[str]] = {}
     paths: Dict[str, str] = {}
     # Both suffixes: Flux reconciles either, so globbing one would drop a stage
@@ -64,7 +63,7 @@ def _kustomizations(
             if not str(doc.get("apiVersion", "")).startswith("kustomize.toolkit"):
                 continue
             name = ((doc.get("metadata") or {}).get("name"))
-            if not name or name in excluded:
+            if not name or name in DEFAULT_EXCLUDE:
                 continue
             spec = doc.get("spec") or {}
             deps[name] = {
@@ -95,18 +94,6 @@ def _order(deps: Dict[str, Set[str]]) -> Tuple[List[str], List[str]]:
     return ordered, cycled
 
 
-def child_kustomization_paths(directory: Path) -> List[Tuple[str, str]]:
-    """[(name, spec.path)] in dependsOn order, for the Kustomizations that
-    declare a path. Raises OSError or yaml.YAMLError on an unreadable file."""
-    unreadable: List = []
-    deps, paths = _kustomizations(directory, set(DEFAULT_EXCLUDE), unreadable=unreadable)
-    if unreadable:
-        path, exc = unreadable[0]
-        raise exc if isinstance(exc, Exception) else OSError("%s: %s" % (path, exc))
-    names, _cycled = _order(deps)
-    return [(name, paths[name]) for name in names if name in paths]
-
-
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -117,21 +104,6 @@ def main(argv=None) -> int:
         "--paths", action="store_true",
         help="print `name<TAB>spec.path` instead of the name alone",
     )
-    parser.add_argument(
-        "--allow-missing-paths", action="store_true",
-        help="with --paths, print the paths there are instead of failing on a "
-             "Kustomization that declares none",
-    )
-    parser.add_argument(
-        "--require-paths", action="store_true",
-        help="deprecated, now the default: --paths fails on a Kustomization "
-             "that declares no spec.path",
-    )
-    parser.add_argument(
-        "--exclude", action="append", default=None, metavar="NAME",
-        help="also skip this Kustomization; repeatable (%s is always skipped)"
-             % ", ".join(sorted(DEFAULT_EXCLUDE)),
-    )
     args = parser.parse_args(argv)
 
     directory = args.dir or default_dir()
@@ -140,9 +112,7 @@ def main(argv=None) -> int:
         return 2
 
     unreadable: List = []
-    deps, paths = _kustomizations(
-        directory, set(DEFAULT_EXCLUDE) | set(args.exclude or ()), unreadable=unreadable
-    )
+    deps, paths = _kustomizations(directory, unreadable=unreadable)
     if unreadable:
         for path, exc in unreadable:
             print("%s: %s" % (path, exc), file=sys.stderr)
@@ -159,13 +129,8 @@ def main(argv=None) -> int:
         # job log that names the stage is what makes a failing one identifiable.
         names = ["%s\t%s" % (n, paths[n]) for n in names if n in paths]
         if skipped:
-            print("WARNING: %d Kustomization(s) declare no spec.path and are not "
-                  "listed: %s" % (len(skipped), ", ".join(skipped)), file=sys.stderr)
-        if skipped and not args.allow_missing_paths:
-            return 1
-        if not names:
-            print("no Flux Kustomization under %s declares a spec.path" % directory,
-                  file=sys.stderr)
+            print("ERROR: %d Kustomization(s) declare no spec.path: %s"
+                  % (len(skipped), ", ".join(skipped)), file=sys.stderr)
             return 1
     print("\n".join(names))
     if cycled:

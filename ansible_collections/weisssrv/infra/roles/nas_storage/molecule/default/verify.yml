@@ -24,12 +24,6 @@
       changed_when: false
       failed_when: leases_dropin.rc != 0
 
-    - name: Stat the site-named NFSv4 delegation drop-in the role now removes
-      ansible.builtin.stat:
-        path: /etc/sysctl.d/99-z-weisssrv-nas-storage-nfs-leases.conf
-      register: leases_legacy_dropin
-      failed_when: leases_legacy_dropin.stat.exists
-
     - name: Verify exports file contains expected exports
       ansible.builtin.command: grep -q "/tank/media/unified" /etc/exports
       register: exports_check
@@ -246,9 +240,8 @@
       changed_when: false
       failed_when: swap_clean_timer.stdout | trim != 'enabled'
 
-    # Per-app appdata subdirectories: created after the
-    # mounted-dataset guard, owned 1000:2000 so the all_squashed appdata export
-    # is writable by the floating k3s apps (Grafana + downloads/recipes).
+    # Per-app appdata subdirectories: created after the mounted-dataset guard,
+    # owned 1000:2000 so the all_squashed appdata export is writable.
     - name: Stat the grafana appdata subdirectory
       ansible.builtin.stat:
         path: /mnt/ssd/appdata/grafana
@@ -279,8 +272,8 @@
           - >-
             '/export/backups-apps/home-assistant 192.0.2.154/32(rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=2000,fsid=98)'
             in (backups_apps_exports.content | b64decode)
-        fail_msg: "per-app backups-apps exports not scoped/TLS-set as expected (authentik+gitlab TLS, HAOS plaintext)"
-        success_msg: "backups-apps split into per-app exports: authentik/gitlab require TLS, HAOS stays plaintext"
+        fail_msg: "per-app backups-apps exports not scoped/TLS-set as expected (authentik+gitlab TLS, home-assistant plaintext)"
+        success_msg: "backups-apps split into per-app exports: authentik/gitlab require TLS, home-assistant stays plaintext"
 
     # bind_source_check: each per-app subdir bind anchors on the encrypted mount
     # (its bind_source is in nas_storage_encrypted_bind_sources).
@@ -317,11 +310,9 @@
       changed_when: false
       failed_when: backup_artifact_timer.stdout | trim != 'enabled'
 
-    # CRITICAL: a collector taking the newest file of ANY name lets nightly
-    # sidecar copies hold the freshness signal green while no restorable dump
-    # ever lands. Both arms are asserted: a sidecar-only dir reports 0, and the
-    # same dir reports a real mtime and size once an artefact lands. Sidecars are
-    # seeded non-empty, so exclusion must come from the name, not the size.
+    # Sidecar copies must not hold the freshness signal green: a sidecar-only
+    # dir reports 0, then a real mtime and size once an artefact lands. The
+    # sidecars are non-empty, so only the name can exclude them.
     - name: Seed the gitlab landing dir with sidecar files only (non-restorable)
       ansible.builtin.copy:
         dest: "/mnt/tank/backups/apps/gitlab/{{ item }}"
@@ -531,11 +522,9 @@
           - "'pve_cluster_backup_last_size_bytes 0' in (nas_storage_pve_cluster_prom_fail.content | b64decode)"
         fail_msg: "An absent source did not record a failed run — the alert arms would stay green."
 
-    # CRITICAL: without the landing-zone mount guard this local producer tars
-    # /etc/pve, priv/ included, onto the root filesystem and reports success, and
-    # the collector reads the same shadowed dir. The guard is forced on here. A
-    # stale archive is seeded under the redirected DEST_DIR so the run must not
-    # size a shadow copy into a healthy-looking last_size_bytes.
+    # The landing-zone mount guard, forced on: an unmounted landing zone must
+    # fail the run, and the stale archive seeded under DEST_DIR must not be
+    # sized into a healthy-looking last_size_bytes.
     - name: An unmounted landing zone must fail closed, not shadow-write the source
       ansible.builtin.shell: |
         set -o pipefail
@@ -585,10 +574,9 @@
           nothing can reach.
         success_msg: "The unmounted-landing-zone run distrusts shadow archives and reports size 0"
 
-    # CRITICAL: /etc/pve is FUSE, so with pve-cluster.service down it is an empty
-    # directory every downstream check passes on. Without the source-side mount
-    # guard the run publishes a backup of nothing as success, and retention
-    # retires the real archives behind it.
+    # /etc/pve is FUSE, so with pve-cluster down it is an empty directory. The
+    # source-side mount guard must refuse it, or retention retires real
+    # archives behind a backup of nothing.
     - name: An unmounted pmxcfs source must fail closed, not archive an empty mountpoint
       ansible.builtin.shell: |
         set -o pipefail
@@ -718,10 +706,8 @@
         - authkey.pub
         - priv/authkey.key
 
-    # CRITICAL: a source that tars perfectly but is missing one identity file is
-    # a degraded pmxcfs, and publishing it retires a real archive per night
-    # through retention. The content guard must refuse and leave the landing
-    # zone alone.
+    # A source missing one identity file is a degraded pmxcfs. The content
+    # guard must refuse it and leave the landing zone alone.
     - name: Count the archives before the missing-identity-file run
       ansible.builtin.find:
         paths: /mnt/tank/backups/apps/pve-cluster
@@ -870,6 +856,107 @@
         /usr/local/sbin/archive-backupctl /tmp/archive-backupctl-excluded-ok
       changed_when: false
 
+    - name: Render archive-backupctl with keep-monthly overrides  # noqa no-relative-paths
+      ansible.builtin.template:
+        src: ../../templates/archive-backupctl.sh.j2
+        dest: /tmp/archive-backupctl-overrides
+        mode: "0755"
+      vars:
+        nas_storage_archive_backup_keep_monthly_overrides:
+          tank/proxmox: 0
+          tank/share/media: 1
+          'tank/share/q"x$(touch /tmp/archive-override-expanded)': 4
+        nas_storage_archive_backup_keep_recent: 3
+        nas_storage_archive_backup_keep_monthly: 6
+        nas_storage_zfs_scrub_schedule: monthly
+        nas_storage_backup_artifact_metrics_dir: /var/lib/node_exporter
+
+    # Safe and force restores, the force refusals and their overrides, the
+    # rollbacks, the per-child prop resets, the key-less warning and the
+    # monthly overrides, including a key that must not expand.
+    - name: Assert the archive restore paths and per-dataset retention (executed, not grepped)
+      ansible.builtin.script: >-
+        files/archive-restore-behavior.sh /tmp/archive-backupctl-excluded
+        /tmp/archive-backupctl-overrides /usr/local/sbin/archive-backupctl
+      changed_when: false
+
+    - name: Drive the retention guard - overrides on a source and a descendant
+      ansible.builtin.include_tasks: ../../tasks/assert_archive_retention.yml
+      vars:
+        nas_storage_archive_backup_sources: [tank/share, tank/proxmox]
+        nas_storage_archive_backup_keep_monthly_overrides:
+          tank/proxmox: 0
+          tank/share/media: "2"
+
+    - name: Drive the retention guard - an override outside every source
+      block:
+        - name: Include the retention guard with an orphan key
+          ansible.builtin.include_tasks: ../../tasks/assert_archive_retention.yml
+          vars:
+            nas_storage_archive_backup_sources: [tank/share]
+            nas_storage_archive_backup_keep_monthly_overrides:
+              tank/sharex: 0
+      rescue:
+        - name: Record that the orphan override was rejected
+          ansible.builtin.set_fact:
+            nas_archive_retention_orphan_rejected: >-
+              {{ ansible_failed_task.name
+                 == 'Assert every keep-monthly override names a replicated dataset and a count' }}
+
+    - name: Drive the retention guard - a count that is not a non-negative integer
+      block:
+        - name: Include the retention guard with a negative count
+          ansible.builtin.include_tasks: ../../tasks/assert_archive_retention.yml
+          vars:
+            nas_storage_archive_backup_sources: [tank/proxmox]
+            nas_storage_archive_backup_keep_monthly_overrides:
+              tank/proxmox: -1
+      rescue:
+        - name: Record that the negative count was rejected
+          ansible.builtin.set_fact:
+            nas_archive_retention_count_rejected: >-
+              {{ ansible_failed_task.name
+                 == 'Assert every keep-monthly override names a replicated dataset and a count' }}
+
+    - name: Drive the retention guard - a malformed vzdump quiesce bound
+      block:
+        - name: Include the retention guard with a unit-suffixed quiesce bound
+          ansible.builtin.include_tasks: ../../tasks/assert_archive_retention.yml
+          vars:
+            nas_storage_archive_backup_vzdump_quiesce_min: "10m"
+      rescue:
+        - name: Record that the malformed bound was rejected
+          ansible.builtin.set_fact:
+            nas_archive_vzdump_malformed_rejected: >-
+              {{ ansible_failed_task.name
+                 == 'Assert the vzdump quiesce bounds are positive whole minutes in order' }}
+
+    - name: Drive the retention guard - a quiet period longer than the wait
+      block:
+        - name: Include the retention guard with quiesce above max wait
+          ansible.builtin.include_tasks: ../../tasks/assert_archive_retention.yml
+          vars:
+            nas_storage_archive_backup_vzdump_quiesce_min: 40
+            nas_storage_archive_backup_vzdump_max_wait_min: 30
+      rescue:
+        - name: Record that the inverted bounds were rejected
+          ansible.builtin.set_fact:
+            nas_archive_vzdump_order_rejected: >-
+              {{ ansible_failed_task.name
+                 == 'Assert the vzdump quiesce bounds are positive whole minutes in order' }}
+
+    - name: Assert the retention guard fails closed
+      ansible.builtin.assert:
+        that:
+          - nas_archive_retention_orphan_rejected | default(false) | bool
+          - nas_archive_retention_count_rejected | default(false) | bool
+          - nas_archive_vzdump_malformed_rejected | default(false) | bool
+          - nas_archive_vzdump_order_rejected | default(false) | bool
+        fail_msg: >-
+          The retention guard accepted an override the script can never apply,
+          which would leave that dataset on the global monthly window.
+        success_msg: "retention guard rejects orphan keys and invalid counts"
+
     - name: Drive the exclusion guard - every entry under a replicated source
       ansible.builtin.include_tasks: ../../tasks/assert_archive_exclude.yml
       vars:
@@ -950,9 +1037,9 @@
         fail_msg: "nas_storage_archive_backup_on_success_units is not a real seam - OnSuccess= is still rendered"
         success_msg: "an empty on-success list renders no OnSuccess line"
 
-    # Executes the ZFS-free metric helpers (deferral accounting, timestamp
-    # preservation, swap-clean's write_prom_metrics + cleanup restart-failure
-    # demotion) instead of only grep-pinning them.
+    # Executes the ZFS-free metric helpers: deferral accounting, timestamp
+    # preservation, and swap-clean's write_prom_metrics with its cleanup
+    # restart-failure demotion.
     - name: Assert archive/media-mover/swap-clean metric behavior (executed, not grepped)
       ansible.builtin.script: files/archive-metrics-behavior.sh
       changed_when: false
@@ -965,7 +1052,7 @@
         - name: Create the probe fixture mounts
           ansible.builtin.shell: |
             set -eo pipefail
-            mkdir -p /tmp/mergerfs-probe/union /tmp/mergerfs-probe/bind /tmp/mergerfs-probe/subbind /tmp/mergerfs-probe/empty-bin
+            mkdir -p /tmp/mergerfs-probe/union /tmp/mergerfs-probe/bind /tmp/mergerfs-probe/subbind
             mountpoint -q /tmp/mergerfs-probe/union || mount -t tmpfs tmpfs /tmp/mergerfs-probe/union
             mkdir -p /tmp/mergerfs-probe/union/sub
             mountpoint -q /tmp/mergerfs-probe/bind \
@@ -1047,104 +1134,139 @@
               guard would read "could not run" as "nothing holds the union".
             success_msg: "bind probe usage errors exit 2 with empty stdout"
 
-        # A probe result carrying no rc never ran. Feeding one to the gate must
-        # refuse the remount, not read as "no failure, therefore clean".
-        - name: Evaluate the remount gate against a probe that never ran
-          vars:
-            nas_storage_mergerfs_needs_remount: true
-            nas_storage_mergerfs_mounts:
-              - name: media
-                target: /tmp/mergerfs-probe/union
-            nas_storage_mergerfs_nfs_check:
-              results:
-                - failed: true
-                  msg: "could not execute the probe script"
-            nas_storage_mergerfs_process_check:
-              results:
-                - rc: 0
-          ansible.builtin.set_fact:
-            nas_gate_without_rc: >-
-              {{ nas_storage_mergerfs_needs_remount | default(false)
-                 and (nas_storage_mergerfs_nfs_check.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list | length) == (nas_storage_mergerfs_mounts | length)
-                 and (nas_storage_mergerfs_process_check.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list | length) == (nas_storage_mergerfs_mounts | length) }}
+        # A probe result carrying no rc never ran: the gate's own assert must
+        # refuse it rather than count it clean.
+        - name: Drive the remount gate - a probe that never ran
+          block:
+            - name: Include the remount gate with a probe result carrying no rc
+              ansible.builtin.include_tasks: ../../tasks/mergerfs_remount_gate.yml
+              vars:
+                nas_storage_mergerfs_needs_remount: true
+                nas_storage_mergerfs_mounts:
+                  - name: media
+                    target: /tmp/mergerfs-probe/union
+                nas_storage_exports: []
+                nas_storage_mergerfs_nfs_check:
+                  results:
+                    - failed: true
+                      msg: "could not execute the probe script"
+                nas_storage_mergerfs_process_check:
+                  results:
+                    - rc: 0
+
+            - name: Record that the gate accepted a probe that never ran
+              ansible.builtin.set_fact:
+                nas_gate_without_rc_refused: false
+          rescue:
+            - name: Record which task refused the probe that never ran
+              ansible.builtin.set_fact:
+                nas_gate_without_rc_refused: >-
+                  {{ ansible_failed_task.name
+                     == 'Assert every busy-mount probe that ran produced a result' }}
 
         - name: Assert a probe that never ran blocks the remount cycle
           ansible.builtin.assert:
             that:
-              - not (nas_gate_without_rc | bool)
+              - nas_gate_without_rc_refused | default(false) | bool
             fail_msg: >-
               The remount gate read a probe result with no rc as clean, so the
               cycle would unexport and unmount unions that were never checked.
             success_msg: "a probe that never ran blocks the remount cycle"
 
-        # A missing fuser must read as "I could not look", never as an idle
-        # union: reading it clean would unmount a union processes still hold.
-        - name: Read the idle probe out of the task file
-          ansible.builtin.slurp:
-            src: ../../tasks/mergerfs.yml
-          register: nas_mergerfs_tasks
-          delegate_to: localhost
-          become: false
+        # The shipped idle probe runs with the real fuser against the fixture
+        # union, idle and then held by a process; each result goes through the gate.
+        - name: Install fuser for the idle probe
+          ansible.builtin.apt:
+            name: psmisc
+            state: present
+            update_cache: true
+            cache_valid_time: 3600
 
-        - name: Assert the idle probe refuses to run without fuser
-          ansible.builtin.assert:
-            that:
-              - "'command -v fuser' in (nas_mergerfs_tasks.content | b64decode)"
-              - "'NO_FUSER' in (nas_mergerfs_tasks.content | b64decode)"
-            fail_msg: >-
-              tasks/mergerfs.yml lost its fuser guard, so an absent binary
-              reads as an idle union.
-            success_msg: "the idle probe guards on fuser being present"
-
-        - name: Run the idle probe's fuser guard with fuser off PATH
-          ansible.builtin.shell: |
-            set -o pipefail
-            MOUNTPOINT=/tmp/mergerfs-probe/union
-            command -v fuser >/dev/null 2>&1 || {
-              echo "NO_FUSER: cannot determine whether $MOUNTPOINT is in use"
-              exit 3
-            }
-            echo "IDLE"
-            exit 0
-          args:
-            executable: /bin/bash
-          environment:
-            PATH: /tmp/mergerfs-probe/empty-bin
-          register: nas_probe_no_fuser
+        - name: Run the idle probe against the unheld union
+          ansible.builtin.script: ../../files/mergerfs-idle-probe.sh /tmp/mergerfs-probe/union
+          register: nas_idle_probe_idle
           changed_when: false
           failed_when: false
 
-        - name: Evaluate the remount gate against a probe that could not look
+        - name: Hold the union with a process
+          ansible.builtin.shell: |
+            set -e
+            cd /tmp/mergerfs-probe/union
+            nohup sleep 600 >/dev/null 2>&1 &
+          args:
+            executable: /bin/bash
+          changed_when: false
+
+        - name: Run the idle probe against the held union
+          ansible.builtin.script: ../../files/mergerfs-idle-probe.sh /tmp/mergerfs-probe/union
+          register: nas_idle_probe_busy
+          changed_when: false
+          failed_when: false
+
+        - name: Release the union
+          ansible.builtin.command: fuser -k -M -m /tmp/mergerfs-probe/union
+          changed_when: false
+          failed_when: false
+
+        - name: Assert the idle probe reports each state with its exit code
+          ansible.builtin.assert:
+            that:
+              - nas_idle_probe_idle.rc == 0
+              - "'IDLE' in nas_idle_probe_idle.stdout"
+              - nas_idle_probe_busy.rc == 1
+              - "'IN_USE' in nas_idle_probe_busy.stdout"
+            fail_msg: >-
+              The idle probe misreported the union: idle
+              {{ nas_idle_probe_idle.rc }}, held {{ nas_idle_probe_busy.rc }}.
+            success_msg: "idle probe: IDLE 0, IN_USE 1"
+
+        - name: Drive the remount gate with the idle probe's result
+          ansible.builtin.include_tasks: ../../tasks/mergerfs_remount_gate.yml
           vars:
             nas_storage_mergerfs_needs_remount: true
             nas_storage_mergerfs_mounts:
               - name: media
                 target: /tmp/mergerfs-probe/union
+            nas_storage_exports: []
             nas_storage_mergerfs_nfs_check:
               results:
                 - rc: 0
             nas_storage_mergerfs_process_check:
               results:
-                - rc: "{{ nas_probe_no_fuser.rc }}"
-          ansible.builtin.set_fact:
-            nas_gate_without_fuser: >-
-              {{ nas_storage_mergerfs_needs_remount | default(false)
-                 and (nas_storage_mergerfs_nfs_check.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list | length) == (nas_storage_mergerfs_mounts | length)
-                 and (nas_storage_mergerfs_process_check.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list | length) == (nas_storage_mergerfs_mounts | length) }}
+                - "{{ nas_idle_probe_idle }}"
 
-        - name: Assert a probe with no fuser exits 3 and blocks the remount cycle
+        - name: Record the gate's verdict on the idle union
+          ansible.builtin.set_fact:
+            nas_gate_idle: "{{ nas_storage_mergerfs_safe_to_remount | bool }}"
+
+        - name: Drive the remount gate with the held probe's result
+          ansible.builtin.include_tasks: ../../tasks/mergerfs_remount_gate.yml
+          vars:
+            nas_storage_mergerfs_needs_remount: true
+            nas_storage_mergerfs_mounts:
+              - name: media
+                target: /tmp/mergerfs-probe/union
+            nas_storage_exports: []
+            nas_storage_mergerfs_nfs_check:
+              results:
+                - rc: 0
+            nas_storage_mergerfs_process_check:
+              results:
+                - "{{ nas_idle_probe_busy }}"
+
+        - name: Assert only the idle union unblocks the remount cycle
           ansible.builtin.assert:
             that:
-              - nas_probe_no_fuser.rc == 3
-              - "'NO_FUSER' in nas_probe_no_fuser.stdout"
-              - not (nas_gate_without_fuser | bool)
+              - nas_gate_idle | bool
+              - not (nas_storage_mergerfs_safe_to_remount | bool)
             fail_msg: >-
-              The idle probe reported IDLE with no fuser installed, so the
-              remount cycle would unmount a union that may still be in use.
-            success_msg: "a probe that cannot look blocks the remount cycle"
+              The remount gate let a held union through to the unmount: idle
+              {{ nas_gate_idle }}, held {{ nas_storage_mergerfs_safe_to_remount }}.
+            success_msg: "the gate unblocks the idle union only"
       always:
         - name: Tear down the probe fixture mounts
           ansible.builtin.shell: |
+            fuser -k -M -m /tmp/mergerfs-probe/union 2>/dev/null || true
             umount -l /tmp/mergerfs-probe/subbind 2>/dev/null || true
             umount -l /tmp/mergerfs-probe/bind 2>/dev/null || true
             umount -l /tmp/mergerfs-probe/union 2>/dev/null || true
@@ -1298,6 +1420,40 @@
         fail_msg: "A non-zero status check must trigger the remount cycle, or a hand-unmounted union never recovers"
         success_msg: "status-check path: needs_remount true"
 
+    # A status check carrying no rc never ran: the decision step must refuse it
+    # rather than read it as a healthy union.
+    - name: Drive the remount decision - a status check that never ran
+      block:
+        - name: Include the remount decision with a status check carrying no rc
+          ansible.builtin.include_tasks: ../../tasks/mergerfs_needs_remount.yml
+          vars:
+            nas_storage_mergerfs_fstab_changed:
+              results:
+                - {changed: false}
+            nas_storage_mergerfs_status_check:
+              results:
+                - failed: true
+                  msg: "could not execute the verify script"
+
+        - name: Record that the decision accepted a status check that never ran
+          ansible.builtin.set_fact:
+            nas_status_without_rc_refused: false
+      rescue:
+        - name: Record which task refused the status check that never ran
+          ansible.builtin.set_fact:
+            nas_status_without_rc_refused: >-
+              {{ ansible_failed_task.name
+                 == 'Assert every MergerFS status check that ran produced a result' }}
+
+    - name: Assert a status check that never ran fails the run
+      ansible.builtin.assert:
+        that:
+          - nas_status_without_rc_refused | default(false) | bool
+        fail_msg: >-
+          The remount decision read a status check with no rc as a healthy
+          union, so a union that was never verified is never remounted.
+        success_msg: "a status check that never ran fails the run"
+
     # Classification guard (tasks/assert_zfs_classification.yml) driven from
     # fabricated inventory in all four shapes it decides. These pin the
     # fail-closed direction, which no converging inventory can exercise.
@@ -1355,9 +1511,8 @@
             nas_classify_union_rejected: >-
               {{ 'no branch INSIDE' in (ansible_failed_result | to_json) }}
 
-    # The anchor is derived from the branch set, so a union that never declares
-    # systemd_requires is checked too — scoping the guard to that key left the
-    # shape it exists to catch invisible whenever the key was absent.
+    # The anchor is derived from the branch set, so a union that declares no
+    # systemd_requires is checked too.
     - name: Drive the classification guard — an unanchored union with no systemd_requires
       block:
         - name: Include the guard with a root-branched union carrying no systemd_requires
@@ -1878,7 +2033,9 @@
       rescue:
         - name: Record that the non-file path was refused
           ansible.builtin.set_fact:
-            nas_deprovision_nonfile_refused: true
+            nas_deprovision_nonfile_refused: >-
+              {{ ansible_failed_task.name
+                 == 'Assert every declared component path is a regular file' }}
 
     - name: Verify a declared path that is not a regular file fails the play
       ansible.builtin.assert:
@@ -2080,7 +2237,7 @@
       ansible.builtin.include_tasks: ../../tasks/deprovision_units.yml
       vars:
         nas_storage_deprovision_timers: [media-mover.timer]
-        nas_storage_deprovision_services: [media-mover.service]
+        nas_storage_deprovision_static_services: [media-mover.service]
         nas_storage_deprovision_paths:
           - /usr/local/sbin/media-mover.sh
         nas_storage_deprovision_metrics:
@@ -2090,7 +2247,7 @@
       ansible.builtin.include_tasks: ../../tasks/deprovision_units.yml
       vars:
         nas_storage_deprovision_timers: [swap-clean.timer]
-        nas_storage_deprovision_services: [swap-clean.service]
+        nas_storage_deprovision_static_services: [swap-clean.service]
         nas_storage_deprovision_paths:
           - /usr/local/sbin/swap-clean.sh
         nas_storage_deprovision_metrics:
@@ -2100,7 +2257,7 @@
       ansible.builtin.include_tasks: ../../tasks/deprovision_units.yml
       vars:
         nas_storage_deprovision_timers: [backup-artifact-mtime-collector.timer]
-        nas_storage_deprovision_services: [backup-artifact-mtime-collector.service]
+        nas_storage_deprovision_static_services: [backup-artifact-mtime-collector.service]
         nas_storage_deprovision_paths:
           - /usr/local/sbin/backup-artifact-mtime-collector.sh
         nas_storage_deprovision_metrics:

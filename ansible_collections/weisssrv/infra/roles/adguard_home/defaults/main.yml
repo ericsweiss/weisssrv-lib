@@ -28,8 +28,8 @@ adguard_home_archive_cache_dir: ""
 adguard_home_archive_sha256: ""
 
 # Root-owned 0700 staging directory for the release tarball and its unpacked
-# tree, on disk rather than a tmpfs: the two together are ~55 MB of resident RAM
-# on /run. Created and removed by the install block.
+# tree, on disk: the two together are ~55 MB. Created and removed by the
+# install block.
 adguard_home_stage_dir: /root/adguard-home-install
 
 # Where files/adguard-admin-hash.py is installed; it is also the operator tool

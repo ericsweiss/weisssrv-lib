@@ -1,0 +1,30 @@
+---
+# Internal, not consumer API. `qm create` sets this tag and the create's last
+# step clears it, so a VM still carrying it is proof of a create that stopped.
+_proxmox_vm_create_marker: weisssrv-create-incomplete
+
+# The `qm create` arguments both guest types share; each path appends its own.
+_proxmox_vm_create_common_argv: >-
+  {{
+    ['qm', 'create', proxmox_vm_id | string,
+     '--name', inventory_hostname,
+     '--tags', _proxmox_vm_create_marker,
+     '--memory', proxmox_vm_memory | string]
+    + (['--balloon', proxmox_vm_balloon | string] if proxmox_vm_balloon is defined else [])
+    + ['--cores', proxmox_vm_cores | string,
+       '--cpu', proxmox_vm_cpu_type,
+       '--net0', 'virtio,bridge=' ~ proxmox_vm_bridge ~ ',firewall=1',
+       '--agent', 'enabled=' ~ (proxmox_vm_agent_enabled | ternary(1, 0))]
+    + (['--pool', proxmox_resource_pool] if proxmox_resource_pool is defined else [])
+  }}
+
+# The tags of `_proxmox_vm_config_lines`, a `qm config` stdout_lines, and the
+# `qm set` arguments that drop the create marker and keep every other tag.
+_proxmox_vm_config_tags: >-
+  {{ _proxmox_vm_config_lines | select('match', '^tags: ')
+     | map('regex_replace', '^tags: ', '') | join(';') | regex_findall('[^;, ]+') }}
+_proxmox_vm_kept_tags: >-
+  {{ _proxmox_vm_config_tags | reject('equalto', _proxmox_vm_create_marker) | join(';') }}
+_proxmox_vm_marker_clear_args: >-
+  {{ ['--tags', _proxmox_vm_kept_tags] if _proxmox_vm_kept_tags | length > 0
+     else ['--delete', 'tags'] }}

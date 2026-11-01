@@ -4,16 +4,3 @@
   become: true
   roles:
     - role: weisssrv.infra.zfs_encryption
-
-  post_tasks:
-    # Branch coverage for the secrets-backend seam: the deployed copy asserts the
-    # 1Password Connect default, this side render covers zfs_encryption_key_command.
-    # The role template lives outside the scenario dir, hence the relative src.
-    - name: Render the unlock script with a key command  # noqa: no-relative-paths
-      ansible.builtin.template:
-        src: "{{ playbook_dir }}/../../templates/zfs-load-key.sh.j2"
-        dest: /tmp/zfs-load-key-keycmd.sh
-        mode: "0750"
-      vars:
-        zfs_encryption_key_command: >-
-          printf '%s' "passphrase-for-$ZFS_ENCRYPTION_POOL"

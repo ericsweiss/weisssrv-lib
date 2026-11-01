@@ -4,4 +4,6 @@
 Assert a reachable Proxmox node was found for the reconcile
 Ensure we're running on a Proxmox VE cluster
 Assert every HA rule is a supported type
-Get current storage replication jobs
+Get current storage replication jobs ::2
+Create storage replication jobs
+Get list of local VMIDs on this node

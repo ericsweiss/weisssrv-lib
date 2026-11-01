@@ -5,11 +5,10 @@ spec:
       description: Name of the generated hidden job.
     tags:
       type: array
-      default: ["infrastructure"]
       description: >-
-        Runner tag(s). The fragment apt-installs and writes `/usr/local/bin`,
-        so it needs a root-capable runner; it needs no LAN or SSH reach to the
-        hosts, only the Kubernetes API the kubeconfig names.
+        Runner tag(s), required. The fragment apt-installs and writes
+        `/usr/local/bin`, so a consumer passes the tag of a root-capable runner.
+        It needs no LAN or SSH reach, only the Kubernetes API the kubeconfig names.
     image:
       default: "python:3.14-slim"
       description: >-

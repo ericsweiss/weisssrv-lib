@@ -7,6 +7,7 @@ set -Eeuo pipefail
 POOL_DST="{{ nas_storage_archive_backup_pool }}"
 {% raw -%}
 RESTORE_BASE="/mnt/restore"
+ZVOL_DEV_DIR="/dev/zvol"
 SNAP_PREFIX="archsync"
 {% endraw %}
 # Archive scrub timer: plug enables it and unplug disables it, so scrub coverage
@@ -21,16 +22,24 @@ SCRUB_TIMER="zfs-scrub-{{ nas_storage_zfs_scrub_schedule }}@{{ nas_storage_archi
 KEEP_RECENT={{ nas_storage_archive_backup_keep_recent | int }}
 KEEP_MONTHLY={{ nas_storage_archive_backup_keep_monthly | int }}
 {% raw %}
-
+# Per-dataset monthly counts, from nas_storage_archive_backup_keep_monthly_overrides.
+# Each applies to its source subtree and to that subtree's archive copy. Keys
+# are shell-quoted, so no expansion runs when the array is declared.
+{% endraw %}
+declare -A KEEP_MONTHLY_OVERRIDES=(
+{% for ds, keep in (nas_storage_archive_backup_keep_monthly_overrides | default({}, true)).items() %}
+  [{{ ds | quote }}]={{ keep | int }}
+{% endfor %}
+)
+{% raw %}
 # vzdump-overrun guard for the ONE cluster-wide dump target: remote nodes write
 # it over NFS, so a local pgrep sees nothing. It is snapshotted only once writes
 # under its mountpoint quiesce; empty means no dataset gets the guard.
 {% endraw %}
 VZDUMP_TARGET="{{ nas_storage_archive_backup_vzdump_target }}"
-{% raw -%}
-VZDUMP_QUIESCE_MIN=10
-VZDUMP_MAX_WAIT_MIN=30
-
+VZDUMP_QUIESCE_MIN={{ nas_storage_archive_backup_vzdump_quiesce_min }}
+VZDUMP_MAX_WAIT_MIN={{ nas_storage_archive_backup_vzdump_max_wait_min }}
+{% raw %}
 # Datasets to replicate, recursively; leave out anything already captured
 # indirectly (a VM disk inside the vzdump target). Each ROOT must be a
 # filesystem: the -R receive's -o mountpoint/canmount is rejected on a zvol.
@@ -85,9 +94,9 @@ assert_send_exclude_supported() {
   [[ ${#EXCLUDE_LIST[@]} -gt 0 ]] || return 0
   local usage version
   usage="$(zfs send 2>&1 || true)"
+  # The version is logged because how `send -X` treats an existing archive
+  # copy differs between zfs releases.
   case "$usage" in
-    # Leaving an excluded child's archive copy in place is this `send -X`
-    # behaviour, so the version it was observed on is logged with the probe.
     *-X*)
       version="$(zfs version 2>/dev/null || true)"
       version="${version%%$'\n'*}"
@@ -142,7 +151,14 @@ for _src in "${SRC_LIST[@]}"; do
   MAP["$_src"]="$_dst"
   RMAP["$_dst"]="$_src"
 done
-unset _src _dst
+for _ds in "${!KEEP_MONTHLY_OVERRIDES[@]}"; do
+  for _src in "${SRC_LIST[@]}"; do
+    if [[ "$_ds" == "$_src" || "$_ds" == "$_src"/* ]]; then
+      KEEP_MONTHLY_OVERRIDES["${MAP[$_src]}${_ds#"$_src"}"]="${KEEP_MONTHLY_OVERRIDES[$_ds]}"
+    fi
+  done
+done
+unset _src _dst _ds
 
 {% endraw %}
 PROM_DIR="{{ nas_storage_backup_artifact_metrics_dir }}"
@@ -195,22 +211,20 @@ write_prom_metrics() {
     log "FATAL: cannot create ${PROM_DIR}; no metrics written"
     return 1
   fi
-  # Read the children's marker, do not consume it: the gauge it feeds is only
-  # published by the mv below, so deleting it first would lose the retention
-  # failure whenever the write fails.
+  # The children's marker is read, not consumed: the gauge it feeds is published
+  # only by the mv below, and a failed write must keep the retention failure.
   local had_marker=0
   if [[ -e "$PRUNE_FAIL_MARKER" ]]; then
     had_marker=1
     PRUNE_OK=0
   fi
-  # The status is captured with `|| wrote=1` rather than tested as `if ! { … }`:
-  # a compound command's FAILED REDIRECTION does not reliably negate, so the
-  # `if !` form reads an unwritable textfile as a successful write.
   local orphans="$EXCLUDED_ORPHANS"
   if [[ "$_EXCLUDE_RECONCILED" -ne 1 ]]; then
     orphans="$(awk '/^archive_backup_excluded_orphans / {print $2}' "$PROM_FILE" 2>/dev/null || true)"
     orphans="${orphans:-0}"
   fi
+  # `|| wrote=1` records a failed write, including a temp file the redirection
+  # cannot open.
   local wrote=0
   {
     echo "# HELP archive_backup_last_run_duration_seconds Duration of last backup run"
@@ -320,51 +334,102 @@ need_root() {
 pool_present() { zpool list -H -o name "${POOL_DST}" >/dev/null 2>&1; }
 dataset_present() { zfs list -H -o name "$1" >/dev/null 2>&1; }
 
+# tree_prop_matches <dataset> <property> <grep-args...>: 0 when a value under the
+# dataset matches, 1 when none does, 2 when `zfs get` fails. The output is captured
+# first, so a large tree cannot SIGPIPE a `grep -q` into a false negative.
+tree_prop_matches() {
+  local ds="$1" prop="$2" vals
+  shift 2
+  if ! vals="$(zfs get -H -o value -r -t filesystem,volume "$prop" "$ds" 2>/dev/null)"; then
+    log "FAILED: cannot read the ${prop} property under ${ds}"
+    return 2
+  fi
+  grep -q "$@" <<< "$vals"
+}
+
+tree_is_encrypted() { tree_prop_matches "$1" encryption -Ev '^(off|-|)$'; }
+tree_has_keyless() { tree_prop_matches "$1" keystatus -x 'unavailable'; }
+
+# Prints each filesystem under $1 that should be mounted and is not: canmount=on,
+# its key available, and a mountpoint other than none or legacy, which `zfs mount`
+# never mounts. Returns 2 when `zfs get` fails.
+unmounted_in_tree() {
+  local props
+  if ! props="$(zfs get -H -o name,property,value -r -t filesystem canmount,keystatus,mounted,mountpoint "$1" 2>/dev/null)"; then
+    log "FAILED: cannot read the mount state under $1"
+    return 2
+  fi
+  awk -F'\t' '{ v[$1 SUBSEP $2] = $3; n[$1] = 1 }
+    END { for (d in n) if (v[d SUBSEP "canmount"] == "on" && v[d SUBSEP "keystatus"] != "unavailable" \
+      && v[d SUBSEP "mountpoint"] != "none" && v[d SUBSEP "mountpoint"] != "legacy" && v[d SUBSEP "mounted"] == "no") print d }' \
+    <<< "$props" | sort
+}
+
+# Monthly keep count for one dataset: the nearest override on it or an
+# ancestor, else KEEP_MONTHLY.
+keep_monthly_for() {
+  local ds="$1"
+  while :; do
+    if [[ -n "${KEEP_MONTHLY_OVERRIDES[$ds]+set}" ]]; then
+      printf '%s' "${KEEP_MONTHLY_OVERRIDES[$ds]}"
+      return 0
+    fi
+    [[ "$ds" == */* ]] || break
+    ds="${ds%/*}"
+  done
+  printf '%s' "$KEEP_MONTHLY"
+}
+
 # LOCKDOWN / SAFETY
 
-# A readonly=on that did not take leaves the replica writable. The flag demotes
-# the run to success=0; `|| true` would hide the broken invariant entirely.
+# A readonly=on that did not take, or a filesystem left mounted, leaves the
+# replica exposed, so the flag demotes the run to success=0.
 _LOCKDOWN_FAILED=0
 
-# Force backup tree into a safe, non-mountable, read-only state.
-lock_backup_tree() {
-  local root="$1"
+# Sets the tree non-mountable with readonly=$2: on locks the replica, off lets a
+# receive write. A child `zfs inherit` tracks the root's mountpoint=none, and
+# `|| true` is there because zvol children reject mountpoint.
+_set_backup_tree() {
+  local root="$1" ro="$2" children child mounted
   dataset_present "$root" || return 0
 
   zfs set mountpoint=none "$root" >/dev/null 2>&1 || true
   zfs set canmount=off "$root"   >/dev/null 2>&1 || true
-  zfs set readonly=on "$root" >/dev/null 2>&1 \
-    || { log "Lockdown: FAILED readonly=on on ${root}"; _LOCKDOWN_FAILED=1; }
-
-  # `zfs inherit` (there is no `zfs set mountpoint=inherit`) so children track
-  # the root's mountpoint=none; `|| true` — zvol children reject mountpoint.
+  if children="$(zfs list -H -o name -r "$root")"; then
+    children="$(tail -n +2 <<< "$children")"
+  else
+    log "Lockdown: FAILED, cannot list the datasets under ${root}"
+    _LOCKDOWN_FAILED=1
+    children=""
+  fi
   while IFS= read -r child; do
-    zfs inherit mountpoint "$child" >/dev/null 2>&1 || true
-    zfs set canmount=off "$child"   >/dev/null 2>&1 || true
-    zfs set readonly=on "$child" >/dev/null 2>&1 \
+    [[ -n "$child" ]] || continue
+    if [[ "$child" != "$root" ]]; then
+      zfs inherit mountpoint "$child" >/dev/null 2>&1 || true
+      zfs set canmount=off "$child"   >/dev/null 2>&1 || true
+    fi
+    zfs set readonly="$ro" "$child" >/dev/null 2>&1 || [[ "$ro" == off ]] \
       || { log "Lockdown: FAILED readonly=on on ${child}"; _LOCKDOWN_FAILED=1; }
-  done < <(zfs list -H -o name -r "$root" | tail -n +2)
+  done <<< "${root}"$'\n'"${children}"
 
-  zfs unmount -r "$root" >/dev/null 2>&1 || true
+  zfs unmount "$root" >/dev/null 2>&1 || true
+  if ! mounted="$(zfs get -H -o name,value -r -t filesystem mounted "$root" 2>/dev/null)"; then
+    log "Lockdown: FAILED, cannot read the mount state under ${root}"
+    _LOCKDOWN_FAILED=1
+    return 0
+  fi
+  mounted="$(awk -F'\t' '$2 == "yes" { print $1 }' <<< "$mounted" | paste -sd' ' -)"
+  if [[ -n "$mounted" ]]; then
+    log "Lockdown: FAILED, still mounted: ${mounted}"
+    _LOCKDOWN_FAILED=1
+  fi
 }
+
+# Force backup tree into a safe, non-mountable, read-only state.
+lock_backup_tree() { _set_backup_tree "$1" on; }
 
 # Allow receives to write (still never mount anywhere).
-unlock_for_receive() {
-  local root="$1"
-  dataset_present "$root" || return 0
-
-  zfs set mountpoint=none "$root" >/dev/null 2>&1 || true
-  zfs set canmount=off "$root"    >/dev/null 2>&1 || true
-  zfs set readonly=off "$root"    >/dev/null 2>&1 || true
-
-  while IFS= read -r child; do
-    zfs inherit mountpoint "$child" >/dev/null 2>&1 || true
-    zfs set canmount=off "$child"   >/dev/null 2>&1 || true
-    zfs set readonly=off "$child"   >/dev/null 2>&1 || true
-  done < <(zfs list -H -o name -r "$root" | tail -n +2)
-
-  zfs unmount -r "$root" >/dev/null 2>&1 || true
-}
+unlock_for_receive() { _set_backup_tree "$1" off; }
 
 # Every received dataset lands with a safe mountpoint, so it can never
 # temporarily inherit a dangerous one (capturing a live path) mid-receive.
@@ -441,30 +506,32 @@ latest_common_snapshot() {
   printf "%s" "$common"
 }
 
+# Prints the newest archsync snapshot of $1, or nothing when it has none.
+# Returns 2 when the listing fails, so an error never reads as "no snapshots".
 latest_backup_snapshot_fullname() {
-  local bdst="$1"
-  zfs list -H -t snapshot -o name -s creation -r "$bdst" 2>/dev/null \
-    | grep -E "^${bdst}@${SNAP_PREFIX}-" \
-    | tail -n 1 || true
+  local bdst="$1" snaps
+  snaps="$(zfs list -H -t snapshot -o name -s creation -r "$bdst")" || return 2
+  grep -E "^${bdst}@${SNAP_PREFIX}-" <<< "$snaps" | tail -n 1 || true
 }
 
 # RETENTION / PRUNING
 
 # Prune snapshots for ONE dataset (non-recursive). The `retain` policy keeps the
-# newest KEEP_RECENT snapshots plus the newest of each of the last KEEP_MONTHLY
-# calendar months; `none` keeps nothing.
+# newest KEEP_RECENT snapshots plus the newest of each of the last
+# keep_monthly_for calendar months; `none` keeps nothing.
 prune_snaps_dataset() {
   local ds="$1" policy="${2:-retain}"
 
-  mapfile -t snaps < <(
-    zfs list -H -t snapshot -o name -S creation -r "$ds" 2>/dev/null \
-      | grep -E "^${ds}@${SNAP_PREFIX}-" || true
-  )
+  local listed
+  listed="$(zfs list -H -t snapshot -o name -S creation -r "$ds")" \
+    || { log "Prune: FAILED to list snapshots of $ds"; return 1; }
+  mapfile -t snaps < <(grep -E "^${ds}@${SNAP_PREFIX}-" <<< "$listed" || true)
   ((${#snaps[@]} == 0)) && return 0
 
   declare -A keep=()
   if [[ "$policy" == retain ]]; then
-    local i=0
+    local i=0 keep_monthly
+    keep_monthly="$(keep_monthly_for "$ds")"
 
     for s in "${snaps[@]}"; do
       if (( i < KEEP_RECENT )); then
@@ -477,9 +544,10 @@ prune_snaps_dataset() {
     local kept_m=0
 
     for s in "${snaps[@]}"; do
+      (( kept_m < keep_monthly )) || break
       [[ -n "${keep[$s]:-}" ]] && continue
 
-      local snap_name="${s#${ds}@}"
+      local snap_name="${s#"${ds}"@}"
       local yyyymm
       yyyymm="$(echo "$snap_name" | sed -n 's/^'"${SNAP_PREFIX}"'-\([0-9]\{6\}\)[0-9]\{2\}-[0-9]\{6\}$/\1/p')"
 
@@ -489,7 +557,6 @@ prune_snaps_dataset() {
         keep["$s"]=1
         kept_month["$yyyymm"]=1
         kept_m=$((kept_m+1))
-        ((kept_m >= KEEP_MONTHLY)) && break
       fi
     done
   fi
@@ -513,14 +580,17 @@ prune_snaps_tree() {
   local root="$1"
   dataset_present "$root" || return 0
 
-  local rc=0 ds
+  local rc=0 ds listed
+  listed="$(zfs list -H -o name -r "$root")" \
+    || { log "Prune: FAILED to list the datasets under $root"; return 1; }
   while IFS= read -r ds; do
+    [[ -n "$ds" ]] || continue
     if is_excluded "$ds"; then
       prune_snaps_dataset "$ds" none || rc=1
     else
       prune_snaps_dataset "$ds" retain || rc=1
     fi
-  done < <(zfs list -H -o name -r "$root")
+  done <<< "$listed"
   return "$rc"
 }
 
@@ -538,8 +608,6 @@ set_pool_root_props() {
 
 replicate_one() {
   local src="$1" dst="$2"
-  # Declare + assign separately so the $(date) exit status isn't masked by
-  # `local` (shellcheck SC2155); this script is linted in CI as a *.sh.j2.
   local snap_now
   snap_now="${SNAP_PREFIX}-$(date +%Y%m%d-%H%M%S)"
   local reseed_tmp="${dst}-reseed"
@@ -574,10 +642,13 @@ replicate_one() {
   # Encrypted sources must be sent raw (-w): ZFS refuses -R on an encrypted
   # dataset otherwise, and the archive then holds ciphertext. Detected
   # RECURSIVELY - one encrypted child under a plaintext parent aborts the send.
-  local raw_flags=()
-  if zfs get -H -o value -r encryption "$src" 2>/dev/null | grep -Eqv '^(off|-)$'; then
-    raw_flags=(-w)
-  fi
+  local raw_flags=() enc_rc=0
+  tree_is_encrypted "$src" || enc_rc=$?
+  case "$enc_rc" in
+    0) raw_flags=(-w) ;;
+    1) ;;
+    *) log "FATAL ${src}: encryption unknown, so the send mode cannot be chosen"; return 1 ;;
+  esac
 
   exclude_flags_for "$src"
 
@@ -639,7 +710,7 @@ replicate_one() {
     fi
     [[ -n "$snap_list" ]] || { log "Re-seed aborted: no ${snap_now} snapshots under ${src}"; return 1; }
     while IFS= read -r snap; do
-      ds="${snap%@${snap_now}}"
+      ds="${snap%@"${snap_now}"}"
       # The -R paths drop these through -X; this per-dataset loop skips them.
       if is_excluded "$ds"; then
         continue
@@ -862,7 +933,7 @@ cmd_unplug() {
     exit 0
   fi
   log "Unmounting datasets under '${POOL_DST}'"
-  zfs unmount -r "${POOL_DST}" 2>/dev/null || true
+  zfs unmount "${POOL_DST}" 2>/dev/null || true
   log "Exporting pool '${POOL_DST}' (safe to unplug after this)"
   zpool export "${POOL_DST}"
   log "Done."
@@ -911,88 +982,230 @@ cmd_plug_arm() {
 
 # RESTORE
 
+# Makes every filesystem child mountable under its parent. Volumes take neither
+# canmount nor mountpoint, so only filesystems are listed.
+_restore_reset_children() {
+  local root="$1" children child rc=0
+  if ! children="$(zfs list -H -o name -t filesystem -r "$root")"; then
+    log "FAILED: cannot list the filesystems under ${root}"
+    return 1
+  fi
+  while IFS= read -r child; do
+    [[ -n "$child" && "$child" != "$root" ]] || continue
+    zfs set canmount=on "$child" || { log "FAILED: zfs set canmount=on ${child}"; rc=1; }
+    zfs inherit mountpoint "$child" || { log "FAILED: zfs inherit mountpoint ${child}"; rc=1; }
+  done <<< "$children"
+  return "$rc"
+}
+
+# Mounts the tree, then fails when a filesystem that should mount did not. A
+# key-less dataset is left for the operator, with the unlock command logged and
+# _RESTORE_KEYLESS set.
+_RESTORE_KEYLESS=0
+_restore_mount_and_verify() {
+  local root="$1" mount_err unmounted urc=0 krc=0
+  _RESTORE_KEYLESS=0
+  mount_err="$(zfs mount -R "$root" 2>&1)" || true
+  unmounted="$(unmounted_in_tree "$root")" || urc=$?
+  if [[ "$urc" -ne 0 ]]; then
+    log "FAILED: cannot tell whether ${root} mounted"
+    return 1
+  fi
+  if [[ -n "$unmounted" ]]; then
+    log "FAILED: restored ${root}, but these filesystems did not mount: ${unmounted//$'\n'/ }"
+    [[ -z "$mount_err" ]] || log "  zfs mount -R ${root}: ${mount_err//$'\n'/; }"
+    return 1
+  fi
+  tree_has_keyless "$root" || krc=$?
+  case "$krc" in
+    0)
+      _RESTORE_KEYLESS=1
+      log "Restored tree ${root} contains encrypted key-less datasets, so its mount is incomplete."
+      log "  Unlock + mount: zfs load-key -r -L prompt ${root} && zfs mount -R ${root}"
+      ;;
+    1) ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
 _restore_mount_tree() {
   local restore_root="$1" label="$2" ts="$3"
-  local mp="${RESTORE_BASE}/${label}/${ts}"
+  local mp="${RESTORE_BASE}/${label}/${ts}" rc=0
 
   mkdir -p "$mp"
 
-  zfs set canmount=on "$restore_root"
-  zfs set mountpoint="$mp" "$restore_root"
-  # The stream carries the archive's local readonly=on as a RECEIVED value on
-  # every dataset (received beats inherited); inherit -r masks it tree-wide so
-  # the restore is writable (root + children fall back to the pool default).
-  zfs inherit -r readonly "$restore_root" >/dev/null 2>&1 || true
+  zfs set canmount=on "$restore_root" || rc=1
+  zfs set mountpoint="$mp" "$restore_root" || rc=1
+  # The stream carries the archive's readonly=on as a received value on every
+  # dataset, and received beats inherited. inherit -r masks it tree-wide.
+  zfs inherit -r readonly "$restore_root" || rc=1
+  _restore_reset_children "$restore_root" || rc=1
+  if [[ "$rc" -ne 0 ]]; then
+    log "FAILED: ${restore_root} was received, but its properties were not reset, so it may stay read-only or unmounted"
+    return 1
+  fi
 
-  # `zfs inherit` (not the invalid `zfs set mountpoint=inherit`) also masks a
-  # RECEIVED mountpoint=none a re-seeded child carries, so children mount
-  # under $mp instead of silently staying unmounted.
-  while IFS= read -r child; do
-    zfs set canmount=on "$child" >/dev/null 2>&1 || true
-    zfs inherit mountpoint "$child" >/dev/null 2>&1 || true
-  done < <(zfs list -H -o name -r "$restore_root" | tail -n +2)
-
-  zfs mount -r "$restore_root" >/dev/null 2>&1 || true
-  # A restored encrypted dataset is raw and key-less (keystatus=unavailable),
-  # so the mount above is a silent no-op. Say how to unlock it rather than
-  # report an empty directory as a readable restore.
-  if zfs get -H -o value -r keystatus "$restore_root" 2>/dev/null | grep -q '^unavailable$'; then
-    log "Restore tree ${restore_root} contains encrypted key-less datasets — mount is incomplete."
-    log "  Unlock + mount: zfs load-key -r -L prompt ${restore_root} && zfs mount -r ${restore_root}  (mounts under ${mp})"
+  _restore_mount_and_verify "$restore_root" || return 1
+  if [[ "$_RESTORE_KEYLESS" -eq 1 ]]; then
+    log "  Once unlocked, the restore tree mounts at: $mp"
   else
     log "Mounted restore tree at: $mp"
   fi
 }
 
-# A restored stream carries the archive's lockdown props (mountpoint=none,
-# canmount=off, readonly=on). Reset the tree to /mnt/<pool>/<dataset>; `zfs
-# receive -x/-o` cannot, reaching only the stream's top dataset under -R.
-_force_restore_reset_props() {
-  local root="$1"
-  local child dtype
-  # received readonly=on beats inheritance; inherit -r masks it tree-wide.
-  zfs inherit -r readonly "$root" >/dev/null 2>&1 || true
-  zfs set canmount=on "$root"
-  zfs set mountpoint="/mnt/${root}" "$root"
-  # canmount is not inheritable — set it per filesystem child; volumes hold
-  # neither mountpoint nor canmount, so skip them (readonly already cleared).
-  while IFS= read -r child; do
-    dtype="$(zfs get -H -o value type "$child" 2>/dev/null || true)"
-    [[ "$dtype" == "volume" ]] && continue
-    zfs set canmount=on "$child" >/dev/null 2>&1 || true
-    zfs inherit mountpoint "$child" >/dev/null 2>&1 || true
-  done < <(zfs list -H -o name -r "$root" | tail -n +2)
-  zfs mount -r "$root" >/dev/null 2>&1 || true
-  # A raw-restored encrypted dataset is key-less, so the mount above is a
-  # silent no-op — tell the operator how to unlock instead of claiming success.
-  if zfs get -H -o value -r keystatus "$root" 2>/dev/null | grep -q '^unavailable$'; then
-    log "Restored tree ${root} contains encrypted key-less datasets — mount is incomplete."
-    log "  Unlock + mount: zfs load-key -r -L prompt ${root} && zfs mount -r ${root}"
+# Puts back a mountpoint read before the restore: a local or received value as
+# it was, an inherited or default one by following the parent again.
+_restore_mountpoint() {
+  local ds="$1" mp_value="$2" mp_source="$3"
+  if [[ "$mp_source" == local || "$mp_source" == received ]]; then
+    zfs set mountpoint="$mp_value" "$ds"
   else
-    log "Restored ${root}, mounted at /mnt/${root} (re-run the storage deploy to re-assert host_vars properties)"
+    zfs inherit mountpoint "$ds"
   fi
 }
 
+# Sets each recorded child mountpoint again under $1. A recorded child that is
+# not in the tree is logged and skipped.
+_force_restore_child_mountpoints() {
+  local root="$1" suffix rc=0
+  for suffix in "${!_FORCE_CHILD_MP[@]}"; do
+    if ! dataset_present "${root}${suffix}"; then
+      log "WARNING: ${root}${suffix} had mountpoint=${_FORCE_CHILD_MP[$suffix]} but is not in the restored tree"
+      continue
+    fi
+    zfs set mountpoint="${_FORCE_CHILD_MP[$suffix]}" "${root}${suffix}" \
+      || { log "FAILED: zfs set mountpoint=${_FORCE_CHILD_MP[$suffix]} ${root}${suffix}"; rc=1; }
+  done
+  return "$rc"
+}
+
+# A restored stream carries the archive's lockdown props (mountpoint=none,
+# canmount=off, readonly=on). canmount is not inheritable, so no receive option
+# resets it on the children; the tree is reset here to the dataset it replaces.
+_force_restore_reset_props() {
+  local root="$1" mp_value="$2" mp_source="$3" mp rc=0
+  zfs inherit -r readonly "$root" || rc=1
+  zfs set canmount=on "$root" || rc=1
+  _restore_mountpoint "$root" "$mp_value" "$mp_source" || rc=1
+  _restore_reset_children "$root" || rc=1
+  _force_restore_child_mountpoints "$root" || rc=1
+  if [[ "$rc" -ne 0 ]]; then
+    log "FAILED: ${root} was restored, but its properties were not reset, so it may stay read-only or unmounted"
+    return 1
+  fi
+
+  _restore_mount_and_verify "$root" || return 1
+  [[ "$_RESTORE_KEYLESS" -eq 0 ]] || return 0
+  mp="$(zfs get -H -o value mountpoint "$root" 2>/dev/null || true)"
+  log "Restored ${root}, mounted at ${mp:-its inherited mountpoint}. Re-run the storage deploy to re-assert the host_vars properties."
+}
+
+# A full stream cannot be received over a dataset with snapshots or encryption,
+# so the existing tree is renamed aside into _FORCE_ASIDE and unmounted first.
+_FORCE_ASIDE=""
+# Local or received child mountpoints of the replaced tree, keyed by the path
+# below its root, for the restored or rolled-back tree to set again.
+declare -A _FORCE_CHILD_MP=()
+_force_restore_clear_target() {
+  local dst="$1" ts="$2"
+  local aside="${dst}-pre-restore-${ts}" mps name value source children child
+  _FORCE_ASIDE=""
+  _FORCE_CHILD_MP=()
+  if ! mps="$(zfs get -H -o name,value,source -r -t filesystem mountpoint "$dst")"; then
+    log "FAILED: cannot read the mountpoints under ${dst}"
+    return 1
+  fi
+  while IFS=$'\t' read -r name value source; do
+    if [[ "$name" == "$dst"/* && ( "$source" == local || "$source" == received ) ]]; then
+      _FORCE_CHILD_MP["${name#"$dst"}"]="$value"
+    fi
+  done <<< "$mps"
+  log "FORCE restore: renaming ${dst} -> ${aside}"
+  zfs rename "$dst" "$aside" || { log "FAILED: zfs rename ${dst} ${aside}"; return 1; }
+  _FORCE_ASIDE="$aside"
+  zfs set mountpoint=none "$aside" || { log "FAILED: zfs set mountpoint=none ${aside}"; return 1; }
+  if ! children="$(zfs list -H -o name -t filesystem -r "$aside")"; then
+    log "FAILED: cannot list the filesystems under ${aside}"
+    return 1
+  fi
+  while IFS= read -r child; do
+    [[ -n "$child" && "$child" != "$aside" ]] || continue
+    zfs inherit mountpoint "$child" || { log "FAILED: zfs inherit mountpoint ${child}"; return 1; }
+  done <<< "$children"
+}
+
+# Puts the renamed-aside tree back under its name after a failed force restore,
+# replacing any partial tree the receive left there. Each recorded child
+# mountpoint is set again and the whole tree must mount.
+_force_restore_rollback() {
+  local dst="$1" aside="$2" mp_value="$3" mp_source="$4" rc=0
+  local mp_cmd="zfs inherit mountpoint ${dst}"
+  if [[ "$mp_source" == local || "$mp_source" == received ]]; then
+    mp_cmd="zfs set mountpoint=${mp_value} ${dst}"
+  fi
+  if [[ -z "$aside" ]]; then
+    log "FORCE restore of ${dst} FAILED. No previous tree existed, so there is nothing to roll back to."
+    # Nothing stood at the name before the receive, so whatever is there now is
+    # this run's partial tree.
+    if dataset_present "$dst"; then
+      if zfs destroy -r "$dst"; then
+        log "  Destroyed the partial ${dst} this run received."
+      else
+        log "  A partial ${dst} remains; destroy it with 'zfs destroy -r ${dst}'."
+        return 1
+      fi
+    fi
+    return 0
+  fi
+  log "FORCE restore of ${dst} FAILED; rolling back to the previous tree ${aside}"
+  if { dataset_present "$dst" && ! zfs destroy -r "$dst"; } \
+     || ! zfs rename "$aside" "$dst" \
+     || ! _restore_mountpoint "$dst" "$mp_value" "$mp_source"; then
+    log "ROLLBACK FAILED. The previous tree is ${aside}. Roll back by hand:"
+    log "  If a partial ${dst} exists: zfs destroy -r ${dst}"
+    log "  zfs rename ${aside} ${dst} && ${mp_cmd} && zfs mount -R ${dst}"
+    return 1
+  fi
+  _force_restore_child_mountpoints "$dst" || rc=1
+  if [[ "$rc" -ne 0 ]] || ! _restore_mount_and_verify "$dst"; then
+    log "ROLLBACK INCOMPLETE: ${dst} holds the previous tree again, but not every filesystem in it is back at its mountpoint."
+    return 1
+  fi
+  log "Rolled back: ${dst} holds the previous tree again"
+}
+
+# Returns 0 restored, 1 failed, 3 skipped: no backup dataset or no archsync
+# snapshot to restore from.
 _restore_one() {
-  local bdst="$1" mode="$2"   # safe|force
+  local bdst="$1" mode="$2"  # mode: safe|force
   local dst="${RMAP[$bdst]}"
   local label
   label="$(basename "$bdst")"
 
-  dataset_present "$bdst" || { log "SKIP restore: missing backup dataset $bdst"; return 0; }
+  dataset_present "$bdst" || { log "SKIP restore: missing backup dataset $bdst"; return 3; }
 
-  local snap_full
-  snap_full="$(latest_backup_snapshot_fullname "$bdst")"
-  [[ -n "$snap_full" ]] || { log "SKIP restore: no ${SNAP_PREFIX}- snapshots on $bdst"; return 0; }
+  local snap_full snap_rc=0
+  snap_full="$(latest_backup_snapshot_fullname "$bdst")" || snap_rc=$?
+  if [[ "$snap_rc" -ne 0 ]]; then
+    log "FAILED restore of ${bdst}: cannot list its snapshots, so nothing was touched"
+    return 1
+  fi
+  [[ -n "$snap_full" ]] || { log "SKIP restore: no ${SNAP_PREFIX}- snapshots on $bdst"; return 3; }
 
   # Encrypted backups can only be sent raw, so the restored dataset is itself
   # encrypted and needs the source's `zfs load-key` before it mounts. Detected
   # recursively: `zfs send -R` over any encrypted descendant requires -w.
-  local raw_flags=()
-  if zfs get -H -o value -r encryption "$bdst" 2>/dev/null | grep -Eqv '^(off|-)$'; then
-    raw_flags=(-w)
-    log "Note: ${bdst} contains encrypted datasets; restoring raw (run 'zfs load-key' on the restored dataset before mounting)"
-  fi
+  local raw_flags=() enc_rc=0
+  tree_is_encrypted "$bdst" || enc_rc=$?
+  case "$enc_rc" in
+    0)
+      raw_flags=(-w)
+      log "Note: ${bdst} contains encrypted datasets; restoring raw (run 'zfs load-key' on the restored dataset before mounting)"
+      ;;
+    1) ;;
+    *) log "FAILED restore of ${bdst}: encryption unknown, so nothing was touched"; return 1 ;;
+  esac
 
   local ts
   ts="$(date +%Y%m%d-%H%M%S)"
@@ -1000,24 +1213,209 @@ _restore_one() {
   if [[ "$mode" == "safe" ]]; then
     local restore_dst="${dst}-restore-${ts}"
     log "SAFE restore: ${snap_full} -> ${restore_dst} (non-destructive)"
-    zfs send -R "${raw_flags[@]}" "${snap_full}" | zfs receive -u "${restore_dst}"
+    if ! zfs send -R "${raw_flags[@]}" "${snap_full}" | zfs receive -u "${restore_dst}"; then
+      log "FAILED: SAFE restore of ${snap_full}; the live ${dst} is untouched"
+      # The name carries this run's timestamp, so a partial tree is this run's own.
+      if dataset_present "$restore_dst"; then
+        if zfs destroy -r "$restore_dst"; then
+          log "  Destroyed the partial ${restore_dst} this run received."
+        else
+          log "  A partial ${restore_dst} remains on the source pool; destroy it with 'zfs destroy -r ${restore_dst}'."
+        fi
+      fi
+      return 1
+    fi
     mkdir -p "${RESTORE_BASE}"
-    _restore_mount_tree "${restore_dst}" "${label}" "${ts}"
+    _restore_mount_tree "${restore_dst}" "${label}" "${ts}" || return 1
     return 0
   fi
 
-  if ! dataset_present "$dst"; then
-    log "FORCE restore target missing; creating: ${snap_full} -> ${dst}"
-    zfs send -R "${raw_flags[@]}" "${snap_full}" | zfs receive -u "${dst}"
-    _force_restore_reset_props "$dst"
+  local mp_value="" mp_source="" mp_line aside=""
+  _FORCE_CHILD_MP=()
+  if dataset_present "$dst"; then
+    if ! mp_line="$(zfs get -H -o value,source mountpoint "$dst")"; then
+      log "FAILED restore of ${dst}: cannot read its mountpoint, so nothing was touched"
+      return 1
+    fi
+    mp_value="${mp_line%%$'\t'*}"
+    mp_source="${mp_line#*$'\t'}"
+    if ! _force_restore_clear_target "$dst" "$ts"; then
+      if [[ -n "$_FORCE_ASIDE" ]]; then
+        _force_restore_rollback "$dst" "$_FORCE_ASIDE" "$mp_value" "$mp_source" || true
+      else
+        log "FORCE restore of ${dst} FAILED: ${dst} was not renamed and is untouched."
+      fi
+      return 1
+    fi
+    aside="$_FORCE_ASIDE"
+  fi
+  log "FORCE restore (destructive): ${snap_full} -> ${dst}"
+  if ! zfs send -R "${raw_flags[@]}" "${snap_full}" | zfs receive -u "${dst}"; then
+    _force_restore_rollback "$dst" "$aside" "$mp_value" "$mp_source" || true
+    return 1
+  fi
+  if ! _force_restore_reset_props "$dst" "$mp_value" "$mp_source"; then
+    [[ -z "$aside" ]] || log "The previous tree is kept as ${aside}."
+    return 1
+  fi
+  [[ -z "$aside" ]] || log "Kept the previous ${dst} as ${aside}, unmounted, with its space still on the source pool. Destroy it with 'zfs destroy -r ${aside}' once the restore is verified."
+}
+
+# An excluded child has no archive copy, so a force restore of its parent moves
+# it aside or destroys it and brings nothing back in its place.
+_force_guard_excluded() {
+  local src="$1" allow="$2" ex rc=0
+  for ex in "${EXCLUDE_LIST[@]}"; do
+    [[ "$ex" == "$src"/* ]] || continue
+    dataset_present "$ex" || continue
+    if [[ "$allow" -eq 1 ]]; then
+      log "WARNING: ${ex} is excluded from the archive; restore-force ${src##*/} leaves it out of the restored tree (--force-excluded)"
+      continue
+    fi
+    log "REFUSED: ${ex} is excluded from the archive, so restore-force ${src##*/} would remove it and restore nothing in its place."
+    log "  Restore the replicated children one at a time instead (nas_storage README, Archive backup restore), or pass --force-excluded."
+    rc=1
+  done
+  return "$rc"
+}
+
+# fuser exits 1 both for "no holders" and for a failed probe; no output or the
+# bare "<path>:" header means it looked, as in files/mergerfs-idle-probe.sh.
+# Returns 0 held, 1 not held, 2 unknown, and leaves the output in _PROBE_OUT.
+_PROBE_OUT=""
+_fuser_probe() {
+  local rc=0 path="${!#}" seen
+  _PROBE_OUT="$(fuser "$@" 2>&1)" || rc=$?
+  [[ "$rc" -eq 0 ]] && return 0
+  seen="${_PROBE_OUT//[[:space:]]/}"
+  [[ "$rc" -eq 1 && ( -z "$seen" || "$seen" == "${path//[[:space:]]/}:" ) ]] && return 1
+  return 2
+}
+
+# _held_report <allow> <label> <what> [<remedy>]: logs a path that holds the
+# restore, and returns 1 when that refuses it.
+_held_report() {
+  local allow="$1" label="$2" what="$3" remedy="${4:-Stop it first}"
+  if [[ "$allow" -eq 1 ]]; then
+    log "WARNING: ${label} ${what}; restoring over it anyway (--force-held)"
     return 0
   fi
+  log "REFUSED: ${label} ${what}. ${remedy}, or pass --force-held."
+  return 1
+}
 
-  # receive -F of a full replication stream destroys and recreates $dst, so
-  # its local props are lost too — both force branches need the reset.
-  log "FORCE restore (destructive): ${snap_full} -> ${dst} (receive -F)"
-  zfs send -R "${raw_flags[@]}" "${snap_full}" | zfs receive -u -F "${dst}"
-  _force_restore_reset_props "$dst"
+# _held_verdict <allow> <label> <fuser args...>: 1 when the path refuses the restore.
+_held_verdict() {
+  local allow="$1" label="$2" prc=0
+  shift 2
+  _fuser_probe "$@" || prc=$?
+  case "$prc" in
+    1) return 0 ;;
+    0) _held_report "$allow" "$label" "is held open by a running guest, container or process" ;;
+    *) _held_report "$allow" "$label" "could not be checked for holders: ${_PROBE_OUT//$'\n'/; }" ;;
+  esac
+}
+
+# Prints the MAJ:MIN of the filesystem holding a path. Each mounted dataset has
+# its own, and a bind mount shares its source's.
+_mount_devid() {
+  local out
+  out="$(findmnt -n -o MAJ:MIN --target "$1" 2>/dev/null)" || return 1
+  out="${out//[[:space:]]/}"
+  [[ -n "$out" ]] || return 1
+  printf '%s' "$out"
+}
+
+# _force_guard_exported <allow> <mountpoint...>: kernel nfsd serves an export
+# without a process, so fuser never sees its clients. A mountpoint is exported
+# when an export path is on that filesystem, directly or by bind, or above it.
+_force_guard_exported() {
+  local allow="$1" exports exp mp edev rc=0
+  shift
+  [[ "$#" -gt 0 ]] || return 0
+  # exportfs ships with the NFS server, so a host without it exports nothing.
+  command -v exportfs >/dev/null 2>&1 || return 0
+  if ! exports="$(exportfs -s 2>&1)"; then
+    _held_report "$allow" "the NFS export table" "could not be read: ${exports//$'\n'/; }" \
+      "Unexport the datasets under the target first"
+    return
+  fi
+  local -A mdev=()
+  for mp in "$@"; do
+    mdev["$mp"]="$(_mount_devid "$mp")" || mdev["$mp"]=""
+  done
+  while read -r exp _; do
+    [[ "$exp" == /* ]] || continue
+    exp="$(printf '%b' "$exp")"
+    edev="$(_mount_devid "$exp")" || edev=""
+    for mp in "$@"; do
+      if [[ "$exp" == "$mp" || "$exp" == "$mp"/* || "$mp" == "$exp"/* \
+            || ( -n "$edev" && "$edev" == "${mdev[$mp]}" ) ]]; then
+        _held_report "$allow" "$mp" "is exported over NFS as ${exp}" \
+          "Stop its NFS clients and unexport it with 'exportfs -u' first" || rc=1
+      elif [[ -z "$edev" || -z "${mdev[$mp]}" ]]; then
+        _held_report "$allow" "$mp" "could not be checked against the NFS export ${exp}" \
+          "Unexport ${exp} first" || rc=1
+      fi
+    done
+  done <<< "$exports"
+  return "$rc"
+}
+
+# A zvol a guest holds open, or a mounted filesystem a process or NFS client
+# uses, keeps its writer through the rename and splits from the restored copy.
+# Without fuser the holders cannot be known, so that refuses too.
+_force_guard_held() {
+  local src="$1" allow="$2" vols fss vol name mp mounted path targets target rc=0
+  local -a devs=() mnts=()
+  dataset_present "$src" || return 0
+  if ! vols="$(zfs list -H -o name -t volume -r "$src" 2>/dev/null)" \
+     || ! fss="$(zfs list -H -o name,mountpoint,mounted -t filesystem -r "$src" 2>/dev/null)"; then
+    if [[ "$allow" -eq 1 ]]; then
+      log "WARNING: cannot list the datasets under ${src}; they were not checked for holders (--force-held)"
+      return 0
+    fi
+    log "REFUSED: cannot list the datasets under ${src}; pass --force-held to skip the holder check."
+    return 1
+  fi
+  while IFS= read -r vol; do
+    [[ -n "$vol" && -e "${ZVOL_DEV_DIR}/${vol}" ]] && devs+=( "${ZVOL_DEV_DIR}/${vol}" )
+  done <<< "$vols"
+  # A legacy mountpoint is mounted by fstab or a mount unit, so its paths come
+  # from the mount table rather than the property.
+  while IFS=$'\t' read -r name mp mounted; do
+    [[ -n "$name" && "$mounted" == yes ]] || continue
+    if [[ "$mp" == /* ]]; then
+      mnts+=( "$mp" )
+      continue
+    fi
+    targets="$(findmnt -rn -o TARGET -t zfs -S "$name" 2>/dev/null)" || targets=""
+    if [[ -z "$targets" ]]; then
+      _held_report "$allow" "$name" "is mounted with mountpoint=${mp} at a path that could not be resolved" \
+        "Unmount it first" || rc=1
+      continue
+    fi
+    while IFS= read -r target; do
+      [[ -n "$target" ]] && mnts+=( "$(printf '%b' "$target")" )
+    done <<< "$targets"
+  done <<< "$fss"
+  [[ "${#devs[@]}" -gt 0 || "${#mnts[@]}" -gt 0 ]] || return "$rc"
+  _force_guard_exported "$allow" "${mnts[@]}" || rc=1
+  if ! command -v fuser >/dev/null 2>&1; then
+    if [[ "$allow" -eq 1 ]]; then
+      log "WARNING: fuser is not installed; the datasets under ${src} were not checked for holders (--force-held)"
+      return "$rc"
+    fi
+    log "REFUSED: fuser is not installed, so the datasets under ${src} cannot be checked for holders; install psmisc or pass --force-held."
+    return 1
+  fi
+  for path in "${devs[@]}"; do
+    _held_verdict "$allow" "$path" "$path" || rc=1
+  done
+  for path in "${mnts[@]}"; do
+    _held_verdict "$allow" "$path" -m "$path" || rc=1
+  done
+  return "$rc"
 }
 
 # Valid restore targets, derived from SRC_LIST basenames (for usage strings).
@@ -1033,7 +1431,23 @@ _restore_usage_targets() {
 # interleave with the nightly replication reading and pruning the same datasets:
 # it takes the same single-instance lock cmd_run uses.
 _cmd_restore_impl() {
-  local mode="$1" what="$2" cmd_name="$3"
+  local mode="$1" cmd_name="$2"
+  shift 2
+  local what="" arg force_excluded=0 force_held=0
+  for arg in "$@"; do
+    case "$arg" in
+      --force-excluded|--force-held)
+        [[ "$mode" == force ]] || { echo "${arg} applies to restore-force only" >&2; exit 2; }
+        case "$arg" in
+          --force-excluded) force_excluded=1 ;;
+          --force-held) force_held=1 ;;
+        esac ;;
+      -*) echo "Unknown option: ${arg}" >&2; exit 2 ;;
+      *)
+        [[ -z "$what" ]] || { echo "Only one restore target is accepted" >&2; exit 2; }
+        what="$arg" ;;
+    esac
+  done
 
   _take_run_lock_or_die
 
@@ -1056,18 +1470,43 @@ _cmd_restore_impl() {
     targets=( "$bdst" )
   fi
 
+  # Every target is checked before any is touched, so a refusal leaves nothing
+  # half restored.
+  if [[ "$mode" == force ]]; then
+    local refused=0
+    for bdst in "${targets[@]}"; do
+      _force_guard_excluded "${RMAP[$bdst]}" "$force_excluded" || refused=1
+      _force_guard_held "${RMAP[$bdst]}" "$force_held" || refused=1
+    done
+    [[ "$refused" -eq 0 ]] || exit 1
+  fi
+
+  # A failure stops the run. A target with nothing to restore is skipped, and
+  # fails the run once the other targets are done.
+  local -a skipped=()
+  local orc
   for bdst in "${targets[@]}"; do
-    _restore_one "$bdst" "$mode"
+    orc=0
+    _restore_one "$bdst" "$mode" || orc=$?
+    case "$orc" in
+      0) ;;
+      3) skipped+=( "${bdst##*/}" ) ;;
+      *) exit 1 ;;
+    esac
   done
+  if [[ "${#skipped[@]}" -gt 0 ]]; then
+    log "FAILED: nothing was restored for ${skipped[*]}: no backup dataset or no ${SNAP_PREFIX}- snapshot"
+    exit 1
+  fi
 }
 
 cmd_restore() {
-  _cmd_restore_impl safe "${1:-}" restore
+  _cmd_restore_impl safe restore "$@"
   log "Restore (safe) complete. Restores are under: ${RESTORE_BASE}/<target>/<timestamp>/ (space consumed on the source pool)"
 }
 
 cmd_restore_force() {
-  _cmd_restore_impl force "${1:-}" restore-force
+  _cmd_restore_impl force restore-force "$@"
   log "Restore (FORCE) complete."
 }
 
@@ -1086,8 +1525,17 @@ Commands:
 
   restore <target>        SAFE restore into new *-restore-YYYYMMDD-HHMMSS datasets
                           ON THE SOURCE POOL (space cost lands there), mounted
-                          under /mnt/restore/<target>/<timestamp>/
-  restore-force <target>  DESTRUCTIVE restore in place (zfs receive -F)
+                          under ${RESTORE_BASE}/<target>/<timestamp>/
+  restore-force <target> [--force-excluded] [--force-held]
+                          DESTRUCTIVE restore in place. The existing dataset is
+                          renamed to <dataset>-pre-restore-YYYYMMDD-HHMMSS and
+                          unmounted first; its space stays on the source pool
+                          until you destroy it. A failed receive renames it
+                          back.
+                          Refuses a target holding an excluded child
+                          (--force-excluded overrides), or a zvol or mounted
+                          filesystem a guest, container or process holds open
+                          or that is exported over NFS (--force-held overrides).
                           targets: $(_restore_usage_targets)
 USAGE
 }
@@ -1105,8 +1553,8 @@ main() {
     unplug) cmd_unplug ;;
     plug) cmd_plug ;;
     plug-arm) cmd_plug_arm ;;
-    restore) cmd_restore "${1:-}" ;;
-    restore-force) cmd_restore_force "${1:-}" ;;
+    restore) cmd_restore "$@" ;;
+    restore-force) cmd_restore_force "$@" ;;
     ""|help|-h|--help) usage ;;
     *) echo "Unknown command: $cmd" >&2; usage; exit 2 ;;
   esac

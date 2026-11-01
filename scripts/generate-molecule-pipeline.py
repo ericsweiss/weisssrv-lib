@@ -7,9 +7,7 @@ dependency map from the repo, failing loudly rather than under-selecting.
 from __future__ import annotations
 
 import argparse
-import functools
 import os
-import re
 import subprocess
 import sys
 from collections import defaultdict
@@ -30,27 +28,20 @@ from ci_yaml import CILoader  # noqa: E402  (resolved from this script's directo
 REPO = Path(__file__).resolve().parent.parent
 
 # Repo-relative locations, overridable by env (same variable names as
-# check-molecule-matrix-coverage.sh, so one CI `variables:` block configures
-# both). Empty/unset falls back to the conventional layout.
+# check-molecule-matrix-coverage.sh). Empty/unset falls back to the default.
 CI_FILE_NAME = os.environ.get("CI_FILE") or ".gitlab-ci.yml"
 ROLES_PREFIX = (os.environ.get("ROLES_DIR") or "ansible/roles").strip("/")
-INTEGRATION_PREFIX = (os.environ.get("INTEGRATION_DIR") or "ansible/integration-tests").strip("/")
 
 CI_FILE = REPO / CI_FILE_NAME
 ROLES_DIR = REPO / ROLES_PREFIX
-INTEGRATION_DIR = REPO / INTEGRATION_PREFIX
 
-# Path (repo-relative) the parent extracts .molecule-base + the molecule /
-# integration job bodies into; the emitted child `include: local:`s it and the
-# child jobs `extends:` the hidden templates below.
+# The self-contained job file the emitted child `include: local:`s.
 MOLECULE_JOBS_INCLUDE = (
     os.environ.get("MOLECULE_JOBS_INCLUDE") or ".gitlab/ci/molecule-jobs.gitlab-ci.yml"
 )
-# Hidden-template job names the child extends, from the include file. They carry
-# the script but no parallel:matrix and no rules, so the child supplies the
-# narrowed matrix and runs unconditionally.
+# The hidden job the child extends. It carries the script but no matrix and no
+# rules, so the child supplies the narrowed matrix and runs unconditionally.
 MOLECULE_JOB_EXTENDS = ".molecule-test-job"
-INTEGRATION_JOB_EXTENDS = ".integration-test-job"
 
 # The no-op job emitted when nothing is affected (a GitLab trigger job fails on
 # an empty child pipeline, so we always emit at least one trivially-green job).
@@ -58,82 +49,54 @@ NOOP_JOB_NAME = "molecule-none-affected"
 # Trivially-green no-op job image (any tiny pinned base works).
 NOOP_IMAGE = "alpine:3.23"
 
-# Consumer-supplied extra global triggers: space-separated; a trailing "/"
-# makes it a prefix.
-_EXTRA_TRIGGERS = os.environ.get("MOLECULE_GLOBAL_TRIGGERS", "").split()
-# How $MOLECULE_GLOBAL_TRIGGERS combines with the conventional set below:
-# "extend" (default) adds to it, "replace" stands in for it. Only the layout
-# conventions are replaceable; the derived entries stay triggers either way.
-_TRIGGER_MODE = os.environ.get("MOLECULE_GLOBAL_TRIGGERS_MODE") or "extend"
-# Conventional-layout triggers, non-derivable: helper scripts, the playbooks a
-# verify can include, and the image build contexts. A consumer laid out
-# otherwise sets MOLECULE_GLOBAL_TRIGGERS_MODE=replace and lists its own paths.
-_CONVENTIONAL_TRIGGER_FILES = (
+# Helper scripts and image build contexts every scenario runs on.
+_FIXED_TRIGGER_FILES = (
     "scripts/molecule-retry.sh",
     "scripts/generate-molecule-pipeline.py",
+    "scripts/sanitize-junit-expected-failures.py",
 )
-_CONVENTIONAL_TRIGGER_PREFIXES = (
-    "ansible/molecule/",
-    # Playbooks a scenario's verify can include_tasks. Global rather than a
-    # per-role map, so a new consumer cannot rot the narrowing.
-    "ansible/playbooks/maintenance/",
+_FIXED_TRIGGER_PREFIXES = (
     "docker/molecule-test/",
-    # Includes the CI image's requirements.txt — the pip pins both suites run on.
+    # Includes the CI image's requirements.txt, the pip pins both suites run on.
     "docker/molecule-ci/",
 )
 
 
-@functools.lru_cache(maxsize=None)
 def _global_triggers(roles_prefix: str) -> tuple[frozenset[str], tuple[str, ...]]:
     """CRITICAL: files and prefixes that force the FULL matrix.
 
     The roles tree root is neither a role path nor a scenario path, so without
     these a change to galaxy.yml selects nothing at all and the MR ships
-    untested. A trigger only bites when the plan job was CREATED, so a consumer
-    adding an entry to $MOLECULE_GLOBAL_TRIGGERS must add the same path to the
-    plan job's `changes` list (ci/internal/molecule-matrix). docs/SCRIPTS.md.
+    untested. A trigger only bites when the plan job was CREATED, so a new
+    entry needs the same path in the plan job's `changes` list.
     """
-    if _TRIGGER_MODE not in ("extend", "replace"):
-        raise ValueError(
-            f"MOLECULE_GLOBAL_TRIGGERS_MODE={_TRIGGER_MODE!r}: expected 'extend' or 'replace'"
-        )
-    replace = _TRIGGER_MODE == "replace"
     root = PurePosixPath(roles_prefix).parent
     files = {
         str(root / "requirements.yml"),
         str(root / "galaxy.yml"),
         CI_FILE_NAME,
-        # The shared job templates every molecule/integration job extends — a
-        # template-only change must re-run everything, not emit a no-op child.
         MOLECULE_JOBS_INCLUDE,
+        *_FIXED_TRIGGER_FILES,
     }
-    if not replace:
-        files |= set(_CONVENTIONAL_TRIGGER_FILES)
-    files |= {e for e in _EXTRA_TRIGGERS if not e.endswith("/")}
     prefixes = (
         str(root / "meta") + "/",
         str(root / "plugins") + "/",
         str(root / "molecule-shared") + "/",
+        *_FIXED_TRIGGER_PREFIXES,
     )
-    if not replace:
-        prefixes += _CONVENTIONAL_TRIGGER_PREFIXES
-    prefixes += tuple(e for e in _EXTRA_TRIGGERS if e.endswith("/"))
     return frozenset(files), prefixes
 
 
 GLOBAL_TRIGGER_FILES, GLOBAL_TRIGGER_PREFIXES = _global_triggers(ROLES_PREFIX)
 
+
 # include_role / import_role — matched on the final dotted component so
 # ansible.builtin.include_role, ansible.legacy.import_role, etc. all count.
 _INCLUDE_ROLE_KEYS = frozenset({"include_role", "import_role"})
 
-# Sentinel: a change under ansible/integration-tests/_shared/ (the shared prepare
-# every stack references) selects ALL integration tests.
-_ALL_INTEGRATION = object()
-
 
 class CoverageError(RuntimeError):
-    """A changed role/test has no matrix entry — a coverage bug, fail loud."""
+    """A changed role has no matrix entry — a coverage bug, fail loud."""
 
 
 def _load_yaml(path: Path):
@@ -155,32 +118,26 @@ def _load_yaml(path: Path):
 
 # --- Matrix parsing (single source of truth = the CI file) ---
 
-def parse_molecule_matrix(ci_path: Path = CI_FILE) -> tuple[dict[str, list[str]], list[str]]:
-    """Parse the molecule-tests / integration-tests parallel:matrix from the CI file.
+def parse_molecule_matrix(ci_path: Path = CI_FILE) -> dict[str, list[str]]:
+    """Parse the molecule-tests parallel:matrix into role -> sorted scenarios.
 
-    Returns (role -> sorted scenarios, sorted stack names). A missing or
-    malformed matrix raises; an absent `integration-tests` job yields [].
+    A missing or malformed matrix raises.
     """
     ci = _load_yaml(ci_path)
     if not isinstance(ci, dict):
         raise RuntimeError(f"could not parse {ci_path} as a YAML mapping")
-
-    def _matrix(job_name: str, *, required: bool = True) -> list:
-        job = ci.get(job_name)
-        if job is None and not required:
-            return []
-        if not isinstance(job, dict):
-            raise RuntimeError(f"{ci_path}: job {job_name!r} missing or not a mapping")
-        parallel = job.get("parallel")
-        if not isinstance(parallel, dict):
-            raise RuntimeError(f"{ci_path}: {job_name}.parallel missing or not a mapping")
-        matrix = parallel.get("matrix")
-        if not isinstance(matrix, list) or not matrix:
-            raise RuntimeError(f"{ci_path}: {job_name}.parallel.matrix missing or empty")
-        return matrix
+    job = ci.get("molecule-tests")
+    if not isinstance(job, dict):
+        raise RuntimeError(f"{ci_path}: job 'molecule-tests' missing or not a mapping")
+    parallel = job.get("parallel")
+    if not isinstance(parallel, dict):
+        raise RuntimeError(f"{ci_path}: molecule-tests.parallel missing or not a mapping")
+    matrix = parallel.get("matrix")
+    if not isinstance(matrix, list) or not matrix:
+        raise RuntimeError(f"{ci_path}: molecule-tests.parallel.matrix missing or empty")
 
     role_scenarios: dict[str, set[str]] = defaultdict(set)
-    for entry in _matrix("molecule-tests"):
+    for entry in matrix:
         if not isinstance(entry, dict):
             continue
         role = entry.get("ROLE")
@@ -189,21 +146,7 @@ def parse_molecule_matrix(ci_path: Path = CI_FILE) -> tuple[dict[str, list[str]]
             role_scenarios[role].add(scenario)
     if not role_scenarios:
         raise RuntimeError(f"{ci_path}: molecule-tests matrix yielded no ROLE/SCENARIO pairs")
-
-    integration: set[str] = set()
-    integration_entries = _matrix("integration-tests", required=False)
-    for entry in integration_entries:
-        if not isinstance(entry, dict):
-            continue
-        tests = entry.get("TEST")
-        if isinstance(tests, list):
-            integration.update(t for t in tests if isinstance(t, str))
-        elif isinstance(tests, str):
-            integration.add(tests)
-    if integration_entries and not integration:
-        raise RuntimeError(f"{ci_path}: integration-tests matrix yielded no TEST names")
-
-    return ({r: sorted(s) for r, s in role_scenarios.items()}, sorted(integration))
+    return {r: sorted(sc) for r, sc in role_scenarios.items()}
 
 
 # --- Dependency-graph derivation (from the repo, not hardcoded) ---
@@ -319,94 +262,6 @@ def build_role_graph(
     return graph
 
 
-def build_integration_map(
-    it_dir: Path = INTEGRATION_DIR,
-    known_roles: set[str] | None = None,
-    collection_prefix: str | None = None,
-) -> dict[str, set[str]]:
-    """Map integration-test stack -> set(roles it exercises directly).
-
-    Scans every YAML under the stack's molecule/ tree for include_role names,
-    filtered to known roles. `_shared/` is not a stack.
-    """
-    if known_roles is None and ROLES_DIR.is_dir():
-        known_roles = {p.name for p in ROLES_DIR.iterdir() if p.is_dir()}
-    known_roles = known_roles or set()
-    if collection_prefix is None:
-        collection_prefix = collection_role_prefix(ROLES_DIR)
-    mapping: dict[str, set[str]] = {}
-    if not it_dir.is_dir():
-        return mapping
-    for stack_dir in sorted(it_dir.iterdir()):
-        if not stack_dir.is_dir() or stack_dir.name == "_shared":
-            continue
-        molecule = stack_dir / "molecule"
-        if not molecule.is_dir():
-            continue
-        roles: set[str] = set()
-        for yml in _yaml_files(molecule):
-            _collect_include_role_names(_load_yaml(yml), roles)
-        roles = _strip_collection_prefix(roles, collection_prefix)
-        mapping[stack_dir.name] = {r for r in roles if r in known_roles}
-    return mapping
-
-
-# Match an inventory-file reference anywhere in a scenario file (e.g. a
-# vars_files entry "../../../../inventories/prod/group_vars/all.yml").
-_INVENTORY_REF_RE = re.compile(r"[A-Za-z0-9_./-]*inventories/[A-Za-z0-9_./-]+\.ya?ml")
-
-
-def build_inventory_consumers(
-    repo: Path = REPO,
-    roles_dir: Path | None = None,
-    it_dir: Path | None = None,
-) -> dict[str, set[tuple[str, str]]]:
-    """Map repo-relative inventory file -> set of selectors that consume it.
-
-    A selector is ("role", <role>) or ("integration", <stack>), derived by
-    scanning every molecule scenario file for references under inventories/.
-    """
-    consumers: dict[str, set[tuple[str, str]]] = defaultdict(set)
-
-    def _scan(scenario_file: Path, selector: tuple[str, str]) -> None:
-        try:
-            text = scenario_file.read_text()
-        except FileNotFoundError:
-            return
-        except OSError as e:
-            raise CoverageError(f"{scenario_file}: unreadable: {e}") from e
-        base = scenario_file.parent
-        for token in _INVENTORY_REF_RE.findall(text):
-            if token.startswith("ansible/") or token.startswith("/"):
-                resolved = Path(os.path.normpath(token))
-            else:
-                resolved = Path(os.path.normpath(base / token))
-            try:
-                rel = resolved.resolve().relative_to(repo.resolve()).as_posix()
-            except ValueError:
-                continue
-            consumers[rel].add(selector)
-
-    roles_dir = roles_dir if roles_dir is not None else repo / ROLES_PREFIX
-    if roles_dir.is_dir():
-        for scenario in roles_dir.glob("*/molecule/*"):
-            if not scenario.is_dir():
-                continue
-            role = scenario.parent.parent.name
-            for yml in _yaml_files(scenario):
-                _scan(yml, ("role", role))
-
-    it_dir = it_dir if it_dir is not None else repo / INTEGRATION_PREFIX
-    if it_dir.is_dir():
-        for stack in it_dir.iterdir():
-            if not stack.is_dir() or stack.name == "_shared":
-                continue
-            for yml in _yaml_files(stack / "molecule"):
-                _scan(yml, ("integration", stack.name))
-
-    return dict(consumers)
-
-
 # --- Path classification ---
 
 def is_global_trigger(path: str, roles_prefix: str = ROLES_PREFIX) -> bool:
@@ -417,14 +272,6 @@ def is_global_trigger(path: str, roles_prefix: str = ROLES_PREFIX) -> bool:
     return any(path.startswith(prefix) for prefix in prefixes)
 
 
-def _under(path: str, prefix: str) -> list[str] | None:
-    """Path components below `prefix/`, or None when `path` isn't under it."""
-    head = prefix + "/"
-    if not path.startswith(head):
-        return None
-    return path[len(head):].split("/")
-
-
 def classify_role_path(
     path: str, matrix_roles: set[str], roles_prefix: str = ROLES_PREFIX
 ) -> str | None:
@@ -433,10 +280,12 @@ def classify_role_path(
     Raises CoverageError for <roles-dir>/<name>/... where <name> is not in the
     molecule matrix (a role missing from the matrix is a coverage bug).
     """
-    rest = _under(path, roles_prefix)
-    # len<2: a file directly under the roles dir (e.g. README.md) — not scoped
-    # to any role.
-    if rest is None or len(rest) < 2:
+    head = roles_prefix + "/"
+    if not path.startswith(head):
+        return None
+    rest = path[len(head):].split("/")
+    # A file directly under the roles dir (e.g. README.md) is not a role path.
+    if len(rest) < 2:
         return None
     name = rest[0]
     if name in matrix_roles:
@@ -449,44 +298,18 @@ def classify_role_path(
     )
 
 
-def classify_integration_path(
-    path: str, integration_tests: set[str], integration_prefix: str = INTEGRATION_PREFIX
-):
-    """Classify a change under the integration-tests dir.
-
-    _ALL_INTEGRATION for a change under _shared/, the stack name for a known
-    stack, None when the path is elsewhere; an unknown stack dir raises.
-    """
-    rest = _under(path, integration_prefix)
-    if rest is None:
-        return None
-    name = rest[0]
-    if name == "_shared":
-        return _ALL_INTEGRATION
-    if len(rest) < 2:
-        # a file directly under integration-tests/ — not a stack
-        return None
-    if name in integration_tests:
-        return name
-    raise CoverageError(
-        f"changed path {path!r} is under {integration_prefix}/{name}/, but "
-        f"{name!r} has no entry in the integration-tests matrix in {CI_FILE_NAME}."
-    )
-
-
 # --- Selection ---
 
 class Selection:
     """Result of computing the affected set."""
 
-    def __init__(self, scenarios: set[tuple[str, str]], integration: set[str], full: bool = False):
+    def __init__(self, scenarios: set[tuple[str, str]], full: bool = False):
         self.scenarios = scenarios          # {(role, scenario)}
-        self.integration = integration      # {stack}
         self.full = full                    # a global trigger selected everything
 
     @property
     def empty(self) -> bool:
-        return not self.scenarios and not self.integration
+        return not self.scenarios
 
 
 def _closure(seed: set[str], adjacency: dict[str, set[str]]) -> set[str]:
@@ -505,25 +328,19 @@ def compute_affected(
     changed_files: list[str],
     *,
     matrix: dict[str, list[str]],
-    integration_tests: list[str],
     role_deps: dict[str, set[str]],
-    integration_map: dict[str, set[str]],
-    inventory_consumers: dict[str, set[tuple[str, str]]],
     roles_prefix: str = ROLES_PREFIX,
-    integration_prefix: str = INTEGRATION_PREFIX,
 ) -> Selection:
-    """Compute the affected scenarios + integration tests for a changed-file set.
+    """Compute the affected scenarios for a changed-file set.
 
-    Pure over its inputs (the derived data structures), so it is unit-testable
-    with synthetic graphs as well as against the real repo.
+    Pure over its inputs, so it is unit-testable with synthetic graphs.
     """
     matrix_roles = set(matrix)
     all_scenarios = {(r, s) for r, scen in matrix.items() for s in scen}
-    integration_set = set(integration_tests)
 
     # Global trigger -> everything (first, so it short-circuits role/coverage checks).
     if any(is_global_trigger(f, roles_prefix) for f in changed_files):
-        return Selection(set(all_scenarios), set(integration_set), full=True)
+        return Selection(set(all_scenarios), full=True)
 
     # consumer graph -> reverse (provider -> direct consumers) for molecule fan-out.
     consumers_of: dict[str, set[str]] = defaultdict(set)
@@ -532,32 +349,14 @@ def compute_affected(
             consumers_of[provider].add(consumer)
 
     changed_roles: set[str] = set()
-    integration_selected: set[str] = set()
-
     for path in changed_files:
         role = classify_role_path(path, matrix_roles, roles_prefix)
         if role is not None:
             changed_roles.add(role)
-            continue
-        stack = classify_integration_path(path, integration_set, integration_prefix)
-        if stack is _ALL_INTEGRATION:
-            integration_selected |= integration_set
-            continue
-        if isinstance(stack, str):
-            integration_selected.add(stack)
-            continue
-        for selector_kind, selector_name in inventory_consumers.get(path, ()):
-            if selector_kind == "role":
-                changed_roles.add(selector_name)
-            else:
-                integration_selected.add(selector_name)
 
-    # Molecule scenarios: every role that transitively CONSUMES a changed role
-    # (provider) must run — walk the reverse graph. The changed roles themselves
-    # are the floor.
-    selected_roles = _closure(changed_roles, consumers_of)
+    # Every role that transitively CONSUMES a changed role must run.
     scenarios: set[tuple[str, str]] = set()
-    for role in selected_roles:
+    for role in _closure(changed_roles, consumers_of):
         scen = matrix.get(role)
         if not scen:
             raise CoverageError(
@@ -566,16 +365,7 @@ def compute_affected(
             )
         for scenario in scen:
             scenarios.add((role, scenario))
-
-    # A stack runs when a changed role is one it exercises directly or via that
-    # role's providers, so each stack's role set is closed under the provider
-    # graph.
-    for stack in integration_set:
-        exercised = _closure(integration_map.get(stack, set()), role_deps)
-        if exercised & changed_roles:
-            integration_selected.add(stack)
-
-    return Selection(scenarios, integration_selected)
+    return Selection(scenarios)
 
 
 def select(
@@ -583,33 +373,18 @@ def select(
     *,
     repo: Path = REPO,
     roles_prefix: str = ROLES_PREFIX,
-    integration_prefix: str = INTEGRATION_PREFIX,
     ci_file: str = CI_FILE_NAME,
 ) -> Selection:
     """Build the derived data from `repo` and compute the affected set."""
-    matrix, integration_tests = parse_molecule_matrix(repo / ci_file)
+    matrix = parse_molecule_matrix(repo / ci_file)
     roles_dir = repo / roles_prefix
-    it_dir = repo / integration_prefix
     if not roles_dir.is_dir():
         # A mistyped $ROLES_DIR would otherwise derive an empty graph and
         # silently under-select every scenario.
         raise RuntimeError(f"roles dir {roles_prefix!r} not found under {repo}")
-    known_roles = {p.name for p in roles_dir.iterdir() if p.is_dir()}
-    prefix = collection_role_prefix(roles_dir)
-    role_deps = build_role_graph(roles_dir, known_roles=known_roles, collection_prefix=prefix)
-    integration_map = build_integration_map(
-        it_dir, known_roles=known_roles, collection_prefix=prefix
-    )
-    inventory_consumers = build_inventory_consumers(repo, roles_dir=roles_dir, it_dir=it_dir)
+    role_deps = build_role_graph(roles_dir)
     return compute_affected(
-        changed_files,
-        matrix=matrix,
-        integration_tests=integration_tests,
-        role_deps=role_deps,
-        integration_map=integration_map,
-        inventory_consumers=inventory_consumers,
-        roles_prefix=roles_prefix,
-        integration_prefix=integration_prefix,
+        changed_files, matrix=matrix, role_deps=role_deps, roles_prefix=roles_prefix
     )
 
 
@@ -639,20 +414,17 @@ def render_child_pipeline(selection: Selection) -> str:
                 "stage": "test",
                 "image": NOOP_IMAGE,
                 "script": [
-                    "echo 'No molecule scenarios or integration tests affected by "
-                    "this MR diff; nothing to run.'"
+                    "echo 'No molecule scenarios affected by this MR diff; nothing to run.'"
                 ],
                 "rules": [dict(r) for r in _ALWAYS_RULES],
             },
         }
         return _HEADER + yaml.safe_dump(doc, default_flow_style=False, sort_keys=False)
 
-    doc: dict = {
+    doc = {
         "include": [{"local": MOLECULE_JOBS_INCLUDE}],
         "stages": ["test"],
-    }
-    if selection.scenarios:
-        doc["molecule-tests"] = {
+        "molecule-tests": {
             "extends": MOLECULE_JOB_EXTENDS,
             "rules": [dict(r) for r in _ALWAYS_RULES],
             "parallel": {
@@ -661,13 +433,8 @@ def render_child_pipeline(selection: Selection) -> str:
                     for role, scenario in sorted(selection.scenarios)
                 ]
             },
-        }
-    if selection.integration:
-        doc["integration-tests"] = {
-            "extends": INTEGRATION_JOB_EXTENDS,
-            "rules": [dict(r) for r in _ALWAYS_RULES],
-            "parallel": {"matrix": [{"TEST": sorted(selection.integration)}]},
-        }
+        },
+    }
     return _HEADER + yaml.safe_dump(doc, default_flow_style=False, sort_keys=False)
 
 
@@ -720,40 +487,6 @@ def _read_paths(stream) -> list[str]:
     return [line.strip() for line in stream if line.strip()]
 
 
-def _print_graph(repo: Path = REPO) -> int:
-    """Diagnostic: print the derived matrix + dependency graph + integration map."""
-    matrix, integration_tests = parse_molecule_matrix(repo / CI_FILE_NAME)
-    roles_dir = repo / ROLES_PREFIX
-    it_dir = repo / INTEGRATION_PREFIX
-    known_roles = {p.name for p in roles_dir.iterdir() if p.is_dir()}
-    prefix = collection_role_prefix(roles_dir)
-    role_deps = build_role_graph(roles_dir, known_roles=known_roles, collection_prefix=prefix)
-    integration_map = build_integration_map(
-        it_dir, known_roles=known_roles, collection_prefix=prefix
-    )
-    inv = build_inventory_consumers(repo, roles_dir=roles_dir, it_dir=it_dir)
-
-    print(f"# molecule matrix: {sum(len(v) for v in matrix.values())} scenarios across {len(matrix)} roles")
-    print(f"# integration stacks: {', '.join(integration_tests)}\n")
-    print("# consumer -> providers (a change to a provider selects the consumer):")
-    for consumer in sorted(role_deps):
-        print(f"  {consumer} -> {sorted(role_deps[consumer])}")
-    consumers_of: dict[str, set[str]] = defaultdict(set)
-    for consumer, providers in role_deps.items():
-        for provider in providers:
-            consumers_of[provider].add(consumer)
-    print("\n# provider -> direct consumers (reverse edges that drive fan-out):")
-    for provider in sorted(consumers_of):
-        print(f"  {provider} -> {sorted(consumers_of[provider])}")
-    print("\n# integration stack -> roles exercised (direct):")
-    for stack in sorted(integration_map):
-        print(f"  {stack} -> {sorted(integration_map[stack])}")
-    print("\n# inventory file -> consumers:")
-    for path in sorted(inv):
-        print(f"  {path} -> {sorted(inv[path])}")
-    return 0
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -761,26 +494,20 @@ def main(argv: list[str] | None = None) -> int:
             "examples:\n"
             '  generate-molecule-pipeline.py "$CI_MERGE_REQUEST_DIFF_BASE_SHA" -o molecule-child.yml\n'
             "  printf '%s\\n' ansible/roles/foo/tasks/main.yml | generate-molecule-pipeline.py\n"
-            "  generate-molecule-pipeline.py --print-graph\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("base", nargs="?", help="base SHA/ref; runs `git diff --name-only <base>...HEAD`")
-    parser.add_argument("--diff-base", help="base SHA/ref (alternative to the positional arg)")
     parser.add_argument(
         "--changed-files-from",
         metavar="FILE",
         help='read newline-separated changed paths from FILE ("-" = stdin)',
     )
     parser.add_argument("-o", "--output", help="write the child pipeline YAML here (default: stdout)")
-    parser.add_argument("--print-graph", action="store_true", help="print the derived dependency graph and exit")
     parser.add_argument("--repo", type=Path, default=REPO, help="repo root (default: the script's repo)")
     args = parser.parse_args(argv)
 
-    if args.print_graph:
-        return _print_graph(args.repo)
-
-    base = args.diff_base or args.base
+    base = args.base
     if args.changed_files_from:
         if args.changed_files_from == "-":
             changed = _read_paths(sys.stdin)
@@ -810,18 +537,14 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         selection = select(changed, repo=args.repo)
-    except CoverageError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return 2
-    except RuntimeError as e:
+    except RuntimeError as e:  # CoverageError included
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
 
     rendered = render_child_pipeline(selection)
     if args.output:
         Path(args.output).write_text(rendered)
-        n_scen, n_int = len(selection.scenarios), len(selection.integration)
-        tag = "FULL matrix" if selection.full else ("none affected" if selection.empty else f"{n_scen} scenario(s) + {n_int} integration test(s)")
+        tag = "FULL matrix" if selection.full else f"{len(selection.scenarios)} scenario(s)"
         print(f"Wrote {args.output} ({tag})", file=sys.stderr)
     else:
         sys.stdout.write(rendered)

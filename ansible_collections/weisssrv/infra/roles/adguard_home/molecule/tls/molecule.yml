@@ -1,17 +1,6 @@
 ---
 # Covers the TLS/DoT path the default scenario cannot: a self-signed cert plus
 # adguard_home_tls_enabled makes the /control/tls/configure POST fire.
-# Self-contained so "molecule -s tls test" runs without -c; CI passes the shared base anyway.
-dependency:
-  name: galaxy
-  options:
-    # See molecule-shared/base.yml: read the collection's single source of
-    # truth (requirements.yml) via a path relative to molecule's CWD, the role
-    # directory.
-    role-file: ../../requirements.yml
-    requirements-file: ../../requirements.yml
-driver:
-  name: docker
 platforms:
   - name: adguard-tls-test
     image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}
@@ -30,23 +19,6 @@ platforms:
       - /run
       - /tmp
 provisioner:
-  name: ansible
-  env:
-    ANSIBLE_ROLES_PATH: ../../..
-    ANSIBLE_COLLECTIONS_PATH: ../../../../../../..:~/.ansible/collections:/usr/share/ansible/collections
-  config_options:
-    defaults:
-      callbacks_enabled: profile_tasks, timer
-      stdout_callback: ansible.builtin.default
-      result_format: yaml
-    # Self-contained so the scenario runs without -c: mirror the base's [connection]
-    # pipelining — one docker exec per task instead of put-file + exec.
-    connection:
-      pipelining: true
-  playbooks:
-    prepare: ../../../../molecule-shared/prepare-common.yml
-    converge: converge.yml
-    verify: verify.yml
   inventory:
     group_vars:
       all:
@@ -83,18 +55,3 @@ provisioner:
         adguard_home_https_port: 443
         adguard_home_dot_port: 853
         adguard_home_doq_port: 853
-verifier:
-  name: ansible
-scenario:
-  test_sequence:
-    - dependency
-    - cleanup
-    - destroy
-    - syntax
-    - create
-    - prepare
-    - converge
-    - idempotence
-    - verify
-    - cleanup
-    - destroy

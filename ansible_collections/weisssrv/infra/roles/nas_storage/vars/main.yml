@@ -1,0 +1,5 @@
+---
+# Internal, not consumer API. The fstab options mergerfs-verify.sh requires of
+# the union in `item`, shared by the pre-remount and post-remount checks.
+_nas_storage_mergerfs_required_opts: >-
+  {{ (nas_storage_mergerfs_required_opts | default(item.options | default([]), true)) | join(' ') }}

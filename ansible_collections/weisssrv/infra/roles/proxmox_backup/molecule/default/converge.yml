@@ -11,9 +11,8 @@
         type: nfs
         server: nas.example.com
         export: /tank-proxmox
-        # path is create-fixed like server/export — mirror the production
-        # host_vars so Case A drives the create `--path` arm and Cases D/E
-        # actually compare path in the fixed-property assert (not short-circuit).
+        # path is create-fixed like server/export, so Case A drives the create
+        # `--path` arm and Cases D/E compare path in the fixed-property assert.
         path: /mnt/pve/tank-proxmox
         content: "snippets,backup,vztmpl,iso"
         options: "vers=4.2,xprtsec=tls"

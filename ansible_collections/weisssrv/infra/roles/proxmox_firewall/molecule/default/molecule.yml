@@ -28,6 +28,8 @@ provisioner:
           - 192.168.0.0/24
         proxmox_firewall_wan_wireguard_vips:
           - 192.168.0.99
+        proxmox_firewall_k3s_public_vips:
+          - 192.168.0.98
         # sg-smtp-relay fails closed by default, so the scenario names its own
         # client scope; two entries assert the per-source fan-out.
         proxmox_firewall_smtp_relay_sources: [core-cluster, admin_ts]

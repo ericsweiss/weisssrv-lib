@@ -6,6 +6,7 @@ renumbered `exit`, or a header line lost to a reword, changes retry behaviour.
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import jinja2
@@ -88,6 +89,20 @@ def test_a_renumbered_code_is_caught(mutate):
     script = mutate(render(""))
     assert script != render(""), "mutation needle no longer present"
     assert documented(script) != reachable(script)
+
+
+def test_the_key_command_render_drops_the_connect_fetch():
+    """The secrets-backend seam: the operator's command replaces the Connect
+    fetch outright, so no Connect URL, token path or bearer header remains."""
+    script = render("printf '%s' secret")
+    assert "PASSPHRASE=$(printf" in script
+    for name in ("POOL", "ITEM", "FIELD"):
+        assert f"export ZFS_ENCRYPTION_{name}=" in script
+    for connect in ("CONNECT_URL", "TOKEN_FILE", "-H @-"):
+        assert connect not in script
+    assert "set -euo pipefail" in script
+    assert "zfs load-key" in script
+    subprocess.run(["bash", "-n"], input=script, text=True, check=True)
 
 
 if __name__ == "__main__":

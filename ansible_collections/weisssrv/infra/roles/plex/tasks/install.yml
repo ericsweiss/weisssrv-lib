@@ -17,8 +17,8 @@
   register: plex_debian_sources
 
 # Rewrite EVERY Components line in the deb822 file to the canonical set: covers
-# every partial state, stays idempotent, adds no second sources entry. Inline
-# rather than apt_signed_repo's enable-components.yml, which fails where this skips.
+# every partial state, stays idempotent, adds no second sources entry. A host
+# without the deb822 file skips this and takes the one-line fallback.
 - name: Enable contrib/non-free/non-free-firmware components
   ansible.builtin.replace:
     path: "{{ plex_debian_sources_path }}"

@@ -19,9 +19,9 @@ variable "networks" {
 
     `dhcp.dns_servers` drives `dhcp_server.dns_enabled`: a non-empty list turns
     the DHCP DNS option on, an empty list leaves clients on the gateway's own
-    resolver. An empty list is the only way to express "no DHCP DNS" — upstream
-    #429 means an explicit `[]` written to the controller never converges, so
-    the module sends null instead.
+    resolver. An empty list is the only way to express "no DHCP DNS": provider
+    issue 429 means an explicit `[]` written to the controller never converges,
+    so the module sends null instead.
 
     Omitting `dhcp` entirely writes no `dhcp_server` block at all: the network
     is served by a relay or by another server, and the controller keeps whatever
@@ -204,7 +204,7 @@ variable "networks" {
     error_message = "networks[*].dhcp must not cover the gateway address — the host part of `subnet` is the gateway, and a pool spanning it hands the router's address to a client."
   }
 
-  # Shape only: the provider parses the value, so "24h" and "86400s" are legal.
+  # Shape only: shorthand such as "24h" is legal but can drift (description).
   validation {
     condition = alltrue([
       for key, n in var.networks :
@@ -260,7 +260,7 @@ variable "zones" {
 
     Membership is a FULL REPLACEMENT on every apply — the provider always sends
     the whole `network_ids` list — and it is the only way to set a network's
-    zone in v0.55.0 (`unifi_network` has no `firewall_zone_id`; upstream #417).
+    zone in v0.55.0 (`unifi_network` has no `firewall_zone_id`; provider issue 417).
     Whether the controller also removes that network from `Internal` is
     controller behaviour the provider neither performs nor detects: probe it
     with `data.unifi_firewall_zone` after the first apply (README).
@@ -294,7 +294,7 @@ variable "builtin_zone_names" {
 
     They are read through `data.unifi_firewall_zone`, which is the only
     supported path in v0.55.0: importing a built-in zone by name is not in the
-    pinned release (upstream PR #401), and managing one would fight the
+    pinned release (provider PR 401), and managing one would fight the
     controller over its membership list.
 
     Display names are controller- and locale-dependent (`Internal`, `External`,
@@ -479,9 +479,9 @@ variable "wlans" {
     attribute is never written, so the CONSOLE owns it and a band enabled in
     the UI survives every apply. Set to a list it is terraform-owned and
     re-asserted on every apply, reverting a UI change. `6g` is allowed in that
-    list, but including it fails WLAN creation on provider releases still
-    carrying upstream #406 — so a 6 GHz SSID today is one that leaves `bands`
-    unset and is toggled in the UI.
+    list, but including it fails WLAN creation at the pinned provider
+    (ubiquiti-community/terraform-provider-unifi issue 406), so a 6 GHz SSID
+    leaves `bands` unset and is toggled in the UI.
 
     `wpa3 = true` is WPA2/WPA3 transition mode with PMF optional. `false` is
     plain WPA2 with PMF disabled — what ESP32/Kasa-class gear needs.
@@ -517,7 +517,7 @@ variable "wlans" {
       for key, w in var.wlans :
       w.passphrase == null ? false : can(regex("^[\\x20-\\x7e]{8,63}$", w.passphrase))
     ])
-    error_message = "wlans[*].passphrase is required and must be 8-63 printable ASCII characters, which is the WPA-PSK rule (a smart quote or an accented letter pasted from a password manager is not one). An 1Password field that was renamed resolves to an empty string, and a sensitive value's diff hides it — the apply would silently reset the SSID's key."
+    error_message = "wlans[*].passphrase is required and must be 8-63 printable ASCII characters, which is the WPA-PSK rule (a smart quote or an accented letter pasted from a password manager is not one). A secret-store field that was renamed resolves to an empty string, and a sensitive value's diff hides it — the apply would silently reset the SSID's key."
   }
 
   # Same rule as above: the message names the field, never a value.
@@ -534,8 +534,8 @@ variable "wlans" {
 
 variable "qos_rate_name" {
   description = <<-EOT
-    Name of the client QoS rate (the old "user group") every WLAN is assigned
-    to. `unifi_wlan.user_group_id` is Required with no default, and it is read
+    Name of the client QoS rate (the controller's user group) every WLAN is
+    assigned to. `unifi_wlan.user_group_id` is Required with no default, and it is read
     from this name through `data.unifi_client_qos_rate`; "Default" is the stock
     controller name.
 
@@ -558,7 +558,7 @@ variable "clients" {
     `unifi_client`: a reservation inside the pool races the dynamic leases the
     controller hands out of the same range.
 
-    Upstream #428: an in-place UPDATE of a client fails with "inconsistent
+    Provider issue 428: an in-place UPDATE of a client fails with "inconsistent
     result after apply: .last_ip". Change a name or an address with
     `terraform apply -replace='module.<name>.unifi_client.this["<key>"]'`.
   EOT
@@ -615,9 +615,7 @@ variable "clients" {
     condition = (
       length([for c in var.clients : c if c.fixed_ip != null])
       == length(distinct([
-        # Not coalesce(): it refuses an empty-string fallback when network is
-        # null, which the fixed_ip-requires-network validation reports on its
-        # own terms.
+        # A null network keys as ""; the fixed_ip-requires-network rule reports it.
         for c in var.clients : "${c.network == null ? "" : c.network}:${c.fixed_ip}" if c.fixed_ip != null
       ]))
     )
@@ -710,11 +708,11 @@ variable "site_settings" {
     blocks carry far more than the toggles below, and what keeps the rest intact
     is each attribute being Optional+Computed in the provider (main.tf).
 
-    The defaults are the hardened posture: no unattended firmware upgrades (a
-    gateway that reboots itself takes the whole site with it), no "network
-    optimization" (it re-enables features behind your back), UPnP and NAT-PMP
-    off (port forwards are declared, not requested by whatever is on the LAN),
-    and IDS in detection-only mode (create-time intent only, see below).
+    The defaults are the hardened posture. No unattended firmware upgrades: a
+    gateway that reboots itself takes the whole site with it. No "network
+    optimization", which re-enables features the controller deems beneficial.
+    UPnP and NAT-PMP off: port forwards are declared, not requested by whatever
+    is on the LAN. IDS in detection-only mode, as create-time intent only.
 
     `ips_mode` is CREATE-TIME INTENT only: the resource `ignore_changes`es the
     whole `ips` block, because UniFi Network accepts the API write and then

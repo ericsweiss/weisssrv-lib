@@ -1,7 +1,5 @@
 ---
-# Verifies the ip_forward sysctl drop-in (content, perms, live kernel value)
-# and the per-interface ethtool drop-in in /etc/network/interfaces.d/ (post-up
-# lines plus the `logger` failure guard).
+# Verifies every artifact the role writes and its negative-case guards.
 - name: Verify
   hosts: all
   # The negative cases below drive the whole role, whose package task reads

@@ -5,17 +5,17 @@ spec:
     stage:
       default: lint
     image:
-      # Pinned (not :stable) so lint results are reproducible — a moving tag
-      # could silently change shellcheck behavior between runs.
+      # Version-pinned so lint results are reproducible between runs.
       default: koalaman/shellcheck-alpine:v0.11.0
       description: >-
-        shellcheck image (pinned digest/tag for reproducibility). Its tag is
+        shellcheck image, pinned by tag for reproducibility. Its tag is
         held equal to scripts/ci-fetch-tools.py's shellcheck pin by
         tests/test_pin_parity.py, so both paths lint on one version.
     tags:
       type: array
-      default: ["infrastructure"]
-      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+      default: []
+      description: >-
+        Runner tag(s). Empty runs the job on a tag-less runner.
     severity:
       default: warning
       description: shellcheck --severity level.
@@ -23,17 +23,17 @@ spec:
       default: "SC1091,SC2034"
       description: Comma-separated shellcheck exclusions.
     direct_globs:
-      default: "scripts/*.sh ansible/*.sh"
+      default: "scripts/*.sh"
       description: >-
         Space-separated files/globs shellchecked directly; a glob that matches
-        nothing is skipped with a note. A repo with only scripts/ passes
-        `scripts/*.sh`.
+        nothing is skipped with a note.
     find_dir:
-      default: "ansible/roles"
+      default: ""
       description: >-
         Directory recursively searched for *.sh and *.sh.j2 (the Jinja shell
-        templates get the neutralizer treatment). Empty — or a directory this
-        repo does not have — skips both find loops with a note.
+        templates get the neutralizer treatment). A directory this repo does
+        not have skips both find loops with a note. Empty skips them too,
+        but fails the job when ansible/roles exists.
     default_branch:
       default: "main"
       description: >-
@@ -44,10 +44,9 @@ spec:
       type: array
       default:
         - "scripts/**/*"
-        - "ansible/*.sh"
-        - "ansible/roles/**/*.sh"
-        - "ansible/roles/**/*.sh.j2"
-      description: Path list for the MR / default-branch `changes:` rules.
+      description: >-
+        Path list for the MR / default-branch `changes:` rules. A consumer that
+        widens `direct_globs` or sets `find_dir` passes a matching list.
     job_memory_limit:
       default: "512Mi"
       description: >-
@@ -100,9 +99,13 @@ spec:
       [ "$rc" -eq 0 ] || { echo "ShellCheck failed on one or more direct files"; failed=1; }
     - |
       FIND_DIR="$[[ inputs.find_dir ]]"
-      # Unset OR absent skips: a set-but-missing dir would make `find` exit
-      # non-zero, failing a consumer that simply does not have that tree.
-      if [ -z "$FIND_DIR" ]; then
+      # An absent dir skips, as `find` would exit non-zero on it. An empty
+      # find_dir skips too, unless the repo has ansible/roles: that role shell
+      # would drop out of the lint with only a note.
+      if [ -z "$FIND_DIR" ] && [ -d ansible/roles ]; then
+        echo "ERROR: find_dir is empty but this repo has ansible/roles — pass find_dir: ansible/roles so its role shell is linted"
+        failed=1
+      elif [ -z "$FIND_DIR" ]; then
         echo "no find_dir set — skipping role shell + template checks"
       elif [ ! -d "$FIND_DIR" ]; then
         echo "no such find_dir '$FIND_DIR' — skipping role shell + template checks"

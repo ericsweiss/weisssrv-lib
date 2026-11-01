@@ -91,6 +91,7 @@
         echo "Waiting for DinD... ($i)"
         sleep 1
       done
+      docker info >/dev/null 2>&1 || { echo "ERROR: DinD sidecar not ready after 30s" >&2; exit 1; }
     - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
     # Cache-first pull, SHA tag BEFORE :latest: when build-molecule-test rebuilt
     # the image in this pipeline the jobs must use that SHA build, not a stale
@@ -109,6 +110,7 @@
       if pull_via_cache "${MOLECULE_IMAGE}:${CI_COMMIT_SHORT_SHA}"; then
         docker tag "${MOLECULE_IMAGE}:${CI_COMMIT_SHORT_SHA}" "${MOLECULE_IMAGE}:latest"
       else
+        # pull_via_cache hides its fallback's error; this re-pull prints it.
         pull_via_cache "${MOLECULE_IMAGE}:latest" || docker pull "${MOLECULE_IMAGE}:latest"
       fi
     - mkdir -p "$CI_PROJECT_DIR/junit"
@@ -121,10 +123,9 @@
     reports:
       junit: junit/*.xml
       dotenv: molecule-retry.env
-  # 30m, not 20m: the in-job wrapper retries molecule up to 4 attempts and the
-  # heaviest scenarios run ~8-11m per attempt, so 20m could not fit even two full
-  # attempts — a first-attempt flake on a heavy role was an automatic timeout.
-  timeout: 30m
+  # Only setup stages retry (molecule-retry.sh, up to 4 attempts). The longest
+  # scenario takes ~25m when the shared runner is also serving another project.
+  timeout: 45m
 
 .molecule-test-job:
   extends: .molecule-base

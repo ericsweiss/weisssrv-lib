@@ -71,6 +71,13 @@ properties; a missing one fails the deploy.
 - The role creates `nas_storage_export_root` (`/export`). Each entry in
   `nas_storage_exports` carries its own path, which the role does not derive
   from that root.
+- **Delegations.** `nas_storage_nfs_disable_delegations` writes a sysctl.d
+  drop-in with `fs.leases-enable=0`, so nfsd grants no new NFSv4 delegations.
+  Existing delegations persist until they are returned or the host reboots.
+  It is costly for clients that lock files over NFS. Without a write
+  delegation, every lock and unlock is a server RPC, and each unlock waits on
+  that file's in-flight I/O. Lock-heavy workloads such as SQLite-backed apps
+  stall. Enable it as a deliberate mitigation, not as hardening.
 
 ### Samba
 Server packages, the `nas` user, and one share per `nas_storage_samba_shares`
@@ -123,7 +130,8 @@ in the middle fails:
   busy and fail the unmount with no explanation.
 - `exportfs -a` at the end, from the block's `always`.
 - Verify: the union is mounted, fstab carries the required options, and every
-  bind is back on the union's device. A stale result fails the run.
+  bind is back on the union's device. A stale result fails the run. The same
+  `files/mergerfs-verify.sh` runs before the cycle to decide whether it is needed.
 
 It runs only when the mount is idle: no established connections on port 2049 and
 no processes holding the mount. **Binds are matched by mount device id**, so any
@@ -146,6 +154,8 @@ scoped to the MergerFS-backed exports. The option string is derived in
 `tasks/mergerfs_opts.yml` for the same reason, and the scenario asserts all four
 anchor shapes. The bind probe (`files/mergerfs-bind-probe.sh`) is executed
 against real bind mounts over a private tmpfs, including a subdirectory bind.
+The idle probe (`files/mergerfs-idle-probe.sh`) is executed against the same
+tmpfs, idle and held by a process, and each result is fed through the real gate.
 
 ### Media mover
 Timer-driven rsync from the hot tier to the bulk tier for files older than
@@ -230,12 +240,9 @@ plug/unplug/restore subcommands and the scrub-timer wiring.
   never reclaimed, and publishes `archive_backup_excluded_orphans <n>` so the
   copy is alertable rather than a log line in the timer unit's journal. Snapshot
   or `zfs send` it elsewhere first if it has value.
-- **The leave-in-place behaviour is `send -X`'s, not a guarantee.** The run
-  probes for `-X` before it reconciles anything and logs the zfs version it
-  observed the capability on, so a future `-X`/`receive -F` interaction that
-  removed the copy instead would be traceable to a version from the journal.
-  A run that exits before the reconcile (an exported pool) re-publishes the
-  previous orphan count rather than clearing the gauge.
+- The run probes for `-X` before it reconciles anything and logs the zfs
+  version it found. A run that exits before the reconcile, such as one against
+  an exported pool, re-publishes the previous orphan count.
 - That orphan is not counted when the next incremental base is chosen, so keeping
   it does not force a full re-send. It keeps its own snapshot history under the
   normal window — only the source side treats an exclusion as "keep nothing".
@@ -248,10 +255,17 @@ plug/unplug/restore subcommands and the scrub-timer wiring.
   cluster-wide backup writes over NFS; it is snapshotted only after writes under
   its mountpoint quiesce, so a half-written image is never captured. On timeout
   that dataset is deferred to the next run (exit 75) rather than failed. Empty
-  disables the guard.
+  disables the guard. `nas_storage_archive_backup_vzdump_quiesce_min` and
+  `nas_storage_archive_backup_vzdump_max_wait_min` set the quiet period and the
+  wait. Both must be positive whole minutes, and the quiet period no longer
+  than the wait. The role asserts it before the script ships.
 - Retention per dataset (an excluded child excepted, above): the newest
   `nas_storage_archive_backup_keep_recent` snapshots, plus the newest of each of
-  the last `nas_storage_archive_backup_keep_monthly` calendar months. A failed
+  the last `nas_storage_archive_backup_keep_monthly` calendar months.
+  `nas_storage_archive_backup_keep_monthly_overrides` sets the monthly count for
+  one source or descendant, its subtree and its archive copy. A vzdump target
+  whose own `prune-backups` keeps monthly dumps sets `0`. The role asserts every
+  key names a source or a descendant of one. A failed
   `zfs destroy` does not fail the run — replication still succeeded — but it
   sets `archive_backup_last_prune_success 0`, so blocked retention is visible
   before the pool fills. The per-dataset child carries that back as exit 76
@@ -267,6 +281,45 @@ plug/unplug/restore subcommands and the scrub-timer wiring.
   survives an interrupted re-seed. Within that loop, filesystems receive with
   `-o mountpoint=none,canmount=off` and zvols with `-o readonly=on` only,
   because ZFS rejects a per-dataset mountpoint override on a volume.
+
+#### Restore
+
+`archive-backupctl restore <target>` is non-destructive. It receives the newest
+archive snapshot into `<dataset>-restore-<timestamp>` on the source pool and
+mounts it under `/mnt/restore/<target>/<timestamp>/`. A failed receive destroys
+the partial tree, or names it when the destroy fails.
+
+A target with no archive copy or no archive snapshot is skipped and fails the
+run once the other targets are done. A failed snapshot listing is a failure,
+not a skip.
+
+`archive-backupctl restore-force <target>` replaces the live dataset.
+
+- A full stream cannot be received over a dataset with snapshots or
+  encryption. The existing tree is renamed to `<dataset>-pre-restore-<timestamp>`
+  and unmounted first, and its space stays on the source pool until you
+  destroy it.
+- A failed receive destroys the partial tree and renames the previous tree
+  back, with its mountpoints, and that tree must mount. With a missing
+  target there is nothing to roll back to. A failed rename leaves the target
+  untouched.
+- Both restores mount with `zfs mount -R` and fail on any filesystem that
+  should mount and did not; a force restore then keeps the previous tree. A
+  `none` or `legacy` mountpoint is not expected to mount.
+- The restored root and each child get back their local or received
+  mountpoint; an inherited one, or a new target's, is inherited.
+- An encrypted backup is restored raw and key-less, and the run prints the
+  `zfs load-key` command instead of reporting a mount.
+- Every target is checked before any is touched. A subtree holding an excluded
+  child refuses, because the restore would remove it; `--force-excluded`
+  overrides. A zvol or mounted filesystem held open by a guest, container or
+  process refuses, as does one exported over NFS, directly, by bind or below an
+  export. A missing `fuser`, a failed probe, an unreadable export table or a
+  `legacy` mount whose path cannot be found refuses too; `--force-held`
+  overrides. A host without `exportfs` runs no NFS server and skips that check.
+- To restore around an excluded child, restore each replicated child on its
+  own: receive the newest snapshot of `<pool>/<basename>/<child>` into a new
+  name and swap it in with `zfs rename`.
 
 ### Proxmox cluster-config archive (opt-in)
 `nas_storage_pve_cluster_backup_enabled` deploys a nightly tar of `/etc/pve`
@@ -339,9 +392,9 @@ pool path (`nas_storage_zfs_mount_roots`, `_appdata_base`,
 `_backup_apps_base`), a uid/gid pair (`_appdata_owner`, `_media_gid`) or the
 four pool-named smartd groups. The collection's rule is that site data is an
 asserted input, and these are the documented exception: they are marked
-*reference-deployment* values here and in `defaults/main.yml`, kept because a
-site that shares the layout gets a working role with no inventory and one that
-does not overrides them wholesale. The classification guard
+*reference-deployment* values here, kept because a site that shares the layout
+gets a working role with no inventory and one that does not overrides them
+wholesale. The classification guard
 (`assert_zfs_classification.yml`) is what keeps the mount-roots default from
 failing open on a different layout — anything it cannot classify is a hard
 failure, not a silent skip.
@@ -354,7 +407,6 @@ failure, not a silent skip.
 | `nas_storage_zfs_scrub_enabled` | `true` | Enable the per-pool scrub timers. |
 | `nas_storage_zfs_scrub_schedule` | `monthly` | Scrub timer instance (`zfs-scrub-<schedule>@<pool>.timer`). |
 | `nas_storage_zfs_arc_max_bytes` | `{{ zfs_arc_max_bytes \| default('') }}` | ARC cap in bytes; empty = unmanaged. |
-| `nas_storage_zfs_arc_skip_initramfs` | `false` | Passed through as `zfs_arc_cap_skip_initramfs`: render the modprobe.d file but skip `update-initramfs` (no real `/boot`). |
 | `nas_storage_exports` | *(undefined)* | NFS exports. Undefined skips all NFS tasks. |
 | `nas_storage_export_root` | `/export` | NFSv4 pseudo-root directory the role creates; the export paths in `nas_storage_exports` are site data and are not derived from it. |
 | `nas_storage_zfs_mount_roots` | `/mnt/tank`, `/mnt/ssd`, `/mnt/nvme` | Mount roots whose bind sources count as ZFS-backed (guard + boot ordering). Empty = nothing is ZFS-backed by derivation. |
@@ -400,7 +452,9 @@ failure, not a silent skip.
 | `nas_storage_archive_backup_exclude_destroy_ok` | `false` | Destroy the archive-side copy of an excluded child (`zfs destroy -r`). While `false` the run proceeds and warns, naming the orphan it leaves on the archive pool and counting it in `archive_backup_excluded_orphans`. |
 | `nas_storage_archive_backup_on_success_units` | `[]` | Units the unit starts on a successful run; empty renders no `OnSuccess=`. A site handing off to `restic_offsite` sets `[restic-offsite.service]`. |
 | `nas_storage_archive_backup_vzdump_target` | `""` | Dataset needing the quiesce guard; empty disables it. |
+| `nas_storage_archive_backup_vzdump_quiesce_min`, `nas_storage_archive_backup_vzdump_max_wait_min` | `10` / `30` | Minutes without writes that count as quiesced, and the wait before the target is deferred. |
 | `nas_storage_archive_backup_keep_recent`, `nas_storage_archive_backup_keep_monthly` | `3` / `6` | Snapshot retention. |
+| `nas_storage_archive_backup_keep_monthly_overrides` | `{}` | Monthly count per source or descendant, applied to its subtree and its archive copy, e.g. `{tank/proxmox: 0}`. |
 | `nas_storage_archive_backup_schedule`, `nas_storage_archive_backup_random_delay` | `*-*-* 06:30:00` / `10m` | Timer. |
 | `nas_storage_pve_cluster_backup_enabled` | `false` | Deploy the `/etc/pve` archive. |
 | `nas_storage_pve_cluster_backup_src` | `/etc/pve` | Source (pmxcfs mountpoint). |
@@ -408,10 +462,9 @@ failure, not a silent skip.
 | `nas_storage_pve_cluster_backup_required_files` | `user.cfg`, `corosync.conf`, `pve-root-ca.pem`, `priv/pve-root-ca.key`, `authkey.pub`, `priv/authkey.key` | Paths (relative to `_src`) that must be in the archive before it is published. |
 | `nas_storage_pve_cluster_backup_schedule`, `nas_storage_pve_cluster_backup_random_delay`, `nas_storage_pve_cluster_backup_keep`, `nas_storage_pve_cluster_backup_nice` | `*-*-* 02:15:00` / `300` / `14` / `10` | Timer + retention. |
 | `nas_storage_pve_cluster_backup_lib_path` | `/usr/local/lib/nas-storage-backup-lib.sh` | Where the shared `write_prom_metrics` helper is deployed. The wrapper sources it and exits 1 if it is missing. |
-| `nas_storage_nfs_disable_delegations` | `false` | Write (and, per the live gate below, apply) a sysctl.d drop-in with `fs.leases-enable=0` so nfsd grants no NEW NFSv4 delegations. Existing delegations persist until returned or the host reboots. Costly for clients that lock files over NFS: without a write delegation every lock and unlock is a server RPC, and each unlock waits on that file's in-flight I/O, which stalls lock-heavy workloads such as SQLite-backed apps. Enable as a deliberate mitigation, not as hardening. |
+| `nas_storage_nfs_disable_delegations` | `false` | Write, and apply per the live gate below, `fs.leases-enable=0` so nfsd grants no new NFSv4 delegations. Costly for lock-heavy clients; see NFS above. |
 | `nas_storage_nfs_apply_delegation_sysctl_live` | `true` | Reconcile the live `fs.leases-enable` value with `sysctl -p` on every enabled run. Test scenarios set `false`: the sysctl is not container-namespaced. |
 | `nas_storage_skip_zfs_operations` | `false` | Skip all real-ZFS work (also disables both mount guards). Test use. |
-| `nas_storage_skip_mergerfs` | `false` | Skip MergerFS mount management. |
 | `nas_storage_skip_nfs_reload` | `false` | Skip `exportfs` reload / nfsd start. |
 | `nas_storage_skip_smartd_service` | `false` | Skip enabling/starting smartd. |
 
@@ -554,20 +607,21 @@ nas_storage_archive_backup_sources:
 |---|---|
 | `tasks/assert_zfs_classification.yml` | Up-front guard: every export bind source and boot-ordered union is classified ZFS-backed or not, split out so it is testable from fabricated inventory |
 | `tasks/zfs.yml` | Dataset properties, scrub timers |
-| `tasks/zfs_arc.yml` | ARC cap: the modprobe.d file plus the optional `update-initramfs` |
 | `tasks/nfs.yml` | Exports, bind mounts, guards, nfsd ordering drop-in |
 | `tasks/samba.yml` | Shares, `nas` user, password handling |
 | `tasks/media_group.yml` | The shared media group, included by both the NFS and Samba paths |
 | `tasks/mergerfs.yml` | Union mount + the safe remount cycle |
 | `tasks/mergerfs_opts.yml` | Per-union fstab option string, split out so it is testable without FUSE |
 | `files/mergerfs-bind-probe.sh` | Lists a union's binds by mount device id; the busy gate and the leftover-mount check |
+| `files/mergerfs-idle-probe.sh` | Reports whether any process holds a union; the busy gate's second probe |
+| `files/mergerfs-verify.sh` | Checks a union's mount, control file, fstab options and binds; both verify steps |
 | `tasks/mergerfs_needs_remount.yml` / `mergerfs_remount_gate.yml` | The remount cycle's decision facts, split out so they are testable without FUSE |
 | `tasks/media_mover.yml` | Hot-to-bulk mover script/unit/timer |
 | `tasks/swap_clean.yml` | Nightly swap reset |
 | `tasks/smartd.yml` | SMART config + unmonitored-disk assert |
 | `tasks/archive_backup.yml` | Archive replication |
 | `tasks/deprovision_units.yml` | Shared opt-out path: stop (and disable, where the unit has an `[Install]`) and remove a component's units, scripts and `.prom` |
-| `tasks/assert_swap_clean_guests.yml` / `assert_archive_exclude.yml` | Input-shape guards, split out so the failing cases are testable |
+| `tasks/assert_swap_clean_guests.yml` / `assert_archive_exclude.yml` / `assert_archive_retention.yml` | Input-shape guards, split out so the failing cases are testable |
 | `tasks/pve_cluster_backup.yml` | `/etc/pve` archive |
 | `tasks/backup_metrics.yml` | Backup-artifact collector |
 
@@ -590,10 +644,37 @@ deploy that follows its next plug.
 
 `mergerfs-bind-probe.sh <list|check> <union mountpoint>`. `list` prints each
 bind target, one per line, and prints nothing when the union has none.
-`check` prints `NO_NFS_BIND_EXPORTS` (exit 0), `BIND_EXPORTS` with `NFS_IDLE`
-(exit 0), or `BIND_EXPORTS` with `ACTIVE_NFS_CLIENTS` (exit 1). Subdirectory
+`check` prints `NOT_MOUNTED` (exit 0) when the union is not mounted,
+`NO_NFS_BIND_EXPORTS` (exit 0), `BIND_EXPORTS` with `NFS_IDLE` (exit 0), or
+`BIND_EXPORTS` with `ACTIVE_NFS_CLIENTS` (exit 1). Subdirectory
 binds are matched as well as whole-union ones.
 
 Exit 2 is a bad argument. Exit 3 means the probe could not look: `findmnt` or
 `ss` is missing, or `ss` failed. The remount cycle's guard fails on any non-zero exit, because
 empty output from a probe that could not run would read as a clean union.
+
+### `mergerfs-idle-probe.sh`
+
+`mergerfs-idle-probe.sh <union mountpoint>` prints `IDLE` (exit 0) when no
+process holds the union, and `IN_USE` with the `fuser -vm` listing (exit 1)
+when one does. Exit 2 is a missing argument. Exit 3 means the probe could
+not look. It prints `NO_FUSER` when `fuser` is not installed. It prints
+`PROBE_ERROR` when `mountpoint` or `findmnt` is missing, when the mount table
+lists the union but the path does not answer, or when `fuser` failed. A
+disconnected FUSE union lands there. Exit 4 prints `NOT_MOUNTED` when the
+mount table does not list the path. The remount gate blocks the cycle on any non-zero exit.
+
+### `mergerfs-verify.sh`
+
+`mergerfs-verify.sh <union mountpoint> <required options> [bind ...]` takes the
+required options as one space-separated argument, which may be empty. It prints
+`FSTAB_OPTS` with the union's fstab options and `STATUS: OK` (exit 0) when the
+union is mounted, has its `.mergerfs` control file, and its fstab line holds
+every required option as a whole comma-separated token. Each named bind must
+share the union's mount device id.
+
+Exit 1 prints one failing status: `NOT_MOUNTED`, `NOT_MERGERFS`,
+`NO_FSTAB_ENTRY`, `FSTAB_MISSING_OPTIONS` with the missing options, or
+`BIND_NOT_ON_UNION` with the bind and its device. Exit 2 is a missing argument.
+The fstab line is matched on its target field, never as a regex, and commented
+lines are skipped. `FSTAB` names another fstab for the tests.

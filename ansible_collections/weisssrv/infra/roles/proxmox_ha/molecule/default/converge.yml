@@ -2,8 +2,8 @@
 - name: Converge — exercise HA resource + replication contracts
   hosts: all
   become: true
-  # See proxmox_vm/molecule/default/converge.yml for the rationale on
-  # deferring gather_facts behind a raw mkdir.
+  # Under become and the docker connector the implicit fact gathering cannot
+  # create remote_tmp, so a raw mkdir runs first and setup gathers after it.
   gather_facts: false
   vars:
     # Fixtures for the cases below. The role gates each task file behind
@@ -76,6 +76,12 @@
         target_node: pve-opt-02
         schedule: "*/15"
         enabled: true
+    test_replication_jobs_paused:
+      - id: "150-0"
+        source_node: "{{ inventory_hostname }}"
+        target_node: pve-opt-02
+        schedule: "*/15"
+        paused: true
     # Matches the live 150-0 of the real-shape index exactly (target, schedule
     # and comment), so parsing that index must mutate nothing.
     test_replication_jobs_shape:
@@ -85,6 +91,18 @@
         schedule: "*/15"
         comment: "guest-150 -> pve-opt-02"
         enabled: true
+    # One enabled and one disabled entry for the same VMID (case S3).
+    test_replication_jobs_disable_permuted:
+      - id: "150-0"
+        source_node: "{{ inventory_hostname }}"
+        target_node: pve-opt-02
+        schedule: "*/15"
+        enabled: true
+      - id: "150-1"
+        source_node: "{{ inventory_hostname }}"
+        target_node: pve-opt-03
+        schedule: "*/15"
+        enabled: false
     # Two jobs for the same VMID — used by the permuted-ID case (L), where the
     # live jobs carry the same TARGET SET but swapped job-ID assignments (what
     # Proxmox does after a guest migration round-trip).
@@ -459,7 +477,8 @@
       changed_when: false
 
     # CASE J — REAL target drift (desired target set differs) with the VM
-    # local: exactly one `pvesr delete` + one `pvesr create-local-job`.
+    # local: one `pvesr delete` + one create under a fresh id, since the
+    # deleted id stays in the index until its removal completes.
     - name: J — reset log, seed a job on the wrong target, VMID local
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -492,8 +511,9 @@
         set -o pipefail
         log=/tmp/molecule-stub-state/pvesr.log
         delete=$(grep -c '^pvesr delete 150-0$' "$log" || true)
-        create=$(grep -c '^pvesr create-local-job 150-0 pve-opt-02 ' "$log" || true)
-        echo "{\"delete_calls\": ${delete}, \"create_calls\": ${create}}"
+        create=$(grep -c '^pvesr create-local-job 150-1 pve-opt-02 ' "$log" || true)
+        reused=$(grep -c '^pvesr create-local-job 150-0 ' "$log" || true)
+        echo "{\"delete_calls\": ${delete}, \"create_calls\": ${create}, \"reused_id_creates\": ${reused}}"
       args:
         executable: /bin/bash
       register: case_j
@@ -627,9 +647,9 @@
       register: case_l2
       changed_when: false
 
-    # CASE L3 — the production fault: permuted ids whose comments still carry
-    # the OLD pairing. Each comment must be rewritten to the node the job
-    # actually replicates to, never re-stamped from the inventory entry's id.
+    # CASE L3 — permuted ids whose comments name the other target. Each
+    # comment is rewritten to the node the job replicates to, never stamped
+    # from the inventory entry that carries the same id.
     - name: L3 — reset log, seed permuted ids carrying stale comments
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -676,7 +696,7 @@
 
     # CASE M — orphaned job (exists on this node, absent from config) next
     # to an already-correct configured job: warning only, ZERO mutations.
-    # Orphan cleanup is manual (see tasks/replication.yml).
+    # Orphan cleanup is manual (see the role README).
     - name: M — reset log, seed a matching job + an orphan, VMID local
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -1184,6 +1204,372 @@
       register: case_s2
       changed_when: false
 
+    # CASE S3 — disabling an entry while the ids are permuted removes the job
+    # serving the disabled TARGET and keeps the one serving the enabled target.
+    - name: S3 — reset log, seed permuted ids for an enabled and a disabled entry
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - {name: qm_vmids, content: "150\n"}
+        - name: pvesh_replication
+          content: |
+            [{"id": "150-0", "guest": 150, "jobnum": 0, "type": "local",
+              "source": "{{ inventory_hostname }}", "target": "pve-opt-03",
+              "schedule": "*/15"},
+             {"id": "150-1", "guest": 150, "jobnum": 1, "type": "local",
+              "source": "{{ inventory_hostname }}", "target": "pve-opt-02",
+              "schedule": "*/15"}]
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: S3 — run replication tasks with the disabled entry's id permuted
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+        tasks_from: replication
+      vars:
+        proxmox_ha_replication_jobs: "{{ test_replication_jobs_disable_permuted }}"
+
+    - name: S3 — record the orphans
+      ansible.builtin.set_fact:
+        s3_orphans: "{{ proxmox_ha_orphaned_job_ids | default([]) }}"
+
+    - name: S3 — count pvesr calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/pvesr.log
+        kept=$(grep -cxF 'pvesr delete 150-1' "$log" || true)
+        removed=$(grep -cxF 'pvesr delete 150-0' "$log" || true)
+        total=$(grep -c '^pvesr ' "$log" || true)
+        echo "{\"kept_deleted\": ${kept}, \"disabled_deleted\": ${removed}, \"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_s3
+      changed_when: false
+
+    # CASE J2 — one of two wanted targets is live under the other entry's id.
+    # The live job is kept and the missing target is created under the free id.
+    - name: J2 — reset log, seed one wanted target under the other entry's id
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - {name: qm_vmids, content: "150\n"}
+        - name: pvesh_replication
+          content: |
+            [{"id": "150-0", "guest": 150, "jobnum": 0, "type": "local",
+              "source": "{{ inventory_hostname }}", "target": "pve-opt-03",
+              "schedule": "*/15"}]
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: J2 — run replication tasks with a still-wanted target on another id
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+        tasks_from: replication
+      vars:
+        proxmox_ha_replication_jobs: "{{ test_replication_jobs_multi }}"
+
+    - name: J2 — record the detected drift
+      ansible.builtin.set_fact:
+        j2_drifted: "{{ proxmox_ha_drifted_job_ids | default([]) }}"
+
+    - name: J2 — count pvesr calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/pvesr.log
+        delete=$(grep -c '^pvesr delete ' "$log" || true)
+        create=$(grep -c '^pvesr create-local-job ' "$log" || true)
+        free_id=$(grep -c '^pvesr create-local-job 150-1 pve-opt-02 ' "$log" || true)
+        echo "{\"delete_calls\": ${delete}, \"create_calls\": ${create}, \"free_id_create\": ${free_id}}"
+      args:
+        executable: /bin/bash
+      register: case_j2
+      changed_when: false
+
+    # CASE J3 — a live job sourced on another node while the guest is here is
+    # reported and kept: no delete, and no create to the same target.
+    - name: J3 — reset log, seed the wanted job sourced on another node
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - {name: qm_vmids, content: "150\n"}
+        - name: pvesh_replication
+          content: |
+            [{"id": "150-0", "guest": 150, "jobnum": 0, "type": "local",
+              "source": "pve-opt-09", "target": "pve-opt-02",
+              "schedule": "*/15"}]
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: J3 — run replication tasks with a stale source
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+        tasks_from: replication
+      vars:
+        proxmox_ha_replication_jobs: "{{ test_replication_jobs }}"
+
+    - name: J3 — record the stale-source report
+      ansible.builtin.set_fact:
+        j3_stale: "{{ proxmox_ha_stale_source_job_ids | default([]) }}"
+
+    - name: J3 — count pvesr calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/pvesr.log
+        delete=$(grep -c '^pvesr delete ' "$log" || true)
+        create=$(grep -c '^pvesr create-local-job ' "$log" || true)
+        total=$(grep -c '^pvesr ' "$log" || true)
+        echo "{\"delete_calls\": ${delete}, \"create_calls\": ${create}, \"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_j3
+      changed_when: false
+
+    # CASE S4 — a live job disabled outside the role is re-enabled in place.
+    - name: S4 — reset log, seed the wanted job as live but disabled
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - {name: qm_vmids, content: "150\n"}
+        - name: pvesh_replication
+          content: |
+            [{"id": "150-0", "guest": 150, "jobnum": 0, "type": "local",
+              "source": "{{ inventory_hostname }}", "target": "pve-opt-02",
+              "schedule": "*/15", "disable": 1}]
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: S4 — run replication tasks against a live-disabled job
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+        tasks_from: replication
+      vars:
+        proxmox_ha_replication_jobs: "{{ test_replication_jobs }}"
+
+    - name: S4 — record the re-enable report
+      ansible.builtin.set_fact:
+        s4_reenabled: "{{ proxmox_ha_reenabled_job_ids | default([]) }}"
+
+    - name: S4 — count pvesr calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/pvesr.log
+        enable=$(grep -cxF 'pvesr update 150-0 --schedule */15 --disable 0' "$log" || true)
+        total=$(grep -c '^pvesr ' "$log" || true)
+        echo "{\"enable_calls\": ${enable}, \"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_s4
+      changed_when: false
+
+    # CASE S5 — a paused entry disables its live job in place and keeps it.
+    - name: S5 — reset log, seed the paused entry's job as live and enabled
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - {name: qm_vmids, content: "150\n"}
+        - name: pvesh_replication
+          content: |
+            [{"id": "150-0", "guest": 150, "jobnum": 0, "type": "local",
+              "source": "{{ inventory_hostname }}", "target": "pve-opt-02",
+              "schedule": "*/15"}]
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: S5 — run replication tasks with the entry paused
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+        tasks_from: replication
+      vars:
+        proxmox_ha_replication_jobs: "{{ test_replication_jobs_paused }}"
+
+    - name: S5 — count pvesr calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/pvesr.log
+        pause=$(grep -cxF 'pvesr update 150-0 --schedule */15 --disable 1' "$log" || true)
+        create=$(grep -cxF 'pvesr create-local-job 150-0 pve-opt-02 --schedule */15 --disable 1' "$log" || true)
+        delete=$(grep -c '^pvesr delete ' "$log" || true)
+        total=$(grep -c '^pvesr ' "$log" || true)
+        echo "{\"pause\": ${pause}, \"create\": ${create}, \"delete\": ${delete}, \"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_s5
+      changed_when: false
+
+    # CASE S6 — a paused entry whose job is already disabled changes nothing.
+    - name: S6 — reset log, seed the paused entry's job as live and disabled
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - {name: qm_vmids, content: "150\n"}
+        - name: pvesh_replication
+          content: |
+            [{"id": "150-0", "guest": 150, "jobnum": 0, "type": "local",
+              "source": "{{ inventory_hostname }}", "target": "pve-opt-02",
+              "schedule": "*/15", "disable": 1}]
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: S6 — run replication tasks with the entry paused
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+        tasks_from: replication
+      vars:
+        proxmox_ha_replication_jobs: "{{ test_replication_jobs_paused }}"
+
+    - name: S6 — record the re-enable report
+      ansible.builtin.set_fact:
+        s6_reenabled: "{{ proxmox_ha_reenabled_job_ids | default([]) }}"
+
+    - name: S6 — count pvesr calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/pvesr.log
+        pause=$(grep -cxF 'pvesr update 150-0 --schedule */15 --disable 1' "$log" || true)
+        create=$(grep -cxF 'pvesr create-local-job 150-0 pve-opt-02 --schedule */15 --disable 1' "$log" || true)
+        delete=$(grep -c '^pvesr delete ' "$log" || true)
+        total=$(grep -c '^pvesr ' "$log" || true)
+        echo "{\"pause\": ${pause}, \"create\": ${create}, \"delete\": ${delete}, \"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_s6
+      changed_when: false
+
+    # CASE S7 — a paused entry with no live job is created disabled.
+    - name: S7 — reset log, empty index for the paused entry
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - {name: qm_vmids, content: "150\n"}
+        - name: pvesh_replication
+          content: |
+            []
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: S7 — run replication tasks with the entry paused
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+        tasks_from: replication
+      vars:
+        proxmox_ha_replication_jobs: "{{ test_replication_jobs_paused }}"
+
+    - name: S7 — count pvesr calls
+      ansible.builtin.shell: |
+        set -o pipefail
+        log=/tmp/molecule-stub-state/pvesr.log
+        pause=$(grep -cxF 'pvesr update 150-0 --schedule */15 --disable 1' "$log" || true)
+        create=$(grep -cxF 'pvesr create-local-job 150-0 pve-opt-02 --schedule */15 --disable 1' "$log" || true)
+        delete=$(grep -c '^pvesr delete ' "$log" || true)
+        total=$(grep -c '^pvesr ' "$log" || true)
+        echo "{\"pause\": ${pause}, \"create\": ${create}, \"delete\": ${delete}, \"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_s7
+      changed_when: false
+
+    # CASE D3 — a create blocked by another job to the same target fails the
+    # play: the live index missed a job, so a green run would hide it.
+    - name: D3 — reset log, empty index, arm a per-target create rejection
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - {name: qm_vmids, content: "150\n"}
+        - {name: pvesh_replication, content: "[]\n"}
+        - name: pvesr_create_reject
+          content: "replication job for guest '150' to target 'pve-opt-02' already exists\n"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: D3 — assume the blocked create did not fail
+      ansible.builtin.set_fact:
+        blocked_create_failed: false
+
+    # Only the create task failing on the per-target rejection counts.
+    - name: D3 — run replication tasks against a blocked create
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: D3 — include replication (expected to fail)
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_ha
+            tasks_from: replication
+          vars:
+            proxmox_ha_replication_jobs: "{{ test_replication_jobs }}"
+      rescue:
+        - name: D3 — blocked create failed as expected
+          ansible.builtin.set_fact:
+            blocked_create_failed: >-
+              {{
+                ansible_failed_task.name == 'Create storage replication jobs'
+                and 'already exists' in (ansible_failed_result.results | default([])
+                  | map(attribute='stderr', default='') | join(' '))
+              }}
+
+    - name: D3 — count create attempts
+      ansible.builtin.shell: |
+        set -o pipefail
+        create=$(grep -c '^pvesr create-local-job 150-' /tmp/molecule-stub-state/pvesr.log || true)
+        echo "{\"create_calls\": ${create}}"
+      args:
+        executable: /bin/bash
+      register: case_d3
+      changed_when: false
+
+    # CASE D4 — a create racing another run for the same id is tolerated.
+    - name: D4 — reset log, empty index, arm a same-id create rejection
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - name: pvesr_create_reject
+          content: "replication job '150-0' already exists\n"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: D4 — run replication tasks against a same-id race
+      ansible.builtin.include_role:
+        name: weisssrv.infra.proxmox_ha
+        tasks_from: replication
+      vars:
+        proxmox_ha_replication_jobs: "{{ test_replication_jobs }}"
+
+    - name: D4 — count create attempts and disarm the rejection
+      ansible.builtin.shell: |
+        set -o pipefail
+        create=$(grep -c '^pvesr create-local-job 150-0 pve-opt-02 ' /tmp/molecule-stub-state/pvesr.log || true)
+        rm -f /tmp/molecule-stub-state/pvesr_create_reject
+        echo "{\"create_calls\": ${create}}"
+      args:
+        executable: /bin/bash
+      register: case_d4
+      changed_when: false
+
     # CASE T — an unsupported rule type must fail the play, not be skipped.
     - name: T — reset log and empty the live rule list
       ansible.builtin.copy:
@@ -1277,9 +1663,8 @@
       register: case_u
       changed_when: false
 
-    # CASE V — a failed `pvesr list` must ABORT: read as "no jobs exist" it
-    # would fire create-local-job for every job, and the tolerated
-    # "already exists" would hide that behind a green play.
+    # CASE V — a failed replication index read aborts: read as "no jobs exist"
+    # it would fire create-local-job for every job.
     - name: V — reset log and make the pvesr read fail
       ansible.builtin.copy:
         dest: "/tmp/molecule-stub-state/{{ item.name }}"
@@ -1319,6 +1704,94 @@
       register: case_v
       changed_when: false
 
+    # CASE V3 — an rc-0 read that prints nothing aborts too: a cluster with no
+    # jobs answers `[]`, so empty output is never a valid index.
+    - name: V3 — reset log and make the replication read print nothing
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - {name: pvesh_replication, content: ""}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: V3 — assume the empty read did not abort
+      ansible.builtin.set_fact:
+        pvesr_empty_read_aborted: false
+
+    - name: V3 — run replication tasks against an empty read
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: V3 — include replication (expected to fail)
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_ha
+            tasks_from: replication
+          vars:
+            proxmox_ha_replication_jobs: "{{ test_replication_jobs }}"
+      rescue:
+        - name: V3 — empty read aborted as expected
+          ansible.builtin.set_fact:
+            pvesr_empty_read_aborted: true
+          when: ansible_failed_task.name == 'Get current storage replication jobs'
+
+    - name: V3 — count pvesr mutations and restore the stub
+      ansible.builtin.shell: |
+        set -o pipefail
+        total=$(grep -c '^pvesr ' /tmp/molecule-stub-state/pvesr.log || true)
+        printf '[]\n' > /tmp/molecule-stub-state/pvesh_replication
+        echo "{\"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_v3
+      changed_when: false
+
+    # CASE V2 — a failed local-guest read aborts: read as "no local guests" it
+    # would skip every create and update while the play stays green.
+    - name: V2 — reset log and make the qm read fail
+      ansible.builtin.copy:
+        dest: "/tmp/molecule-stub-state/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {name: pvesr.log, content: ""}
+        - {name: pvesh_replication, content: "[]\n"}
+        - {name: qm_vmids, content: "150\n"}
+        - {name: qm_list_fail, content: "1\n"}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: V2 — assume the failed guest read did not abort
+      ansible.builtin.set_fact:
+        local_vmids_failure_aborted: false
+
+    - name: V2 — run replication tasks against a failing guest read
+      tags: [molecule-idempotence-notest]
+      block:
+        - name: V2 — include replication (expected to fail)
+          ansible.builtin.include_role:
+            name: weisssrv.infra.proxmox_ha
+            tasks_from: replication
+          vars:
+            proxmox_ha_replication_jobs: "{{ test_replication_jobs }}"
+      rescue:
+        - name: V2 — failed guest read aborted as expected
+          ansible.builtin.set_fact:
+            local_vmids_failure_aborted: true
+          when: ansible_failed_task.name == 'Get list of local VMIDs on this node'
+
+    - name: V2 — count pvesr mutations and restore the stub
+      ansible.builtin.shell: |
+        set -o pipefail
+        total=$(grep -c '^pvesr ' /tmp/molecule-stub-state/pvesr.log || true)
+        rm -f /tmp/molecule-stub-state/qm_list_fail
+        echo "{\"total\": ${total}}"
+      args:
+        executable: /bin/bash
+      register: case_v2
+      changed_when: false
+
     - name: Capture HA contract results
       ansible.builtin.copy:
         dest: /tmp/molecule-results/ha-contract.json
@@ -1346,6 +1819,7 @@
            "j_drifted": {{ j_drifted | to_json }},
            "j_delete": {{ (case_j.stdout | from_json).delete_calls }},
            "j_create": {{ (case_j.stdout | from_json).create_calls }},
+           "j_reused": {{ (case_j.stdout | from_json).reused_id_creates }},
            "k_delete": {{ (case_k.stdout | from_json).delete_calls }},
            "k_create": {{ (case_k.stdout | from_json).create_calls }},
            "l_drifted": {{ l_drifted | to_json }},
@@ -1385,6 +1859,28 @@
            "s_delete": {{ (case_s.stdout | from_json).delete_calls }},
            "s_create": {{ (case_s.stdout | from_json).create_calls }},
            "s2_total": {{ (case_s2.stdout | from_json).total }},
+           "s3_kept_deleted": {{ (case_s3.stdout | from_json).kept_deleted }},
+           "s3_disabled_deleted": {{ (case_s3.stdout | from_json).disabled_deleted }},
+           "s3_total": {{ (case_s3.stdout | from_json).total }},
+           "s3_orphans": {{ s3_orphans | to_json }},
+           "j2_drifted": {{ j2_drifted | to_json }},
+           "j2_delete": {{ (case_j2.stdout | from_json).delete_calls }},
+           "j2_create": {{ (case_j2.stdout | from_json).create_calls }},
+           "j2_free_id_create": {{ (case_j2.stdout | from_json).free_id_create }},
+           "j3_stale": {{ j3_stale | to_json }},
+           "j3_delete": {{ (case_j3.stdout | from_json).delete_calls }},
+           "j3_create": {{ (case_j3.stdout | from_json).create_calls }},
+           "j3_total": {{ (case_j3.stdout | from_json).total }},
+           "s4_enable": {{ (case_s4.stdout | from_json).enable_calls }},
+           "s4_total": {{ (case_s4.stdout | from_json).total }},
+           "s4_reenabled": {{ s4_reenabled | to_json }},
+           "s6_reenabled": {{ s6_reenabled | to_json }},
+           "s5": {{ case_s5.stdout }},
+           "s6": {{ case_s6.stdout }},
+           "s7": {{ case_s7.stdout }},
+           "d3_failed": {{ blocked_create_failed | bool | ternary('true', 'false') }},
+           "d3_create": {{ (case_d3.stdout | from_json).create_calls }},
+           "d4_create": {{ (case_d4.stdout | from_json).create_calls }},
            "t_failed": {{ bad_rule_type_failed | ternary('true', 'false') }},
            "t_msg_names_rule": {{ ('db-together' in bad_rule_type_msg) | ternary('true', 'false') }},
            "t_total": {{ (case_t.stdout | from_json).total }},
@@ -1392,7 +1888,11 @@
            "u_rules": {{ unmanaged_rule_ids | to_json }},
            "u_resources": {{ unmanaged_resource_sids | to_json }},
            "v_aborted": {{ pvesr_read_failure_aborted | ternary('true', 'false') }},
-           "v_total": {{ (case_v.stdout | from_json).total }}}
+           "v_total": {{ (case_v.stdout | from_json).total }},
+           "v3_aborted": {{ pvesr_empty_read_aborted | ternary('true', 'false') }},
+           "v3_total": {{ (case_v3.stdout | from_json).total }},
+           "v2_aborted": {{ local_vmids_failure_aborted | ternary('true', 'false') }},
+           "v2_total": {{ (case_v2.stdout | from_json).total }}}
 
 # The delegate seam: the role serializes the cluster-wide reconcile itself with
 # run_once + a reachability probe, so the calling play needs no serial: 1.

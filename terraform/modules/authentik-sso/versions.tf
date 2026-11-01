@@ -1,6 +1,5 @@
 terraform {
-  # Floor is the test harness's (override_during = plan), not the
-  # configuration's, which needs 1.9 — see ../README.md.
+  # The test harness's floor (override_during = plan): ../README.md.
   required_version = ">= 1.11, < 2.0"
 
   required_providers {

@@ -75,6 +75,14 @@ acme_certs_distribution_check_retry_delay: 10
 # path and are not seeded.
 acme_certs_receiver_path: /usr/local/sbin/cert-receive
 
+# tasks_from: reseed. The distribution targets to re-pin, by `host`; every sudo
+# target by default. A requested ssh_no_sudo target is reported, never seeded.
+acme_certs_reseed_hosts: >-
+  {{ acme_certs_distribution_targets | default([]) | map(attribute='host')
+     | reject('in', _acme_certs_no_sudo_hosts) | list }}
+# Fail the play when a requested target is left unpinned; false only warns.
+acme_certs_reseed_fail_on_miss: true
+
 # Distribution targets (per-entry schema: README). host_key is REQUIRED on every
 # entry — the push runs with StrictHostKeyChecking=yes, so the key must be
 # pinned before the first push.

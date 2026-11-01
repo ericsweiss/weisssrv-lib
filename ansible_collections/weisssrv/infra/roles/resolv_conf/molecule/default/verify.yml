@@ -33,6 +33,33 @@
         fail_msg: "resolv.conf options line is missing or split"
         success_msg: "resolv.conf carries one combined options line"
 
+    # The opt-out branches render the real template on the controller, since
+    # this host's file already holds the populated case.
+    - name: Render resolv.conf with no search domains and custom options
+      ansible.builtin.set_fact:
+        resolv_conf_no_search: "{{ lookup('ansible.builtin.template', playbook_dir ~ '/../../templates/resolv.conf.j2') }}"
+      vars:
+        resolv_conf_nameservers: [192.0.2.10]
+        resolv_conf_search_domains: []
+        resolv_conf_options: [rotate, "timeout:1"]
+
+    - name: Render resolv.conf with an empty options list
+      ansible.builtin.set_fact:
+        resolv_conf_no_options: "{{ lookup('ansible.builtin.template', playbook_dir ~ '/../../templates/resolv.conf.j2') }}"
+      vars:
+        resolv_conf_nameservers: [192.0.2.10]
+        resolv_conf_search_domains: []
+        resolv_conf_options: []
+
+    - name: Verify the opt-out renders
+      ansible.builtin.assert:
+        that:
+          - not (resolv_conf_no_search | regex_search('^(search|domain)', multiline=True))
+          - "'options rotate timeout:1' in resolv_conf_no_search"
+          - (resolv_conf_no_search | regex_findall('(?m)^options ') | length) == 1
+          - not (resolv_conf_no_options | regex_search('^options', multiline=True))
+        fail_msg: "An empty search list or options list still rendered its line, or custom options split"
+
     - name: Check file mode
       ansible.builtin.stat:
         path: /etc/resolv.conf

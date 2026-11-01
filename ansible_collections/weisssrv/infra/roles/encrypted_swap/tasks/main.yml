@@ -33,50 +33,47 @@
         success_msg: "Backing swap device {{ encrypted_swap_source_device }} present"
       when: encrypted_swap_require_source_device | bool
 
-    # CRITICAL: a host whose backing device is gone still carries the crypttab
-    # and fstab entries an earlier converge wrote, and systemd-cryptsetup@<mapper>
-    # then fails every boot. The self-skip arm reconciles them away.
-    - name: Remove the encrypted-swap crypttab entry when the backing device is absent
-      ansible.builtin.lineinfile:
-        path: /etc/crypttab
-        regexp: '^{{ encrypted_swap_mapper_name | regex_escape }}\s+'
-        state: absent
+    # A host whose backing device is gone would keep its crypttab and fstab
+    # entries, and systemd-cryptsetup@<mapper> would fail every boot. The
+    # self-skip arm reconciles them away.
+    - name: Reconcile a missing backing device
       when: not (encrypted_swap_source_present | bool)
+      block:
+        - name: Remove the encrypted-swap crypttab entry when the backing device is absent
+          ansible.builtin.lineinfile:
+            path: /etc/crypttab
+            regexp: '^{{ encrypted_swap_mapper_name | regex_escape }}\s+'
+            state: absent
 
-    - name: Remove the encrypted-swap fstab line when the backing device is absent
-      ansible.builtin.lineinfile:
-        path: /etc/fstab
-        regexp: '^/dev/mapper/{{ encrypted_swap_mapper_name | regex_escape }}\s+'
-        state: absent
-      when: not (encrypted_swap_source_present | bool)
+        - name: Remove the encrypted-swap fstab line when the backing device is absent
+          ansible.builtin.lineinfile:
+            path: /etc/fstab
+            regexp: '^/dev/mapper/{{ encrypted_swap_mapper_name | regex_escape }}\s+'
+            state: absent
 
-    - name: Disable the boot finalize unit when the backing device is absent
-      ansible.builtin.systemd:
-        name: encrypted-swap-finalize.service
-        enabled: false
-        daemon_reload: true
-      failed_when: false
-      when:
-        - not (encrypted_swap_source_present | bool)
-        - not ansible_check_mode
+        - name: Disable the boot finalize unit when the backing device is absent
+          ansible.builtin.systemd:
+            name: encrypted-swap-finalize.service
+            enabled: false
+            daemon_reload: true
+          failed_when: false
+          when: not ansible_check_mode
 
-    # A frozen `encrypted_swap_mapper_active 1` would keep reading healthy on a
-    # host that no longer has encrypted swap.
-    - name: Remove the encrypted-swap textfile metric when the backing device is absent
-      ansible.builtin.file:
-        path: "{{ encrypted_swap_textfile_dir }}/encrypted_swap.prom"
-        state: absent
-      when: not (encrypted_swap_source_present | bool)
+        # A frozen `encrypted_swap_mapper_active 1` would keep reading healthy on a
+        # host that no longer has encrypted swap.
+        - name: Remove the encrypted-swap textfile metric when the backing device is absent
+          ansible.builtin.file:
+            path: "{{ encrypted_swap_textfile_dir }}/encrypted_swap.prom"
+            state: absent
 
-    - name: Report encrypted swap skipped for a missing backing device
-      ansible.builtin.debug:
-        msg: >-
-          encrypted_swap SKIPPED on {{ inventory_hostname }}:
-          {{ encrypted_swap_source_device }} is not a block device and
-          encrypted_swap_require_source_device is false. Nothing new was written,
-          and any crypttab/fstab entry from an earlier converge plus the boot
-          finalize unit have been reconciled away.
-      when: not (encrypted_swap_source_present | bool)
+        - name: Report encrypted swap skipped for a missing backing device
+          ansible.builtin.debug:
+            msg: >-
+              encrypted_swap SKIPPED on {{ inventory_hostname }}:
+              {{ encrypted_swap_source_device }} is not a block device and
+              encrypted_swap_require_source_device is false. Nothing new was written,
+              and any crypttab/fstab entry from an earlier converge plus the boot
+              finalize unit have been reconciled away.
 
     - name: Write the encrypted-swap configuration
       when: encrypted_swap_source_present | bool
@@ -125,13 +122,6 @@
             owner: root
             group: root
             mode: "0644"
-
-        # Purge rather than orphan: the script carries the unsafe
-        # swapoff→open→swapon path, which must not stay hand-runnable on disk.
-        - name: Remove the obsolete encrypted-swap live-switch script
-          ansible.builtin.file:
-            path: /usr/local/sbin/encrypted-swap-switch.sh
-            state: absent
 
         # Boot finalize: after the activation reboot, drop the plaintext backing
         # swap and comment its fstab line once, guarded on the mapper being

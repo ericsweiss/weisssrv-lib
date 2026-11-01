@@ -38,22 +38,24 @@ placement.
 - Node label application
 - Node taint application
 - kube-apiserver audit logging (opt-in, servers only) — see below
-- Off-node etcd snapshot copy (opt-in, servers only): a systemd timer that
-  copies the newest local etcd snapshot to an NFS export (by hostname, over
-  TLS) and emits an `etcd_snapshot_last_copy_timestamp_seconds`
-  textfile metric for the `EtcdSnapshotStale` alert (the copy script keeps its
-  own metric writer: these names predate the `compose_app` helper's prefix
-  convention and the alert rules select on them) — off by default via
-  `k3s_etcd_snapshot_offnode_enabled` (see defaults for the companion NFS export
-  + `node_exporter_host` + `nfs_tls`/tlshd on the servers it needs — the
-  `xprtsec=tls` mount hangs without the TLS handshake daemon). The copy script
-  runs without `set -e` so the metric is published even when the copy fails,
-  preserving the previous success timestamp rather than resetting it.
+- Off-node etcd snapshot copy (opt-in, servers only) — see below
 
 Both opt-in features **converge on opt-out**: setting the flag back to `false`
 stops and disables the snapshot timer, drops its NFS mount and removes its units
 and script, and removes the audit policy file. Otherwise a flag flip would leave
 the feature running.
+
+### Off-node etcd snapshot copy
+
+`k3s_etcd_snapshot_offnode_enabled` (off by default) installs a systemd timer
+that copies the newest local etcd snapshot to an NFS export, by hostname, over
+TLS. It emits `etcd_snapshot_last_copy_timestamp_seconds` as a textfile metric
+for the `EtcdSnapshotStale` alert; the alert rules select on that name.
+
+The servers need the companion NFS export, `node_exporter_host`, and
+`nfs_tls`/tlshd. The `xprtsec=tls` mount hangs without the TLS handshake
+daemon. The copy script runs without `set -e`, so a failed copy still publishes
+the metric and keeps the previous success timestamp.
 
 ## Firewall expectations
 
@@ -86,21 +88,21 @@ drift. These are asserted, so a dropped inventory var fails the run.
 | `k3s_gpu_*` (4 pins) | `nvidia_*` | GPU agents | see the GPU section |
 
 Everything else has a working default. The ones a site almost always sets:
-`k3s_agent_token` (falls back to `k3s_token`, which is fine for a test run and
-wrong for production — an agent token cannot promote a node),
-`k3s_kube_vip_interface` (alias `kube_vip_interface`, default `eth0`) — the
-kube-vip DaemonSet is rendered once, on the first server, and runs on all of
-them, so every server must name the SAME interface; the role asserts both that
-the NIC exists per host and that the servers agree — the agreement check runs on
-EVERY server, because role defaults are absent from `hostvars` and the first
-server alone cannot see that its peers resolved a different default,
-`k3s_registry_host_pins` / `k3s_storage_host_pins` (both `[]`),
-`k3s_kube_vip_host_kubeconfig` (`false`: kube-vip authenticates with its
-ServiceAccount token and the shipped ClusterRole; `true` mounts the node's
-cluster-admin kubeconfig instead, for a kube-vip build that needs it),
-`k3s_etcd_snapshot_nfs_server` (empty; asserted once the off-node copy is on,
-and it must be a hostname — the TLS mount verifies a cert with no IP SAN),
-`k3s_disable`, `k3s_labels`, `k3s_taints`.
+
+| Variable | Default | Note |
+|---|---|---|
+| `k3s_agent_token` | `k3s_token` | A secret from the site's store. The fallback suits a test run only: an agent token cannot promote a node. |
+| `k3s_kube_vip_interface` | `eth0` (alias `kube_vip_interface`) | Every server must name the SAME interface. See below. |
+| `k3s_registry_host_pins`, `k3s_storage_host_pins` | `[]` | `/etc/hosts` pins. |
+| `k3s_kube_vip_host_kubeconfig` | `false` | kube-vip authenticates with its ServiceAccount token and the shipped ClusterRole. `true` mounts the node's cluster-admin kubeconfig for a kube-vip build that needs it. |
+| `k3s_etcd_snapshot_nfs_server` | empty | Asserted once the off-node copy is on. Must be a hostname: the TLS mount verifies a cert with no IP SAN. |
+| `k3s_disable`, `k3s_labels`, `k3s_taints` | see defaults | |
+
+The kube-vip DaemonSet is rendered once, on the first server, and runs on all
+of them. The role asserts per host that the NIC exists, and on EVERY server that
+the servers agree on `k3s_kube_vip_interface`. Role defaults are absent from
+`hostvars`, so the first server alone cannot see that a peer resolved a
+different default.
 
 The agreement check also asserts the host is a MEMBER of `k3s_server_group`,
 because a misnamed group resolves to an empty list and an empty set trivially
@@ -112,52 +114,15 @@ the control-plane nodes together before trusting it.
 ## Configuration
 
 ```yaml
-# Cluster
-k3s_api_vip: "10.0.0.161"          # required — the kube-vip API address
+k3s_api_vip: "10.0.0.161"
 k3s_token: "<server/cluster join token>"
-k3s_agent_token: "<lower-privilege agent join token>"
+k3s_agent_token: "<agent join token>"
 k3s_version: "v1.36.3+k3s1"
-k3s_kube_vip_version: "v1.2.2"     # required on servers
-k3s_server_group: k3s_servers      # inventory group holding the servers
-
-# Extra apiserver-certificate SANs on top of k3s_api_vip, inventory_hostname
-# and ansible_host.
-k3s_internal_domain: example.com
-k3s_tls_sans: ["k3s.example.com"]
-
-# Server-specific
-k3s_role: server
-k3s_is_first_server: true          # exactly one
-k3s_bootstrap_new_cluster: false   # true only for a greenfield HA bootstrap
-
-# Agent-specific
-k3s_role: agent
-
-# Node customization — the label namespace is the site's, not the library's
-k3s_labels:
-  example.com/nas: "true"
-  example.com/general: "true"
-k3s_taints:
-  - key: example.com/nas
-    value: "true"
-    effect: PreferNoSchedule
-k3s_kubelet_args: []               # extra kubelet-arg entries, servers + agents
-
-# /etc/hosts pins (both default to [])
-k3s_registry_host_pins:
-  - {name: registry.example.com, ip: 10.0.0.101}
-k3s_storage_host_pins:
-  - {name: nas.example.com, ip: 10.0.0.102}
-
-# Passthrough disks, mounted by UUID (weisssrv.infra.zvol_mount). The same
-# conventional name weisssrv.infra.proxmox_vm aliases to CREATE and attach them,
-# so one host_vars block drives both. Set k3s_additional_disks to decouple.
-vm_additional_disks:
-  - name: postgres-data
-    size: 10G
-    zvol: ssd/appdata/authentik/postgres
-    mount_point: /mnt/postgres-data
-    fstype: ext4
+k3s_kube_vip_version: "v1.2.2"
+k3s_server_group: k3s_servers
+k3s_role: server                   # or agent
+k3s_is_first_server: true          # exactly one server
+k3s_labels: {example.com/general: "true"}
 ```
 
 ### Apiserver certificate SANs
@@ -186,6 +151,8 @@ certificate removed so k3s regenerates it.
 | `k3s_etcd_snapshot_textfile_dir` | `node_exporter_host_textfile_dir` | node_exporter textfile dir the copy metric lands in; `node_exporter_host` must run on the servers for it to be scraped. |
 | `k3s_etcd_snapshot_copy_oncalendar` | `hourly` | Copy-timer cadence. |
 | `k3s_etcd_snapshot_retention` | `5` | Snapshots kept per server on the export. |
+| `k3s_additional_disks` | `vm_additional_disks` | Passthrough disks mounted by UUID through `weisssrv.infra.zvol_mount`. It aliases the name `weisssrv.infra.proxmox_vm` uses to create them, so one host_vars block drives both. |
+| `k3s_kubelet_args` | `[]` | Extra `kubelet-arg` entries for servers and agents. |
 
 ### CNI backend
 
@@ -195,10 +162,6 @@ backend rather than plaintext `vxlan`. Rolling back to `vxlan` is a
 cluster-wide change: the node's flannel interface is recreated, so open the
 VXLAN port (UDP/8472) in the site firewall and expect stale `flannel.1` routes
 on nodes that carried the previous backend.
-
-Both join tokens are secrets: supply them from the site's secret store.
-`k3s_agent_token` falls back to `k3s_token` when unset, which is convenient for
-a test run and wrong for production — an agent token cannot promote a node.
 
 ## NVIDIA GPU agents (`k3s_gpu_node`)
 
@@ -242,8 +205,7 @@ non-free components the NVIDIA driver and firmware packages live in.
 
 k3s ships metrics-server as a static manifest set, so a `HelmChartConfig` cannot
 reach it. To raise its replica count or bound its memory, add `metrics-server` to
-`k3s_disable` and ship it as a cluster-managed release instead. The role removes
-a stale `metrics-server-config.yaml` from the server manifests dir.
+`k3s_disable` and ship it as a cluster-managed release instead.
 
 ## kube-apiserver audit logging (`k3s_audit_enabled`)
 
@@ -312,59 +274,17 @@ asserts `k3s_audit_policy` is an `audit.k8s.io/v1` `Policy` with at least one
 rule before writing it — a malformed override should fail the play, not roll the
 control plane into a crash loop.
 
-Turning it back off removes the args from the config (another restart) and
-leaves the now-unreferenced policy file behind, inert.
-
-## Files
-
-`main.yml` runs the prerequisites, the inotify sysctl, the /etc/hosts pins and
-the extra-disk mounts, then includes `server.yml` or `agent.yml` by `k3s_role`;
-node labels and taints are applied at the end of those.
-
-- `tasks/main.yml` - Main orchestration (prerequisites, inotify sysctl, /etc/hosts pins, disks)
-- `tasks/server.yml` - Server installation
-- `tasks/agent.yml` - Agent installation (incl. agent-token migration)
-- `tasks/install-script.yml` - Shared version detection + installer staging
-- `tasks/gpu.yml` - NVIDIA driver/toolkit enablement (included when `k3s_gpu_node`)
-- `tasks/audit.yml` - kube-apiserver audit policy (opt-in, servers only)
-- `tasks/etcd-snapshot-offnode.yml` - Off-node etcd snapshot copy (opt-in)
-- `tasks/etcd-snapshot-offnode-absent.yml` - Its de-provisioning path
-- `templates/k3s-server-config.yaml.j2` - Server configuration
-- `templates/k3s-agent-config.yaml.j2` - Agent configuration
-- `templates/k3s-audit-policy.yaml.j2` - kube-apiserver audit policy
-- `templates/kube-vip-manifest.yaml.j2` - Kube-vip DaemonSet
-- `templates/k3s-etcd-snapshot-copy.{sh,service,timer}.j2` - Off-node snapshot copy
-- `defaults/main.yml` - Default values
-- `handlers/main.yml` - Service restart + Ready-gate handlers. A restarted agent
-  is confirmed active with a stable restart count before the delegated node-Ready
-  poll, because a node object keeps reporting Ready for the node-monitor grace
-  period after its kubelet dies.
-- `molecule/default/` - Server scenario (bootstrap + join branches)
-- `molecule/agent/` - Agent scenario (config, token migration)
+Turning it back off removes the args from the config, which is another
+restart, and deletes the policy file. The log directory and existing logs stay.
 
 ## Companion roles
 
 Applied by the caller's playbook, not as meta dependencies:
-`weisssrv.infra.base`, `weisssrv.infra.postfix_null_client`,
+`weisssrv.infra.base`, `weisssrv.infra.qol`, `weisssrv.infra.postfix_null_client`,
 `weisssrv.infra.alloy_host`, `weisssrv.infra.nfs_tls`,
 `weisssrv.infra.proxmox_firewall`.
 
-## Persistent storage
-
-A passthrough block device (a ZFS zvol on the hypervisor, say) survives VM
-recreation, and brings the host filesystem's snapshots and compression with it.
-The role formats it, records its UUID in `/etc/fstab` and mounts it via
-`weisssrv.infra.zvol_mount`.
-
 ## Operations
-
-```bash
-systemctl status k3s          # servers
-systemctl status k3s-agent    # agents
-journalctl -u k3s -f
-kubectl get nodes
-kubectl get pods -A --field-selector spec.nodeName=<node>
-```
 
 Scaling out is: add the node to the inventory, provision the VM, run the
 playbook limited to it. Upgrading is: bump `k3s_version` and re-run, node by

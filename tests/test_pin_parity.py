@@ -35,6 +35,7 @@ FLUX_LINT_SCRIPT = REPO / "scripts" / "flux-lint.sh"
 DOCKER_DIND_TEMPLATE = REPO / "ci" / "templates" / "docker-dind.yml"
 SHELLCHECK_TEMPLATE = REPO / "ci" / "lint" / "shellcheck.yml"
 TERRAFORM_TEMPLATE = REPO / "ci" / "validate" / "terraform.yml"
+DRIFT_PLAN_TEMPLATE = REPO / "ci" / "validate" / "terraform-drift-plan.yml"
 FETCH_TOOLS = REPO / "scripts" / "ci-fetch-tools.py"
 ADGUARD_ROLE = (
     REPO / "ansible_collections" / "weisssrv" / "infra" / "roles" / "adguard_home"
@@ -145,6 +146,12 @@ class TestFetchToolsPinParity:
         assert template_input_default(FLUX_LINT, f"{tool}_version") == pinned.version
         assert template_input_default(FLUX_LINT, f"{tool}_sha256") == pinned.sha256
 
+    def test_the_flux_lint_flux_default_matches(self):
+        """The fetched flux and the strict parser's default are one release."""
+        pinned = _fetch_tools()["flux"]
+        assert template_input_default(FLUX_LINT, "flux_version") == pinned.version
+        assert template_input_default(FLUX_LINT, "flux_sha256") == pinned.sha256
+
     @pytest.mark.parametrize("tool", ["kustomize", "kubeconform", "shellcheck"])
     def test_the_github_example_env_matches(self, tool):
         pinned = _fetch_tools()[tool]
@@ -159,9 +166,15 @@ class TestFetchToolsPinParity:
     def test_an_image_pinned_tool_runs_the_same_version(self, tool, template):
         assert _image_version(template) == _fetch_tools()[tool].version
 
+    def test_the_drift_plan_runs_the_validate_image(self):
+        """The drift plan reads vault credentials, so it is digest-pinned too."""
+        drift = template_input_default(DRIFT_PLAN_TEMPLATE, "image")
+        assert "@sha256:" in drift
+        assert drift == template_input_default(TERRAFORM_TEMPLATE, "image")
+
     def test_the_table_carries_every_tool_named_above(self):
         """A renamed key would make every case above vacuous."""
-        assert {"kustomize", "kubeconform", "shellcheck", "terraform"} <= set(
+        assert {"flux", "kustomize", "kubeconform", "shellcheck", "terraform"} <= set(
             _fetch_tools()
         )
 
@@ -371,6 +384,12 @@ class TestPyYamlPinParity:
 
 class TestAnsibleCoreFloorParity:
     """collection-floor-build proves the floor the collection advertises."""
+
+    def test_collection_checks_and_python_tests_pin_one_ansible_core(self):
+        pinned = str(_ci_document(LIB_CI)["collection-checks"]["variables"]["ANSIBLE_CORE_VERSION"])
+        packages = _include_inputs(LIB_CI, "/ci/test/python-tests.yml")["pip_packages"]
+        match = re.search(r"ansible-core==(\S+)", packages)
+        assert match and match.group(1) == pinned, (pinned, packages)
 
     def test_the_floor_build_pins_the_advertised_floor(self):
         requires = yaml.safe_load(COLLECTION_RUNTIME.read_text())["requires_ansible"]

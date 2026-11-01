@@ -138,6 +138,10 @@ provisioner:
         nas_storage_archive_backup_enabled: true
         nas_storage_archive_backup_pool: archive
         nas_storage_archive_backup_vzdump_target: tank/proxmox
+        # verify.yml renders the archive script outside the role, where these
+        # defaults are not loaded.
+        nas_storage_archive_backup_vzdump_quiesce_min: 10
+        nas_storage_archive_backup_vzdump_max_wait_min: 30
         nas_storage_archive_backup_sources:
           - tank/share
           - tank/backups
@@ -171,15 +175,14 @@ provisioner:
             guest_ok: false
         # ARC cap pass-through to weisssrv.infra.zfs_arc_cap; verify.yml
         # asserts this byte count reaches the rendered modprobe.d file.
-        # skip_initramfs suppresses the rebuild handler.
+        # The container has no real /boot, so the initramfs rebuild is skipped.
         nas_storage_zfs_arc_max_bytes: "8589934592"
-        nas_storage_zfs_arc_skip_initramfs: true
+        zfs_arc_cap_skip_initramfs: true
         # Delegation kill-switch: verify.yml asserts the sysctl.d drop-in lands
         # with fs.leases-enable=0. Live apply stays off, since the knob is not
         # container-namespaced and would reach the CI host's kernel.
         nas_storage_nfs_disable_delegations: true
         nas_storage_nfs_apply_delegation_sysctl_live: false
         nas_storage_skip_zfs_operations: true
-        nas_storage_skip_mergerfs: true
         nas_storage_skip_nfs_reload: true
         nas_storage_skip_smartd_service: true

@@ -8,7 +8,7 @@ a pinned tag.
 
 ## Current release
 
-**v0.23.0.** Every pin example on this page and in `docs/` is written as
+**v0.24.0.** Every pin example on this page and in `docs/` is written as
 `<CURRENT_TAG>`; substitute the release you are adopting, so a release bump
 touches the few copy-paste snippets that must be runnable rather than a dozen
 stale examples. This line is the authority for the literal; the runnable
@@ -51,9 +51,8 @@ ci/            GitLab CI templates (include:project + spec:inputs)
                copy, vendored not included)
   maintenance/ version-check (read-only report) + version-bump-bot (one bump MR,
                never auto-merged)
-  deploy/      the deploy toolchain: deploy-base and kubectl-setup adopted;
-               cluster-verify-base and ansible-deploy shipped unadopted —
-               adoption per template is docs/INCLUDE-CONTRACT.md
+  deploy/      the deploy toolchain: deploy-base, kubectl-setup and
+               cluster-verify-base
   github/      ci.example.yml + build-image.example.yml (Actions reference
                copies, vendored not included)
   templates/   shared fragments: dep-cache, install-1password,
@@ -72,11 +71,12 @@ lint/          shared config files (yamllint, gitleaks + GitLab ruleset, ruff,
 scripts/       the gates + generators CI jobs run: version tracking, deploy/
                molecule coverage, Flux + Prometheus checks, doc links, the
                release automation — see docs/SCRIPTS.md
+kubernetes/ddns/
+               the Cloudflare dynamic-DNS CronJob program a consumer mounts
 kubernetes/reapers/
-               stdlib programs mounted into a consumer's CronJob beside its app
-               script
+               kube_reaper.py, the shared half of a pod-reaper CronJob program
 docker/        published per release: the two molecule test/CI images for the
-               collection + ansible-deploy (the pre-baked deploy job image)
+               collection
 examples/      copy-and-edit config files for the helper scripts
 cli/           weisssrv-new-project — the copier wrapper that renders the
                cluster template (new-cluster) and the app template (new-app)
@@ -101,7 +101,6 @@ include:
     ref: $[[ inputs.lib_ref ]]
     file: /ci/lint/yaml-lint.yml
     inputs:
-      tags: []                     # tag-less shared runner (tenant default)
       config: "-c lint/yamllint-relaxed.yml"
       targets: "."
 ```
@@ -110,11 +109,9 @@ An input interpolates before `include:` resolves, where `variables:` does not
 exist yet, so one in-git line pins every entry — see
 [The library pin](docs/INCLUDE-CONTRACT.md#the-library-pin).
 
-The library is **internal** visibility, so any authenticated instance user (and
-therefore every repo `eric` owns) can resolve `include: project:`.
-`include: project:` is resolved with the pipeline creator's read access at
-pipeline-creation time — not `CI_JOB_TOKEN` — so it "just works" for
-eric-triggered pipelines.
+GitLab resolves `include: project:` with the pipeline creator's read access at
+pipeline-creation time, not with `CI_JOB_TOKEN`. The library is internal, so
+any pipeline an authenticated instance user creates can include it.
 
 Every CI template's inputs, defaults, and consumer wiring are documented in
 [docs/INCLUDE-CONTRACT.md](docs/INCLUDE-CONTRACT.md); the helper scripts those
@@ -124,18 +121,19 @@ jobs run — and the config file each reads its site data from — are in
 
 ### Three consumer profiles
 
-Every template's input defaults target the first profile; the other two are
-reached by passing inputs, never by forking a job.
+Every template's input defaults target the first profile, except `tags`. Every
+template defaults `tags` to `[]`, so no job pre-selects a runner. The other
+profiles are reached by passing inputs, never by forking a job.
 
-- **weisssrv** (privileged `infrastructure` runner, root): the defaults *are*
-  weisssrv's values — runner tag `infrastructure`, its tool pins, `flux-lint`
-  `substitute: true`. Adopting a template with defaults reproduces what
-  weisssrv already ran; the per-template parity note in the include contract
-  records where that is not literally true and what to pass instead.
+- **weisssrv** (privileged `infrastructure` runner, root): the defaults are
+  weisssrv's values, such as its tool pins and `flux-lint` `substitute: true`.
+  weisssrv passes `tags: [infrastructure]` on the jobs that need root or
+  Docker-in-Docker. The per-template parity note in the include contract
+  records where a default is not weisssrv's value and what it passes instead.
 - **tenant repos** (shared non-privileged `k8s-deploy` runner, non-root, UID
-  1000): pass `tags: []` and the non-root-safe input set (`substitute: false`,
-  literal image pins, empty `apt_packages`). `docker-build` needs a privileged
-  runner and is therefore weisssrv-only unless the tenant registers its own.
+  1000): pass the non-root-safe input set: `substitute: false`, literal image
+  pins and empty `apt_packages`. `docker-build` needs a privileged runner and
+  is therefore weisssrv-only unless the tenant registers its own.
 - **a generated cluster** (weisssrv-cluster-template's output): a *new*
   platform repo, so it consumes the widest surface — CI includes, the Ansible
   collection, and the Terraform modules it opts into — but it is
@@ -144,7 +142,7 @@ reached by passing inputs, never by forking a job.
   gotk files, and every pin (includes, `requirements.yml`, module sources)
   comes from a single copier answer, `lib_ref`, rather than hand-edited
   literals. The generated repo runs on whichever runner its own instance
-  provides, so it passes `tags` explicitly rather than inheriting weisssrv's.
+  provides, so it passes its own privileged tag where a job needs root.
 
 ## Terraform modules
 
@@ -256,8 +254,7 @@ in a consumer — `ci/validate/flux-lint.yml`, the two consumer-only lint gates
 (`ci/lint/runbook-anchors.yml`, `ci/lint/terraform-tflint.yml`), the two drift
 detectors (`ci/validate/terraform-drift-plan.yml`,
 `ci/validate/cluster-drift-plan.yml`), the `ci/templates/` fragments,
-`ci/maintenance/version-bump-bot.yml`, and `ci/deploy/*` (the cluster
-template pins `deploy-base` and `kubectl-setup`). The reason for each is in
+`ci/maintenance/version-bump-bot.yml`, and `ci/deploy/*`. The reason for each is in
 [docs/INCLUDE-CONTRACT.md](docs/INCLUDE-CONTRACT.md). Merging to `main` runs
 `ci/release/semantic-release.yml`, which cuts the tag consumers pin.
 
@@ -281,36 +278,24 @@ pool names, credentials — those are inputs), Kubernetes manifests (they live i
 the cluster template so a cluster is self-contained, with no remote kustomize
 bases), and weisssrv's own pipeline glue (`validation-gate`, its hand-written
 per-playbook deploy jobs, `repo-sync`/`repo-policy` checks). The reusable half
-of that deploy layer **is** here, as `ci/deploy/*` — shipped and versioned,
-with `deploy-base` and `kubectl-setup` adopted so far. There is **no Renovate**
-anywhere — version bumps come from `ci/maintenance/version-bump-bot.yml`, which
-each CONSUMER schedules against its own version-check command and config. This
-library ships the template but does not run it on itself: it tracks no upstream
-versions of its own.
+of that deploy layer **is** here, as `ci/deploy/*`, shipped and versioned;
+which consumer takes which template is the include contract's table. There is
+**no Renovate** anywhere — version bumps come from
+`ci/maintenance/version-bump-bot.yml`, which each CONSUMER schedules against its
+own version-check command and config. This library ships the template but does
+not run it on itself: it tracks no upstream versions of its own.
 
 A consumer whose backends differ from weisssrv's — Ceph instead of ZFS, a
 secrets store other than 1Password, GitHub instead of GitLab — is meant to be
 served by the same tag. Roles that *are* a backend are skipped and replaced by a
 sibling family in the same flat FQCN namespace; roles that merely use one carry
-a seam variable defaulting to today's behaviour, and the CI scripts keep their
-forge calls behind a `--platform` flag. The seam map and the contract for adding
-an alternative are in [docs/EXTENSIBILITY.md](docs/EXTENSIBILITY.md).
+a seam variable defaulting to the shipped behaviour, and the CI scripts keep
+their forge calls behind a `--platform` flag. The seam map and the contract for
+adding an alternative are in [docs/EXTENSIBILITY.md](docs/EXTENSIBILITY.md).
 
 The application-guest roles (`gitlab`, `plex`, `nextcloud`, `immich`,
-`immich_ml`, `home_assistant`) **are** in scope as of this release. They were
-held back as "eric-specific" while they still carried site data in their
-defaults; every domain, IP and credential is now an asserted input, so a second
-cluster can run them unchanged.
+`immich_ml`, `home_assistant`) are in scope. Every domain, IP and credential they
+need is an asserted input, so a second cluster can run them unchanged.
 
 Full per-item detail, including which weisssrv job each template reproduces, is
 in [docs/INCLUDE-CONTRACT.md](docs/INCLUDE-CONTRACT.md).
-
-## Queued for the next release
-
-**Split `scripts/check-versions.py`.** It is one ~1,900-line file covering
-seven registry categories (six with a fetcher), the pin writer and the report
-renderer. Splitting it lands in its own MR because it moves code across files
-that two gates pin by name: the new modules each need a
-`scripts/vendorable-paths.yml` entry, a `docs/SCRIPTS.md` row
-(`tests/test_scripts_have_tests.py` fails otherwise), and their own suite. The
-CLI surface and the registry schema do not change.

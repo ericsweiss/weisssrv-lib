@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Molecule behavioral check for the ZFS-free metric helpers in the rendered
-# archive-backupctl and media-mover.sh: archive-contract-assert.sh pins their
-# structure, this executes them. Runs on the target after converge.
+# Molecule behavioral check for the metric and lockdown helpers in the rendered
+# archive-backupctl, media-mover.sh and swap-clean.sh, against stubbed zfs and
+# qm. archive-contract-assert.sh pins their structure; this executes them.
 set -euo pipefail
 
 ARCHIVE="${1:-/usr/local/sbin/archive-backupctl}"
@@ -24,8 +24,8 @@ grep -q 'main disabled for behavior test' "$WORK/archive-lib.sh" \
 
 # shellcheck disable=SC1091
 source "$WORK/archive-lib.sh"
-# Every path the script writes has to land in $WORK: write_prom_metrics now
-# fails loudly on an uncreatable PROM_DIR instead of writing nothing quietly.
+# Every path the script writes has to land in $WORK: write_prom_metrics fails
+# on an uncreatable PROM_DIR.
 PROM_FILE="$WORK/archive_backup.prom"
 PROM_DIR="$WORK"
 PRUNE_FAIL_MARKER="$WORK/.archive_prune_failed"
@@ -226,5 +226,80 @@ env -i bash -c '
   lock_backup_tree tank/backup >/dev/null 2>&1
   [ "$_LOCKDOWN_FAILED" = "0" ] || exit 33
 ' || fail "a successful lockdown was reported as failed"
+
+# A filesystem still mounted after lockdown, or an unreadable mount state, fails it.
+env -i bash -c '
+  # shellcheck disable=SC1091
+  source "'"$WORK"'/archive-lib.sh" || true
+  set +e
+  zfs() {
+    case "$*" in
+      "list -H -o name -r tank/backup") printf "tank/backup\ntank/backup/media\n" ;;
+      "get -H -o name,value -r -t filesystem mounted tank/backup")
+        printf "tank/backup\tno\ntank/backup/media\tyes\n" ;;
+    esac
+    return 0
+  }
+  lock_backup_tree tank/backup > "'"$WORK"'/mounted.log" 2>&1
+  [ "$_LOCKDOWN_FAILED" = "1" ] || exit 34
+  grep -q "Lockdown: FAILED, still mounted: tank/backup/media$" "'"$WORK"'/mounted.log" || exit 35
+  _LOCKDOWN_FAILED=0
+  zfs() {
+    case "$*" in
+      "get -H -o name,value -r -t filesystem mounted tank/backup") return 1 ;;
+    esac
+    return 0
+  }
+  lock_backup_tree tank/backup > "'"$WORK"'/mounted.log" 2>&1
+  [ "$_LOCKDOWN_FAILED" = "1" ] || exit 36
+  grep -q "Lockdown: FAILED, cannot read the mount state under tank/backup" "'"$WORK"'/mounted.log" || exit 37
+' || fail "a replica left mounted after lockdown was reported as locked"
+
+# A failed child listing leaves every child with its current props, so both
+# the lockdown and the receive unlock must report it rather than pass.
+env -i PATH="$PATH" bash -c '
+  # shellcheck disable=SC1091
+  source "'"$WORK"'/archive-lib.sh" || true
+  set +e
+  zfs() {
+    case "$*" in
+      "list -H -o name -r tank/backup") echo "cannot open tank/backup: I/O error" >&2; return 1 ;;
+    esac
+    return 0
+  }
+  lock_backup_tree tank/backup > "'"$WORK"'/children.log" 2>&1
+  [ "$_LOCKDOWN_FAILED" = "1" ] || exit 41
+  grep -q "Lockdown: FAILED, cannot list the datasets under tank/backup" "'"$WORK"'/children.log" || exit 42
+  _LOCKDOWN_FAILED=0
+  unlock_for_receive tank/backup > "'"$WORK"'/children.log" 2>&1
+  [ "$_LOCKDOWN_FAILED" = "1" ] || exit 43
+' || fail "a failed child listing read as a tree with no children to lock"
+
+# A failed snapshot or dataset listing is a prune failure, never "nothing to
+# prune", so the published prune gauge drops to 0.
+env -i PATH="$PATH" bash -c '
+  # shellcheck disable=SC1091
+  source "'"$WORK"'/archive-lib.sh" || true
+  set +e
+  PROM_DIR="'"$WORK"'/prune-list"
+  PROM_FILE="$PROM_DIR/archive_backup.prom"
+  PRUNE_FAIL_MARKER="$PROM_DIR/.archive_prune_failed"
+  zfs() {
+    case "$*" in
+      "list -H -t snapshot -o name -S creation -r "*) echo "cannot open: I/O error" >&2; return 1 ;;
+      "list -H -o name -r tank/share") echo tank/share ;;
+      "list -H -o name -r tank/broken") echo "cannot open tank/broken: I/O error" >&2; return 1 ;;
+    esac
+    return 0
+  }
+  prune_snaps_dataset tank/share retain > /dev/null 2>&1 && exit 44
+  prune_snaps_tree tank/share > /dev/null 2>&1 && exit 45
+  prune_snaps_tree tank/broken > "$PROM_DIR.log" 2>&1 && exit 46
+  grep -q "Prune: FAILED to list the datasets under tank/broken" "$PROM_DIR.log" || exit 47
+  PRUNE_OK=1
+  prune_snaps_tree tank/share > /dev/null 2>&1 || note_prune_failure
+  write_prom_metrics 1 1 > /dev/null 2>&1 || exit 48
+  grep -qx "archive_backup_last_prune_success 0" "$PROM_FILE" || exit 49
+' || fail "a failed zfs listing read as nothing to prune"
 
 echo "archive/media-mover/swap-clean metric behavior OK"

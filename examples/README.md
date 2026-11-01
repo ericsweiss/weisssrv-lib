@@ -12,7 +12,7 @@ point the script at it. Each script's config resolution is documented in
 | `deploy-coverage.example.conf` | `check-deploy-coverage.sh` | `scripts/deploy-coverage.conf` |
 | `autoscaling-policy.example.yaml` | `check-hpa-vpa-invariant.py`, `validate-helm-values.py` | `kubernetes/autoscaling-policy.yaml` |
 | `helm-values-releases.example.yaml` | `validate-helm-values.py` | `helm-values-releases.yaml` |
-| `b2-bucket.example.json` | `b2-bucket-drift.py` | `scripts/b2-bucket.json` |
+| `b2-bucket.example.json` | `b2-bucket-drift.py` | `scripts/b2-bucket.json`, passed with `--config` |
 | `netpol-except.example.yaml` | `check-netpol-except-parity.py` | `scripts/netpol-except.yaml` |
 | `alertmanager-behaviour.example.yaml` | `check-alertmanager-behaviour.py` | `scripts/alertmanager-behaviour.yaml` |
 | `render-gates.example.conf` | `run-render-gates.sh` | `scripts/render-gates.conf` |
@@ -20,6 +20,7 @@ point the script at it. Each script's config resolution is documented in
 | `helmrelease-crd-safety.example.yaml` | `check-helmrelease-crd-safety.py` | `kubernetes/helmrelease-crd-safety.yaml` |
 | `comment-length.example.yml` | `check-comment-length.py` | `.comment-length.yml` |
 | `lib-ref-sites.example.yml` | `check-lib-pins.py` | `scripts/lib-ref-sites.yml` |
+| `crd-sources.example.yaml` | `check-crd-stage-order.py` | `scripts/crd-sources.yaml` |
 
 The values in these files are illustrative placeholders, not a live
 configuration. `b2-bucket.example.json` and `unifi-settings.example.json` in

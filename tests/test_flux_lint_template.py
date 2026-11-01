@@ -48,11 +48,11 @@ def _before_script() -> str:
 
 
 class TestTheProgramLivesInOneFile:
-    """The strict-render gap opened because this program existed three times;
-    a second copy here would reopen it."""
+    """The render program lives in scripts/flux-lint.sh alone; a second copy
+    in the job script could drift from it."""
 
     @pytest.mark.parametrize("fragment", [
-        "flux envsubst --strict",
+        "envsubst --strict",
         "kustomize build",
         "kubeconform",
         "yaml.safe_load_all",
@@ -65,26 +65,12 @@ class TestTheProgramLivesInOneFile:
         )
 
     @pytest.mark.parametrize("fragment", [
-        "flux envsubst --strict", "kustomize build", "kubeconform",
+        '"$flux_bin" envsubst --strict', "kustomize build", "kubeconform",
     ])
     def test_the_script_does_carry_it(self, fragment):
         """Mutation guard: the assertions above pass vacuously if the program
         is nowhere."""
         assert fragment in SCRIPT.read_text(encoding="utf-8")
-
-    def test_both_arms_invoke_the_script(self):
-        script = _rendered_script()
-        assert script.count('bash "$FLUX_LINT_SCRIPT"') == 2
-        assert "--mode simple" in script
-
-    def test_a_consumer_that_has_not_vendored_it_is_told_so(self):
-        script = _rendered_script()
-        assert '[ -f "$FLUX_LINT_SCRIPT" ]' in script
-        assert "scripts/vendorable-paths.yml" in script
-
-    def test_the_script_path_is_a_consumer_tree_input(self):
-        inputs, _body = _spec_and_body()
-        assert inputs["flux_lint_script"]["default"] == "scripts/flux-lint.sh"
 
 
 class TestTheJobKeepsWhatExtraValidationReads:
@@ -109,11 +95,6 @@ class TestTheJobKeepsWhatExtraValidationReads:
 
 
 class TestArmScopedInputs:
-    @pytest.mark.parametrize("name", ["kustomize_path", "allowed_skips", "cluster_dir"])
-    def test_each_arm_scoped_input_says_which_arm_reads_it(self, name):
-        inputs, _body = _spec_and_body()
-        assert re.search(r"\(substitute=(true|false)\)", inputs[name]["description"]), name
-
     def test_substitute_mode_requires_cluster_dir(self):
         """cluster_dir carries a default, so the substitute arm has to check it."""
         assert "cluster_dir is required when substitute=true" in _rendered_script()
@@ -129,10 +110,23 @@ class TestArmScopedInputs:
         # the download: the `else` half takes kubeconform and kustomize only.
         assert "flux" not in before.split("else", 1)[1]
 
-    def test_the_cli_is_installed_from_the_input_the_guard_compares(self):
-        inputs, _body = _spec_and_body()
-        assert 'FLUX_VERSION: "$[[ inputs.flux_version ]]"' in TEMPLATE.read_text()
-        assert inputs["flux_version"]["default"]
+    def test_the_tenant_arm_downloads_into_a_private_directory(self):
+        """A fixed /tmp/<name> can be pre-seeded or raced by another process."""
+        tenant_arm = _before_script().split("else", 1)[1]
+        assert 'DL_DIR="$(mktemp -d)"' in tenant_arm
+        assert "/tmp/" not in tenant_arm
+
+    def test_the_substitute_arm_stops_on_a_non_root_runner_before_apt(self):
+        """`tags` defaults to [], so a tag-less non-root runner can pick the
+        job up; it must fail with the fix named, not as an apt permission error."""
+        root_arm = _before_script().split("else", 1)[0]
+        guard = next(line.strip() for line in root_arm.splitlines() if "id -u" in line)
+        assert root_arm.index(guard) < root_arm.index("apt-get")
+        if os.geteuid() == 0:
+            pytest.skip("the guard passes as root")
+        proc = subprocess.run(["bash", "-c", guard], capture_output=True, text=True)
+        assert proc.returncode == 1
+        assert "substitute: true needs a root runner" in proc.stderr
 
 
 class TestTheWiringActuallyRuns:
@@ -157,7 +151,7 @@ class TestTheWiringActuallyRuns:
             CLUSTER_DIR="kubernetes/clusters/demo",
             VERSIONS_CONFIGMAP=(
                 "kubernetes/infrastructure/sources/versions-configmap.yaml"),
-            FLUX_RENDER_SCRIPT=str(REPO / "scripts" / "flux-render.sh"),
+            FLUX_RENDER_SCRIPT=str(REPO / "scripts" / "flux-env.sh"),
             SKIPPED_SCRIPT=str(REPO / "scripts" / "kubeconform-skipped.py"),
             EXPECTED_SKIPPED_FILE="", REQUIRE_CLUSTER_ROOT="true",
         )
@@ -173,7 +167,7 @@ class TestTheWiringActuallyRuns:
             CLUSTER_DIR="kubernetes/clusters/demo",
             VERSIONS_CONFIGMAP=(
                 "kubernetes/infrastructure/sources/versions-configmap.yaml"),
-            FLUX_RENDER_SCRIPT=str(REPO / "scripts" / "flux-render.sh"),
+            FLUX_RENDER_SCRIPT=str(REPO / "scripts" / "flux-env.sh"),
             SKIPPED_SCRIPT=str(REPO / "scripts" / "kubeconform-skipped.py"),
             EXPECTED_SKIPPED_FILE="", REQUIRE_CLUSTER_ROOT="true",
         )
@@ -202,3 +196,4 @@ class TestTheWiringActuallyRuns:
                          KUSTOMIZE_PATH="kubernetes/apps", ALLOWED_SKIPS="0")
         assert proc.returncode == 1
         assert "scripts/flux-lint.sh not found" in proc.stdout
+        assert "scripts/vendorable-paths.yml" in proc.stdout

@@ -99,7 +99,7 @@ here.
 | `adguard_sync` | Replicates AdGuard settings primary → replica, with freshness metrics |
 | `smtp_relay` | Central Postfix relay to an upstream provider with SASL, as a merge over role defaults |
 | `postfix_null_client` | Postfix satellite forwarding to the relay, incl. compiled-map repair |
-| `acme_certs` | Wildcard certificates via acme.sh (DNS-01) plus verified push to each consuming host |
+| `acme_certs` | Wildcard certificates via acme.sh (DNS-01) plus verified push to each consuming host; a `reseed` entry point re-pins the distribution key on its targets |
 
 ### Kubernetes
 
@@ -154,10 +154,10 @@ Two consequences of that naming worth knowing before editing inventory:
   `cert_distribution_targets.prom`) because live alerts, promtool tests and
   dashboards consume those exact strings. Renaming one is an observability
   change, not a tidy-up.
-- **Some roles de-provision on `enabled: false`.** `nas_storage`'s archive
-  replication and `zfs_encryption`'s mount-anchor unit are removed when their
-  inputs go empty, rather than being left inert. That is a live-host action the
-  first time the collection reconciles a host that has them.
+- **Some roles de-provision what an input turns off.** `nas_storage` removes
+  the units of a component whose `_enabled` flag is false, and `zfs_encryption`
+  removes its mount unit on a host with no encrypted pools. Turning one off is a
+  live-host change on the next run.
 
 ### Inventory-wide names the roles alias
 
@@ -200,7 +200,7 @@ variable defaulting to
 `node_exporter_host_textfile_dir | default('/var/lib/node_exporter')`, so a
 guest running both roles publishes where the exporter reads without restating
 the path, and a site that moved the textfile dir sets it once. The variables
-following the convention today are `acme_certs_textfile_dir`,
+following the convention are `acme_certs_textfile_dir`,
 `adguard_sync_textfile_dir`, `encrypted_swap_textfile_dir`,
 `gitlab_textfile_dir`, `immich_backup_metrics_dir`,
 `k3s_etcd_snapshot_textfile_dir`, `nas_storage_backup_artifact_metrics_dir`,
@@ -218,7 +218,7 @@ collection. Roles that *are* a backend (`zfs_*`, `nas_storage`, the `proxmox_*`
 family) are skipped and replaced by a sibling family in the same flat FQCN
 namespace; roles that merely *use* one expose a seam variable whose default is
 today's behaviour (`zfs_encryption_key_command`, `proxmox_storage_defaults`,
-`restic_offsite_bind_mode`, `restic_offsite_rclone_remote_type`,
+`restic_offsite_rclone_remote_type`,
 `node_exporter_host_zpool_collector`, `acme_certs_dns_hook`,
 `zvol_mount_device_id_prefix`). The full seam map, the
 by-design list, and the contract for contributing an alternative are in
@@ -266,8 +266,7 @@ Scenarios run from the role directory, inheriting the shared base config:
 
 ```bash
 cd roles/<role>
-molecule -c ../../molecule-shared/base.yml test            # default scenario
-molecule -s <scenario> test                                # self-contained scenario
+molecule -c ../../molecule-shared/base.yml test [-s <scenario>]
 ```
 
 The base config wires `ANSIBLE_ROLES_PATH` to `roles/` and the collections path

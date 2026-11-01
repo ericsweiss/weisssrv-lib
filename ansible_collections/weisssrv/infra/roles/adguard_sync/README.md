@@ -21,8 +21,7 @@ One-way sync of AdGuard Home settings from a **primary** instance to a
 | `adguard_sync_enabled` | Run the role on this host (the primary) | no (`false`) |
 | `adguard_sync_version` | Pinned adguardhome-sync release | yes |
 | `adguard_sync_origin` | Primary AdGuard API URL | yes |
-| `adguard_sync_replica` | Replica AdGuard API URL | yes, unless `adguard_sync_replicas` is set |
-| `adguard_sync_replicas` | Two or more replicas: `{url, username, password}` entries, credentials falling back to the admin pair | no (`[]`) |
+| `adguard_sync_replica` | Replica AdGuard API URL | yes |
 | `adguard_sync_admin_user` / `_admin_password` | Credentials, valid on **every** endpoint | yes |
 | `adguard_sync_schedule` | Timer `OnCalendar` | no (`*:0/5`) |
 | `adguard_sync_features` | Which config sections to sync | no (see `defaults/main.yml`) |
@@ -34,27 +33,10 @@ adguard_sync_origin: "https://dns-01.{{ internal_domain }}"
 adguard_sync_replica: "https://dns-02.{{ internal_domain }}"
 ```
 
-Three or more instances use the list form instead, which renders upstream's
-`replicas:` block and ignores `adguard_sync_replica`:
-
-```yaml
-adguard_sync_replicas:
-  - url: "https://dns-02.{{ internal_domain }}"
-  - url: "https://dns-03.{{ internal_domain }}"
-    username: "sync"          # optional per-entry override
-    password: "{{ dns_03_sync_password }}"
-```
-
-Fronting the two endpoints with an ingress proxy gives you TLS and is the
-recommended shape. It makes the sync timer depend on that proxy being up, but
-DNS resolution itself is unaffected (each instance serves port 53 directly):
-what stops during such an outage is drift correction, and the next tick after
-recovery catches up.
-
-Pointing the URLs at the instances' plain HTTP ports removes that dependency at
-the cost of putting the AdGuard **admin** credential on the wire in cleartext on
-every tick — take the shortcut only where an eavesdropper on that LAN segment is
-an accepted risk.
+Front the two endpoints with an ingress proxy for TLS. The sync timer then
+depends on that proxy. DNS resolution does not, because each instance serves
+port 53 directly. A proxy outage stops drift correction only, and the next tick
+after recovery catches up. Plain HTTP URLs: see Security.
 
 ## What is and is not synced
 
@@ -78,8 +60,7 @@ node_exporter textfile on every run (`ExecStopPost=+…-metrics.sh`, under
 - `adguardhome_sync_last_success_timestamp_seconds` — preserved across failures, so
   a staleness alert measures time-since-last-success
 
-(The metric names keep the upstream tool's `adguardhome_sync_` prefix; only the
-role variables are `adguard_sync_`.)
+The metrics keep the upstream tool's `adguardhome_sync_` prefix.
 
 The role creates that directory itself, so the metric is published on a host
 where `node_exporter_host` has not run. If the directory is missing anyway, the
@@ -116,5 +97,5 @@ curl -u "$user:$pass" "$replica/control/dns_info"
 - credentials come from the site's secret store, never from git; the tasks that
   touch them use `no_log`
 - the sync authenticates with HTTP Basic on every tick, so an `http://` replica
-  URL sends the admin credential in cleartext — use `https://` endpoints unless
-  that exposure is accepted
+  URL sends the AdGuard **admin** credential in cleartext. Use `https://`
+  endpoints unless an eavesdropper on that segment is an accepted risk.

@@ -5,29 +5,28 @@
   template; plus the Terraform-module and Ansible-collection consumption
   patterns.
 - [SCRIPTS.md](SCRIPTS.md) — the `scripts/` contract: what each gate/generator
-  does, its flags and env, and the consumer config file it reads (examples in
-  [../examples/](../examples/README.md)).
+  does, its flags and env, and the consumer config file it reads. The config
+  examples live in [../examples/](../examples/README.md).
 - [VERSIONING.md](VERSIONING.md) — what one tag covers, the conventional-commit
   release automation, the protected-tag prerequisite, the full pin surface a
   consumer bump has to walk, and this repo's release checklist.
 - [EXTENSIBILITY.md](EXTENSIBILITY.md) — how a consumer whose backends are not
-  weisssrv's (Ceph, a non-1Password secrets store, GitHub) adopts the library:
-  the seam map, what is backend-specific by design, and the contract for adding
-  an alternative.
+  weisssrv's adopts the library, such as Ceph storage, another secrets store or
+  GitHub: the seam map, the known gaps, what is backend-specific by design, and
+  the contract for adding an alternative.
 - [DATABASE-CONTRACT.md](DATABASE-CONTRACT.md) — the connection-Secret contract
   for CloudNativePG consumers: Secret names, keys, delivery as files,
   privileges and rotation.
-- Consumer pins are recorded consumer-side — this library does not keep a
-  registry of who pins it. What it publishes is the vendorable offer list,
-  [../scripts/vendorable-paths.yml](../scripts/vendorable-paths.yml).
+- [../scripts/vendorable-paths.yml](../scripts/vendorable-paths.yml) — the
+  files a consumer may vendor byte-identically.
 
 Vendored surfaces document themselves next to the files:
 [../lint/README.md](../lint/README.md) states the copy-into-consumer contract
 for the linter configs.
 
-The Ansible collection has its own front door —
-[../ansible_collections/weisssrv/infra/README.md](../ansible_collections/weisssrv/infra/README.md)
-(role table, inventory-wide aliases, testing).
+The Ansible collection has its own front door,
+[../ansible_collections/weisssrv/infra/README.md](../ansible_collections/weisssrv/infra/README.md).
+It holds the role table, the inventory-wide aliases and the testing notes.
 
 Each Terraform module documents its own inputs, outputs and consumption pattern:
 [cloudflare-zone](../terraform/modules/cloudflare-zone/README.md),
@@ -40,5 +39,4 @@ repeated validation regexes — are in
 
 The top-level [../README.md](../README.md) is the overview + repo map, and names
 the current release. The CLI has its own [../cli/README.md](../cli/README.md);
-the published images (the two molecule ones and `ansible-deploy`) are documented
-in [../docker/README.md](../docker/README.md).
+the two published molecule images are documented in [../docker/README.md](../docker/README.md).

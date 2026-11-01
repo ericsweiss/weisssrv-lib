@@ -46,9 +46,6 @@ not restart it.
 | `home_assistant_ssh_connect_timeout` | `ConnectTimeout` for every call | no (`10`) |
 | `home_assistant_config_path` | Config dir on HAOS | no (`/config`) |
 | `home_assistant_extra_config` | Extra YAML appended verbatim to `configuration.yaml` | no (`""`) |
-| `home_assistant_enable_prometheus`, `home_assistant_enable_default_config` | Emit the `prometheus:` / `default_config:` block | no (`true`) |
-| `home_assistant_tts_platforms` | TTS platforms; empty omits the `tts:` block | no (`[google_translate]`) |
-| `home_assistant_includes` | `<key>: !include <file>` map; empty omits them | no (`automation`/`script`/`scene`) |
 | `home_assistant_staging_dir` | Pin the staging dir; empty uses a private per-run tempdir | no (`""`) |
 | `home_assistant_render_only` | Render and stop — no ssh/scp/check | no (`false`) |
 
@@ -59,7 +56,8 @@ putting them in inventory. Set the variables directly to bypass that.
 
 `home_assistant_ssl_enabled` is `false` by default on purpose: HA fails to bind
 8123 when `configuration.yaml` names a cert file that is not on the appliance
-yet. Turn it on once the cert has been distributed to `/ssl`.
+yet. Turn it on once the cert has been distributed to `/ssl`. Like the rest of
+the `http:` block, it reaches an instance on first boot only.
 
 ### Worked example
 
@@ -67,9 +65,9 @@ yet. Turn it on once the cert has been distributed to `/ssl`.
 home_assistant_host: 10.0.0.154
 home_assistant_host_key: "ssh-ed25519 AAAAC3Nza...example..."
 home_assistant_trusted_proxies:
-  - 10.0.0.0/24     # LAN — the ingress node handling traffic can change
-  - 10.42.0.0/16       # k3s pod network
-  - 10.43.0.0/16       # k3s service network
+  - 10.0.0.0/24      # LAN — the ingress node handling traffic can change
+  - 10.42.0.0/16     # k3s pod network
+  - 10.43.0.0/16     # k3s service network
 home_assistant_oidc_configure_url: >-
   https://auth.example.com/application/o/home/.well-known/openid-configuration
 home_assistant_ssl_enabled: true
@@ -111,16 +109,13 @@ be reviewable.
 
 `configuration.yaml.j2` renders the `http:` block (X-Forwarded-For + trusted
 proxies, optional TLS), the `openid:` SSO block, `prometheus:`,
-`default_config:`, `tts:` and the `automation`/`script`/`scene` includes. The
-last four are opinionated defaults, not fixtures: `home_assistant_enable_
-prometheus`, `_enable_default_config`, `_tts_platforms` and `_includes` each
-omit their block when disabled or emptied, which matters because
-`home_assistant_extra_config` can only append and `ha core check` fails the
-deploy when an `!include` target does not exist on the host.
+`default_config:`, `tts:` and the `automation`/`script`/`scene` includes.
+`ha core check` fails the deploy when an `!include` target does not exist on
+the host.
+
 Anything else belongs in `home_assistant_extra_config` or in HA's own UI
-storage. SMTP notifications in particular are no longer YAML: the `smtp` notify
-platform was removed in HA 2027.1.0 and lives in a UI config entry (kept in
-HAOS `.storage`, captured by HA backups).
+storage. SMTP notifications are a UI config entry, kept in HAOS `.storage` and
+captured by HA backups, not YAML.
 
 `secrets.yaml.j2` renders `oidc_client_id` / `oidc_client_secret`, each passed
 through `to_json` so a value containing `:` or `[` stays valid YAML.
@@ -128,14 +123,15 @@ through `to_json` so a value containing `:` or `[` stays valid YAML.
 Both templates must stay **byte-stable** across runs — the idempotency check is
 a checksum comparison, so a timestamp in the render would defeat it.
 
-### `trusted_proxies` governs first boot only
+### The `http:` block governs first boot only
 
-`home_assistant_trusted_proxies` is rendered into the `http:` block because a
-fresh instance imports it, and it is asserted at role entry. It is **not** the
-live control on an instance that has already migrated `http` to its storage
-backend: from then on Home Assistant answers from `/config/.storage/http` and
-ignores the YAML list, so a narrower list here does not stop a LAN host
-forging `X-Forwarded-For`.
+The rendered `http:` block holds `use_x_forwarded_for`, `trusted_proxies` from
+`home_assistant_trusted_proxies`, and the `ssl_certificate` and `ssl_key`
+paths. A fresh instance imports it, and `home_assistant_trusted_proxies` is
+asserted at role entry. It is **not** the live control on an instance that has
+already migrated `http` to its storage backend. From then on Home Assistant
+answers from `/config/.storage/http` and ignores the YAML, so a narrower list
+here does not stop a LAN host forging `X-Forwarded-For`.
 
 The effective list is live UI state, not something this role writes — editing
 `.storage` from Ansible would race Home Assistant's own writer. Change it on
@@ -144,29 +140,12 @@ hypervisor when the add-on is unreachable) and restart Home Assistant, then
 re-check from a host that should not be trusted. Keep the rendered list correct
 anyway: it is what a rebuilt instance imports.
 
+Password login is the fallback when SSO is unavailable. The `openid:` block is
+read from YAML on every start, so `home_assistant_oidc_block_login: false` and a
+redeploy bring back Home Assistant's own login.
+
 ## Prerequisites on HAOS
 
 The SSH add-on must be installed and listening (port 22222 by convention) with
 the deploying user's public key authorized. Integrations, automations and
 backups are managed in HA's UI, not here.
-
-## Layout
-
-```
-roles/home_assistant/
-├── defaults/main.yml       consumer API + documented defaults
-├── vars/main.yml           internal shared ssh option set
-├── meta/main.yml           galaxy metadata
-├── tasks/main.yml          assert -> render -> compare -> deploy/rescue
-├── templates/
-│   ├── configuration.yaml.j2
-│   └── secrets.yaml.j2
-├── molecule/default/       render contract + deploy/rollback via local shims
-└── README.md
-```
-
-## Testing
-
-Converges render-only, then drives deploy, no-op, rollback and first-deploy
-cleanup through local `ssh`/`scp`/`ha` shims against a fake `/config`. Run it
-with the standard scenario invocation in the collection README § Testing.

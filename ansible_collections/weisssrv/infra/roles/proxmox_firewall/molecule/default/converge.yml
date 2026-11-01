@@ -193,7 +193,7 @@
 
 # Fifth play: an empty relay client scope must render sg-smtp-relay with no IN
 # rule. Scoped to the docker platform, which carries the cluster-task delegate,
-# so the render and the capture land on the filesystem verify reads.
+# so the render lands on the filesystem verify reads.
 - name: Converge — empty smtp-relay client scope
   hosts: proxmox-firewall-test
   become: true
@@ -206,54 +206,15 @@
     proxmox_firewall_staging_dir: /var/lib/pve-firewall-ansible-smtp-empty
   tasks:
     # The empty relay scope is a fact, not a play var: assert_cluster_scope.yml
-    # compares it with hostvars[delegate], which never carries play vars, so a
-    # play var fails that guard instead of the relay guard below.
+    # compares it with hostvars[delegate], which never carries play vars.
     - name: Clear the cluster run-once fact and empty the relay client scope
       ansible.builtin.set_fact:
         _proxmox_firewall_cluster_done: false
         proxmox_firewall_smtp_relay_sources: []
 
-    - name: Result directory
-      ansible.builtin.file:
-        path: /tmp/molecule-results
-        state: directory
-        mode: "0755"
-
     - name: Re-include proxmox_firewall with no relay client scope
       ansible.builtin.include_role:
         name: weisssrv.infra.proxmox_firewall
-
-    # A guest naming sg-smtp-relay with no client scope would get a group with
-    # no IN rule at all, so the relay's :25 and :587 stay closed. Tagged so the
-    # idempotence replay does not re-fire the guard the declaration counts.
-    - name: Drive the relay-scope guard with a guest that names the group
-      tags: [molecule-idempotence-notest]
-      block:
-        - name: Run the guest tasks for a relay guest with no client scope
-          ansible.builtin.include_role:
-            name: weisssrv.infra.proxmox_firewall
-            tasks_from: guest
-          vars:
-            vmid: 9151
-            guest_security_groups: [sg-smtp-relay]
-
-        - name: Record that the relay-scope guard did not fire
-          ansible.builtin.set_fact:
-            proxmox_firewall_scenario_relay_guard: false
-      rescue:
-        - name: Record that the relay-scope guard fired
-          ansible.builtin.set_fact:
-            proxmox_firewall_scenario_relay_guard: true
-
-    # Tagged with the case above: the fact it reads is set only on the run that
-    # drives the guard, and verify reads this artifact after the replay.
-    - name: Capture the relay-scope guard result
-      tags: [molecule-idempotence-notest]
-      ansible.builtin.copy:
-        dest: /tmp/molecule-results/fw-relay-scope.json
-        mode: "0644"
-        content: |
-          {"guard_fired": {{ proxmox_firewall_scenario_relay_guard | to_json }}}
 
 # Sixth play: an inventory guest naming sg-smtp-relay with an empty client scope
 # must fail at cluster scope, before cluster.fw publishes the empty group.
@@ -324,9 +285,9 @@
   hosts: proxmox-firewall-test
   become: true
   tasks:
-    - name: Load the role defaults holding the compile predicate
+    - name: Load the role vars holding the compile predicate
       ansible.builtin.include_vars:
-        file: "{{ playbook_dir }}/../../defaults/main.yml"
+        file: "{{ playbook_dir }}/../../vars/main.yml"
 
     - name: Stage the compile result — a line-numbered parse error that exited 0
       ansible.builtin.set_fact:
@@ -337,7 +298,7 @@
     - name: Assert the predicate fails a parse error that exited 0
       ansible.builtin.assert:
         that:
-          - proxmox_firewall_compile_failed | bool
+          - _proxmox_firewall_compile_failed | bool
         fail_msg: >-
           A line-numbered pve-firewall parse error that exited 0 reads as a
           successful compile, so a broken ruleset deploys green.
@@ -351,7 +312,7 @@
     - name: Assert the predicate fails wording carrying no error word
       ansible.builtin.assert:
         that:
-          - proxmox_firewall_compile_failed | bool
+          - _proxmox_firewall_compile_failed | bool
         fail_msg: "pve-firewall's own parse-error wording is not matched"
 
     - name: Stage the compile result — a non-zero exit with empty stderr
@@ -363,7 +324,7 @@
     - name: Assert a non-zero exit fails whatever stderr says
       ansible.builtin.assert:
         that:
-          - proxmox_firewall_compile_failed | bool
+          - _proxmox_firewall_compile_failed | bool
         fail_msg: "a non-zero pve-firewall exit is not a failure"
 
     - name: Stage the compile result — a healthy compile and its notices
@@ -375,7 +336,7 @@
     - name: Assert a healthy compile and its notices pass
       ansible.builtin.assert:
         that:
-          - not (proxmox_firewall_compile_failed | bool)
+          - not (_proxmox_firewall_compile_failed | bool)
         fail_msg: >-
           A healthy compile fails the gate, so every run of the role reds on a
           benign pve-firewall notice.
@@ -391,7 +352,7 @@
     - name: Assert the line-error arm catches an unworded parse error
       ansible.builtin.assert:
         that:
-          - proxmox_firewall_compile_failed | bool
+          - _proxmox_firewall_compile_failed | bool
         fail_msg: "a (line N) complaint pve-firewall did not word as an error passes"
 
     - name: Stage the compile result — the same wording with no line number
@@ -403,7 +364,7 @@
     - name: Assert the same wording without a line number is not a failure
       ansible.builtin.assert:
         that:
-          - not (proxmox_firewall_compile_failed | bool)
+          - not (_proxmox_firewall_compile_failed | bool)
         fail_msg: >-
           Something other than the (line N) arm matched, so the line-error arm
           cannot be shown to be what widens the gate.
@@ -425,10 +386,9 @@
         state: directory
         mode: "0755"
 
-    # CRITICAL: the asserts above prove the expression, not the wiring. This
-    # publishes through the role's own task against a stub that prints a
-    # line-numbered parse error and exits 0, so failed_when has to catch it.
-    # Tagged so the idempotence replay does not re-fire the guard.
+    # Proves the wiring: the role's own publish task against a stub that prints
+    # a parse error and exits 0, so failed_when has to catch it. Tagged so the
+    # idempotence replay does not re-fire the guard.
     - name: Compile gate — a parse error that exits 0 must fail the publish
       tags: [molecule-idempotence-notest]
       block:

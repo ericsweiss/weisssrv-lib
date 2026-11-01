@@ -16,11 +16,6 @@ SCRIPTS = REPO / "scripts"
 TESTS = Path(__file__).resolve().parent
 DOC = REPO / "docs" / "SCRIPTS.md"
 
-# Scripts that ship without a suite on purpose: path relative to scripts/ -> reason.
-# An explicit list, not a filter, so an exemption is a visible edit a reviewer sees.
-EXEMPT: Dict[str, str] = {}
-
-
 def collect(root: Path) -> List[Path]:
     """Every file under `root` this gate covers: executable, or .py/.sh (some
     vendored scripts ship mode 644). Recursive; __pycache__ excluded."""
@@ -29,17 +24,16 @@ def collect(root: Path) -> List[Path]:
         # Generated, not shipped.
         if "__pycache__" in path.parts or not path.is_file():
             continue
-        if path.relative_to(root).as_posix() in EXEMPT:
-            continue
         if os.access(path, os.X_OK) or path.suffix in (".py", ".sh"):
             found.append(path)
     return found
 
 
-# Executable code ships from two roots: scripts/, and the reaper modules a
-# CronJob mounts beside its app script.
+# Executable code ships from scripts/ and from the CronJob programs under
+# kubernetes/ a consumer mounts into its cluster.
 REAPERS = REPO / "kubernetes" / "reapers"
-SHIPPED_ROOTS = ((SCRIPTS, SCRIPTS), (REAPERS, REAPERS))
+DDNS = REPO / "kubernetes" / "ddns"
+SHIPPED_ROOTS = ((SCRIPTS, SCRIPTS), (REAPERS, REAPERS), (DDNS, DDNS))
 SHIPPED = [path for root, _ in SHIPPED_ROOTS for path in collect(root)]
 
 # Role `files/` scripts run on a real host (as root, in several cases), so they
@@ -97,21 +91,21 @@ def _suite_for(script: Path) -> Path:
     The directory is part of the key, so `scripts/lib/helper.sh` does not share
     a suite with `scripts/helper.sh`. The `.py`/`.sh` suffix is dropped.
     """
-    root = REAPERS if REAPERS in script.parents else SCRIPTS
+    root = next(r for r, _ in SHIPPED_ROOTS if r in script.parents)
     rel = script.relative_to(root).as_posix()
     for suffix in (".py", ".sh"):
         rel = rel.removesuffix(suffix)
     return TESTS / ("test_%s.py" % re.sub(r"[-./]", "_", rel))
 
 
-def _assert_suite_exercises(script: Path, suite: Path) -> None:
-    """The suite names the script and defines at least one test."""
+def _assert_suite_exercises(script: Path, suite: Path, remedy: str) -> None:
+    """The suite exists, names the script and defines at least one test."""
     if not suite.exists():
-        pytest.fail("%s has no suite at all — see the existence check." % script.name)
+        pytest.fail("%s has no tests — add %s, or %s." % (script.name, suite.name, remedy))
     body = suite.read_text(encoding="utf-8")
     assert script.name in body, (
-        "%s exists but never names %s — a placeholder suite satisfies the "
-        "existence check while proving nothing." % (suite.name, script.name)
+        "%s exists but never names %s — a placeholder suite proves nothing."
+        % (suite.name, script.name)
     )
     assert re.search(r"^\s*def test_", body, re.M), "%s defines no tests" % suite.name
 
@@ -121,9 +115,10 @@ def test_there_are_scripts_to_check():
     assert len(SHIPPED) > 20
 
 
-def test_there_are_reaper_scripts_to_check():
-    """Guard the guard: the reapers root ships code and must be walked."""
-    assert len(collect(REAPERS)) >= 1
+@pytest.mark.parametrize("root", [REAPERS, DDNS], ids=["reapers", "ddns"])
+def test_there_are_cronjob_programs_to_check(root: Path):
+    """Guard the guard: each CronJob program root ships code and must be walked."""
+    assert len(collect(root)) >= 1
 
 
 def test_no_two_scripts_share_a_suite():
@@ -174,37 +169,14 @@ def test_the_collector_sees_every_kind_of_script_it_claims_to_cover(tmp_path):
     }
 
 
-def test_an_exemption_is_an_explicit_edit(tmp_path):
-    """Opting a file out is possible, but only by naming it (with a reason)."""
-    script = tmp_path / "unloved.sh"
-    script.write_text("")
-    assert [p.name for p in collect(tmp_path)] == ["unloved.sh"]
-    EXEMPT["unloved.sh"] = "test fixture"
-    try:
-        assert collect(tmp_path) == []
-    finally:
-        del EXEMPT["unloved.sh"]
-
-
-@pytest.mark.parametrize(
-    "script", SHIPPED, ids=lambda p: p.relative_to(REPO).as_posix()
-)
-def test_every_shipped_script_has_a_suite(script: Path):
-    suite = _suite_for(script)
-    assert suite.exists(), (
-        "%s has no tests — add %s, or drop the script. docs/SCRIPTS.md tells "
-        "consumers every script here is covered." % (script.name, suite.name)
-    )
-
-
 @pytest.mark.parametrize(
     "script", SHIPPED, ids=lambda p: p.relative_to(REPO).as_posix()
 )
 def test_every_suite_actually_exercises_its_script(script: Path):
-    """Existence certifies a filename, not coverage: `def test_placeholder: pass`
-    in a correctly-named file satisfies the check above and proves nothing. Make
-    the suite show it at least reaches for the script it is named after."""
-    _assert_suite_exercises(script, _suite_for(script))
+    """docs/SCRIPTS.md tells consumers every script here is covered, and a
+    correctly-named placeholder file proves nothing, so the suite must reach
+    for the script it is named after."""
+    _assert_suite_exercises(script, _suite_for(script), "drop the script")
 
 
 @pytest.mark.parametrize(
@@ -290,21 +262,12 @@ def test_a_stale_exemption_claim_is_caught(tmp_path):
 @pytest.mark.parametrize(
     "script", ROLE_SCRIPTS, ids=lambda p: p.relative_to(COLLECTIONS).as_posix()
 )
-def test_every_role_script_has_a_suite(script: Path):
-    suite = _role_suite_for(script)
-    assert suite.exists(), (
-        "%s runs on a real host with no suite — add %s, or name it in "
-        "ROLE_SCRIPT_EXEMPT with a reason." % (script.name, suite.name)
-    )
-
-
-@pytest.mark.parametrize(
-    "script", ROLE_SCRIPTS, ids=lambda p: p.relative_to(COLLECTIONS).as_posix()
-)
 def test_every_role_suite_actually_exercises_its_script(script: Path):
     """A role script runs on a real host as root, so a placeholder suite is the
     worst place for one."""
-    _assert_suite_exercises(script, _role_suite_for(script))
+    _assert_suite_exercises(
+        script, _role_suite_for(script), "name it in ROLE_SCRIPT_EXEMPT with a reason"
+    )
 
 
 if __name__ == "__main__":

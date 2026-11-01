@@ -23,8 +23,8 @@ One source of truth for everything the family shares:
 - **`terraform/modules/`** — four module shapes (cloudflare-zone,
   tailscale-acl, authentik-sso, unifi-network).
 - **`scripts/`** — the gates and generators the CI jobs run.
-- **`kubernetes/reapers/`** — the shipped reaper programs a consumer vendors
-  into its own cluster (see [docs/SCRIPTS.md](docs/SCRIPTS.md)).
+- **`kubernetes/ddns/`, `kubernetes/reapers/`** — the CronJob programs a
+  consumer vendors into its own cluster (see [docs/SCRIPTS.md](docs/SCRIPTS.md)).
 - **`lint/`** — linter configs a consumer vendors.
 - **`cli/`** — `weisssrv-new-project`, the copier wrapper that renders the
   cluster template (`new-cluster`) and the app template (`new-app`).
@@ -49,8 +49,11 @@ Start with [README.md](README.md), then
 - **No Renovate** anywhere — the whole family bumps versions manually.
 - **Preserve consumer parity.** The CI templates' input DEFAULTS reproduce
   weisssrv's current values; changing a default is a behavior change for
-  weisssrv and must be flagged. When you change a template, update its parity
-  note and its input list in the include contract.
+  weisssrv and must be flagged. A default that deliberately differs from
+  weisssrv, such as `tags`, is named in
+  [docs/INCLUDE-CONTRACT.md](docs/INCLUDE-CONTRACT.md) with the value weisssrv
+  passes. When you change a template, update its parity note and its input list
+  in the include contract.
 - **The cluster template is the product; `weisssrv` is one instance of it.**
   A generic improvement — a gate, a role behaviour, a CI job, a doc pattern —
   lands here or in the cluster template first and reaches the running cluster
@@ -121,6 +124,19 @@ should be a new template plus an include, not an inline job.
   `ansible-playbook --syntax-check` for a parse proof.
 - A metric name a role emits is API too: alerts, promtool tests and dashboards
   bind to the literal string and none of them live in this repo.
+
+## Adding a vendorable gate script
+
+A consumer copies the script byte for byte, so it lands complete in one MR:
+
+- The script and its pytest suite under `tests/`.
+- Its line in [scripts/vendorable-paths.yml](scripts/vendorable-paths.yml),
+  with a comment naming any sibling it imports from its own directory.
+- A gate that imports `gate_common.py` joins the importer list in
+  `tests/test_gate_common_vendoring.py`, and exits 2 when that file is absent.
+- Its contract entry in [docs/SCRIPTS.md](docs/SCRIPTS.md).
+- For each consumer that adopts it, the MR description names the
+  `scripts/vendored-manifest.yml` line and the job or task that runs it.
 
 ## Comments
 

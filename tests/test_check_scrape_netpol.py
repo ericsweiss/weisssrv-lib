@@ -232,21 +232,7 @@ spec:
     assert _run(scoped + SERVICE_MONITOR, monkeypatch) == 0
 
 
-def test_exempt_namespace_is_skipped(monkeypatch):
-    argv = ["--exempt", "ns=external Endpoints only"]
-    assert _run(DEFAULT_DENY + SERVICE_MONITOR, monkeypatch, argv) == 0
 
-
-def test_exempt_without_a_reason_is_rejected(monkeypatch, capsys):
-    """An operator error exits 2 — exit 1 means "a scrape is blocked"."""
-    assert _run(DEFAULT_DENY + SERVICE_MONITOR, monkeypatch, ["--exempt", "ns"]) == 2
-    assert "NS=REASON" in capsys.readouterr().err
-
-
-def test_observability_namespace_is_configurable(monkeypatch):
-    corpus = (DEFAULT_DENY + SERVICE_MONITOR + OBS_ALLOW).replace("observability", "metrics")
-    assert _run(corpus, monkeypatch) == 1
-    assert _run(corpus, monkeypatch, ["--observability-namespace", "metrics"]) == 0
 
 
 def test_targetnamespace_overrides_helmrelease_namespace(monkeypatch):
@@ -668,13 +654,6 @@ def test_a_namespaceless_document_is_read_as_default(monkeypatch):
     allow = OBS_ALLOW.replace(", namespace: ns", "")
     assert _run(deny + allow + monitor, monkeypatch) == 0
 
-
-def test_an_unused_exempt_is_reported_not_fatal(monkeypatch, capsys):
-    """Same accounting as the sibling default-deny gate: an exemption the corpus
-    no longer exercises is visible, never a failure."""
-    argv = ["--exempt", "gone=namespace retired"]
-    assert _run(DEFAULT_DENY + OBS_ALLOW + SERVICE_MONITOR, monkeypatch, argv) == 0
-    assert "not exercised by this corpus: gone" in capsys.readouterr().out
 
 
 SERVICE_WITH_METRICS_PORT = """

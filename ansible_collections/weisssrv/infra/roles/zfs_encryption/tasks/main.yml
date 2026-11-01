@@ -25,70 +25,56 @@
 
 # Fail loudly when the token is absent on a host that has pools to unlock:
 # the per-pool services would otherwise exit 1 at boot with a misleading
-# "missing token file".
-- name: Validate the Connect access point is set
-  ansible.builtin.assert:
-    that: zfs_encryption_connect_url | default('') | length > 0
-    fail_msg: >-
-      zfs_encryption_connect_url is empty — set it, or set
-      zfs_encryption_internal_domain (alias: internal_domain) that it derives
-      from. Without it every per-pool unlock unit curls an empty URL forever.
+# "missing token file". A host that never loads a key holds no credential.
+- name: Deploy the Connect token for the pool unlock
   when:
     - zfs_encryption_pools | default([]) | length > 0
     - zfs_encryption_key_command | default('') | length == 0
+  block:
+    - name: Validate the Connect access point is set
+      ansible.builtin.assert:
+        that: zfs_encryption_connect_url | default('') | length > 0
+        fail_msg: >-
+          zfs_encryption_connect_url is empty — set it, or set
+          zfs_encryption_internal_domain (alias: internal_domain) that it derives
+          from. Without it every per-pool unlock unit curls an empty URL forever.
 
-- name: Validate Connect token is present
-  ansible.builtin.assert:
-    that: zfs_encryption_connect_token | length > 0
-    fail_msg: >-
-      zfs_encryption_connect_token is empty. Supply it from the site's secret
-      store — e.g. `op run -- env ZFS_ENCRYPTION_CONNECT_TOKEN="$(op read
-      'op://<vault>/<token item>/credential')" ansible-playbook ...` — or set
-      zfs_encryption_key_command to fetch keys another way. See README §
-      Scoping the Connect token.
-  when:
-    - zfs_encryption_pools | default([]) | length > 0
-    - zfs_encryption_key_command | default('') | length == 0
+    - name: Validate Connect token is present
+      ansible.builtin.assert:
+        that: zfs_encryption_connect_token | length > 0
+        fail_msg: >-
+          zfs_encryption_connect_token is empty. Supply it from the site's secret
+          store — e.g. `op run -- env ZFS_ENCRYPTION_CONNECT_TOKEN="$(op read
+          'op://<vault>/<token item>/credential')" ansible-playbook ...` — or set
+          zfs_encryption_key_command to fetch keys another way. See README §
+          Scoping the Connect token.
 
-# No default: a vault name is site identity, and the token can read every item
-# in whatever vault it names.
-- name: Validate the Connect vault is named
-  ansible.builtin.assert:
-    that: zfs_encryption_connect_vault | default('') | length > 0
-    fail_msg: >-
-      zfs_encryption_connect_vault is empty — name the 1Password vault holding
-      the pool passphrases, scoped to only those items. See README § Scoping
-      the Connect token.
-  when:
-    - zfs_encryption_pools | default([]) | length > 0
-    - zfs_encryption_key_command | default('') | length == 0
+    # No default: a vault name is site identity, and the token can read every
+    # item in whatever vault it names.
+    - name: Validate the Connect vault is named
+      ansible.builtin.assert:
+        that: zfs_encryption_connect_vault | default('') | length > 0
+        fail_msg: >-
+          zfs_encryption_connect_vault is empty — name the 1Password vault holding
+          the pool passphrases, scoped to only those items. See README § Scoping
+          the Connect token.
 
-# Token deploy is gated on zfs_encryption_pools, so a host that never loads a
-# key holds no Connect credential. It is skipped too when
-# zfs_encryption_key_command replaces the Connect fetch.
-- name: Ensure the Connect token directory exists
-  ansible.builtin.file:
-    path: "{{ zfs_encryption_token_path | dirname }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "0700"
-  when:
-    - zfs_encryption_pools | default([]) | length > 0
-    - zfs_encryption_key_command | default('') | length == 0
+    - name: Ensure the Connect token directory exists
+      ansible.builtin.file:
+        path: "{{ zfs_encryption_token_path | dirname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
 
-- name: Deploy 1Password Connect access token
-  ansible.builtin.copy:
-    dest: "{{ zfs_encryption_token_path }}"
-    content: "{{ zfs_encryption_connect_token }}\n"
-    owner: root
-    group: root
-    mode: "0400"
-  when:
-    - zfs_encryption_connect_token | length > 0
-    - zfs_encryption_pools | default([]) | length > 0
-    - zfs_encryption_key_command | default('') | length == 0
-  no_log: true
+    - name: Deploy 1Password Connect access token
+      ansible.builtin.copy:
+        dest: "{{ zfs_encryption_token_path }}"
+        content: "{{ zfs_encryption_connect_token }}\n"
+        owner: root
+        group: root
+        mode: "0400"
+      no_log: true
 
 # Fail-closed cleanup: this role is the sole deployer/consumer of the token, so
 # emptying zfs_encryption_pools — or moving to another backend — takes the
@@ -125,33 +111,31 @@
   loop_control:
     label: "{{ item.name }}"
 
-- name: Deploy zfs-load-key script
+# Scripts and units deploy on every host; only the units for listed pools and
+# guest cohorts are enabled below. Why the mount anchor is separate: role README.
+- name: Deploy the key-load, mount and guest-start scripts
   ansible.builtin.template:
-    src: zfs-load-key.sh.j2
-    dest: /usr/local/sbin/zfs-load-key.sh
+    src: "{{ item }}.j2"
+    dest: "/usr/local/sbin/{{ item }}"
     owner: root
     group: root
     mode: "0750"
+  loop:
+    - zfs-load-key.sh
+    - zfs-mount-encrypted.sh
+    - zfs-start-encrypted-guests.sh
 
-- name: Deploy zfs-load-key@.service systemd template
+- name: Deploy the key-load and guest-start units
   ansible.builtin.template:
-    src: zfs-load-key@.service.j2
-    dest: /etc/systemd/system/zfs-load-key@.service
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
     owner: root
     group: root
     mode: "0644"
+  loop:
+    - zfs-load-key@.service
+    - pve-start-encrypted-guests.service
   notify: Reload systemd
-
-# Late, retrying pass that mounts the encrypted datasets once their keys are
-# loaded: the single anchor nfsd and encrypted-storage guests order After=.
-# Why it is separate from stock zfs-mount.service: role README.
-- name: Deploy zfs-mount-encrypted mount script
-  ansible.builtin.template:
-    src: zfs-mount-encrypted.sh.j2
-    dest: /usr/local/sbin/zfs-mount-encrypted.sh
-    owner: root
-    group: root
-    mode: "0750"
 
 # Rendered only where there is something to mount: with no pool arguments the
 # script exits 1 on its usage guard, and the unit's `until ... done` ExecStart
@@ -164,26 +148,6 @@
     group: root
     mode: "0644"
   when: zfs_encryption_pools | default([]) | length > 0
-  notify: Reload systemd
-
-# Starts the encrypted-storage guest cohort after the mount anchor is active.
-# Script + unit are deployed on every Proxmox host (no-op when the guest
-# lists are empty); the unit is only ENABLED below where a cohort exists.
-- name: Deploy encrypted-storage guest-start script
-  ansible.builtin.template:
-    src: zfs-start-encrypted-guests.sh.j2
-    dest: /usr/local/sbin/zfs-start-encrypted-guests.sh
-    owner: root
-    group: root
-    mode: "0750"
-
-- name: Deploy pve-start-encrypted-guests.service systemd unit
-  ansible.builtin.template:
-    src: pve-start-encrypted-guests.service.j2
-    dest: /etc/systemd/system/pve-start-encrypted-guests.service
-    owner: root
-    group: root
-    mode: "0644"
   notify: Reload systemd
 
 - name: Apply pending systemd reloads

@@ -352,3 +352,25 @@ class TestTheSharedCheckTaskfileHookFollowsIncludes:
         assert hook["pass_filenames"] is False
         assert (REPO / "scripts" / "check-taskfile.sh").is_file()
 
+
+
+# Paths a consumer tree never has. A profile comment naming one forces every
+# consumer to fork the file for its header alone.
+LIBRARY_ONLY_PATHS = ("lint/README", "cli/", "ci/", "docs/", "AGENTS.md", "weisssrv-lib")
+CONSUMER_NEUTRAL_PROFILES = (REPO / "lint" / "ruff.toml", YAMLLINT_PROFILE)
+
+
+def library_only_references(text: str) -> list[str]:
+    """Each comment line that names a path only this library has."""
+    comments = [ln for ln in text.splitlines() if ln.lstrip().startswith("#")]
+    return [ln for ln in comments if any(p in ln for p in LIBRARY_ONLY_PATHS)]
+
+
+class TestProfilesAreConsumerNeutral:
+    @pytest.mark.parametrize("path", CONSUMER_NEUTRAL_PROFILES, ids=lambda p: p.name)
+    def test_no_comment_names_a_library_only_path(self, path):
+        assert library_only_references(path.read_text()) == []
+
+    def test_a_header_pointing_at_the_library_readme_is_caught(self):
+        drifted = "# See lint/README.md.\n" + YAMLLINT_PROFILE.read_text()
+        assert library_only_references(drifted) == ["# See lint/README.md."]

@@ -26,7 +26,6 @@ ansible_collections/weisssrv/infra/roles/proxmox_vm/molecule/default/converge.ym
 ansible_collections/weisssrv/infra/roles/proxmox_vm/molecule/default/verify.yml var-naming[no-role-prefix]
 ansible_collections/weisssrv/infra/roles/qol/molecule/default/converge.yml var-naming[no-role-prefix]
 ansible_collections/weisssrv/infra/roles/qol/molecule/default/verify.yml var-naming[no-role-prefix]
-ansible_collections/weisssrv/infra/roles/resolv_conf/molecule/empty-search/verify.yml var-naming[no-role-prefix]
 ansible_collections/weisssrv/infra/roles/restic_offsite/molecule/default/verify.yml var-naming[no-role-prefix]
 ansible_collections/weisssrv/infra/roles/smtp_relay/molecule/default/verify.yml var-naming[no-role-prefix]
 ansible_collections/weisssrv/infra/roles/tailscale/molecule/default/verify.yml var-naming[no-role-prefix]

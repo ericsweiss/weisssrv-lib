@@ -19,6 +19,8 @@ ENTRY = {
     "checksum_var": "k3s_install_script_checksum",
     "checksum_url": "https://example.invalid/k3s/{version}/install.sh",
 }
+PINNED = f"k3s_version: 'v1.36.4+k3s1'\nk3s_install_script_checksum: 'sha256:{INSTALLER_SHA}'\n"
+NO_VAR_NAME = {k: v for k, v in ENTRY.items() if k != "var_name"}
 
 
 def fetcher(_url: str) -> bytes:
@@ -51,11 +53,6 @@ class TestViolations:
         gate.violations([ENTRY], vars_data(INSTALLER_SHA), recording)
         assert seen == ["https://example.invalid/k3s/v1.36.4+k3s1/install.sh"]
 
-    def test_an_unknown_url_placeholder_is_an_operator_error(self):
-        entry = dict(ENTRY, checksum_url="https://example.invalid/{release}/install.sh")
-        with pytest.raises(gate.ConfigError):
-            gate.violations([entry], vars_data(INSTALLER_SHA), fetcher)
-
     def test_missing_vars_key_is_an_operator_error(self):
         with pytest.raises(gate.ConfigError):
             gate.violations([ENTRY], {"k3s_version": "v1.36.4+k3s1"}, fetcher)
@@ -69,22 +66,6 @@ class TestChecksumEntries:
     def test_entries_without_a_checksum_pin_are_ignored(self):
         assert gate.checksum_entries({"services": [{"name": "x", "var_name": "x_version"}]}) == []
 
-    def test_half_a_pin_is_rejected(self):
-        with pytest.raises(gate.ConfigError):
-            gate.checksum_entries(
-                {"services": [{"name": "x", "var_name": "x_version", "checksum_var": "x_sha"}]}
-            )
-
-    def test_a_version_file_pin_is_rejected(self):
-        entry = dict(ENTRY, version_file="ci")
-        with pytest.raises(gate.ConfigError):
-            gate.checksum_entries({"services": [entry]})
-
-    def test_a_pin_without_a_var_name_is_rejected(self):
-        entry = {k: v for k, v in ENTRY.items() if k != "var_name"}
-        with pytest.raises(gate.ConfigError):
-            gate.checksum_entries({"services": [entry]})
-
 
 def write_registry(tmp_path: Path, entry: dict) -> Path:
     config = tmp_path / "version-registry.py"
@@ -95,9 +76,7 @@ def write_registry(tmp_path: Path, entry: dict) -> Path:
 class TestMain:
     def test_clean_run_exits_zero(self, tmp_path, monkeypatch):
         monkeypatch.setattr(gate, "fetch", fetcher)
-        (tmp_path / "vars.yml").write_text(
-            f"k3s_version: 'v1.36.4+k3s1'\nk3s_install_script_checksum: 'sha256:{INSTALLER_SHA}'\n"
-        )
+        (tmp_path / "vars.yml").write_text(PINNED)
         assert gate.main(
             ["--config", str(write_registry(tmp_path, ENTRY)), "--repo-root", str(tmp_path)]
         ) == 0
@@ -112,48 +91,6 @@ class TestMain:
         ) == 1
         assert "Stale checksum pins" in capsys.readouterr().err
 
-    def test_missing_registry_exits_two(self, tmp_path):
-        assert gate.main(["--config", str(tmp_path / "nope.py"), "--repo-root", str(tmp_path)]) == 2
-
-    def test_missing_vars_file_exits_two(self, tmp_path):
-        assert gate.main(
-            ["--config", str(write_registry(tmp_path, ENTRY)), "--repo-root", str(tmp_path)]
-        ) == 2
-
-    def test_an_unparseable_vars_file_exits_two(self, tmp_path, capsys):
-        """Exit 1 is the stale-pin code, so an unreadable input must not use it."""
-        (tmp_path / "vars.yml").write_text("a: [1,\n")
-        assert gate.main(
-            ["--config", str(write_registry(tmp_path, ENTRY)), "--repo-root", str(tmp_path)]
-        ) == 2
-        err = capsys.readouterr().err
-        assert "vars.yml" in err
-        assert "Traceback" not in err
-
-    def test_a_binary_vars_file_exits_two(self, tmp_path, capsys):
-        (tmp_path / "vars.yml").write_bytes(b"\xff\xfe\x00binary")
-        assert gate.main(
-            ["--config", str(write_registry(tmp_path, ENTRY)), "--repo-root", str(tmp_path)]
-        ) == 2
-        assert "Traceback" not in capsys.readouterr().err
-
-    def test_a_pin_without_a_var_name_exits_two(self, tmp_path):
-        entry = {k: v for k, v in ENTRY.items() if k != "var_name"}
-        (tmp_path / "vars.yml").write_text("k3s_version: 'v1'\n")
-        assert gate.main(
-            ["--config", str(write_registry(tmp_path, entry)), "--repo-root", str(tmp_path)]
-        ) == 2
-
-    def test_an_unknown_url_placeholder_exits_two(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(gate, "fetch", fetcher)
-        entry = dict(ENTRY, checksum_url="https://example.invalid/{release}/install.sh")
-        (tmp_path / "vars.yml").write_text(
-            f"k3s_version: 'v1'\nk3s_install_script_checksum: 'sha256:{INSTALLER_SHA}'\n"
-        )
-        assert gate.main(
-            ["--config", str(write_registry(tmp_path, entry)), "--repo-root", str(tmp_path)]
-        ) == 2
-
     def test_registry_without_checksum_pins_exits_two(self, tmp_path, capsys):
         config = write_registry(tmp_path, {"name": "x", "var_name": "x_version"})
         assert gate.main(["--config", str(config), "--repo-root", str(tmp_path)]) == 2
@@ -166,25 +103,6 @@ class TestMain:
         ) == 0
         assert "No checksum pins" in capsys.readouterr().out
 
-    def test_a_malformed_url_format_string_exits_two(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(gate, "fetch", fetcher)
-        entry = dict(ENTRY, checksum_url="https://example.invalid/{version/install.sh")
-        (tmp_path / "vars.yml").write_text(
-            f"k3s_version: 'v1'\nk3s_install_script_checksum: 'sha256:{INSTALLER_SHA}'\n"
-        )
-        assert gate.main(
-            ["--config", str(write_registry(tmp_path, entry)), "--repo-root", str(tmp_path)]
-        ) == 2
-
-    def test_a_plaintext_http_checksum_url_exits_two(self, tmp_path):
-        entry = dict(ENTRY, checksum_url="http://example.invalid/{version}/install.sh")
-        (tmp_path / "vars.yml").write_text(
-            f"k3s_version: 'v1'\nk3s_install_script_checksum: 'sha256:{INSTALLER_SHA}'\n"
-        )
-        assert gate.main(
-            ["--config", str(write_registry(tmp_path, entry)), "--repo-root", str(tmp_path)]
-        ) == 2
-
     def test_the_config_env_var_selects_the_registry(self, tmp_path, monkeypatch, capsys):
         config = write_registry(tmp_path, {"name": "x", "var_name": "x_version"})
         monkeypatch.setenv("CHECK_VERSIONS_CONFIG", str(config))
@@ -192,49 +110,39 @@ class TestMain:
         assert "No checksum pins" in capsys.readouterr().out
 
 
-class TestFetchFailures:
-    """A download failure is an operator error: exit 1 means "recompute the pin"."""
+# Exit 1 means "recompute the pin", so no unusable input may reach it.
+@pytest.mark.parametrize("entry,vars_text,needle", [
+    pytest.param(None, PINNED, "nope.py not found", id="missing_registry"),
+    pytest.param(ENTRY, None, "vars.yml not found", id="missing_vars_file"),
+    pytest.param(ENTRY, b"a: [1,\n", "vars.yml", id="unparseable_vars_file"),
+    pytest.param(ENTRY, b"\xff\xfe\x00binary", "vars.yml", id="binary_vars_file"),
+    pytest.param(ENTRY, b"- a\n- b\n", "top-level is not a mapping", id="vars_file_is_a_list"),
+    pytest.param(NO_VAR_NAME, PINNED, "no var_name", id="pin_without_a_var_name"),
+    pytest.param({"name": "x", "var_name": "x_version", "checksum_var": "x_sha"}, PINNED,
+                 "declares only one of", id="half_a_pin"),
+    pytest.param(dict(ENTRY, version_file="ci"), PINNED, "version_file", id="version_file_pin"),
+    pytest.param("k3s", PINNED, "not a mapping", id="non_mapping_service_entry"),
+    pytest.param(dict(ENTRY, checksum_url="https://example.invalid/{release}/install.sh"),
+                 PINNED, "not a usable format string", id="unknown_url_placeholder"),
+    pytest.param(dict(ENTRY, checksum_url="https://example.invalid/{version/install.sh"),
+                 PINNED, "not a usable format string", id="malformed_url_format_string"),
+    pytest.param(dict(ENTRY, checksum_url="http://example.invalid/{version}/install.sh"),
+                 PINNED, "refusing a non-https", id="plaintext_http_url"),
+    pytest.param(dict(ENTRY, checksum_url="file:///etc/passwd"), PINNED,
+                 "refusing a non-https", id="file_url"),
+    pytest.param(ENTRY, PINNED, "failed to download", id="failed_download"),
+])
+def test_an_unusable_input_exits_two(tmp_path, monkeypatch, capsys, entry, vars_text, needle):
+    def unreachable(*_args, **_kwargs):
+        raise gate.urllib.error.URLError("unreachable")
 
-    @staticmethod
-    def _unreachable(monkeypatch):
-        def raiser(*_args, **_kwargs):
-            raise gate.urllib.error.URLError("unreachable")
-
-        monkeypatch.setattr(gate.urllib.request, "urlopen", raiser)
-
-    def test_fetch_maps_a_network_failure_to_a_config_error(self, monkeypatch):
-        self._unreachable(monkeypatch)
-        with pytest.raises(gate.ConfigError, match="failed to download"):
-            gate.fetch("https://example.invalid/install.sh")
-
-    def test_a_failed_download_exits_two_not_one(self, tmp_path, monkeypatch, capsys):
-        self._unreachable(monkeypatch)
-        (tmp_path / "vars.yml").write_text(
-            f"k3s_version: 'v1.36.4+k3s1'\nk3s_install_script_checksum: 'sha256:{INSTALLER_SHA}'\n"
-        )
-        assert gate.main(
-            ["--config", str(write_registry(tmp_path, ENTRY)), "--repo-root", str(tmp_path)]
-        ) == 2
-        err = capsys.readouterr().err
-        assert "failed to download" in err
-        assert "Stale checksum pins" not in err
-
-
-def test_a_non_mapping_service_entry_is_rejected():
-    with pytest.raises(gate.ConfigError, match="not a mapping"):
-        gate.checksum_entries({"services": ["k3s"]})
-
-
-def test_a_vars_file_that_is_a_list_exits_two(tmp_path, capsys):
-    (tmp_path / "vars.yml").write_text("- a\n- b\n")
-    assert gate.main(
-        ["--config", str(write_registry(tmp_path, ENTRY)), "--repo-root", str(tmp_path)]
-    ) == 2
-    assert "vars.yml" in capsys.readouterr().err
-
-
-def test_fetch_rejects_a_non_https_url():
-    with pytest.raises(gate.ConfigError):
-        gate.fetch("file:///etc/passwd")
-    with pytest.raises(gate.ConfigError):
-        gate.fetch("http://example.invalid/install.sh")
+    monkeypatch.setattr(gate.urllib.request, "urlopen", unreachable)
+    config = tmp_path / "nope.py" if entry is None else write_registry(tmp_path, entry)
+    if vars_text is not None:
+        vars_file = tmp_path / "vars.yml"
+        vars_file.write_bytes(vars_text.encode() if isinstance(vars_text, str) else vars_text)
+    assert gate.main(["--config", str(config), "--repo-root", str(tmp_path)]) == 2
+    err = capsys.readouterr().err
+    assert needle in err
+    assert "Traceback" not in err
+    assert "Stale checksum pins" not in err

@@ -106,11 +106,6 @@ def diff_bucket(b: dict, desired: dict) -> list[str]:
     return drift
 
 
-def is_revision_conflict(exc: urllib.error.HTTPError) -> bool:
-    """B2 answers a stale `ifRevisionIs` with 409."""
-    return exc.code == 409
-
-
 def apply_bucket(api_url: str, token: str, cfg: dict, revision: int | None = None) -> dict:
     # defaultRetention stays out of the update payload: file lock is a
     # create-time option, so it cannot drift. diff_bucket checks it only to
@@ -196,7 +191,8 @@ def main(argv: list[str] | None = None) -> int:
         apply_bucket(api_url, token, cfg, revision)
         remaining = diff_bucket(read_bucket(api_url, token, cfg), cfg["desired"])
     except urllib.error.HTTPError as e:
-        if is_revision_conflict(e):
+        # B2 answers a stale `ifRevisionIs` with 409.
+        if e.code == 409:
             print("ERROR: the bucket changed since it was read; re-run the drift check")
             return 2
         print(f"ERROR: apply failed: {e}")

@@ -6,7 +6,6 @@
 set -Eeuo pipefail
 
 # config (rendered by Ansible; keep OUT of the raw block below)
-BIND_MODE="{{ restic_offsite_bind_mode | default('bind') }}"        # bind (host) | direct (molecule)
 BIND_ROOT="{{ restic_offsite_bind_root }}"                          # stable path root for file-source binds
 ZVOL_MOUNT_ROOT="{{ restic_offsite_zvol_mount_root }}"             # stable path root for zvol-clone mounts
 SNAP_PREFIX="{{ restic_offsite_snap_prefix | default('archsync') }}"
@@ -484,7 +483,7 @@ latest_zvol_snap() {
 }
 
 # Age in seconds of a <prefix>-YYYYMMDD-HHMMSS snapshot, parsed from its NAME
-# (works in bind + direct mode, needs no zfs command). Prints a huge number when
+# (needs no zfs command). Prints a huge number when
 # the name is unparseable so the freshness guard treats it as stale.
 snap_age_seconds() {
   local name="$1" d epoch now
@@ -656,19 +655,13 @@ cmd_run() {
       log "stale-source: ${mp} newest snapshot ${snap} is ${age}s old (> ${max_age_s}s) — aborting"
       exit 1
     fi
-    if [[ "$BIND_MODE" == "bind" ]]; then
-      mkdir -p "${BIND_ROOT}/${name}"
-      _BINDS_TO_UMOUNT+=( "${BIND_ROOT}/${name}" )
-      mount --bind "${mp}/.zfs/snapshot/${snap}" "${BIND_ROOT}/${name}"
-      # A ZFS snapshot is immutable, but remount ro so nothing can ever write
-      # through the bind either.
-      mount -o remount,ro,bind "${BIND_ROOT}/${name}" 2>/dev/null || true
-      restic_paths+=( "${BIND_ROOT}/${name}" )
-    else
-      # direct (molecule): back up the snapshot dir in place (single run; no
-      # parent-snapshot dedup needed).
-      restic_paths+=( "${mp}/.zfs/snapshot/${snap}" )
-    fi
+    mkdir -p "${BIND_ROOT}/${name}"
+    _BINDS_TO_UMOUNT+=( "${BIND_ROOT}/${name}" )
+    mount --bind "${mp}/.zfs/snapshot/${snap}" "${BIND_ROOT}/${name}"
+    # A ZFS snapshot is immutable, but remount ro so nothing can ever write
+    # through the bind either.
+    mount -o remount,ro,bind "${BIND_ROOT}/${name}" 2>/dev/null || true
+    restic_paths+=( "${BIND_ROOT}/${name}" )
   done
 
   for entry in "${ZVOL_SOURCES[@]}"; do
@@ -852,14 +845,8 @@ drill_compare_path() {
     entry="${FILE_SOURCES[$i]}"
     [[ -n "$entry" ]] || continue
     read -r name mp <<< "$entry"
-    if [[ "$BIND_MODE" == "bind" ]]; then
-      [[ "$p" == "${BIND_ROOT}/${name}/"* ]] || continue
-      rest="${p#"${BIND_ROOT}/${name}/"}"
-    else
-      [[ "$p" == "${mp}/.zfs/snapshot/"* ]] || continue
-      rest="${p#"${mp}/.zfs/snapshot/"}"
-      rest="${rest#*/}"
-    fi
+    [[ "$p" == "${BIND_ROOT}/${name}/"* ]] || continue
+    rest="${p#"${BIND_ROOT}/${name}/"}"
     snap="${DRILL_SNAPS[$i]:-}"
     if [[ -n "$snap" && -f "${mp}/.zfs/snapshot/${snap}/${rest}" ]]; then
       printf '%s\t%s' "$i" "${mp}/.zfs/snapshot/${snap}/${rest}"

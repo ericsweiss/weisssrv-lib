@@ -31,8 +31,8 @@
       caller's secret store.
     success_msg: "Upstream smarthost credentials are present"
 
-# default('') guards the undef()-hinted lookups in all.yml so a missing env
-# var fails the assert with fail_msg instead of an undefined-variable error.
+# default('') turns a missing value into the fail_msg below rather than an
+# undefined-variable error.
 - name: Validate required SMTP relay auth credentials are set
   ansible.builtin.assert:
     that:
@@ -43,8 +43,6 @@
       clients authenticate to this relay with them. Inject them from the
       caller's secret store.
     success_msg: "SMTP relay auth credentials are present"
-
-# Cert-distribution pubkey deployment is owned by acme_certs, for every target.
 
 - name: Install postfix and dependencies
   ansible.builtin.apt:
@@ -126,23 +124,22 @@
 - name: Check if SASL user exists
   ansible.builtin.shell: |
     set -o pipefail
-    sasldblistusers2 | grep -Fq -- "$SASL_USER@$SASL_REALM"
+    sasldblistusers2 | awk -F': ' '$1 == ENVIRON["SASL_ID"] { f = 1 } END { exit !f }'
   args:
     executable: /bin/bash
   environment:
-    SASL_USER: "{{ smtp_relay_sasl_user }}"
-    SASL_REALM: "{{ smtp_relay_effective_config.myhostname }}"
+    SASL_ID: "{{ smtp_relay_sasl_user }}@{{ smtp_relay_effective_config.myhostname }}"
   register: smtp_relay_sasl_user_check
   failed_when: false
   changed_when: false
-  # The relay username is a credential half, so it reaches the probe through the
-  # environment (never argv) and -F keeps a metacharacter in it from matching
-  # something else.
+  # The username is a credential half, so it reaches the probe by environment.
+  # awk compares the whole user@realm field, so a longer name never matches, and
+  # it reads all of its input, so SIGPIPE cannot turn a present user into a miss.
   no_log: true
 
-# sasldb holds no recoverable plaintext, so rotation is detected by this
-# fingerprint. It is written only after saslpasswd2 succeeds, so a failed
-# rotation leaves the old value and the next run retries.
+# Rotation is detected by this fingerprint rather than by reading sasldb. It is
+# written only after saslpasswd2 succeeds, so a failed rotation leaves the old
+# value and the next run retries.
 - name: Read existing SASL relay credential fingerprint
   ansible.builtin.slurp:
     src: /etc/postfix/.sasl_relay_user.sha256

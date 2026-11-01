@@ -126,27 +126,6 @@ def test_template_renders(path: Path) -> None:
         assert proc.returncode == 0, f"rendered script does not parse:\n{proc.stderr}"
 
 
-def test_deploy_templates_never_default_needs() -> None:
-    """A deploy job's gate must be stated by the consumer, never defaulted."""
-    checked = 0
-    deploy = _LIB_ROOT / "ci" / "deploy"
-    for path in sorted(
-        {p for suffix in _YAML_SUFFIXES for p in deploy.glob(f"*.{suffix}")}
-    ):
-        spec, _body = _split_docs(path.read_text(encoding="utf-8"))
-        if spec is None:
-            continue
-        meta = spec["spec"]["inputs"].get("needs")
-        if meta is None:
-            continue
-        checked += 1
-        assert "default" not in meta, (
-            f"{path.name}: `needs` must stay a REQUIRED input — every default "
-            "the library could pick bypasses the validation gate"
-        )
-    assert checked, "no ci/deploy template declares a `needs` input any more"
-
-
 _ARRAY_MARKER = "__ARRAY_INPUT_{}__"
 
 

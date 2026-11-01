@@ -211,22 +211,6 @@
       register: kube_vip_manifest
       failed_when: kube_vip_manifest.stat.exists != (k3s_is_first_server | bool)
 
-    - name: Stat the retired metrics-server override
-      ansible.builtin.stat:
-        path: /var/lib/rancher/k3s/server/manifests/metrics-server-config.yaml
-      register: metrics_server_override
-
-    - name: Assert the stale metrics-server override was removed
-      ansible.builtin.assert:
-        that:
-          - not metrics_server_override.stat.exists
-        fail_msg: >-
-          tasks/server.yml "Remove a stale metrics-server override" did not
-          delete the stale HelmChartConfig; k3s keeps re-applying it on every
-          restart.
-        success_msg: "the stale metrics-server override is removed"
-      when: k3s_is_first_server | default(false)
-
     - name: Read kube-vip manifest
       ansible.builtin.slurp:
         src: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml

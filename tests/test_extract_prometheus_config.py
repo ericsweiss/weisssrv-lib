@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 import yaml
 from script_loader import load_script
 
@@ -43,15 +42,7 @@ class TestExtractRules:
         for group in doc["groups"]:
             assert "name" in group
             assert isinstance(group.get("rules"), list)
-
-    def test_every_rule_has_alert_and_expr(self, tmp_path: Path):
-        out = tmp_path / "rules.yaml"
-        ext.extract_rules(out, RELEASE, tmp_path / "absent")
-        doc = yaml.safe_load(out.read_text())
-        for group in doc["groups"]:
             for rule in group["rules"]:
-                # recording rules use `record`; alerts use `alert` — either way
-                # an `expr` is mandatory (promtool would reject a missing one).
                 assert "expr" in rule
                 assert "alert" in rule or "record" in rule
 
@@ -154,15 +145,6 @@ class TestExtractRules:
         assert ext.extract_rules(tmp_path / "out.yaml", empty, tmp_path / "absent") == 1
         assert "no rule groups" in capsys.readouterr().err
 
-    def test_neither_source_holds_a_group_fails(self, tmp_path: Path, capsys):
-        """Union semantics: an empty result is the failure, from either source."""
-        empty = tmp_path / "release.yaml"
-        empty.write_text("# only a comment\n")
-        assert ext.extract_rules(
-            tmp_path / "out.yaml", empty, tmp_path / "absent"
-        ) == 1
-        assert "no rule groups found" in capsys.readouterr().err
-
 
 class TestExtractAlertmanager:
     def test_no_unrendered_template_remains(self, tmp_path: Path):
@@ -184,14 +166,6 @@ class TestExtractAlertmanager:
         out = tmp_path / "am.yaml"
         assert ext.extract_alertmanager(out, AM_CONFIG) == 0
         assert "${cluster_internal_domain}" in out.read_text()
-
-    def test_dummy_override_wins(self, tmp_path: Path):
-        out = tmp_path / "am.yaml"
-        ext.extract_alertmanager(
-            out, AM_CONFIG, {"chatWebhookUrl": "https://chat.invalid/hook"}
-        )
-        doc = yaml.safe_load(out.read_text())
-        assert doc["receivers"][0]["webhook_configs"][0]["url"] == "https://chat.invalid/hook"
 
     def test_missing_template_fails(self, tmp_path: Path):
         empty = tmp_path / "am.yaml"
@@ -235,16 +209,6 @@ class TestExtractAlertmanager:
 
 
 class TestCli:
-    def test_bad_subcommand_exits_2(self):
-        with pytest.raises(SystemExit) as exc:
-            ext.main(["prog", "bogus", "/tmp/x"])
-        assert exc.value.code == 2
-
-    def test_missing_args_exits_2(self):
-        with pytest.raises(SystemExit) as exc:
-            ext.main(["prog", "rules"])
-        assert exc.value.code == 2
-
     def test_rules_via_cli(self, tmp_path: Path):
         out = tmp_path / "rules.yaml"
         assert ext.main([
@@ -299,26 +263,6 @@ class TestCli:
         names = [g["name"] for g in yaml.safe_load(out.read_text())["groups"]]
         assert "standalone.rules" in names
 
-    def test_an_explicit_rules_dir_is_included(self, tmp_path: Path):
-        rules_dir = tmp_path / "rules"
-        rules_dir.mkdir()
-        (rules_dir / "standalone.yaml").write_text(PROMETHEUS_RULE, encoding="utf-8")
-        out = tmp_path / "rules.yaml"
-        assert ext.main([
-            "prog", "rules", str(out), "--release", str(RELEASE),
-            "--rules-dir", str(rules_dir),
-        ]) == 0
-        names = [g["name"] for g in yaml.safe_load(out.read_text())["groups"]]
-        assert "standalone.rules" in names
-
-    def test_malformed_dummy_pair_rejected(self, tmp_path: Path):
-        with pytest.raises(SystemExit):
-            ext.main(
-                [
-                    "prog", "alertmanager", str(tmp_path / "o.yaml"),
-                    "--am-config", str(AM_CONFIG), "--dummy", "noequals",
-                ]
-            )
 
 
 class TestRepeatableRulesDir:

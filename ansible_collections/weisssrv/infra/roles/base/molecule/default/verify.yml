@@ -55,9 +55,8 @@
         src: /home/testuser/.ssh/authorized_keys
       register: auth_keys_content
 
-    # The whole key list is deployed in ONE authorized_key call, joined by
-    # newlines (a looped exclusive: true would leave only the last key), so a
-    # broken join shows up as one malformed line rather than two keys.
+    # The whole key list is deployed in ONE newline-joined authorized_key call,
+    # so a broken join shows up as one malformed line rather than two keys.
     - name: Verify the additive path lands every key on its own line
       vars:
         # splitlines(), not split('\n'): ansible-core does not unescape a Jinja
@@ -212,8 +211,8 @@
         success_msg: "testuser home directory has correct ownership"
 
     # resolv.conf template coverage lives in the resolv_conf role's own
-    # molecule scenarios (default, empty-search); dns.yml is skipped here
-    # because /etc/resolv.conf is a docker bind mount.
+    # molecule scenario; dns.yml is skipped here because /etc/resolv.conf is a
+    # docker bind mount.
 
     - name: Check the SSH hardening drop-in exists
       ansible.builtin.stat:
@@ -384,55 +383,6 @@
         msg: "{{ sshd_jail_status.stdout_lines | default(['sshd jail status not available']) }}"
       when: sshd_jail_status.rc == 0
 
-    # Negative test: on a systemd-boot host the drop-in is never read, so the
-    # role must refuse. Driven here, not from converge: staging and removing
-    # /etc/kernel/cmdline is a change on every run, which reds idempotence.
-    - name: Stage a systemd-boot kernel command line
-      ansible.builtin.copy:
-        dest: /etc/kernel/cmdline
-        content: "root=ZFS=rpool/ROOT/pve-1 boot=zfs\n"
-        mode: "0644"
-
-    - name: Re-apply with a systemd-boot kernel command line (expect failure)
-      block:
-        - name: Include base while /etc/kernel/cmdline exists
-          ansible.builtin.include_role:
-            name: weisssrv.infra.base
-
-        - name: Systemd-boot assert failed to trigger
-          ansible.builtin.copy:
-            dest: /tmp/base-kernel-cmdline-grub-assert.json
-            content: '{"failed": false}'
-            mode: "0644"
-      rescue:
-        - name: Systemd-boot assert correctly refused the host
-          ansible.builtin.copy:
-            dest: /tmp/base-kernel-cmdline-grub-assert.json
-            mode: "0644"
-            content: |
-              {"failed": true, "msg": {{ ansible_failed_result.msg | to_json }}}
-      always:
-        - name: Remove the staged systemd-boot kernel command line
-          ansible.builtin.file:
-            path: /etc/kernel/cmdline
-            state: absent
-
-    - name: Stat the staged systemd-boot kernel command line after cleanup
-      ansible.builtin.stat:
-        path: /etc/kernel/cmdline
-      register: base_staged_cmdline
-
-    # Residue would refuse every later run on this host, the role's own
-    # positive path included.
-    - name: Assert the negative case left no systemd-boot cmdline behind
-      ansible.builtin.assert:
-        that:
-          - not base_staged_cmdline.stat.exists
-        fail_msg: >-
-          /etc/kernel/cmdline survived the systemd-boot negative case, so the
-          role would refuse a host it is meant to configure.
-        quiet: true
-
 # Accept/reject matrix for the lockout guard tasks/ssh.yml asserts, which
 # converge exercises in only one combination. The verdict comes from the role's
 # own base_ssh_login_path_survives, loaded from defaults rather than restated.
@@ -477,52 +427,3 @@
       loop: "{{ lockout_matrix }}"
       loop_control:
         label: "{{ item.admin_user }}/{{ item.permit_root }}/pw={{ item.password_auth }}"
-
-    - name: Read the kernel cmdline GRUB drop-in
-      ansible.builtin.slurp:
-        src: /etc/default/grub.d/99-base-kernel-cmdline.cfg
-      register: base_kernel_cmdline_dropin
-
-    # The drop-in APPENDS to $GRUB_CMDLINE_LINUX_DEFAULT; an assignment would
-    # drop root=/boot= and leave the host unbootable.
-    - name: Assert the drop-in appends the configured kernel parameters
-      ansible.builtin.assert:
-        that:
-          - "'GRUB_CMDLINE_LINUX_DEFAULT=\"$GRUB_CMDLINE_LINUX_DEFAULT slub_nomerge\"'
-             in (base_kernel_cmdline_dropin.content | b64decode)"
-        fail_msg: >-
-          99-base-kernel-cmdline.cfg does not append base_kernel_cmdline_args to
-          the existing GRUB_CMDLINE_LINUX_DEFAULT.
-        quiet: true
-
-    - name: Read the kernel cmdline negative-test results
-      ansible.builtin.slurp:
-        src: "{{ item }}"
-      register: base_kernel_cmdline_asserts
-      loop:
-        - /tmp/base-kernel-cmdline-token-assert.json
-        - /tmp/base-kernel-cmdline-grub-assert.json
-
-    - name: Assert both kernel cmdline guards rejected their input
-      vars:
-        # Keyed by marker path, so the message checks do not ride on the slurp
-        # loop's order. Each rescue recorded its own guard's msg.
-        base_cmdline_verdicts: >-
-          {{ dict(base_kernel_cmdline_asserts.results | map(attribute='item')
-             | zip(base_kernel_cmdline_asserts.results | map(attribute='content')
-                   | map('b64decode') | map('from_json'))) }}
-      ansible.builtin.assert:
-        that:
-          - base_cmdline_verdicts.values()
-            | map(attribute='failed') | reject | list | length == 0
-          # The guard's own message, not merely a failure: a run that broke for
-          # any other reason would otherwise read as a rejection.
-          - (base_cmdline_verdicts['/tmp/base-kernel-cmdline-token-assert.json'].msg
-             | default('')) is search('is not a single bare token')
-          - (base_cmdline_verdicts['/tmp/base-kernel-cmdline-grub-assert.json'].msg
-             | default('')) is search('/etc/kernel/cmdline')
-        fail_msg: >-
-          The role accepted a multi-token base_kernel_cmdline_args entry, or
-          staged the drop-in on a host carrying /etc/kernel/cmdline, so a
-          parameter the alerting depends on would never reach the kernel.
-        success_msg: "Both kernel cmdline guards rejected their input"

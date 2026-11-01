@@ -48,7 +48,7 @@
   register: proxmox_firewall_compile
   changed_when: false
   check_mode: false
-  failed_when: proxmox_firewall_compile_failed | bool
+  failed_when: _proxmox_firewall_compile_failed | bool
   when:
     - not (proxmox_firewall_skip_pveum | default(false))
     - proxmox_firewall_pmxcfs_publish is changed

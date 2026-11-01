@@ -1,0 +1,21 @@
+---
+# CRD sources for scripts/check-crd-stage-order.py (--crd-source).
+# The gate knows the CRD groups of a few common charts. This file extends that
+# table and wins over it.
+
+# charts: chart name -> the API groups its CRDs serve. An empty list says the
+# chart installs no CRD, overriding the built-in entry.
+charts:
+  widget-operator:
+    - widgets.example.io
+
+# releases: "namespace/HelmRelease/name" -> the groups that release installs.
+# Authoritative over the chart entry and over every values toggle.
+releases:
+  example/HelmRelease/split-crds:
+    - example.io
+
+# external_groups: group -> why its CRDs come from outside this tree. A group
+# listed here is never reported as unresolved.
+external_groups:
+  helm.cattle.io: the distribution installs it before Flux starts

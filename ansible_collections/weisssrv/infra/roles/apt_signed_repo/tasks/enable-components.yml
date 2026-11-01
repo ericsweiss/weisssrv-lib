@@ -17,9 +17,9 @@
     path: "{{ apt_signed_repo_sources_path }}"
   register: apt_signed_repo_sources
 
-# CRITICAL: a skip here is invisible. The caller goes on to install packages
-# that only exist in the components this task was meant to enable, and fails
-# much later with an opaque "Unable to locate package".
+# Fail rather than skip: the caller goes on to install packages from these
+# components, and a silent skip surfaces much later as an opaque "Unable to
+# locate package".
 - name: Fail when the deb822 sources file is absent
   ansible.builtin.fail:
     msg: >-

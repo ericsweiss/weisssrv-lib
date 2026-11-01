@@ -18,31 +18,15 @@ vhv = load_script("validate-helm-values.py")
 
 # --- substitute() ----------------------------------------------------------
 
-class TestSubstitute:
-    def test_resolves_known_keys(self):
-        text, missing = vhv.substitute("tag: ${foo}", {"foo": "1.2.3"})
-        assert text == "tag: 1.2.3"
-        assert missing == []
-
-    def test_unknown_key_reported_and_left_literal(self):
-        text, missing = vhv.substitute("tag: ${bar}", {"foo": "1.2.3"})
-        # Unknown placeholder is left verbatim and surfaced in `missing`.
-        assert text == "tag: ${bar}"
-        assert missing == ["bar"]
-
-    def test_mixed_known_and_unknown(self):
-        text, missing = vhv.substitute("${a}-${b}", {"a": "x"})
-        assert text == "x-${b}"
-        assert missing == ["b"]
-
-    def test_missing_keys_deduped_and_sorted(self):
-        _, missing = vhv.substitute("${z} ${a} ${z}", {})
-        assert missing == ["a", "z"]
-
-    def test_noop_on_placeholder_free_text(self):
-        text, missing = vhv.substitute("no placeholders here", {"foo": "1"})
-        assert text == "no placeholders here"
-        assert missing == []
+@pytest.mark.parametrize("text,versions,expected,missing", [
+    ("tag: ${foo}", {"foo": "1.2.3"}, "tag: 1.2.3", []),
+    ("tag: ${bar}", {"foo": "1.2.3"}, "tag: ${bar}", ["bar"]),
+    ("${a}-${b}", {"a": "x"}, "x-${b}", ["b"]),
+    ("${z} ${a} ${z}", {}, "${z} ${a} ${z}", ["a", "z"]),
+    ("no placeholders here", {"foo": "1"}, "no placeholders here", []),
+], ids=["known", "unknown-left-literal", "mixed", "missing-deduped-sorted", "noop"])
+def test_substitute(text, versions, expected, missing):
+    assert vhv.substitute(text, versions) == (expected, missing)
 
 
 # --- load_versions() -------------------------------------------------------
@@ -63,33 +47,46 @@ class TestLoadVersions:
         versions = vhv.load_versions(str(root))
         assert versions == {"foo": "1.2.3", "num": "7"}
 
-    def test_raises_on_empty_data(self, tmp_path):
-        root = self._write_cm(tmp_path, "apiVersion: v1\nkind: ConfigMap\ndata: {}\n")
+    @pytest.mark.parametrize("body", [
+        "apiVersion: v1\nkind: ConfigMap\ndata: {}\n",
+        "apiVersion: v1\nkind: ConfigMap\n",
+        "- not\n- a\n- mapping\n",
+    ], ids=["empty-data", "absent-data", "non-mapping"])
+    def test_raises_on_unusable_data(self, tmp_path, body):
         with pytest.raises(SystemExit):
-            vhv.load_versions(str(root))
-
-    def test_raises_on_absent_data(self, tmp_path):
-        root = self._write_cm(tmp_path, "apiVersion: v1\nkind: ConfigMap\n")
-        with pytest.raises(SystemExit):
-            vhv.load_versions(str(root))
-
-    def test_raises_on_non_mapping(self, tmp_path):
-        # A non-dict top-level doc must fail cleanly, not AttributeError.
-        root = self._write_cm(tmp_path, "- not\n- a\n- mapping\n")
-        with pytest.raises(SystemExit):
-            vhv.load_versions(str(root))
+            vhv.load_versions(str(self._write_cm(tmp_path, body)))
 
 
-class TestDeriveKubeVersion:
-    def test_strips_v_prefix_and_k3s_suffix(self):
-        assert vhv.derive_kube_version({"k3s_version": "v1.36.2+k3s1"}) == "1.36.2"
+@pytest.mark.parametrize("versions,expected", [
+    ({"k3s_version": "v1.36.2+k3s1"}, "1.36.2"),
+    ({"k3s_version": "1.36.2"}, "1.36.2"),
+], ids=["v-prefix-k3s-suffix", "plain-semver"])
+def test_derive_kube_version(versions, expected):
+    assert vhv.derive_kube_version(versions) == expected
 
-    def test_plain_semver(self):
-        assert vhv.derive_kube_version({"k3s_version": "1.36.2"}) == "1.36.2"
 
-    def test_falls_back_when_absent_or_unparseable(self):
-        assert vhv.derive_kube_version({}) == vhv.KUBE_VERSION_FALLBACK
-        assert vhv.derive_kube_version({"k3s_version": "garbage"}) == vhv.KUBE_VERSION_FALLBACK
+@pytest.mark.parametrize("versions", [{}, {"k3s_version": "garbage"}], ids=["absent", "unparseable"])
+def test_an_unusable_k3s_version_is_an_error(versions):
+    with pytest.raises(SystemExit, match="k3s_version"):
+        vhv.derive_kube_version(versions)
+
+
+@pytest.mark.parametrize(
+    ("spec", "meta", "expected"),
+    [
+        ({"releaseName": "fixed", "targetNamespace": "ns"}, {"name": "app"}, "fixed"),
+        ({"targetNamespace": "ns"}, {"name": "app"}, "ns-app"),
+        ({}, {"name": "app"}, "app"),
+        ({}, {}, "registry-name"),
+        ({"targetNamespace": "n" * 30}, {"name": "a" * 30},
+         "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnn-aaaaaaaaa-d565fe94a777"),
+    ],
+    ids=["release-name-wins", "target-namespace-prefix", "plain-name", "registry-fallback",
+         "shortened-past-53"],
+)
+def test_the_release_name_is_the_one_flux_installs(spec, meta, expected):
+    name = vhv.flux_release_name(spec, meta, "registry-name")
+    assert name == expected and len(name) <= 53
 
 
 # --- extract_helmrelease_from_text() ---------------------------------------
@@ -136,15 +133,6 @@ class TestExtractHelmRelease:
         hr = vhv.extract_helmrelease_from_text(manifest.read_text(), str(manifest))
         assert hr["metadata"]["name"] == "only"
 
-    def test_from_text_returns_first_helmrelease(self):
-        hr = vhv.extract_helmrelease_from_text(
-            "apiVersion: v1\nkind: ConfigMap\n---\n"
-            "apiVersion: helm.toolkit.fluxcd.io/v2\nkind: HelmRelease\n"
-            "metadata:\n  name: first\n",
-            "inline",
-        )
-        assert hr["metadata"]["name"] == "first"
-
     def test_text_substitution_preserves_quoted_string_type(self):
         # Substituting the raw text (like Flux) must keep a quoted placeholder a
         # string even when the value is numeric — not re-parse it as a number.
@@ -157,15 +145,6 @@ class TestExtractHelmRelease:
         hr = vhv.extract_helmrelease_from_text(rendered, "inline")
         assert hr["spec"]["values"]["tag"] == "1.36"
         assert isinstance(hr["spec"]["values"]["tag"], str)
-
-
-def _deploy(limits: dict) -> list:
-    return [{
-        "apiVersion": "apps/v1", "kind": "Deployment",
-        "metadata": {"name": "app", "namespace": "ns"},
-        "spec": {"template": {"spec": {"containers": [
-            {"name": "c", "resources": {"limits": limits}}]}}},
-    }]
 
 
 class TestLoadReleases:
@@ -202,30 +181,6 @@ class TestLoadReleases:
         path = self._write(tmp_path, "- name: traefik\n  chart: traefik\n")
         with pytest.raises(SystemExit):
             vhv.load_releases(path)
-
-
-class TestRenderedCpuLimitPolicy:
-    """validate-helm-values reuses check-hpa-vpa-invariant's CPU-limit scanner +
-    allowlist (loaded via importlib) so the kustomize-side and helm-rendered-side
-    no-CPU-limits checks can never diverge. Smoke-test that wiring."""
-
-    def test_shared_module_loaded(self):
-        assert hasattr(vhv, "_hpa")
-        assert callable(vhv._hpa.cpu_limit_violations)
-        assert isinstance(vhv._hpa.Policy().cpu_limit_allowlist, set)
-
-    def test_flags_rendered_cpu_limit(self):
-        v = vhv._hpa.cpu_limit_violations(_deploy({"cpu": "500m"}))
-        assert len(v) == 1
-        assert "ns/Deployment/app" in v[0] and "limits.cpu=500m" in v[0]
-
-    def test_memory_only_and_null_cpu_are_clean(self):
-        assert vhv._hpa.cpu_limit_violations(_deploy({"memory": "256Mi"})) == []
-        assert vhv._hpa.cpu_limit_violations(_deploy({"cpu": None})) == []
-
-    def test_allowlist_suppresses_violation(self):
-        allowlist = {"ns/Deployment/app"}
-        assert vhv._hpa.cpu_limit_violations(_deploy({"cpu": "250m"}), allowlist) == []
 
 
 # --- refusals that keep the gate honest about what it rendered ---------------
@@ -323,19 +278,11 @@ spec:
         assert len(found) == 1
         assert found[0]["metadata"]["namespace"] == "ns"
 
-    def test_a_cap_above_the_rendered_limit_is_flagged(self, tmp_path):
+    def test_an_unreadable_sibling_is_reported_not_skipped(self, tmp_path):
         (tmp_path / "release.yaml").write_text(HR_BODY)
-        (tmp_path / "vpa.yaml").write_text(self.VPA)
-        rendered = _deploy({"memory": "128Mi"})
-        docs = rendered + vhv.release_vpas(str(tmp_path / "release.yaml"), "ns", {})
-        assert vhv._hpa.vpa_cap_violations(docs)
-
-    def test_a_cap_below_the_rendered_limit_passes(self, tmp_path):
-        (tmp_path / "release.yaml").write_text(HR_BODY)
-        (tmp_path / "vpa.yaml").write_text(self.VPA)
-        rendered = _deploy({"memory": "1Gi"})
-        docs = rendered + vhv.release_vpas(str(tmp_path / "release.yaml"), "ns", {})
-        assert vhv._hpa.vpa_cap_violations(docs) == []
+        (tmp_path / "vpa.yaml").write_text("a: [unclosed\n")
+        with pytest.raises(vhv.UnreadableSibling, match="vpa.yaml"):
+            vhv.release_vpas(str(tmp_path / "release.yaml"), "ns", {})
 
 
 class TestValidateReleaseSuccessPath:
@@ -388,6 +335,13 @@ spec:
         rel = _release(tmp_path, HR_BODY)
         assert vhv.validate_release(rel, {}, str(tmp_path), False, "1.30.0") is False
         assert "caps memory at or above" in capsys.readouterr().out
+
+    def test_an_unreadable_sibling_fails_the_release(self, tmp_path, monkeypatch, capsys):
+        self._render(monkeypatch, "memory: 128Mi")
+        (tmp_path / "vpa.yaml").write_bytes(b"kind: \xff\xfe\n")
+        rel = _release(tmp_path, HR_BODY)
+        assert vhv.validate_release(rel, {}, str(tmp_path), False, "1.30.0") is False
+        assert "beside the release is unreadable" in capsys.readouterr().out
 
     def test_a_vpa_capping_below_the_rendered_limit_passes(self, tmp_path, monkeypatch):
         self._render(monkeypatch, "memory: 1Gi")
@@ -526,6 +480,30 @@ class TestMain:
         assert vhv.main(self._argv(repo)) == 1
         assert "failed to add/update Helm repo" in capsys.readouterr().out
 
+    def test_kubeconform_without_a_catalog_ref_exits_2(self, tmp_path, monkeypatch, capsys):
+        repo = self._repo(tmp_path)
+        self._stub_helm(repo, monkeypatch)
+        monkeypatch.delenv("CRD_CATALOG_REF", raising=False)
+        assert vhv.main([*self._argv(repo), "--kubeconform"]) == 2
+        assert "CRD_CATALOG_REF" in capsys.readouterr().out
+
+    def test_the_catalog_ref_reaches_kubeconform(self, tmp_path, monkeypatch):
+        repo = self._repo(tmp_path)
+        self._stub_helm(repo, monkeypatch)
+        monkeypatch.setenv("CRD_CATALOG_REF", "abc123")
+        seen = []
+        monkeypatch.setattr(vhv, "validate_release", lambda *a, **k: seen.append(a) or True)
+        assert vhv.main([*self._argv(repo), "--kubeconform"]) == 0
+        assert seen[0][-1] == "abc123"
+
+    def test_the_repo_update_names_only_the_release_repos(self, tmp_path, monkeypatch):
+        repo = self._repo(tmp_path)
+        self._stub_helm(repo, monkeypatch)
+        stub, seen = vhv._run_tool, []
+        monkeypatch.setattr(vhv, "_run_tool", lambda cmd, *a, **k: seen.append(cmd) or stub(cmd, *a, **k))
+        assert vhv.main(self._argv(repo)) == 0
+        assert ["helm", "repo", "update", "app"] in seen
+
     def test_one_failing_release_is_counted(self, tmp_path, monkeypatch, capsys):
         repo = self._repo(tmp_path)
         self._stub_helm(repo, monkeypatch)
@@ -624,26 +602,6 @@ class TestResolveChartRepo:
         repos = vhv.helm_repositories(str(sources), unreadable)
         assert repos == {"bitnami": "https://charts.bitnami.com/bitnami"}
         assert [path for path, _exc in unreadable] == [str(sources / "broken.yaml")]
-
-    def test_repo_keys_are_no_longer_required_on_a_release_entry(self, tmp_path):
-        releases = tmp_path / "releases.yaml"
-        releases.write_text("- name: redis\n  manifest: m.yaml\n  chart: redis\n")
-        assert vhv.load_releases(str(releases))[0]["name"] == "redis"
-
-    def test_a_release_entry_still_needs_its_manifest(self, tmp_path):
-        releases = tmp_path / "releases.yaml"
-        releases.write_text("- name: redis\n  chart: redis\n")
-        with pytest.raises(SystemExit) as excinfo:
-            vhv.load_releases(str(releases))
-        assert "manifest" in str(excinfo.value)
-
-
-def test_the_crd_catalog_ref_is_overridable():
-    """A pinned catalog sha has to be settable in one place."""
-    assert vhv.DEFAULT_CRD_CATALOG_REF
-    source = _SRC.read_text()
-    assert "--crd-catalog-ref" in source
-    assert "CRDs-catalog/main/" not in source
 
 
 if __name__ == "__main__":

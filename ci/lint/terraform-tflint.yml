@@ -13,8 +13,9 @@ spec:
       description: tflint image. The job overrides its entrypoint.
     tags:
       type: array
-      default: ["infrastructure"]
-      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+      default: []
+      description: >-
+        Runner tag(s). Empty runs the job on a tag-less runner.
     work_dir:
       default: "terraform"
       description: >-

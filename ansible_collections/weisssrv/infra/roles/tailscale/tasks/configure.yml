@@ -1,6 +1,7 @@
 ---
-# `tailscale up` runs automatically when TAILSCALE_AUTH_KEY is present in the
-# environment; without it the play ends by printing the manual command to run.
+# `tailscale up` runs on a node not yet Running when TAILSCALE_AUTH_KEY is set.
+# Without it the join is skipped and the manual command is printed, or the play
+# fails under tailscale_require_authkey.
 
 - name: Create keyrings directory
   ansible.builtin.file:
@@ -105,9 +106,7 @@
     enabled: true
   when: ansible_facts['os_family'] == "Debian"
 
-# Persisted in a role-owned sysctl.d drop-in (NOT the module's /etc/sysctl.conf
-# default, and NOT nic_tuning's 99-nic-tuning-ip-forward.conf — that file is
-# deleted by nic_tuning's disable path).
+# Persisted in a role-owned sysctl.d drop-in, independent of nic_tuning's.
 - name: Enable IP forwarding for subnet routing
   ansible.posix.sysctl:
     name: net.ipv4.ip_forward
@@ -196,7 +195,7 @@
       # No jump yet (nftables mode, or a slow boot): inserting now would strand
       # the rule below a later jump, so retry on the timer and mark it once.
       # rc 4 is a resource problem, not an absent rule.
-      "$IPT" -w 5 -t nat -C POSTROUTING -j ts-postrouting
+      "$IPT" -w 5 -t nat -C POSTROUTING -j ts-postrouting 2>/dev/null
       rc=$?
       if [ "$rc" -ne 0 ]; then
           [ "$rc" -eq 4 ] && { log 'iptables reported a resource problem; retrying next run'; exit 0; }
@@ -347,7 +346,7 @@
     --accept-routes={{ tailscale_accept_routes | lower }}
     --accept-dns={{ tailscale_accept_dns | lower }}
     {% if tailscale_advertise_routes | length > 0 %}--advertise-routes={{ tailscale_advertise_routes | join(',') }}{% endif %}
-    {% if tailscale_additional_flags is defined %}{{ tailscale_additional_flags | join(' ') }}{% endif %}
+    {{ tailscale_additional_flags | join(' ') }}
   environment:
     TS_AUTHKEY: "{{ lookup('ansible.builtin.env', 'TAILSCALE_AUTH_KEY') }}"
   when:
@@ -483,9 +482,7 @@
       {% if tailscale_advertise_routes | length > 0 %}
       --advertise-routes={{ tailscale_advertise_routes | join(',') }}
       {% endif %}
-      {% if tailscale_additional_flags is defined %}
       {{ tailscale_additional_flags | join(' ') }}
-      {% endif %}
       {% if tailscale_advertise_tags | length > 0 %}
       Then adopt the ACL tag (after the ACL defines tagOwners): tailscale set --advertise-tags={{ tailscale_advertise_tags | join(',') }}
       (first tag adoption on a user-owned host needs a reauth — see the tailnet-ACL module README)

@@ -105,15 +105,6 @@ base_bootstrap_dns_servers:
   - 8.8.8.8
 base_resolver_probe_name: example.com
 
-# Extra kernel boot parameters appended to GRUB_CMDLINE_LINUX_DEFAULT via a
-# drop-in (e.g. ['slub_nomerge']). One bare token per entry; an empty list
-# removes the drop-in. Takes effect on the next reboot.
-base_kernel_cmdline_args: []
-
-# Skips update-grub and the reboot warning. Set true under molecule, where the
-# container has no boot loader to regenerate.
-base_skip_boot_update: false
-
 # Component gates
 # Each skips one block of the role; declared here so a typo cannot silently
 # disable a guard.

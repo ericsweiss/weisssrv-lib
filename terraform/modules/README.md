@@ -28,7 +28,7 @@ the feature, never to keep the four in step. Raising a floor is breaking for a
 consumer on an older Terraform.
 
 The CLI that renders those floors in CI is `ci/validate/terraform.yml`'s `image`
-input, digest-pinned to the 1.16.x line the consumers plan with. A raised floor
+input, digest-pinned to the release the consumers plan with. A raised floor
 needs an image at or above it; the image does not set the floor.
 
 ## Pre-1.0 providers are pinned to the minor
@@ -41,8 +41,8 @@ notes for schema moves.
 
 ## Validation regexes are written out per validation
 
-Variable validation cannot reference `locals` at the current floor and Terraform
-has no user-defined functions, so a shared regex (the port-list and bare-IPv4
-forms in `unifi-network`) is repeated in each validation that needs it. Edit
-every copy together. Hoist them into `locals` if the floor ever moves to 1.9 or
-later — do not raise the floor for this alone.
+Variable validation cannot reference `locals` below Terraform 1.9, and Terraform
+has no user-defined functions. At its 1.7 floor `unifi-network` therefore
+repeats a shared regex, such as the port-list and bare-IPv4 forms, in each
+validation that needs it. Edit every copy together. Hoisting them into `locals`
+needs a 1.9 floor, which this alone does not justify.

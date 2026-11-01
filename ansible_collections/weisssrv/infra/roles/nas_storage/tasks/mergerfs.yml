@@ -28,46 +28,7 @@
   register: nas_storage_mergerfs_fstab_changed
 
 - name: Verify MergerFS mount status and fstab options
-  ansible.builtin.shell: |
-    set -o pipefail
-    MOUNTPOINT={{ item.target | quote }}
-    CONTROL_FILE="${MOUNTPOINT}/.mergerfs"
-
-    if ! mountpoint -q "$MOUNTPOINT" 2>/dev/null; then
-      echo "STATUS: NOT_MOUNTED"
-      exit 1
-    fi
-
-    if [ ! -e "$CONTROL_FILE" ]; then
-      echo "STATUS: NOT_MERGERFS - mount exists but no .mergerfs control file"
-      exit 1
-    fi
-
-    fstab_opts=$(grep "^[^#].*[[:space:]]{{ item.target }}[[:space:]]" /etc/fstab | awk '{print $4}')
-    if [ -z "$fstab_opts" ]; then
-      echo "STATUS: NO_FSTAB_ENTRY"
-      exit 1
-    fi
-
-    echo "FSTAB_OPTS: $fstab_opts"
-
-    required_opts="{{ (nas_storage_mergerfs_required_opts | default(item.options | default([]), true)) | join(' ') }}"
-    missing_opts=""
-    for opt in $required_opts; do
-      if ! echo "$fstab_opts" | grep -qF -- "$opt"; then
-        missing_opts="${missing_opts}${opt} "
-      fi
-    done
-
-    if [ -n "$missing_opts" ]; then
-      echo "STATUS: FSTAB_MISSING_OPTIONS - $missing_opts"
-      exit 1
-    fi
-
-    echo "STATUS: OK - MergerFS mounted with correct fstab options"
-    exit 0
-  args:
-    executable: /bin/bash
+  ansible.builtin.script: "mergerfs-verify.sh {{ item.target | quote }} {{ _nas_storage_mergerfs_required_opts | quote }}"
   loop: "{{ nas_storage_mergerfs_mounts }}"
   loop_control:
     label: "{{ item.name }}"
@@ -106,27 +67,7 @@
     - nas_storage_mergerfs_needs_remount | default(false)
 
 - name: Check for processes using MergerFS mount
-  ansible.builtin.shell: |
-    set -o pipefail
-    MOUNTPOINT={{ item.target | quote }}
-
-    # Without fuser the probe cannot tell "nothing holds it" from "I could not
-    # look"; a missing binary would read as an idle union and unmount it.
-    command -v fuser >/dev/null 2>&1 || {
-      echo "NO_FUSER: cannot determine whether $MOUNTPOINT is in use"
-      exit 3
-    }
-
-    if fuser -m "$MOUNTPOINT" 2>/dev/null | grep -q .; then
-      echo "IN_USE:"
-      fuser -vm "$MOUNTPOINT" 2>&1 | head -20
-      exit 1
-    fi
-
-    echo "IDLE"
-    exit 0
-  args:
-    executable: /bin/bash
+  ansible.builtin.script: "mergerfs-idle-probe.sh {{ item.target | quote }}"
   loop: "{{ nas_storage_mergerfs_mounts }}"
   loop_control:
     label: "{{ item.name }}"
@@ -283,51 +224,12 @@
 # mount must be live, carry the required fstab options, and every bind must be
 # back on the same device as its union.
 - name: Verify MergerFS mount after remount cycle
-  ansible.builtin.shell: |
-    set -o pipefail
-    MOUNTPOINT={{ item.target | quote }}
-    CONTROL_FILE="${MOUNTPOINT}/.mergerfs"
-
-    if ! mountpoint -q "$MOUNTPOINT"; then
-      echo "FAILED: Not mounted"
-      exit 1
-    fi
-
-    if [ ! -e "$CONTROL_FILE" ]; then
-      echo "FAILED: No .mergerfs control file"
-      exit 1
-    fi
-
-    fstab_opts=$(grep "^[^#].*[[:space:]]{{ item.target }}[[:space:]]" /etc/fstab | awk '{print $4}')
-    required_opts="{{ (nas_storage_mergerfs_required_opts | default(item.options | default([]), true)) | join(' ') }}"
-    missing_opts=""
-    for opt in $required_opts; do
-      if ! echo "$fstab_opts" | grep -qF -- "$opt"; then
-        missing_opts="${missing_opts}${opt} "
-      fi
-    done
-    if [ -n "$missing_opts" ]; then
-      echo "FAILED: fstab is missing options ($missing_opts): $fstab_opts"
-      exit 1
-    fi
-
-    union_dev=$(findmnt --noheadings --first-only -o MAJ:MIN --mountpoint "$MOUNTPOINT")
-    binds=({{ nas_storage_exports | default([]) | selectattr('bind_source', 'defined')
-              | selectattr('bind_source', 'equalto', item.target)
-              | map(attribute='path') | map('quote') | join(' ') }})
-    for bind in "${binds[@]}"; do
-      bind_dev=$(findmnt --noheadings --first-only -o MAJ:MIN --mountpoint "$bind" 2>/dev/null || true)
-      if [ "$bind_dev" != "$union_dev" ]; then
-        echo "FAILED: export bind $bind is not on ${MOUNTPOINT} after the cycle (${bind_dev:-unmounted})"
-        exit 1
-      fi
-    done
-
-    echo "SUCCESS: MergerFS mounted, fstab has correct options"
-    echo "FSTAB: $fstab_opts"
-    exit 0
-  args:
-    executable: /bin/bash
+  ansible.builtin.script: "mergerfs-verify.sh {{ item.target | quote }} {{ _nas_storage_mergerfs_required_opts | quote }} {{ _binds }}"
+  vars:
+    _binds: >-
+      {{ nas_storage_exports | default([]) | selectattr('bind_source', 'defined')
+         | selectattr('bind_source', 'equalto', item.target)
+         | map(attribute='path') | map('quote') | join(' ') }}
   loop: "{{ nas_storage_mergerfs_mounts }}"
   loop_control:
     label: "{{ item.name }}"

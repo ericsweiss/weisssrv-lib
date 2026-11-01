@@ -15,18 +15,6 @@
     success_msg: "Required k3s variables are present"
   tags: [validation, always]
 
-# verbosity, not just the tag: a tag selects a task, it does not gate one.
-- name: Debug - Show k3s agent configuration variables
-  ansible.builtin.debug:
-    verbosity: 1
-    msg:
-      - "Host: {{ inventory_hostname }}"
-      - "k3s_role: {{ k3s_role }}"
-      - "k3s_api_vip: {{ k3s_api_vip }}"
-      - "k3s_labels: {{ k3s_labels }}"
-      - "Config will be written to: /etc/rancher/k3s/config.yaml"
-  tags: [debug]
-
 - name: Deploy k3s agent config
   ansible.builtin.template:
     src: k3s-agent-config.yaml.j2
@@ -43,7 +31,6 @@
   ansible.builtin.include_tasks: gpu.yml
   when: k3s_gpu_node | default(false)
 
-# Version detection + install-script staging (shared with server.yml)
 - name: Detect k3s version and stage install script
   ansible.builtin.include_tasks: install-script.yml
 

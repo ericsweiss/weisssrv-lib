@@ -140,23 +140,6 @@ publicly reachable, since Immich makes the first registered account the owner.
 Use the same email as the SSO account, then flip back to `false` and redeploy
 for SSO-only; OIDC links to the admin user by email.
 
-## Molecule
-
-`molecule/default` is a render/contract scenario: `immich_skip_install: true`
-skips the Docker/nginx install and all service management, so the compose file,
-system config (both the SSO-only and bootstrap branches), `.env`, nginx site
-(including the inventory-derived real-IP trust list, seeded with fixture proxy
-hosts), systemd units and the backup wrapper (success + failure metric paths,
-against a mocked `docker`) are rendered and asserted without a container
-runtime.
-
-Two negative cases re-run the role and must fail: a real-IP trust list that
-resolves empty, and a postgres-exporter image left unpinned. Both guards run
-ahead of every mutating task, so the rescued re-runs leave the converged host
-untouched. `expected-junit-failures.txt` declares one junit failure each, which
-the `molecule-idempotence-notest` tag on the two blocks keeps true across the
-idempotence re-run of converge.
-
 ## Related
 
 - `weisssrv.infra.immich_ml` — GPU inference endpoint to put first in

@@ -14,11 +14,9 @@ driver:
 provisioner:
   name: ansible
   env:
-    # CRITICAL: both resolve against the SCENARIO dir. Three up is
-    # <collection-root>/roles, seven up is the dir CONTAINING
-    # ansible_collections/, which is what makes weisssrv.infra resolvable by
-    # FQCN. The two trailing defaults are re-listed because this replaces the
-    # variable wholesale; dropping them hides the galaxy dependencies.
+    # Both resolve against the SCENARIO dir: three up is <collection-root>/roles,
+    # seven up holds ansible_collections/. The trailing defaults keep the galaxy
+    # dependencies visible; molecule-shared/README.md has the layout.
     ANSIBLE_ROLES_PATH: ../../..
     ANSIBLE_COLLECTIONS_PATH: ../../../../../../..:~/.ansible/collections:/usr/share/ansible/collections
   config_options:

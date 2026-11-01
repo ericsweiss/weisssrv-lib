@@ -32,9 +32,8 @@ to the *included* role.
 
 The site is rendered to a temp dir and checked with `nginx -t` against a copy of
 `nginx.conf` whose `sites-enabled` include points at that temp dir; only a
-candidate that passes is copied into `sites-available`. Validating after install
-would leave a broken `.conf` enabled, so the next nginx start (a reboot, or a
-coordinated reboot controller) could not bring the guest back. A whole-config
+candidate that passes is copied into `sites-available`, so a broken `.conf` is
+never enabled and the next nginx start can always bring the guest back. A whole-config
 `nginx -t` still runs after the site is enabled and the default vhost removed.
 
 Under `compose_app_skip_install` the validation step is skipped (no nginx
@@ -42,11 +41,9 @@ binary), but the candidate is still rendered and installed.
 
 ### Backup metrics library
 
-`tasks/backup_lib.yml` installs the backup-freshness metric emitter used by the
-compose app guests: `gitlab`, `immich` and `nextcloud` include it. Roles whose
-wrappers emit a richer or differently-shaped metric set (`restic_offsite`,
-`nas_storage`, `k3s`, `acme_certs`) keep their own emitter. The library is
-sourced, and everything variable is a call argument:
+`tasks/backup_lib.yml` installs a backup-freshness metric emitter that any role
+may include with `tasks_from`. The library is sourced, and everything variable
+is a call argument:
 
 ```bash
 source /usr/local/lib/<app>-backup-lib.sh
@@ -80,9 +77,6 @@ require_mounted_landing_zone <prefix> <path> <nfs_enabled> <prom_file>
 | `compose_app_description` | `Docker Compose stack` | Unit `Description=`. |
 | `compose_app_working_directory` | `/opt/compose` | Unit `WorkingDirectory=` (where the compose project lives). |
 | `compose_app_requires_mounts_for` | `[]` | List for `RequiresMountsFor=`; **empty omits the line and its comment**. |
-| `compose_app_requires_mounts_comment` | `[]` | Comment lines rendered above `RequiresMountsFor=`. |
-| `compose_app_reconcile_comment` | `[]` | Comment lines rendered above `ExecStart=`. |
-| `compose_app_remain_after_exit` | `"yes"` | Unit `RemainAfterExit=`. |
 | `compose_app_backup_lib_dest` | `/usr/local/lib/compose-app-backup-lib.sh` | Where the sourceable metrics library is installed. |
 | `compose_app_backup_size_help_object` | `dump` | Noun in the size-gauge HELP line. |
 | `compose_app_nginx_cert_dir` | `/etc/nginx/ssl` | TLS material directory. |
@@ -99,20 +93,6 @@ require_mounted_landing_zone <prefix> <path> <nfs_enabled> <prom_file>
 A site that terminates TLS for a wildcard hostname should set
 `compose_app_nginx_self_signed_subj` / `_san` to that name, e.g.
 `/CN=app.example.com` and `DNS:*.example.com`.
-
-## Molecule
-
-`molecule/default` is a contract scenario. Under `compose_app_skip_install:
-true` it renders the compose unit for **both** the `RequiresMountsFor`-present
-and `-absent` cases, renders the `write_prom_metrics` lib and runs it end-to-end
-(success, failure/preserve-timestamp, newest-artefact fallback, unwritable
-path), and runs the host-nginx flow to assert the `creates:` cert guard, the
-deployed + enabled site and the removed default vhost.
-
-It then installs nginx and runs the host-nginx flow again with validation on: a
-valid candidate must pass `nginx -t` and land in `sites-available`, and a
-candidate with an unknown directive must fail the play and leave the installed
-site untouched. `expected-junit-failures.txt` declares that deliberate failure.
 
 ## Related
 

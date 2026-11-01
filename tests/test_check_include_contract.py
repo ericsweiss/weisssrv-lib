@@ -72,275 +72,163 @@ def pipeline(consumer: Path) -> Path:
     return consumer / ".gitlab-ci.yml"
 
 
-class TestHappyPath:
-    def test_a_legal_pipeline_passes(self, world, capsys):
-        assert run(world) == 0
-        assert "1 included file(s) checked" in capsys.readouterr().out
+def consumer_pipeline(stages, inputs=None) -> str:
+    """A pipeline including /ci/lint/gate.yml; `stages=None` omits the key."""
+    lines = [] if stages is None else ["stages: [%s]" % ", ".join(stages)]
+    lines += ["include:", "  - project: group/weisssrv-lib", "    file: /ci/lint/gate.yml"]
+    if inputs:
+        lines += ["    inputs:"] + ["      %s: %s" % item for item in inputs.items()]
+    return "\n".join(lines) + "\n"
 
-    def test_a_template_with_no_spec_header_passes(self, world):
-        lib, consumer = world
-        write(lib, "ci/lint/gate.yml", 'plain-job:\n  stage: lint\n  script: ["true"]\n')
-        write(
-            consumer,
-            ".gitlab-ci.yml",
-            """\
-            stages: [lint]
-            include:
-              - project: group/weisssrv-lib
-                file: /ci/lint/gate.yml
-            """,
-        )
-        assert run(world) == 0
 
-    def test_a_local_include_is_checked_too(self, world):
+def _job(body: str, spec: str = "") -> str:
+    return (spec + "---\n" if spec else "") + "run-gate:\n" + body + '  script: ["true"]\n'
+
+
+REQUIRES_LIB_REF = (
+    'spec:\n  inputs:\n    stage:\n      default: lint\n    lib_ref: {}\n---\n'
+    'run-gate:\n  stage: $[[ inputs.stage ]]\n  script: ["echo $[[ inputs.lib_ref ]]"]\n'
+)
+DEFAULTS_TO_VALIDATE = _job(
+    "  stage: $[[ inputs.stage ]]\n", "spec:\n  inputs:\n    stage:\n      default: validate\n"
+)
+STAGELESS = _job("")
+
+CASES = [
+    # (id, template or None for the fixture's, stages, inputs, rc, needles)
+    ("legal", None, ["lint", "deploy"], {"stage": "lint"}, 0, ["1 included file(s) checked"]),
+    ("no-spec-header", 'plain-job:\n  stage: lint\n  script: ["true"]\n', ["lint"], None, 0, []),
+    ("undeclared-input", None, ["lint"], {"stagee": "lint"}, 1, ["declares no input 'stagee'"]),
+    ("required-input-omitted", REQUIRES_LIB_REF, ["lint"], None, 1,
+     ["requires input 'lib_ref'"]),
+    ("required-input-passed",
+     'spec:\n  inputs:\n    lib_ref: {}\n---\n'
+     'run-gate:\n  stage: lint\n  script: ["echo $[[ inputs.lib_ref ]]"]\n',
+     ["lint"], {"lib_ref": "v1.0.0"}, 0, []),
+    # `lib_ref:` with no body parses as None, which carries no default.
+    ("required-input-null",
+     _job("  stage: lint\n", "spec:\n  inputs:\n    lib_ref:\n"), ["lint"], None, 1,
+     ["requires input 'lib_ref'"]),
+    ("undeclared-stage", None, ["deploy"], None, 1, ["resolves to stage 'lint'", "'run-gate'"]),
+    # The include passes no stage, so the template default is the subject.
+    ("default-resolves-the-stage", DEFAULTS_TO_VALIDATE, ["lint"], None, 1,
+     ["resolves to stage 'validate'"]),
+    ("passed-input-overrides", DEFAULTS_TO_VALIDATE, ["lint"], {"stage": "lint"}, 0, []),
+    ("stage-less-is-test", STAGELESS, ["lint"], None, 1, ["resolves to stage 'test'"]),
+    ("no-stages-key-gets-defaults", STAGELESS, None, None, 0, []),
+    ("pre-stage", _job("  stage: .pre\n"), ["lint"], None, 0, []),
+    # `.base` creates no job, but something must still have been inspected.
+    ("hidden-template", '.base:\n  stage: nowhere\n  script: ["true"]\n', ["lint"], None, 0, []),
+    ("extends-outside-the-file-is-unchecked", _job("  extends: .base\n"), ["lint"], None, 0,
+     ["not contract-checked: ci/lint/gate.yml: job 'run-gate' extends '.base', which does "
+      "not resolve in this file, so its stage is not checked"]),
+    ("extends-reads-the-template-stage",
+     '.base:\n  stage: nowhere\n' + _job("  extends: .base\n"), ["lint"], None, 1,
+     ["resolves to stage 'nowhere'"]),
+    ("extends-through-two-templates",
+     '.root:\n  stage: nowhere\n.mid:\n  extends: .root\n' + _job("  extends: .mid\n"),
+     ["lint"], None, 1, ["resolves to stage 'nowhere'"]),
+    ("the-last-extends-entry-wins",
+     '.a:\n  stage: lint\n.b:\n  stage: nowhere\n' + _job("  extends: [.a, .b]\n"),
+     ["lint"], None, 1, ["resolves to stage 'nowhere'"]),
+    ("the-last-extends-entry-wins-reversed",
+     '.a:\n  stage: lint\n.b:\n  stage: nowhere\n' + _job("  extends: [.b, .a]\n"),
+     ["lint"], None, 0, []),
+    ("the-job-stage-beats-extends",
+     '.base:\n  stage: nowhere\n' + _job("  extends: .base\n  stage: lint\n"),
+     ["lint"], None, 0, []),
+    ("a-stageless-chain-is-test",
+     '.base:\n  image: alpine\n' + _job("  extends: .base\n"), ["lint"], None, 1,
+     ["resolves to stage 'test'"]),
+    ("an-extends-cycle-is-unchecked",
+     '.a:\n  extends: .b\n.b:\n  extends: .a\n' + _job("  extends: .a\n"), ["lint"], None, 0,
+     ["job 'run-gate' extends '.a', which loops back on itself, so its stage is not checked"]),
+    # An input that names a fragment `.hidden` makes a template, never a job.
+    ("an-input-named-hidden-fragment-is-no-job",
+     'spec:\n  inputs:\n    job_name:\n      default: .fragment\n---\n'
+     '"$[[ inputs.job_name ]]":\n  extends: .elsewhere\n  script: ["true"]\n'
+     '"$[[ inputs.job_name ]]-bare":\n  script: ["true"]\n',
+     ["lint"], None, 0, ["1 included file(s) checked"]),
+    ("pages-is-a-test-job-too", 'pages:\n  script: ["true"]\n', ["lint"], None, 1,
+     ["job 'pages' resolves to stage 'test'"]),
+    ("undeclared-reference",
+     _job("  stage: lint\n  variables:\n    X: $[[ inputs.missing ]]\n",
+          "spec:\n  inputs:\n    stage:\n      default: lint\n"),
+     ["lint"], None, 1, ["references input 'missing'"]),
+    ("undeclared-reference-in-a-job-name",
+     'spec:\n  inputs:\n    stage:\n      default: lint\n---\n'
+     '"$[[ inputs.job_name ]]":\n  stage: lint\n  script: ["true"]\n',
+     ["lint"], None, 1, ["references input 'job_name'"]),
+    ("declared-reference-with-a-function",
+     _job('  stage: lint\n  variables:\n    X: "$[[ inputs.stage | expand_vars ]]"\n',
+          "spec:\n  inputs:\n    stage:\n      default: lint\n"),
+     ["lint"], None, 0, []),
+]
+
+
+@pytest.mark.parametrize(
+    "template, stages, inputs, rc, needles", [c[1:] for c in CASES], ids=[c[0] for c in CASES]
+)
+def test_include_contract(world, capsys, template, stages, inputs, rc, needles):
+    lib, consumer = world
+    if template is not None:
+        (lib / "ci" / "lint" / "gate.yml").write_text(template, encoding="utf-8")
+    pipeline(consumer).write_text(consumer_pipeline(stages, inputs), encoding="utf-8")
+    assert run(world) == rc
+    out, err = capsys.readouterr()
+    for needle in needles:
+        assert needle in (err if rc else out)
+
+
+def test_an_input_named_hidden_fragment_prints_no_note(world, capsys):
+    lib, consumer = world
+    (lib / "ci" / "lint" / "gate.yml").write_text(
+        'spec:\n  inputs:\n    job_name:\n      default: .fragment\n---\n'
+        '"$[[ inputs.job_name ]]":\n  extends: .elsewhere\n  script: ["true"]\n',
+        encoding="utf-8",
+    )
+    pipeline(consumer).write_text(consumer_pipeline(["lint"]), encoding="utf-8")
+    assert run(world) == 0
+    assert "not contract-checked" not in capsys.readouterr().out
+
+
+def test_a_local_include_is_checked_too(world):
+    _lib, consumer = world
+    write(consumer, "ci/local.yml", 'own-job:\n  stage: deploy\n  script: ["true"]\n')
+    write(
+        consumer,
+        ".gitlab-ci.yml",
+        """\
+        stages: [lint, deploy]
+        include:
+          - local: /ci/local.yml
+        """,
+    )
+    assert run(world) == 0
+
+
+class TestProjectScope:
+    def test_another_project_is_listed_not_checked(self, world, capsys):
         _lib, consumer = world
-        write(consumer, "ci/local.yml", 'own-job:\n  stage: deploy\n  script: ["true"]\n')
-        write(
-            consumer,
-            ".gitlab-ci.yml",
-            """\
-            stages: [lint, deploy]
-            include:
-              - local: /ci/local.yml
-            """,
+        text = pipeline(consumer).read_text()
+        pipeline(consumer).write_text(
+            text + "  - project: other/templates\n    file: /absent.yml\n", encoding="utf-8"
         )
-        assert run(world) == 0
+        assert run(world, "--project", "Group/Weisssrv-Lib") == 0
+        assert "includes another project" in capsys.readouterr().out
 
+    def test_only_another_project_inspects_nothing(self, world, capsys):
+        assert run(world, "--project", "other/templates") == 2
+        assert "inspected nothing" in capsys.readouterr().err
 
-class TestUndeclaredInput:
-    def test_an_input_the_template_does_not_declare_fails(self, world, capsys):
+    def test_without_the_flag_every_project_is_the_library(self, world, capsys):
         _lib, consumer = world
-        write(
-            consumer,
-            ".gitlab-ci.yml",
-            """\
-            stages: [lint]
-            include:
-              - project: group/weisssrv-lib
-                file: /ci/lint/gate.yml
-                inputs:
-                  stagee: lint
-            """,
+        text = pipeline(consumer).read_text()
+        pipeline(consumer).write_text(
+            text + "  - project: other/templates\n    file: /absent.yml\n", encoding="utf-8"
         )
-        assert run(world) == 1
-        assert "declares no input 'stagee'" in capsys.readouterr().err
-
-
-class TestRequiredInput:
-    def test_an_omitted_default_less_input_fails(self, world, capsys):
-        lib, _consumer = world
-        write(
-            lib,
-            "ci/lint/gate.yml",
-            """\
-            spec:
-              inputs:
-                stage:
-                  default: lint
-                lib_ref: {}
-            ---
-            run-gate:
-              stage: $[[ inputs.stage ]]
-              script: ["echo $[[ inputs.lib_ref ]]"]
-            """,
-        )
-        assert run(world) == 1
-        assert "requires input 'lib_ref'" in capsys.readouterr().err
-
-    def test_passing_it_clears_the_finding(self, world):
-        lib, consumer = world
-        write(
-            lib,
-            "ci/lint/gate.yml",
-            """\
-            spec:
-              inputs:
-                lib_ref: {}
-            ---
-            run-gate:
-              stage: lint
-              script: ["echo $[[ inputs.lib_ref ]]"]
-            """,
-        )
-        write(
-            consumer,
-            ".gitlab-ci.yml",
-            """\
-            stages: [lint]
-            include:
-              - project: group/weisssrv-lib
-                file: /ci/lint/gate.yml
-                inputs:
-                  lib_ref: v1.0.0
-            """,
-        )
-        assert run(world) == 0
-
-    def test_a_null_declaration_is_still_required(self, world, capsys):
-        """`lib_ref:` with no body parses as None, which carries no default."""
-        lib, _consumer = world
-        write(
-            lib,
-            "ci/lint/gate.yml",
-            'spec:\n  inputs:\n    lib_ref:\n---\nrun-gate:\n'
-            '  stage: lint\n  script: ["true"]\n',
-        )
-        assert run(world) == 1
-        assert "requires input 'lib_ref'" in capsys.readouterr().err
-
-
-class TestStages:
-    def test_a_stage_the_pipeline_does_not_declare_fails(self, world, capsys):
-        _lib, consumer = world
-        write(
-            consumer,
-            ".gitlab-ci.yml",
-            """\
-            stages: [deploy]
-            include:
-              - project: group/weisssrv-lib
-                file: /ci/lint/gate.yml
-            """,
-        )
-        assert run(world) == 1
-        err = capsys.readouterr().err
-        assert "resolves to stage 'lint'" in err
-        assert "'run-gate'" in err
-
-    def test_the_input_default_is_what_resolves_the_stage(self, world, capsys):
-        """The include passes no stage, so the template default is the subject."""
-        lib, consumer = world
-        write(
-            lib,
-            "ci/lint/gate.yml",
-            'spec:\n  inputs:\n    stage:\n      default: validate\n---\n'
-            'run-gate:\n  stage: $[[ inputs.stage ]]\n  script: ["true"]\n',
-        )
-        write(
-            consumer,
-            ".gitlab-ci.yml",
-            """\
-            stages: [lint]
-            include:
-              - project: group/weisssrv-lib
-                file: /ci/lint/gate.yml
-            """,
-        )
-        assert run(world) == 1
-        assert "resolves to stage 'validate'" in capsys.readouterr().err
-
-    def test_a_passed_input_overrides_the_default(self, world):
-        lib, consumer = world
-        write(
-            lib,
-            "ci/lint/gate.yml",
-            'spec:\n  inputs:\n    stage:\n      default: validate\n---\n'
-            'run-gate:\n  stage: $[[ inputs.stage ]]\n  script: ["true"]\n',
-        )
-        write(
-            consumer,
-            ".gitlab-ci.yml",
-            """\
-            stages: [lint]
-            include:
-              - project: group/weisssrv-lib
-                file: /ci/lint/gate.yml
-                inputs:
-                  stage: lint
-            """,
-        )
-        assert run(world) == 0
-
-    def test_a_stage_less_job_resolves_to_test(self, world, capsys):
-        lib, consumer = world
-        write(lib, "ci/lint/gate.yml", 'run-gate:\n  script: ["true"]\n')
-        write(
-            consumer,
-            ".gitlab-ci.yml",
-            """\
-            stages: [lint]
-            include:
-              - project: group/weisssrv-lib
-                file: /ci/lint/gate.yml
-            """,
-        )
-        assert run(world) == 1
-        assert "resolves to stage 'test'" in capsys.readouterr().err
-
-    def test_a_pipeline_with_no_stages_key_gets_gitlab_s_defaults(self, world):
-        lib, consumer = world
-        write(lib, "ci/lint/gate.yml", 'run-gate:\n  script: ["true"]\n')
-        write(
-            consumer,
-            ".gitlab-ci.yml",
-            'include:\n  - project: group/weisssrv-lib\n    file: /ci/lint/gate.yml\n',
-        )
-        assert run(world) == 0
-
-    def test_the_always_present_stages_are_accepted(self, world):
-        lib, consumer = world
-        write(lib, "ci/lint/gate.yml", 'run-gate:\n  stage: .pre\n  script: ["true"]\n')
-        write(
-            consumer,
-            ".gitlab-ci.yml",
-            """\
-            stages: [lint]
-            include:
-              - project: group/weisssrv-lib
-                file: /ci/lint/gate.yml
-            """,
-        )
-        assert run(world) == 0
-
-    def test_a_hidden_template_is_not_a_job(self, world):
-        lib, consumer = world
-        write(lib, "ci/lint/gate.yml", '.base:\n  stage: nowhere\n  script: ["true"]\n')
-        write(
-            consumer,
-            ".gitlab-ci.yml",
-            """\
-            stages: [lint]
-            include:
-              - project: group/weisssrv-lib
-                file: /ci/lint/gate.yml
-            """,
-        )
-        # `.base` creates no job, but something must still have been inspected.
-        assert run(world) == 0
-
-    def test_an_extending_job_is_left_unchecked(self, world):
-        lib, consumer = world
-        write(
-            lib,
-            "ci/lint/gate.yml",
-            'run-gate:\n  extends: .base\n  script: ["true"]\n',
-        )
-        write(
-            consumer,
-            ".gitlab-ci.yml",
-            """\
-            stages: [lint]
-            include:
-              - project: group/weisssrv-lib
-                file: /ci/lint/gate.yml
-            """,
-        )
-        assert run(world) == 0
-
-    def test_a_pages_job_is_not_read_as_an_implicit_test_job(self, world):
-        lib, consumer = world
-        write(lib, "ci/lint/gate.yml", 'pages:\n  script: ["true"]\n')
-        write(
-            consumer,
-            ".gitlab-ci.yml",
-            """\
-            stages: [lint]
-            include:
-              - project: group/weisssrv-lib
-                file: /ci/lint/gate.yml
-            """,
-        )
-        assert run(world) == 0
+        assert run(world) == 2
+        assert "absent.yml is not in" in capsys.readouterr().err
 
 
 class TestUnreadableIncludes:
@@ -430,3 +318,9 @@ class TestInvocation:
         )
         assert proc.returncode == 2
         assert "ci_yaml.py must sit next to this script" in proc.stderr
+
+
+def test_the_keyword_list_is_the_one_ci_yaml_owns():
+    """A second copy of GitLab's keywords would drift from the one jobs() reads."""
+    ci_yaml = sys.modules[mod.jobs.__module__]
+    assert mod.RESERVED_KEYS is ci_yaml.RESERVED_KEYS

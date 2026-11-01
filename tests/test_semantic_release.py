@@ -279,65 +279,77 @@ def test_api_request_posts_json_with_the_token_header():
     assert seen["timeout"] == 60
 
 
-def test_api_request_gets_when_there_is_no_payload():
-    opener, seen = recording_opener(b'{"tag_name": "v0.2.0"}')
-    assert sr.api_request("https://git.example/x", "tok", "PRIVATE-TOKEN", None, opener=opener) == {
-        "tag_name": "v0.2.0"
-    }
-    assert seen["method"] == "GET"
-    assert seen["data"] is None
-    assert seen["content_type"] is None
-
-
-def test_api_request_empty_body_is_an_empty_dict():
-    opener, _ = recording_opener(b"")
-    assert sr.api_request("https://git.example/x", "t", "JOB-TOKEN", None, opener=opener) == {}
-
-
 def _http_error(code: int, body: bytes = b'{"message": "denied"}'):
     return urllib.error.HTTPError("https://git.example/x", code, "err", {}, io.BytesIO(body))
 
 
-def test_api_request_propagates_http_error_with_its_body():
+# Both requesters behind one call shape: (payload, opener) -> response.
+REQUESTERS = {
+    "gitlab": lambda payload, opener: sr.api_request(
+        "https://git.example/x", "t", "JOB-TOKEN", payload, opener=opener),
+    "github": lambda payload, opener: sr.github_api_request(
+        "https://api.github.test/x", "t", payload=payload, opener=opener),
+}
+PLATFORMS = {
+    "gitlab": ("https://git.example/api/v4", "42", {}),
+    "github": ("https://api.github.test", "acme/widget", {"platform": "github"}),
+}
+
+
+@pytest.mark.parametrize("name", sorted(REQUESTERS))
+def test_a_requester_gets_when_there_is_no_payload(name):
+    opener, seen = recording_opener(b'{"tag_name": "v0.2.0"}')
+    assert REQUESTERS[name](None, opener) == {"tag_name": "v0.2.0"}
+    assert seen["method"] == "GET"
+    assert seen["data"] is None
+    assert seen["content_type"] is None
+    if name == "github":
+        assert seen["headers"]["Accept"] == "application/vnd.github+json"
+
+
+@pytest.mark.parametrize("name", sorted(REQUESTERS))
+def test_a_requester_reads_an_empty_body_as_an_empty_dict(name):
+    opener, _ = recording_opener(b"")
+    assert REQUESTERS[name](None, opener) == {}
+
+
+@pytest.mark.parametrize("name", sorted(REQUESTERS))
+@pytest.mark.parametrize("failure, raised", [
+    (_http_error(403), urllib.error.HTTPError),
+    (urllib.error.URLError("name or service not known"), urllib.error.URLError),
+    (TimeoutError("timed out"), OSError),
+], ids=["http-error", "url-error", "timeout"])
+def test_a_requester_propagates_a_transport_failure(name, failure, raised):
     def opener(request, timeout=None):
-        raise _http_error(403)
+        raise failure
 
-    with pytest.raises(urllib.error.HTTPError) as exc:
-        sr.api_request("https://git.example/x", "t", "JOB-TOKEN", {"a": 1}, opener=opener)
-    assert exc.value.code == 403
-    assert b"denied" in exc.value.read()
-
-
-def test_api_request_propagates_url_error():
-    def opener(request, timeout=None):
-        raise urllib.error.URLError("name or service not known")
-
-    with pytest.raises(urllib.error.URLError):
-        sr.api_request("https://git.example/x", "t", "JOB-TOKEN", {"a": 1}, opener=opener)
+    with pytest.raises(raised) as exc:
+        REQUESTERS[name]({"a": 1}, opener)
+    if raised is urllib.error.HTTPError:
+        assert exc.value.code == 403
+        assert b"denied" in exc.value.fp.getvalue()
 
 
-def test_api_request_propagates_a_timeout():
-    def opener(request, timeout=None):
-        raise TimeoutError("timed out")
-
-    with pytest.raises(OSError):
-        sr.api_request("https://git.example/x", "t", "JOB-TOKEN", {"a": 1}, opener=opener)
-
-
-def test_get_release_returns_none_on_404():
+@pytest.mark.parametrize("platform", sorted(PLATFORMS))
+def test_get_release_returns_none_on_404(platform):
+    """A tag with no PUBLISHED Release 404s on both forges, so the
+    crash-recovery probe needs no platform-specific reading."""
     def request(url, token, token_header, payload):
         assert payload is None
         raise _http_error(404)
 
-    assert sr.get_release("https://git.example/api/v4", "42", "t", "v0.2.0", request=request) is None
+    api, project, kw = PLATFORMS[platform]
+    assert sr.get_release(api, project, "t", "v0.2.0", request=request, **kw) is None
 
 
-def test_get_release_reraises_other_http_errors():
+@pytest.mark.parametrize("platform", sorted(PLATFORMS))
+def test_get_release_reraises_other_http_errors(platform):
     def request(url, token, token_header, payload):
         raise _http_error(500)
 
+    api, project, kw = PLATFORMS[platform]
     with pytest.raises(urllib.error.HTTPError):
-        sr.get_release("https://git.example/api/v4", "42", "t", "v0.2.0", request=request)
+        sr.get_release(api, project, "t", "v0.2.0", request=request, **kw)
 
 
 def test_get_release_escapes_the_tag_in_the_url():
@@ -400,17 +412,6 @@ def test_github_api_request_posts_json_with_bearer_auth():
     assert seen["timeout"] == 60
 
 
-def test_github_api_request_gets_when_there_is_no_payload():
-    opener, seen = recording_opener(b'{"tag_name": "v0.2.0"}')
-    assert sr.github_api_request("https://api.github.test/x", "tok", opener=opener) == {
-        "tag_name": "v0.2.0"
-    }
-    assert seen["method"] == "GET"
-    assert seen["data"] is None
-    assert seen["content_type"] is None
-    assert seen["headers"]["Accept"] == "application/vnd.github+json"
-
-
 def test_github_api_request_ignores_the_gitlab_token_header():
     """Both requesters are called through the same 4-argument seam, so the
     GitLab-only argument has to be harmless rather than absent."""
@@ -418,37 +419,6 @@ def test_github_api_request_ignores_the_gitlab_token_header():
     sr.github_api_request("https://api.github.test/x", "tok", "PRIVATE-TOKEN", opener=opener)
     assert "PRIVATE-TOKEN" not in seen["headers"] and "Private-token" not in seen["headers"]
     assert seen["headers"]["Authorization"] == "Bearer tok"
-
-
-def test_github_api_request_empty_body_is_an_empty_dict():
-    opener, _ = recording_opener(b"")
-    assert sr.github_api_request("https://api.github.test/x", "t", opener=opener) == {}
-
-
-def test_github_api_request_propagates_http_error_with_its_body():
-    def opener(request, timeout=None):
-        raise _http_error(422, b'{"message": "Validation Failed"}')
-
-    with pytest.raises(urllib.error.HTTPError) as exc:
-        sr.github_api_request("https://api.github.test/x", "t", payload={"a": 1}, opener=opener)
-    assert exc.value.code == 422
-    assert b"Validation Failed" in exc.value.read()
-
-
-def test_github_api_request_propagates_url_error():
-    def opener(request, timeout=None):
-        raise urllib.error.URLError("name or service not known")
-
-    with pytest.raises(urllib.error.URLError):
-        sr.github_api_request("https://api.github.test/x", "t", payload={"a": 1}, opener=opener)
-
-
-def test_github_api_request_propagates_a_timeout():
-    def opener(request, timeout=None):
-        raise TimeoutError("timed out")
-
-    with pytest.raises(OSError):
-        sr.github_api_request("https://api.github.test/x", "t", payload={"a": 1}, opener=opener)
 
 
 def test_create_release_posts_the_github_payload():
@@ -489,33 +459,6 @@ def test_get_release_probes_the_github_tags_endpoint():
         "https://api.github.test", "acme/widget", "t", "v0.2.0", request=request, platform="github"
     )
     assert seen["url"] == "https://api.github.test/repos/acme/widget/releases/tags/v0.2.0"
-
-
-def test_get_release_returns_none_on_404_from_github():
-    """A tag with no PUBLISHED Release 404s on GitHub exactly as it does on
-    GitLab, so the crash-recovery probe needs no platform-specific reading."""
-
-    def request(url, token, token_header, payload):
-        raise _http_error(404, b'{"message": "Not Found"}')
-
-    assert (
-        sr.get_release(
-            "https://api.github.test", "acme/widget", "t", "v0.2.0",
-            request=request, platform="github",
-        )
-        is None
-    )
-
-
-def test_get_release_reraises_other_http_errors_from_github():
-    def request(url, token, token_header, payload):
-        raise _http_error(401)
-
-    with pytest.raises(urllib.error.HTTPError):
-        sr.get_release(
-            "https://api.github.test", "acme/widget", "t", "v0.2.0",
-            request=request, platform="github",
-        )
 
 
 def test_the_platform_picks_the_requester_and_gitlab_is_the_default(monkeypatch):

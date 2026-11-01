@@ -12,8 +12,10 @@ spec:
         before_script. The root path additionally needs apt.
     tags:
       type: array
-      default: ["infrastructure"]
-      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+      default: []
+      description: >-
+        Runner tag(s). Empty runs the job on a tag-less runner.
+        Substitute mode installs with apt, so it needs root.
     substitute:
       type: boolean
       default: true
@@ -109,8 +111,8 @@ spec:
         A consumer's `flux:lint` task runs the same file, so the strict render
         and every floor below reach local lint and CI together.
     flux_render_script:
-      default: "scripts/flux-render.sh"
-      description: (substitute=true) repo-local copy of the shared render helper.
+      default: "scripts/flux-env.sh"
+      description: (substitute=true) repo-local copy of the ConfigMap exporter.
     skipped_script:
       default: "scripts/kubeconform-skipped.py"
       description: (substitute=true) repo-local copy of the unvalidated-kind tracker.
@@ -132,13 +134,13 @@ spec:
       default: ""
       description: >-
         (substitute=true) extra shell injected after flux-lint.sh, with
-        $RENDER_ALL / $K8S_VER / $FAILED and the ConfigMap exports in scope.
-        The supported shape is a
-        consumer gate chain listed in scripts/render-gates.conf and run by
-        scripts/run-render-gates.sh, so the value stays one line:
-        `bash scripts/run-render-gates.sh --flux-env scripts/flux-env.sh`. The
-        runner honours the same RENDER_ALL / VERSIONS_CONFIGMAP contract and
-        exits non-zero on a failing gate. Any other shell still works.
+        $RENDER_ALL, $K8S_VER, $FAILED and the ConfigMap exports in scope. The
+        supported shape is a consumer gate chain listed in
+        scripts/render-gates.conf and run by scripts/run-render-gates.sh, so the
+        value stays one line, such as `bash scripts/run-render-gates.sh
+        --flux-env scripts/flux-env.sh`. The runner honours the same RENDER_ALL
+        and VERSIONS_CONFIGMAP contract and exits non-zero on a failing gate.
+        Any other shell still works.
     default_branch:
       default: "main"
       description: >-
@@ -222,6 +224,7 @@ spec:
         # ROOT path (privileged runner): apt, /usr/local/bin and a verified
         # tarball cache. Every run re-checks each tarball against its pinned
         # sha256 and re-extracts.
+        [ "$(id -u)" = 0 ] || { echo "ERROR: substitute: true needs a root runner: pass its tag in tags, or pass substitute: false" >&2; exit 1; }
         apt-get update -qq && apt-get install -y -qq curl gettext-base
         # `--user` like every other template: the user site dir is on sys.path,
         # so the inline parser imports it without a PATH change.
@@ -252,14 +255,15 @@ spec:
         # bin on PATH. before_script + script share one shell, so PATH carries. ---
         export TOOLS_BIN="$CI_PROJECT_DIR/.bin"
         mkdir -p "$TOOLS_BIN"
+        DL_DIR="$(mktemp -d)"
         fetch_verified() { # <file> <url> <sha256>
-          python -c "import urllib.request,sys; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" "$2" "/tmp/$1"
-          echo "$3  /tmp/$1" | sha256sum -c -
+          python -c "import urllib.request,sys; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" "$2" "$DL_DIR/$1"
+          echo "$3  $DL_DIR/$1" | sha256sum -c -
         }
         fetch_verified kubeconform.tar.gz "$KC_URL" "$KUBECONFORM_SHA256"
-        tar xzf /tmp/kubeconform.tar.gz -C "$TOOLS_BIN" kubeconform
+        tar xzf "$DL_DIR/kubeconform.tar.gz" -C "$TOOLS_BIN" kubeconform
         fetch_verified kustomize.tar.gz "$KZ_URL" "$KUSTOMIZE_SHA256"
-        tar xzf /tmp/kustomize.tar.gz -C "$TOOLS_BIN" kustomize
+        tar xzf "$DL_DIR/kustomize.tar.gz" -C "$TOOLS_BIN" kustomize
         export PATH="$TOOLS_BIN:$PATH"
         kubeconform -v && kustomize version
       fi
@@ -309,9 +313,6 @@ spec:
         --crd-catalog-ref "$CRD_CATALOG_REF" \
         --render-all "$RENDER_ALL" || FAILED=1
 
-      # Consumer-injected extra validation (e.g. an HPA/VPA invariant or a
-      # helm-values check). Runs with $RENDER_ALL / $K8S_VER / $FAILED in
-      # scope; no-op by default, and references consumer-local scripts.
       $[[ inputs.extra_validation ]]
 
       exit $FAILED

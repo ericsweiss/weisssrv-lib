@@ -87,13 +87,6 @@ def test_paths_mode_prints_the_name_and_the_spec_path(tmp_path, capsys):
     ]
 
 
-def test_child_kustomization_paths_is_the_importable_form(tmp_path):
-    directory = _cluster(tmp_path, [("apps", ["configs"]), ("configs", [])])
-    assert tool.child_kustomization_paths(directory) == [
-        ("configs", "./kubernetes/configs"), ("apps", "./kubernetes/apps"),
-    ]
-
-
 PATHLESS_KUSTOMIZATION = """---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -120,27 +113,8 @@ def test_a_pathless_kustomization_fails_paths_by_default(tmp_path, capsys):
     assert "observability" in capsys.readouterr().err
 
 
-def test_allow_missing_paths_prints_the_paths_there_are(tmp_path, capsys):
-    directory = _cluster(tmp_path, [("apps", [])])
-    _add_pathless(directory, "observability")
-    assert tool.main(
-        ["--dir", str(directory), "--paths", "--allow-missing-paths"]
-    ) == 0
-    captured = capsys.readouterr()
-    assert captured.out.splitlines() == ["apps\t./kubernetes/apps"]
-    assert "observability" in captured.err
-
-
-def test_require_paths_is_accepted_as_a_no_op_alias(tmp_path, capsys):
-    directory = _cluster(tmp_path, [("apps", [])])
-    _add_pathless(directory, "observability")
-    assert tool.main(["--dir", str(directory), "--paths", "--require-paths"]) == 1
-    assert "observability" in capsys.readouterr().err
-
-
 def test_paths_passes_when_every_stage_declares_one(tmp_path):
     directory = _cluster(tmp_path, [("apps", []), ("configs", [])])
-    assert tool.main(["--dir", str(directory), "--paths", "--require-paths"]) == 0
     assert tool.main(["--dir", str(directory), "--paths"]) == 0
 
 
@@ -149,11 +123,10 @@ def test_a_tree_where_no_kustomization_declares_a_path_is_a_finding(tmp_path, ca
     directory = _cluster(tmp_path, [])
     _add_pathless(directory, "apps")
     _add_pathless(directory, "observability")
-    assert tool.main(["--dir", str(directory), "--paths", "--allow-missing-paths"]) == 1
-    captured = capsys.readouterr()
-    assert "declares a spec.path" in captured.err
-    assert captured.out.strip() == ""
     assert tool.main(["--dir", str(directory), "--paths"]) == 1
+    captured = capsys.readouterr()
+    assert "apps, observability" in captured.err
+    assert captured.out.strip() == ""
 
 
 def test_another_kind_in_the_cluster_directory_is_ignored(tmp_path):
@@ -217,12 +190,6 @@ def test_a_root_level_flux_system_is_excluded(tmp_path, capsys):
     assert capsys.readouterr().out.split() == ["apps"]
     assert tool.main(["--dir", str(directory), "--paths"]) == 0
     assert capsys.readouterr().out.splitlines() == ["apps\t./kubernetes/apps"]
-
-
-def test_an_extra_exclusion_keeps_flux_system_excluded(tmp_path, capsys):
-    directory = _cluster(tmp_path, [("apps", []), ("flux-system", []), ("extra", [])])
-    assert tool.main(["--dir", str(directory), "--exclude", "extra"]) == 0
-    assert capsys.readouterr().out.split() == ["apps"]
 
 
 if __name__ == "__main__":

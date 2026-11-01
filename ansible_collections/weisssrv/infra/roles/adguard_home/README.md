@@ -25,7 +25,7 @@ needs its own upstreams and TLS:
 - TLS/DoT/DoQ configuration (HTTPS, DoT, DoQ ports)
 - DNS cache size + TTL bounds
 - Cache optimistic mode
-- DHCP server enable/disable
+- DHCP server kept disabled
 
 **DNS records** (`api_config.yml`) — **primary only**:
 - DNS rewrites (forward A records)
@@ -48,21 +48,19 @@ adguard-admin-hash.py --config <install_path>/AdGuardHome.yaml --user <user> rea
 printf '%s' "$password" | adguard-admin-hash.py --config … --user <user> reconcile
 ```
 
-- it **parses** the document to locate
-  `users[?name == adguard_home_admin_user].password`. A line-oriented edit
-  (`grep`/`lineinfile` for an indented `password:`) means "the last password key
-  in the file" — a different account's the moment a second user exists.
-- it rewrites **only that one line** (temp file + atomic replace, mode/uid/gid
-  preserved) and re-parses the result before committing. AdGuard owns this file
-  at runtime; re-emitting it from parsed YAML would reformat everything the role
-  did not write.
-- it prints `UNCHANGED` when the stored hash already verifies against the
+- It **parses** the document to locate
+  `users[?name == adguard_home_admin_user].password`, so a second user's key is
+  never touched.
+- It rewrites **only that one line** through a temp file and an atomic replace,
+  preserving mode, uid and gid. It re-parses the result before committing.
+  AdGuard owns the rest of the file at runtime.
+- It prints `UNCHANGED` when the stored hash already verifies against the
   password, so a converged host is untouched and nothing restarts. `CHANGED`
-  notifies the restart handler. (Compare those verdicts exactly — `UNCHANGED`
-  contains `CHANGED`.)
-- the password arrives on **stdin**, never in argv or `environment:` (Ansible
-  prefixes environment assignments onto the remote command string, where they
-  are readable in `/proc` for the length of the run).
+  notifies the restart handler. Compare the verdicts exactly, because
+  `UNCHANGED` contains `CHANGED`.
+- The password arrives on **stdin**, never in argv or `environment:`. Ansible
+  prefixes environment assignments onto the remote command string, which
+  `/proc` exposes for the length of the run.
 
 It exits 0 on success and 1 on any error: config unreadable or unparsable, the
 user absent or ambiguous, no password key, a multi-line scalar, passlib
@@ -90,6 +88,14 @@ missing, or post-write verification failing.
 | `adguard_home_upstream_dns` | Upstream resolvers | no (`127.0.0.1:5335`) |
 | `adguard_home_rewrites`, `adguard_home_user_rules` | Primary-only API-managed records; empty means "manage none" | no (`[]`) |
 | `adguard_home_prune_rewrites`, `adguard_home_prune_user_rules` | Treat the empty list as authoritative and delete what it does not name | no (`false`) |
+| `adguard_home_http_port`, `adguard_home_dns_port`, `adguard_home_dot_port`, `adguard_home_https_port`, `adguard_home_doq_port` | Admin UI, DNS, DoT, HTTPS and DoQ ports | no (`3000`, `53`, `853`, `443`, `853`) |
+| `adguard_home_protection_enabled`, `adguard_home_enable_dnssec`, `adguard_home_resolve_clients` | Filtering, DNSSEC and client rDNS | no (`true`) |
+| `adguard_home_upstream_mode` | `load_balance`, `parallel` or `fastest_addr` | no (`load_balance`) |
+| `adguard_home_fallback_dns` | Fallback resolvers | no (`[]`) |
+| `adguard_home_use_private_ptr_resolvers` | Forward private PTR lookups; keep false with static PTR records | no (`false`) |
+| `adguard_home_disable_ipv6` | Drop AAAA answers | no (`false`) |
+| `adguard_home_cache_enabled`, `adguard_home_cache_size`, `adguard_home_cache_ttl_min`, `adguard_home_cache_ttl_max`, `adguard_home_cache_optimistic` | DNS cache: on/off, size in bytes, TTL bounds, optimistic mode | no (`true`, `8388608`, `0`, `0`, `false`) |
+| `adguard_home_ratelimit`, `adguard_home_ratelimit_whitelist` | Requests/s per client, and clients exempt from it | no (`20`, `[]`) |
 | `adguard_home_ratelimit_subnet_len_ipv4`, `adguard_home_ratelimit_subnet_len_ipv6` | Subnet the per-client rate limit is counted over. At the default 24, one non-whitelisted client consumes the bucket for its whole /24, so a per-host `adguard_home_ratelimit_whitelist` only has bite at 32. Needs an AdGuard that reports the fields (0.107.4x line or newer); one that does not fails the play rather than dropping the value | no (`24`, `56`) |
 | `adguard_home_web_bind`, `adguard_home_dns_bind` | Listen addresses written by the first-install wizard | no (`0.0.0.0`) |
 | `adguard_home_after_units`, `adguard_home_wants_units` | Extra systemd ordering for the upstream resolver | no (`[unbound.service]`) |
@@ -104,59 +110,23 @@ missing, or post-write verification failing.
 | `adguard_home_settle_seconds` | Pause between config rewrite and restart (container harnesses only) | no (`0`) |
 | `adguard_home_use_private_tmp`, `adguard_home_use_protect_system` | systemd sandboxing (disable in containers) | no (`true`) |
 
-The remaining knobs (ports, cache, rate limiting, DHCP, DNSSEC, fallbacks) are
-listed with their defaults in `defaults/main.yml`.
+Every default, with its comment, is in `defaults/main.yml`.
 
 ## Configuration
 
+The values a consumer sets per site:
+
 ```yaml
-# Base settings
-adguard_home_http_port: 3000
-adguard_home_dns_port: 53
-adguard_home_dot_port: 853
-adguard_home_https_port: 443
-adguard_home_doq_port: 853
-
-# Upstream DNS (points to Unbound)
-adguard_home_upstream_dns:
-  - "127.0.0.1:5335"
-
-# DNS features
-adguard_home_protection_enabled: true
-adguard_home_upstream_mode: "load_balance"  # load_balance, parallel, or fastest_addr
-adguard_home_fallback_dns: []
-adguard_home_enable_dnssec: true
-adguard_home_resolve_clients: true
-adguard_home_use_private_ptr_resolvers: false  # false when using static PTR records
-adguard_home_disable_ipv6: false
-
-# TLS/Encryption configuration
-adguard_home_tls_enabled: true
+adguard_home_version: "0.107.0"
 adguard_home_tls_server_name: "dns.example.net"   # must match the distributed cert
-adguard_home_cert_path: "{{ adguard_home_install_path }}/certs"
+adguard_home_is_primary: true                       # exactly one instance
 
-# Cache configuration
-adguard_home_cache_enabled: true
-adguard_home_cache_size: 8388608  # 8MB cache
-adguard_home_cache_ttl_min: 0
-adguard_home_cache_ttl_max: 0
-adguard_home_cache_optimistic: false
-
-# Rate limiting (counted per subnet — 32 to make the whitelist per-host)
-adguard_home_ratelimit: 20
-adguard_home_ratelimit_whitelist: []
-adguard_home_ratelimit_subnet_len_ipv4: 24
-adguard_home_ratelimit_subnet_len_ipv6: 56
-
-# DHCP (must stay false — see "Not managed")
-adguard_home_dhcp_enabled: false
-
-# DNS rewrites (managed via API)
+# DNS rewrites (managed via API, primary only)
 adguard_home_rewrites:
   - domain: "app.example.net"
     answer: "10.0.0.20"
 
-# Custom filtering rules (managed via API)
+# Custom filtering rules (managed via API, primary only)
 adguard_home_user_rules:
   - '||10.0.0.5.in-addr.arpa^$dnsrewrite=NOERROR;PTR;app.example.net.'
 ```
@@ -213,32 +183,26 @@ below rather than installing it anyway.
 - API calls use `no_log: true` to prevent credential exposure
 - Runs as unprivileged `adguard` user with `CAP_NET_BIND_SERVICE`
 - Config file owned by `adguard:adguard` with mode `0600`
-- The admin UI is **plaintext HTTP**: `force_https` stays false so the role can
-  reconcile over the plaintext admin API, and the wizard binds
-  `adguard_home_web_bind` (`0.0.0.0` by default). A global HTTP to HTTPS
-  redirect would send those calls to `:443`, where the certificate covers the
-  service hostname and not `127.0.0.1`, so reconciliation would fail. Restrict
-  the bind address or firewall `adguard_home_http_port` to trusted networks
-  instead, and use the `:443` endpoint by hostname elsewhere. The role dials
-  whichever address `adguard_home_web_bind` names, falling back to loopback for
-  a wildcard bind, so restricting the bind does not break its own reconcile.
+- The admin UI is **plaintext HTTP**. Restrict `adguard_home_web_bind` or
+  firewall `adguard_home_http_port` to trusted networks, and use the `:443`
+  endpoint by hostname elsewhere. `force_https` stays false because the role
+  reconciles over the plaintext admin API, and the certificate does not cover
+  `127.0.0.1`. The role dials the address `adguard_home_web_bind` names, or
+  loopback for a wildcard bind, so a restricted bind keeps reconcile working.
 - On a **fresh host** there is a window between the service starting and the
   role's `/control/install/configure` POST in which the setup wizard is reachable
   on that bind address and takes **no credentials** — the instance has none yet.
   Whoever reaches the port first sets the admin password. Provision fresh
   resolvers behind the firewall rules, or bind the wizard to loopback for the
   first run and widen `adguard_home_web_bind` afterwards.
-- The archive cache is opt-in (`adguard_home_archive_cache_dir` is empty by
-  default) and is treated as a **root trust boundary**, because its contents are
-  unpacked and installed as root with no upstream signature. Before any digest is
-  compared, the role asserts that the cache directory, the staged archive, and
-  the `checksums.txt` (when one is consulted) are each owned by **root (uid 0)**
-  and **not writable by group or other**; the play fails naming the offending
-  path if not. This is checked ahead of the verification rather than as part of
-  it: a digest only proves the bytes match a value that lives in the same
-  directory, so a writer who can swap the archive can swap the `checksums.txt`
-  beside it, and the comparison would still pass.
-- Only then is the staged archive verified — against `adguard_home_archive_sha256`
-  if set, otherwise against a `checksums.txt` staged in the same directory — and
-  the play fails if neither is available. Setting the pin is the stronger
-  statement: it lives in inventory rather than in the directory being trusted.
+- Set `adguard_home_archive_sha256` when the archive cache is in use. The pin
+  lives in inventory rather than in the directory being trusted.
+- The archive cache is opt-in and is a **root trust boundary**: its contents
+  are installed as root with no upstream signature. Before any digest compare,
+  the role asserts that the cache directory, the staged archive and any
+  consulted `checksums.txt` are owned by **root (uid 0)** and **not writable by
+  group or other**. A writer who can swap the archive can swap a
+  `checksums.txt` beside it, so ownership is checked first.
+- The staged archive is then verified against `adguard_home_archive_sha256`, or
+  else against a `checksums.txt` in the same directory. The play fails if
+  neither is available.

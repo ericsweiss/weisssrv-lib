@@ -61,14 +61,21 @@
         src: /etc/fstab
       register: fstab_content
 
-    - name: Verify fstab contains UUID-based entry for mount point
+    # One line carrying all three fields, and no second line for the same UUID:
+    # converge plants a stale /mnt/stale-location entry the role must remove.
+    - name: Verify fstab holds exactly one UUID-based entry for the disk
+      vars:
+        zvol_mount_fstab_text: "{{ fstab_content.content | b64decode }}"
+        zvol_mount_uuid: "{{ disk_uuid.stdout | trim }}"
       ansible.builtin.assert:
         that:
-          - "'UUID=' ~ disk_uuid.stdout | trim in (fstab_content.content | b64decode)"
-          - "'/mnt/test-data' in (fstab_content.content | b64decode)"
-          - "'ext4' in (fstab_content.content | b64decode)"
-        fail_msg: "fstab is missing UUID-based mount entry for /mnt/test-data"
-        success_msg: "fstab contains correct UUID-based entry for /mnt/test-data"
+          - zvol_mount_fstab_text is search('(?m)^UUID=' ~ zvol_mount_uuid ~ '\\s+/mnt/test-data\\s+ext4\\s')
+          - zvol_mount_fstab_text | regex_findall('(?m)^UUID=' ~ zvol_mount_uuid ~ '\\s') | length == 1
+          - "'/mnt/stale-location' not in zvol_mount_fstab_text"
+        fail_msg: >-
+          fstab does not carry exactly one `UUID=<uuid> /mnt/test-data ext4` line
+          for the managed disk, or the stale /mnt/stale-location entry survived.
+        success_msg: "fstab carries one UUID-based entry for /mnt/test-data and no stale one"
 
     - name: Read the partition-table guard disk
       ansible.builtin.command: lsblk -dno FSTYPE,PTTYPE /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi9
@@ -87,3 +94,32 @@
           '{{ pt_guard_probe.stdout | trim }}' and fstab mentions
           /mnt/pt-guard: the role formatted or mounted a disk it must refuse.
         success_msg: "Partition-table guard left the disk untouched"
+
+    - name: Read the fstype and duplicate-UUID guard disks
+      ansible.builtin.shell: |
+        set -euo pipefail
+        for slot in 10 11 12; do
+          dev=/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi$slot
+          printf '%s %s\n' "$(blkid -p -s TYPE -o value "$dev")" "$(findmnt -n -o TARGET --source "$dev" || true)"
+        done
+      args:
+        executable: /bin/bash
+      register: guard_disks_probe
+      changed_when: false
+
+    # Converge proves the guards fired; this proves they fired before the role
+    # formatted, mounted or wrote fstab for any of these disks.
+    - name: Verify the fstype and duplicate-UUID guards left their disks untouched
+      vars:
+        guard_disks: "{{ guard_disks_probe.stdout_lines | map('trim') | list }}"
+      ansible.builtin.assert:
+        that:
+          - guard_disks == ['xfs', 'ext4', 'ext4']
+          - "'/mnt/fstype-guard' not in (fstab_content.content | b64decode)"
+          - "'/mnt/dup-guard-a' not in (fstab_content.content | b64decode)"
+          - "'/mnt/dup-guard-b' not in (fstab_content.content | b64decode)"
+        fail_msg: >-
+          The guard disks read {{ guard_disks_probe.stdout_lines }} (type, mount
+          target) or fstab names one of their mount points: the role formatted
+          or mounted a disk its fstype or duplicate-UUID guard must refuse.
+        success_msg: "The fstype and duplicate-UUID guards left their disks untouched"

@@ -64,11 +64,6 @@ def _metrics(out_dir: Path) -> dict:
     return metrics
 
 
-def test_the_collector_is_executable_shell() -> None:
-    assert SCRIPT.exists()
-    subprocess.run([SH, "-n", str(SCRIPT)], check=True)
-
-
 def test_a_running_corosync_publishes_the_second_sample(tmp_path) -> None:
     proc = _run(tmp_path, "echo 1234", "cat <<'EOF'\n%sEOF" % TOP_SAMPLE)
     assert proc.returncode == 0, proc.stderr

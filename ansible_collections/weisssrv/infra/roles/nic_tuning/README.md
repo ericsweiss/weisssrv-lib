@@ -1,8 +1,9 @@
 # weisssrv.infra.nic_tuning
 
 Per-NIC tuning for Proxmox (and any Debian host) where a persistent
-`ethtool -K` setting, a sticky `ip_forward=1`, a lowered `vm.swappiness` or the
-active-backup bond MAC-flap guard is needed.
+`ethtool -K` setting or the active-backup bond MAC-flap guard is needed. The
+role also owns two host sysctls that travel with that tuning: a sticky
+`ip_forward=1` and a lowered `vm.swappiness`.
 
 ## Why each knob exists
 
@@ -130,9 +131,10 @@ active-backup bond MAC-flap guard is needed.
     `/` — which would mangle a VLAN name like `nic1.10`. The `/` form keeps the
     dot in the interface segment.
   - **Strictly per-interface** — never `net.ipv6.conf.all`, so a sibling VLAN
-    subinterface, the management bridge and tailscale keep their IPv6. Removing
-    an interface from the list drops the drop-in (reverts on next reboot); use
-    `sysctl -w net/ipv6/conf/<iface>/disable_ipv6=0` to revert live.
+    subinterface, the management bridge and tailscale keep their IPv6.
+  - **Removal is not live.** Dropping an interface from the list removes its
+    drop-in line only, so IPv6 stays off until the next reboot. Revert it live
+    with `sysctl -w net/ipv6/conf/<iface>/disable_ipv6=0`.
 
 ## Example inventory wiring
 
@@ -152,6 +154,3 @@ nic_tuning_overrides:
 nic_tuning_ip_forward: true
 ```
 
-## Scope
-
-Does not flash NIC firmware.

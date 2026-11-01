@@ -62,6 +62,5 @@
         alloy_host_loki_url: https://loki.test.local/loki/api/v1/push
         alloy_host_loki_user: test-push-user
         alloy_host_loki_password: test-push-password
-        alloy_host_wal_enabled: true
         alloy_host_wal_max_segment_age: "1h"
         alloy_host_journal_max_age: "3h"

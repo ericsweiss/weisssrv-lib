@@ -10,3 +10,7 @@ Assert every declared MergerFS union `zfs:` is a boolean
 Assert every declared component path is a regular file
 Assert the managed-file marker is usable
 Assert the component named something to de-provision
+Assert every busy-mount probe that ran produced a result
+Assert every MergerFS status check that ran produced a result
+Assert every keep-monthly override names a replicated dataset and a count ::2
+Assert the vzdump quiesce bounds are positive whole minutes in order ::2

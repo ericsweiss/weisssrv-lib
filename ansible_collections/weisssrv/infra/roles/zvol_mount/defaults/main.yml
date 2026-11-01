@@ -3,6 +3,3 @@
 # the QEMU/KVM SCSI id (/dev/sdX is not deterministic across reboots); another
 # hypervisor exposes a different by-id scheme.
 zvol_mount_device_id_prefix: "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi"
-
-# Remounts a disk found at the wrong mountpoint after a /dev/sdX reshuffle.
-zvol_mount_fix_wrong_locations: true

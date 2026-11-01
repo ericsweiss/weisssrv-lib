@@ -1,61 +1,58 @@
 ---
-# kmod ships /etc/modprobe.d on a Debian/Proxmox host, but a minimal image
-# (a container, a debootstrap chroot) may not carry it, and the template below
-# does not create its own parent. Idempotent, so it is a no-op everywhere else.
-- name: Ensure the modprobe.d directory exists
-  ansible.builtin.file:
-    path: /etc/modprobe.d
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
+# The single implementation of the ARC cap; nas_storage includes this role.
+# Empty zfs_arc_cap_max_bytes -> nothing is managed.
+- name: Cap the ZFS ARC
   when: zfs_arc_cap_max_bytes | default('') | string | length > 0
+  block:
+    # A minimal image may lack /etc/modprobe.d, and the template below does not
+    # create its own parent.
+    - name: Ensure the modprobe.d directory exists
+      ansible.builtin.file:
+        path: /etc/modprobe.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
 
-# The single implementation of the ARC cap; nas_storage includes this role. A
-# stale cap in a differently named modprobe.d file must be removed by hand, or
-# the load-time value is ambiguous.
-- name: Cap ZFS ARC via modprobe.d
-  ansible.builtin.template:
-    src: zfs-arc.conf.j2
-    dest: /etc/modprobe.d/zfs.conf
-    owner: root
-    group: root
-    mode: "0644"
-  when: zfs_arc_cap_max_bytes | default('') | string | length > 0
-  notify: Rebuild initramfs for zfs arc cap
+    # A stale cap in a differently named modprobe.d file must be removed by
+    # hand, or the load-time value is ambiguous.
+    - name: Cap ZFS ARC via modprobe.d
+      ansible.builtin.template:
+        src: zfs-arc.conf.j2
+        dest: /etc/modprobe.d/zfs.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Rebuild initramfs for zfs arc cap
 
-# The modprobe.d file takes effect at the next boot, so the cap is also applied
-# to the running kernel. Guarded on the sysfs parameter existing.
-- name: Check for the running ZFS ARC parameter
-  ansible.builtin.stat:
-    path: /sys/module/zfs/parameters/zfs_arc_max
-  register: zfs_arc_cap_param
-  when: zfs_arc_cap_max_bytes | default('') | string | length > 0
+    # The modprobe.d file takes effect at the next boot, so the cap is also
+    # applied to the running kernel. Guarded on the sysfs parameter existing.
+    - name: Check for the running ZFS ARC parameter
+      ansible.builtin.stat:
+        path: /sys/module/zfs/parameters/zfs_arc_max
+      register: zfs_arc_cap_param
 
-- name: Apply the ZFS ARC cap to the running kernel
-  # set -euo pipefail so a rejected sysfs write aborts instead of being masked
-  # green by the trailing echo; the read-back then fails a value that did not
-  # take.
-  ansible.builtin.shell: |
-    set -euo pipefail
-    current=$(cat /sys/module/zfs/parameters/zfs_arc_max)
-    if [ "$current" != {{ zfs_arc_cap_max_bytes | quote }} ]; then
-      echo {{ zfs_arc_cap_max_bytes | quote }} > /sys/module/zfs/parameters/zfs_arc_max
-      applied=$(cat /sys/module/zfs/parameters/zfs_arc_max)
-      if [ "$applied" != {{ zfs_arc_cap_max_bytes | quote }} ]; then
-        echo "FAILED: kernel rejected the write (wanted {{ zfs_arc_cap_max_bytes }}, got $applied)" >&2
-        exit 1
-      fi
-      echo "CHANGED"
-    else
-      echo "OK"
-    fi
-  args:
-    executable: /bin/bash
-  register: zfs_arc_cap_runtime
-  changed_when: "'CHANGED' in zfs_arc_cap_runtime.stdout"
-  # No check_mode:false — this writes /sys, so a dry-run (task infra:check) must
-  # skip it rather than mutate the running kernel on a live host.
-  when:
-    - zfs_arc_cap_max_bytes | default('') | string | length > 0
-    - zfs_arc_cap_param.stat.exists | default(false)
+    - name: Apply the ZFS ARC cap to the running kernel
+      # set -euo pipefail so a rejected sysfs write aborts instead of being
+      # masked green by the trailing echo; the read-back then fails a value
+      # that did not take.
+      ansible.builtin.shell: |
+        set -euo pipefail
+        current=$(cat /sys/module/zfs/parameters/zfs_arc_max)
+        if [ "$current" != {{ zfs_arc_cap_max_bytes | quote }} ]; then
+          echo {{ zfs_arc_cap_max_bytes | quote }} > /sys/module/zfs/parameters/zfs_arc_max
+          applied=$(cat /sys/module/zfs/parameters/zfs_arc_max)
+          if [ "$applied" != {{ zfs_arc_cap_max_bytes | quote }} ]; then
+            echo "FAILED: kernel rejected the write (wanted {{ zfs_arc_cap_max_bytes }}, got $applied)" >&2
+            exit 1
+          fi
+          echo "CHANGED"
+        else
+          echo "OK"
+        fi
+      args:
+        executable: /bin/bash
+      register: zfs_arc_cap_runtime
+      changed_when: "'CHANGED' in zfs_arc_cap_runtime.stdout"
+      # Writes /sys, so a dry run skips it rather than mutate the running kernel.
+      when: zfs_arc_cap_param.stat.exists | default(false)

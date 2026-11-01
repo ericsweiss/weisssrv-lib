@@ -1,6 +1,4 @@
 ---
-# QoL role: zsh, oh-my-zsh, neovim, vundle for admin user
-
 # The whole role is Debian-gated at one point. Guarding only the package install
 # would set a login shell to a binary the role declined to install.
 - name: Configure QoL tooling
@@ -29,8 +27,7 @@
              or ansible_facts.getent_passwd[qol_admin_user][4] }}
       when: qol_admin_user != 'root'
 
-    # Set unconditionally — the user module is idempotent, while a getent guard
-    # has to know whether zsh resolved to /bin/zsh or /usr/bin/zsh. Skipped for
+    # The user module is idempotent, so no getent guard is needed. Skipped for
     # root, which gets none of the dotfiles that make the zsh shell usable.
     - name: Set the admin user's login shell
       ansible.builtin.user:

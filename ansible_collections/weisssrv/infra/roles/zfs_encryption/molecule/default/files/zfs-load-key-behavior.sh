@@ -8,30 +8,8 @@ SRC="${1:-/usr/local/sbin/zfs-load-key.sh}"
 PORT="${2:-18099}"
 [ -x "$SRC" ] || { echo >&2 "zfs-load-key.sh not rendered at $SRC"; exit 1; }
 
-# The work dir holds the script copy and the stub binaries it execs, so it must
-# permit exec; /tmp is a noexec tmpfs in this scenario. Probe the candidates
-# instead of hardcoding one, and say so loudly if none can exec.
-work_root() {
-    local candidate probe
-    for candidate in /var/tmp /root "${TMPDIR:-/tmp}"; do
-        [ -d "$candidate" ] || continue
-        probe="$(mktemp "${candidate}/execprobe.XXXXXX" 2>/dev/null)" || continue
-        printf '#!/bin/sh\nexit 0\n' > "$probe"
-        chmod 0755 "$probe"
-        if "$probe" >/dev/null 2>&1; then
-            rm -f "$probe"
-            printf '%s' "$candidate"
-            return 0
-        fi
-        rm -f "$probe"
-    done
-    return 1
-}
-WORK_ROOT="$(work_root)" || {
-    echo >&2 "no exec-capable temp directory (every candidate is mounted noexec)"
-    exit 1
-}
-WORK="$(mktemp -d "${WORK_ROOT}/zfs-load-key-behavior.XXXXXX")"
+# /tmp is a noexec tmpfs in this scenario; the stubs need an exec-capable dir.
+WORK="$(mktemp -d /var/tmp/zfs-load-key-behavior.XXXXXX)"
 BIN="$WORK/bin"
 MODE_FILE="$WORK/mode"
 REQ_LOG="$WORK/requests.log"

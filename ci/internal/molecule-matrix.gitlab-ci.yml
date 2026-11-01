@@ -11,13 +11,11 @@ spec:
       description: Pipeline stage both jobs run in.
     tags:
       type: array
-      default: ["infrastructure"]
+      default: []
       description: >-
-        Runner tag(s) for the PLAN job only — the trigger is a bridge (no
-        runner) and the child's jobs take their tags from `jobs_include`. The
-        plan job is non-root safe, so `[]` (shared runner) also works; the
-        privileged tag is the default because that runner is where the child's
-        DinD jobs must land.
+        Runner tag(s) for the plan job only. The trigger is a bridge with no
+        runner, and the child's jobs take their tags from `jobs_include`. The
+        plan job is non-root safe, so it runs on a tag-less runner.
     image:
       default: python:3.14
       description: >-
@@ -32,48 +30,22 @@ spec:
     roles_dir:
       default: ansible_collections/weisssrv/infra/roles
       description: >-
-        Repo-relative roles dir ($ROLES_DIR). The collection-root paths the
-        generator treats as global triggers (requirements.yml, galaxy.yml,
-        meta/, plugins/, molecule-shared/) are derived from its parent, so
-        retargeting this needs no matching global_triggers edit — but it DOES
-        need a matching `changes` edit, which is a static default (see it).
-    integration_dir:
-      default: ansible_collections/weisssrv/infra/integration-tests
-      description: >-
-        Repo-relative integration-stack dir ($INTEGRATION_DIR). A repo with no
-        integration suite points this at a dir that does not exist and omits the
-        `integration-tests` job from `ci_file`.
+        Repo-relative roles dir ($ROLES_DIR). The generator derives its
+        collection-root full-matrix triggers (requirements.yml, galaxy.yml,
+        meta/, plugins/, molecule-shared/) from its parent. Retargeting it needs
+        a matching `changes` edit, which is a static default.
     ci_file:
       default: .gitlab-ci.yml
       description: >-
-        Repo-relative file holding the `molecule-tests` / `integration-tests`
-        parallel:matrix — the scenario universe the child is narrowed from.
+        Repo-relative file holding the `molecule-tests` parallel:matrix, the
+        scenario universe the child is narrowed from.
     jobs_include:
       default: .gitlab/ci/molecule-jobs.gitlab-ci.yml
       description: >-
         Repo-relative file the generated child `include: local:`s for the
-        `.molecule-test-job` / `.integration-test-job` templates. Must be
-        self-contained (a child pipeline includes ONLY this file) and must NOT
-        also define the static matrix, which the child would then collide with.
-    global_triggers:
-      default: "scripts/sanitize-junit-expected-failures.py"
-      description: >-
-        Extra paths that force the FULL matrix ($MOLECULE_GLOBAL_TRIGGERS,
-        space-separated; a trailing `/` makes it a prefix). The generator
-        already covers the CI file, the jobs include, the two image contexts,
-        its own sources, and everything at the root of `roles_dir`'s parent
-        (requirements.yml, galaxy.yml, meta/, plugins/, molecule-shared/) — the
-        last group derived, so overriding `roles_dir` needs no matching edit
-        here. This input is for genuine per-consumer extras only.
-    global_triggers_mode:
-      default: extend
-      options: [extend, replace]
-      description: >-
-        Whether `global_triggers` adds to the conventional-layout trigger set
-        (the image contexts, `ansible/molecule/`,
-        `ansible/playbooks/maintenance/` and the helper scripts) or stands in
-        for it. `replace` is for a repo that keeps those trees elsewhere; the
-        derived and CI-file triggers apply either way. See docs/SCRIPTS.md.
+        `.molecule-test-job` template. Must be self-contained (a child pipeline
+        includes ONLY this file) and must NOT also define the static matrix,
+        which the child would then collide with.
     child_file:
       default: molecule-child.yml
       description: Artifact the plan writes and the trigger runs.
@@ -116,8 +88,8 @@ spec:
         `ci_file` at it is what buys that back.
 ---
 # MR-targeted molecule child pipeline: runs only the scenarios the diff affects
-# (role dirs, transitive dependents, integration stacks; an unknown role dir
-# fails loudly). MR-only; on main the static matrix from `ci_file` runs instead.
+# (role dirs and their transitive dependents; an unknown role dir fails loudly).
+# MR-only; on main the static matrix from `ci_file` runs instead.
 "$[[ inputs.plan_job_name ]]":
   stage: $[[ inputs.stage ]]
   image: $[[ inputs.image ]]
@@ -134,10 +106,7 @@ spec:
     GIT_DEPTH: 0
     CI_FILE: $[[ inputs.ci_file ]]
     ROLES_DIR: $[[ inputs.roles_dir ]]
-    INTEGRATION_DIR: $[[ inputs.integration_dir ]]
     MOLECULE_JOBS_INCLUDE: $[[ inputs.jobs_include ]]
-    MOLECULE_GLOBAL_TRIGGERS: $[[ inputs.global_triggers ]]
-    MOLECULE_GLOBAL_TRIGGERS_MODE: $[[ inputs.global_triggers_mode ]]
   before_script:
     - pip install --user --quiet "pyyaml==$[[ inputs.pyyaml_version ]]"
   script:

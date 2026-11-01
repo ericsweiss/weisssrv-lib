@@ -8,10 +8,9 @@ the role is a no-op.
 
 ## What it manages
 
-- acme.sh, installed from a **pinned release tarball** (not the single-file
-  installer: only the tarball ships `dnsapi/`, and a hook missing at install
-  time is never fetched later — a single-file install can neither issue nor
-  renew over DNS-01) with Let's Encrypt pinned as the default CA
+- acme.sh, installed from a **pinned release tarball** with Let's Encrypt
+  pinned as the default CA. The tarball ships `dnsapi/`, which holds the DNS-01
+  hooks
 - the renewal cronjob, and `homelab-cert-reload.sh` as acme.sh's `--reloadcmd`
   — re-asserted on every run, so a cert that arrived by another route (manual
   `--install-cert`, a restore, a pre-role host) does not renew without
@@ -44,6 +43,8 @@ the role is a no-op.
 | `acme_certs_distribution_check_retries` | Retries for a check-mode probe that fails, before the target's gauge is written 0 | no (`2`) |
 | `acme_certs_distribution_check_retry_delay` | Seconds between those retries | no (`10`) |
 | `acme_certs_receiver_path` | Receiver path on each sudo target | no (`/usr/local/sbin/cert-receive`) |
+| `acme_certs_reseed_hosts` | `tasks_from: reseed` only. The targets to re-pin, by `host` | no (every sudo target) |
+| `acme_certs_reseed_fail_on_miss` | `tasks_from: reseed` only. Fail the play when a target is left unpinned; `false` warns instead | no (`true`) |
 | `acme_certs_sh_version`, `acme_certs_sh_tarball_sha256` | Pinned acme.sh release and its checksum | no |
 | `acme_certs_stage_dir` | Root-owned 0700 dir the release tarball is staged in, removed after the install | no (`/run/acme-certs-install`) |
 | `acme_certs_dns_hook` | acme.sh dnsapi hook used for DNS-01 (any hook the pinned tarball ships) | no (`dns_cf`) |
@@ -54,19 +55,23 @@ the role is a no-op.
 
 ```yaml
 acme_certs_distribution_targets:
-  - host: dns-02                  # inventory hostname (also the delegate)
-    ip: 10.0.0.160                # address the push connects to
-    host_key: "ssh-ed25519 AAAA..."   # REQUIRED — see host-key pinning
-    cert_dir: /opt/AdGuardHome/certs
-    owner: root
-    group: adguard
-    cert_mode: "0644"
-    key_mode: "0640"
-    restart_service: AdGuardHome  # REQUIRED — or restart_command: <verbatim command>
+  - host: dns-02                  # REQUIRED: inventory hostname, also the delegate
+    ip: 10.0.0.160                # REQUIRED: address the push connects to
+    host_key: "ssh-ed25519 AAAA..."   # REQUIRED: see host-key pinning
+    cert_dir: /opt/AdGuardHome/certs  # REQUIRED
+    owner: root                   # REQUIRED
+    group: adguard                # REQUIRED
+    cert_mode: "0644"             # REQUIRED
+    key_mode: "0640"              # REQUIRED
+    restart_service: AdGuardHome  # REQUIRED, or restart_command: <verbatim command>
     ssh_user: <user>              # defaults to acme_certs_ssh_user
     ssh_port: 22
     ssh_no_sudo: false            # true = appliance, legacy scp push
 ```
+
+The role asserts `host_key` and the reload at entry. The other required keys
+have no default: an entry missing one fails when the receiver or the push
+script renders.
 
 `restart_command` runs verbatim on the target and must invoke `sudo` itself
 where it needs root: the push cannot prepend `sudo`, because a compound shell
@@ -137,9 +142,51 @@ looped `delegate_to`: with a looped delegate, one unreachable target marks the
 loop's aggregate result unreachable for the executing host and the strategy
 drops that host from the play — on an authority host running in a batch of one,
 that silently skips distribution to every *reachable* target, and everything
-after it. Each target is probed first; unreachable ones are listed at the end
-and left unseeded. A genuinely-down target still turns the run red later: the
-distribution script exits non-zero when it cannot reach one.
+after it. Each target is probed first. A target that fails the probe, or drops
+while being seeded, is listed at the end with its reason and left unseeded. A
+genuinely-down target still turns the run red later: the distribution script
+exits non-zero when it cannot reach one.
+
+## Re-seeding targets
+
+A play that rewrites a target's `authorized_keys` drops the pinned distribution
+key. The loss shows only when the next cert push fails. The `reseed` entry point
+re-pins the key without running the rest of the role. Run it on the cert
+authority host after any play that rewrites `authorized_keys`:
+
+```yaml
+- name: Re-seed the cert-distribution key on every cert target
+  hosts: cert_authority
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Re-seed the targets
+      ansible.builtin.include_role:
+        name: weisssrv.infra.acme_certs
+        tasks_from: reseed
+```
+
+It seeds each target in `acme_certs_reseed_hosts` the same way the full role
+does. The pubkey comes from `acme_certs_ssh_public_key`, or else from
+`<acme_certs_ssh_key_path>.pub`, which the full role writes on the authority
+host.
+
+Every requested host left unpinned is reported once, at the end, with its
+reason: not a distribution target, an `ssh_no_sudo` target, a failed probe, a
+drop while seeding, or no pubkey. The report fails the play unless
+`acme_certs_reseed_fail_on_miss` is `false`. A host with
+`acme_certs_enabled: false` re-pins nothing and reports that the same way.
+
+A play that acts on the result reads two facts the entry point sets on the
+authority host when `acme_certs_enabled` is true:
+
+| Fact | Value |
+|---|---|
+| `acme_certs_reseed_missed_reasons` | map of each requested host left unpinned to its reason; empty when every one was pinned |
+| `acme_certs_reseed_report` | the same map rendered as the one line the report prints |
+
+The full role leaves `acme_certs_unseeded_reasons` instead: every target it
+could not seed, mapped to why.
 
 ## Manual issuance
 
@@ -248,8 +295,9 @@ ssh -i <ssh_key_path> <ssh_user>@<target> </dev/null
 
 ## Security
 
-- local private key `0600`; the distributed key's mode is each target's
-  `key_mode` (`0600` unless a non-root service must read it), cert `0644`
+- local private key `0600`; the distributed key and cert take each target's
+  `key_mode` and `cert_mode`, which have no default. Use `0600` for the key
+  unless a non-root service must read it.
 - the distribution key is locked to the forced-command receiver on sudo targets
   — no shell, no arbitrary sudo
 - the receiver validates every bundle (parse, expiry, key-matches-cert, SAN,

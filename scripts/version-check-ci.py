@@ -3,7 +3,6 @@
 and writes the JSON report artifact. Exit 0 up to date, 1 updates, 2 errors.
 Environment and inputs: docs/SCRIPTS.md - version-check-ci.py.
 """
-import argparse
 import json
 import os
 import re
@@ -13,11 +12,10 @@ import sys
 from urllib.request import Request, urlopen
 
 CHECK_CMD = os.environ.get("CHECK_VERSIONS_CMD", "./scripts/check-versions.py")
-LOCAL_CMD = os.environ.get("CHECK_VERSIONS_LOCAL", CHECK_CMD)
-# CWD-relative default: the `artifacts:` path CI collects. Keep it stable —
-# a consumer's .gitlab-ci.yml names it.
-DEFAULT_OUTPUT = "version-report.json"
-DEFAULT_TOKEN_ENV = "GITLAB_API_TOKEN"
+# check-versions polls ~50 services sequentially, so a partial outage can take
+# minutes; the bound only stops a hung run.
+TIMEOUT = 600
+TOKEN_ENV = "GITLAB_API_TOKEN"
 # Hidden in the note body so a re-run refreshes that note instead of stacking
 # an identical comment on every pipeline.
 MARKER = "<!-- weisssrv:version-check -->"
@@ -93,12 +91,12 @@ def _marked_note_id(notes_url: str, token: str, api_url: str = ""):
     return None
 
 
-def upsert_mr_comment(body: str, token_env: str = DEFAULT_TOKEN_ENV) -> None:
+def upsert_mr_comment(body: str) -> None:
     """Refresh this job's MR note, or post it the first time."""
     api_url = os.environ.get("CI_API_V4_URL", "")
     project_id = os.environ.get("CI_PROJECT_ID", "")
     mr_iid = os.environ.get("CI_MERGE_REQUEST_IID", "")
-    token = os.environ.get(token_env, "")
+    token = os.environ.get(TOKEN_ENV, "")
 
     if not all([api_url, project_id, mr_iid, token]):
         if mr_iid:
@@ -106,7 +104,7 @@ def upsert_mr_comment(body: str, token_env: str = DEFAULT_TOKEN_ENV) -> None:
             # the version comment.
             print(
                 "Warning: in an MR pipeline but GitLab API URL/project/token is "
-                f"incomplete; skipping MR comment (check ${token_env}).",
+                f"incomplete; skipping MR comment (check ${TOKEN_ENV}).",
                 file=sys.stderr,
             )
         return
@@ -139,7 +137,7 @@ def _services(data: dict) -> list:
 
 
 def _write_report(path: str, text: str) -> None:
-    """Write the report artifact, creating a --output parent dir if needed."""
+    """Write the report artifact, creating its parent dir if needed."""
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
@@ -147,46 +145,16 @@ def _write_report(path: str, text: str) -> None:
         f.write(text)
 
 
-def _parse_args(argv):
-    parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "--output",
-        default=DEFAULT_OUTPUT,
-        metavar="PATH",
-        help=f"where to write the JSON report artifact (default: {DEFAULT_OUTPUT})",
-    )
-    parser.add_argument(
-        "--token-env",
-        default=DEFAULT_TOKEN_ENV,
-        metavar="NAME",
-        help=f"env var holding the MR-comment token (default: {DEFAULT_TOKEN_ENV})",
-    )
-    return parser.parse_args(argv)
-
-
-def main(argv=None):
-    args = _parse_args(argv)
-
-    # check-versions polls ~50 services sequentially, so a partial outage can
-    # take minutes. The generous env-tunable timeout keeps a slow endpoint from
-    # SIGKILLing a run that mostly succeeded.
-    _timeout_raw = os.environ.get("VERSION_CHECK_TIMEOUT", "600")
-    try:
-        timeout = int(_timeout_raw)
-        if timeout <= 0:
-            raise ValueError("must be positive")
-    except ValueError:
-        print(f"Warning: invalid VERSION_CHECK_TIMEOUT={_timeout_raw!r}; using 600s")
-        timeout = 600
+def main():
+    # CWD-relative default: the `artifacts:` path CI collects, set by the
+    # version-check template's report_path input.
+    report_path = os.environ.get("REPORT_PATH") or "version-report.json"
     try:
         result = subprocess.run(
             [*shlex.split(CHECK_CMD), "--json"],
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=TIMEOUT,
         )
     except subprocess.TimeoutExpired:
         print("Error: version check timed out")
@@ -207,7 +175,7 @@ def main(argv=None):
             raise ValueError(
                 f"version-check output is not a JSON object (got {type(data).__name__})"
             )
-        _write_report(args.output, result.stdout)
+        _write_report(report_path, result.stdout)
         summary = data.get("summary")
         if not isinstance(summary, dict):
             # Tolerate a missing or mis-shaped summary; the defaults apply.
@@ -253,7 +221,7 @@ def main(argv=None):
         data = {}
         # Write a self-describing stub so the artifact isn't a 0-byte or
         # raw-text file that reads like a successful empty report.
-        _write_report(args.output, json.dumps(
+        _write_report(report_path, json.dumps(
             {
                 "error": f"version-check output not parseable: {type(e).__name__}: {e}",
                 "stdout": result.stdout,
@@ -303,11 +271,11 @@ def main(argv=None):
                 MARKER
                 + "\n## Version Check\n\n"
                 + "\n\n".join(sections)
-                + f"\n\nRun `{LOCAL_CMD}` locally for details."
+                + f"\n\nRun `{CHECK_CMD}` locally for details."
             )
             # Upstream error bodies and version names reach this note: a line
             # starting with `/` is a GitLab quick action run as the token owner.
-            upsert_mr_comment(neutralize_quick_actions(body), args.token_env)
+            upsert_mr_comment(neutralize_quick_actions(body))
 
     sys.exit(rc)
 

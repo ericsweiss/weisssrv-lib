@@ -76,57 +76,24 @@ class TestTypeSafety:
     """flatten() must reject surprise types that would silently corrupt the
     ConfigMap. bool is the obvious one (bool is int subclass in Python)."""
 
-    def test_bool_at_top_level_raises(self):
-        # Fail closed, like the nested branch: skipping one mis-quoted
-        # `some_version: yes` leaves an unresolved ${some_version} at
-        # reconcile, and the "no flat keys" guard only catches a total drop.
-        with pytest.raises(ValueError, match="bool"):
-            gen.flatten({"flag_version": True})
-
-    def test_non_scalar_at_top_level_raises(self):
-        with pytest.raises(ValueError, match="non-scalar"):
-            gen.flatten({"list_version": ["a"]})
-
-    def test_bool_inside_nested_helm_chart_raises(self):
-        with pytest.raises(ValueError, match="bool"):
-            gen.flatten({"helm_chart_versions": {"traefik": True}})
-
-    def test_float_at_top_level_raises(self):
-        # An unquoted version like `foo_version: 1.20` parses to the float 1.2 and
-        # would silently ship as "1.2" — fail loud so the author quotes it.
-        with pytest.raises(ValueError, match="float"):
-            gen.flatten({"redis_version": 1.20})
-
-    def test_float_inside_nested_helm_chart_raises(self):
-        with pytest.raises(ValueError, match="float"):
-            gen.flatten({"helm_chart_versions": {"traefik": 1.20}})
-
-    def test_dict_inside_nested_helm_chart_raises(self):
-        with pytest.raises(ValueError, match="non-scalar"):
-            gen.flatten({"helm_chart_versions": {"traefik": {"nested": "bad"}}})
-
-    def test_list_inside_nested_helm_chart_raises(self):
-        with pytest.raises(ValueError, match="non-scalar"):
-            gen.flatten({"helm_chart_versions": {"traefik": ["1.0", "2.0"]}})
-
-    def test_hyphen_in_nested_key_raises(self):
-        # Flux postBuild var names require [A-Za-z_][A-Za-z0-9_]*.
-        # A nested key with a hyphen would produce an invalid var name;
-        # catch it at generation time instead of silently shipping it.
-        with pytest.raises(ValueError, match="Flux postBuild"):
-            gen.flatten({"helm_chart_versions": {"external-dns": "1.0"}})
-
-
-class TestDeterministic:
-    """The generated output is diffed by CI, so flatten must be order-stable."""
-
-    def test_twice_same_result(self):
-        data = {
-            "authentik_version": "1.0",
-            "mealie_version": "2.0",
-            "helm_chart_versions": {"traefik": "3.0", "cert_manager": "4.0"},
-        }
-        assert gen.flatten(data) == gen.flatten(data)
+    # An unquoted `foo_version: 1.20` parses to the float 1.2, and a bool or a
+    # skipped key leaves an unresolved ${...} at reconcile: fail closed.
+    @pytest.mark.parametrize(
+        "data, match",
+        [
+            ({"flag_version": True}, "bool"),
+            ({"list_version": ["a"]}, "non-scalar"),
+            ({"redis_version": 1.20}, "float"),
+            ({"helm_chart_versions": {"traefik": True}}, "bool"),
+            ({"helm_chart_versions": {"traefik": 1.20}}, "float"),
+            ({"helm_chart_versions": {"traefik": {"nested": "bad"}}}, "non-scalar"),
+            ({"helm_chart_versions": {"traefik": ["1.0", "2.0"]}}, "non-scalar"),
+            ({"helm_chart_versions": {"external-dns": "1.0"}}, "Flux postBuild"),
+        ],
+    )
+    def test_a_surprise_type_or_invalid_name_raises(self, data, match):
+        with pytest.raises(ValueError, match=match):
+            gen.flatten(data)
 
 
 class TestMain:
@@ -171,15 +138,6 @@ class TestMain:
         assert cm["data"]["helm_chart_versions_cert_manager"] == "v1.20.2"
         assert "some_unrelated_key" not in cm["data"]
 
-    def test_name_and_namespace_are_inputs(self, tmp_path):
-        argv, out = self._argv(
-            tmp_path, 'authentik_version: "1.0"\n',
-            "--name", "my-versions", "--namespace", "gitops",
-        )
-        assert gen.main(argv) == 0
-        cm = yaml.safe_load(_body(out.read_text()))
-        assert cm["metadata"] == {"name": "my-versions", "namespace": "gitops"}
-
     def test_custom_nested_key_flattened(self, tmp_path):
         argv, out = self._argv(
             tmp_path,
@@ -197,23 +155,11 @@ class TestMain:
         assert gen.main(argv) == 0
         assert out.read_text() == first
 
-    def test_missing_file_exits_one(self, tmp_path):
-        argv, _ = self._argv(tmp_path, None)  # vars file never created
-        assert gen.main(argv) == 1
-
-    def test_empty_file_exits_one(self, tmp_path):
-        argv, _ = self._argv(tmp_path, "")
-        assert gen.main(argv) == 1
-
-    def test_non_mapping_top_level_exits_one(self, tmp_path):
-        argv, _ = self._argv(tmp_path, "- just\n- a\n- list\n")
-        assert gen.main(argv) == 1
-
-    def test_no_version_keys_exits_one(self, tmp_path):
-        # Valid mapping but nothing matches the _version suffix / nested keys.
-        argv, _ = self._argv(tmp_path, "foo: bar\nbaz: qux\n")
-        assert gen.main(argv) == 1
-
-    def test_invalid_yaml_exits_one(self, tmp_path):
-        argv, _ = self._argv(tmp_path, "foo: [unterminated\n")
+    @pytest.mark.parametrize(
+        "vars_text",
+        [None, "", "- just\n- a\n- list\n", "foo: bar\nbaz: qux\n", "foo: [unterminated\n"],
+        ids=["missing", "empty", "non-mapping", "no-version-keys", "invalid-yaml"],
+    )
+    def test_an_unusable_vars_file_exits_one(self, tmp_path, vars_text):
+        argv, _ = self._argv(tmp_path, vars_text)
         assert gen.main(argv) == 1

@@ -149,17 +149,12 @@
   vars:
     compose_app_skip_install: "{{ immich_skip_install }}"
     compose_app_nginx_cert_dir: "{{ immich_nginx_ssl_cert | dirname }}"
-    compose_app_nginx_cert_dir_mode: "0750"
     compose_app_nginx_ssl_cert: "{{ immich_nginx_ssl_cert }}"
     compose_app_nginx_ssl_key: "{{ immich_nginx_ssl_key }}"
     compose_app_nginx_site_name: immich.conf
     compose_app_nginx_site_template: "{{ immich_nginx_site_template }}"
-    compose_app_nginx_self_signed_days: 3650
     compose_app_nginx_self_signed_subj: "{{ immich_nginx_self_signed_subj }}"
     compose_app_nginx_self_signed_san: "{{ immich_nginx_self_signed_san }}"
-    # Seeded unconditionally: nginx must start on a fresh guest to be reachable
-    # for the first real-cert push.
-    compose_app_nginx_bootstrap_cert: true
 
 # IMMICH_CONFIG_FILE holds the system config, OIDC client secret inline — no_log.
 - name: Render the Immich system config file
@@ -204,13 +199,6 @@
       - "{{ immich_app_dir }}"
       - "{{ immich_db_data_location }}"
       - "{{ immich_data_dir }}"
-    compose_app_requires_mounts_comment:
-      - "Never start the stack before its data volumes are mounted — otherwise"
-      - "compose would write into the (unmounted) root filesystem. These map to the"
-      - "fstab-generated mount units for the app/postgres/library volumes."
-    compose_app_reconcile_comment:
-      - "`up -d` reconciles the running stack to the rendered compose/.env/config,"
-      - "recreating only the containers whose definition changed."
 
 # immich_backup_dir is the NFS mountpoint when the offsite landing is enabled.
 # The root:root 0750 attrs belong to the local underlay only, so the file task

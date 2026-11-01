@@ -24,9 +24,20 @@ esac
 """
 
 
+# ss with a single state filter prints no State column; -H drops the header.
+SS_HEADER = "Recv-Q Send-Q Local Address:Port Peer Address:Port Process"
+
+
+def _ss(*rows: str) -> str:
+    """An ss stub that prints the real single-state header unless -H is given."""
+    body = "".join("echo '%s'\n" % row for row in rows)
+    return ('#!/bin/sh\ncase " $* " in *" -H"*) ;; *) echo \'%s\' ;; esac\n%s'
+            % (SS_HEADER, body))
+
+
 # PATH is the whole point here: the real findmnt and ss must not be reachable,
 # so the fixture PATH holds only the stubs plus the tools the script pipes to.
-NEEDED = ("awk", "grep", "head", "sh")
+NEEDED = ("awk", "head", "sh")
 
 
 def _bin(tmp_path: Path, **stubs: str) -> dict:
@@ -54,7 +65,7 @@ def _run(env: dict) -> subprocess.CompletedProcess:
 
 
 def test_an_idle_union_is_reported_idle(tmp_path):
-    env = _bin(tmp_path, findmnt=FINDMNT, ss="#!/bin/sh\necho 'State Recv-Q'\n")
+    env = _bin(tmp_path, findmnt=FINDMNT, ss=_ss())
     proc = _run(env)
     assert proc.returncode == 0, proc.stderr
     assert "NFS_IDLE" in proc.stdout
@@ -62,46 +73,39 @@ def test_an_idle_union_is_reported_idle(tmp_path):
 
 def test_an_active_client_blocks_the_cycle(tmp_path):
     env = _bin(tmp_path, findmnt=FINDMNT,
-               ss="#!/bin/sh\nprintf 'State Recv-Q\\nESTAB 0 10.0.0.1:2049\\n'\n")
+               ss=_ss("0 0 10.0.0.1:2049 10.0.0.9:801"))
     proc = _run(env)
     assert proc.returncode == 1
     assert "ACTIVE_NFS_CLIENTS" in proc.stdout
 
 
-def test_an_absent_ss_is_not_an_idle_union(tmp_path):
-    """Without ss the probe cannot tell "no clients" from "I could not look"."""
-    env = _bin(tmp_path, findmnt=FINDMNT, ss="#!/bin/sh\necho 'State'\n")
-    (tmp_path / "bin" / "ss").unlink()
+BROKEN_LIST = FINDMNT.replace("*--list*) printf '0:42 /union\\n0:42 /export/media\\n' ;;",
+                              "*--list*) exit 1 ;;")
+
+
+@pytest.mark.parametrize(
+    ("stubs", "removed", "stderr"),
+    [
+        # Without ss the probe cannot tell "no clients" from "I could not look".
+        pytest.param({"findmnt": FINDMNT, "ss": _ss()}, "ss", "ss is not available", id="absent-ss"),
+        pytest.param({"findmnt": FINDMNT, "ss": "#!/bin/sh\nexit 2\n"}, None, "ss failed",
+                     id="failing-ss"),
+        # findmnt present but unable to list mounts must not read as a clean union.
+        pytest.param({"findmnt": BROKEN_LIST, "ss": _ss()}, None, "findmnt failed",
+                     id="failing-findmnt-list"),
+        pytest.param({"findmnt": FINDMNT}, "findmnt", "findmnt is not available",
+                     id="absent-findmnt"),
+    ],
+)
+def test_a_probe_that_could_not_look_is_refused(tmp_path, stubs, removed, stderr):
+    env = _bin(tmp_path, **stubs)
+    if removed:
+        (tmp_path / "bin" / removed).unlink()
     proc = _run(env)
     assert proc.returncode == 3
     assert "NFS_IDLE" not in proc.stdout
-    assert "ss is not available" in proc.stderr
-
-
-def test_a_failing_ss_is_not_an_idle_union(tmp_path):
-    env = _bin(tmp_path, findmnt=FINDMNT, ss="#!/bin/sh\nexit 2\n")
-    proc = _run(env)
-    assert proc.returncode == 3
-    assert "NFS_IDLE" not in proc.stdout
-    assert "ss failed" in proc.stderr
-
-
-def test_a_failing_mount_table_read_is_not_an_empty_bind_list(tmp_path):
-    """findmnt present but unable to list mounts must not read as a clean union."""
-    broken = FINDMNT.replace("*--list*) printf '0:42 /union\\n0:42 /export/media\\n' ;;", "*--list*) exit 1 ;;")
-    env = _bin(tmp_path, findmnt=broken, ss="#!/bin/sh\necho 'State Recv-Q'\n")
-    proc = _run(env)
-    assert proc.returncode == 3
     assert "NO_NFS_BIND_EXPORTS" not in proc.stdout
-    assert "findmnt failed" in proc.stderr
-
-
-def test_an_absent_findmnt_is_still_refused(tmp_path):
-    env = _bin(tmp_path, findmnt=FINDMNT)
-    (tmp_path / "bin" / "findmnt").unlink()
-    proc = _run(env)
-    assert proc.returncode == 3
-    assert "findmnt is not available" in proc.stderr
+    assert stderr in proc.stderr
 
 
 if __name__ == "__main__":

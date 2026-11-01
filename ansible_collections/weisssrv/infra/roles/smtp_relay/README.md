@@ -9,9 +9,9 @@ collector so a wedged upstream is alertable.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `smtp_relay_internal_domain` | `{{ internal_domain }}` | domain the two names below derive from |
-| `smtp_relay_hostname` | `smtp-relay.{{ internal_domain }}` | `myhostname` in the default config |
-| `smtp_relay_origin` | `{{ internal_domain }}` | `myorigin` in the default config |
+| `smtp_relay_internal_domain` | `internal_domain`, else `""` | domain the two names below derive from. Unset, both stay empty and the effective-config assert names them |
+| `smtp_relay_hostname` | `smtp-relay.<domain>`, else `""` | `myhostname` in the default config |
+| `smtp_relay_origin` | `smtp_relay_internal_domain` | `myorigin` in the default config |
 | `smtp_relay_upstream` | `""` | `relayhost`, e.g. `[smtp.example.net]:587`. Empty = direct delivery |
 | `smtp_relay_default_config` | see `defaults/main.yml` | the shipped `main.cf` map |
 | `smtp_relay_config` | `{}` | site overrides, merged **over** the defaults. Every key of the merged map is rendered, so any postfix parameter can be set here |
