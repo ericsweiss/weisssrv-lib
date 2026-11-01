@@ -99,41 +99,8 @@
           - kept | bool
         fail_msg: >-
           The disabled arm deleted a hand-written /etc/modprobe.d/vfio.conf; it
-          owns only files carrying one of its ownership markers.
+          owns only files carrying its own marker.
         success_msg: "the removal arm removes only role-written drop-ins"
-
-    - name: Read the cmdline-method reject result
-      ansible.builtin.slurp:
-        src: /tmp/molecule-results/cmdline-method.json
-      register: vfio_passthrough_method_artifact
-
-    - name: Assert an unimplemented cmdline method fails the role
-      vars:
-        rejected: "{{ (vfio_passthrough_method_artifact.content | b64decode | from_json).rejected }}"
-      ansible.builtin.assert:
-        that:
-          - rejected | bool
-        fail_msg: >-
-          vfio_passthrough accepted an unimplemented cmdline method, so it would
-          stage the drop-in and never capture the card.
-        success_msg: "an unimplemented vfio_passthrough_cmdline_method fails the role"
-
-    - name: Read the empty-marker reject result
-      ansible.builtin.slurp:
-        src: /tmp/molecule-results/empty-marker.json
-      register: vfio_passthrough_empty_marker_artifact
-
-    - name: Assert no usable marker fails the disabled arm and keeps the file
-      vars:
-        result: "{{ vfio_passthrough_empty_marker_artifact.content | b64decode | from_json }}"
-      ansible.builtin.assert:
-        that:
-          - result.rejected | bool
-          - result.kept | bool
-        fail_msg: >-
-          Emptying every vfio_passthrough marker did not fail the disabled arm,
-          so no file at the three VFIO paths can be told apart from the role's.
-        success_msg: "the disabled arm fails when no vfio_passthrough marker is usable"
 
     - name: Read the marker-skew removal result
       ansible.builtin.slurp:
@@ -151,20 +118,3 @@
           place, so the role no longer recognises its own drop-ins and the GPU
           stays captured.
         success_msg: "the removal arm keys on the role-owned marker, not ansible_managed"
-
-    - name: Read the legacy-marker removal result
-      ansible.builtin.slurp:
-        src: /tmp/molecule-results/legacy-marker.json
-      register: vfio_passthrough_legacy_artifact
-
-    - name: Assert the removal arm also owns a drop-in carrying only ansible_managed
-      vars:
-        kept: "{{ (vfio_passthrough_legacy_artifact.content | b64decode | from_json).kept }}"
-      ansible.builtin.assert:
-        that:
-          - not (kept | bool)
-        fail_msg: >-
-          A drop-in carrying only the ansible_managed header survived the
-          disabled arm, so a host whose drop-in carries only that header keeps
-          its GPU bound to vfio-pci.
-        success_msg: "the removal arm accepts the legacy ansible_managed marker"

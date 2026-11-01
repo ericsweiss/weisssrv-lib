@@ -114,52 +114,15 @@ the control-plane nodes together before trusting it.
 ## Configuration
 
 ```yaml
-# Cluster
-k3s_api_vip: "10.0.0.161"          # required — the kube-vip API address
+k3s_api_vip: "10.0.0.161"
 k3s_token: "<server/cluster join token>"
-k3s_agent_token: "<lower-privilege agent join token>"
+k3s_agent_token: "<agent join token>"
 k3s_version: "v1.36.3+k3s1"
-k3s_kube_vip_version: "v1.2.2"     # required on servers
-k3s_server_group: k3s_servers      # inventory group holding the servers
-
-# Extra apiserver-certificate SANs on top of k3s_api_vip, inventory_hostname
-# and ansible_host.
-k3s_internal_domain: example.com
-k3s_tls_sans: ["k3s.example.com"]
-
-# Server-specific
-k3s_role: server
-k3s_is_first_server: true          # exactly one
-k3s_bootstrap_new_cluster: false   # true only for a greenfield HA bootstrap
-
-# Agent-specific
-k3s_role: agent
-
-# Node customization — the label namespace is the site's, not the library's
-k3s_labels:
-  example.com/nas: "true"
-  example.com/general: "true"
-k3s_taints:
-  - key: example.com/nas
-    value: "true"
-    effect: PreferNoSchedule
-k3s_kubelet_args: []               # extra kubelet-arg entries, servers + agents
-
-# /etc/hosts pins (both default to [])
-k3s_registry_host_pins:
-  - {name: registry.example.com, ip: 10.0.0.101}
-k3s_storage_host_pins:
-  - {name: nas.example.com, ip: 10.0.0.102}
-
-# Passthrough disks, mounted by UUID (weisssrv.infra.zvol_mount). The same
-# conventional name weisssrv.infra.proxmox_vm aliases to CREATE and attach them,
-# so one host_vars block drives both. Set k3s_additional_disks to decouple.
-vm_additional_disks:
-  - name: postgres-data
-    size: 10G
-    zvol: ssd/appdata/authentik/postgres
-    mount_point: /mnt/postgres-data
-    fstype: ext4
+k3s_kube_vip_version: "v1.2.2"
+k3s_server_group: k3s_servers
+k3s_role: server                   # or agent
+k3s_is_first_server: true          # exactly one server
+k3s_labels: {example.com/general: "true"}
 ```
 
 ### Apiserver certificate SANs
@@ -188,6 +151,8 @@ certificate removed so k3s regenerates it.
 | `k3s_etcd_snapshot_textfile_dir` | `node_exporter_host_textfile_dir` | node_exporter textfile dir the copy metric lands in; `node_exporter_host` must run on the servers for it to be scraped. |
 | `k3s_etcd_snapshot_copy_oncalendar` | `hourly` | Copy-timer cadence. |
 | `k3s_etcd_snapshot_retention` | `5` | Snapshots kept per server on the export. |
+| `k3s_additional_disks` | `vm_additional_disks` | Passthrough disks mounted by UUID through `weisssrv.infra.zvol_mount`. It aliases the name `weisssrv.infra.proxmox_vm` uses to create them, so one host_vars block drives both. |
+| `k3s_kubelet_args` | `[]` | Extra `kubelet-arg` entries for servers and agents. |
 
 ### CNI backend
 
@@ -240,8 +205,7 @@ non-free components the NVIDIA driver and firmware packages live in.
 
 k3s ships metrics-server as a static manifest set, so a `HelmChartConfig` cannot
 reach it. To raise its replica count or bound its memory, add `metrics-server` to
-`k3s_disable` and ship it as a cluster-managed release instead. The role removes
-a stale `metrics-server-config.yaml` from the server manifests dir.
+`k3s_disable` and ship it as a cluster-managed release instead.
 
 ## kube-apiserver audit logging (`k3s_audit_enabled`)
 
@@ -313,33 +277,6 @@ control plane into a crash loop.
 Turning it back off removes the args from the config, which is another
 restart, and deletes the policy file. The log directory and existing logs stay.
 
-## Files
-
-`main.yml` runs the prerequisites, the inotify sysctl, the /etc/hosts pins and
-the extra-disk mounts, then includes `server.yml` or `agent.yml` by `k3s_role`;
-node labels and taints are applied at the end of those.
-
-- `tasks/main.yml` - Main orchestration (prerequisites, inotify sysctl, /etc/hosts pins, disks)
-- `tasks/server.yml` - Server installation
-- `tasks/agent.yml` - Agent installation (incl. agent-token migration)
-- `tasks/install-script.yml` - Shared version detection + installer staging
-- `tasks/gpu.yml` - NVIDIA driver/toolkit enablement (included when `k3s_gpu_node`)
-- `tasks/audit.yml` - kube-apiserver audit policy (opt-in, servers only)
-- `tasks/etcd-snapshot-offnode.yml` - Off-node etcd snapshot copy (opt-in)
-- `tasks/etcd-snapshot-offnode-absent.yml` - Its de-provisioning path
-- `templates/k3s-server-config.yaml.j2` - Server configuration
-- `templates/k3s-agent-config.yaml.j2` - Agent configuration
-- `templates/k3s-audit-policy.yaml.j2` - kube-apiserver audit policy
-- `templates/kube-vip-manifest.yaml.j2` - Kube-vip DaemonSet
-- `templates/k3s-etcd-snapshot-copy.{sh,service,timer}.j2` - Off-node snapshot copy
-- `defaults/main.yml` - Default values
-- `handlers/main.yml` - Service restart + Ready-gate handlers. A restarted agent
-  is confirmed active with a stable restart count before the delegated node-Ready
-  poll, because a node object keeps reporting Ready for the node-monitor grace
-  period after its kubelet dies.
-- `molecule/default/` - Server scenario (bootstrap + join branches)
-- `molecule/agent/` - Agent scenario (config, token migration)
-
 ## Companion roles
 
 Applied by the caller's playbook, not as meta dependencies:
@@ -347,22 +284,7 @@ Applied by the caller's playbook, not as meta dependencies:
 `weisssrv.infra.alloy_host`, `weisssrv.infra.nfs_tls`,
 `weisssrv.infra.proxmox_firewall`.
 
-## Persistent storage
-
-A passthrough block device (a ZFS zvol on the hypervisor, say) survives VM
-recreation, and brings the host filesystem's snapshots and compression with it.
-The role formats it, records its UUID in `/etc/fstab` and mounts it via
-`weisssrv.infra.zvol_mount`.
-
 ## Operations
-
-```bash
-systemctl status k3s          # servers
-systemctl status k3s-agent    # agents
-journalctl -u k3s -f
-kubectl get nodes
-kubectl get pods -A --field-selector spec.nodeName=<node>
-```
 
 Scaling out is: add the node to the inventory, provision the VM, run the
 playbook limited to it. Upgrading is: bump `k3s_version` and re-run, node by

@@ -8,7 +8,6 @@ import os
 import re
 import shlex
 import shutil
-import subprocess
 from pathlib import Path
 
 import jinja2
@@ -31,19 +30,6 @@ def require_tags(tags, gate_name: str) -> None:
             "does), or fetch them explicitly." % gate_name
         )
     pytest.skip("no version tag in this checkout")
-
-
-def git(repo: Path, *args: str) -> str:
-    """`git -C <repo> <args>` stdout; raises on a non-zero exit."""
-    return subprocess.run(
-        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
-    ).stdout
-
-
-def require_git_checkout(repo: Path) -> None:
-    """Skip a gate that needs history when the tree is not a git checkout."""
-    if shutil.which("git") is None or not (repo / ".git").exists():
-        pytest.skip("not a git checkout")
 
 
 def require_tool(name: str, gate_name: str, install_hint: str = "") -> None:

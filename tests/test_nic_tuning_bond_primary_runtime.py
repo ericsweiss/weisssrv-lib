@@ -135,6 +135,24 @@ def test_a_leg_no_bond_enslaves_is_reported(tmp_path):
     assert "MISSING" in proc.stdout
 
 
+def test_a_dotted_leg_name_does_not_match_a_similar_slave(tmp_path):
+    """`.` is a regex wildcard: eth0.10 must not select the slave eth0x10."""
+    bonding = _bond(tmp_path / "net", slaves="eth0x10 eth1")
+    proc = _run(_set_script(tmp_path / "net", iface="eth0.10"))
+    assert proc.returncode == 3, proc.stdout
+    assert "MISSING eth0.10" in proc.stdout
+    assert (bonding / "primary").read_text().strip() == ""
+
+
+def test_a_slave_name_is_matched_as_a_whole_field(tmp_path):
+    """eth0 is not a slave when only eth0.10 is enslaved."""
+    bonding = _bond(tmp_path / "net", slaves="eth0.10 eth1")
+    proc = _run(_set_script(tmp_path / "net", iface="eth0"))
+    assert proc.returncode == 3, proc.stdout
+    assert "MISSING eth0" in proc.stdout
+    assert (bonding / "primary").read_text().strip() == ""
+
+
 def test_a_bond_in_another_mode_is_skipped(tmp_path):
     bonding = _bond(tmp_path / "net", mode="balance-rr")
     proc = _run(_set_script(tmp_path / "net"))
@@ -171,9 +189,6 @@ def test_the_absent_arm_fails_loudly_on_an_unwritable_primary(tmp_path):
     assert proc.returncode == 4
     assert "WRITEFAIL" in proc.stdout
 
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-v"]))
 
 
 def test_the_probe_accepts_a_slave_the_file_and_the_kernel_agree_on(tmp_path):
@@ -254,3 +269,7 @@ def test_the_membership_guard_precedes_every_persistent_write():
     ]
     assert writes, "bond-primary.yml persists nothing any more"
     assert names.index(GUARD) < min(writes), names
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-v"]))

@@ -46,6 +46,19 @@ any_swap_active() {
   awk '/^SwapTotal:/ { exit !($2 > 0) }' /proc/meminfo
 }
 
+# Tears down a half-open mapper, restores plaintext swap and exits 0.
+fall_back() {
+  echo "encrypted-swap-finalize: $1; restoring plaintext fallback" >&2
+  swapoff "$mapper" >/dev/null 2>&1 || true
+  systemctl stop "systemd-cryptsetup@${mapper_name}.service" >/dev/null 2>&1 || true
+  if restore_plaintext_swap; then
+    logger -t encrypted-swap -p daemon.err "$1; this host is running plaintext swap" || true
+  else
+    logger -t encrypted-swap -p daemon.err "$1 and plaintext swap could not be restored; this host has NO swap" || true
+  fi
+  exit 0
+}
+
 # Every failure branch exits 0 to honour the never-exit-swapless invariant, so
 # the unit stays green while the host runs unencrypted swap. This gauge is the
 # only signal that says so.
@@ -93,37 +106,9 @@ if ! mapper_active; then
     logger -t encrypted-swap -p daemon.err "swapoff ${dev} failed; this host is running plaintext swap" || true
     exit 0
   fi
-  if ! systemctl start "systemd-cryptsetup@${mapper_name}.service"; then
-    echo "encrypted-swap-finalize: cryptsetup open failed; restoring plaintext fallback" >&2
-    if restore_plaintext_swap; then
-      logger -t encrypted-swap -p daemon.err "cryptsetup open failed; this host is running plaintext swap" || true
-    else
-      logger -t encrypted-swap -p daemon.err "cryptsetup open failed and plaintext swap could not be restored; this host has NO swap" || true
-    fi
-    exit 0
-  fi
-  if ! swapon "$mapper"; then
-    echo "encrypted-swap-finalize: swapon ${mapper} failed; restoring plaintext fallback" >&2
-    swapoff "$mapper" >/dev/null 2>&1 || true
-    systemctl stop "systemd-cryptsetup@${mapper_name}.service" >/dev/null 2>&1 || true
-    if restore_plaintext_swap; then
-      logger -t encrypted-swap -p daemon.err "swapon ${mapper} failed; this host is running plaintext swap" || true
-    else
-      logger -t encrypted-swap -p daemon.err "swapon ${mapper} failed and plaintext swap could not be restored; this host has NO swap" || true
-    fi
-    exit 0
-  fi
-  if ! mapper_active; then
-    echo "encrypted-swap-finalize: ${mapper} still not active after switch; restoring plaintext fallback" >&2
-    swapoff "$mapper" >/dev/null 2>&1 || true
-    systemctl stop "systemd-cryptsetup@${mapper_name}.service" >/dev/null 2>&1 || true
-    if restore_plaintext_swap; then
-      logger -t encrypted-swap -p daemon.err "${mapper} still not active after the switch; this host is running plaintext swap" || true
-    else
-      logger -t encrypted-swap -p daemon.err "${mapper} still not active after the switch and plaintext swap could not be restored; this host has NO swap" || true
-    fi
-    exit 0
-  fi
+  systemctl start "systemd-cryptsetup@${mapper_name}.service" || fall_back "cryptsetup open failed"
+  swapon "$mapper" || fall_back "swapon ${mapper} failed"
+  mapper_active || fall_back "${mapper} still not active after the switch"
   echo "encrypted-swap-finalize: boot-time switch complete (${mapper} active)" >&2
 fi
 

@@ -24,12 +24,6 @@
       changed_when: false
       failed_when: leases_dropin.rc != 0
 
-    - name: Stat the legacy NFSv4 delegation drop-in the role removes
-      ansible.builtin.stat:
-        path: /etc/sysctl.d/99-z-weisssrv-nas-storage-nfs-leases.conf
-      register: leases_legacy_dropin
-      failed_when: leases_legacy_dropin.stat.exists
-
     - name: Verify exports file contains expected exports
       ansible.builtin.command: grep -q "/tank/media/unified" /etc/exports
       register: exports_check

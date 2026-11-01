@@ -11,7 +11,10 @@
 # The cap is a modprobe.d/sysfs concern on any ZFS host, so it runs whether or
 # not pool properties are declared or the pool work is skipped.
 - name: Cap the ZFS ARC
-  ansible.builtin.include_tasks: zfs_arc.yml
+  ansible.builtin.include_role:
+    name: weisssrv.infra.zfs_arc_cap
+  vars:
+    zfs_arc_cap_max_bytes: "{{ nas_storage_zfs_arc_max_bytes }}"
   when: nas_storage_zfs_arc_max_bytes | default('') | string | length > 0
 
 - name: Include ZFS tasks
@@ -22,9 +25,7 @@
 
 - name: Include MergerFS tasks
   ansible.builtin.include_tasks: mergerfs.yml
-  when:
-    - nas_storage_mergerfs_mounts is defined
-    - not (nas_storage_skip_mergerfs | default(false))
+  when: nas_storage_mergerfs_mounts is defined
 
 - name: Include NFS tasks
   ansible.builtin.include_tasks: nfs.yml

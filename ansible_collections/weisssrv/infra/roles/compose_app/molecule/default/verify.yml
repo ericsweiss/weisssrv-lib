@@ -18,14 +18,13 @@
           - (compose_app_unit_a.content | b64decode) is search('Description=Test app \\(mounts\\)')
           - (compose_app_unit_a.content | b64decode) is search('Requires=docker.service')
           - (compose_app_unit_a.content | b64decode) is search('RequiresMountsFor=/mnt/testapp-a /mnt/testapp-b')
-          - (compose_app_unit_a.content | b64decode) is search('# Mount-ordering comment line one.')
+          - (compose_app_unit_a.content | b64decode) is search('# Never start the stack before its data volumes are mounted')
           - (compose_app_unit_a.content | b64decode) is search('WorkingDirectory=/opt/testapp/compose')
           - (compose_app_unit_a.content | b64decode) is search('RemainAfterExit=yes')
-          - (compose_app_unit_a.content | b64decode) is search('# Reconcile comment line one.')
           - (compose_app_unit_a.content | b64decode) is search('ExecStart=/usr/bin/docker compose up -d --remove-orphans')
           - (compose_app_unit_a.content | b64decode) is search('ExecStop=/usr/bin/docker compose down')
         fail_msg: "mounts-present compose unit missing expected lines"
-        success_msg: "mounts-present compose unit renders description, mounts, reconcile comment, lifecycle"
+        success_msg: "mounts-present compose unit renders description, mounts, lifecycle"
 
     # Compose unit — RequiresMountsFor absent
     - name: Slurp the mounts-absent compose unit
@@ -38,10 +37,9 @@
         that:
           - (compose_app_unit_b.content | b64decode) is search('WorkingDirectory=/opt/testapp2/compose')
           - (compose_app_unit_b.content | b64decode) is search('RemainAfterExit=yes')
-          - (compose_app_unit_b.content | b64decode) is search('# Reconcile-only comment line.')
           # Empty requires_mounts_for => no RequiresMountsFor line AND no mount comment.
           - (compose_app_unit_b.content | b64decode) is not search('RequiresMountsFor')
-          - (compose_app_unit_b.content | b64decode) is not search('Mount-ordering')
+          - (compose_app_unit_b.content | b64decode) is not search('Never start the stack')
         fail_msg: "mounts-absent unit must omit RequiresMountsFor and its comment"
         success_msg: "mounts-absent unit omits RequiresMountsFor (empty list)"
 

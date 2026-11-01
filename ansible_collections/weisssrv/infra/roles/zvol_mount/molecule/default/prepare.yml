@@ -43,52 +43,10 @@
       loop_control:
         label: "{{ item.img }}"
 
-    # Loop devices are kernel-global but their /dev nodes are per-container; the
-    # script below mknods the node itself and retries on contention (see inline).
-    - name: Attach loopback devices (dynamic allocation, mknod recovery, race-safe)
-      ansible.builtin.shell: |
-        set -euo pipefail
-        # Keep these comments apostrophe-free: ansible split_args tokenizes the
-        # shell free-form value, so a stray single quote fails at parse time.
-
-        # losetup can report a device "lost" because /dev/loopN has no udev
-        # here, so trust only the loop-index digits and recreate the node.
-        loop_num() { n=${1##*loop}; printf '%s' "${n%%[!0-9]*}"; }
-        node_for() {
-          n=$(loop_num "$1"); [ -n "$n" ] || return 1
-          d="/dev/loop$n"
-          rm -f "$d" 2>/dev/null || true
-          mknod "$d" b 7 "$n" 2>/dev/null || true
-          [ -b "$d" ] || return 1   # mknod failed: do not hand back an invalid node
-          printf '%s' "$d"
-        }
-        # Reuse an existing attachment (idempotent re-run); its node may be gone too.
-        existing=$(losetup -j {{ item.img }} 2>/dev/null | cut -d: -f1 | head -1 || true)
-        if [ -n "$existing" ]; then
-          d=$(node_for "$existing") && { printf '%s' "$d"; exit 0; }
-        fi
-        # Fresh allocation: get a free number, materialize its node, attach --
-        # retry when a concurrent molecule job wins the number between our probe
-        # and our attach (loops are shared host-wide).
-        for _ in $(seq 1 10); do
-          raw=$(losetup -f 2>/dev/null || true)
-          [ -n "$raw" ] || { sleep 1; continue; }
-          d=$(node_for "$raw") || { sleep 1; continue; }
-          if losetup "$d" {{ item.img }} 2>/dev/null; then
-            printf '%s' "$d"
-            exit 0
-          fi
-          sleep 1
-        done
-        echo "could not attach a loop device for {{ item.img }} after 10 attempts" >&2
-        exit 1
-      args:
-        executable: /bin/bash
-      loop: "{{ zvol_mount_test_disks }}"
-      loop_control:
-        label: "{{ item.img }}"
-      register: zvol_loop_devices
-      changed_when: false
+    - name: Attach the test disk images to loop devices
+      ansible.builtin.import_tasks: ../../../../molecule-shared/tasks/attach-loop.yml
+      vars:
+        molecule_loop_images: "{{ zvol_mount_test_disks | map(attribute='img') | list }}"
 
     - name: Create /dev/disk/by-id directory
       ansible.builtin.file:
@@ -98,13 +56,13 @@
 
     - name: Create symlinks simulating SCSI device paths
       ansible.builtin.file:
-        src: "{{ item.stdout | trim }}"
-        dest: "/dev/disk/by-id/{{ item.item.link }}"
+        src: "{{ item.1.stdout | trim }}"
+        dest: "/dev/disk/by-id/{{ item.0.link }}"
         state: link
         force: true
-      loop: "{{ zvol_loop_devices.results }}"
+      loop: "{{ zvol_mount_test_disks | zip(molecule_loop_devices.results) | list }}"
       loop_control:
-        label: "{{ item.item.link }}"
+        label: "{{ item.0.link }}"
 
     # Blank disk carrying only a GPT label: FSTYPE is empty, PTTYPE is not.
     - name: Write a partition table with no filesystem on the guard disk

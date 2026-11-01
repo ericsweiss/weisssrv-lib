@@ -94,45 +94,40 @@
         fail_msg: "prometheus-node-exporter is not enabled"
         success_msg: "prometheus-node-exporter is enabled"
 
-    # corosync collector — deploy contract + end-to-end run (proxmox gate on)
-
-    - name: Verify corosync health collector script is present and executable
+    # Every deployed collector and healthcheck artifact: present, mode, root:root.
+    - name: Stat the deployed collector and healthcheck artifacts
       ansible.builtin.stat:
-        path: /usr/local/sbin/corosync-health-collector.sh
-      register: corosync_script
+        path: "{{ item.path }}"
+      register: node_exporter_host_artifacts
+      loop:
+        - {path: /usr/local/sbin/corosync-health-collector.sh, mode: "0755"}
+        - {path: /etc/systemd/system/corosync-health-collector.service, mode: "0644"}
+        - {path: /etc/systemd/system/corosync-health-collector.timer, mode: "0644"}
+        - {path: /usr/local/sbin/zpool-status-collector.sh, mode: "0755"}
+        - {path: /etc/systemd/system/zpool-status-collector.service, mode: "0644"}
+        - {path: /etc/systemd/system/zpool-status-collector.timer, mode: "0644"}
+        - {path: /usr/local/sbin/smartmon-collector.sh, mode: "0755"}
+        - {path: /etc/systemd/system/smartmon-collector.service, mode: "0644"}
+        - {path: /etc/systemd/system/smartmon-collector.timer, mode: "0644"}
+        - {path: /usr/local/sbin/node-exporter-healthcheck.sh, mode: "0755"}
+        - {path: /etc/systemd/system/node-exporter-healthcheck.service, mode: "0644"}
+        - {path: /etc/systemd/system/node-exporter-healthcheck.timer, mode: "0644"}
+      loop_control:
+        label: "{{ item.path }}"
 
-    - name: Assert corosync collector script is mode 0755 root:root
+    - name: Assert each artifact is present with its mode and root:root
       ansible.builtin.assert:
         that:
-          - corosync_script.stat.exists
-          - corosync_script.stat.mode == "0755"
-          - corosync_script.stat.pw_name == "root"
-          - corosync_script.stat.gr_name == "root"
-        fail_msg: "corosync-health-collector.sh missing or has wrong perms"
+          - item.stat.exists
+          - item.stat.mode == item.item.mode
+          - item.stat.pw_name == "root"
+          - item.stat.gr_name == "root"
+        fail_msg: "{{ item.item.path }} missing or has the wrong mode or owner"
+      loop: "{{ node_exporter_host_artifacts.results }}"
+      loop_control:
+        label: "{{ item.item.path }}"
 
-    - name: Verify corosync collector service unit is present
-      ansible.builtin.stat:
-        path: /etc/systemd/system/corosync-health-collector.service
-      register: corosync_svc
-
-    - name: Assert corosync collector service unit is mode 0644 root:root
-      ansible.builtin.assert:
-        that:
-          - corosync_svc.stat.exists
-          - corosync_svc.stat.mode == "0644"
-        fail_msg: "corosync-health-collector.service missing or has wrong perms"
-
-    - name: Verify corosync collector timer unit is present
-      ansible.builtin.stat:
-        path: /etc/systemd/system/corosync-health-collector.timer
-      register: corosync_timer
-
-    - name: Assert corosync collector timer unit is mode 0644 root:root
-      ansible.builtin.assert:
-        that:
-          - corosync_timer.stat.exists
-          - corosync_timer.stat.mode == "0644"
-        fail_msg: "corosync-health-collector.timer missing or has wrong perms"
+    # corosync collector — end-to-end run (proxmox gate on)
 
     # The role's enable and start step runs for real here, so every collector
     # timer must come back enabled.
@@ -180,44 +175,6 @@
 
     # zpool collector — no zpool binary in CI, so the run exercises the
     # no-ZFS path: success 0 plus the last_success sentinel.
-
-    - name: Verify zpool collector script is present and executable
-      ansible.builtin.stat:
-        path: /usr/local/sbin/zpool-status-collector.sh
-      register: zpool_script
-
-    - name: Assert zpool collector script is mode 0755 root:root
-      ansible.builtin.assert:
-        that:
-          - zpool_script.stat.exists
-          - zpool_script.stat.mode == "0755"
-          - zpool_script.stat.pw_name == "root"
-          - zpool_script.stat.gr_name == "root"
-        fail_msg: "zpool-status-collector.sh missing or has wrong perms"
-
-    - name: Verify zpool collector service unit is present
-      ansible.builtin.stat:
-        path: /etc/systemd/system/zpool-status-collector.service
-      register: zpool_svc
-
-    - name: Assert zpool collector service unit is mode 0644
-      ansible.builtin.assert:
-        that:
-          - zpool_svc.stat.exists
-          - zpool_svc.stat.mode == "0644"
-        fail_msg: "zpool-status-collector.service missing or has wrong perms"
-
-    - name: Verify zpool collector timer unit is present
-      ansible.builtin.stat:
-        path: /etc/systemd/system/zpool-status-collector.timer
-      register: zpool_timer
-
-    - name: Assert zpool collector timer unit is mode 0644
-      ansible.builtin.assert:
-        that:
-          - zpool_timer.stat.exists
-          - zpool_timer.stat.mode == "0644"
-        fail_msg: "zpool-status-collector.timer missing or has wrong perms"
 
     - name: Invoke zpool collector once to produce textfile metric
       ansible.builtin.command: /usr/local/sbin/zpool-status-collector.sh
@@ -332,83 +289,8 @@
           node_slabinfo_collector_last_success_seconds records the last ATTEMPT
           rather than the last success, or is missing from a successful run.
 
-    - name: Stage a slabinfo fixture holding one known cache
-      ansible.builtin.copy:
-        dest: /tmp/slabinfo-fixture
-        mode: "0644"
-        content: |
-          slabinfo - version: 2.1
-          demo_cache 10 20 32 4 1 : tunables 0 0 0 : slabdata 1 2 0
-
-    - name: Run the collector against the fixture with a bogus cache name
-      ansible.builtin.command: >-
-        /usr/local/sbin/slabinfo-collector.sh /tmp/slabinfo-probe
-        demo_cache nosuchcache
-      environment:
-        SLABINFO: /tmp/slabinfo-fixture
-      changed_when: false
-
-    - name: Read the fixture-run .prom file
-      ansible.builtin.slurp:
-        src: /tmp/slabinfo-probe/node_slabinfo.prom
-      register: node_exporter_host_slab_probe_prom
-
-    # A cache the kernel renamed or merged away emits no series at all, which
-    # reads exactly like a leak that stopped.
-    - name: Assert an absent cache publishes a presence zero rather than nothing
-      ansible.builtin.assert:
-        that:
-          - "'node_slab_cache_present{cache=\"demo_cache\"} 1'
-             in (node_exporter_host_slab_probe_prom.content | b64decode)"
-          - "'node_slab_cache_present{cache=\"nosuchcache\"} 0'
-             in (node_exporter_host_slab_probe_prom.content | b64decode)"
-          - "'node_slab_objects{cache=\"demo_cache\"} 10'
-             in (node_exporter_host_slab_probe_prom.content | b64decode)"
-        fail_msg: >-
-          The slabinfo collector emitted no signal for a cache name that does
-          not exist, so a typo is indistinguishable from a leak that stopped.
-        success_msg: "an absent slab cache publishes node_slab_cache_present 0"
-
     # smartmon collector — no SMART-capable devices in CI, so the run
     # exercises the degraded path: success 0 plus the last_success sentinel.
-
-    - name: Verify smartmon collector script is present and executable
-      ansible.builtin.stat:
-        path: /usr/local/sbin/smartmon-collector.sh
-      register: smartmon_script
-
-    - name: Assert smartmon collector script is mode 0755 root:root
-      ansible.builtin.assert:
-        that:
-          - smartmon_script.stat.exists
-          - smartmon_script.stat.mode == "0755"
-          - smartmon_script.stat.pw_name == "root"
-          - smartmon_script.stat.gr_name == "root"
-        fail_msg: "smartmon-collector.sh missing or has wrong perms"
-
-    - name: Verify smartmon collector service unit is present
-      ansible.builtin.stat:
-        path: /etc/systemd/system/smartmon-collector.service
-      register: smartmon_svc
-
-    - name: Assert smartmon collector service unit is mode 0644
-      ansible.builtin.assert:
-        that:
-          - smartmon_svc.stat.exists
-          - smartmon_svc.stat.mode == "0644"
-        fail_msg: "smartmon-collector.service missing or has wrong perms"
-
-    - name: Verify smartmon collector timer unit is present
-      ansible.builtin.stat:
-        path: /etc/systemd/system/smartmon-collector.timer
-      register: smartmon_timer
-
-    - name: Assert smartmon collector timer unit is mode 0644
-      ansible.builtin.assert:
-        that:
-          - smartmon_timer.stat.exists
-          - smartmon_timer.stat.mode == "0644"
-        fail_msg: "smartmon-collector.timer missing or has wrong perms"
 
     - name: Invoke smartmon collector once to produce textfile metric
       ansible.builtin.command: /usr/local/sbin/smartmon-collector.sh
@@ -612,38 +494,6 @@
 
     # liveness gate — guards a zombie exporter systemd still reports active, so
     # the probe must be able to FAIL as well as pass; both directions run here.
-
-    - name: Verify healthcheck script is present and executable
-      ansible.builtin.stat:
-        path: /usr/local/sbin/node-exporter-healthcheck.sh
-      register: healthcheck_script
-
-    - name: Assert healthcheck script is mode 0755 root:root
-      ansible.builtin.assert:
-        that:
-          - healthcheck_script.stat.exists
-          - healthcheck_script.stat.mode == "0755"
-          - healthcheck_script.stat.pw_name == "root"
-          - healthcheck_script.stat.gr_name == "root"
-        fail_msg: "node-exporter-healthcheck.sh missing or has wrong perms"
-
-    - name: Verify healthcheck unit + timer are present
-      ansible.builtin.stat:
-        path: "/etc/systemd/system/node-exporter-healthcheck.{{ item }}"
-      register: healthcheck_units
-      loop:
-        - service
-        - timer
-
-    - name: Assert healthcheck units are mode 0644
-      ansible.builtin.assert:
-        that:
-          - item.stat.exists
-          - item.stat.mode == "0644"
-        fail_msg: "node-exporter-healthcheck unit missing or has wrong perms"
-      loop: "{{ healthcheck_units.results }}"
-      loop_control:
-        label: "{{ item.item }}"
 
     - name: Read healthcheck service unit
       ansible.builtin.slurp:

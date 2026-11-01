@@ -562,91 +562,6 @@ class TestDockerfileParserDirectives:
         assert "a.sh:1:" in proc.stdout
 
 
-# --- Markdown fenced code (--scan-fenced-code) -----------------------------
-
-# Assembled, not a literal: a `#` at column 0 in this file would be a comment
-# block the gate reports against this test module.
-FOUR_LINE_YAML_FENCE = (
-    "# Wiring\n\nAdd this to the parent kustomization:\n\n"
-    "```yaml\n# one\n# two\n# three\n# four\nresources:\n  - ./app\n```\n"
-)
-
-
-def _doc(tmp_path: Path, body: str = FOUR_LINE_YAML_FENCE, name: str = "ONBOARDING.md") -> Path:
-    path = tmp_path / name
-    path.write_text(body, encoding="utf-8")
-    return path
-
-
-def test_markdown_is_not_scanned_by_default(tmp_path):
-    """Prose in a fence is documentation, so the scan is opt-in."""
-    result = run(str(_doc(tmp_path)))
-    assert result.returncode == 2
-    assert "no scannable files found" in result.stderr
-
-
-def test_an_over_long_block_in_a_yaml_fence_fails(tmp_path):
-    result = run("--scan-fenced-code", str(_doc(tmp_path)))
-    assert result.returncode == 1
-    assert "4 content lines" in result.stdout
-
-
-def test_the_reported_line_is_the_one_in_the_document(tmp_path):
-    result = run("--scan-fenced-code", str(_doc(tmp_path)))
-    assert "ONBOARDING.md:6:" in result.stdout
-
-
-def test_a_critical_block_in_a_fence_gets_the_wider_budget(tmp_path):
-    body = FOUR_LINE_YAML_FENCE.replace("# one", "# CRITICAL: one")
-    assert run("--scan-fenced-code", str(_doc(tmp_path, body))).returncode == 0
-
-
-def test_a_three_line_block_in_a_fence_passes(tmp_path):
-    body = FOUR_LINE_YAML_FENCE.replace("# four\n", "")
-    assert run("--scan-fenced-code", str(_doc(tmp_path, body))).returncode == 0
-
-
-def test_a_fence_with_no_language_is_not_scanned(tmp_path):
-    """An untagged fence is output or prose, not code in a known language."""
-    body = FOUR_LINE_YAML_FENCE.replace("```yaml", "```")
-    result = run("--scan-fenced-code", str(_doc(tmp_path, body)))
-    assert result.returncode == 0
-
-
-def test_text_outside_a_fence_is_never_a_comment(tmp_path):
-    """Markdown ATX headings start with `#` and must not group into a block."""
-    body = "# One\n# Two\n# Three\n# Four\n\n```yaml\nkey: value\n```\n"
-    assert run("--scan-fenced-code", str(_doc(tmp_path, body))).returncode == 0
-
-
-def test_a_tilde_fence_is_scanned(tmp_path):
-    body = FOUR_LINE_YAML_FENCE.replace("```yaml", "~~~yaml").replace("```", "~~~")
-    assert run("--scan-fenced-code", str(_doc(tmp_path, body))).returncode == 1
-
-
-def test_a_md_jinja_template_is_scanned(tmp_path):
-    path = _doc(tmp_path, name="ONBOARDING.md.jinja")
-    assert run("--scan-fenced-code", str(path)).returncode == 1
-
-
-def test_the_config_key_turns_the_scan_on(tmp_path):
-    _doc(tmp_path)
-    config = tmp_path / "comment-length.yml"
-    config.write_text(
-        json.dumps({"paths": [str(tmp_path)], "scan_fenced_code": True}), encoding="utf-8"
-    )
-    assert run("--config", str(config)).returncode == 1
-
-
-def test_a_second_fence_is_scanned_too(tmp_path):
-    body = FOUR_LINE_YAML_FENCE.replace(
-        "```yaml\n# one", "```yaml\nkey: value\n```\n\n```yaml\n# one"
-    )
-    result = run("--scan-fenced-code", str(_doc(tmp_path, body)))
-    assert result.returncode == 1
-    assert "ONBOARDING.md:10:" in result.stdout
-
-
 # --- examples/comment-length.example.yml -----------------------------------
 
 EXAMPLE_CONFIG = (
@@ -662,12 +577,10 @@ def test_the_example_config_declares_every_documented_key():
         "exclude",
         "max_lines",
         "critical_max_lines",
-        "scan_fenced_code",
     }
     assert config["paths"] and config["include"] and config["exclude"]
     assert config["max_lines"] == ccl.MAX_LINES
     assert config["critical_max_lines"] == ccl.CRITICAL_MAX_LINES
-    assert config["scan_fenced_code"] is True
 
 
 def test_the_example_config_drives_the_gate(tmp_path):
@@ -791,13 +704,6 @@ class TestJinjaPythonTemplates:
         assert "broken.py.jinja:1:" in proc.stdout
         assert "WARNING" in proc.stderr
 
-    def test_strict_jinja_makes_it_an_operator_error(self, tmp_path):
-        write(tmp_path, "broken.py.jinja", BROKEN_TEMPLATE)
-        proc = run(str(tmp_path), "--strict-jinja")
-        assert proc.returncode == 2
-        assert "broken.py.jinja" in proc.stderr
-        assert "WARNING" not in proc.stderr
-
     def test_an_unparsable_plain_py_is_still_an_operator_error(self, tmp_path):
         write(tmp_path, "broken.py", "def f(:\n")
         write(tmp_path, "fine.py.jinja", BROKEN_TEMPLATE)
@@ -897,12 +803,6 @@ class TestJinjaStatementLines:
     def test_a_plain_file_is_not_read_as_a_template(self, tmp_path):
         write(tmp_path, "unit.sh", self.SPLIT)
         assert run(str(tmp_path)).returncode == 0
-
-    def test_a_j2_fence_joins_statement_lines_to_the_run(self, tmp_path):
-        doc = _doc(tmp_path, "Intro\n\n```j2\n" + self.SPLIT + "```\n")
-        proc = run("--scan-fenced-code", str(doc))
-        assert proc.returncode == 1
-        assert "ONBOARDING.md:4: comment block is 4 content lines" in proc.stdout
 
 
 @pytest.mark.parametrize(

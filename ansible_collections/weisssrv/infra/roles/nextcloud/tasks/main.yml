@@ -139,7 +139,6 @@
 - name: Resolve the Nextcloud nginx site template path
   ansible.builtin.set_fact:
     nextcloud_nginx_site_template: "{{ role_path }}/templates/nginx-nextcloud.conf.j2"
-  when: nextcloud_nginx_enabled | default(true)
 
 - name: Configure the host nginx reverse proxy
   ansible.builtin.include_role:
@@ -159,7 +158,6 @@
     compose_app_nginx_self_signed_san: ""
     # Seed the placeholder only on a real deploy.
     compose_app_nginx_bootstrap_cert: "{{ not (nextcloud_skip_install | default(false)) }}"
-  when: nextcloud_nginx_enabled | default(true)
 
 # Secrets live in the .env; the compose file itself is secret-free.
 - name: Deploy the Nextcloud compose environment file
@@ -195,13 +193,6 @@
       - "{{ nextcloud_app_dir }}"
       - "{{ nextcloud_postgres_dir }}"
       - "{{ nextcloud_data_mount }}"
-    compose_app_requires_mounts_comment:
-      - "Path-based mount ordering (systemd escapes these to the right .mount units):"
-      - "the data volumes must be mounted before the stack starts."
-    compose_app_reconcile_comment:
-      - "`up -d` reconciles the running stack to the rendered compose/.env, recreating"
-      - "only the containers whose definition changed (ExecReload matches ExecStart so"
-      - "`systemctl reload` re-applies without a full down/up)."
 
 - name: Wait for Nextcloud to finish installing or upgrading
   ansible.builtin.command:
@@ -369,7 +360,7 @@
 - name: Enable + start the Nextcloud backup timer
   ansible.builtin.systemd:
     name: nextcloud-backup.timer
-    enabled: "{{ nextcloud_backup_enabled | default(true) }}"
-    state: "{{ 'started' if (nextcloud_backup_enabled | default(true)) else 'stopped' }}"
+    enabled: true
+    state: started
     daemon_reload: true
   when: not (nextcloud_skip_install | default(false))

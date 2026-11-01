@@ -5,27 +5,8 @@
 vfio_passthrough_enabled: false
 
 # Lets the disabled arm remove the three VFIO drop-ins. Only a file carrying
-# the marker below is removed; set false to leave every drop-in alone.
+# the role's own marker is removed; set false to leave every drop-in alone.
 vfio_passthrough_manage_absent: true
-
-# Substring that identifies a role-written drop-in. Role-owned literal the three
-# templates emit, so it is stable across re-installs and independent of the
-# consumer's `ansible_managed`. A hand-written file is reported and kept.
-vfio_passthrough_managed_marker: "managed by weisssrv.infra.vfio_passthrough"
-
-# Extra ownership markers accepted by the removal arm, for a drop-in carrying
-# only the `ansible_managed` header; the defaults are that header's stable
-# prefix from the config and from the variable. An empty entry is ignored.
-vfio_passthrough_legacy_markers:
-  - >-
-    {{ lookup('ansible.builtin.config', 'DEFAULT_MANAGED_STR', on_missing='skip')
-       | default('', true) | regex_replace('\{.*$', '') | trim }}
-  - "{{ ansible_managed | default('') | regex_replace('\\{.*$', '') | trim }}"
-
-# How the kernel command line is written. 'grub' appends a /etc/default/grub.d
-# drop-in and is the only method implemented; a host that keeps its cmdline in
-# /etc/kernel/cmdline (systemd-boot) is refused by a preflight.
-vfio_passthrough_cmdline_method: grub
 
 # PCI IDs (vendor:device) bound to vfio-pci — one `ids=` list. REQUIRED when
 # enabled (a preflight asserts it is non-empty). For a multifunction GPU list

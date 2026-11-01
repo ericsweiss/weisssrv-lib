@@ -76,28 +76,16 @@ include:
       schedule_when: "never"
       changes:
         - "docker/molecule-test/**/*"
-  # The deploy job image (docker/ansible-deploy/README.md), consumed by no job
-  # here: consumers pull it at a release tag. `changes` is its own context
-  # alone, disjoint from both molecule contexts.
-  - local: /ci/build/docker-build.yml
-    inputs:
-      job_name: build-ansible-deploy
-      image_name: ansible-deploy
-      context: docker/ansible-deploy
-      tags: ["infrastructure"]
-      cpu_selector: "esweiss.com/cpu=modern"
-      schedule_when: "never"
-      changes:
-        - "docker/ansible-deploy/**/*"
   # MR-targeted molecule child pipeline. Every other input already matches this
-  # repo; integration_dir points at a dir that does not exist, which is correct
-  # here. The PLAN job is non-root safe, so it runs on the shared runner.
+  # repo. The PLAN job is non-root safe, so it runs on the shared runner.
   - local: /ci/internal/molecule-matrix.gitlab-ci.yml
     inputs:
       tags: []
   - local: /ci/lint/ansible-lint.yml
     inputs:
       tags: []
+      job_memory_limit: "1Gi"
+      job_memory_request: "256Mi"
       config: "-c .ansible-lint"
       targets: "ansible_collections"
       # The repo root holds ansible_collections/, so `.` is what makes the
@@ -122,7 +110,6 @@ include:
   # hand. Rendering the job still exercises the template's inputs and rules.
   - local: /ci/maintenance/version-check.yml
     inputs:
-      tags: []
       job_name: version-check-selftest
       # Runs first and in the same shell as check_command, so the export below
       # proves the input is threaded rather than dropped.
@@ -136,6 +123,8 @@ include:
   - local: /ci/lint/yaml-lint.yml
     inputs:
       tags: []
+      job_memory_limit: "1Gi"
+      job_memory_request: "256Mi"
       image: python:3.14-slim
       # Explicit copy of the template default; the parity gate holds all three
       # copies (here, the template, the molecule image) equal.
@@ -157,6 +146,8 @@ include:
   - local: /ci/lint/shellcheck.yml
     inputs:
       tags: []
+      job_memory_limit: "1Gi"
+      job_memory_request: "256Mi"
       direct_globs: "scripts/*.sh"
       # The collection ships shell in role files/ and templates/ (*.sh.j2 gets
       # the Jinja neutralizer treatment), which is what find_dir walks.
@@ -179,7 +170,6 @@ include:
         - "tests/**/*.py"
         - "cli/**/*.py"
         - "examples/**/*.py"
-        # kubernetes/reapers/ ships programs a consumer vendors into its cluster.
         - "kubernetes/**/*.py"
         - "lint/ruff.toml"
         - ".gitlab-ci.yml"
@@ -187,6 +177,8 @@ include:
   - local: /ci/lint/docs-link-check.yml
     inputs:
       tags: []
+      job_memory_limit: "1Gi"
+      job_memory_request: "256Mi"
       image: python:3.14
   # Blocking over the whole tree: the script excludes tool caches itself, and
   # the convention covers every file, so neither paths nor changes is narrowed.
@@ -198,6 +190,8 @@ include:
   - local: /ci/test/python-tests.yml
     inputs:
       tags: []
+      job_memory_limit: "2Gi"
+      job_memory_request: "512Mi"
       # The FULL python image (not -slim) ships git — needed by the
       # check-taskfile and vendored-copy tests that init throwaway repos — so no
       # apt package is required and the job stays non-root safe.
@@ -227,7 +221,6 @@ include:
         # the result: the gate has to fire on the files it guards, not only on
         # the test that guards them.
         - "ci/**/*"
-        # tests/test_kube_reaper.py guards the shipped reaper programs.
         - "kubernetes/**/*"
         - ".gitlab-ci.yml"
         # test_lint_version_parity.py holds the molecule image's linter pins
@@ -255,6 +248,8 @@ include:
   - local: /ci/security/secret-detection.yml
     inputs:
       tags: []
+      job_memory_limit: "1Gi"
+      job_memory_request: "256Mi"
       cpu_selector: "esweiss.com/cpu=modern"
   # terraform/modules/ is the library-side workload; both jobs run in the lint
   # stage because this pipeline has no validate stage. `test: true` because only
@@ -288,8 +283,6 @@ include:
   # `version:` pins. No `needs:`, so the last-declared `release` stage gates it
   # on every earlier job. major_on_zero stays false while the tag is 0.x.
   - local: /ci/release/semantic-release.yml
-    inputs:
-      tags: []
 
 # Republish every image this repo builds under the tag semantic-release just cut,
 # so a consumer pins images at the SAME ref as the templates. The source is this
@@ -341,7 +334,7 @@ publish-image-tags:
       done
       docker info >/dev/null 2>&1 || { echo "docker daemon did not become ready"; exit 1; }
       echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
-      for img in molecule-ci molecule-test ansible-deploy; do
+      for img in molecule-ci molecule-test; do
         ref="${CI_REGISTRY_IMAGE}/${img}"
         src=""
         # Only an absent tag falls through to the next source; any other pull
@@ -374,8 +367,6 @@ publish-image-tags:
 # level: these variables land on it without touching its scripts.
 python-tests:
   variables:
-    KUBERNETES_MEMORY_LIMIT: "2Gi"
-    KUBERNETES_MEMORY_REQUEST: "512Mi"
     # Full clone: TestReleaseLineage binds galaxy.yml / cli/pyproject.toml to
     # the tag semantic-release will cut, and the shallow default drops those
     # assertions once the last release falls outside the clone depth.
@@ -388,17 +379,11 @@ python-tests:
       optional: true
 
 ansible-lint:
-  variables:
-    KUBERNETES_MEMORY_LIMIT: "1Gi"
-    KUBERNETES_MEMORY_REQUEST: "256Mi"
   needs:
     - job: yaml-lint
       optional: true
 
 secret_detection:
-  variables:
-    KUBERNETES_MEMORY_LIMIT: "1Gi"
-    KUBERNETES_MEMORY_REQUEST: "256Mi"
   needs:
     - job: shellcheck
       optional: true
@@ -411,43 +396,10 @@ molecule-plan:
     - job: lint-docs-links
       optional: true
 
-# Right-size the tag-less job pods (the runner allows overrides <= 6Gi): these
-# jobs use ~200Mi, so declaring 1Gi keeps a full fan-out inside the namespace
-# quota instead of failing at pod creation.
-yaml-lint:
-  variables:
-    KUBERNETES_MEMORY_LIMIT: "1Gi"
-    KUBERNETES_MEMORY_REQUEST: "256Mi"
-
-shellcheck:
-  variables:
-    KUBERNETES_MEMORY_LIMIT: "1Gi"
-    KUBERNETES_MEMORY_REQUEST: "256Mi"
-
-python-lint:
-  variables:
-    KUBERNETES_MEMORY_LIMIT: "1Gi"
-    KUBERNETES_MEMORY_REQUEST: "256Mi"
-
-lint-docs-links:
-  variables:
-    KUBERNETES_MEMORY_LIMIT: "1Gi"
-    KUBERNETES_MEMORY_REQUEST: "256Mi"
-
 comment-length:
   needs:
     - job: yaml-lint
       optional: true
-
-terraform-fmt:
-  variables:
-    KUBERNETES_MEMORY_LIMIT: "1Gi"
-    KUBERNETES_MEMORY_REQUEST: "256Mi"
-
-terraform-validate:
-  variables:
-    KUBERNETES_MEMORY_LIMIT: "1Gi"
-    KUBERNETES_MEMORY_REQUEST: "256Mi"
 
 # Quota contention on the shared runner surfaces as runner_system_failure at
 # pod creation when a pipeline's fan-out bursts past the namespace quota;
@@ -697,9 +649,6 @@ molecule-tests:
         SCENARIO: default
       - ROLE: resolv_conf
         SCENARIO: default
-      # Second scenario: the opt-out branch (`resolv_conf_search_domains: []`).
-      - ROLE: resolv_conf
-        SCENARIO: empty-search
       - ROLE: restic_offsite
         SCENARIO: default
       - ROLE: smtp_relay

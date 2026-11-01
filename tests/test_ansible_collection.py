@@ -5,11 +5,13 @@ and the relative depths the shared molecule base config resolves against."""
 
 import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
-from _helpers import git, require_git_checkout, require_tags
+from _helpers import require_tags
 from script_loader import load_script
 
 REPO = Path(__file__).resolve().parent.parent
@@ -21,6 +23,12 @@ MOLECULE_BASE = COLLECTION / "molecule-shared" / "base.yml"
 IMAGE_REQUIREMENTS = REPO / "docker" / "molecule-ci" / "requirements.yml"
 CLI_PYPROJECT = REPO / "cli" / "pyproject.toml"
 README = REPO / "README.md"
+
+
+def git(*args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(REPO), *args], check=True, capture_output=True, text=True
+    ).stdout
 
 
 def readme_current_release() -> str:
@@ -230,13 +238,11 @@ class TestReleaseLineage:
 
     @pytest.fixture(scope="class")
     def plan(self, sr):
-        require_git_checkout(REPO)
-        tags = git(REPO, "tag", "--list").split()
+        if shutil.which("git") is None or not (REPO / ".git").exists():
+            pytest.skip("not a git checkout")
+        tags = git("tag", "--list").split()
         previous = require_previous_tag(sr, tags)
-        log_output = git(
-            REPO,
-            "log", "--no-merges", "--format=" + sr.LOG_FORMAT, "%s..HEAD" % previous
-        )
+        log_output = git("log", "--no-merges", "--format=" + sr.LOG_FORMAT, "%s..HEAD" % previous)
         return sr.plan_release(tags, log_output)
 
     def test_declared_version_is_the_one_that_will_be_tagged(self, galaxy, plan):

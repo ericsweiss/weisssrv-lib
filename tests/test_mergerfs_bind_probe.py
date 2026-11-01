@@ -79,40 +79,33 @@ def test_an_active_client_blocks_the_cycle(tmp_path):
     assert "ACTIVE_NFS_CLIENTS" in proc.stdout
 
 
-def test_an_absent_ss_is_not_an_idle_union(tmp_path):
-    """Without ss the probe cannot tell "no clients" from "I could not look"."""
-    env = _bin(tmp_path, findmnt=FINDMNT, ss=_ss())
-    (tmp_path / "bin" / "ss").unlink()
+BROKEN_LIST = FINDMNT.replace("*--list*) printf '0:42 /union\\n0:42 /export/media\\n' ;;",
+                              "*--list*) exit 1 ;;")
+
+
+@pytest.mark.parametrize(
+    ("stubs", "removed", "stderr"),
+    [
+        # Without ss the probe cannot tell "no clients" from "I could not look".
+        pytest.param({"findmnt": FINDMNT, "ss": _ss()}, "ss", "ss is not available", id="absent-ss"),
+        pytest.param({"findmnt": FINDMNT, "ss": "#!/bin/sh\nexit 2\n"}, None, "ss failed",
+                     id="failing-ss"),
+        # findmnt present but unable to list mounts must not read as a clean union.
+        pytest.param({"findmnt": BROKEN_LIST, "ss": _ss()}, None, "findmnt failed",
+                     id="failing-findmnt-list"),
+        pytest.param({"findmnt": FINDMNT}, "findmnt", "findmnt is not available",
+                     id="absent-findmnt"),
+    ],
+)
+def test_a_probe_that_could_not_look_is_refused(tmp_path, stubs, removed, stderr):
+    env = _bin(tmp_path, **stubs)
+    if removed:
+        (tmp_path / "bin" / removed).unlink()
     proc = _run(env)
     assert proc.returncode == 3
     assert "NFS_IDLE" not in proc.stdout
-    assert "ss is not available" in proc.stderr
-
-
-def test_a_failing_ss_is_not_an_idle_union(tmp_path):
-    env = _bin(tmp_path, findmnt=FINDMNT, ss="#!/bin/sh\nexit 2\n")
-    proc = _run(env)
-    assert proc.returncode == 3
-    assert "NFS_IDLE" not in proc.stdout
-    assert "ss failed" in proc.stderr
-
-
-def test_a_failing_mount_table_read_is_not_an_empty_bind_list(tmp_path):
-    """findmnt present but unable to list mounts must not read as a clean union."""
-    broken = FINDMNT.replace("*--list*) printf '0:42 /union\\n0:42 /export/media\\n' ;;", "*--list*) exit 1 ;;")
-    env = _bin(tmp_path, findmnt=broken, ss=_ss())
-    proc = _run(env)
-    assert proc.returncode == 3
     assert "NO_NFS_BIND_EXPORTS" not in proc.stdout
-    assert "findmnt failed" in proc.stderr
-
-
-def test_an_absent_findmnt_is_still_refused(tmp_path):
-    env = _bin(tmp_path, findmnt=FINDMNT)
-    (tmp_path / "bin" / "findmnt").unlink()
-    proc = _run(env)
-    assert proc.returncode == 3
-    assert "findmnt is not available" in proc.stderr
+    assert stderr in proc.stderr
 
 
 if __name__ == "__main__":

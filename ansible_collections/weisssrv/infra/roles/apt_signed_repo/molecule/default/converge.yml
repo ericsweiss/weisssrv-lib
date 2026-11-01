@@ -48,7 +48,6 @@
         apt_signed_repo_key_url: "file:///tmp/testkey.asc"
         apt_signed_repo_fingerprint: "{{ apt_signed_repo_real_fpr }}"
         apt_signed_repo_keyring_path: /etc/apt/keyrings/test-ok.gpg
-        apt_signed_repo_keyring_mode: "0644"
         apt_signed_repo_repo_line: >-
           deb [signed-by=/etc/apt/keyrings/test-ok.gpg]
           http://deb.debian.org/debian bookworm main
@@ -133,9 +132,8 @@
           though the primary fingerprint matched — the pub_count==1 fail-closed
           guard is not enforcing, so an appended signing key would be trusted.
 
-    # test-ok.gpg is already installed by the accept path above. The
-    # download and dearmor steps skip on an existing keyring, so only the
-    # existing-keyring re-verify can catch a drifted fingerprint.
+    # test-ok.gpg is already installed by the accept path above, so the
+    # fingerprint check runs against the installed keyring, not a download.
     - name: Existing-keyring re-verify — a drifted fingerprint on an installed keyring must fail
       tags: [molecule-idempotence-notest]
       block:

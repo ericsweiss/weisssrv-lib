@@ -9,7 +9,7 @@ by `zvol_mount_device_id_prefix` + its SCSI slot, formats it once (only when
 `lsblk -d` shows neither a filesystem nor a partition table), then writes
 `UUID=<id>` entries to `/etc/fstab` so mounts survive device renumbering. It
 also detects and corrects disks mounted or listed in fstab at the wrong
-location (`zvol_mount_fix_wrong_locations`, default `true`).
+location.
 
 ## Inputs
 

@@ -484,7 +484,7 @@
         content: |
           {"qm_calls": {{ (qm_lines.stdout | from_json).qm_calls }},
            "qm_config_calls": {{ (qm_lines.stdout | from_json).qm_config_calls }},
-           "reconcile_changed": {{ proxmox_vm_net0_firewall.changed | to_json }}}
+           "reconcile_changed": {{ proxmox_vm_guest_nic_firewall_result.changed | to_json }}}
 
     # 5i. A VM still carrying the create marker, alone or beside another tag,
     # fails by name before any reconcile mutates it.
@@ -616,7 +616,7 @@
           {"qm_calls": {{ (qm_reconcile_lines.stdout | from_json).qm_calls }},
            "qm_config_calls": {{ (qm_reconcile_lines.stdout | from_json).qm_config_calls }},
            "repair_calls": {{ (qm_reconcile_lines.stdout | from_json).repair_calls }},
-           "reconcile_changed": {{ proxmox_vm_net0_firewall.changed | to_json }}}
+           "reconcile_changed": {{ proxmox_vm_guest_nic_firewall_result.changed | to_json }}}
 
     # 7. Firewall reconcile with explicit firewall=0 — the stale key
     # must be REPLACED, not appended to (no duplicate firewall= keys
@@ -666,7 +666,7 @@
            "qm_config_calls": {{ (qm_fwzero_lines.stdout | from_json).qm_config_calls }},
            "repair_calls": {{ (qm_fwzero_lines.stdout | from_json).repair_calls }},
            "stale_key_in_set": {{ (qm_fwzero_lines.stdout | from_json).stale_key_in_set }},
-           "reconcile_changed": {{ proxmox_vm_net0_firewall.changed | to_json }}}
+           "reconcile_changed": {{ proxmox_vm_guest_nic_firewall_result.changed | to_json }}}
 
     # 7a. A guest whose config carries no net0 cannot have the flag
     # reconciled; reporting ok would leave every security group inert.

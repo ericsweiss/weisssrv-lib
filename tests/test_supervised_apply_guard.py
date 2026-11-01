@@ -26,13 +26,13 @@ def _run(args: list[str], stdin_text: str = "") -> subprocess.CompletedProcess:
     )
 
 
-def _run_on_tty(args: list[str], typed: str, env: dict | None = None) -> tuple[int, str]:
+def _run_on_tty(args: list[str], typed: str) -> tuple[int, str]:
     """Run the guard with a real pty on stdin and feed it `typed`."""
     parent, child = pty.openpty()
     proc = subprocess.Popen(
         ["bash", str(GUARD), *args],
         stdin=child, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, env={**os.environ, **(env or {})},
+        text=True,
     )
     os.close(child)
     os.write(parent, typed.encode())
@@ -54,26 +54,12 @@ def test_non_tty_is_refused():
     assert "run it from a terminal" in res.stderr
 
 
-def test_auto_approve_is_refused_on_a_tty():
-    code, out = _run_on_tty(
-        ["terraform:apply", "the UniFi network", "-auto-approve"], "apply\n"
-    )
-    assert code == 2
-    assert "-auto-approve is refused" in out
-
-
-def test_equals_spelling_of_auto_approve_is_refused():
-    code, out = _run_on_tty(
-        ["terraform:apply", "the network", "-auto-approve=true"], "apply\n"
-    )
-    assert code == 2
-    assert "-auto-approve is refused" in out
-
-
-def test_double_dash_spelling_of_auto_approve_is_refused():
-    code, out = _run_on_tty(
-        ["terraform:apply", "the network", "--auto-approve"], "apply\n"
-    )
+@pytest.mark.parametrize(
+    "flag", ["-auto-approve", "-auto-approve=true", "--auto-approve"],
+    ids=["bare", "equals", "double-dash"],
+)
+def test_auto_approve_is_refused_on_a_tty(flag):
+    code, out = _run_on_tty(["terraform:apply", "the network", flag], "apply\n")
     assert code == 2
     assert "-auto-approve is refused" in out
 
@@ -94,23 +80,6 @@ def test_bare_enter_aborts():
     code, out = _run_on_tty(["terraform:apply", "the network"], "\n")
     assert code == 1
     assert "Aborted." in out
-
-
-def test_custom_confirm_word_is_honoured():
-    env = {"SUPERVISED_APPLY_CONFIRM_WORD": "renumber"}
-    code, out = _run_on_tty(["unifi:apply", "VLAN 10"], "apply\n", env)
-    assert code == 1, out
-    code, out = _run_on_tty(["unifi:apply", "VLAN 10"], "renumber\n", env)
-    assert code == 0, out
-
-
-def test_empty_confirm_word_exits_2():
-    """An empty word would make a bare Enter an approval."""
-    code, out = _run_on_tty(
-        ["unifi:apply", "VLAN 10"], "\n", {"SUPERVISED_APPLY_CONFIRM_WORD": ""}
-    )
-    assert code == 2
-    assert "would approve" in out
 
 
 if __name__ == "__main__":

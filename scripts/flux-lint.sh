@@ -10,13 +10,12 @@ FL_MODE="substitute"
 FL_CLUSTER_DIR=""
 FL_KUSTOMIZE_PATH=""
 FL_VERSIONS_CM=""
-FL_RENDER_SCRIPT="scripts/flux-render.sh"
+FL_RENDER_SCRIPT="scripts/flux-env.sh"
 FL_SKIPPED_SCRIPT="scripts/kubeconform-skipped.py"
 FL_EXPECTED_SKIPPED=""
 FL_CHILD_KUSTOMIZATIONS=""
 FL_RENDER_ALL=""
 FL_K8S_VERSION=""
-FL_CATALOG=""
 FL_CATALOG_REF=""
 FL_ALLOWED_SKIPS="0"
 FL_REQUIRE_CLUSTER_ROOT="true"
@@ -29,7 +28,7 @@ Usage: flux-lint.sh [--mode substitute|simple] [options]
 Substitute mode (a cluster repo; needs flux, kustomize, kubeconform, envsubst):
   --cluster-dir DIR            dir of Flux Kustomizations to iterate (required)
   --versions-configmap FILE    ConfigMap of substitution keys (required)
-  --render-script FILE         flux-render.sh / flux-env.sh (default scripts/flux-render.sh)
+  --render-script FILE         ConfigMap exporter (default scripts/flux-env.sh)
   --skipped-script FILE        kubeconform-skipped.py (default scripts/kubeconform-skipped.py)
   --expected-skipped FILE      baseline of apiVersion/Kind pairs with no schema
   --child-kustomizations FILE  flux-child-kustomizations.py, for dependsOn order
@@ -44,8 +43,7 @@ name a cluster_* key, the namespace cluster-config owns:
 
 Both modes:
   --k8s-version VER            kubeconform target; substitute mode derives it otherwise
-  --crd-catalog URL            kubeconform -schema-location template
-  --crd-catalog-ref REF        datreeio/CRDs-catalog ref the default template uses
+  --crd-catalog-ref REF        datreeio/CRDs-catalog ref (required)
 USAGE
 }
 
@@ -71,7 +69,6 @@ while [ "$#" -gt 0 ]; do
         --child-kustomizations) FL_CHILD_KUSTOMIZATIONS="${2:-}"; shift 2 ;;
         --render-all) FL_RENDER_ALL="${2:-}"; shift 2 ;;
         --k8s-version) FL_K8S_VERSION="${2:-}"; shift 2 ;;
-        --crd-catalog) FL_CATALOG="${2:-}"; shift 2 ;;
         --crd-catalog-ref) FL_CATALOG_REF="${2:-}"; shift 2 ;;
         --allowed-skips) FL_ALLOWED_SKIPS="${2:-}"; shift 2 ;;
         --require-cluster-root) need_value "$1" "${2:-}"; FL_REQUIRE_CLUSTER_ROOT="$2"; shift 2 ;;
@@ -82,12 +79,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 # The catalog is pinned to a ref so a catalog rewrite cannot change what the
-# gate accepts. A caller may pass the whole template instead, to self-host.
-if [ -z "$FL_CATALOG" ]; then
-    [ -n "$FL_CATALOG_REF" ] || die "--crd-catalog or --crd-catalog-ref is required"
-    FL_CATALOG="https://raw.githubusercontent.com/datreeio/CRDs-catalog/${FL_CATALOG_REF}/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
-fi
-FL_CATALOG_LABEL="${FL_CATALOG_REF:-$FL_CATALOG}"
+# gate accepts.
+[ -n "$FL_CATALOG_REF" ] || die "--crd-catalog-ref is required"
+FL_CATALOG="https://raw.githubusercontent.com/datreeio/CRDs-catalog/${FL_CATALOG_REF}/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
 
 # `$${` is Flux's escape for a literal `${`, masked out of every scan.
 mask_flux_escapes() {
@@ -164,7 +158,7 @@ run_simple_mode() {
     skipped=$(printf '%s\n' "$summary" | sed -n 's/.*Skipped: \([0-9][0-9]*\).*/\1/p')
     if [ -z "$skipped" ] || [ "$skipped" -gt "$FL_ALLOWED_SKIPS" ]; then
         echo "ERROR: kubeconform validated ${skipped:-?} resource(s) against no schema (allowed_skips=$FL_ALLOWED_SKIPS)"
-        echo "The catalog at $FL_CATALOG_LABEL moved or was unreachable, or the kind has no published schema."
+        echo "The catalog at $FL_CATALOG_REF moved or was unreachable, or the kind has no published schema."
         echo "Add a -schema-location for it, or raise allowed_skips."
         return 1
     fi

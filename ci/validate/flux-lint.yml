@@ -109,8 +109,8 @@ spec:
         A consumer's `flux:lint` task runs the same file, so the strict render
         and every floor below reach local lint and CI together.
     flux_render_script:
-      default: "scripts/flux-render.sh"
-      description: (substitute=true) repo-local copy of the shared render helper.
+      default: "scripts/flux-env.sh"
+      description: (substitute=true) repo-local copy of the ConfigMap exporter.
     skipped_script:
       default: "scripts/kubeconform-skipped.py"
       description: (substitute=true) repo-local copy of the unvalidated-kind tracker.

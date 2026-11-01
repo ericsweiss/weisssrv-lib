@@ -265,42 +265,10 @@ def test_an_export_admitting_a_whole_group_by_cidr_is_clean(tmp_path):
     assert gate.check(root) == ([], 2)
 
 
-def test_scoped_groups_are_configurable(tmp_path):
-    """A site naming its node groups differently gets no partial-group check
-    unless it can name them, and a mixed group would report every export."""
-    root = _repo(
-        tmp_path,
-        manifests={"apps/b/slice.yaml": _slice("10.0.10.102")},
-        group_vars={"nas.yml": _exports("10.0.10.221/32")},
-    )
-    assert gate.check(root, scoped_groups=())[0] == []
-    problems = gate.check(root, scoped_groups=("k3s",))[0]
-    assert any("admits part of k3s but not" in p for p in problems)
 
 
-def test_several_lan_keys_widen_the_scope(tmp_path):
-    config = CONFIG + "  cluster_storage_cidr: 10.0.20.0/24\n"
-    root = _repo(
-        tmp_path, config=config,
-        manifests={
-            "apps/a/slice.yaml": _slice("10.0.20.50", name="storage"),
-            "apps/b/slice.yaml": _slice("10.0.10.102"),
-        },
-    )
-    assert gate.check(root) == ([], 1)
-    problems, checked = gate.check(
-        root, lan_cidr_keys=("cluster_lan_cidr", "cluster_storage_cidr")
-    )
-    assert checked == 2 and any("10.0.20.50" in p for p in problems)
 
 
-def test_an_extra_lan_cidr_widens_the_scope(tmp_path):
-    root = _repo(tmp_path, manifests={
-        "apps/a/slice.yaml": _slice("192.168.1.9", name="dmz"),
-        "apps/b/slice.yaml": _slice("10.0.10.102"),
-    })
-    problems, checked = gate.check(root, extra_lan_cidrs=("192.168.1.0/24",))
-    assert checked == 2 and any("192.168.1.9" in p for p in problems)
 
 
 def test_host_vars_exports_are_read_as_well(tmp_path):
@@ -474,16 +442,6 @@ def test_main_reports_an_uninspectable_subject_as_exit_2(tmp_path, capsys):
     assert "inspected nothing" in capsys.readouterr().err
 
 
-def test_main_passes_every_flag_through(tmp_path, capsys):
-    root = _repo(tmp_path, manifests={"apps/a/slice.yaml": _slice("192.168.1.9")})
-    assert gate.main([
-        "--repo-root", str(root),
-        "--extra-lan-cidr", "192.168.1.0/24",
-        "--manifest-tree", "kubernetes",
-        "--inventory", "ansible/inventories/prod",
-        "--scoped-group", "k3s",
-    ]) == 1
-    assert "192.168.1.9" in capsys.readouterr().err
 
 
 if __name__ == "__main__":

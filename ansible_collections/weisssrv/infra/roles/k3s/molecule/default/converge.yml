@@ -15,24 +15,6 @@
         state: present
       when: ansible_os_family == "Debian"
 
-    # Stage a stale override so the removal step in tasks/server.yml has
-    # something to reconcile.
-    - name: Create the k3s server manifests directory
-      ansible.builtin.file:
-        path: /var/lib/rancher/k3s/server/manifests
-        state: directory
-        mode: "0755"
-      when: k3s_is_first_server | default(false)
-      tags: [molecule-idempotence-notest]
-
-    - name: Stage a stale metrics-server override
-      ansible.builtin.copy:
-        dest: /var/lib/rancher/k3s/server/manifests/metrics-server-config.yaml
-        content: "# stale override the role must remove\n"
-        mode: "0644"
-      when: k3s_is_first_server | default(false)
-      tags: [molecule-idempotence-notest]
-
   roles:
     - role: weisssrv.infra.k3s
 

@@ -176,12 +176,6 @@ def test_the_rule_source_flags_reach_the_extractor(run):
     assert "--require-rules-dir" in argv[0]
 
 
-def test_extra_extractor_args_reach_the_extractor(run):
-    run(EXTRACT_ARGS="--dummy slack_url=https://example.invalid")
-    argv = run.extract_trace.read_text().splitlines()
-    assert argv[0].endswith("--dummy slack_url=https://example.invalid")
-
-
 def test_no_rule_source_flag_is_passed_by_default(run):
     run()
     argv = run.extract_trace.read_text().splitlines()

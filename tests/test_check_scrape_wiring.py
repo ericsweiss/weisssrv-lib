@@ -742,15 +742,6 @@ def test_a_matchnames_entry_for_another_namespace_is_refused(tmp_path, capsys):
     assert "against --namespace app" in capsys.readouterr().err
 
 
-def test_the_scrape_namespace_is_an_option(tmp_path):
-    renamed = policy().replace(
-        "kubernetes.io/metadata.name: observability",
-        "kubernetes.io/metadata.name: monitoring",
-    )
-    argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, renamed)
-    assert gate.main(argv) == 1
-    assert gate.main([*argv, "--observability-namespace", "monitoring"]) == 0
-
 
 def _peer_namespace_selector(selector: str) -> str:
     """policy() with its peer namespaceSelector replaced by `selector` (flow YAML)."""
@@ -771,7 +762,7 @@ class TestScrapeAllowDetection:
     naming the namespace counts even when narrowed: the vacuity guard fails closed."""
 
     def test_a_peer_naming_the_namespace_is_a_scrape_allow(self):
-        assert gate.scrape_allow(_documents(policy()), "observability") == "allow-scrape"
+        assert gate.scrape_allow(_documents(policy())) == "allow-scrape"
 
     @pytest.mark.parametrize(
         "selector",
@@ -783,13 +774,13 @@ class TestScrapeAllowDetection:
     )
     def test_a_narrowed_peer_naming_the_namespace_is_still_a_scrape_allow(self, selector):
         documents = _documents(_peer_namespace_selector(selector))
-        assert gate.scrape_allow(documents, "observability") == "allow-scrape"
+        assert gate.scrape_allow(documents) == "allow-scrape"
 
     @pytest.mark.parametrize("selector", ["[]", '""'])
     def test_a_malformed_selector_is_not_a_scrape_allow_and_notes(self, selector):
         gate.UNMODELLED.clear()
         documents = _documents(_peer_namespace_selector(selector))
-        assert gate.scrape_allow(documents, "observability") is None
+        assert gate.scrape_allow(documents) is None
         assert any("is not a mapping" in n for n in gate.UNMODELLED)
         gate.UNMODELLED.clear()
 

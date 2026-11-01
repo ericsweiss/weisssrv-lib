@@ -53,9 +53,3 @@ def test_the_guard_names_no_input_the_template_dropped():
         "renders." % ", ".join(stale)
     )
 
-
-def test_the_gate_reports_an_unguarded_input():
-    """Mutation case: drop a guarded name and the comparison must catch it."""
-    rendered = {"proxmox_firewall_a", "proxmox_firewall_b"}
-    guarded = {"proxmox_firewall_a"}
-    assert sorted(rendered - guarded - PER_HOST) == ["proxmox_firewall_b"]

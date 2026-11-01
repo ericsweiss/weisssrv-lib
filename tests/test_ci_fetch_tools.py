@@ -78,6 +78,14 @@ def pin(monkeypatch, name: str, **fields) -> gate.Tool:
     return tool
 
 
+@pytest.fixture
+def jq_raw(monkeypatch, tmp_path) -> tuple[Path, Path]:
+    """A raw jq asset pinned in the table, and the install directory to use."""
+    asset = write_raw(tmp_path / "jq-linux-amd64")
+    pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
+    return asset, tmp_path / "bin"
+
+
 def run(monkeypatch, argv: list, directory: Path) -> int:
     """`main()` with no env override in play, so a stray export cannot leak in."""
     for key in list(os.environ):
@@ -98,86 +106,57 @@ class TestTheShippedTable:
         }
 
     @pytest.mark.parametrize("name", sorted(gate.TOOLS))
-    def test_every_pin_is_a_full_sha256(self, name):
-        sha256 = gate.TOOLS[name].sha256
-        assert len(sha256) == 64 and set(sha256) <= set("0123456789abcdef"), sha256
-
-    @pytest.mark.parametrize("name", sorted(gate.TOOLS))
-    def test_every_url_and_member_renders_from_the_version_alone(self, name):
-        """An unknown placeholder would only surface on a live fetch."""
+    def test_every_pin_is_well_formed(self, name):
+        """An unknown placeholder or kind would only surface on a live fetch."""
         tool = gate.TOOLS[name]
+        assert len(tool.sha256) == 64 and set(tool.sha256) <= set("0123456789abcdef")
         assert tool.url.format(version=tool.version).startswith("https://")
+        assert tool.kind in {gate.RAW, "zip", *gate.ARCHIVE_MODES}
+        assert bool(tool.member) == (tool.kind != gate.RAW)
         assert tool.member.format(version=tool.version) or tool.kind == gate.RAW
 
-    @pytest.mark.parametrize("name", sorted(gate.TOOLS))
-    def test_every_archive_kind_is_one_the_extractor_handles(self, name):
-        kind = gate.TOOLS[name].kind
-        assert kind in {gate.RAW, "zip", *gate.ARCHIVE_MODES}
 
-    @pytest.mark.parametrize("name", sorted(gate.TOOLS))
-    def test_only_a_raw_pin_omits_its_member(self, name):
-        tool = gate.TOOLS[name]
-        assert bool(tool.member) == (tool.kind != gate.RAW)
+def _raw_asset(path: Path) -> Path:
+    return write_raw(path)
+
+
+def _tar_gz(path: Path) -> Path:
+    return write_tar(path, {"tool-9.9.9/tool": PAYLOAD, "LICENSE": b"x"})
+
+
+def _tar_xz(path: Path) -> Path:
+    require_lzma()
+    return write_tar(path, {"tool-9.9.9/tool": PAYLOAD}, mode="w:xz")
+
+
+def _zip(path: Path) -> Path:
+    return write_zip(path, {"tool": PAYLOAD, "LICENSE.txt": b"x"})
 
 
 class TestArchiveKinds:
-    def test_a_raw_binary_is_installed_executable(self, monkeypatch, tmp_path):
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
+    @pytest.mark.parametrize(
+        "kind, writer, member",
+        [
+            (gate.RAW, _raw_asset, ""),
+            ("tar.gz", _tar_gz, "tool-{version}/tool"),
+            ("tar.xz", _tar_xz, "tool-{version}/tool"),
+            ("zip", _zip, "tool"),
+        ],
+        ids=["raw", "tar.gz", "tar.xz", "zip"],
+    )
+    def test_the_member_is_installed_executable(self, monkeypatch, tmp_path, kind, writer, member):
+        asset = writer(tmp_path / "asset")
+        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(asset.read_bytes()),
+            kind=kind, member=member)
         target = tmp_path / "bin"
         assert run(monkeypatch, ["jq"], target) == 0
         assert (target / "jq").read_bytes() == PAYLOAD
         assert os.access(target / "jq", os.X_OK)
 
-    def test_a_tar_gz_member_is_installed(self, monkeypatch, tmp_path):
-        asset = write_tar(
-            tmp_path / "prometheus.tar.gz",
-            {"prometheus-9.9.9.linux-amd64/promtool": PAYLOAD, "LICENSE": b"x"},
-        )
-        pin(
-            monkeypatch, "promtool", url=as_url(asset), sha256=sha(asset.read_bytes()),
-            kind="tar.gz", member="prometheus-{version}.linux-amd64/promtool",
-        )
-        target = tmp_path / "bin"
-        assert run(monkeypatch, ["promtool"], target) == 0
-        assert (target / "promtool").read_bytes() == PAYLOAD
-
-    def test_a_tar_xz_member_is_installed(self, monkeypatch, tmp_path):
-        require_lzma()
-        asset = write_tar(
-            tmp_path / "shellcheck.tar.xz",
-            {"shellcheck-v9.9.9/shellcheck": PAYLOAD},
-            mode="w:xz",
-        )
-        pin(
-            monkeypatch, "shellcheck", url=as_url(asset),
-            sha256=sha(asset.read_bytes()), kind="tar.xz",
-            member="shellcheck-v{version}/shellcheck",
-        )
-        target = tmp_path / "bin"
-        assert run(monkeypatch, ["shellcheck"], target) == 0
-        assert (target / "shellcheck").read_bytes() == PAYLOAD
-
-    def test_a_zip_member_is_installed(self, monkeypatch, tmp_path):
-        asset = write_zip(
-            tmp_path / "terraform.zip",
-            {"terraform": PAYLOAD, "LICENSE.txt": b"x"},
-        )
-        pin(
-            monkeypatch, "terraform", url=as_url(asset),
-            sha256=sha(asset.read_bytes()), kind="zip", member="terraform",
-        )
-        target = tmp_path / "bin"
-        assert run(monkeypatch, ["terraform"], target) == 0
-        assert (target / "terraform").read_bytes() == PAYLOAD
-        assert os.access(target / "terraform", os.X_OK)
-
     def test_the_success_line_names_the_version_and_the_path(
-        self, monkeypatch, tmp_path, capsys
+        self, monkeypatch, jq_raw, capsys
     ):
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
-        target = tmp_path / "bin"
+        _, target = jq_raw
         run(monkeypatch, ["jq"], target)
         assert capsys.readouterr().out.strip() == "jq 9.9.9 -> %s" % (target / "jq")
 
@@ -264,11 +243,9 @@ class TestRefusals:
 
 class TestEnvOverrides:
     def test_a_version_override_without_a_sha_exits_2(
-        self, monkeypatch, tmp_path, capsys
+        self, monkeypatch, jq_raw, capsys
     ):
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
-        target = tmp_path / "bin"
+        _, target = jq_raw
         monkeypatch.setenv("TOOL_JQ_VERSION", "1.0.0")
         monkeypatch.delenv("TOOL_JQ_SHA256", raising=False)
         assert gate.main(["--dir", str(target), "jq"]) == 2
@@ -291,12 +268,10 @@ class TestEnvOverrides:
         assert (target / "jq").read_bytes() == OTHER
 
     def test_an_override_for_another_tool_does_not_block_this_one(
-        self, monkeypatch, tmp_path
+        self, monkeypatch, tmp_path, jq_raw
     ):
         """Only the requested tools are resolved, so an unrelated half-made
         override cannot fail an unrelated fetch."""
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
         monkeypatch.setenv("TOOL_TERRAFORM_VERSION", "1.0.0")
         monkeypatch.delenv("TOOL_TERRAFORM_SHA256", raising=False)
         assert gate.main(["--dir", str(tmp_path / "bin"), "jq"]) == 0
@@ -310,34 +285,28 @@ class TestIdempotence:
     """The pin in the script decides, through the asset it names: nothing a
     mutable cache directory says about itself is trusted."""
 
-    def test_a_matching_stamp_and_binary_is_a_no_op(self, monkeypatch, tmp_path, capsys):
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
-        target = tmp_path / "bin"
+    def test_a_matching_stamp_and_binary_is_a_no_op(self, monkeypatch, jq_raw, capsys):
+        _, target = jq_raw
         assert run(monkeypatch, ["jq"], target) == 0
         capsys.readouterr()
         assert run(monkeypatch, ["jq"], target) == 0
         assert capsys.readouterr().out.strip() == "jq 9.9.9: present"
 
-    def test_a_truncated_binary_re_fetches(self, monkeypatch, tmp_path):
+    def test_a_truncated_binary_re_fetches(self, monkeypatch, jq_raw):
         """An interrupted write or a half-restored cache: the bytes are not the
         ones the asset installs."""
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
-        target = tmp_path / "bin"
+        _, target = jq_raw
         assert run(monkeypatch, ["jq"], target) == 0
         (target / "jq").write_bytes(PAYLOAD[:5])
         assert run(monkeypatch, ["jq"], target) == 0
         assert (target / "jq").read_bytes() == PAYLOAD
 
     def test_a_tampered_binary_under_its_own_stamp_re_fetches(
-        self, monkeypatch, tmp_path
+        self, monkeypatch, jq_raw
     ):
         """What a stamp in the cache directory cannot catch: binary and stamp
         rewritten together. The asset the pin names can."""
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
-        target = tmp_path / "bin"
+        _, target = jq_raw
         assert run(monkeypatch, ["jq"], target) == 0
         (target / "jq").write_bytes(OTHER)
         gate.stamp_path(target, "jq").write_text(
@@ -364,12 +333,10 @@ class TestIdempotence:
         assert run(monkeypatch, ["jq"], target) == 0
         assert (target / "jq").read_bytes() == PAYLOAD
 
-    def test_a_tampered_cached_asset_re_fetches(self, monkeypatch, tmp_path):
+    def test_a_tampered_cached_asset_re_fetches(self, monkeypatch, jq_raw):
         """Asset, binary and stamp all replaced at once: the asset is re-hashed
         against the pin, never trusted for being there."""
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
-        target = tmp_path / "bin"
+        _, target = jq_raw
         assert run(monkeypatch, ["jq"], target) == 0
         gate.asset_path(target, "jq").write_bytes(OTHER)
         (target / "jq").write_bytes(OTHER)
@@ -381,25 +348,21 @@ class TestIdempotence:
         assert gate.asset_path(target, "jq").read_bytes() == PAYLOAD
 
     def test_a_binary_whose_asset_is_gone_is_not_trusted(
-        self, monkeypatch, tmp_path, capsys
+        self, monkeypatch, jq_raw, capsys
     ):
         """A cache that kept only the binary cannot stand in for the asset: with
         the download unreachable the run fails rather than trusting it."""
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
-        target = tmp_path / "bin"
+        asset, target = jq_raw
         assert run(monkeypatch, ["jq"], target) == 0
         gate.asset_path(target, "jq").unlink()
         asset.unlink()
         assert run(monkeypatch, ["jq"], target) == 2
         assert "failed to download" in capsys.readouterr().err
 
-    def test_a_verified_cache_needs_no_download(self, monkeypatch, tmp_path, capsys):
+    def test_a_verified_cache_needs_no_download(self, monkeypatch, jq_raw, capsys):
         """The kept asset makes the second run offline, and it still prints the
         skip rather than re-installing."""
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
-        target = tmp_path / "bin"
+        asset, target = jq_raw
         assert run(monkeypatch, ["jq"], target) == 0
         asset.unlink()
         capsys.readouterr()
@@ -422,23 +385,19 @@ class TestIdempotence:
         assert kept.read_bytes() == archive.read_bytes()
 
     def test_a_directory_where_the_binary_belongs_re_fetches(
-        self, monkeypatch, tmp_path
+        self, monkeypatch, jq_raw
     ):
         """A cached path that is not a regular file reads as absent, instead of
         failing the rename at the end of the install."""
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
-        target = tmp_path / "bin"
+        _, target = jq_raw
         (target / "jq" / "nested").mkdir(parents=True)
         assert run(monkeypatch, ["jq"], target) == 0
         assert (target / "jq").read_bytes() == PAYLOAD
 
-    def test_a_symlinked_binary_re_fetches(self, monkeypatch, tmp_path):
+    def test_a_symlinked_binary_re_fetches(self, monkeypatch, tmp_path, jq_raw):
         """A symlink is not the file the pin installs, whatever it points at. The
         install replaces the link itself, leaving what it pointed at alone."""
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
-        target = tmp_path / "bin"
+        _, target = jq_raw
         assert run(monkeypatch, ["jq"], target) == 0
         elsewhere = write_raw(tmp_path / "elsewhere", OTHER)
         elsewhere.chmod(0o755)
@@ -449,12 +408,10 @@ class TestIdempotence:
         assert (target / "jq").read_bytes() == PAYLOAD
         assert elsewhere.read_bytes() == OTHER
 
-    def test_a_non_executable_binary_re_fetches(self, monkeypatch, tmp_path):
+    def test_a_non_executable_binary_re_fetches(self, monkeypatch, jq_raw):
         """Right bytes, no execute bit: the job would fail on the call, so the
         install runs again rather than reporting it present."""
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
-        target = tmp_path / "bin"
+        _, target = jq_raw
         assert run(monkeypatch, ["jq"], target) == 0
         (target / "jq").chmod(0o644)
         assert run(monkeypatch, ["jq"], target) == 0
@@ -476,45 +433,30 @@ class TestIdempotence:
         assert stamp == ["9.9.9", sha(archive.read_bytes()), sha(PAYLOAD)]
         assert run(monkeypatch, ["jq"], target) == 0
 
-    def test_a_missing_stamp_re_fetches(self, monkeypatch, tmp_path):
-        """A pre-seeded, cached or truncated binary claims nothing about itself."""
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
-        target = tmp_path / "bin"
+    @pytest.mark.parametrize(
+        "stamp",
+        [
+            # A pre-seeded, cached or truncated binary claims nothing about itself.
+            None,
+            # The bump that silently did not take effect.
+            "9.9.8 {payload} {stale}\n",
+            # Same version, re-cut asset: the sha256 half of the stamp catches it.
+            "9.9.9 {other} {stale}\n",
+        ],
+        ids=["missing", "stale-version", "other-checksum"],
+    )
+    def test_a_stamp_not_matching_the_pin_re_fetches(self, monkeypatch, jq_raw, stamp):
+        _, target = jq_raw
         target.mkdir()
         (target / "jq").write_bytes(b"stale\n")
-        assert run(monkeypatch, ["jq"], target) == 0
-        assert (target / "jq").read_bytes() == PAYLOAD
-
-    def test_a_stale_stamp_re_fetches(self, monkeypatch, tmp_path):
-        """The bump that silently did not take effect: the cached .bin survived
-        with the old version in it."""
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
-        target = tmp_path / "bin"
-        target.mkdir()
-        (target / "jq").write_bytes(b"stale\n")
-        gate.stamp_path(target, "jq").write_text(
-            "9.9.8 %s %s\n" % (sha(PAYLOAD), sha(b"stale\n"))
-        )
+        if stamp:
+            gate.stamp_path(target, "jq").write_text(stamp.format(
+                payload=sha(PAYLOAD), other=sha(OTHER), stale=sha(b"stale\n")))
         assert run(monkeypatch, ["jq"], target) == 0
         assert (target / "jq").read_bytes() == PAYLOAD
         assert gate.stamp_path(target, "jq").read_text() == "9.9.9 %s %s\n" % (
             sha(PAYLOAD), sha(PAYLOAD),
         )
-
-    def test_a_stamp_at_another_checksum_re_fetches(self, monkeypatch, tmp_path):
-        """Same version, re-cut asset: the sha256 half of the stamp catches it."""
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
-        target = tmp_path / "bin"
-        target.mkdir()
-        (target / "jq").write_bytes(b"stale\n")
-        gate.stamp_path(target, "jq").write_text(
-            "9.9.9 %s %s\n" % (sha(OTHER), sha(b"stale\n"))
-        )
-        assert run(monkeypatch, ["jq"], target) == 0
-        assert (target / "jq").read_bytes() == PAYLOAD
 
     def test_an_env_override_re_fetches_over_a_table_stamp(self, monkeypatch, tmp_path):
         """The override is part of the resolved tool, so the stamp tracks it."""
@@ -531,10 +473,8 @@ class TestIdempotence:
         assert gate.main(["--dir", str(target), "jq"]) == 0
         assert (target / "jq").read_bytes() == OTHER
 
-    def test_force_replaces_a_stamped_install(self, monkeypatch, tmp_path):
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
-        target = tmp_path / "bin"
+    def test_force_replaces_a_stamped_install(self, monkeypatch, jq_raw):
+        _, target = jq_raw
         assert run(monkeypatch, ["jq"], target) == 0
         (target / "jq").write_bytes(b"stale\n")
         assert run(monkeypatch, ["--force", "jq"], target) == 0
@@ -555,15 +495,13 @@ class TestCacheEscapes:
     cache is refused rather than followed out of it."""
 
     def test_an_assets_dir_linked_outside_is_refused(
-        self, monkeypatch, tmp_path, capsys
+        self, monkeypatch, tmp_path, jq_raw, capsys
     ):
         """The kept asset would land on whatever the link names."""
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
+        _, target = jq_raw
         outside = tmp_path / "outside"
         outside.mkdir()
         planted = write_raw(outside / "jq", KEEP)
-        target = tmp_path / "bin"
         target.mkdir()
         (target / gate.ASSETS_DIR).symlink_to(outside)
         assert run(monkeypatch, ["jq"], target) == 2
@@ -571,13 +509,11 @@ class TestCacheEscapes:
         assert planted.read_bytes() == KEEP
         assert not (target / "jq").exists()
 
-    def test_a_linked_cache_entry_is_refused(self, monkeypatch, tmp_path, capsys):
+    def test_a_linked_cache_entry_is_refused(self, monkeypatch, tmp_path, jq_raw, capsys):
         """A link where the asset belongs is not the cache's own file, so the
         asset is neither read through it nor replaced under it."""
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
+        _, target = jq_raw
         planted = write_raw(tmp_path / "planted", KEEP)
-        target = tmp_path / "bin"
         (target / gate.ASSETS_DIR).mkdir(parents=True)
         gate.asset_path(target, "jq").symlink_to(planted)
         assert run(monkeypatch, ["jq"], target) == 2
@@ -586,14 +522,12 @@ class TestCacheEscapes:
         assert not (target / "jq").exists()
 
     def test_a_stamp_link_swapped_in_after_the_check_is_replaced_not_followed(
-        self, monkeypatch, tmp_path
+        self, monkeypatch, tmp_path, jq_raw
     ):
         """The stamp goes through the same descriptor-based replace as the
         binary, so a link planted between the check and the write is replaced."""
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
+        _, target = jq_raw
         planted = write_raw(tmp_path / "planted", KEEP)
-        target = tmp_path / "bin"
         target.mkdir()
         stamp = gate.stamp_path(target, "jq")
         original = gate.replace_into
@@ -610,24 +544,20 @@ class TestCacheEscapes:
         assert planted.read_bytes() == KEEP
         assert not stamp.is_symlink() and stamp.is_file()
 
-    def test_no_directory_descriptor_rename_fails_closed(self, monkeypatch, tmp_path, capsys):
+    def test_no_directory_descriptor_rename_fails_closed(self, monkeypatch, jq_raw, capsys):
         """Without a descriptor-relative rename the containment cannot be held,
         so the write is refused rather than made through a path."""
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
-        target = tmp_path / "bin"
+        _, target = jq_raw
         target.mkdir()
         monkeypatch.setattr(gate.os, "supports_dir_fd", set())
         assert run(monkeypatch, ["jq"], target) == 2
         assert "directory descriptor" in capsys.readouterr().err
         assert not (target / "jq").exists()
 
-    def test_a_linked_stamp_is_refused(self, monkeypatch, tmp_path, capsys):
+    def test_a_linked_stamp_is_refused(self, monkeypatch, tmp_path, jq_raw, capsys):
         """The stamp is written by path, so a link there would be followed."""
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
+        _, target = jq_raw
         planted = write_raw(tmp_path / "planted", KEEP)
-        target = tmp_path / "bin"
         target.mkdir()
         gate.stamp_path(target, "jq").symlink_to(planted)
         assert run(monkeypatch, ["jq"], target) == 2
@@ -635,26 +565,11 @@ class TestCacheEscapes:
         assert planted.read_bytes() == KEEP
         assert not (target / "jq").exists()
 
-    def test_a_clean_cache_installs_keeps_and_skips(self, monkeypatch, tmp_path):
-        """The guards are invisible to a cache the script owns: the asset is a
-        real file beside the binary, and the second run reads it offline."""
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
-        target = tmp_path / "bin"
-        assert run(monkeypatch, ["jq"], target) == 0
-        kept = gate.asset_path(target, "jq")
-        assert not kept.is_symlink() and kept.read_bytes() == PAYLOAD
-        assert (target / "jq").read_bytes() == PAYLOAD
-        asset.unlink()
-        assert run(monkeypatch, ["jq"], target) == 0
-
     def test_a_symlinked_install_dir_is_still_installed_into(
-        self, monkeypatch, tmp_path
+        self, monkeypatch, tmp_path, jq_raw
     ):
         """`--dir` is the caller's own path: resolving it is what makes a link
         inside it visible, and a link to it stays usable."""
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
         real = tmp_path / "real-bin"
         real.mkdir()
         linked = tmp_path / "bin"
@@ -663,17 +578,15 @@ class TestCacheEscapes:
         assert (real / "jq").read_bytes() == PAYLOAD
 
     def test_the_descriptor_refuses_a_link_swapped_in_behind_the_check(
-        self, monkeypatch, tmp_path, capsys
+        self, monkeypatch, tmp_path, jq_raw, capsys
     ):
         """The window between the check and the rename: with the check stubbed
         out, the descriptor on the directory itself is what refuses."""
         require_dir_fd_rename()
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
+        _, target = jq_raw
         outside = tmp_path / "outside"
         outside.mkdir()
         planted = write_raw(outside / "jq", KEEP)
-        target = tmp_path / "bin"
         target.mkdir()
         (target / gate.ASSETS_DIR).symlink_to(outside)
         monkeypatch.setattr(gate, "in_cache", lambda directory, path: path)
@@ -688,10 +601,8 @@ class TestCacheEscapes:
         assert gate.default_dir({}) == Path(".bin")
 
     def test_a_run_without_dir_installs_under_ci_project_dir(
-        self, monkeypatch, tmp_path
+        self, monkeypatch, tmp_path, jq_raw
     ):
-        asset = write_raw(tmp_path / "jq-linux-amd64")
-        pin(monkeypatch, "jq", url=as_url(asset), sha256=sha(PAYLOAD), kind=gate.RAW)
         monkeypatch.setenv("CI_PROJECT_DIR", str(tmp_path / "project"))
         assert gate.main(["jq"]) == 0
         assert (tmp_path / "project" / ".bin" / "jq").read_bytes() == PAYLOAD
@@ -700,7 +611,8 @@ class TestCacheEscapes:
 class TestListing:
     def test_list_prints_every_pin_and_exits_zero(self, capsys):
         assert gate.main(["--list"]) == 0
-        out = capsys.readouterr().out
+        out, err = capsys.readouterr()
+        assert err == ""
         assert out.splitlines()[0].split() == ["TOOL", "VERSION", "SHA256"]
         for name, tool in gate.TOOLS.items():
             assert "%s " % name in out
@@ -711,10 +623,6 @@ class TestListing:
         table = gate.pin_table(env={"TOOL_JQ_VERSION": "1.0.0",
                                     "TOOL_JQ_SHA256": "f" * 64})
         assert "jq           1.0.0      ffffffffffffffff" in table
-
-    def test_list_needs_no_tool_argument(self, capsys):
-        assert gate.main(["--list"]) == 0
-        assert capsys.readouterr().err == ""
 
 
 if __name__ == "__main__":

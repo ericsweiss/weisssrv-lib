@@ -407,7 +407,6 @@ failure, not a silent skip.
 | `nas_storage_zfs_scrub_enabled` | `true` | Enable the per-pool scrub timers. |
 | `nas_storage_zfs_scrub_schedule` | `monthly` | Scrub timer instance (`zfs-scrub-<schedule>@<pool>.timer`). |
 | `nas_storage_zfs_arc_max_bytes` | `{{ zfs_arc_max_bytes \| default('') }}` | ARC cap in bytes; empty = unmanaged. |
-| `nas_storage_zfs_arc_skip_initramfs` | `false` | Passed through as `zfs_arc_cap_skip_initramfs`: render the modprobe.d file but skip `update-initramfs` (no real `/boot`). |
 | `nas_storage_exports` | *(undefined)* | NFS exports. Undefined skips all NFS tasks. |
 | `nas_storage_export_root` | `/export` | NFSv4 pseudo-root directory the role creates; the export paths in `nas_storage_exports` are site data and are not derived from it. |
 | `nas_storage_zfs_mount_roots` | `/mnt/tank`, `/mnt/ssd`, `/mnt/nvme` | Mount roots whose bind sources count as ZFS-backed (guard + boot ordering). Empty = nothing is ZFS-backed by derivation. |
@@ -466,7 +465,6 @@ failure, not a silent skip.
 | `nas_storage_nfs_disable_delegations` | `false` | Write, and apply per the live gate below, `fs.leases-enable=0` so nfsd grants no new NFSv4 delegations. Costly for lock-heavy clients; see NFS above. |
 | `nas_storage_nfs_apply_delegation_sysctl_live` | `true` | Reconcile the live `fs.leases-enable` value with `sysctl -p` on every enabled run. Test scenarios set `false`: the sysctl is not container-namespaced. |
 | `nas_storage_skip_zfs_operations` | `false` | Skip all real-ZFS work (also disables both mount guards). Test use. |
-| `nas_storage_skip_mergerfs` | `false` | Skip MergerFS mount management. |
 | `nas_storage_skip_nfs_reload` | `false` | Skip `exportfs` reload / nfsd start. |
 | `nas_storage_skip_smartd_service` | `false` | Skip enabling/starting smartd. |
 

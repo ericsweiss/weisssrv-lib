@@ -27,18 +27,6 @@ docker_engine_compose_plugin_version: "2.41.1-1~debian.13~trixie"
 Bumping a pin reconciles through the hold (`allow_change_held_packages`), and a
 host that drifted **above** the pin converges back down (`allow_downgrade`).
 
-## How callers invoke it
-
-```yaml
-- name: Install Docker Engine + compose plugin
-  ansible.builtin.include_role:
-    name: weisssrv.infra.docker_engine
-  when: not (<role>_skip_install | default(false))
-```
-
-The `daemon.json` task notifies this role's own `Restart docker` handler, so the
-caller does not need to carry one.
-
 ## Parameters
 
 | Variable | Meaning | Default |
@@ -48,31 +36,13 @@ caller does not need to carry one.
 | `docker_engine_buildx_plugin_version` | buildx plugin apt version | **required** |
 | `docker_engine_compose_plugin_version` | compose plugin apt version | **required** |
 | `docker_engine_skip_install` | Skip every step needing the real apt repo / Docker binary / running daemon (render-only); the `/etc/docker` dir + `daemon.json` still render | `false` |
-| `docker_engine_key_url` | download.docker.com signing key URL | download.docker.com/linux/debian/gpg |
-| `docker_engine_key_fingerprint` | Expected primary-key fingerprint | Docker's `9DC8…CD88` |
-| `docker_engine_repo_url` | apt repo base URL | download.docker.com/linux/debian |
-| `docker_engine_keyring_path` | Dearmored keyring destination | `/etc/apt/keyrings/docker.gpg` |
-| `docker_engine_packages` | Pinned `name=version` list to install | engine + CLI + containerd + buildx + compose, from the four version inputs |
-| `docker_engine_hold_packages` | Package names to `dpkg`-hold | same five, unversioned |
-| `docker_engine_daemon_config` | dict rendered to `/etc/docker/daemon.json` | journald log driver + live-restore |
-
-## Molecule
-
-`molecule/default` runs render-only with `docker_engine_skip_install: true`. It
-covers:
-
-- the journald `daemon.json`;
-- the required-pin assert, driven from a second play with one version pin
-  empty. `expected-junit-failures.txt` declares that failure.
-
-The apt install and the `dpkg` hold need a real repo, so they are not covered.
 
 ## Key rotation
 
 The signing key is fail-closed: a keyring whose fingerprint stops matching the
 pin fails the run rather than being replaced. Rotate by deleting
-`docker_engine_keyring_path` on the affected hosts, then bumping the key URL and
-fingerprint — see `apt_signed_repo`'s README § Key rotation.
+`/etc/apt/keyrings/docker.gpg` on the affected hosts, then bumping the key URL and
+fingerprint in `tasks/main.yml`. See `apt_signed_repo`'s README § Key rotation.
 
 ## See also
 

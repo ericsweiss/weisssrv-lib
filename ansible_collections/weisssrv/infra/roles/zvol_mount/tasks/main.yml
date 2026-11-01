@@ -202,7 +202,6 @@
   changed_when: false
   # An empty UUID from a disk that is still unformatted reports not-mounted.
   check_mode: false
-  when: zvol_mount_fix_wrong_locations | bool
 
 - name: Unmount disks mounted at wrong locations
   ansible.posix.mount:
@@ -212,7 +211,6 @@
   loop_control:
     label: "{{ item.item.0.name }}: {{ item.stdout | trim }} (should be {{ item.item.0.mount_point }})"
   when:
-    - zvol_mount_fix_wrong_locations | bool
     - item.stdout | trim != "not-mounted"
     - item.stdout | trim != item.item.0.mount_point
 
@@ -226,9 +224,7 @@
   loop: "{{ zvol_mount_disk_devices | zip(zvol_mount_disk_uuids.results) | list }}"
   loop_control:
     label: "{{ item.0.name }}"
-  when:
-    - zvol_mount_fix_wrong_locations | bool
-    - item.1.stdout | default('') | trim | length > 0
+  when: item.1.stdout | default('') | trim | length > 0
 
 - name: Mount additional disks by UUID
   ansible.posix.mount:

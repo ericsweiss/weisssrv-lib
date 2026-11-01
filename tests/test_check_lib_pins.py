@@ -56,28 +56,11 @@ def _ci(
     )
 
 
-def _literal_ci(
-    declared: str = "v0.4.0", refs: tuple[str, ...] = ("v0.4.0", "v0.4.0")
-) -> str:
-    """The layout --fix converts from: a literal tag repeated on every pin."""
-    return textwrap.dedent(
-        f"""\
-        ---
-        # A consumer pipeline with no `spec:` header.
-        variables:
-          WEISSSRV_LIB_REF: "{declared}"
-        include:
-          - project: eric/weisssrv-lib
-            ref: {refs[0]}
-            file: /ci/lint/docs-link-check.yml
-          - project: eric/weisssrv-lib
-            ref: {refs[1]}
-            file:
-              - /ci/lint/yaml-lint.yml
-              - /ci/lint/shellcheck.yml
-          - local: .gitlab/ci/molecule-jobs.gitlab-ci.yml
-        """
-    )
+# The header layout with literal pins, which --fix rewrites to the interpolation.
+_LITERAL = _ci(refs=("v0.4.0", "v0.4.0"), variable='"v0.4.0"')
+_NO_HEADER = _ci().split("---\n", 1)[1]
+# Prepended to a hand-written pipeline body that --fix is driven over.
+_HEADER = "spec:\n  inputs:\n    lib_ref:\n      default: v0.5.0\n---\n"
 
 
 def _write(tmp_path: Path, content: str) -> Path:
@@ -95,7 +78,7 @@ def test_the_declared_ref_is_the_header_default() -> None:
 
 
 def test_a_file_without_a_header_declares_nothing() -> None:
-    assert clp.declared_ref(_literal_ci()) is None
+    assert clp.declared_ref(_NO_HEADER) is None
 
 
 def test_the_header_is_not_mistaken_for_the_pipeline_body(tmp_path: Path) -> None:
@@ -158,7 +141,7 @@ def test_an_absent_variable_fails(tmp_path: Path) -> None:
 
 
 def test_a_missing_header_is_reported(tmp_path: Path) -> None:
-    problems = clp.check(_write(tmp_path, _literal_ci()))
+    problems = clp.check(_write(tmp_path, _NO_HEADER))
     assert len(problems) == 1
     assert "spec.inputs.lib_ref.default is not set" in problems[0]
 
@@ -198,8 +181,8 @@ def test_reference_tag_does_not_break_parsing(tmp_path: Path) -> None:
     assert clp.check(_write(tmp_path, content)) == []
 
 
-def test_project_and_ref_var_are_overridable(tmp_path: Path) -> None:
-    """A consumer pinning a fork, or naming its variable differently."""
+def test_project_is_overridable(tmp_path: Path) -> None:
+    """A consumer pinning a fork."""
     content = textwrap.dedent(
         f"""\
         spec:
@@ -208,7 +191,7 @@ def test_project_and_ref_var_are_overridable(tmp_path: Path) -> None:
               default: v1.2.3
         ---
         variables:
-          MY_LIB_REF: {MARKER}
+          WEISSSRV_LIB_REF: {MARKER}
         include:
           - project: acme/my-lib
             ref: {MARKER}
@@ -219,42 +202,14 @@ def test_project_and_ref_var_are_overridable(tmp_path: Path) -> None:
         """
     )
     p = _write(tmp_path, content)
-    # Scoped to the fork + its own variable: clean, and the OTHER project's
-    # literal ref is none of this invocation's business.
-    assert clp.check(p, project="acme/my-lib", ref_var="MY_LIB_REF") == []
+    # Scoped to the fork: clean, and the OTHER project's literal ref is none of
+    # this invocation's business.
+    assert clp.check(p, project="acme/my-lib") == []
     assert clp.check(p) != []
 
 
 # ---------------------------------------------------------------------------
-# --fix converts the literal layout, and stays put once converted.
-
-
-def test_fix_converts_a_literal_file_and_is_idempotent(tmp_path: Path) -> None:
-    p = _write(tmp_path, _literal_ci())
-    assert clp.fix(p) > 0
-    assert clp.check(p) == []
-    assert clp.declared_ref(p.read_text()) == "v0.4.0"
-    assert clp.fix(p) == 0  # nothing left to change
-
-
-def test_fix_keeps_the_leading_document_marker_as_the_separator(
-    tmp_path: Path,
-) -> None:
-    """A second `---` would open an empty document between header and body."""
-    p = _write(tmp_path, _literal_ci())
-    clp.fix(p)
-    text = p.read_text()
-    assert text.startswith("spec:\n")
-    assert text.count("---\n") == 1
-    assert "# A consumer pipeline with no `spec:` header." in text
-
-
-def test_fix_adds_the_separator_when_the_file_has_none(tmp_path: Path) -> None:
-    content = _literal_ci().replace("---\n", "", 1)
-    p = _write(tmp_path, content)
-    clp.fix(p)
-    assert clp.check(p) == []
-    assert p.read_text().startswith("spec:\n")
+# --fix rewrites every pin from the header default.
 
 
 def test_fix_moves_only_the_default_once_the_header_exists(tmp_path: Path) -> None:
@@ -279,7 +234,7 @@ def test_fix_leaves_non_lib_includes_alone(tmp_path: Path) -> None:
             file: /ci/thing.yml
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     clp.fix(p)
     refs = {
         i["project"]: i["ref"]
@@ -309,7 +264,7 @@ def test_fix_does_not_rewrite_a_project_whose_path_merely_ends_with_ours(
             file: /ci/lint/shellcheck.yml
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     clp.fix(p)
     refs = {
         i["project"]: i["ref"]
@@ -336,7 +291,7 @@ def test_fix_matches_a_quoted_or_commented_project_value(tmp_path: Path) -> None
             file: /ci/lint/shellcheck.yml
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     clp.fix(p)
     assert clp.check(p) == []
 
@@ -349,7 +304,7 @@ def test_fix_refuses_a_branch_source_without_touching_the_file(
     The rewrite cannot repair a branch, so propagating it to every entry and
     only then reporting would leave the CI file worse than it found it.
     """
-    p = _write(tmp_path, _literal_ci("main"))
+    p = _write(tmp_path, _ci("main"))
     before = p.read_text()
     with pytest.raises(clp.OperatorError) as excinfo:
         clp.fix(p)
@@ -357,46 +312,18 @@ def test_fix_refuses_a_branch_source_without_touching_the_file(
     assert p.read_text() == before
 
 
-def test_fix_refuses_a_file_declaring_no_ref_at_all(tmp_path: Path) -> None:
-    """With no header and no variable there is nothing to convert from."""
-    content = textwrap.dedent(
-        """\
-        include:
-          - project: eric/weisssrv-lib
-            ref: v0.3.2
-            file: /ci/lint/yaml-lint.yml
-        """
-    )
-    p = _write(tmp_path, content)
+@pytest.mark.parametrize(
+    "header",
+    ["", "spec:\n  inputs:\n    env:\n      default: prod\n---\n"],
+    ids=["no-header", "header-without-lib-ref"],
+)
+def test_fix_refuses_a_file_declaring_no_lib_ref_default(tmp_path: Path, header) -> None:
+    """Writing a header or inventing an input in one is not a line rewrite."""
+    p = _write(tmp_path, header + _NO_HEADER)
     before = p.read_text()
     with pytest.raises(clp.OperatorError) as excinfo:
         clp.fix(p)
-    assert "nothing to sync" in str(excinfo.value)
-    assert p.read_text() == before
-
-
-def test_fix_refuses_a_header_that_declares_no_lib_ref_input(tmp_path: Path) -> None:
-    """Inventing an input inside someone else's header is not a line rewrite."""
-    content = textwrap.dedent(
-        f"""\
-        spec:
-          inputs:
-            env:
-              default: prod
-        ---
-        variables:
-          WEISSSRV_LIB_REF: "v0.5.0"
-        include:
-          - project: eric/weisssrv-lib
-            ref: {MARKER}
-            file: /ci/lint/yaml-lint.yml
-        """
-    )
-    p = _write(tmp_path, content)
-    before = p.read_text()
-    with pytest.raises(clp.OperatorError) as excinfo:
-        clp.fix(p)
-    assert "declares no `lib_ref:` input" in str(excinfo.value)
+    assert "declares no spec.inputs.lib_ref.default" in str(excinfo.value)
     assert p.read_text() == before
 
 
@@ -420,7 +347,7 @@ def test_fix_ignores_project_ref_pairs_outside_the_include_block(
             - echo "$ref"
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     clp.fix(p)
     doc = clp.load_ci(p)
     assert doc["include"][0]["ref"] == MARKER
@@ -442,7 +369,7 @@ def test_fix_rewrites_an_empty_ref_without_corrupting_the_line(
             file: /ci/lint/yaml-lint.yml
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     clp.fix(p)
     assert f"    ref: {MARKER}\n" in p.read_text()
     assert clp.check(p) == []
@@ -459,7 +386,7 @@ def test_fix_preserves_a_trailing_comment_on_the_ref_line(tmp_path: Path) -> Non
             file: /ci/lint/yaml-lint.yml
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     clp.fix(p)
     assert f"ref: {MARKER}  # one of the lint templates" in p.read_text()
 
@@ -478,7 +405,7 @@ def test_fix_leaves_a_nested_inputs_ref_alone(tmp_path: Path) -> None:
               ref: some-user-value
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     clp.fix(p)
     doc = clp.load_ci(p)
     assert doc["include"][0]["ref"] == MARKER
@@ -504,7 +431,7 @@ def test_fix_refuses_a_block_scalar_ref_and_leaves_the_file_alone(
             file: /ci/lint/yaml-lint.yml
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     before = p.read_text()
     with pytest.raises(clp.OperatorError) as excinfo:
         clp.fix(p)
@@ -522,7 +449,7 @@ def test_fix_refuses_a_flow_style_entry_it_cannot_rewrite(tmp_path: Path) -> Non
           - {project: eric/weisssrv-lib, ref: v0.3.2, file: /ci/lint/yaml-lint.yml}
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     before = p.read_text()
     with pytest.raises(clp.OperatorError) as excinfo:
         clp.fix(p)
@@ -610,7 +537,7 @@ def test_fix_refuses_an_entry_with_no_ref_to_rewrite(tmp_path: Path) -> None:
             file: /ci/lint/yaml-lint.yml
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     before = p.read_text()
     with pytest.raises(clp.OperatorError) as excinfo:
         clp.fix(p)
@@ -638,7 +565,7 @@ def test_fix_ignores_a_ref_reached_through_an_alias_outside_include(
           - *shared
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     before = p.read_text()
     with pytest.raises(clp.OperatorError) as excinfo:
         clp.fix(p)
@@ -671,7 +598,7 @@ def test_fix_refuses_an_alias_anchored_inside_the_include_block(
               reused: *shared
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     before = p.read_text()
     with pytest.raises(clp.OperatorError) as excinfo:
         clp.fix(p)
@@ -698,7 +625,7 @@ def test_fix_refuses_an_anchor_defined_inside_the_include_block(
           copy: *entry
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     before = p.read_text()
     with pytest.raises(clp.OperatorError) as excinfo:
         clp.fix(p)
@@ -725,7 +652,7 @@ def test_fix_still_works_with_an_alias_outside_the_include_block(
             file: /ci/lint/yaml-lint.yml
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     assert clp.fix(p) > 0
     assert clp.check(p) == []
 
@@ -746,7 +673,7 @@ def test_fix_refuses_duplicate_top_level_include_keys(tmp_path: Path) -> None:
             file: /ci/live.yml
         """
     )
-    p = _write(tmp_path, content)
+    p = _write(tmp_path, _HEADER + content)
     before = p.read_text()
     with pytest.raises(clp.OperatorError) as excinfo:
         clp.fix(p)
@@ -838,7 +765,7 @@ def test_print_writes_the_declared_ref_and_nothing_else(tmp_path, capsys) -> Non
 
 def test_print_refuses_a_file_declaring_no_tag(tmp_path, capsys) -> None:
     """Exporting a garbage image tag is worse than failing the command."""
-    ci = _write(tmp_path, _literal_ci())
+    ci = _write(tmp_path, _NO_HEADER)
     assert clp.main(["--ci-file", str(ci), "--print"]) == 2
     out = capsys.readouterr()
     assert out.out == ""
@@ -895,14 +822,13 @@ class TestPrintPaths:
         assert proc.stdout == ""
         assert "absent.yml" in proc.stderr
 
-    @pytest.mark.parametrize("flag", ["--ci-file", "--input"])
-    def test_print_refuses_a_flag_with_no_value(self, tmp_path, flag) -> None:
+    def test_print_refuses_a_ci_file_with_no_value(self, tmp_path) -> None:
         """A valueless flag fails even where the default pipeline file resolves."""
         script = _copied_script(tmp_path, "v0.7.1")
-        proc = _run("--print", flag, script=script, cwd=tmp_path)
+        proc = _run("--print", "--ci-file", script=script, cwd=tmp_path)
         assert proc.returncode == 2
         assert proc.stdout == ""
-        assert f"{flag} needs a value" in proc.stderr
+        assert "--ci-file needs a value" in proc.stderr
         assert "Traceback" not in proc.stderr
 
     @pytest.mark.parametrize("extra", [["--fix"], ["--bump", "v0.6.0"], ["--bump=v0.6.0"]])
@@ -915,7 +841,7 @@ class TestPrintPaths:
         assert ci.read_text() == before
 
 
-def test_print_reads_only_the_requested_input_stanza(tmp_path: Path) -> None:
+def test_print_reads_only_the_lib_ref_stanza(tmp_path: Path) -> None:
     """A header with several inputs must not bind lib_ref to a sibling's default."""
     ci = tmp_path / ".gitlab-ci.yml"
     ci.write_text(textwrap.dedent("""\
@@ -931,12 +857,9 @@ def test_print_reads_only_the_requested_input_stanza(tmp_path: Path) -> None:
         ---
         variables: {}
         """))
-    for want, expect in (("lib_ref", "v0.4.0"), ("other_ref", "v9.9.9")):
-        proc = _print(ci, "--input", want)
-        assert proc.returncode == 0, proc.stderr
-        assert proc.stdout.strip() == expect
-    proc = _print(ci, "--input", "k8s_version")
-    assert proc.returncode == 2
+    proc = _print(ci)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "v0.4.0"
 
 
 def test_print_reads_only_the_leading_document(tmp_path: Path) -> None:
@@ -1067,15 +990,6 @@ def test_bump_rejects_a_branch(tmp_path, capsys) -> None:
     assert clp.main(["--ci-file", str(ci), "--bump", "main"]) == 2
     assert "release tag" in capsys.readouterr().err
     assert ci.read_text() == before
-
-
-def test_fix_from_the_cli_converts_and_reports(tmp_path, capsys) -> None:
-    ci = _write(tmp_path, _literal_ci("v0.4.0", ("v0.4.0", "v0.3.2")))
-    _write_requirements(tmp_path, _requirements("v0.3.2"))
-    assert clp.main(["--ci-file", str(ci), "--fix"]) == 0
-    assert clp.check(ci) == []
-    assert clp.check_requirements(ci, "v0.4.0") == []
-    assert "rewrote" in capsys.readouterr().out
 
 
 def test_a_clean_tree_reports_what_it_inspected(tmp_path, capsys) -> None:
@@ -1508,7 +1422,7 @@ class TestRefusalsExitTwo:
         assert "multiple top-level `include:`" in capsys.readouterr().err
 
     def test_a_branch_declared_ref_exits_two(self, tmp_path, capsys) -> None:
-        ci = _write(tmp_path, _literal_ci("main"))
+        ci = _write(tmp_path, _ci("main"))
         assert clp.main(["--ci-file", str(ci), "--fix"]) == 2
         assert "must be a release tag" in capsys.readouterr().err
 
@@ -1748,9 +1662,9 @@ class TestFixIsPlannedBeforeItWrites:
     _CLI = r"'weisssrv-lib\.git@(v\d+\.\d+\.\d+)(?=#subdirectory=cli)'"
 
     def _tree(self, tmp_path: Path, second: str) -> tuple[Path, Path]:
-        """A literal-layout repo drifted on every surface, so a working --fix
-        would rewrite all of them."""
-        ci = _write(tmp_path, _literal_ci())
+        """A repo drifted on every surface, so a working --fix would rewrite
+        all of them."""
+        ci = _write(tmp_path, _LITERAL)
         _write_requirements(tmp_path, _requirements("v0.3.2"))
         _write_sites(
             tmp_path,
@@ -1813,7 +1727,7 @@ class TestFixIsPlannedBeforeItWrites:
         self, tmp_path, capsys
     ) -> None:
         """Two surfaces rewriting one file would discard one of the two plans."""
-        ci = _write(tmp_path, _literal_ci())
+        ci = _write(tmp_path, _LITERAL)
         _write_sites(
             tmp_path,
             "sites:\n  - path: .gitlab-ci.yml\n"

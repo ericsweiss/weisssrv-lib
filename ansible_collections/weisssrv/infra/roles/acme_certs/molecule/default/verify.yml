@@ -121,19 +121,6 @@
         fail_msg: "Cert reload script missing expected content"
         success_msg: "Cert reload script contains all expected variables and commands"
 
-    # A sudo target goes through the forced-command receiver
-    # (push_target_receiver), not the legacy scp path, so its reload command
-    # lives in the receiver on that host.
-    - name: Verify cert reload script uses the forced-command receiver dispatch
-      ansible.builtin.assert:
-        that:
-          - "'push_target_receiver' in (cert_reload_content.content | b64decode)"
-          - "'CERT-RECEIVE-BUNDLE-BOUNDARY' in (cert_reload_content.content | b64decode)"
-          - "'\"10.0.0.160\"' in (cert_reload_content.content | b64decode)"
-          - "'push_target_legacy \\\\' not in (cert_reload_content.content | b64decode)"
-        fail_msg: "Cert reload script is not using the forced-command receiver path for sudo targets"
-        success_msg: "Cert reload script dispatches sudo targets through the receiver"
-
     # node_exporter drops every textfile metric for a scrape that reads a
     # half-written file, so both .prom writers build a temp file and rename it.
     - name: Verify both textfile writers are atomic and log a failed write
@@ -160,34 +147,6 @@
           A failed run drops cert_renewal_last_success_timestamp_seconds, so a
           staleness rule sees absent() instead of a growing age.
         success_msg: "a failed run preserves the last-success timestamp"
-
-    - name: Verify a dead target is reported separately from the renewal bit
-      vars:
-        script: "{{ cert_reload_content.content | b64decode }}"
-      ansible.builtin.assert:
-        that:
-          - "'cert_distribution_last_run_failed_targets ${_TARGET_FAIL_COUNT}' in script"
-          - '"trap_write_failure_metrics \"$rc\"" in script'
-          - '"[ \"$rc\" -eq 2 ] && [ \"$_LOCAL_OK\" -eq 1 ]" in script'
-        fail_msg: >-
-          The run-level gauges do not separate a dead distribution target from a
-          failed local renewal, so one unreachable target pages the renewal
-          alert.
-        success_msg: "a dead target reports on the distribution gauges only"
-
-    - name: Verify an empty target list retires the per-target gauges
-      vars:
-        script: "{{ cert_reload_content.content | b64decode }}"
-      ansible.builtin.assert:
-        that:
-          - '"_TARGETS_WALKED=1" in script'
-          - '"[[ \"$_TARGETS_WALKED\" -eq 0 && ! -s \"$_TARGET_METRICS_TMP\" ]]" in script'
-          - '"[[ \"$CHECK_ONLY\" -eq 1 && ! -s \"$_TARGET_METRICS_TMP\" ]]" not in script'
-        fail_msg: >-
-          The target metrics flush keeps the previous gauges whenever it recorded
-          nothing, so a target removed from the inventory keeps alerting from a
-          stale series.
-        success_msg: "an empty target list publishes an empty target set"
 
     # A check-mode probe that cannot reach a target must say so: the legacy
     # path's hash reads swallow an ssh failure, and the gauge it writes holds
@@ -224,29 +183,6 @@
       loop: "{{ cert_check_units.results }}"
       loop_control:
         label: "{{ item.item }}"
-
-    - name: Read the cert distribution check units
-      ansible.builtin.slurp:
-        src: "/etc/systemd/system/{{ item }}"
-      register: cert_check_unit_content
-      loop:
-        - homelab-cert-check.service
-        - homelab-cert-check.timer
-
-    # Without --check the daily timer would push to every target instead of
-    # probing them.
-    - name: Verify the check service probes and the timer fires daily
-      vars:
-        units: "{{ cert_check_unit_content.results | map(attribute='content') | map('b64decode') | join('\n') }}"
-      ansible.builtin.assert:
-        that:
-          - "'ExecStart=/usr/local/sbin/homelab-cert-reload.sh --check' in units"
-          - "'OnCalendar=*-*-* 05:40:00' in units"
-          - "'WantedBy=timers.target' in units"
-        fail_msg: >-
-          The distribution check units do not run the script in check mode on a
-          daily timer.
-        success_msg: "the distribution check runs daily in check mode"
 
     - name: Check cert distribution check timer enabled  # noqa command-instead-of-module
       ansible.builtin.command: systemctl is-enabled homelab-cert-check.timer

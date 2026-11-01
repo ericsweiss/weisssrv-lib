@@ -10,8 +10,9 @@ config, one prepare playbook, and the task files scenarios import directly.
 | `tasks/prepare-base.yml` | wait for systemd + ensure the ansible temp dir |
 | `tasks/prepare-apt-disable.yml` | stop/disable the apt background timers (dpkg-lock races) |
 | `tasks/container-warmup.yml` | wait out apt locks, fix interrupted dpkg, refresh the cache |
+| `tasks/attach-loop.yml` | attach a loop device per image in `molecule_loop_images`, registered as `molecule_loop_devices` |
 
-`prepare-common.yml` and the three `tasks/` files are on
+`prepare-common.yml` and every `tasks/` file but `attach-loop.yml` are on
 [scripts/vendorable-paths.yml](../../../../scripts/vendorable-paths.yml): a
 consumer that keeps its own copies holds them byte-identical to these. Their
 headers state purpose only, so the wiring that differs per repo stays on this

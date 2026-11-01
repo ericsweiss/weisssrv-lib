@@ -326,6 +326,7 @@
 # add-repo pipeline; gnupg comes from the prerequisites task above. Rotate the
 # key by deleting the keyring first.
 - name: Add GitLab EE signed APT repository
+  when: not (gitlab_skip_install | bool)
   ansible.builtin.include_role:
     name: weisssrv.infra.apt_signed_repo
   vars:
@@ -337,7 +338,6 @@
       https://packages.gitlab.com/gitlab/gitlab-ee/debian/
       {{ ansible_facts['distribution_release'] }} main
     apt_signed_repo_filename: gitlab-ee
-    apt_signed_repo_when: "{{ not (gitlab_skip_install | bool) }}"
 
 # Env staged in a root-only file, not a task-level `environment:`, to keep the
 # root password out of /proc/<pid>/cmdline. Downgrades stay disabled (Omnibus

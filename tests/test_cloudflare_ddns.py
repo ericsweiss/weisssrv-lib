@@ -62,36 +62,47 @@ def test_the_program_carries_no_site_data(ddns):
     )
 
 
-def test_parse_records_reads_the_cronjob_spec(ddns):
-    """The CronJob supplies the record list, so the parser is the contract."""
-    zone = ddns.ZONE
+Z = TEST_ZONE
+
+
+# (spec, parsed records, needles of the one error; none means no error).
+@pytest.mark.parametrize("spec, records, error", [
     # A bare label is proxied by default; ':false' turns it off.
-    assert ddns.parse_records("www") == (((f"www.{zone}", True),), ())
-    assert ddns.parse_records("www:false") == (((f"www.{zone}", False),), ())
+    ("www", ((f"www.{Z}", True),), ()),
+    ("www:false", ((f"www.{Z}", False),), ()),
     # Whitespace and empty entries between commas are ignored.
-    assert ddns.parse_records(" www , ,") == (((f"www.{zone}", True),), ())
-
-
-@pytest.mark.parametrize("spec, reason", [
-    ("a:bogus", "proxied flag other than true or false"),
-    ("b:false:oops", "more than one ':'"),
+    (" www , ,", ((f"www.{Z}", True),), ()),
+    ("@", ((Z, True),), ()),
+    ("@:true", ((Z, True),), ()),
+    ("a.b:TRUE", ((f"a.b.{Z}", True),), ()),
+    (" @ , www ", ((Z, True), (f"www.{Z}", True)), ()),
+    ("git.lab", ((f"git.lab.{Z}", True),), ()),
+    # Dropping a malformed entry silently would stop updating a WAN name.
+    ("a:bogus", (), ("a:bogus", "proxied flag other than true or false")),
+    ("b:false:oops", (), ("b:false:oops", "more than one ':'")),
+    # A label like '' or '.' would build `.zone` and POST it as a new record.
+    (":false", (), ("empty or dot-edged label",)),
+    (" :false", (), ("empty or dot-edged label",)),
+    (".:false", (), ("empty or dot-edged label",)),
+    ("www.:false", (), ("empty or dot-edged label",)),
+    ("a..b:false", (), ("empty or dot-edged label",)),
+    (" :false, www", ((f"www.{Z}", True),), ("empty or dot-edged label",)),
+    # A full name under the zone would build `git.example.test.example.test`.
+    (Z, (), ("full name where a label belongs",)),
+    (f"git.{Z}", (), ("full name where a label belongs",)),
+    (f"git.{Z}:false", (), ("full name where a label belongs",)),
 ])
-def test_parse_records_reports_a_malformed_entry(ddns, spec, reason):
-    """Dropping one silently would stop updating a WAN name."""
-    parsed, errors = ddns.parse_records(spec)
-    assert parsed == ()
-    assert len(errors) == 1 and spec in errors[0] and reason in errors[0], errors
-
-
-def test_parse_records_rejects_an_empty_or_dot_edged_label(ddns):
-    """A label like '' or '.' would build `.zone` and POST it as a new record."""
-    for spec in (":false", " :false", ".:false", "www.:false", "a..b:false"):
-        parsed, errors = ddns.parse_records(spec)
-        assert parsed == () and len(errors) == 1, (parsed, errors)
-        assert "empty or dot-edged label" in errors[0]
-    # A mixed spec still reports the bad entry beside the good one.
-    parsed, errors = ddns.parse_records(" :false, www")
-    assert parsed == ((f"www.{ddns.ZONE}", True),) and len(errors) == 1
+def test_parse_records(ddns, spec, records, error):
+    """The CronJob supplies the record list, so the parser is the contract."""
+    parsed, errors = ddns.parse_records(spec, zone=Z)
+    assert parsed == records
+    if not error:
+        assert errors == ()
+        assert ddns.records_are_valid(parsed) is True
+        return
+    assert len(errors) == 1, errors
+    for needle in error:
+        assert needle in errors[0]
 
 
 def test_get_public_ip_skips_non_global_and_non_ipv4(ddns, monkeypatch):
@@ -197,59 +208,46 @@ def test_build_record_body_on_create_uses_the_literal_proxied(ddns):
     assert not any(key in body for key in ddns.PRESERVED_FIELDS)
 
 
+def _api(monkeypatch, ddns, get, write=None):
+    """A fake api_request: GET answers `get` (rows, or a whole reply), a write
+    answers `write`. Returns the (method, url, data) call log."""
+    log = []
+    reply = {"success": True, "result": get} if isinstance(get, list) else get
+
+    def fake(token, url, method="GET", data=None, timeout=30):
+        log.append((method, url, data))
+        return reply if method == "GET" else (write or {"success": True})
+
+    monkeypatch.setattr(ddns, "api_request", fake)
+    return log
+
+
 def test_update_record_is_a_noop_when_the_ip_is_unchanged(ddns, monkeypatch):
-    seen = []
-
-    def fake_api(token, url, method="GET", data=None, timeout=30):
-        seen.append((method, url))
-        return {"success": True, "result": [{"id": "r1", "content": "198.51.100.7"}]}
-
-    monkeypatch.setattr(ddns, "api_request", fake_api)
+    log = _api(monkeypatch, ddns, [{"id": "r1", "content": "198.51.100.7"}])
     assert ddns.update_record("tok", "z1", "git.example.test", "198.51.100.7", False) is True
-    assert [m for m, _ in seen] == ["GET"]
+    assert [m for m, _, _ in log] == ["GET"]
 
 
 def test_update_record_posts_when_the_record_is_absent(ddns, monkeypatch):
-    seen = []
-
-    def fake_api(token, url, method="GET", data=None, timeout=30):
-        seen.append((method, data))
-        if method == "GET":
-            return {"success": True, "result": []}
-        return {"success": True}
-
-    monkeypatch.setattr(ddns, "api_request", fake_api)
+    log = _api(monkeypatch, ddns, [])
     assert ddns.update_record("tok", "z1", "vpn.example.test", "198.51.100.7", False) is True
-    assert seen[-1][0] == "POST"
+    assert log[-1][0] == "POST"
 
 
 def test_update_record_puts_the_preserved_decorations_end_to_end(ddns, monkeypatch):
     """build_record_body is only half the guarantee — this is the body that
     actually reaches the wire on the PUT path."""
-    seen = []
-
-    def fake_api(token, url, method="GET", data=None, timeout=30):
-        seen.append((method, url, data))
-        if method == "GET":
-            return {
-                "success": True,
-                "result": [
-                    {
-                        "id": "r1",
-                        "content": "198.51.100.1",
-                        "ttl": 60,
-                        "proxied": True,
-                        "comment": "Terraform-owned",
-                        "tags": ["managed"],
-                        "settings": {"ipv4_only": True},
-                    }
-                ],
-            }
-        return {"success": True}
-
-    monkeypatch.setattr(ddns, "api_request", fake_api)
+    log = _api(monkeypatch, ddns, [{
+        "id": "r1",
+        "content": "198.51.100.1",
+        "ttl": 60,
+        "proxied": True,
+        "comment": "Terraform-owned",
+        "tags": ["managed"],
+        "settings": {"ipv4_only": True},
+    }])
     assert ddns.update_record("tok", "z1", "git.example.test", "198.51.100.7", False) is True
-    method, url, data = seen[-1]
+    method, url, data = log[-1]
     assert method == "PUT"
     assert url.endswith("/dns_records/r1")
     assert data["content"] == "198.51.100.7"
@@ -262,22 +260,13 @@ def test_update_record_refuses_an_ambiguous_multi_record_name(ddns, monkeypatch,
     """Two A records for one name is ambiguous ownership: updating just the
     first leaves the stale sibling answering intermittently — a round-robin half
     outage — and picking one at all guesses which record Terraform owns."""
-    seen = []
-
-    def fake_api(token, url, method="GET", data=None, timeout=30):
-        seen.append((method, url))
-        return {
-            "success": True,
-            "result": [
-                {"id": "r1", "content": "198.51.100.1"},
-                {"id": "r2", "content": "198.51.100.2"},
-            ],
-        }
-
-    monkeypatch.setattr(ddns, "api_request", fake_api)
+    log = _api(monkeypatch, ddns, [
+        {"id": "r1", "content": "198.51.100.1"},
+        {"id": "r2", "content": "198.51.100.2"},
+    ])
     assert ddns.update_record("tok", "z1", "vpn.example.test", "203.0.113.9", False) is False
     # Only the query happened: nothing was written, not even the first record.
-    assert [m for m, _ in seen] == ["GET"]
+    assert [m for m, _, _ in log] == ["GET"]
     captured = capsys.readouterr()
     assert "ambiguous ownership" in captured.err
     # stdout is the per-record report a healthy run also writes; a refusal buried
@@ -364,26 +353,17 @@ def test_main_counts_failed_records_and_never_prints_complete(ddns, monkeypatch,
     assert "DDNS update FAILED for 2 record(s)" in out.err
 
 
-def test_get_zone_id_rejects_a_zone_the_api_did_not_actually_match(ddns, monkeypatch):
-    """The unfiltered-list shape: rows come back, none of them ours."""
-    monkeypatch.setattr(
-        ddns,
-        "api_request",
-        lambda *a, **k: {"success": True, "result": [{"id": "other", "name": "not-ours.com"}]},
-    )
-    assert ddns.get_zone_id("tok", "example.test") is None
+OTHER_ZONE = {"id": "other", "name": "not-ours.com"}
 
 
-def test_get_zone_id_returns_the_matching_zone(ddns, monkeypatch):
-    monkeypatch.setattr(
-        ddns,
-        "api_request",
-        lambda *a, **k: {
-            "success": True,
-            "result": [{"id": "other", "name": "not-ours.com"}, {"id": "z1", "name": "example.test"}],
-        },
-    )
-    assert ddns.get_zone_id("tok", "example.test") == "z1"
+# The unfiltered-list shape returns rows, none of them necessarily ours.
+@pytest.mark.parametrize("rows, zone_id", [
+    ([OTHER_ZONE], None),
+    ([OTHER_ZONE, {"id": "z1", "name": "example.test"}], "z1"),
+], ids=["rejects-a-zone-the-api-did-not-match", "returns-the-matching-zone"])
+def test_get_zone_id_matches_the_zone_by_name(ddns, monkeypatch, rows, zone_id):
+    _api(monkeypatch, ddns, rows)
+    assert ddns.get_zone_id("tok", "example.test") == zone_id
 
 
 CF_ERRORS = {
@@ -413,22 +393,16 @@ def test_get_zone_id_names_a_matched_zone_without_an_id(ddns, monkeypatch, capsy
 @pytest.mark.parametrize("reply", [None, CF_ERRORS], ids=["no-reply", "success-false"])
 def test_update_record_refuses_to_write_when_the_query_failed(ddns, monkeypatch, capsys, reply):
     """A failed query reads like "no such record", and a POST would duplicate it."""
-    seen = []
-    monkeypatch.setattr(ddns, "api_request", lambda t, u, method="GET", **k: seen.append(method) or reply)
+    log = _api(monkeypatch, ddns, reply)
     assert ddns.update_record("tok", "z1", f"git.{TEST_ZONE}", "198.51.100.7", False) is False
-    assert seen == ["GET"]
+    assert [m for m, _, _ in log] == ["GET"]
     err = capsys.readouterr().err
     assert "failed to query the existing record" in err
     assert ("9109: Invalid access token" in err) is (reply is not None)
 
 
 def test_update_record_logs_cloudflares_errors_on_a_failed_write(ddns, monkeypatch, capsys):
-    def fake_api(token, url, method="GET", data=None, timeout=30):
-        if method == "GET":
-            return {"success": True, "result": [{"id": "r1", "content": "198.51.100.1"}]}
-        return CF_ERRORS
-
-    monkeypatch.setattr(ddns, "api_request", fake_api)
+    _api(monkeypatch, ddns, [{"id": "r1", "content": "198.51.100.1"}], write=CF_ERRORS)
     assert ddns.update_record("tok", "z1", f"git.{TEST_ZONE}", "198.51.100.7", False) is False
     captured = capsys.readouterr()
     assert "update FAILED" in captured.err and "9109: Invalid access token" in captured.err
@@ -456,22 +430,6 @@ def test_the_query_name_is_percent_encoded(ddns, monkeypatch, call, row, query):
     )
     assert call(ddns)
     assert seen[0].endswith(query)
-
-
-def test_parse_records_rejects_a_full_name_where_a_label_belongs(ddns):
-    """`git.example.test` under zone example.test would build `git.example.test.example.test`."""
-    for spec in (TEST_ZONE, f"git.{TEST_ZONE}", f"git.{TEST_ZONE}:false"):
-        parsed, errors = ddns.parse_records(spec, zone=TEST_ZONE)
-        assert parsed == (), parsed
-        assert len(errors) == 1 and "full name where a label belongs" in errors[0], errors
-    assert ddns.parse_records("git.lab", zone=TEST_ZONE) == (((f"git.lab.{TEST_ZONE}", True),), ())
-
-
-@pytest.mark.parametrize("spec", ["@", "@:true", "www", "www:false", "a.b:TRUE", " @ , www "])
-def test_records_accept_the_documented_spellings(ddns, spec):
-    parsed, errors = ddns.parse_records(spec, zone=TEST_ZONE)
-    assert errors == ()
-    assert ddns.records_are_valid(parsed) is True
 
 
 def test_every_failure_line_goes_to_stderr(ddns, monkeypatch, capsys):

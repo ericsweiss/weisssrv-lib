@@ -19,3 +19,20 @@ _proxmox_firewall_builtin_groups:
 # pve-firewall's own security-group grammar: a leading letter, then letters,
 # digits, `-` or `_`, 2 to 18 characters total.
 _proxmox_firewall_group_name_re: '^[A-Za-z][A-Za-z0-9_-]{1,17}\Z'
+
+# pve-firewall can exit 0 on a parse error, so the compile check tests stderr
+# too, case-insensitively; a `(line N)` complaint fails whatever its wording.
+# Healthy hosts emit notices, so never match all. Both compile tasks use this.
+_proxmox_firewall_compile_error_patterns:
+  - error
+  - unable to
+  - skip line
+  - "no such "
+  - "invalid "
+  - "unknown "
+_proxmox_firewall_compile_failed: >-
+  {{ (proxmox_firewall_compile.rc | default(0)) != 0
+     or (_proxmox_firewall_compile_error_patterns
+         | select('in', proxmox_firewall_compile.stderr | default('') | lower)
+         | list | length) > 0
+     or (proxmox_firewall_compile.stderr | default('')) is search('\(line [0-9]+\)') }}

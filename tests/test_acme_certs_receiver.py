@@ -92,15 +92,15 @@ def test_every_shape_assigns_reload_exactly_once(rendered) -> None:
     assert len(re.findall(r"(?m)^RELOAD=", rendered)) == 1
 
 
-def test_the_command_shape_bakes_the_command_verbatim() -> None:
-    rendered = _render_shape("command")
-    assert f"RELOAD={shlex.quote(SHAPES['command']['restart_command'])}" in rendered
+EXPECTED_RELOAD = {
+    "command": f"RELOAD={shlex.quote(SHAPES['command']['restart_command'])}",
+    "service": f"RELOAD={shlex.quote('systemctl restart AdGuardHome')}",
+    "empty": "RELOAD=''",
+}
 
 
-def test_the_service_shape_bakes_a_systemctl_restart() -> None:
-    rendered = _render_shape("service")
-    expected = shlex.quote(f"systemctl restart {SHAPES['service']['restart_service']}")
-    assert f"RELOAD={expected}" in rendered
+def test_every_shape_bakes_its_reload(shape, rendered) -> None:
+    assert EXPECTED_RELOAD[shape] in rendered
 
 
 def test_a_restart_command_wins_over_a_restart_service() -> None:
@@ -115,10 +115,6 @@ def test_a_restart_command_wins_over_a_restart_service() -> None:
     )
     assert f"RELOAD={shlex.quote(SHAPES['command']['restart_command'])}" in rendered
     assert "systemctl restart AdGuardHome" not in rendered
-
-
-def test_the_empty_shape_bakes_an_empty_reload() -> None:
-    assert "RELOAD=''" in _render_shape("empty")
 
 
 def test_every_shape_carries_the_empty_reload_belt(rendered) -> None:
@@ -144,16 +140,11 @@ def test_the_applied_marker_is_written_only_after_a_clean_reload(rendered) -> No
     reload_run = rendered.index('if bash -c "$RELOAD"; then', belt)
     marker = rendered.index(".applied-fullchain.sha256\"", reload_run)
     assert belt < reload_run < marker
-    # And the else arm fails rather than falling through to the marker.
-    assert re.search(r'else\n\s*fail "reload failed"', rendered[reload_run:])
-
-
-def test_the_marker_write_is_inside_the_success_arm(rendered) -> None:
-    """The write must sit between `if bash -c "$RELOAD"; then` and `else` — a
-    write after `fi` would run on both arms and defeat the ordering above."""
-    body = rendered[rendered.index('if bash -c "$RELOAD"; then') :]
-    success_arm = body[: body.index("\nelse")]
+    # The write sits inside the success arm, and the else arm fails rather than
+    # falling through to it.
+    success_arm = rendered[reload_run:rendered.index("\nelse", reload_run)]
     assert '> "${CERT_DIR}/.applied-fullchain.sha256"' in success_arm
+    assert re.search(r'else\n\s*fail "reload failed"', rendered[reload_run:])
 
 
 def test_the_receiver_pins_the_expected_domain(rendered) -> None:

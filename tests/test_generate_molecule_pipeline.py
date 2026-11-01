@@ -37,14 +37,6 @@ FIXTURE_CI = textwrap.dedent(
             SCENARIO: default
           - ROLE: leaf
             SCENARIO: default
-
-    integration-tests:
-      stage: test
-      parallel:
-        matrix:
-          - TEST:
-              - stack-a
-              - stack-b
     """
 )
 
@@ -87,30 +79,6 @@ def _build_repo(root: Path) -> Path:
                 f"        name: {'leaf' if role == 'alpha' else role}\n",
             )
 
-    _write(root / "ansible/integration-tests/_shared/prepare.yml", "---\n- hosts: all\n")
-    # stack-a exercises gamma and loads the shared inventory vars file.
-    _write(
-        root / "ansible/integration-tests/stack-a/molecule/default/molecule.yml",
-        "driver:\n  name: docker\n",
-    )
-    _write(
-        root / "ansible/integration-tests/stack-a/molecule/default/converge.yml",
-        "---\n- hosts: all\n  vars_files:\n"
-        "    - ../../../../inventories/prod/group_vars/all.yml\n"
-        "  tasks:\n    - ansible.builtin.include_role:\n        name: gamma\n",
-    )
-    _write(
-        root / "ansible/integration-tests/stack-b/molecule/default/molecule.yml",
-        "driver:\n  name: docker\n",
-    )
-    _write(
-        root / "ansible/integration-tests/stack-b/molecule/default/converge.yml",
-        "---\n- hosts: all\n  tasks:\n    - ansible.builtin.include_role:\n        name: leaf\n",
-    )
-
-    _write(root / "ansible/inventories/prod/group_vars/all.yml", "---\nfoo: bar\n")
-    _write(root / "ansible/inventories/prod/hosts.yml", "---\nall: {}\n")
-    _write(root / "ansible/playbooks/site.yml", "---\n- hosts: all\n")
     return root
 
 
@@ -129,10 +97,9 @@ def sel(repo):
 
 class TestMatrixParsing:
     def test_role_scenarios_present(self, repo):
-        matrix, integration = gmp.parse_molecule_matrix(repo / ".gitlab-ci.yml")
+        matrix = gmp.parse_molecule_matrix(repo / ".gitlab-ci.yml")
         assert matrix["beta"] == ["default", "extra"]
         assert set(matrix) == {"alpha", "beta", "gamma", "leaf"}
-        assert integration == ["stack-a", "stack-b"]
 
     def test_unparseable_matrix_raises(self, tmp_path):
         (tmp_path / ".gitlab-ci.yml").write_text("molecule-tests:\n  stage: test\n")
@@ -159,15 +126,6 @@ class TestDerivedGraph:
             assert consumer not in providers
             assert providers <= {"alpha", "beta"}
 
-    def test_integration_role_map(self, repo):
-        known = {"alpha", "beta", "gamma", "leaf"}
-        mapping = gmp.build_integration_map(repo / "ansible/integration-tests", known_roles=known)
-        assert mapping == {"stack-a": {"gamma"}, "stack-b": {"leaf"}}
-
-    def test_inventory_consumers(self, repo):
-        inv = gmp.build_inventory_consumers(repo)
-        assert inv["ansible/inventories/prod/group_vars/all.yml"] == {("integration", "stack-a")}
-
 
 class TestDirectRoleSelection:
     def test_leaf_selects_only_itself(self, sel):
@@ -178,9 +136,9 @@ class TestDirectRoleSelection:
         s = sel(["ansible/roles/beta/tasks/main.yml"])
         assert {sc for r, sc in s.scenarios if r == "beta"} == {"default", "extra"}
 
-    def test_roles_readme_is_not_a_role_change(self, sel):
-        s = sel(["ansible/roles/README.md"])
-        assert s.empty
+    @pytest.mark.parametrize("path", ["ansible/roles/README.md", "docs/01-overview.md"])
+    def test_non_role_paths_select_nothing(self, sel, path):
+        assert sel([path]).empty
 
 
 class TestTransitiveRoleDeps:
@@ -193,37 +151,14 @@ class TestTransitiveRoleDeps:
         assert {r for r, _ in s.scenarios} == {"gamma"}
 
 
-class TestIntegrationSelection:
-    def test_role_in_stack_selects_stack(self, sel):
-        assert sel(["ansible/roles/leaf/tasks/main.yml"]).integration == {"stack-b"}
-
-    def test_transitive_provider_selects_stack(self, sel):
-        # stack-a exercises gamma, which transitively consumes alpha.
-        assert "stack-a" in sel(["ansible/roles/alpha/tasks/main.yml"]).integration
-
-    def test_integration_dir_change_selects_only_that_stack(self, sel):
-        s = sel(["ansible/integration-tests/stack-b/molecule/default/converge.yml"])
-        assert s.integration == {"stack-b"}
-        assert s.scenarios == set()
-
-    def test_shared_prepare_selects_all_stacks(self, sel):
-        s = sel(["ansible/integration-tests/_shared/prepare.yml"])
-        assert s.integration == {"stack-a", "stack-b"}
-
-    def test_unknown_stack_dir_raises(self, sel):
-        with pytest.raises(gmp.CoverageError):
-            sel(["ansible/integration-tests/ghost/molecule/default/converge.yml"])
-
-
 class TestGlobalTriggers:
     def test_each_global_trigger(self, sel, repo):
-        matrix, integration = gmp.parse_molecule_matrix(repo / ".gitlab-ci.yml")
+        matrix = gmp.parse_molecule_matrix(repo / ".gitlab-ci.yml")
         all_scenarios = {(r, s) for r, scen in matrix.items() for s in scen}
         for path in sorted(gmp.GLOBAL_TRIGGER_FILES):
             s = sel([path])
             assert s.full, f"{path} must trigger the full matrix"
             assert s.scenarios == all_scenarios
-            assert s.integration == set(integration)
         for prefix in gmp.GLOBAL_TRIGGER_PREFIXES:
             assert sel([prefix + "x.yml"]).full, f"{prefix} must trigger the full matrix"
 
@@ -238,45 +173,6 @@ class TestGlobalTriggers:
         s = sel([".gitlab-ci.yml", "ansible/roles/ghost/tasks/main.yml"])
         assert s.full
 
-    def test_env_extra_triggers_are_honored(self, monkeypatch):
-        # $MOLECULE_GLOBAL_TRIGGERS is read once into _EXTRA_TRIGGERS and folded
-        # into the derived sets, which are cached per roles_prefix.
-        monkeypatch.setattr(gmp, "_EXTRA_TRIGGERS", ["Taskfile.yml", "hack/"])
-        gmp._global_triggers.cache_clear()
-        try:
-            assert gmp.is_global_trigger("Taskfile.yml")
-            assert gmp.is_global_trigger("hack/thing.sh")
-        finally:
-            gmp._global_triggers.cache_clear()
-
-    def test_replace_mode_swaps_the_conventional_set_only(self, monkeypatch):
-        """`replace` drops the layout conventions (image contexts, helper
-        scripts) but must keep the derived + CI-file triggers, or a
-        collection-wide change emits a green no-op child."""
-        monkeypatch.setattr(gmp, "_TRIGGER_MODE", "replace")
-        monkeypatch.setattr(gmp, "_EXTRA_TRIGGERS", ["containers/", "hack/molecule-retry.sh"])
-        gmp._global_triggers.cache_clear()
-        try:
-            assert not gmp.is_global_trigger("docker/molecule-ci/Dockerfile")
-            assert not gmp.is_global_trigger("scripts/molecule-retry.sh")
-            assert gmp.is_global_trigger("containers/molecule-ci/Dockerfile")
-            assert gmp.is_global_trigger("hack/molecule-retry.sh")
-            assert gmp.is_global_trigger(gmp.CI_FILE_NAME)
-            assert gmp.is_global_trigger(gmp.MOLECULE_JOBS_INCLUDE)
-            assert gmp.is_global_trigger("ansible/requirements.yml")
-            assert gmp.is_global_trigger("ansible/molecule-shared/tasks/x.yml")
-        finally:
-            gmp._global_triggers.cache_clear()
-
-    def test_unknown_trigger_mode_fails_loud(self, monkeypatch):
-        monkeypatch.setattr(gmp, "_TRIGGER_MODE", "union")
-        gmp._global_triggers.cache_clear()
-        try:
-            with pytest.raises(ValueError, match="MOLECULE_GLOBAL_TRIGGERS_MODE"):
-                gmp.is_global_trigger("anything")
-        finally:
-            gmp._global_triggers.cache_clear()
-
     def test_global_triggers_follow_the_roles_prefix(self):
         """A caller configuring the layout by PARAMETER (not $ROLES_DIR) must
         still get that layout's global triggers."""
@@ -284,20 +180,6 @@ class TestGlobalTriggers:
         assert gmp.is_global_trigger("ansible_collections/ns/name/galaxy.yml", prefix)
         assert gmp.is_global_trigger("ansible_collections/ns/name/plugins/x.py", prefix)
         assert not gmp.is_global_trigger("ansible_collections/ns/name/galaxy.yml")
-
-
-class TestInventoryAndPlaybookPaths:
-    def test_group_vars_all_selects_integration_only(self, sel):
-        s = sel(["ansible/inventories/prod/group_vars/all.yml"])
-        assert s.integration == {"stack-a"}
-        assert s.scenarios == set()
-
-    def test_playbook_only_is_empty(self, sel):
-        assert sel(["ansible/playbooks/site.yml"]).empty
-
-    def test_hosts_and_non_ansible_paths_are_empty(self, sel):
-        assert sel(["ansible/inventories/prod/hosts.yml"]).empty
-        assert sel(["docs/01-overview.md", "kubernetes/apps/foo/release.yaml"]).empty
 
 
 class TestFailureModes:
@@ -313,10 +195,7 @@ class TestFailureModes:
             gmp.compute_affected(
                 ["ansible/roles/a/tasks/main.yml"],
                 matrix={"a": ["default"], "b": []},
-                integration_tests=[],
                 role_deps={"b": {"a"}},
-                integration_map={},
-                inventory_consumers={},
             )
 
 
@@ -327,15 +206,8 @@ class TestComputeAffectedSynthetic:
     # b consumes a; c consumes b  => a change fans out a->b->c.
     DEPS = {"b": {"a"}, "c": {"b"}}
 
-    def _compute(self, changed, integration_map=None):
-        return gmp.compute_affected(
-            changed,
-            matrix=self.MATRIX,
-            integration_tests=list(integration_map or []),
-            role_deps=self.DEPS,
-            integration_map=integration_map or {},
-            inventory_consumers={},
-        )
+    def _compute(self, changed):
+        return gmp.compute_affected(changed, matrix=self.MATRIX, role_deps=self.DEPS)
 
     def test_provider_change_fans_out_to_consumers(self):
         sel = self._compute(["ansible/roles/a/tasks/main.yml"])
@@ -345,39 +217,25 @@ class TestComputeAffectedSynthetic:
         sel = self._compute(["ansible/roles/c/tasks/main.yml"])
         assert {r for r, _ in sel.scenarios} == {"c"}
 
-    def test_integration_provider_coupling(self):
-        sel = self._compute(["ansible/roles/a/tasks/main.yml"], integration_map={"stack": {"c"}})
-        assert "stack" in sel.integration
-
 
 class TestRendering:
     def test_noop_child_when_empty(self):
-        doc = yaml.safe_load(gmp.render_child_pipeline(gmp.Selection(set(), set())))
+        doc = yaml.safe_load(gmp.render_child_pipeline(gmp.Selection(set())))
         assert gmp.NOOP_JOB_NAME in doc
         assert doc[gmp.NOOP_JOB_NAME]["rules"] == [{"when": "always"}]
 
     def test_child_reuses_template_and_matrix(self):
-        sel = gmp.Selection({("alpha", "default"), ("beta", "extra")}, {"stack-a"})
+        sel = gmp.Selection({("alpha", "default"), ("beta", "extra")})
         doc = yaml.safe_load(gmp.render_child_pipeline(sel))
         assert doc["include"] == [{"local": gmp.MOLECULE_JOBS_INCLUDE}]
         assert doc["molecule-tests"]["extends"] == gmp.MOLECULE_JOB_EXTENDS
-        assert doc["integration-tests"]["extends"] == gmp.INTEGRATION_JOB_EXTENDS
         assert sorted(
             (e["ROLE"], e["SCENARIO"]) for e in doc["molecule-tests"]["parallel"]["matrix"]
         ) == [("alpha", "default"), ("beta", "extra")]
-        assert doc["integration-tests"]["parallel"]["matrix"] == [{"TEST": ["stack-a"]}]
 
     def test_render_is_deterministic(self):
-        sel = gmp.Selection({("alpha", "default"), ("beta", "extra")}, {"stack-a"})
+        sel = gmp.Selection({("alpha", "default"), ("beta", "extra")})
         assert gmp.render_child_pipeline(sel) == gmp.render_child_pipeline(sel)
-
-    def test_molecule_only_selection_omits_integration_job(self):
-        doc = yaml.safe_load(gmp.render_child_pipeline(gmp.Selection({("alpha", "default")}, set())))
-        assert "integration-tests" not in doc
-
-    def test_integration_only_selection_omits_molecule_job(self):
-        doc = yaml.safe_load(gmp.render_child_pipeline(gmp.Selection(set(), {"stack-a"})))
-        assert "molecule-tests" not in doc
 
 
 COLLECTION = "ansible_collections/weisssrv/infra"
@@ -400,7 +258,7 @@ COLLECTION_CI = textwrap.dedent(
 
 
 def _build_collection_repo(root: Path) -> Path:
-    """Collection layout with NO integration suite (the lib shape)."""
+    """Collection layout (the lib shape)."""
     _write(root / ".gitlab-ci.yml", COLLECTION_CI)
     _write(root / COLLECTION / "requirements.yml", "---\ncollections: []\n")
     _write(root / COLLECTION / "roles/alpha/tasks/main.yml", "---\n- name: noop\n  ansible.builtin.debug: {}\n")
@@ -434,13 +292,6 @@ FQCN_CI = textwrap.dedent(
             SCENARIO: default
           - ROLE: foreign
             SCENARIO: default
-
-    integration-tests:
-      stage: test
-      parallel:
-        matrix:
-          - TEST:
-              - stack-fqcn
     """
 )
 
@@ -469,35 +320,22 @@ def _build_fqcn_collection_repo(root: Path) -> Path:
     )
     for role in ("alpha", "beta", "gamma", "delta", "foreign"):
         _write(roles / role / "molecule/default/molecule.yml", "driver:\n  name: docker\n")
-    _write(
-        root / COLLECTION / "integration-tests/stack-fqcn/molecule/default/converge.yml",
-        "---\n- hosts: all\n  tasks:\n    - ansible.builtin.include_role:\n"
-        f"        name: {FQCN_NS}gamma\n",
-    )
     return root
 
 
 class TestCollectionLayout:
-    """ROLES_DIR/INTEGRATION_DIR/CI_FILE retargeting (weisssrv.infra collection)."""
+    """ROLES_DIR retargeting (weisssrv.infra collection)."""
 
     @pytest.fixture(scope="class")
     def repo(self, tmp_path_factory) -> Path:
         return _build_collection_repo(tmp_path_factory.mktemp("collection-repo"))
 
     def _sel(self, repo, changed):
-        return gmp.select(
-            changed,
-            repo=repo,
-            roles_prefix=f"{COLLECTION}/roles",
-            integration_prefix=f"{COLLECTION}/integration-tests",
-        )
+        return gmp.select(changed, repo=repo, roles_prefix=f"{COLLECTION}/roles")
 
     def test_provider_fans_out_under_collection_prefix(self, repo):
         s = self._sel(repo, [f"{COLLECTION}/roles/alpha/tasks/main.yml"])
         assert {r for r, _ in s.scenarios} == {"alpha", "beta"}
-
-    def test_absent_integration_job_yields_no_integration(self, repo):
-        assert self._sel(repo, [f"{COLLECTION}/roles/beta/tasks/main.yml"]).integration == set()
 
     def test_default_prefix_paths_no_longer_match(self, repo):
         assert self._sel(repo, ["ansible/roles/alpha/tasks/main.yml"]).empty
@@ -516,12 +354,6 @@ class TestCollectionLayout:
         with pytest.raises(RuntimeError, match="not found"):
             gmp.select([], repo=repo, roles_prefix="ansible/roles")
 
-    def test_present_but_empty_integration_matrix_still_raises(self, tmp_path):
-        ci = tmp_path / ".gitlab-ci.yml"
-        ci.write_text(COLLECTION_CI + "\nintegration-tests:\n  stage: test\n")
-        with pytest.raises(RuntimeError):
-            gmp.parse_molecule_matrix(ci)
-
 
 class TestCollectionFqcnReferences:
     """A collection's roles reference each other by FQCN while the on-disk dirs
@@ -536,12 +368,7 @@ class TestCollectionFqcnReferences:
         return gmp.build_role_graph(repo / COLLECTION / "roles")
 
     def _sel(self, repo, changed):
-        return gmp.select(
-            changed,
-            repo=repo,
-            roles_prefix=f"{COLLECTION}/roles",
-            integration_prefix=f"{COLLECTION}/integration-tests",
-        )
+        return gmp.select(changed, repo=repo, roles_prefix=f"{COLLECTION}/roles")
 
     def test_prefix_derived_from_the_roles_dir_layout(self, repo):
         assert gmp.collection_role_prefix(repo / COLLECTION / "roles") == FQCN_NS
@@ -579,18 +406,6 @@ class TestCollectionFqcnReferences:
         s = self._sel(repo, [f"{COLLECTION}/roles/alpha/tasks/main.yml"])
         assert {r for r, _ in s.scenarios} == {"alpha", "beta", "gamma", "delta"}
 
-    def test_fqcn_integration_map(self, repo):
-        mapping = gmp.build_integration_map(
-            repo / COLLECTION / "integration-tests",
-            known_roles={"alpha", "beta", "gamma", "delta", "foreign"},
-            collection_prefix=FQCN_NS,
-        )
-        assert mapping == {"stack-fqcn": {"gamma"}}
-
-    def test_fqcn_integration_stack_selected_via_provider(self, repo):
-        s = self._sel(repo, [f"{COLLECTION}/roles/alpha/tasks/main.yml"])
-        assert s.integration == {"stack-fqcn"}
-
 
 class TestEnvironmentOverrides:
     """The env contract ci/internal/molecule-matrix.gitlab-ci.yml relies on.
@@ -616,10 +431,7 @@ class TestEnvironmentOverrides:
     def repo(self, tmp_path_factory) -> Path:
         return _build_collection_repo(tmp_path_factory.mktemp("collection-env-repo"))
 
-    ENV = {
-        "ROLES_DIR": f"{COLLECTION}/roles",
-        "INTEGRATION_DIR": f"{COLLECTION}/integration-tests",
-    }
+    ENV = {"ROLES_DIR": f"{COLLECTION}/roles"}
 
     def test_roles_dir_env_narrows_to_the_changed_role(self, repo, tmp_path):
         doc = self._run(repo, tmp_path, f"{COLLECTION}/roles/beta/tasks/main.yml", self.ENV)
@@ -680,42 +492,6 @@ class TestCli:
         changed = tmp_path / "changed.txt"
         changed.write_text("ansible/roles/ghost/tasks/main.yml\n")
         assert gmp.main(["--changed-files-from", str(changed), "--repo", str(repo)]) == 2
-
-    def test_print_graph(self, repo, capsys):
-        assert gmp.main(["--print-graph", "--repo", str(repo)]) == 0
-        out = capsys.readouterr().out
-        assert "molecule matrix" in out and "stack-a" in out
-
-    def test_diff_base_reads_git(self, tmp_path):
-        require_tool("git", "molecule pipeline generator",
-                     "git ships in the full python image.")
-        r = _build_repo(tmp_path / "gitrepo")
-        env = {
-            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
-            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
-            # A global commit.gpgsign, init.templateDir hook or pre-commit hook
-            # would otherwise error this fixture.
-            "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
-        }
-
-        def git(*args):
-            subprocess.run(["git", "-C", str(r), *args], check=True,
-                           capture_output=True, env={**os.environ, **env})
-
-        git("init", "-q", "-b", "main")
-        git("add", "-A")
-        git("-c", "commit.gpgsign=false", "commit", "--no-verify", "-q", "-m", "base")
-        base = subprocess.run(["git", "-C", str(r), "rev-parse", "HEAD"],
-                              check=True, capture_output=True, text=True).stdout.strip()
-        _write(r / "ansible/roles/leaf/tasks/main.yml", "---\n- name: changed\n  ansible.builtin.debug: {}\n")
-        git("-c", "commit.gpgsign=false", "commit", "--no-verify", "-q", "-am", "edit leaf")
-
-        out = tmp_path / "child.yml"
-        assert gmp.main([base, "-o", str(out), "--repo", str(r)]) == 0
-        doc = yaml.safe_load(out.read_text())
-        assert doc["molecule-tests"]["parallel"]["matrix"] == [
-            {"ROLE": "leaf", "SCENARIO": "default"}
-        ]
 
 
 class TestGalaxyVersionOnlyDiff:

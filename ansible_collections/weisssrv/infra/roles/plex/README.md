@@ -138,13 +138,3 @@ proxmox_lxc_bind_mounts:
 # /dev/dri is what the role passes through; there is no device list variable.
 proxmox_lxc_gpu_passthrough: true
 ```
-
-## Testing
-
-Run the scenario as described in the collection README § Testing.
-
-The scenario installs the real package but skips the driver packages and the
-service lifecycle. It runs the non-free components rewrite against a seeded
-scratch sources file, and exercises the cert hook end to end (build, verify, and
-revert on a served-certificate mismatch) against a stub `systemctl` and a stub
-TLS server.

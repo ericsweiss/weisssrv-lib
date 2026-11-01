@@ -5,6 +5,7 @@ rule, the `--check` drift cases and the exit-2 paths for an unreadable source.
 """
 from __future__ import annotations
 
+import shutil
 import textwrap
 from pathlib import Path
 
@@ -207,19 +208,6 @@ def test_the_header_names_the_sync_command_in_one_sentence(repo: Path) -> None:
         '# Host journald ships as {job="journal"}.\n'
         "groups:\n"
     )
-    assert run(repo, "--sync-command", "make sync-staleness") == 0
-    assert "`make sync-staleness`" in (repo / gen.OUTPUT).read_text()
-
-
-def test_the_role_and_paths_are_arguments(repo: Path) -> None:
-    write(repo, "play.yml", SITE.replace("alloy_host", "journal_shipper"))
-    write(repo, "inv/hosts.yml", HOSTS)
-    argv = ["--site-yml", "play.yml", "--hosts-yml", "inv/hosts.yml", "--role", "journal_shipper",
-            "--output", "rules/staleness.yaml"]
-    assert run(repo, *argv) == 0
-    body = (repo / "rules/staleness.yaml").read_text()
-    assert "from the journal_shipper play in\n# play.yml" in body
-    assert run(repo, *argv, "--check") == 0
 
 
 def test_count_is_hosts_plus_the_cluster_wide_rule(repo: Path, capsys) -> None:
@@ -227,15 +215,24 @@ def test_count_is_hosts_plus_the_cluster_wide_rule(repo: Path, capsys) -> None:
     assert capsys.readouterr().out.strip() == "4"
 
 
+def _output_is_a_directory(repo: Path) -> None:
+    (repo / gen.OUTPUT).unlink()
+    (repo / gen.OUTPUT).mkdir()
+
+
+def _output_parent_is_a_file(repo: Path) -> None:
+    parent = (repo / gen.OUTPUT).parent
+    shutil.rmtree(parent)
+    parent.write_text("a file\n")
+
+
 @pytest.mark.parametrize(
     ("setup", "argv", "message"),
     [
-        (lambda r: (r / "rules-dir").mkdir(), ["--output", "rules-dir", "--check"],
-         "rules-dir unreadable"),
+        (_output_is_a_directory, ["--check"], f"{gen.OUTPUT} unreadable"),
         (lambda r: (r / gen.OUTPUT).write_bytes(b"groups:\n  - name: \xff\xfe\n"), ["--check"],
          "unreadable"),
-        (lambda r: (r / "blocker").write_text("a file\n"), ["--output", "blocker/rules.yaml"],
-         "cannot write blocker/rules.yaml"),
+        (_output_parent_is_a_file, [], f"cannot write {gen.OUTPUT}"),
     ],
     ids=["output-is-a-directory", "non-utf8-output", "unwritable-output"],
 )

@@ -3,7 +3,6 @@
 fallback chain. `ssh`, `timeout` and `gtimeout` are PATH stubs here.
 """
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -32,28 +31,6 @@ exit "${SSH_RC:-0}"
 """ % BASH
 
 
-# Replays a scripted kubectl: KUBECTL_OUT on stdout or stderr, KUBECTL_RC as
-# the exit status, KUBECTL_WARN as a stderr line alongside a successful read.
-RECORDING_KUBECTL = """\
-#!%s
-printf 'kubectl %%s\\n' "$*" >> "$TRACE"
-[ -z "${KUBECTL_WARN:-}" ] || printf '%%s\\n' "$KUBECTL_WARN" >&2
-if [ "${KUBECTL_RC:-0}" -eq 0 ]; then
-    printf '%%s' "${KUBECTL_OUT:-}"
-else
-    printf '%%s' "${KUBECTL_OUT:-}" >&2
-fi
-exit "${KUBECTL_RC:-0}"
-""" % BASH
-
-
-# Real binaries a test may link into the stubs-only PATH: kubectl_read keeps
-# kubectl's stderr in a temp file apart from the JSON.
-SYSTEM_TOOLS = ("mktemp", "cat", "rm")
-# Real binaries a test may also link: ssh_contains tests its capture with grep.
-LINKABLE_TOOLS = SYSTEM_TOOLS + ("grep",)
-
-
 @pytest.fixture()
 def shell(tmp_path):
     """Run a snippet with shell-lib.sh sourced; `tools` picks which stubs exist."""
@@ -68,12 +45,8 @@ def shell(tmp_path):
         path.chmod(0o755)
 
     def _run(snippet, tools=("timeout", "ssh"), **env):
-        bodies = {"ssh": RECORDING_SSH, "kubectl": RECORDING_KUBECTL}
         for name in tools:
-            if name in LINKABLE_TOOLS:
-                (bin_dir / name).symlink_to(shutil.which(name))
-            else:
-                _stub(name, bodies.get(name, RECORDING_TIMEOUT))
+            _stub(name, RECORDING_SSH if name == "ssh" else RECORDING_TIMEOUT)
         # PATH is ONLY the stub dir: `command -v timeout` must not find the
         # host's real coreutils and make the fallback untestable.
         proc = subprocess.run(
@@ -118,33 +91,12 @@ def test_timeout_cmd_falls_back_to_gtimeout(shell):
 def test_timeout_cmd_runs_unbounded_when_neither_exists(shell):
     """The documented last resort: still run the command rather than fail, so a
     box without coreutils is not silently unable to probe anything — but say so
-    on stderr, since the wall-clock bound is gone."""
-    proc, trace = shell('timeout_cmd 9 /bin/echo hi', tools=())
+    on stderr once per shell, since the wall-clock bound is gone."""
+    proc, trace = shell('timeout_cmd 9 /bin/echo hi\ntimeout_cmd 9 /bin/echo hi', tools=())
     assert proc.returncode == 0
-    assert proc.stdout.strip() == "hi"
+    assert proc.stdout.split() == ["hi", "hi"]
     assert trace == []
-    assert "UNBOUNDED" in proc.stderr
-
-
-def test_unbounded_warning_is_emitted_once_per_shell(shell):
-    proc, _ = shell(
-        'timeout_cmd 9 /bin/echo a\ntimeout_cmd 9 /bin/echo b', tools=()
-    )
-    assert proc.returncode == 0
     assert proc.stderr.count("UNBOUNDED") == 1
-
-
-def test_ssh_contains_warns_once_when_probes_run_unbounded(shell):
-    """ssh_contains captures ssh_probe with stderr dropped, so the warning must
-    come from outside that capture and stick in the caller's shell."""
-    proc, trace = shell(
-        'ssh_contains u@h true ""; echo "RC:$?"\nssh_contains u@h true ""',
-        tools=("ssh", "grep"),
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "RC:0"
-    assert proc.stderr.count("UNBOUNDED") == 1
-    assert len(trace) == 2
 
 
 def test_timeout_cmd_propagates_the_commands_exit_code(shell):
@@ -153,6 +105,8 @@ def test_timeout_cmd_propagates_the_commands_exit_code(shell):
 
 
 def test_ssh_probe_passes_the_hardening_options_target_and_command(shell):
+    """`timeout 6` is the wall-clock backstop for a host that connects then
+    stalls, which ConnectTimeout alone leaves hanging."""
     proc, trace = shell('ssh_probe host-a "true"')
     assert proc.returncode == 0
     assert trace == [
@@ -162,195 +116,9 @@ def test_ssh_probe_passes_the_hardening_options_target_and_command(shell):
     ]
 
 
-def test_ssh_probe_is_bounded_by_timeout_cmd(shell):
-    """The wall-clock backstop is what saves a host that connects then stalls;
-    without it ConnectTimeout alone leaves the wrapper hanging indefinitely."""
-    _, trace = shell('ssh_probe host-a "true"')
-    assert trace[0] == "timeout 6"
-
-
 def test_ssh_probe_reports_an_unreachable_target(shell):
     proc, _ = shell('ssh_probe host-a "true"', SSH_RC=255)
     assert proc.returncode == 255
-
-
-def _kubectl_read(shell, out, rc, tools=("kubectl",) + SYSTEM_TOOLS, **env):
-    return shell(
-        'set -e\nif json="$(kubectl_read secret vpn-credentials -n downloads)"; then\n'
-        '  echo "OK:$json"\nelse\n  echo "RC:$?"\nfi',
-        tools=tools,
-        KUBECTL_OUT=out,
-        KUBECTL_RC=rc,
-        **env,
-    )
-
-
-def test_kubectl_read_prints_the_object_when_it_exists(shell):
-    proc, _ = _kubectl_read(shell, '{"kind":"Secret"}', 0)
-    assert proc.returncode == 0
-    assert proc.stdout.strip() == 'OK:{"kind":"Secret"}'
-
-
-def test_kubectl_read_reports_notfound_distinctly(shell):
-    proc, _ = _kubectl_read(
-        shell, 'Error from server (NotFound): secrets "vpn-credentials" not found', 1
-    )
-    assert proc.returncode == 0
-    assert proc.stdout.strip() == "RC:3"
-
-
-def test_an_unreadable_cluster_is_a_failed_read_not_an_absent_object(shell):
-    """The whole point: `2>/dev/null || true` would hand the caller the same
-    empty string as a genuinely absent object, and the caller prints the wrong
-    remedy."""
-    proc, _ = _kubectl_read(
-        shell, "The connection to the server 10.0.0.1:6443 was refused", 1
-    )
-    assert proc.returncode == 0
-    assert proc.stdout.strip() == "RC:1"
-    assert "was refused" in proc.stderr
-
-
-def test_a_forbidden_read_is_a_failed_read(shell):
-    proc, _ = _kubectl_read(
-        shell, 'Error from server (Forbidden): secrets is forbidden', 1
-    )
-    assert proc.stdout.strip() == "RC:1"
-
-
-def test_a_missing_kubectl_is_a_failed_read_not_an_absent_object(shell):
-    """The shell's `kubectl: command not found` must not read as NotFound."""
-    proc, _ = _kubectl_read(shell, "", 0, tools=SYSTEM_TOOLS)
-    assert proc.stdout.strip() == "RC:1"
-    assert "not found" in proc.stderr
-
-
-def test_a_missing_context_is_a_failed_read_not_an_absent_object(shell):
-    proc, _ = _kubectl_read(shell, 'error: context "lab" not found', 1)
-    assert proc.stdout.strip() == "RC:1"
-    assert 'context "lab" not found' in proc.stderr
-
-
-def test_a_warning_on_stderr_stays_out_of_the_json(shell):
-    """A deprecation warning goes to stderr; stdout carries only the object."""
-    proc, _ = _kubectl_read(
-        shell, '{"kind":"Secret"}', 0, KUBECTL_WARN="Warning: v1 Secret is deprecated"
-    )
-    assert proc.stdout.strip() == 'OK:{"kind":"Secret"}'
-    assert "deprecated" in proc.stderr
-
-
-def test_kubectl_read_names_a_failed_temp_file(shell):
-    """A failed mktemp is rc 1 like a failed read, so it must say why."""
-    proc, trace = _kubectl_read(
-        shell, '{"kind":"Secret"}', 0, tools=("kubectl", "cat", "rm")
-    )
-    assert proc.stdout.strip() == "RC:1"
-    assert "kubectl_read: cannot create a temporary file" in proc.stderr
-    assert trace == []
-
-
-# Prints ~200 KiB of short lines: past any pipe buffer, so a piped `grep -q`
-# that stops at an early match leaves its writer to take SIGPIPE.
-LARGE_TAIL = "i=0; while [ $i -lt 2000 ]; do printf '%0100d\\n' 0; i=$((i+1)); done"
-
-
-def _bash(snippet: str) -> subprocess.CompletedProcess:
-    """Run a snippet with shell-lib.sh sourced and the real PATH (grep is needed)."""
-    return subprocess.run(
-        [BASH, "-c", 'set -euo pipefail\n. "$1"\n%s' % snippet, "bash", str(LIB)],
-        capture_output=True,
-        text=True,
-    )
-
-
-class TestCapturedMatch:
-    """The pipefail hazard the helper exists to remove."""
-
-    def test_a_piped_grep_q_turns_a_match_into_a_failure(self):
-        """The mistake: grep exits on the first hit, the producer takes SIGPIPE,
-        and pipefail returns its status — so a PASS reads as a FAIL."""
-        proc = _bash('if yes abc | grep -q abc; then echo MATCH; else echo "RC:$?"; fi')
-        assert proc.stdout.strip().startswith("RC:"), proc.stdout
-
-    def test_the_helper_reports_the_same_match_as_a_match(self):
-        proc = _bash('out=$(printf "abc\\n"); if captured_match "$out" abc; '
-                     'then echo MATCH; else echo "RC:$?"; fi')
-        assert proc.stdout.strip() == "MATCH", proc.stdout + proc.stderr
-
-    def test_an_early_match_in_a_value_past_the_pipe_buffer_is_a_match(self):
-        """Fails as RC:141 when the helper pipes the value into `grep -q`."""
-        proc = _bash('out=$(printf "abc\\n"; %s); [ ${#out} -gt 65536 ]; '
-                     'if captured_match "$out" "^abc"; then echo MATCH; '
-                     'else echo "RC:$?"; fi' % LARGE_TAIL)
-        assert proc.stdout.strip() == "MATCH", proc.stdout + proc.stderr
-
-    def test_an_absent_pattern_is_a_clean_non_match(self):
-        proc = _bash('out=$(printf "abc\\n"); if captured_match "$out" zzz; '
-                     'then echo MATCH; else echo "NOMATCH:$?"; fi')
-        assert proc.stdout.strip() == "NOMATCH:1", proc.stdout + proc.stderr
-
-    def test_a_pattern_starting_with_a_dash_is_not_read_as_an_option(self):
-        proc = _bash('out=$(printf -- "--verbose\\n"); '
-                     'if captured_match "$out" -- ; then echo MATCH; else echo "RC:$?"; fi')
-        assert proc.stdout.strip() == "MATCH", proc.stdout + proc.stderr
-
-
-class TestProbeWrappers:
-    """`url_contains` / `ssh_contains`: 0 on a match, 1 on none, 2 on a failed fetch."""
-
-    def _stub(self, tmp_path, name: str, body: str) -> dict:
-        stub = tmp_path / name
-        stub.write_text("#!%s\n%s" % (BASH, body))
-        stub.chmod(0o755)
-        env = dict(os.environ)
-        env["PATH"] = "%s:%s" % (tmp_path, env["PATH"])
-        return env
-
-    def _run(self, snippet: str, env: dict) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            [BASH, "-c", 'set -euo pipefail\n. "$1"\n%s' % snippet, "bash", str(LIB)],
-            capture_output=True, text=True, env=env,
-        )
-
-    def test_a_matching_body_passes(self, tmp_path):
-        env = self._stub(tmp_path, "curl", 'printf "hello world\\n"\n')
-        proc = self._run(
-            'if url_contains http://x hello; then echo MATCH; else echo "RC:$?"; fi', env
-        )
-        assert proc.stdout.strip() == "MATCH", proc.stdout + proc.stderr
-
-    def test_a_failed_fetch_is_not_a_clean_non_match(self, tmp_path):
-        """A failed fetch returns 2, a body without the pattern returns 1. An
-        empty pattern matches any body, so only the fetch status can fail it."""
-        env = self._stub(tmp_path, "curl", "exit 7\n")
-        proc = self._run(
-            'if url_contains http://x ""; then echo MATCH; else echo "RC:$?"; fi', env
-        )
-        assert proc.stdout.strip() == "RC:2", proc.stdout + proc.stderr
-
-    def test_an_absent_pattern_fails(self, tmp_path):
-        env = self._stub(tmp_path, "curl", 'printf "hello\\n"\n')
-        proc = self._run(
-            'if url_contains http://x zzz; then echo MATCH; else echo "RC:$?"; fi', env
-        )
-        assert proc.stdout.strip() == "RC:1", proc.stdout + proc.stderr
-
-    def test_ssh_contains_matches_command_output(self, tmp_path):
-        env = self._stub(tmp_path, "ssh", 'printf "active\\n"\n')
-        proc = self._run(
-            'if ssh_contains u@h "systemctl is-active x" "^active"; '
-            'then echo MATCH; else echo "RC:$?"; fi', env
-        )
-        assert proc.stdout.strip() == "MATCH", proc.stdout + proc.stderr
-
-    def test_ssh_contains_reports_a_failed_command(self, tmp_path):
-        env = self._stub(tmp_path, "ssh", "exit 255\n")
-        proc = self._run(
-            'if ssh_contains u@h "true" ""; then echo MATCH; else echo "RC:$?"; fi',
-            env,
-        )
-        assert proc.stdout.strip() == "RC:2", proc.stdout + proc.stderr
 
 
 if __name__ == "__main__":

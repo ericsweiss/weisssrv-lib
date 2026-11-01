@@ -31,7 +31,7 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`check-ephemeral-storage-cap.py`](#check-ephemeral-storage-cappy-pyyaml) | sized emptyDirs larger than their pod's ephemeral-storage budget; pods where only some containers fund that budget | stdin | neutral |
 | [`check-flux-stage-timeouts.py`](#check-flux-stage-timeoutspy-pyyaml) | a waiting Flux stage that does not outlast the releases beneath it | flags | neutral |
 | [`check-flux-version-pin.py`](#check-flux-version-pinpy) | the Flux CLI pin, the versions ConfigMap and gotk-components agree | flags | neutral |
-| [`check-guest-endpoint-parity.py`](#check-guest-endpoint-paritypy-pyyaml) | a hand-written LAN endpoint address or NFS export client that covers no inventory host, and an export admitting part of a node group | flags | neutral |
+| [`check-guest-endpoint-parity.py`](#check-guest-endpoint-paritypy-pyyaml) | a hand-written LAN endpoint address or NFS export client that covers no inventory host, and an export admitting part of a node group | none | neutral |
 | [`check-helm-repo-parity.py`](#check-helm-repo-paritypy-pyyaml) | chart-repo URLs equal to the HelmRepository CRs Flux pulls from | flags | neutral |
 | [`check-helm-values-coverage.py`](#check-helm-values-coveragepy-pyyaml) | a HelmRelease the helm-values registry neither lists nor excludes | flags | neutral |
 | [`check-helmrelease-crd-safety.py`](#check-helmrelease-crd-safetypy-pyyaml) | a CRD-owning HelmRelease that would delete its CRDs on uninstall | `helmrelease-crd-safety.example.yaml` | neutral |
@@ -48,7 +48,6 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`check-molecule-matrix-coverage.sh`](#check-molecule-matrix-coveragesh-pyyaml) | molecule scenarios and matrix entries agree, both directions | env | gitlab-only |
 | [`check-netpol-except-parity.py`](#check-netpol-except-paritypy-pyyaml) | no fenced pod has unrestricted egress | `netpol-except.example.yaml` | neutral |
 | [`check-nfs-tls.py`](#check-nfs-tlspy-pyyaml) | an NFS PV that does not mount over TLS by hostname | flags | neutral |
-| [`check-prometheus-rule-coverage.py`](#check-prometheus-rule-coveragepy-pyyaml) | a shipped alert with no promtool unit test and no declared exemption | flags | neutral |
 | [`check-pvc-storageclass.py`](#check-pvc-storageclasspy-pyyaml) | a sized volume with no storage class named; a `volumeName` claim Flux may prune | none | neutral |
 | [`check-role-default-flips.py`](#check-role-default-flipspy-pyyaml) | changed role defaults between two collection refs that the inventory does not declare | inventory directory, `--allow` keys | neutral |
 | [`check-role-defaults-documented.py`](#check-role-defaults-documentedpy-pyyaml) | a role default its README never names | flags | neutral |
@@ -56,10 +55,10 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`check-role-readme-literals.py`](#check-role-readme-literalspy) | one site's addresses or domains in a role README | flags | neutral |
 | [`check-rule-windows.py`](#check-rule-windowspy-pyyaml) | an alert `for:` hold that is not inside its accumulating lookback | flags | neutral |
 | [`check-runbook-anchors.py`](#check-runbook-anchorspy) | an alert `runbook_url` pointing at a missing doc or a dangling anchor | flags | neutral |
-| [`check-scrape-netpol.py`](#check-scrape-netpolpy-pyyaml) | a scraped, fenced namespace that admits no observability traffic, or a monitor port nothing declares | `--exempt` | neutral |
+| [`check-scrape-netpol.py`](#check-scrape-netpolpy-pyyaml) | a scraped, fenced namespace that admits no observability traffic, or a monitor port nothing declares | `--prometheus-pod-label` | neutral |
 | [`check-scrape-wiring.py`](#check-scrape-wiringpy-pyyaml) | a scrape NetworkPolicy that does not admit the port its monitor scrapes | paths or `--corpus` | neutral |
 | [`check-secret-rotation-coverage.py`](#check-secret-rotation-coveragepy-pyyaml) | an ESO-managed credential with no documented rotation path | flags | neutral |
-| [`check-secretstore-scope.py`](#check-secretstore-scopepy-pyyaml) | an unscoped ClusterSecretStore, or a consumer outside its conditions | `--external-store` | neutral |
+| [`check-secretstore-scope.py`](#check-secretstore-scopepy-pyyaml) | an unscoped ClusterSecretStore, or a consumer outside its conditions | none | neutral |
 | [`check-skill-refs.py`](#check-skill-refspy) | backticked repo paths an agent skill cites still exist | `--skill-dir`, `--foreign`, `--shorthand-root` | neutral |
 | [`check-taskfile.sh`](#check-taskfilesh) | every script, dotenv and task a Taskfile references exists, and no fragment is orphaned | env | neutral |
 | [`check-tenant-traefik-isolation.py`](#check-tenant-traefik-isolationpy-pyyaml) | tenant onboarding without the shape-pinned Traefik admission policies or a hostname grant | flags | neutral |
@@ -78,9 +77,8 @@ Example configs for every script live in [`../examples/`](../examples/).
 | `find-pve-host-for-vm.sh` | prints which Proxmox host runs a VMID | env | neutral |
 | `find-reachable-host.sh` | prints the first reachable SSH target from its args | args | neutral |
 | [`flux-child-kustomizations.py`](#flux-child-kustomizationspy-pyyaml) | child Flux Kustomizations in `dependsOn` order | flags | blocking on a cycle |
-| [`flux-env.sh`](#flux-envsh-pyyaml-wraps-flux-rendersh) | multi-ConfigMap front end to `flux-render.sh` | env | neutral |
+| [`flux-env.sh`](#flux-envsh-pyyaml) | substitution ConfigMaps → shell exports, the kubeconform schema version, or one merged ConfigMap | args + env | neutral |
 | [`flux-lint.sh`](#flux-lintsh-pyyaml-needs-kustomize-kubeconform-flux-envsubst) | renders, scans and kubeconforms a Flux tree | flags | neutral |
-| [`flux-render.sh`](#flux-envsh-pyyaml-wraps-flux-rendersh) | ConfigMap → shell exports, and the kubeconform schema version | args | neutral |
 | [`flux-secret-consumers.py`](#flux-secret-consumerspy) | the workloads in one namespace that consume a named Secret, and which manager owns each | args + stdin | neutral |
 | [`gate_common.py`](#gate_commonpy-pyyaml-not-run-directly) | shared loader, cluster-config, key and NetworkPolicy helpers for the corpus gates | n/a | neutral |
 | [`generate-host-log-staleness.py`](#generate-host-log-stalenesspy-pyyaml) | per-host and cluster-wide journald staleness rules from the log-shipping play, with a drift gate | `--runbook` | neutral |
@@ -96,9 +94,9 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`run-render-gates.sh`](#run-render-gatessh) | runs a consumer's ordered corpus-gate list | `render-gates.example.conf` | neutral |
 | [`sanitize-junit-expected-failures.py`](#sanitize-junit-expected-failurespy) | downgrades declared negative-path junit failures | expectations file | neutral |
 | [`semantic-release.py`](#semantic-releasepy) | cuts the tag + Release from conventional commits | flags | dual |
-| `shell-lib.sh` | sourceable `timeout_cmd` / `ssh_probe` / `kubectl_read` / `captured_match` / `url_contains` / `ssh_contains` helpers | env | neutral |
+| `shell-lib.sh` | sourceable `timeout_cmd` / `ssh_probe` helpers | env | neutral |
 | `smoke-lib.sh` | sourceable HTTP/TCP probe classifiers and a PASS/FAIL ledger for a consumer's per-guest verify scripts | env | neutral |
-| [`supervised-apply-guard.sh`](#supervised-apply-guardsh) | confirmation ceremony for a supervised apply | env | neutral |
+| [`supervised-apply-guard.sh`](#supervised-apply-guardsh) | confirmation ceremony for a supervised apply | args | neutral |
 | `taskfile_tree.py` | importable flattener for a Taskfile `includes:` tree | n/a | neutral |
 | [`tenant_common.py`](#tenant_commonpy-pyyaml-not-run-directly) | shared tenancy constants, target resolution and aggregator reader for the two tenant gates | n/a | neutral |
 | [`unifi-settings-drift.py`](#unifi-settings-driftpy) | a console-owned UniFi settings section drifting from its codified expectation | `unifi-settings.example.json` | neutral |
@@ -184,7 +182,9 @@ current pin are both unchanged.
   `--update` prints the manual step, and `--update-all` lists every such update
   under a manual-edit note. A `--service` / `--category` combination that
   matches nothing prints one line on stderr and exits 2. Any unexpected failure
-  also exits 2, never 1.
+  also exits 2, never 1. `--category` is validated against the known set, and
+  an entry whose category is unknown lands in an **"Other"** bucket in the
+  table.
 - **`--check-partner-pins BASE_REF`** reads the vars file at `BASE_REF` with
   `git show` and fails when an entry's `var_name` moved while one of its
   `coupled_vars` did not. A coupled pin or a partner missing from the head vars
@@ -205,12 +205,6 @@ current pin are both unchanged.
   how a service published for several Debian suites is tracked;
   `apt_exclude_regex` drops pre-release stanzas. A response that is not a
   Packages index falls back to `<url>.gz`. There are no per-vendor categories.
-- **The CLI is argparse**, so error wording is argparse's
-  (`unrecognized arguments: …`, `argument --config: expected one argument`) and
-  a usage error exits 2. `--category` is validated against
-  the known set at parse time rather than failing later, and a registry entry
-  whose category is unknown lands in an explicit **"Other"** bucket in the table
-  instead of vanishing from it.
 - **Pins are read AND written anchored at column 0.** An indented `*_version:`
   key is not a pin — it is a nested value in some other structure — so it is
   neither reported as current nor rewritten by `--update`/`--update-all` (both
@@ -243,17 +237,14 @@ current pin are both unchanged.
 ### `version-check-ci.py`
 
 CI wrapper: runs the checker once with `--json`, prints a summary, writes
-the report artifact (`--output`, default `version-report.json`; parent dirs
-created), and posts an MR comment when there are actionable (non-held) updates
+the report artifact to `$REPORT_PATH` (default `version-report.json`; parent
+dirs created), and posts an MR comment when there are actionable (non-held) updates
 or errors. Exit code is derived from the report, not inherited from the
 checker: 0 clean, 1 updates available, 2 errors or an unparseable report.
 
-- **Env:** `CHECK_VERSIONS_CMD` (default `./scripts/check-versions.py`; it is
-  expected to exit 0 up-to-date / 1 updates / 2 errors, and any other code is
-  reported as 2), `CHECK_VERSIONS_LOCAL` (command named in the comment footer),
-  `VERSION_CHECK_TIMEOUT` (default 600), `GITLAB_API_TOKEN` — the variable NAME
-  is overridable with `--token-env`, so a consumer holding one bot PAT need not
-  provision it twice.
+- **Env:** `CHECK_VERSIONS_CMD` (default `./scripts/check-versions.py`) runs
+  the checker, bounded at 600s. It must exit 0 up to date, 1 updates or 2
+  errors; any other code reports as 2. `GITLAB_API_TOKEN` posts the comment.
 - **The comment is refreshed, not re-posted.** The body carries a hidden
   `<!-- weisssrv:version-check -->` marker; each run finds its own note and PUTs
   it, so an MR pushed to N times keeps ONE Version Check note. A failed note
@@ -407,12 +398,12 @@ Both are idempotent: regenerate in CI and fail if the committed output differs.
 ### `generate-versions-configmap.py` (PyYAML)
 
 Flattens `*_version` keys (plus each `--nested-key` mapping) from a vars file
-into a Flux `postBuild.substituteFrom` ConfigMap. Rejects bool/float/non-scalar
-values and any key that is not a valid Flux postBuild identifier.
+into the Flux `postBuild.substituteFrom` ConfigMap
+`flux-system/cluster-versions`. Rejects bool/float/non-scalar values and any key
+that is not a valid Flux postBuild identifier.
 
 ```
 generate-versions-configmap.py --vars-file <in.yml> --output <out.yaml>
-    [--name cluster-versions] [--namespace flux-system]
     [--nested-key helm_chart_versions ...] [--regen-command "task flux:sync-versions"]
 ```
 
@@ -478,21 +469,19 @@ Writes the journald-staleness alert rules for every host the log-shipping play
 targets, and fails when the committed file drifts from a regeneration.
 
 ```
-scripts/generate-host-log-staleness.py --runbook <path#anchor> [--check | --count]
-    [--repo-root .]
-    [--output kubernetes/infrastructure/observability/loki/host-log-staleness.yaml]
-    [--site-yml ansible/playbooks/site.yml]
-    [--hosts-yml ansible/inventories/prod/hosts.yml] [--role alloy_host]
-    [--sync-command 'task flux:sync-host-log-staleness']
+scripts/generate-host-log-staleness.py --runbook <path#anchor> [--check | --count] [--repo-root .]
 ```
 
+- It reads `ansible/playbooks/site.yml` and `ansible/inventories/prod/hosts.yml`
+  and writes
+  `kubernetes/infrastructure/observability/loki/host-log-staleness.yaml`.
 - It writes one `HostLogShippingStaleAll` rule and one `HostLogShippingStale`
-  rule per host that the single play running `--role` targets.
+  rule per host that the single play running `alloy_host` targets.
 - Hosts come in inventory order, deduplicated, with `!group` exclusions
   removed. A declared empty group adds nothing.
 - `--runbook` is appended to `${cluster_runbook_base_url}/` in every rule.
 - **`--check`** exits 1 when the whole file, header included, differs from a
-  regeneration. `--sync-command` is the command the header and that error name.
+  regeneration. The header and that error name `task flux:sync-host-log-staleness`.
 - **`--count`** prints the rule count a regenerated file carries: the hosts
   plus one.
 - **Exit codes:** 0 clean, 1 on drift under `--check`, 2 on an undeclared
@@ -604,7 +593,6 @@ helm/kubeconform call is timeout-bounded (120s repo add, 300s render).
 ```
 validate-helm-values.py [--kubeconform] [--repo-root DIR] [--releases FILE]
     [--versions-configmap PATH] [--policy-config PATH] [--sources-dir DIR]
-    [--crd-catalog-ref REF]
 ```
 
 - **Releases file** (default `<repo-root>/helm-values-releases.yaml`): a list (or
@@ -616,13 +604,12 @@ validate-helm-values.py [--kubeconform] [--repo-root DIR] [--releases FILE]
   does. When neither resolves, the run fails naming both fixes. A file under
   `--sources-dir` that will not parse as YAML fails the run naming that file,
   rather than vanishing from the resolution map.
-- **`--crd-catalog-ref`** (default `$CRD_CATALOG_REF`, else `main`) sets the
-  `datreeio/CRDs-catalog` ref kubeconform reads schemas from, so the family pins
-  one sha in one place.
+- **`$CRD_CATALOG_REF`** (default `main`) sets the `datreeio/CRDs-catalog` ref
+  kubeconform reads schemas from, so the family pins one sha in one place.
 - **Example:** [`helm-values-releases.example.yaml`](../examples/helm-values-releases.example.yaml).
 - **Kube version:** derived from the ConfigMap's `k3s_version` and passed to
   both `helm --kube-version` and `kubeconform -kubernetes-version`. Unlike
-  `flux-render.sh k8s-version`, a missing or unparseable key falls back to
+  `flux-env.sh k8s-version`, a missing or unparseable key falls back to
   `KUBE_VERSION_FALLBACK` (`1.36.0`) rather than failing, so a malformed pin
   cannot take out `flux:lint` — the rendered chart is then judged against a
   version nobody chose, which is the trade this hook accepts.
@@ -634,11 +621,9 @@ cluster's `k3s_version`. Defaults to `.gitlab-ci.yml` +
 `kubernetes/infrastructure/sources/versions-configmap.yaml`; pass both paths
 positionally for another layout.
 
-- **Env:** `CI_FILE` retargets the first default (repo-relative or absolute,
-  same name as the two molecule scripts), for a consumer whose kubectl pin
-  lives somewhere other than `.gitlab-ci.yml`. The extraction is a `dl.k8s.io`
-  regex over whatever text it is handed, so the file's format is irrelevant —
-  but both failure messages name the resolved paths.
+- **Format:** the pin is a `dl.k8s.io` URL or a `kubectl_version:` input
+  regexed from the text, so any CI file format works. Failure messages name
+  both paths.
 - **Exit codes:** 0 within skew, 1 on skew, 2 on an operator error (an
   unreadable input, or neither version found in the paths given).
 
@@ -651,7 +636,7 @@ Alertmanager config from an ExternalSecret template into standalone files that
 ```
 extract-prometheus-config.py rules <out> [--release PATH] [--rules-dir DIR]...
     [--require-release-rules] [--require-rules-dir]
-extract-prometheus-config.py alertmanager <out> [--am-config PATH] [--dummy K=V]
+extract-prometheus-config.py alertmanager <out> [--am-config PATH]
 ```
 
 - **`rules` is the union of two sources**: the HelmRelease's
@@ -675,16 +660,14 @@ extract-prometheus-config.py alertmanager <out> [--am-config PATH] [--dummy K=V]
   "not found in <path>" and exits 1 rather than raising.
 
 `lint-prometheus-config.sh` env: `EXTRACT_SCRIPT`, `RULE_TESTS_DIR`,
-`HELM_RELEASE`, `RULES_DIR`, `AM_CONFIG`, `EXTRACT_ARGS`,
+`HELM_RELEASE`, `RULES_DIR`, `AM_CONFIG`,
 `REQUIRE_RELEASE_RULES`, `REQUIRE_RULES_DIR`, `ALLOW_NO_RULE_TESTS`. An empty or absent `RULE_TESTS_DIR` FAILS the gate,
 naming the resolved directory, so a dropped shard variable cannot green a run
 that tested no alerts; set `ALLOW_NO_RULE_TESTS=1` to skip them on purpose.
 `RULES_DIR` is whitespace-separated and
 becomes one `--rules-dir` per tree. A `--rules-dir` given explicitly (or through
 `RULES_DIR`) must exist; only the default path is allowed to be absent, and
-`REQUIRE_RULES_DIR` makes it required too. `EXTRACT_ARGS` is whitespace-split
-and appended to the rules invocation, for an extractor flag neither variable
-covers.
+`REQUIRE_RULES_DIR` makes it required too.
 
 ### `check-flux-stage-timeouts.py` (PyYAML)
 
@@ -726,69 +709,43 @@ scripts/check-flux-version-pin.py --repo-root .
   set `flux bootstrap` installs. A cluster bootstrapped with
   `--components-extra` passes its own set, so a silent distribution change
   cannot pass as a version bump.
-- `--runbook PATH` names the consumer doc quoted in the re-export remediation
-  line, so the failure points at the repo's own procedure.
 - A repository with no `gotk-components.yaml` yet (pre-bootstrap) still compares
   CI against the ConfigMap and says so.
 - **Exit codes:** 0 agreement, 1 on a disagreement, 2 on an operator error (an
   unreadable subject, no pin, or no `flux_version` key).
 
-### `flux-env.sh` (PyYAML, wraps `flux-render.sh`)
+### `flux-env.sh` (PyYAML)
 
-The multi-ConfigMap front end to `flux-render.sh` for clusters that substitute
-from more than one ConfigMap (versions plus a cluster-config). Same
-`export-versions` / `k8s-version` entry points, so callers written for one
-ConfigMap keep working with several, plus `merged-configmap` for tools that
-accept a single `--versions-configmap`.
+Turns a cluster's substitution ConfigMaps into shell exports, derives the
+kubeconform schema version, or prints one merged ConfigMap.
 
 ```
 VARS=$(scripts/flux-env.sh export-versions "$VERSIONS_CM") || exit 1
-eval "$VARS"        # every key from every file + ONE merged FLUX_ENVSUBST_VARS
+eval "$VARS"        # every .data key + FLUX_ENVSUBST_VARS
+K8S_VER=$(scripts/flux-env.sh k8s-version "$VERSIONS_CM")
 ```
 
-- The argument may name several files in one quoted word; later files win on a
-  key collision, and a file named twice is read once.
-- `FLUX_EXTRA_CONFIGMAPS` (default: the sibling cluster-config path) appends
-  files; set it to the empty string to add none.
-- `merged-configmap` prints one ConfigMap whose `.data` is the union, with the
-  same precedence, so the merged document and the exported environment cannot
-  disagree. `FLUX_ENVSUBST_VARS` is the union too: a key defined in two
-  ConfigMaps appears once.
-
-### `flux-render.sh` (PyYAML)
-
-Turns the cluster-versions ConfigMap into shell exports, and derives the
-kubeconform schema version from it. The per-Kustomization build + kubeconform
-loop is [`flux-lint.sh`](#flux-lintsh-pyyaml-needs-kustomize-kubeconform-flux-envsubst)'s;
-this file is the half `run-render-gates.sh` needs on its own too.
-
-```
-VARS=$(scripts/flux-render.sh export-versions "$CM") || exit 1
-eval "$VARS"                                  # every .data key + FLUX_ENVSUBST_VARS
-K8S_VER=$(scripts/flux-render.sh k8s-version "$CM")
-```
-
-- `export-versions` emits one `export <key>=<shell-quoted value>` per `.data`
-  key, plus `FLUX_ENVSUBST_VARS` — the `${name}` allowlist envsubst is given, so
-  substitution can never reach a variable the ConfigMap did not declare.
-- **Keys are validated before they are emitted, because the caller `eval`s the
-  output.** A key that is not a valid POSIX shell name is an error, and so is a
+- The argument may name several files in one quoted word.
+  `FLUX_EXTRA_CONFIGMAPS` appends files; it defaults to the sibling
+  cluster-config path, and the empty string adds none. Later files win on a key
+  collision, and a file named twice is read once.
+- `export-versions` emits one `export <key>=<shell-quoted value>` per key, plus
+  `FLUX_ENVSUBST_VARS`. That is the `${name}` allowlist envsubst is given, so
+  substitution never reaches a variable no ConfigMap declared.
+- **Keys are validated before anything is emitted, because the caller `eval`s
+  the output.** A key that is not a POSIX shell name is an error. So is a
   **reserved** one: `PATH`, `HOME`, `IFS`, `PWD`, `SHELL`, `TMPDIR`, `CI`,
   `CLUSTER_DIR`, `SKIPPED_SCRIPT`, `FLUX_RENDER_SCRIPT`, `VERSIONS_CONFIGMAP`,
   `FAILED`, `RENDER_ALL`, `K8S_VER`, `VARS`, `FLUX_ENVSUBST_VARS`, or anything
-  ending `_SHA256`. Those are the calling job's own variables; exporting one
-  would rewrite the job's environment mid-run. Generated keys are lowercase, so
-  no current consumer trips this.
-- `k8s-version` parses `k3s_version` out of `.data` **with PyYAML** and reduces
-  it to `major.minor.patch`. A missing or unparseable key is a hard **failure**,
-  not a fallback: validating a whole cluster against a version nobody chose is
-  worse than a red job. A consumer whose ConfigMap has no such key passes the
-  template's `k8s_version` input instead. Note the two paths that DO fall back
-  to `1.36.0` — flux-lint's simple (tenant) mode and
-  `validate-helm-values.py`'s `derive_kube_version`.
-- An empty or unreadable ConfigMap path, and a ConfigMap with no `.data`, are
-  both errors. So is a multi-line `.data` value: the export block is re-read
-  line by line, and a newline could not survive envsubst into YAML.
+  ending `_SHA256`. Those are the calling job's own variables.
+- A missing file, a file with no `.data` and a multi-line value are errors. The
+  export block is re-read line by line, and a newline cannot survive envsubst
+  into YAML.
+- `k8s-version` reduces the first file's `k3s_version` to `MAJOR.MINOR.0`. A
+  missing or unparseable key is a hard failure, not a fallback. A consumer
+  without the key passes the template's `k8s_version` input instead.
+- `merged-configmap` prints one ConfigMap whose `.data` is the union, for tools
+  that take a single `--versions-configmap`.
 - **Vendored:** the flux-lint template takes the path from the consumer tree,
   so the consumer's vendored copy is the one CI runs.
 
@@ -813,8 +770,7 @@ scripts/flux-lint.sh --mode simple --kustomize-path kubernetes/flux \
 ```
 
 **Substitute mode** (the default) evaluates the ConfigMap's keys through
-`--render-script` (`flux-render.sh`, or `flux-env.sh` for a cluster that
-substitutes from several files), then per stage: `kustomize build`, the
+`--render-script` (default `flux-env.sh`), then per stage: `kustomize build`, the
 `${`-shape scan, the unknown-key and empty-key scans, `flux envsubst --strict`,
 the GNU `envsubst` render, and `kubeconform`. Afterwards it tracks the kinds no
 schema validated through `--skipped-script`, and builds the cluster root.
@@ -861,8 +817,8 @@ schema validated through `--skipped-script`, and builds the cluster root.
   alone, under strict substitution, so any other name fails the whole tenant
   reconcile. Escape a literal as `$${...}`. The kubeconform heading says when
   the script's default Kubernetes version is in use.
-- The catalog is pinned: `--crd-catalog-ref` is a `datreeio/CRDs-catalog` ref, or
-  `--crd-catalog` takes the whole `-schema-location` template to self-host.
+- The catalog is pinned: `--crd-catalog-ref` is a `datreeio/CRDs-catalog` ref.
+  Point it at a mirror ref to self-host.
 - **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error (an unknown
   flag, a missing `--cluster-dir`, no catalog).
 - Flag state is `FL_`-prefixed: the script `eval`s the render helper's exports,
@@ -912,10 +868,8 @@ scripts/check-dashboards.py kubernetes/infrastructure/observability/dashboards
   datasource is default.
 - Only uids nested under a `datasource` key are checked, so a dashboard's own
   top-level `uid` stays free-form.
-- `--dashboard-label`, `--dashboard-label-value` (default `1`) and
-  `--folder-annotation` name the sidecar contract;
-  `--skip-registration` lints a directory that holds dashboards as source rather
-  than registering them with a configMapGenerator.
+- The sidecar contract is the Grafana chart's default: the label
+  `grafana_dashboard: "1"` and the `grafana_folder` annotation.
 - **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error including a
   run that scanned zero dashboards, or a directory named on the command line
   that does not exist. A stale hit from the default glob is still skipped.
@@ -946,14 +900,11 @@ Prints a cluster's child Flux Kustomizations in `dependsOn` order (topological,
 ties alphabetical), so a reconcile loop or a deploy verifier never hand-lists
 the stages. `--dir` defaults to the single directory under
 `kubernetes/clusters/`; `--paths` prints `name<TAB>spec.path` instead of the
-name alone, and `--exclude NAME` (repeatable) skips another Kustomization
-besides `flux-system`. A
-`dependsOn` cycle exits **2**: the ordering still prints, for diagnosis, but it
-does not satisfy the declared dependencies. Exit 1 when the directory holds no
-Kustomization. `--paths` exits 1 and names the offenders on
-stderr when any Kustomization declares no `spec.path`, so a missing stage cannot
-pass as a complete corpus. `--allow-missing-paths` prints the paths there are and
-still warns. `--require-paths` is accepted as a no-op alias for the default.
+name alone. `flux-system` is never printed. A `dependsOn` cycle exits **2**: the
+ordering still prints, for diagnosis, but it does not satisfy the declared
+dependencies. Exit 1 when the directory holds no Kustomization. `--paths` exits
+1 and names the offenders on stderr when any Kustomization declares no
+`spec.path`, so a missing stage cannot pass as a complete corpus.
 
 ### `flux-secret-consumers.py`
 
@@ -1005,15 +956,14 @@ kubelet's image-GC high watermark.
 
 ```
 scripts/check-image-gc-threshold.py [--repo-root .]
-    [--k3s-vars ansible/inventories/prod/group_vars/k3s.yml]
-    [--kubelet-args-var k3s_kubelet_args] [--rules <file|dir>]...
-    [--alertmanager-config <path>] [--alert KubeletImageGCIneffective]
+    [--rules <file|dir>]...
     [--alert-offset 0] [--alert-cap N] [--min-prose-mentions 2]
     [--unthresholded-inhibitor ALERT]...
 ```
 
-- It reads `image-gc-high-threshold` from the kubelet args in the vars file.
-- It finds the alert in any manifest shape under `--rules`, default
+- It reads `image-gc-high-threshold` from the kubelet args in
+  `ansible/inventories/prod/group_vars/k3s.yml`.
+- It finds `KubeletImageGCIneffective` in any manifest shape under `--rules`, default
   `kubernetes/infrastructure/observability/rules`. The alert's trailing `> N`
   must equal `min(watermark + offset, cap)`.
 - Every `N% image-gc-high-threshold`, `image-gc-high-threshold (N%)` or
@@ -1052,31 +1002,6 @@ scripts/check-helm-values-coverage.py --releases scripts/helm-values-releases.ya
 - **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error — an empty or
   malformed registry, a missing manifest directory, or no HelmRelease found.
 
-### `check-prometheus-rule-coverage.py` (PyYAML)
-
-Accounts for every shipped alert against the promtool unit tests, so the gap
-between what fires in production and what is ever evaluated is recorded rather
-than discovered during an incident.
-
-```
-scripts/check-prometheus-rule-coverage.py --tests-dir tests/prometheus-rules \
-  --release kubernetes/infrastructure/observability/kube-prometheus-stack/release.yaml
-```
-
-- `--tests-dir` (required), `--repo-root`, `--manifest-dir` (repeatable,
-  default `kubernetes`), `--loki-rules-dir` (repeatable).
-- The corpus is the release's `additionalPrometheusRulesMap`, every
-  PrometheusRule CR under the walked trees, and the bare `groups:` Loki ruler
-  files. Pass exactly one of `--release <manifest>` or `--no-release`: an unset
-  release would silently drop every inline rule group.
-- A test counts an alert as covered when any `*.test.yaml` (or `.test.yaml.jinja`)
-  under `--tests-dir` names it in an `alertname:` key.
-- `--untested ALERTNAME=REASON` records a deliberate gap. An entry a test now
-  covers, or one no rule declares, is a finding — as is a test naming an alert
-  no rule declares, which passes against nothing.
-- **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error — an empty
-  corpus, a missing tests directory, or a missing release manifest.
-
 ### `check-rule-windows.py` (PyYAML)
 
 Fails an alert whose `for:` hold is at or past the lookback window its own
@@ -1104,8 +1029,6 @@ scripts/check-rule-windows.py kubernetes/infrastructure/observability \
   operator error — a missing path, an unparseable file or duration, an
   exemption with no reason, or a scan that examined no alert with both a hold
   and an accumulating lookback.
-- **Vendoring:** offered in `scripts/vendorable-paths.yml`. Vendor
-  `tests/test_check_rule_windows.py` with it to keep the negative cases.
 
 ## Cluster invariant gates
 
@@ -1356,20 +1279,17 @@ scripts/check-runbook-anchors.py \
   `--rules-dir` or `--docs-dir`, or a tree carrying no `runbook_url` at all. A
   gate that checks nothing is not a gate, so an empty scan fails rather than
   passing.
-- **Vendoring:** offered in `scripts/vendorable-paths.yml`. Vendor
-  `tests/test_check_runbook_anchors.py` with it to keep the negative cases.
 
 ### `check-scrape-netpol.py` (PyYAML)
 
 Fails a namespace that is scraped AND ingress-restricted but admits no traffic
-from the observability namespace, and a monitor whose endpoint port is declared
+from the `observability` namespace, and a monitor whose endpoint port is declared
 by nothing it selects. Kubelet probes bypass the CNI policy chain, so
 the pod stays healthy while the scrape is REJECTed and the only symptom is
 `TargetDown`.
 
 ```
 cat rendered-corpus.yaml | scripts/check-scrape-netpol.py \
-    [--observability-namespace NS] [--exempt NS=REASON ...]
     [--prometheus-pod-label KEY=VALUE ...]
 ```
 
@@ -1377,9 +1297,6 @@ cat rendered-corpus.yaml | scripts/check-scrape-netpol.py \
   namespace, or `spec.namespaceSelector.matchNames`) **or** from a HelmRelease
   whose values enable a chart-native monitor — the case the kustomize corpus
   cannot otherwise see. `namespaceSelector.any` is unattributable and skipped.
-- **`--exempt` requires a reason** (`NS=REASON`); an unexplained exemption is
-  rejected at parse time, and an exemption no namespace exercised is reported on
-  the success path, never fatal.
 - **`--prometheus-pod-label KEY=VALUE`** (repeatable) names a label the scraper
   pods carry. Declaring them lets a peer that narrows the observability
   namespace with a `podSelector` be judged; without them such a peer is
@@ -1416,12 +1333,13 @@ cat rendered-corpus.yaml | scripts/check-scrape-netpol.py \
   targets with none ingress-restricted among them is still a pass (default-deny
   is a per-namespace choice); the success line prints both counts.
 - **Exit codes:** 0 clean, 1 on a blocked scrape, 2 on an operator error (an
-  empty or target-less corpus, unparseable input, a malformed `--exempt`).
+  empty or target-less corpus, unparseable input, a malformed
+  `--prometheus-pod-label`).
 
 ### `check-scrape-wiring.py` (PyYAML)
 
 Fails a monitor whose scraped PORT no NetworkPolicy admits from the
-observability namespace. Reads a manifest tree from **paths**, one effective
+`observability` namespace. Reads a manifest tree from **paths**, one effective
 namespace at a time, or a whole rendered cluster from **`--corpus`**, where a
 monitor's scope resolves against the namespaces the corpus carries. Either way
 the monitor, the Service, the workload and the policy resolve against each
@@ -1429,7 +1347,7 @@ other. `check-scrape-netpol.py` is the namespace granularity; this one is the
 port granularity.
 
 ```
-scripts/check-scrape-wiring.py [--observability-namespace NS]
+scripts/check-scrape-wiring.py [--prometheus-pod-label KEY=VALUE ...]
     [--namespace NS | --namespace-from-tree | --corpus PATH] [DIRECTORY]
 ```
 
@@ -1621,12 +1539,9 @@ finding.
 
 ```
 cat rendered-corpus.yaml | scripts/check-default-deny-coverage.py \
-    [--exempt NS=REASON ...] [--require-egress NS ...]
+    [--exempt NS=REASON ...]
 ```
 
-- **`--require-egress NS`** (repeatable) also demands a namespace-wide egress
-  default-deny in that namespace. The ingress mandate is cluster-wide; egress is
-  opt-in per namespace, because an egress fence needs its own allow set.
 - A namespace **owns a workload** when the corpus puts a Deployment /
   StatefulSet / DaemonSet / ReplicaSet / Job / CronJob / Pod in it, **or** a
   HelmRelease targets it — a chart's own workloads never appear in a kustomize
@@ -1732,9 +1647,7 @@ cat rendered-corpus.yaml | scripts/check-secretstore-scope.py
   alone matches no selector.
 - **A store referenced but not defined in the corpus FAILS.** That is the runtime
   failure the gate exists to catch: the ExternalSecret never syncs and the Secret
-  goes stale. `--external-store NAME` (repeatable) declares a store genuinely
-  managed outside the linted tree, so the exemption is visible. A
-  `--external-store` name nothing referenced is reported on the success path.
+  goes stale.
 - **An empty corpus is an operator error, exit 2** — a broken pipe or a wrong
   `kustomize build` path must not report green. So is a corpus that HAS documents
   but holds neither a ClusterSecretStore nor a consumer: that is what a render
@@ -1744,8 +1657,6 @@ cat rendered-corpus.yaml | scripts/check-secretstore-scope.py
   empty or store-less corpus, unparseable input, or a `namespaceRegexes` entry
   that does not compile — a defect in its own right, and the fail-open direction
   for the catch-all probe).
-- No configuration file: the rule is universal; `--external-store` is the only
-  site-shaped flag.
 
 ### `check-netpol-except-parity.py` (PyYAML)
 
@@ -1933,24 +1844,18 @@ return. The same split owns `companions:` and its
 `BackupArtifactCompanionMissing` rule, checked both ways.
 
 ```
-scripts/check-backup-artifact-apps.py --host-vars FILE --rules FILE [--allow-empty]
+scripts/check-backup-artifact-apps.py --host-vars FILE --rules FILE
 ```
 
 - Both paths are site data, so both flags are required.
 - Nothing declared on either side is an operator error: the gate paired nothing
-  and would certify a contract it never inspected. `--allow-empty` is the
-  opt-out for a consumer that collects no backup artefacts; it also accepts a
-  rules corpus that defines no `BackupArtifactStale` rule at all, which is the
-  state such a consumer is actually in. Declared apps with no alert still fail.
-- A `BackupArtifactStale` rule that exists with no `absent()` arm fails even
-  under `--allow-empty`. The flag covers the consumer that ships no such rule,
-  not a rule that guards nothing, so the two states are told apart rather than
-  both reading as an empty arm set.
+  and would certify a contract it never inspected. A rules corpus with no
+  `BackupArtifactStale` rule is one too.
 - The rule is read as TEXT, scoped to the alert's own block: it lives inside a
   HelmRelease `values:` blob several levels deep, carrying Go-template
   `{{ $labels }}` strings, so a structural walk buys nothing.
 - **Exit codes:** 0 in sync, 1 on drift, 2 when either file is missing, the
-  pairing is empty without `--allow-empty`, or the rule is present with no arm.
+  rule is missing, or the pairing is empty.
 
 ### `check-nfs-tls.py` (PyYAML)
 
@@ -1967,13 +1872,8 @@ cat rendered-corpus.yaml | scripts/check-nfs-tls.py --cert-domain example.com
   `volumes[].nfs` has no `mountOptions` field at all, and a CSI-provisioned
   volume keeps its server and options in the StorageClass parameters, so
   neither is covered and both would need a different check.
-- `--required-option` (default `xprtsec=tls`), `--cert-domain` (message text
-  only), `--allow-empty` for a cluster with no NFS storage. The shipped example
-  config leaves the guard armed.
-- **`--allow-ip-server`** is for a consumer whose export is reached by IP: it
-  declares that the server certificate carries an IP SAN. It trades the
-  handshake arm away, so a wildcard certificate with no IP SAN still fails the
-  mount at runtime with the gate green.
+- `--cert-domain` (message text only), `--allow-empty` for a cluster with no
+  NFS storage. The shipped example config leaves the guard armed.
 - Loads the corpus through `gate_common.py`, so a PV inside a `kind: List` is
   inspected. Vendor `gate_common.py` alongside it.
 - **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error — an empty
@@ -1992,14 +1892,11 @@ identity the manifests substitute from.
 scripts/check-cluster-invariants.py
 ```
 
-- `--hosts`, `--cluster-config`, repeatable `--vip-key`, `--lan-cidr-key`,
-  `--allow-missing-cluster-config`, `--allow-missing-lan-cidr`,
-  `--allow-missing-lan-addresses`, `--allow-missing-vip`,
-  `--allow-missing-vmid`, `--allow-missing-ansible-host`.
+- `--hosts` and `--cluster-config`. The LAN CIDR is the config's
+  `cluster_lan_cidr`.
 - `--rules-dir` turns on the instance-parity arm, and takes an alert-rule file
-  or a directory; repeat it for several. `--rules-glob` is the glob applied
-  inside a directory (default `**/*.y*ml`). Every exact `instance="<ipv4>"` or
-  `instance="<ipv4>:<port>"` literal must be some host's `ansible_host`, a
+  or a directory, read as `**/*.y*ml`; repeat it for several. Every exact
+  `instance="<ipv4>"` or `instance="<ipv4>:<port>"` literal must be some host's `ansible_host`, a
   cluster-config value, or a repeatable `--allow-instance` entry. `instance=~`
   is left alone: a regex alternation is deliberate, and the rules gates read it.
   An `--allow-instance` no rule pins any more is an operator error, so the
@@ -2008,28 +1905,15 @@ scripts/check-cluster-invariants.py
 - **Vendoring:** imports `inventory_tree.py` from its own directory, so the
   library gate and the consumer's own inventory gates cannot disagree about
   which hosts exist. Vendor the pair.
-- With no `--vip-key`, the VIP arm checks both API-VIP spellings, both MetalLB
-  VIPs, and every other `cluster_*_vip` key the config declares. An absent key
-  is skipped.
-- `--allow-missing-cluster-config` makes an absent cluster config a pass, and
-  the success line then says the VIP and LAN arms were skipped. Without it, an
-  absent config is an operator error, because two of the three arms cannot run.
-- A config declaring no `--lan-cidr-key` is an operator error too: the LAN arm
-  would examine nothing, and a misspelled key would leave it permanently green.
-  `--allow-missing-lan-cidr` is the opt-out, and the success line then names the
-  skipped arm.
-- Every arm exits 2 rather than 0 when it examined nothing, so each has its own
-  opt-out for a consumer whose inventory does not carry that field:
-  `--allow-missing-vmid` (an inventory keeping `vmid` in `host_vars`),
-  `--allow-missing-ansible-host` and `--allow-missing-lan-addresses` (an
-  inventory addressing hosts by name), `--allow-missing-vip` and
-  `--allow-missing-lan-cidr` (a config declaring neither), and
-  `--allow-missing-cluster-config` (no config at all). The success line names
-  each skipped arm, so an opt-out is visible rather than silent.
+- The VIP arm checks both API-VIP spellings, both MetalLB VIPs, and every
+  other `cluster_*_vip` key the config declares. An absent key is skipped.
+- Every arm exits 2 when it examined nothing: an absent cluster config, no
+  VIP, no `cluster_lan_cidr`, no host with a `vmid`, no `ansible_host`, or no
+  IP-literal `ansible_host`.
 - Hosts are merged across groups, so a host in two groups is not a duplicate of
   itself; a host named rather than addressed is left to DNS.
 - **Exit codes:** 0 clean, 1 on a collision, 2 on an operator error including an
-  inventory with no host or a config declaring no VIP or no LAN CIDR.
+  inventory with no host or an arm that examined nothing.
 
 ### `check-guest-endpoint-parity.py` (PyYAML)
 
@@ -2045,25 +1929,20 @@ mount on itself alone while the rest keep it.
 scripts/check-guest-endpoint-parity.py
 ```
 
-- `--repo-root` (default: the script's parent's parent), `--inventory` (the
-  directory holding `hosts.yml`, `group_vars/` and `host_vars/`, default
-  `ansible/inventories/prod`), `--manifest-tree` (default `kubernetes`).
-- Repeatable `--lan-cidr-key` names the cluster-config keys holding a host
-  CIDR, so a site with management, storage or DMZ VLANs scopes to all of them
-  (default `cluster_lan_cidr`); `--extra-lan-cidr` adds a range cluster-config
-  does not name. `cluster_lan_gateway` is allowed without being a host.
-- Repeatable `--scoped-group` names the inventory groups an export must admit
-  whole (default `k3s_servers`, `k3s_agents`). A group of mixed roles (`all`)
-  would report every export that legitimately admits one role, so the default
-  is the node groups rather than every group the inventory declares.
-- An address outside every declared CIDR is out of scope, not a finding: an
-  endpoint may legitimately name an upstream. The same holds for an export
-  client range outside them, and for a spec this gate cannot resolve to an
-  address at all (a hostname, netgroup or wildcard).
+- `--repo-root` (default: the script's parent's parent). It reads the inventory
+  in `ansible/inventories/prod` and walks `kubernetes/` for endpoints.
+- The host CIDR is cluster-config's `cluster_lan_cidr`. `cluster_lan_gateway`
+  is allowed without being a host.
+- An export must admit `k3s_servers` and `k3s_agents` each whole. A group of
+  mixed roles such as `all` would report every export that admits one role.
+- An address outside the host CIDR is out of scope, not a finding: an endpoint
+  may legitimately name an upstream. The same holds for an export client range
+  outside it, and for a spec this gate cannot resolve to an address at all,
+  such as a hostname, netgroup or wildcard.
 - An `ansible_host` holding a NAME rather than an address cannot be placed in a
   CIDR, so it is left out of the comparison and every finding that rests on
   containment says which names were skipped.
-- **An export client spec WIDER than a host CIDR is in scope too**, reported on
+- **An export client spec WIDER than the host CIDR is in scope too**, reported on
   its own terms rather than skipped: `10.0.0.0/8` over a `10.20.0.0/24` LAN, or
   `0.0.0.0/0`, is the broadest client list an exports file can carry, and
   testing containment in one direction alone never looked at it.
@@ -2078,10 +1957,9 @@ scripts/check-guest-endpoint-parity.py
 - **Vendoring:** imports `gate_common.py` and `inventory_tree.py` from its own
   directory, and names both at once when either is absent. Vendor all three.
 - **Exit codes:** 0 clean, 1 on drift, 2 when it inspected nothing — no
-  endpoint address in the tree, no address inside the declared CIDRs, an
-  inventory declaring no `ansible_host` or declaring only names, or a
-  cluster-config naming none of the `--lan-cidr-key` keys with no
-  `--extra-lan-cidr` to stand in.
+  endpoint address in the tree, no address inside the host CIDR, an inventory
+  declaring no `ansible_host` or declaring only names, or a cluster-config with
+  no parseable `cluster_lan_cidr`.
 
 ### `check-role-inputs.py` (PyYAML, Jinja2)
 
@@ -2180,15 +2058,13 @@ fresh cluster then fails with `no matches for kind`.
 
 ```
 scripts/check-crd-stage-order.py --cluster-dir kubernetes/clusters/NAME
-    [--repo-root .] [--crd-source FILE] [--crd-group CHART=GROUP]...
-    [--stage-corpus STAGE=FILE]... [--exempt ns/Kind/name=REASON]...
-    [--exempt-file PATH]... [--allow-unresolved]
+    [--repo-root .] [--crd-source FILE]
+    [--exempt ns/Kind/name=REASON]... [--exempt-file PATH]... [--allow-unresolved]
 ```
 
 - It is a tree gate and takes no stdin. It reads the stage Kustomizations under
   `--cluster-dir`, then each stage's manifests by following `resources:` the
-  way kustomize does. `--stage-corpus` supplies a rendered corpus in their
-  place.
+  way kustomize does.
 - **A CR passes** when a stage it transitively depends on, and that waits,
   installs its API group. Waiting means `wait: true`, or a healthCheck on the
   installing release. A CR also passes when a CRD manifest sits in its own
@@ -2198,7 +2074,7 @@ scripts/check-crd-stage-order.py --cluster-dir kubernetes/clusters/NAME
 - Built-in groups, Flux toolkit groups and CRD manifests under the cluster
   directory count as present from the start.
 - **HelmRelease sources.** `releases:` in the `--crd-source` map wins, then
-  `charts:` and `--crd-group`, then the built-in chart table. `install.crds:
+  `charts:`, then the built-in chart table. `install.crds:
   Skip`, or a false `installCRDs` or `crds.enabled` / `crds.create` /
   `crds.install`, means the release installs nothing.
 - Cluster-scoped kinds are keyed `default/Kind/name` in an exemption.
@@ -2372,10 +2248,6 @@ scripts/check-doc-links.py <root>...  # scan explicit roots
   because a doc may legitimately cite a path in another repo;
   `$CHECK_DOC_LINKS_IGNORE` holds space-separated fnmatch patterns for the
   exceptions that remain.
-- **Consumer note:** `ci/lint/docs-link-check.yml` defaults `changes` to
-  `**/*.md` plus the gate script, matching the checker's own tracked-Markdown
-  scope. Pass your own `changes` only to narrow the trigger deliberately; a path
-  missing from it means no run on that edit.
 
 ### `check-comment-length.py`
 
@@ -2386,7 +2258,6 @@ opens `CRITICAL:` may run to eight, for the traps that cause an outage.
 ```
 scripts/check-comment-length.py [PATH ...] [--config FILE]
     [--include GLOB] [--exclude GLOB] [--max N] [--critical-max N]
-    [--scan-fenced-code] [--strict-jinja]
 ```
 
 - **Scan scope:** the paths given, else the config's `paths`, else the working
@@ -2413,17 +2284,13 @@ scripts/check-comment-length.py [PATH ...] [--config FILE]
   directives, not prose: they neither count toward the limit nor join the
   header block below them. Only the preamble is read that way, so the same
   spelling further down the file is an ordinary comment.
-- **`--scan-fenced-code`** (config `scan_fenced_code`) applies the limit inside
-  Markdown fenced code blocks too, so a wiring snippet people copy into a real
-  file is held to it. The fence's language tag resolves to a suffix through the
-  fence-language table, and a language the table does not list is skipped.
 - **A `.py.jinja` source** has its jinja tags neutralized before the parse that
   reads docstrings, so a copier template is held to the same limit as the file
   it renders into. A `{% raw %}` body is kept verbatim, because jinja reads no
   tags inside it. One that still does not parse is a single WARNING and no
-  change to the exit code; **`--strict-jinja`** makes it an operator error.
+  change to the exit code.
 - **Config keys:** `paths`, `include`, `exclude`, `max_lines`,
-  `critical_max_lines`, `scan_fenced_code`. Template:
+  `critical_max_lines`. Template:
   [`examples/comment-length.example.yml`](../examples/comment-length.example.yml).
   Flags win over the config; `.git`, `.terraform`, `.venv`, `.ansible`,
   `.ansible-home`, `__pycache__`, `node_modules`, the
@@ -2431,13 +2298,10 @@ scripts/check-comment-length.py [PATH ...] [--config FILE]
   `*.egg-info`, `.tmp` and `.worktrees` are always excluded, so scanning `.`
   does not fail on a tree the repo did not author.
 - Stdlib-only, so every consumer can vendor it.
-- Consumers include it as `ci/lint/comment-length.yml`. Adopt it after a sweep:
-  a repo with a backlog of long comments reds every pipeline from the first run.
 - **Exit codes:** 0 clean, 1 on an over-long block, 2 on an operator error (a
   missing path or config, a `max_lines` below 1 or above `critical_max_lines`,
   a file that does not decode, a `.py` that does not parse, or a run that found
-  no scannable file). An unparsable `.jinja` source is a warning unless
-  `--strict-jinja` is given.
+  no scannable file). An unparsable `.jinja` source is a warning.
 
 ### `check-role-defaults-documented.py` (PyYAML)
 
@@ -2503,29 +2367,23 @@ scripts/check-taskfile.sh [Taskfile.yml ...]  # default: <repo-root>/Taskfile.ym
 
 - **`includes:` are followed.** Both the `name: path.yml` shorthand and the
   `name: {taskfile: path.yml}` map form, resolved relative to the including
-  file, with a visited set for cycles and a depth cap
-  (`CHECK_TASKFILE_MAX_DEPTH`, default 10). Only a column-0 `includes:` block
-  counts. This covers a consumer's own vendored fragments, which carry their own
+  file, with a visited set for cycles and a depth cap of 10. Only a column-0
+  `includes:` block counts. This covers a consumer's own vendored fragments, which carry their own
   `scripts/` references.
 - **A missing include target is a failure**, not a skip: go-task fails hard at
   load time on one, taking every task with it.
-- **Env:** `CHECK_TASKFILE_DOTENV` — space-separated dotenv targets to require
-  when the Taskfile references them. Default `scripts/hosts.env`; set it to the
-  consumer's own generated env file(s), or to an empty string for a Taskfile
-  with none.
-- The dotenv match is on the bare path anywhere in the file, not just a same-line
-  `dotenv:`, so the YAML multi-line list form is caught too.
+- The dotenv target is `scripts/hosts.env`, required when the Taskfile
+  references it. The match is on the bare path anywhere in the file, not just a
+  same-line `dotenv:`, so the YAML multi-line list form is caught too.
 - **Task references are resolved across the whole tree**, from both `cmds:`
   (`- task: NAME`) and `deps:` (a bare string, a `- task: NAME` mapping, or the
   inline `deps: [a, b]` list). A bare name qualifies against the including
   namespace and a leading-colon name against the root, the way go-task resolves
   them, so a dangling entry fails here rather than at the moment an operator
   runs the task. A reference holding `{{` is templated and skipped.
-  `CHECK_TASKFILE_REFS=0` turns the arm off.
 - **A fragment no `includes:` entry reaches is a failure.** Such a file is
   wholly inert: `task --list` omits every task in it and no other gate fires.
-  `CHECK_TASKFILE_FRAGMENT_DIR` names the directory scanned (default
-  `taskfiles`); set it to an empty string for a repo that keeps none.
+  The scanned directory is `taskfiles`.
 
 ---
 
@@ -2584,9 +2442,8 @@ change the pipeline with no commit in the consuming repo.
   still cannot run. A GitHub consumer also has no `include:` to drift (it vendors
   workflows), so it is simply not wired there.
 - **Flags:** `--ci-file PATH` (default `<repo root>/.gitlab-ci.yml`),
-  `--project` (default `eric/weisssrv-lib`),
-  `--ref-var` (default `WEISSSRV_LIB_REF`), `--input` (default `lib_ref`),
-  `--fix`, `--bump vX.Y.Z`, `--print`.
+  `--project` (default `eric/weisssrv-lib`), `--fix`, `--bump vX.Y.Z`,
+  `--print`.
 - **`--print`** writes the declared tag to stdout and nothing else, for a
   Taskfile or a shell: `MOLECULE_TEST_IMAGE=…/molecule-test:$(scripts/check-lib-pins.py --print)`.
   A file that declares no release tag exits 2 and prints nothing, rather than
@@ -2634,11 +2491,7 @@ change the pipeline with no commit in the consuming repo.
   naming the pipeline file or its requirements.yml) is refused rather than
   letting one plan discard the other.
 - **`--fix`** rewrites every surface from the declared tag and reports one count
-  (`rewrote N pin(s) at vX.Y.Z`). On a repo still carrying the literal layout it
-  CONVERTS it: the current `variables.WEISSSRV_LIB_REF` becomes the header
-  default, and every pin becomes the interpolation. It reuses an existing
-  leading `---` as the document separator, adds one when there is none, and is
-  idempotent from the second run. The rewrite is textual, so comments and
+  (`rewrote N pin(s) at vX.Y.Z`). The rewrite is textual, so comments and
   formatting survive, but the lines it touches come from the PARSED tree — the
   `ref` key of each direct mapping under `include:`, the `variables:` entry, the
   header's `default:` — exactly the nodes `check()` reads, so the two halves
@@ -2651,11 +2504,9 @@ change the pipeline with no commit in the consuming repo.
   byte is written:
   - the ref is validated first, so a branch is reported instead of propagated
     to every pin;
-  - a file that declares neither a header default nor a literal variable has
-    nothing to convert FROM, and says so;
-  - a file whose header exists but declares no `lib_ref:` input with a
-    `default:` is refused, because inventing an input inside someone else's
-    header is not a line rewrite;
+  - a file whose header declares no `lib_ref:` input with a `default:`, or
+    that has no header, is refused, because writing a header or an input is
+    not a line rewrite;
   - the output is re-parsed and every pin must have landed as the exact string
     intended;
   - targets are bounded to the `include:` block's own span, so an aliased entry
@@ -2719,9 +2570,6 @@ kubectl get pods,deployments,statefulsets,daemonsets,verticalpodautoscalers \
   the pair they were admitted with. Containers whose limits an active VPA owns
   are skipped, and the skip count is printed so a shrinking findings list cannot
   be mistaken for a fixed cluster.
-- `LIVE_CPU_LIMIT_ALLOWLIST` in the script is empty by design, keyed
-  `namespace/pod-name-prefix/container`. An entry is a claim that CFS throttling
-  is WANTED there, and needs a reason beside it.
 - **Exit codes:** 0 clean (memory drift is a warning only, so it does not own
   the exit code), 1 on a live CPU limit, 2 on an operator error. The empty-input
   arm comes from `gate_common.load_live_items`: a valid but EMPTY item list is
@@ -2743,7 +2591,6 @@ bump.
 ```
 scripts/check-vendored-copies.py [--manifest FILE] [--repo-root DIR]
     [--lib-path DIR] [--ref GIT_REF] [--require-ref] [--list]
-    [--scan CONSUMER_DIR=LIB_PREFIX]
 ```
 
 - **Two relationships.** `vendored` is byte-identical — drift in either
@@ -2771,11 +2618,6 @@ scripts/check-vendored-copies.py [--manifest FILE] [--repo-root DIR]
   (the canonical `tests/test_check_lib_pins.py`) and vendored workflows are all
   listable — which is where the unguarded copies were. What a manifest may
   name is bounded by the library's offer list, `scripts/vendorable-paths.yml`.
-- **`--scan CONSUMER_DIR=LIB_PREFIX`** (repeatable) reports a file under that
-  consumer tree whose offered library twin at `LIB_PREFIX/<relpath>` no manifest
-  entry registers, so an unregistered copy is caught rather than drifting
-  unguarded. A `--scan` naming a directory that does not exist is an operator
-  error, never a silent skip.
 - **This gate itself is never vendored.** A consumer runs it from a library
   checkout with `--lib-path`; only the files it compares are copies, and the
   offer list deliberately excludes the engine (a copy of the gate would gate
@@ -2974,76 +2816,48 @@ no runnable scenario at all, or when the matrix exceeds `MAX_MATRIX_ENTRIES`
 ### `generate-molecule-pipeline.py` (PyYAML)
 
 Emits a targeted molecule child pipeline for an MR: derives the role dependency
-graph from `meta/main.yml` + `include_role`/`import_role` in production dirs and
-the stack→roles map from each integration scenario, then selects the affected
-scenarios transitively. Fails loudly (exit 2) on a role missing from the matrix
-rather than silently under-selecting; any global-trigger path selects everything.
+graph from `meta/main.yml` + `include_role`/`import_role` in production dirs,
+then selects the affected scenarios transitively. Fails loudly (exit 2) on a
+role missing from the matrix rather than silently under-selecting; any
+global-trigger path selects everything.
 
 ```
-generate-molecule-pipeline.py [BASE_SHA | --diff-base SHA | --changed-files-from FILE|-]
-    [-o out.yml] [--repo DIR] [--print-graph]
+generate-molecule-pipeline.py [BASE_SHA | --changed-files-from FILE|-]
+    [-o out.yml] [--repo DIR]
 ```
 
-- **Forge: gitlab-only** — it reads a GitLab `parallel:matrix` and emits a
-  GitLab child-pipeline YAML. The dependency graph it derives (roles →
-  scenarios → affected set) is forge-neutral and lives in `compute_affected`.
-- **Env:** `CI_FILE`, `ROLES_DIR`, `INTEGRATION_DIR` — repo-relative locations,
-  same names as `check-molecule-matrix-coverage.sh`, so one CI `variables:` block
-  configures both (e.g. `ROLES_DIR=ansible_collections/<ns>/<name>/roles` for a
-  collection layout). `MOLECULE_JOBS_INCLUDE` — the file the generated child
-  `include: local:`s. `MOLECULE_GLOBAL_TRIGGERS` — extra global-trigger paths
-  (space-separated; a trailing `/` makes it a prefix).
-  `MOLECULE_GLOBAL_TRIGGERS_MODE` — `extend` (default) or `replace`; see below.
-- The collection-root paths that force a full matrix follow `ROLES_DIR` (its
-  parent): `requirements.yml`, `galaxy.yml`, `meta/`, `plugins/` and
-  `molecule-shared/` — none of them is a role or scenario path, so without this a
-  collection-wide change would select nothing and report green. `galaxy.yml` is
-  the one exception: a diff touching nothing but its `version:` key is dropped
-  from the changed set with a note, because every release MR bumps it and the
-  version lineage bears on no scenario. That needs a diff base — with
-  `--changed-files-from` or piped paths there is nothing to diff and `galaxy.yml`
-  stays a full trigger. `CI_FILE` and
-  `MOLECULE_JOBS_INCLUDE` are triggers too. A repo with no integration suite just
-  omits the `integration-tests` job from `CI_FILE`; a job that IS present with a
-  broken matrix still fails loudly.
-- **The rest of the default trigger set is the conventional layout, not a
-  derivation**: `scripts/molecule-retry.sh`, `scripts/generate-molecule-pipeline.py`,
-  `ansible/molecule/`, `ansible/playbooks/maintenance/`, `docker/molecule-test/`
-  and `docker/molecule-ci/`. A repo that keeps its image contexts or helpers
-  elsewhere would otherwise carry dead triggers *and* a full-matrix fan-out on
-  any `docker/` change, so `MOLECULE_GLOBAL_TRIGGERS_MODE=replace` drops that set
-  and takes `$MOLECULE_GLOBAL_TRIGGERS` as the whole of it. The derived and
-  CI-file entries above are not replaceable. An unknown mode value fails the job
-  rather than being ignored.
-- **Library-internal, not on the offer list.** A consumer reaches this generator
-  through `ci/validate/`'s image rather than a vendored copy, so
-  `scripts/vendorable-paths.yml` does not offer it and no manifest names it.
-- **`$MOLECULE_GLOBAL_TRIGGERS` must be paired with the plan job's `changes:`.**
-  A path listed here forces a full matrix *once the plan job runs* — but if that
-  path is not also in the `changes:` list that creates the plan job, an MR
-  touching only that path creates no plan job at all and the full matrix never
-  happens. The two lists are one setting expressed in two places; change them
-  together.
+- **Forge: gitlab-only.** It reads a GitLab `parallel:matrix` and emits a
+  GitLab child-pipeline YAML.
+- **Library-internal, not on the offer list.** Only this repo's own pipeline
+  runs it, through `ci/internal/molecule-matrix.gitlab-ci.yml`.
+- **Env:** `CI_FILE` and `ROLES_DIR` are repo-relative locations, with the same
+  names as `check-molecule-matrix-coverage.sh`. `MOLECULE_JOBS_INCLUDE` is the
+  file the generated child `include: local:`s.
+- **Full-matrix triggers.** The collection-root paths follow `ROLES_DIR`'s
+  parent: `requirements.yml`, `galaxy.yml`, `meta/`, `plugins/` and
+  `molecule-shared/`. None of them is a role or scenario path, so without this a
+  collection-wide change would select nothing and report green. `CI_FILE`,
+  `MOLECULE_JOBS_INCLUDE`, `scripts/molecule-retry.sh`, the generator,
+  `scripts/sanitize-junit-expected-failures.py`, `docker/molecule-test/` and
+  `docker/molecule-ci/` are triggers too.
+- **`galaxy.yml` version bumps are exempt.** A diff touching nothing but its
+  `version:` key is dropped from the changed set with a note, because every
+  release MR bumps it. That needs a diff base. With `--changed-files-from` or
+  piped paths, `galaxy.yml` stays a full trigger.
+- **A trigger needs the plan job's `changes:` too.** A trigger path missing from
+  the `changes:` list that creates the plan job never creates the plan, so the
+  full matrix never runs. Change the two lists together.
 - **How the changed-file list is obtained**, first match wins:
-  `--changed-files-from FILE` (`-` = stdin); then a base SHA (positional or
-  `--diff-base`), run as `git diff --name-only <base>...HEAD` — three-dot,
-  matching `CI_MERGE_REQUEST_DIFF_BASE_SHA` semantics; then stdin when it is not
-  a TTY.
-- **Single source of truth.** The scenario universe is the two `parallel:matrix`
-  blocks in the CI file, read-only — the same matrix
-  `check-molecule-matrix-coverage.sh` enforces, never re-hardcoded.
-- **Fail loud, never under-select.** A changed path under `<roles-dir>/<name>`
-  where `<name>` is not in the matrix raises; so does an unparseable or empty
-  molecule matrix, an `integration-tests` job whose matrix is empty or malformed
-  (only its complete ABSENCE reads as "no integration suite"), a selected role
-  with no matrix scenarios, and a YAML file that is present but unreadable. When
-  in doubt it selects MORE: any global-trigger path selects everything, and the
-  direct role→scenario mapping is a floor.
-- **Inventory paths** are handled by a derived inventory-consumer map (scenarios
-  are scanned for inventory-file references, resolved relative to the
-  referencing file), so a `group_vars` file selects only the scenarios that load
-  it.
-- Wired by `ci/internal/molecule-matrix.gitlab-ci.yml`.
+  `--changed-files-from FILE` (`-` = stdin); then the positional base SHA, run
+  as `git diff --name-only <base>...HEAD` to match
+  `CI_MERGE_REQUEST_DIFF_BASE_SHA`; then stdin when it is not a TTY.
+- **Single source of truth.** The scenario universe is the CI file's
+  `molecule-tests` `parallel:matrix`, the same matrix
+  `check-molecule-matrix-coverage.sh` enforces.
+- **Fail loud, never under-select.** It exits 2 on a changed path under
+  `<roles-dir>/<name>` where `<name>` is not in the matrix, a missing roles dir,
+  an unparseable or empty matrix, a selected role with no matrix scenarios, and
+  a YAML file that is present but unreadable.
 
 ### `maintenance-run-with-verify.sh`
 
@@ -3153,8 +2967,9 @@ scripts/check-role-default-flips.py --from <installed tag> --to <new tag>
 
 - It reads every role's defaults at both refs with `git`: `defaults/main.yml`,
   `main.yaml` or the files under `defaults/main/`. It reports each bool,
-  number, string or list default that both refs ship and that changed.
-  Mappings, and keys new on the `--to` side, are out of scope.
+  number, string, list or mapping default that the `--from` ref ships and that
+  changed. A mapping change names the changed keys, and a dropped key reports as
+  removed. A key new on the `--to` side is out of scope.
 - A flip the inventory declares nowhere fails with exit 1, unless `--allow`
   names it.
 - The inventory is read by structure: `vars:` mappings and inline host
@@ -3323,15 +3138,13 @@ scripts/unifi-settings-drift.py [--config FILE]
 
 | Script | Contract |
 |---|---|
-| `shell-lib.sh` | function-only, safe to source under `set -e`. `timeout_cmd <secs> <cmd…>` bounds a command. With neither `timeout` nor `gtimeout` on `PATH` it warns once per shell on stderr that probes run unbounded. `ssh_probe <target> <cmd>` is a bounded, non-interactive ssh. `kubectl_read <args…>` reads one object as JSON: 0 with the JSON on stdout, 3 when kubectl reports `(NotFound)`, 1 with kubectl's stderr for any other failure. stdout carries only the JSON; warnings from a successful read go to stderr. `captured_match <value> <bre>` tests a value already in hand through a here-string, so no `pipefail` SIGPIPE can turn a match into a failure. `url_contains <url> <bre>` and `ssh_contains <target> <cmd> <bre>` fetch, then test: 0 on a match, 1 on none, 2 when the fetch failed. `SHELL_LIB_CURL_MAX_TIME` bounds the fetch, default 10s |
-| `smoke-lib.sh` | the probe half of a per-guest smoke script. The script stays consumer-owned, because its endpoint list is site data. `http_status <url>` prints a HEAD request's status, or `000` when nothing answered, and always returns 0 so an errexit caller reaches the classifier. `check_http_ok` takes 2xx and 3xx. `check_registry_ok` also takes 401, because a registry answering without credentials is up. `check_http_below_500` takes anything below 500. `check_tcp_port <host> <port>` is a bounded `nc` probe. `smoke_url_contains` and `smoke_ssh_contains` test a literal needle; `smoke_ssh_matches` takes an ERE. All three return 0 on a match, 1 on none and 2 when the fetch failed. Their ssh is non-interactive and bounded by `SMOKE_LIB_SSH_MAX_TIME`, default 30s. `SMOKE_LIB_CURL_MAX_TIME` bounds every fetch. `smoke_check <label> <cmd…>` and `smoke_optional <label> <reason> <cmd…>` keep the `SMOKE_PASS` / `SMOKE_FAIL` ledger, and `smoke_summary` prints it and is the script's exit status |
+| `shell-lib.sh` | function-only, safe to source under `set -e`. `timeout_cmd <secs> <cmd…>` bounds a command. With neither `timeout` nor `gtimeout` on `PATH` it warns once per shell on stderr that probes run unbounded. `ssh_probe <target> <cmd>` is a bounded, non-interactive ssh |
+| `smoke-lib.sh` | the probe half of a per-guest smoke script. The script stays consumer-owned, because its endpoint list is site data. `http_status <url>` prints a HEAD request's status, or `000` when nothing answered, and always returns 0 so an errexit caller reaches the classifier. `check_http_ok` takes 2xx and 3xx. `check_registry_ok` also takes 401, because a registry answering without credentials is up. `check_http_below_500` takes anything below 500. `check_tcp_port <host> <port>` is a bounded `nc` probe. `smoke_url_contains` and `smoke_ssh_contains` test a literal needle; `smoke_ssh_matches` takes an ERE. All three return 0 on a match, 1 on none and 2 when the fetch failed. Their ssh is non-interactive and bounded at 30s, and every fetch at 10s. `smoke_check <label> <cmd…>` and `smoke_optional <label> <reason> <cmd…>` keep the `SMOKE_PASS` / `SMOKE_FAIL` ledger, and `smoke_summary` prints it and is the script's exit status |
 | `ci-run-check.sh` | function-only driver a consolidated gate job sources. `run_check <name> <cmd…>` runs one check in a `set -eo pipefail` subshell, so a helper failing mid-body fails the check. errexit is off only around that subshell and is restored to the state the caller had, so a failure records itself in `overall` / `failed` and the next check still runs. Each check gets a collapsible log section when `GITLAB_CI` is set and a plain `== name` heading elsewhere. `run_check_summary [label]` names every failure and returns the job's status |
 | `deploy-verify-lib.sh` | function-only readiness classifiers a consumer's `deploy-verify.sh` sources; each reads kubectl output on stdin and needs `jq` or `awk`. `count_not_ready` prints how many list items are not Ready, or 999 when jq fails. `not_ready_ns_names` and `helmreleases_not_ready_names` print the not-Ready items, and `helmreleases_hard_failed` the HelmReleases with a terminal failure reason or a non-zero failure count; all three return non-zero on a jq failure, so an unknown list never reads as empty. `steady_state <count>` prints `true` only at exactly 0. `nodes_not_ready_count`, `pods_not_running_or_completed`, `pods_non_transient` and `pods_running_unready` read `--no-headers` rows |
 | `find-reachable-host.sh` | prints the first reachable SSH target from its args, exit 1 if none |
-| `find-pve-host-for-vm.sh` | prints which Proxmox host runs a VMID (ha-manager → `pvesh /cluster/resources` → per-host `qm status`) |
 | `resolve-tool.sh` | prints how to invoke a Python dev tool (`PATH` → `python3 -m <module>` → validated pyenv glob) |
 | `cluster-config-value.sh` | prints one or more `data:` values from the cluster-config ConfigMap, space-separated; fails on an absent key rather than printing nothing. `$CLUSTER_CONFIG` overrides the path |
-| `collect-state-lib.sh` | function-only helpers a consumer's `collect-state.sh` sources: `REDACT_PATTERNS` + `redact_file`, the `cs_capped` / `cs_emit` section emitters, `warning_events_filter`, `coerce_int`, and the `classify_regular` / `regular_failing_predicates` / `classify_json` verdicts. Detail below |
 | `taskfile_tree.py` | importable flattener for a `Taskfile.yml` `includes:` tree (PyYAML): `include_paths(repo)` reads both entry shapes (a bare path and a `taskfile:` mapping), `taskfile_paths` prepends the root file, `load_tasks` returns every task keyed by the name `task <name>` would run with each `- task:`/`deps:` reference rewritten fully qualified (a leading colon is root-relative, a bare name resolves inside its namespace), and `task_names` drops `internal: true` templates. Rewriting is done on a copy, so two namespaces including one fragment do not qualify each other's |
 | `inventory_tree.py` | importable Ansible-inventory resolver (PyYAML): `group_index(inventory)` indexes every group that carries content, merged across occurrences; `resolve_hosts(name, index)` expands a group in inventory order with children depth first, deduped, and terminates on a cycle (`strict=True` raises `InventoryCycle`); `declared_groups` also counts a null-bodied placeholder; `host_vars` merges a host's vars across every group listing it; `all_hosts`, `hosts_by_address` and `addresses_by_host` read off that. `generate-hosts-env.py` imports it from its own directory: vendor the pair |
 | `ci_playbook_invocations.py` | importable argv walk over a job script's `ansible-playbook` calls: `parse_invocations(text)` returns one dict per call (`inventory`, `playbook`, `limit`, `tags`, `skip_tags`, `argv`). Every call is returned, so two chained on one script line are two invocations, and `--skip-tags` is kept out of `tags` so a gate never reads a skip as a selection. Stdlib only. `check-deploy-preflight.py` imports it from its own directory: vendor the pair |
@@ -3368,6 +3181,11 @@ redaction guard, the output emitters and the verdict ladder.
   OK / PARTIAL / FAILED ladder, the second naming which predicates failed) and
   `classify_json` (healthy / degraded / catastrophic). The two read the same
   signals, so a signal added to one is added to the other.
+- **`compose_active_sections <health_url> <nginx_cert> <backup_timer>
+  <backup_prom>`** prints the comma-joined active sections in output order. A
+  `-` argument drops that section, and `metrics` needs `backup`.
+- **`firewall_guest_fw_list`** reads candidate `/etc/pve/firewall/*.fw` paths
+  on stdin and prints the per-guest ones sorted, without `cluster.fw`.
 - Function-only and safe to source under `set -e`. Requires `jq` only for
   `warning_events_filter`.
 
@@ -3428,8 +3246,8 @@ scripts/wait-for-reloader-roll.sh ns app "$gen" 60 provider
 
 Confirmation ceremony for an apply a human must watch. It refuses a non-tty, so
 a scheduled pipeline cannot reach the prompt and answer it from a piped stdin;
-it refuses every `-auto-approve` spelling; and it makes the operator type the
-confirm word.
+it refuses every `-auto-approve` spelling; and it makes the operator type
+`apply`.
 
 ```
 scripts/supervised-apply-guard.sh unifi:apply "the UniFi network" "$@"
@@ -3438,11 +3256,8 @@ scripts/supervised-apply-guard.sh unifi:apply "the UniFi network" "$@"
 - Takes the task name and what the apply rewrites, then the task's own CLI args
   so the `-auto-approve` scan sees them. Call it as the task's FIRST command, so
   `read` inherits the task's stdin.
-- `SUPERVISED_APPLY_CONFIRM_WORD` (default `apply`) sets the word. An
-  explicitly empty value is an operator error, because a bare Enter would
-  then approve.
 - **Exit codes:** 0 confirmed, 1 the operator declined, 2 a refusal — no
-  terminal, `-auto-approve`, too few arguments, or an empty confirm word.
+  terminal, `-auto-approve` or too few arguments.
 
 ---
 
@@ -3451,7 +3266,6 @@ scripts/supervised-apply-guard.sh unifi:apply "the UniFi network" "$@"
 | Path | What it is |
 |---|---|
 | `kubernetes/ddns/cloudflare-ddns.py` | a Cloudflare dynamic-DNS CronJob program. See [`cloudflare-ddns.py`](#cloudflare-ddnspy) |
-| `kubernetes/reapers/kube_reaper.py` | the shared half of a pod-reaper CronJob program (kube-apiserver client, paging, age arithmetic, uid-preconditioned deletes, config validation, entry point). Stdlib only; mounted beside the app script so `import kube_reaper` resolves from the same directory |
 | `tests/copier_render.py` | copier render harness for a template repo's own suite: `copy_source`, `copier_argv`, `render`, `cli_main`, `check_registered_copies`. Every per-repo value is a parameter; pass `check_registered_copies(..., ref=...)` the consumer's own `WEISSSRV_LIB_REF` so the engine compares against the pinned release instead of the library working tree |
 | `lint/gitattributes` | the line-ending policy, vendored as a consumer's `.gitattributes` |
 
@@ -3474,60 +3288,6 @@ kustomization, because kustomize refuses sources outside its root.
 
 ---
 
-## Extraction queue
-
-These scripts exist in both cluster repos without being offered here, so every
-fix has to be made twice and nothing notices when one copy is missed. Where the
-two copies differ, extracting one means reconciling two behaviours, not copying
-a file.
-
-One of them needs no extraction. The library already offers the gate under
-another name, so it is a consumer-adoption item, not library work:
-
-- `flux-corpus-gates.sh` → [`run-render-gates.sh`](#run-render-gatessh) plus the
-  consumer's own `render-gates.conf`. The config file holds the gate list, the
-  per-gate flags and the corpus appends, and the driver keeps the rule that
-  exit 2 is not a finding.
-
-The rest, with what has to become a flag or a config key before each can ship
-from here:
-
-| Script | Site data to lift out |
-|---|---|
-| `audit-tenant-admission.sh` | nothing: byte-identical in both cluster repos, so it can be offered as it stands |
-| `bootstrap-proxmox-host.sh` | repository URLs, pool names and the package set |
-| `check-ansible-service-names.py` | nothing — it reads the playbook tree and a unit-suffix list |
-| `check-ci-pin-parity.sh` | the pin names written twice; near-neighbour of `check-lib-pins.py` |
-| `check-cluster-literals.py` | the literal patterns and the trees exempted because a tool parses them before Flux substitutes |
-| `check-collection-pin-trigger.py` | the CI file and the requirements path the deploy jobs must trigger on |
-| `check-deploy-host-coverage.py` | the inventory, playbook and CI paths |
-| `check-grafana-sidecar-init.py` | nothing: byte-identical in both cluster repos, so it can be offered as it stands |
-| `check-integration-matrix-coverage.py` | the integration-test directory and the matrix job name; near-neighbour of `check-molecule-matrix-coverage.sh` |
-| `check-unmanaged-secrets.py` | the owner allowlist; reads live `kubectl get -o json`, so it wants `gate_common.load_live_items` |
-| `check-upstream-rule-mirror.py` | the chart-version source file and the mirror locations |
-| `deploy-verify.sh` | the probe list; [`deploy-verify-lib.sh`](#shell-helpers) already holds the readiness classifiers, so only the driver is left |
-| `diagnose-network-issues.sh` | the addresses and interfaces it probes |
-| `flux-rotate-db-password.sh` | the role list, the 1Password item names and the workloads it restarts |
-| `maintenance-lib.sh` | the host and guest lists; pairs with `maintenance-run-with-verify.sh`, already offered |
-| `post-maintenance-verify.sh` | the probe list, as for `deploy-verify.sh` |
-
-A script a consumer owns on purpose is not on this queue: `collect-state.sh`,
-the per-guest smoke scripts and `version-registry.py` are site data by
-definition, and the library ships their shared halves
-(`collect-state-lib.sh`, `smoke-lib.sh`, `version-registry.example.py`).
-
----
-
-## Linters the family runs from a template, not a script
-
-`tflint` has no script here: it ships as the CI template
-[`ci/lint/terraform-tflint.yml`](INCLUDE-CONTRACT.md#cilintterraform-tflintyml),
-which consumers include instead of carrying a local job. It catches deprecated
-syntax, unused declarations and provider-specific rules that `terraform
-validate` does not. Run it by hand against a module when a plan surprises you.
-
----
-
 ## Tests
 
 Every script above has a suite in `tests/`, run by the library's `python-tests`
@@ -3542,5 +3302,4 @@ and nothing the ambient environment sets can change what they assert.
 That sentence is itself gated by `tests/test_scripts_have_tests.py`: it walks
 `scripts/` recursively for every executable (plus every `.py`/`.sh`, since
 three scripts are vendored rather than run in place) and requires each one to have a
-suite that names it, defines tests, and to be mentioned on this page. Opting a
-file out means naming it in that file's `EXEMPT` map, with a reason.
+suite that names it, defines tests, and to be mentioned on this page.

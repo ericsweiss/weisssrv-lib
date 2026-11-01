@@ -10,6 +10,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = (REPO / "ansible_collections" / "weisssrv" / "infra" / "roles" / "nas_storage"
           / "files" / "mergerfs-idle-probe.sh")
@@ -45,9 +47,19 @@ def _run(env: dict, *args: str) -> subprocess.CompletedProcess:
                           capture_output=True, text=True)
 
 
-def test_an_unheld_union_is_idle(tmp_path):
-    proc = _run(_env(tmp_path, "#!/bin/sh\nexit 1\n"), "/union")
-    assert proc.returncode == 0, proc.stderr
+@pytest.mark.parametrize(
+    ("fuser", "union"),
+    [
+        pytest.param(FAILS, "/union", id="unheld"),
+        pytest.param('#!/bin/sh\necho "/union:" >&2\nexit 1\n', "/union", id="path-header-only"),
+        pytest.param('#!/bin/sh\necho "fuser: warning: something odd" >&2\nexit 0\n', "/union",
+                     id="warning-on-success"),
+        pytest.param('#!/bin/sh\necho "$2:" >&2\nexit 1\n', "/mnt/my union", id="header-with-space"),
+    ],
+)
+def test_a_union_fuser_looked_at_and_found_unheld_is_idle(tmp_path, fuser, union):
+    proc = _run(_env(tmp_path, fuser), union)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
     assert proc.stdout.strip() == "IDLE"
 
 
@@ -67,60 +79,37 @@ def test_an_absent_fuser_is_not_an_idle_union(tmp_path):
 
 
 def test_a_missing_argument_is_a_usage_error(tmp_path):
-    proc = _run(_env(tmp_path, "#!/bin/sh\nexit 1\n"))
+    proc = _run(_env(tmp_path, FAILS))
     assert proc.returncode == 2
     assert proc.stdout == ""
 
 
-def test_fuser_printing_only_the_path_header_is_idle(tmp_path):
-    proc = _run(_env(tmp_path, '#!/bin/sh\necho "/union:" >&2\nexit 1\n'), "/union")
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "IDLE"
-
-
 def test_an_unmounted_union_is_not_idle(tmp_path):
-    proc = _run(_env(tmp_path, "#!/bin/sh\nexit 1\n", "#!/bin/sh\nexit 1\n"), "/union")
+    proc = _run(_env(tmp_path, FAILS, FAILS), "/union")
     assert proc.returncode == 4
     assert proc.stdout.strip() == "NOT_MOUNTED: /union"
 
 
-def test_a_failed_fuser_is_a_probe_error(tmp_path):
-    fuser = ("#!/bin/sh\necho \"Cannot stat file /union: Transport endpoint is not connected\" >&2\n"
-             "exit 1\n")
-    proc = _run(_env(tmp_path, fuser), "/union")
+@pytest.mark.parametrize(
+    ("fuser", "mountpoint", "findmnt", "expected"),
+    [
+        pytest.param(
+            '#!/bin/sh\necho "Cannot stat file /union: Transport endpoint is not connected" >&2\nexit 1\n',
+            MOUNTED, FAILS,
+            "PROBE_ERROR: fuser failed on /union\n"
+            "Cannot stat file /union: Transport endpoint is not connected",
+            id="failed-fuser",
+        ),
+        pytest.param(FAILS, None, FAILS, "PROBE_ERROR: mountpoint is not installed",
+                     id="absent-mountpoint"),
+        pytest.param(FAILS, FAILS, '#!/bin/sh\necho "/union mergerfs pool"\nexit 0\n',
+                     "PROBE_ERROR: /union is mounted but not responding", id="disconnected-union"),
+        pytest.param(FAILS, MOUNTED, None, "PROBE_ERROR: findmnt is not installed",
+                     id="absent-findmnt"),
+    ],
+)
+def test_a_probe_that_could_not_look_is_a_probe_error(tmp_path, fuser, mountpoint, findmnt,
+                                                     expected):
+    proc = _run(_env(tmp_path, fuser, mountpoint, findmnt), "/union")
     assert proc.returncode == 3
-    assert "PROBE_ERROR" in proc.stdout
-    assert "Transport endpoint" in proc.stdout
-    assert "IDLE" not in proc.stdout
-
-
-def test_an_absent_mountpoint_binary_is_a_probe_error(tmp_path):
-    proc = _run(_env(tmp_path, "#!/bin/sh\nexit 1\n", None), "/union")
-    assert proc.returncode == 3
-    assert "PROBE_ERROR" in proc.stdout
-
-
-def test_a_disconnected_union_is_a_probe_error_not_unmounted(tmp_path):
-    findmnt = '#!/bin/sh\necho "/union mergerfs pool"\nexit 0\n'
-    proc = _run(_env(tmp_path, FAILS, FAILS, findmnt), "/union")
-    assert proc.returncode == 3
-    assert proc.stdout.strip() == "PROBE_ERROR: /union is mounted but not responding"
-
-
-def test_an_absent_findmnt_binary_is_a_probe_error(tmp_path):
-    proc = _run(_env(tmp_path, FAILS, MOUNTED, None), "/union")
-    assert proc.returncode == 3
-    assert proc.stdout.strip() == "PROBE_ERROR: findmnt is not installed"
-
-
-def test_a_fuser_warning_on_success_is_idle(tmp_path):
-    fuser = '#!/bin/sh\necho "fuser: warning: something odd" >&2\nexit 0\n'
-    proc = _run(_env(tmp_path, fuser), "/union")
-    assert proc.returncode == 0, proc.stdout
-    assert proc.stdout.strip() == "IDLE"
-
-
-def test_the_path_header_of_a_union_with_a_space_is_idle(tmp_path):
-    proc = _run(_env(tmp_path, '#!/bin/sh\necho "$2:" >&2\nexit 1\n'), "/mnt/my union")
-    assert proc.returncode == 0, proc.stdout
-    assert proc.stdout.strip() == "IDLE"
+    assert proc.stdout.strip() == expected

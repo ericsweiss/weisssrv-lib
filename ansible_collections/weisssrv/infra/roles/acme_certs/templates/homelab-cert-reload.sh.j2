@@ -24,9 +24,6 @@ case "${1:-}" in
     "") ;;
     *) echo "usage: $0 [--check]" >&2; exit 1 ;;
 esac
-if [ "${HOMELAB_CERT_CHECK:-0}" = "1" ]; then
-    CHECK_ONLY=1
-fi
 
 # A probe is retried before it writes 0: the gauge holds until the next daily
 # run, so one SSH blip would otherwise read as a dead target for a whole day.

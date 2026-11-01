@@ -72,20 +72,6 @@ class TestTheProgramLivesInOneFile:
         is nowhere."""
         assert fragment in SCRIPT.read_text(encoding="utf-8")
 
-    def test_both_arms_invoke_the_script(self):
-        script = _rendered_script()
-        assert script.count('bash "$FLUX_LINT_SCRIPT"') == 2
-        assert "--mode simple" in script
-
-    def test_a_consumer_that_has_not_vendored_it_is_told_so(self):
-        script = _rendered_script()
-        assert '[ -f "$FLUX_LINT_SCRIPT" ]' in script
-        assert "scripts/vendorable-paths.yml" in script
-
-    def test_the_script_path_is_a_consumer_tree_input(self):
-        inputs, _body = _spec_and_body()
-        assert inputs["flux_lint_script"]["default"] == "scripts/flux-lint.sh"
-
 
 class TestTheJobKeepsWhatExtraValidationReads:
     """`extra_validation` is consumer shell injected into THIS shell, so the
@@ -109,11 +95,6 @@ class TestTheJobKeepsWhatExtraValidationReads:
 
 
 class TestArmScopedInputs:
-    @pytest.mark.parametrize("name", ["kustomize_path", "allowed_skips", "cluster_dir"])
-    def test_each_arm_scoped_input_says_which_arm_reads_it(self, name):
-        inputs, _body = _spec_and_body()
-        assert re.search(r"\(substitute=(true|false)\)", inputs[name]["description"]), name
-
     def test_substitute_mode_requires_cluster_dir(self):
         """cluster_dir carries a default, so the substitute arm has to check it."""
         assert "cluster_dir is required when substitute=true" in _rendered_script()
@@ -128,11 +109,6 @@ class TestArmScopedInputs:
         # The non-root tenant arm substitutes nothing, so it must not pay for
         # the download: the `else` half takes kubeconform and kustomize only.
         assert "flux" not in before.split("else", 1)[1]
-
-    def test_the_cli_is_installed_from_the_input_the_guard_compares(self):
-        inputs, _body = _spec_and_body()
-        assert 'FLUX_VERSION: "$[[ inputs.flux_version ]]"' in TEMPLATE.read_text()
-        assert inputs["flux_version"]["default"]
 
 
 class TestTheWiringActuallyRuns:
@@ -157,7 +133,7 @@ class TestTheWiringActuallyRuns:
             CLUSTER_DIR="kubernetes/clusters/demo",
             VERSIONS_CONFIGMAP=(
                 "kubernetes/infrastructure/sources/versions-configmap.yaml"),
-            FLUX_RENDER_SCRIPT=str(REPO / "scripts" / "flux-render.sh"),
+            FLUX_RENDER_SCRIPT=str(REPO / "scripts" / "flux-env.sh"),
             SKIPPED_SCRIPT=str(REPO / "scripts" / "kubeconform-skipped.py"),
             EXPECTED_SKIPPED_FILE="", REQUIRE_CLUSTER_ROOT="true",
         )
@@ -173,7 +149,7 @@ class TestTheWiringActuallyRuns:
             CLUSTER_DIR="kubernetes/clusters/demo",
             VERSIONS_CONFIGMAP=(
                 "kubernetes/infrastructure/sources/versions-configmap.yaml"),
-            FLUX_RENDER_SCRIPT=str(REPO / "scripts" / "flux-render.sh"),
+            FLUX_RENDER_SCRIPT=str(REPO / "scripts" / "flux-env.sh"),
             SKIPPED_SCRIPT=str(REPO / "scripts" / "kubeconform-skipped.py"),
             EXPECTED_SKIPPED_FILE="", REQUIRE_CLUSTER_ROOT="true",
         )
@@ -202,3 +178,4 @@ class TestTheWiringActuallyRuns:
                          KUSTOMIZE_PATH="kubernetes/apps", ALLOWED_SKIPS="0")
         assert proc.returncode == 1
         assert "scripts/flux-lint.sh not found" in proc.stdout
+        assert "scripts/vendorable-paths.yml" in proc.stdout

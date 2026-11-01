@@ -116,8 +116,8 @@ class CrdSources:
         return self.charts.get(chart, [])
 
 
-def load_crd_sources(path: str | None, flags: list[str]) -> CrdSources:
-    """`--crd-source` YAML plus `--crd-group CHART=GROUP` flags."""
+def load_crd_sources(path: str | None) -> CrdSources:
+    """The `--crd-source` YAML chart/release -> API group map."""
     charts: dict[str, list[str]] = {}
     releases: dict[str, list[str]] = {}
     external: dict[str, str] = {}
@@ -149,14 +149,6 @@ def load_crd_sources(path: str | None, flags: list[str]) -> CrdSources:
             if not str(reason or "").strip():
                 raise OperatorError(f"--crd-source {path}: external_groups[{group}] has no reason")
             external[str(group)] = str(reason).strip()
-    for raw in flags or []:
-        chart, sep, group = raw.partition("=")
-        if not (sep and chart.strip() and group.strip()):
-            raise OperatorError(f"--crd-group takes CHART=GROUP, got {raw!r}")
-        # A flag extends the file's entry for that chart and replaces the built-in one.
-        entry = charts.setdefault(chart.strip(), [])
-        if group.strip() not in entry:
-            entry.append(group.strip())
     return CrdSources(charts, releases, external)
 
 
@@ -352,17 +344,6 @@ def findings(
     return out, checked, used, unresolved
 
 
-def parse_stage_corpus(values: list[str]) -> dict[str, Path]:
-    """`STAGE=FILE` pairs: a rendered corpus that replaces the walk of that stage."""
-    out: dict[str, Path] = {}
-    for raw in values or []:
-        name, sep, path = raw.partition("=")
-        if not (sep and name.strip() and path.strip()):
-            raise OperatorError(f"--stage-corpus takes STAGE=FILE, got {raw!r}")
-        out[name.strip()] = Path(path.strip())
-    return out
-
-
 def bootstrap_groups(cluster_dir: Path) -> set[str]:
     """Groups of the CRD manifests the cluster root applies before any stage."""
     groups: set[str] = set()
@@ -387,20 +368,13 @@ def run(args) -> int:
     cluster_dir = root / args.cluster_dir
     if not cluster_dir.is_dir():
         raise OperatorError(f"--cluster-dir {cluster_dir} does not exist")
-    sources = load_crd_sources(args.crd_source, args.crd_group)
+    sources = load_crd_sources(args.crd_source)
     exempt = load_exempt(args.exempt, args.exempt_file)
-    corpora = parse_stage_corpus(args.stage_corpus)
     stages = load_stages(cluster_dir)
     if not stages:
         raise OperatorError(f"no Flux Kustomization in the top-level files of {cluster_dir}")
-    unknown = sorted(set(corpora) - set(stages))
-    if unknown:
-        raise OperatorError(f"--stage-corpus names no stage: {', '.join(unknown)}")
     paths = {name: stage_dir(root, s.path) for name, s in stages.items()}
     for stage in stages.values():
-        if stage.name in corpora:
-            stage.docs = _read(corpora[stage.name])
-            continue
         others = frozenset(p for n, p in paths.items() if n != stage.name and p != paths[stage.name])
         stage.docs = walk(paths[stage.name], set(), others)
     found, checked, used, unresolved = findings(stages, sources, exempt, bootstrap_groups(cluster_dir))
@@ -439,14 +413,6 @@ def main(argv: list[str] | None = None) -> int:
         help="directory holding the stage Kustomizations, relative to --repo-root",
     )
     parser.add_argument("--crd-source", metavar="PATH", help="YAML chart/release -> API group map")
-    parser.add_argument(
-        "--crd-group", action="append", default=[], metavar="CHART=GROUP",
-        help="a group a chart's CRDs serve; repeatable",
-    )
-    parser.add_argument(
-        "--stage-corpus", action="append", default=[], metavar="STAGE=FILE",
-        help="a rendered corpus read in place of that stage's manifests; repeatable",
-    )
     parser.add_argument(
         "--exempt", action="append", default=[], metavar="NAMESPACE/KIND/NAME=REASON",
         help="a custom resource exempt from the rule, with its reason; repeatable",

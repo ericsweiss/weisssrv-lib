@@ -53,6 +53,12 @@ def _write(path: Path, *docs: dict) -> None:
     path.write_text(yaml.safe_dump_all(docs))
 
 
+def _source(tmp_path: Path, **doc) -> str:
+    path = tmp_path / "crd-sources.yaml"
+    path.write_text(yaml.safe_dump(doc))
+    return str(path)
+
+
 def _tree(tmp_path: Path, controllers=(), configs=(), configs_wait_on_controllers=True,
           controllers_wait=True) -> Path:
     """sources <- controllers <- configs, with a kustomization.yaml in each."""
@@ -192,7 +198,8 @@ def test_cert_manager_installs_its_crds_once_opted_in(tmp_path, capsys, values):
 def test_a_mapped_chart_replaces_the_built_in_opt_in_rule(tmp_path):
     plain = _release("cert-manager", "cert-manager", "cert-manager")
     root = _tree(tmp_path, controllers=[plain], configs=[ISSUER])
-    assert _run(root, "--crd-group", "cert-manager=cert-manager.io") == 0
+    source = _source(tmp_path, charts={"cert-manager": ["cert-manager.io"]})
+    assert _run(root, "--crd-source", source) == 0
 
 
 def test_traefik_crds_with_default_values_serves_no_hub_group(tmp_path, capsys):
@@ -209,19 +216,19 @@ def test_the_map_names_a_chart_the_heuristic_does_not_know(tmp_path):
     ordered = _tree(tmp_path / "a", controllers=[operator], configs=[WIDGET])
     assert _run(ordered) == 1  # unmapped
     assert _run(ordered, "--allow-unresolved") == 2  # so nothing resolved
-    assert _run(ordered, "--crd-group", "widget-operator=example.io") == 0
+    source = _source(tmp_path, charts={"widget-operator": ["example.io"]})
+    assert _run(ordered, "--crd-source", source) == 0
     beside = _tree(tmp_path / "b", controllers=[operator, WIDGET])
-    assert _run(beside, "--crd-group", "widget-operator=example.io") == 1
+    assert _run(beside, "--crd-source", source) == 1
 
 
 def test_a_release_entry_in_the_map_is_authoritative(tmp_path):
     root = _tree(tmp_path, controllers=[_release("eso", "eso", "external-secrets"), SECRET],
                  configs=[CRD, WIDGET])
-    source = tmp_path / "crd-sources.yaml"
-    source.write_text(yaml.safe_dump({"releases": {"eso/HelmRelease/eso": []}}))
+    source = _source(tmp_path, releases={"eso/HelmRelease/eso": []})
     # The map says ESO installs nothing, so only the Widget/CRD pair is checked:
     # configs holds both, which passes.
-    assert _run(root, "--crd-source", str(source), "--allow-unresolved") == 0
+    assert _run(root, "--crd-source", source, "--allow-unresolved") == 0
 
 
 def test_an_unmapped_group_fails_unless_allowed(tmp_path, capsys):
@@ -236,9 +243,8 @@ def test_an_unmapped_group_fails_unless_allowed(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "WARNING: 1 custom resource group(s) unchecked" in captured.err
     assert "CRD stage order OK" in captured.out
-    source = tmp_path / "crd-sources.yaml"
-    source.write_text(yaml.safe_dump({"external_groups": {"example.io": "a k3s add-on"}}))
-    assert _run(root, "--crd-source", str(source)) == 0
+    source = _source(tmp_path, external_groups={"example.io": "a k3s add-on"})
+    assert _run(root, "--crd-source", source) == 0
     assert "unchecked" not in capsys.readouterr().err
 
 
@@ -258,14 +264,6 @@ def test_an_exemption_passes_and_is_reported(tmp_path, capsys):
     root = _tree(tmp_path, controllers=[_release("eso", "eso", "external-secrets"), SECRET])
     assert _run(root, "--exempt", "tailscale/ExternalSecret/oauth=moved next") == 0
     assert "exempt (moved next)" in capsys.readouterr().out
-
-
-def test_a_stage_corpus_replaces_the_walk(tmp_path):
-    root = _tree(tmp_path, controllers=[_release("eso", "eso", "external-secrets")],
-                 configs=[SECRET])
-    rendered = tmp_path / "controllers.rendered.yaml"
-    _write(rendered, _release("eso", "eso", "external-secrets"), SECRET)
-    assert _run(root, "--stage-corpus", f"controllers={rendered}") == 1
 
 
 def test_a_nested_stage_under_a_plain_directory_is_not_read_twice(tmp_path):
@@ -427,9 +425,6 @@ def test_a_malformed_crd_source_is_an_operator_error(tmp_path):
                  {"releases": {"eso": []}}, {"external_groups": {"a.io": ""}}):
         bad.write_text(yaml.safe_dump(body))
         assert _run(root, "--crd-source", str(bad)) == 2
-    for flag in ("no-equals", "chart=", "=example.io", " = "):
-        assert _run(root, "--crd-group", flag) == 2
-    assert _run(root, "--stage-corpus", "nosuchstage=x.yaml") == 2
 
 
 @pytest.mark.parametrize("body", ["", "charts: {}\n---\ncharts: {}\n"])
@@ -442,16 +437,8 @@ def test_a_crd_source_that_is_not_one_document_is_an_operator_error(tmp_path, ca
     assert "expected one mapping document" in capsys.readouterr().err
 
 
-def test_a_repeated_crd_group_flag_is_trimmed_and_recorded_once(tmp_path):
-    flags = [" widget-operator = example.io ", "widget-operator=example.io"]
-    assert mod.load_crd_sources(None, flags).charts["widget-operator"] == ["example.io"]
-    root = _tree(tmp_path, controllers=[_release("w", "apps", "widget-operator")],
-                 configs=[WIDGET])
-    assert _run(root, *(arg for flag in flags for arg in ("--crd-group", flag))) == 0
-
-
 def test_the_example_crd_source_loads(tmp_path):
-    sources = mod.load_crd_sources(str(EXAMPLE), [])
+    sources = mod.load_crd_sources(str(EXAMPLE))
     assert sources.charts["widget-operator"] == ["widgets.example.io"]
     assert "example/HelmRelease/split-crds" in sources.releases
     assert "helm.cattle.io" in sources.external

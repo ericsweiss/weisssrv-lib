@@ -67,11 +67,6 @@
       }}
   tags: [proxmox_ha, proxmox_ha_replication]
 
-- name: Build list of desired job IDs for this node
-  ansible.builtin.set_fact:
-    proxmox_ha_desired_job_ids: "{{ proxmox_ha_desired_jobs | map(attribute='id') | list }}"
-  tags: [proxmox_ha, proxmox_ha_replication]
-
 # A failed qm or pct read aborts: read as "no local guests" it would skip
 # every create and update. An empty node is a successful empty read.
 - name: Get list of local VMIDs on this node
@@ -444,29 +439,4 @@
       {{ proxmox_ha_misplaced_guest_jobs | map(attribute='id') | join(', ') }}
       cannot run — see proxmox_ha README, "Behaviour worth knowing".
   when: proxmox_ha_misplaced_guest_jobs | length > 0
-  tags: [proxmox_ha, proxmox_ha_replication]
-
-# Jobs the STALE SOURCE banner already named are not reported again.
-- name: Detect jobs running from unexpected source nodes
-  ansible.builtin.set_fact:
-    proxmox_ha_unexpected_source_jobs: >-
-      {{
-        proxmox_ha_live_jobs
-        | selectattr('source', 'defined')
-        | selectattr('source', 'ne', inventory_hostname)
-        | map(attribute='id')
-        | select('in', proxmox_ha_desired_job_ids)
-        | reject('in', proxmox_ha_stale_source_job_ids)
-        | list
-      }}
-  tags: [proxmox_ha, proxmox_ha_replication]
-
-- name: Display unexpected source warning
-  ansible.builtin.debug:
-    msg: >-
-      UNEXPECTED SOURCE: jobs
-      {{ proxmox_ha_unexpected_source_jobs | join(', ') }} are configured for
-      {{ inventory_hostname }} but run from another node — the guest migrated; see
-      proxmox_ha README, "Behaviour worth knowing".
-  when: proxmox_ha_unexpected_source_jobs | length > 0
   tags: [proxmox_ha, proxmox_ha_replication]

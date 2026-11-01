@@ -20,7 +20,7 @@ SMOKE_FAIL=0
 # Always returns 0: a bare pipeline here would kill an errexit caller.
 http_status() {
     local status
-    status=$(curl -sI --max-time "${SMOKE_LIB_CURL_MAX_TIME:-10}" "$1" 2>/dev/null | head -1 |
+    status=$(curl -sI --max-time 10 "$1" 2>/dev/null | head -1 |
         grep -oE 'HTTP/[0-9.]+ [0-9]+' | grep -oE '[0-9]+$') || true
     printf '%s\n' "${status:-000}"
 }
@@ -52,18 +52,17 @@ check_tcp_port() {
 }
 
 # Bounded, non-interactive ssh: a stalled guest or a prompt fails the probe.
-# SMOKE_LIB_SSH_MAX_TIME bounds the whole command when timeout or gtimeout exists.
 _smoke_ssh() {
-    timeout_cmd "${SMOKE_LIB_SSH_MAX_TIME:-30}" ssh -o ConnectTimeout=5 -o BatchMode=yes \
+    timeout_cmd 30 ssh -o ConnectTimeout=5 -o BatchMode=yes \
         -o ServerAliveInterval=5 -o ServerAliveCountMax=2 "$@"
 }
 
-# Needles are literal, unlike shell-lib.sh's BRE url_contains/ssh_contains. Each
-# helper returns 0 on a match, 1 on none and 2 when the fetch, connection or
-# command failed; a here-string read means no SIGPIPE can invert a match.
+# Needles are literal. Each helper returns 0 on a match, 1 on none and 2 when
+# the fetch, connection or command failed; a here-string read means no SIGPIPE
+# can invert a match.
 smoke_url_contains() {
     local out
-    out=$(curl -s --max-time "${SMOKE_LIB_CURL_MAX_TIME:-10}" "$1" 2>/dev/null) || return 2
+    out=$(curl -s --max-time 10 "$1" 2>/dev/null) || return 2
     grep -qF -- "$2" <<<"$out"
 }
 

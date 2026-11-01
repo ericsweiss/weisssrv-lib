@@ -31,10 +31,6 @@
       ansible.builtin.set_fact:
         k3s_config_text: "{{ k3s_config_content.content | b64decode }}"
 
-    - name: Debug - Show agent config
-      ansible.builtin.debug:
-        msg: "{{ k3s_config_text }}"
-
     - name: Verify agent config has server URL
       ansible.builtin.assert:
         that:

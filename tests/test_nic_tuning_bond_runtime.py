@@ -1,11 +1,9 @@
 """The runtime bond guards fail loudly instead of reporting a green play.
 
-A swallowed all_slaves_active write re-opens a network black-hole, and the
-bond-primary apply must match a slave name literally, not as a regex."""
+A swallowed all_slaves_active write re-opens a network black-hole."""
 from __future__ import annotations
 
 import os
-import shlex
 import subprocess
 from pathlib import Path
 
@@ -15,9 +13,7 @@ import yaml
 REPO = Path(__file__).resolve().parent.parent
 ROLE = REPO / "ansible_collections" / "weisssrv" / "infra" / "roles" / "nic_tuning"
 MAIN = ROLE / "tasks" / "main.yml"
-PRIMARY = ROLE / "tasks" / "bond-primary.yml"
 TASK = "Enforce all_slaves_active=0 on active-backup bonds at runtime (no reboot)"
-PRIMARY_TASK = "Set the bond primary at runtime (no reboot)"
 
 
 def _script(sysfs_root: Path) -> str:
@@ -106,63 +102,6 @@ def test_a_host_with_no_bonding_module_says_so(tmp_path):
     proc = _run(root)
     assert proc.returncode == 0
     assert proc.stdout.startswith("NOBOND")
-
-
-def _primary_script(sysfs_root: Path, want: str, reselect: str = "always") -> str:
-    """The bond-primary task's shell body, pointed at a fixture sysfs tree."""
-    tasks = yaml.safe_load(PRIMARY.read_text(encoding="utf-8"))
-    body = next(t["ansible.builtin.shell"] for t in tasks if t.get("name") == PRIMARY_TASK)
-    body = body.replace("{{ nic_tuning_bond_primary | quote }}", shlex.quote(want))
-    body = body.replace("{{ nic_tuning_bond_primary_reselect | quote }}", shlex.quote(reselect))
-    assert "{{" not in body, "the task body carries an unexpected template"
-    return body.replace("/sys/class/net", str(sysfs_root))
-
-
-def _primary_bond(root: Path, slaves: str) -> Path:
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "bonding_masters").write_text("bond0\n", encoding="utf-8")
-    bonding = root / "bond0" / "bonding"
-    bonding.mkdir(parents=True)
-    (bonding / "mode").write_text("active-backup 1\n", encoding="utf-8")
-    (bonding / "primary_reselect").write_text("always 0\n", encoding="utf-8")
-    (bonding / "primary").write_text("", encoding="utf-8")
-    (bonding / "slaves").write_text("%s\n" % slaves, encoding="utf-8")
-    return bonding
-
-
-def _run_primary(root: Path, want: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["bash", "-c", _primary_script(root, want)], capture_output=True, text=True
-    )
-
-
-def test_a_real_slave_is_pinned_as_primary(tmp_path):
-    root = tmp_path / "net"
-    bonding = _primary_bond(root, "eth0 eth1")
-    proc = _run_primary(root, "eth0")
-    assert proc.returncode == 0, proc.stderr
-    assert "CHANGED" in proc.stdout
-    assert (bonding / "primary").read_text().strip() == "eth0"
-
-
-def test_a_dotted_leg_name_does_not_match_a_similar_slave(tmp_path):
-    """`.` is a regex wildcard: eth0.10 must not select the slave eth0x10."""
-    root = tmp_path / "net"
-    bonding = _primary_bond(root, "eth0x10 eth1")
-    proc = _run_primary(root, "eth0.10")
-    assert proc.returncode == 3, proc.stdout
-    assert "MISSING eth0.10" in proc.stdout
-    assert (bonding / "primary").read_text() == ""
-
-
-def test_a_slave_name_is_matched_as_a_whole_field(tmp_path):
-    """eth0 is not a slave when only eth0.10 is enslaved."""
-    root = tmp_path / "net"
-    bonding = _primary_bond(root, "eth0.10 eth1")
-    proc = _run_primary(root, "eth0")
-    assert proc.returncode == 3, proc.stdout
-    assert "MISSING eth0" in proc.stdout
-    assert (bonding / "primary").read_text() == ""
 
 
 if __name__ == "__main__":

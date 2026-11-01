@@ -10,11 +10,6 @@ adguard_sync_schedule: "*:0/5"
 # tracks the host's exporter config.
 adguard_sync_textfile_dir: "{{ node_exporter_host_textfile_dir | default('/var/lib/node_exporter') }}"
 
-# Two or more replicas: a list of {url, username, password}, the credentials
-# falling back to adguard_sync_admin_user / _password. When non-empty it
-# replaces the single adguard_sync_replica in the rendered config.
-adguard_sync_replicas: []
-
 # Which AdGuard config sections the primary pushes. tlsConfig stays false: cert
 # files/paths are host-local and reconciled per host by weisssrv.infra.adguard_home,
 # so syncing them would fight the Ansible-managed config on the replica.
@@ -36,5 +31,5 @@ adguard_sync_features:
   tlsConfig: false
 
 # Required inputs, asserted in tasks/main.yml and documented in the README:
-# adguard_sync_version, adguard_sync_origin, adguard_sync_replica (or
-# adguard_sync_replicas), adguard_sync_admin_user, adguard_sync_admin_password.
+# adguard_sync_version, adguard_sync_origin, adguard_sync_replica,
+# adguard_sync_admin_user, adguard_sync_admin_password.

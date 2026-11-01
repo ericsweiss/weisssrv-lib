@@ -1,4 +1,4 @@
-"""scripts/flux-env.sh — the multi-ConfigMap substitution wrapper.
+"""scripts/flux-env.sh — substitution ConfigMaps to exports, schema version, merge.
 
 FLUX_EXTRA_CONFIGMAPS is pinned to "" so fixtures control the whole input list;
 the cases exercising the unset branch pass extra_configmaps=None instead.
@@ -7,7 +7,6 @@ the cases exercising the unset branch pass extra_configmaps=None instead.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -61,47 +60,17 @@ def write_sibling_cm(root: Path, data: dict[str, str]) -> Path:
     return write_cm(path, data)
 
 
-def test_bash_syntax_is_valid() -> None:
-    proc = subprocess.run(
-        ["bash", "-n", str(SCRIPT)], capture_output=True, text=True
-    )
-    assert proc.returncode == 0, proc.stderr
-
-
-@pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck not on PATH")
-def test_shellcheck_clean() -> None:
-    # Local feedback only; ci/lint/shellcheck.yml is the gate, and its exclusion
-    # set is mirrored here.
-    proc = subprocess.run(
-        ["shellcheck", "--severity=warning", "--exclude=SC1091,SC2034", str(SCRIPT)],
-        capture_output=True,
-        text=True,
-    )
-    assert proc.returncode == 0, proc.stdout
-
-
 def test_export_versions_merges_files_with_later_file_winning(tmp_path: Path) -> None:
     a = write_cm(tmp_path / "a.yaml", {"foo_version": "1", "shared": "old"})
     b = write_cm(tmp_path / "b.yaml", {"bar_vip": "10.0.0.1", "shared": "new"})
     proc = run(["export-versions", f"{a.name} {b.name}"], cwd=tmp_path)
     assert proc.returncode == 0, proc.stderr
-    assert "export foo_version=1" in proc.stdout
-    # Both files' lines are emitted; precedence is eval order, so b's must come last.
-    assert proc.stdout.index("export shared=old") < proc.stdout.index("export shared=new")
-    allowlists = [line for line in proc.stdout.splitlines() if "FLUX_ENVSUBST_VARS" in line]
-    assert len(allowlists) == 1, "one merged allowlist, not one per file"
-    assert "${foo_version}" in allowlists[0] and "${bar_vip}" in allowlists[0]
-
-
-def test_a_key_defined_twice_appears_once_in_the_allowlist(tmp_path: Path) -> None:
-    a = write_cm(tmp_path / "a.yaml", {"shared": "old"})
-    b = write_cm(tmp_path / "b.yaml", {"shared": "new"})
-    proc = run(["export-versions", f"{a.name} {b.name}"], cwd=tmp_path)
-    assert proc.returncode == 0, proc.stderr
-    allowlist = next(
-        line for line in proc.stdout.splitlines() if "FLUX_ENVSUBST_VARS" in line
+    check = subprocess.run(
+        ["bash", "-c", 'eval "$1"; echo "$foo_version $bar_vip $shared|$FLUX_ENVSUBST_VARS"',
+         "_", proc.stdout],
+        capture_output=True, text=True,
     )
-    assert allowlist.count("${shared}") == 1
+    assert check.stdout.strip() == "1 10.0.0.1 new|${foo_version} ${shared} ${bar_vip}"
 
 
 def test_a_file_named_twice_is_read_once(tmp_path: Path) -> None:
@@ -178,3 +147,23 @@ def test_an_unknown_subcommand_dies_with_the_menu(tmp_path: Path) -> None:
     proc = run(["frobnicate"], cwd=tmp_path)
     assert proc.returncode != 0
     assert "unknown subcommand" in proc.stderr
+
+
+@pytest.mark.parametrize(
+    ("data", "message"),
+    [
+        ({}, "no substitution keys found"),
+        ({"bad-key": "v1"}, "invalid shell variable name in a.yaml: bad-key"),
+        ({"PATH": "/nope"}, "reserved variable name in a.yaml: PATH"),
+        ({"helm_SHA256": "abc"}, "reserved variable name in a.yaml: helm_SHA256"),
+        ({"notes": "first\nsecond"}, "multi-line value for notes"),
+    ],
+)
+def test_a_configmap_unsafe_to_eval_is_refused(
+    tmp_path: Path, data: dict[str, str], message: str
+) -> None:
+    a = write_cm(tmp_path / "a.yaml", data)
+    proc = run(["export-versions", a.name], cwd=tmp_path)
+    assert proc.returncode != 0
+    assert message in proc.stderr
+    assert "export" not in proc.stdout

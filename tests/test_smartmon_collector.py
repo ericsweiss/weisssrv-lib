@@ -92,11 +92,6 @@ def _run(
     return metrics
 
 
-def test_the_collector_is_executable_shell() -> None:
-    assert SCRIPT.exists()
-    subprocess.run([SH, "-n", str(SCRIPT)], check=True)
-
-
 def test_a_measured_run_reports_success(tmp_path: Path) -> None:
     metrics = _run(tmp_path, "/dev/sda -d sat # /dev/sda, ATA device\n")
     assert metrics["smartmon_collector_success"] == "1"

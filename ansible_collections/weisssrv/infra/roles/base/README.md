@@ -4,105 +4,45 @@ Foundational system configuration applied to all managed hosts. Provides essenti
 
 ## What this role manages
 
-### Package Management
-- Proxmox repositories on PVE hosts (enterprise repos disabled, community
-  `pve-no-subscription` enabled as a deb822 `.sources` stanza pinned to the
-  Proxmox archive keyring via `Signed-By`)
-- Core system packages (curl, wget, neovim, htop, tmux, git, jq, unzip, rsync, net-tools, dnsutils, ca-certificates, gnupg, lsb-release, sudo)
-- VM-specific packages (qemu-guest-agent) -- automatically detected and installed only on KVM guests
-- Apt cache updates with 1-hour validity window
-- unattended-upgrades disabled on VMs and containers (see System Configuration below)
+**Packages.** On a PVE host it disables the enterprise repos and enables
+`pve-no-subscription` as a deb822 stanza pinned to the Proxmox archive keyring
+through `Signed-By`. It installs `base_common_packages` everywhere and
+`base_vm_packages` on KVM guests only.
 
-### User Management
-- Admin user creation and configuration
-- Sudo group membership
-- Passwordless sudo via `/etc/sudoers.d/` (validated with visudo)
-- SSH authorized keys, optionally with `from=` network restrictions. The whole
-  list is deployed exclusively in ONE newline-joined `authorized_key` call
-- Home directory and `.ssh` directory creation with correct permissions
+**Admin user.** It creates the admin account with passwordless sudo, validated
+with `visudo`. The SSH key list is additive by default: dropping a key does not
+revoke it, and the run still reports converged. Set
+`base_ssh_authorized_keys_exclusive: true` to make the list authoritative, which
+also removes keys installed outside Ansible. The list is deployed in one call,
+joined with real newlines; a literal backslash-n would collapse every key into
+one malformed line. An empty list under `exclusive` is refused, because it
+would strip every key from the host.
 
-### SSH Hardening
-- Disable root login
-- Disable password authentication (key-based only)
-- Enable pubkey authentication
-- Disable keyboard-interactive authentication (`KbdInteractiveAuthentication no`)
-- Disable X11 forwarding
-- MaxAuthTries set to 3
-- ClientAlive keepalive (300s interval, 2 max)
-- Written as a `00-hardening.conf` drop-in under `/etc/ssh/sshd_config.d/`
-  (first-match-wins, so it beats cloud-init drop-ins)
-- Validated before install: the candidate is rendered into a temp dir, merged
-  with the host's real config there and checked with `sshd -t`, so a bad value
-  never lands on disk
-- Asserted effective afterwards with `sshd -T`. `Port` is additive in
-  sshd_config, so the assert requires exactly one distinct port line: a stale
-  `Port` from the monolithic config or another drop-in would otherwise keep the
-  old SSH port listening, and the role fails closed instead
-- `ssh_permit_root_login` is normalized to sshd's own spelling before it is
-  rendered or compared. An unquoted `no` in YAML arrives as a boolean, which
-  would write `PermitRootLogin False` and read as a surviving login path in the
-  lockout guard
+**SSH hardening.** A `00-hardening.conf` drop-in disables root login, password
+and keyboard-interactive auth and X11 forwarding, and sets `MaxAuthTries 3` and
+keepalives. First match wins, so it beats cloud-init drop-ins. The candidate is
+merged with the host's real config in a temp dir and checked with `sshd -t`
+before install. Afterwards `sshd -T` must show exactly one `Port`, so a stale
+port line fails the run instead of leaving the old port open.
+`ssh_permit_root_login` is normalized to sshd's spelling first, because an
+unquoted YAML `no` arrives as a boolean.
 
-### Fail2ban
-- sshd jail enabled on all hosts (aggressive mode, systemd backend)
-- pveproxy jail on Proxmox hosts (`base_fail2ban_pveproxy_enabled`)
-- Recidive jail for repeat offenders on physical/VM hosts
-- LXC containers use `banaction = route` (blackhole routes) because
-  unprivileged containers lack CAP_NET_ADMIN for iptables/nftables; the
-  recidive jail is disabled there — trade-offs documented in
-  `tasks/fail2ban.yml`
-- Networks listed in `base_fail2ban_ignoreip` are never banned
+**Fail2ban.** The sshd jail runs everywhere, the pveproxy jail where enabled,
+and the recidive jail on physical hosts and VMs. Unprivileged LXC containers
+lack `CAP_NET_ADMIN`, so they use `banaction = route` and skip recidive.
+`base_fail2ban_ignoreip` networks are never banned.
 
-### DNS Configuration
-- DNS servers configured via `/etc/resolv.conf` (rendered by the shared
-  `resolv_conf` role)
-- Smart DNS selection:
-  - a **resolver host** (`base_is_resolver_host: true`) gets `127.0.0.1` once
-    its own resolver answers (probed with `dig @127.0.0.1`), and
-    `base_bootstrap_dns_servers` only while it does not — the first-deploy
-    chicken-and-egg, since the resolver roles run later in the play
-  - every other host gets `dns_servers`
-- Immutable resolv.conf (`chattr +i`, managed inside the `resolv_conf` role
-  via `resolv_conf_immutable: true`) to prevent overwrites by DHCP/systemd.
-  On unprivileged LXC containers the immutable flag cannot be set (no
-  CAP_LINUX_IMMUTABLE); the role warns and relies on the file being
-  Ansible-managed there.
+**DNS.** The shared `resolv_conf` role writes an immutable `/etc/resolv.conf`.
+A resolver host gets `127.0.0.1` once `dig @127.0.0.1` answers, and
+`base_bootstrap_dns_servers` until then. Every other host gets `dns_servers`.
+Unprivileged LXC containers cannot set the immutable flag, so the role warns
+there.
 
-### System Configuration
-- Timezone (`Etc/UTC` by default; symlink-only method in containers)
-- VM guest agent enablement (qemu-guest-agent service)
-- openipmi.service masked on hosts without IPMI hardware (its LSB init script
-  otherwise fails at boot and leaves systemd degraded)
-- unattended-upgrades turned off on any hypervisor's guest and on containers,
-  where updates run through the Task/Ansible workflows.
-  `base_is_virtual_machine` is `virtualization_role == 'guest'`; the guest
-  agent is gated on the narrower KVM-only `base_is_kvm_guest`. The
-  `/etc/apt/apt.conf.d/20auto-upgrades` knobs are written whether or not the
-  package is installed, so a later `apt install unattended-upgrades` cannot
-  come up enabled
-
-### Kernel command line
-
-`base_kernel_cmdline_args` appends extra kernel boot parameters through
-`/etc/default/grub.d/99-base-kernel-cmdline.cfg`, which `update-grub` folds
-into the boot entries. The default is empty, and emptying the list again
-removes the drop-in. One bare token per entry: entries are joined with spaces,
-so an entry carrying whitespace is rejected rather than silently split into a
-different set of parameters.
-
-Use it for any parameter something else depends on, such as `slub_nomerge` when
-per-cache slab metrics have to be attributable. Applied by hand, that parameter
-survives only until the next reinstall, and whatever reads those metrics then
-goes quietly wrong.
-
-The drop-in is read only by `update-grub`. A host that takes its command line
-from `/etc/kernel/cmdline` (systemd-boot, or `proxmox-boot-tool` in UEFI mode)
-fails the play instead of staging a file that no boot loader reads. The
-parameters apply at the next reboot; the role prints a reboot warning and never
-reboots.
-
-> **NIC offloads belong to `weisssrv.infra.nic_tuning`** (declarative
-> `nic_tuning_overrides`).
+**System.** It sets the timezone, using the symlink method in containers. It
+masks `openipmi.service` on hosts without IPMI, whose init script otherwise
+leaves systemd degraded. It turns unattended-upgrades off on every guest and
+container, writing the `20auto-upgrades` knobs even when the package is absent.
+NIC offloads belong to `weisssrv.infra.nic_tuning`.
 
 ## Configuration
 
@@ -141,18 +81,6 @@ The condition is `base_ssh_login_path_survives` in `defaults/main.yml` — one
 expression, asserted by `tasks/ssh.yml` and driven case-by-case by the
 accept/reject matrix in `molecule/default/verify.yml` (which loads that same
 defaults file), so the guard cannot drift from its tests.
-
-Role-prefixed gates and the DNS bootstrap knobs:
-
-```yaml
-base_is_resolver_host: false         # true where the resolver itself runs
-base_bootstrap_dns_servers: [1.1.1.1, 8.8.8.8]
-base_resolver_probe_name: example.com
-base_skip_ssh_config: false
-base_skip_dns_config: false
-base_skip_timezone_config: false
-base_skip_sudoers_validation: false  # skips `visudo -cf`
-```
 
 ### Variables
 
@@ -193,87 +121,12 @@ input, so a site can set either name.
 | `base_fail2ban_email_enabled` | Send ban notifications through the local relay | `false` |
 | `base_fail2ban_email_dest`, `base_fail2ban_email_sender` | Notification addresses | `base_admin_email`, `fail2ban@<host>` |
 | `base_fail2ban_email_action` | fail2ban action used for notifications | `%(action_mwl)s` |
-| `base_kernel_cmdline_args` | Extra kernel boot parameters appended to `GRUB_CMDLINE_LINUX_DEFAULT`; one bare token per entry | `[]` |
-| `base_skip_boot_update` | Skip `update-grub` and the reboot warning | `false` |
 | `base_skip_ssh_config` | Skip the sshd hardening drop-in | `false` |
 | `base_skip_dns_config` | Skip `/etc/resolv.conf` management | `false` |
 | `base_skip_timezone_config` | Skip the timezone | `false` |
 | `base_skip_sudoers_validation` | Skip `visudo -cf` on the admin sudoers file | `false` |
 
-## Task Flow
-
-```
-1. Configure Proxmox repositories (PVE hosts only)
-2. Update apt cache (1-hour validity)
-3. Install common packages
-4. Detect virtualization (KVM guest / container facts)
-   └─ KVM: install qemu-guest-agent, enable service
-5. Disable unattended-upgrades (VMs and containers)
-6. Mask openipmi.service (no-IPMI hosts)
-7. Create admin user, .ssh directory, authorized_keys, passwordless sudo
-8. Include SSH hardening tasks
-   ├─ Render drop-in candidate + validate merged config (sshd -t)
-   ├─ Install /etc/ssh/sshd_config.d/00-hardening.conf (restart sshd)
-   └─ Assert effective values via sshd -T
-9. Set timezone (hwclock method, or symlink in containers)
-10. Include DNS configuration tasks
-    ├─ Probe the local resolver on a resolver host (keep 127.0.0.1 when healthy)
-    ├─ Determine DNS servers
-    └─ Include resolv_conf role (writes file, manages immutable flag)
-11. Include kernel command-line tasks (grub drop-in, reboot warning)
-12. Include fail2ban tasks (install, jail.local, filters, service)
-```
-
-## Files
-
-- `tasks/main.yml` - Main task orchestration
-- `tasks/proxmox-repos.yml` - Proxmox repository configuration
-- `tasks/ssh.yml` - SSH hardening configuration
-- `tasks/dns.yml` - DNS server selection (delegates to the `resolv_conf` role)
-- `tasks/fail2ban.yml` - Fail2ban installation and configuration
-- `tasks/kernel-cmdline.yml` - Extra kernel boot parameters (GRUB drop-in)
-- `templates/sshd-hardening.conf.j2` - SSH hardening drop-in
-- `templates/jail.local.j2` / `templates/proxmox.conf.j2` - Fail2ban config
-- `templates/grub-kernel-cmdline.cfg.j2` - GRUB drop-in for the extra parameters
-- `weisssrv.infra.resolv_conf` - renders /etc/resolv.conf (shared role)
-- `defaults/main.yml` - Default variable values
-- `handlers/main.yml` - Service restart handlers
-
 ## Dependencies
 
 None — this is the foundational role. It includes
 `weisssrv.infra.resolv_conf` for /etc/resolv.conf.
-
-## Security
-
-- SSH password authentication disabled by default
-- Root login disabled (key-only on Proxmox for migration/replication)
-- SSH keys carry whatever `from=` restriction the site puts in `ssh_authorized_keys`
-- `ssh_authorized_keys` is **additive** by default: dropping a key from the list
-  does not revoke it on hosts the role already touched, and the run still
-  reports converged. Set `base_ssh_authorized_keys_exclusive: true` to make the
-  list authoritative (it then also removes keys installed outside Ansible), or
-  remove the key by hand
-- The key list is deployed in one call, newline-joined, and the separator must
-  be a real newline. `authorized_key` splits a multi-key value on newlines, so a
-  literal backslash-n collapses every key into one malformed line — under
-  `exclusive` that would be the only line left
-- An empty list combined with `base_ssh_authorized_keys_exclusive: true` is
-  refused rather than applied: it would strip every key from an SSH-managed
-  host. A deliberate full revocation belongs to console access
-- Fail2ban bans brute-force sources on SSH (and pveproxy on Proxmox hosts)
-- Sudoers configuration validated before applying
-- SSH configuration validated before install and asserted effective after
-- Proxmox community repo pinned to the archive keyring (`Signed-By`)
-- resolv.conf made immutable to prevent tampering where the platform allows it
-  (not enforceable in unprivileged LXC containers — the resolv_conf role warns
-  there instead)
-
-## Idempotency
-
-- Package installation is idempotent
-- User creation checks for existence first
-- SSH configuration changes only trigger restart if modified
-- DNS immutability only reports changed on a real absent-to-present transition
-- A healthy resolver host keeps its localhost resolver on re-runs
-- Apt cache update uses `cache_valid_time` to avoid unnecessary refreshes

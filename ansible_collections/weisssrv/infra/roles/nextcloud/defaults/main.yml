@@ -15,9 +15,8 @@ nextcloud_redis_image: "redis:{{ nextcloud_redis_version }}"
 nextcloud_exporter_image: "ghcr.io/xperimental/nextcloud-exporter:{{ nextcloud_exporter_version }}"
 
 # Render-only escape hatch: skips everything that needs a live Docker daemon and
-# a running Nextcloud (engine install, compose up, occ). The alias keeps the
-# legacy unprefixed `skip_nextcloud_deploy` switch working.
-nextcloud_skip_install: "{{ skip_nextcloud_deploy | default(false) }}"
+# a running Nextcloud (engine install, compose up, occ).
+nextcloud_skip_install: false
 
 # Filesystem layout. Three separate paths so each can be its own volume: app dir
 # (compose + html + local backups), PGDATA, and bulk user data.
@@ -103,7 +102,6 @@ nextcloud_postgres_exporter_bind_address: "{{ nextcloud_exporter_bind_address }}
 # Host nginx TLS front end. The site's cert distributor (acme_certs) delivers
 # the real cert to these paths and reloads nginx; a self-signed placeholder is
 # seeded on a fresh guest so nginx can start before the first push.
-nextcloud_nginx_enabled: true
 nextcloud_nginx_cert_dir: /etc/ssl/nextcloud
 nextcloud_nginx_ssl_certificate: "{{ nextcloud_nginx_cert_dir }}/fullchain.pem"
 nextcloud_nginx_ssl_certificate_key: "{{ nextcloud_nginx_cert_dir }}/privkey.pem"
@@ -150,7 +148,6 @@ nextcloud_mail_from_address: nextcloud
 nextcloud_mail_domain: "{{ nextcloud_external_domain }}"
 
 # Nightly pg_dump timer + node_exporter textfile metrics.
-nextcloud_backup_enabled: true
 nextcloud_backup_keep_days: 3
 nextcloud_backup_oncalendar: "*-*-* 02:30:00"
 # Where compose_app's sourceable write_prom_metrics helper lands, and where the

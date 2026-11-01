@@ -37,7 +37,7 @@ except ImportError:
     )
     raise SystemExit(2) from None
 
-DEFAULT_OBSERVABILITY_NS = "observability"
+OBSERVABILITY_NS = "observability"
 DEFAULT_TREE = "kubernetes/flux"
 WORKLOAD_KINDS = ("Deployment", "StatefulSet", "DaemonSet")
 ENDPOINT_KEYS = {"PodMonitor": "podMetricsEndpoints", "ServiceMonitor": "endpoints"}
@@ -520,10 +520,8 @@ def pod_port(
     return targets, by_hand
 
 
-def namespace_terms(
-    namespaces: dict, scrape_ns: str, subject: str
-) -> tuple[bool, list[str], bool]:
-    """-> (selects scrape_ns, unverifiable terms, names it by kubernetes.io/metadata.name).
+def namespace_terms(namespaces: dict, subject: str) -> tuple[bool, list[str], bool]:
+    """-> (selects OBSERVABILITY_NS, unverifiable terms, names it by kubernetes.io/metadata.name).
 
     Only the name label is known, so a term of any operator on another key
     cannot be verified: the namespace may carry the label a NotIn excludes.
@@ -548,10 +546,10 @@ def namespace_terms(
         "matchExpressions": kept,
     }
     named = NAME_LABEL in labels or any(e["key"] == NAME_LABEL for e in expressions)
-    return selector_matches(reduced, {NAME_LABEL: scrape_ns}, subject), unverifiable, named
+    return selector_matches(reduced, {NAME_LABEL: OBSERVABILITY_NS}, subject), unverifiable, named
 
 
-def scrape_allow(documents: list[dict], scrape_ns: str) -> str | None:
+def scrape_allow(documents: list[dict]) -> str | None:
     """The name of a NetworkPolicy admitting the observability namespace, if any.
 
     It is the repo's own statement that something here is scraped, so it stands
@@ -570,7 +568,7 @@ def scrape_allow(documents: list[dict], scrape_ns: str) -> str | None:
                 name = (document.get("metadata") or {}).get("name")
                 # Narrowing is not consulted: this feeds the vacuity guard, which
                 # fails closed; admits() is where narrowing is judged.
-                selects, _, named = namespace_terms(namespaces, scrape_ns, name)
+                selects, _, named = namespace_terms(namespaces, name)
                 if selects and named:
                     return name
     return None
@@ -581,7 +579,7 @@ def scrape_allow(documents: list[dict], scrape_ns: str) -> str | None:
 SCRAPER_LABELS: dict[str, str] = {}
 
 
-def admits(policy: dict, pods: dict, accepted: set[int | str], scrape_ns: str) -> bool:
+def admits(policy: dict, pods: dict, accepted: set[int | str]) -> bool:
     """Does this NetworkPolicy let the observability namespace in on the port?"""
     spec = mapping(policy.get("spec"), describe(policy), "spec")
     rules = entries(spec.get("ingress"), describe(policy), "spec.ingress")
@@ -626,7 +624,7 @@ def admits(policy: dict, pods: dict, accepted: set[int | str], scrape_ns: str) -
                 else:
                     scoped = True
                 continue
-            selects, narrowing, named = namespace_terms(namespaces, scrape_ns, name)
+            selects, narrowing, named = namespace_terms(namespaces, name)
             if not selects:
                 continue
             if not named and narrowing:
@@ -652,14 +650,14 @@ def admits(policy: dict, pods: dict, accepted: set[int | str], scrape_ns: str) -
                 or not selector_matches(pod_sel, SCRAPER_LABELS, name)
             ):
                 note(
-                    f"{name}: its peer for namespace {scrape_ns} selects pods by "
+                    f"{name}: its peer for namespace {OBSERVABILITY_NS} selects pods by "
                     f"{shown(pod_sel)}, which the declared scraper labels do not carry "
                     f"({SCRAPER_LABELS or 'none declared'}), so the peer is not credited"
                 )
                 continue
             if narrowing:
                 note(
-                    f"{name}: its peer for namespace {scrape_ns} narrows it with "
+                    f"{name}: its peer for namespace {OBSERVABILITY_NS} narrows it with "
                     f"{', '.join(narrowing)}, which this gate cannot resolve against "
                     "Prometheus's chart-installed pods, so the peer is not credited"
                 )
@@ -822,7 +820,6 @@ def check_monitor(
     namespaces: list[str | None],
     groups: dict[str | None, list[dict]],
     policies: dict[str | None, list[dict]],
-    scrape_ns: str,
     corpus: bool = False,
 ) -> tuple[int, int]:
     """One monitor's endpoints against the policies where its pods live.
@@ -899,29 +896,27 @@ def check_monitor(
         hand_written += by_hand
         for target in targets:
             if any(
-                admits(policy, target.labels, target.spellings, scrape_ns)
+                admits(policy, target.labels, target.spellings)
                 for policy in policies.get(target.namespace) or []
             ):
                 continue
             message = (
-                f"{name}{target.subject}: no NetworkPolicy admits namespace {scrape_ns} "
+                f"{name}{target.subject}: no NetworkPolicy admits namespace {OBSERVABILITY_NS} "
                 f"on port {target.number}, so Prometheus cannot reach this target"
             )
             raise Violation("\n".join([message, *UNMODELLED]))
     return hand_written, chart_rendered
 
 
-def refuse_vacuous(
-    groups: dict[str | None, list[dict]], targeted: set[str | None], scrape_ns: str
-) -> None:
+def refuse_vacuous(groups: dict[str | None, list[dict]], targeted: set[str | None]) -> None:
     """A namespace that declares a scrape while no monitor here targets it."""
     for group_ns in sorted(groups, key=lambda ns: ns or ""):
         if group_ns in targeted:
             continue
-        declared = scrape_allow(groups[group_ns], scrape_ns)
+        declared = scrape_allow(groups[group_ns])
         if declared:
             raise GateError(
-                f"{declared} admits namespace {scrape_ns} but no ServiceMonitor "
+                f"{declared} admits namespace {OBSERVABILITY_NS} but no ServiceMonitor "
                 "or PodMonitor scrapes its namespace: a gate that checks nothing is not "
                 "a gate. Restore the monitor, or remove the scrape allow with it."
             )
@@ -929,7 +924,6 @@ def refuse_vacuous(
 
 def check(
     documents: list[dict],
-    scrape_ns: str = DEFAULT_OBSERVABILITY_NS,
     namespace: str | None = None,
     namespace_error: str | None = None,
     corpus: bool = False,
@@ -959,7 +953,7 @@ def check(
         if document.get("kind") in ENDPOINT_KEYS
     ]
     if not monitors:
-        refuse_vacuous(groups, set(), scrape_ns)
+        refuse_vacuous(groups, set())
         print(
             f"{len(documents)} document(s), no ServiceMonitor or PodMonitor; "
             "nothing to check"
@@ -978,18 +972,18 @@ def check(
         )
         targeted |= set(namespaces)
         counted, charted = check_monitor(
-            monitor, group_ns, namespaces, groups, policies, scrape_ns, corpus
+            monitor, group_ns, namespaces, groups, policies, corpus
         )
         hand_written += counted
         chart_rendered += charted
     # Corpus-wide only: a chart renders monitors a corpus does not carry, so a
     # single namespace's allow cannot be paired with one the way a tree's is.
     if not corpus:
-        refuse_vacuous(groups, targeted, scrape_ns)
+        refuse_vacuous(groups, targeted)
     tail = f"; {hand_written} target(s) have hand-written endpoints" if hand_written else ""
     if chart_rendered:
         tail += f"; {chart_rendered} endpoint(s) scrape pods a chart renders"
-    print(f"{len(monitors)} monitor(s); every scraped port is admitted from {scrape_ns}{tail}")
+    print(f"{len(monitors)} monitor(s); every scraped port is admitted from {OBSERVABILITY_NS}{tail}")
     return 0
 
 
@@ -999,11 +993,6 @@ def main(argv: list[str] | None = None) -> int:
         "directory",
         nargs="?",
         help=f"manifest directory to check (default: {DEFAULT_TREE})",
-    )
-    parser.add_argument(
-        "--observability-namespace",
-        default=DEFAULT_OBSERVABILITY_NS,
-        help="namespace Prometheus scrapes from (default: %(default)s)",
     )
     parser.add_argument(
         "--prometheus-pod-label",
@@ -1079,13 +1068,7 @@ def main(argv: list[str] | None = None) -> int:
         namespace, namespace_error = tree_namespace(documents)
 
     try:
-        return check(
-            documents,
-            arguments.observability_namespace,
-            namespace,
-            namespace_error,
-            bool(arguments.corpus),
-        )
+        return check(documents, namespace, namespace_error, bool(arguments.corpus))
     except GateError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2

@@ -23,9 +23,8 @@ One source of truth for everything the family shares:
 - **`terraform/modules/`** — four module shapes (cloudflare-zone,
   tailscale-acl, authentik-sso, unifi-network).
 - **`scripts/`** — the gates and generators the CI jobs run.
-- **`kubernetes/reapers/`** and **`kubernetes/ddns/`** — the CronJob programs
-  a consumer vendors into its own cluster (see
-  [docs/SCRIPTS.md](docs/SCRIPTS.md)).
+- **`kubernetes/ddns/`** — the CronJob program a consumer vendors into its own
+  cluster (see [docs/SCRIPTS.md](docs/SCRIPTS.md)).
 - **`lint/`** — linter configs a consumer vendors.
 - **`cli/`** — `weisssrv-new-project`, the copier wrapper that renders the
   cluster template (`new-cluster`) and the app template (`new-app`).

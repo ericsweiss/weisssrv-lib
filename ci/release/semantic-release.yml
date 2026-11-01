@@ -14,8 +14,10 @@ spec:
       default: python:3.14
     tags:
       type: array
-      default: ["infrastructure"]
-      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+      default: []
+      description: >-
+        Runner tag(s); a consumer passes its privileged tag for a job that needs
+        root or Docker-in-Docker.
     script_path:
       default: "scripts/semantic-release.py"
       description: >-

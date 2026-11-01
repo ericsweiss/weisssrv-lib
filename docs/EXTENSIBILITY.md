@@ -17,25 +17,18 @@ Two rules govern every seam:
   [README](../ansible_collections/weisssrv/infra/README.md)). A seam is only
   needed where a role hardcodes a *mechanism*.
 
-A gate or script a consumer forked because this library does not offer it is a
-missing seam of the same kind. The queue of those, each with the site data that
-has to become a flag first, is [SCRIPTS.md § Extraction
-queue](SCRIPTS.md#extraction-queue) — including the ones already offered under
-another name, where the work is a consumer deleting its fork rather than a
-library change.
-
 ## Seam map
 
 | Axis | Default | Seam | Where |
 | --- | --- | --- | --- |
 | Secrets, host-side | values resolved by the caller (`op run --`, any `op://` reference) before Ansible starts | none needed — roles take **values**, never references | all roles |
 | Secrets, at boot | `zfs_encryption` fetches pool passphrases from 1Password Connect | `zfs_encryption_key_command` (empty = Connect), plus `zfs_encryption_token_path` | [`zfs_encryption`](../ansible_collections/weisssrv/infra/roles/zfs_encryption/README.md) |
-| Secrets, CI-side | `ci/deploy/*` resolve credentials with the 1Password CLI | `secrets_source` (`1password` \| `env`) on `deploy-base`, `kubectl-setup` and `ci/review/pr-agent.yml`; `secret_runner` on `ansible-deploy`. Gaps below | `ci/deploy/`, `ci/review/` |
+| Secrets, CI-side | `ci/deploy/*` resolve credentials with the 1Password CLI | `secrets_source` (`1password` \| `env`) on `deploy-base`, `kubectl-setup` and `ci/review/pr-agent.yml`. Gaps below | `ci/deploy/`, `ci/review/` |
 | Secrets, in-cluster | External Secrets Operator with the 1Password Connect provider | not in this library — manifests live in the cluster template | — |
 | Storage, guest placement | Proxmox storage picked from the host's `proxmox_role` | `proxmox_storage_defaults` (role → storage id), `proxmox_storage` / `proxmox_lxc_storage` per guest | `proxmox_vm`, `proxmox_lxc` |
 | Storage, guest additional disks | zvols created for a VM's `vm_additional_disks` | `proxmox_vm_additional_disk_backend`; `zfs` is the only backend implemented | `proxmox_vm` |
 | Storage, guest disks | zvols attached at a QEMU SCSI by-id path | `zvol_mount_device_id_prefix` — the role itself is UUID/fstab based, not ZFS-aware | `zvol_mount` |
-| Storage, backup source | restic walks a ZFS snapshot, discovered and cloned with `zfs` | none — `restic_offsite_bind_mode` (`bind` binds the `.zfs/snapshot` subtree, `direct` reads the mountpoint as-is) is a test-harness switch, not a storage-backend seam; see the role README under ## Tunables (Paths and layout). A non-ZFS consumer needs a sibling role | `restic_offsite` |
+| Storage, backup source | restic walks a ZFS snapshot, discovered and cloned with `zfs` | none; a non-ZFS consumer needs a sibling role | `restic_offsite` |
 | Storage, offsite target | rclone remote of type `b2` (Backblaze) | `restic_offsite_rclone_remote_type` + `restic_offsite_rclone_remote_options` (rendered verbatim as `key = value`); only `b2` has named credential variables | `restic_offsite` |
 | Storage, metrics | `zpool status` collector ships with the Proxmox collectors | `node_exporter_host_zpool_collector` (defaults to `node_exporter_host_proxmox`) | `node_exporter_host` |
 | Certificates | acme.sh DNS-01 via Cloudflare | `acme_certs_dns_hook` — any dnsapi hook the pinned tarball ships; `acme_certs_ca_server` — any CA acme.sh accepts (letsencrypt, zerossl, google, buypass, or a CA directory URL) | `acme_certs` |
@@ -49,8 +42,7 @@ library change.
 ### Known gaps in the CI secrets seam
 
 `secrets_source: env` reads `$SSH_PRIVATE_KEY` and `$KUBECONFIG_B64` from
-masked CI variables, and `secret_runner: ""` drops the `op run --` wrapper. A
-third backend supplies those two variables from its own `before_script`, or
+masked CI variables. A third backend supplies those two variables from its own `before_script`, or
 replaces the include, as the cluster template's `secret_read()` and
 `secret_runner()` macros do. Two couplings stay the consumer's to handle:
 
@@ -59,11 +51,8 @@ replaces the include, as the cluster template's `secret_read()` and
 - `deploy-base` extends `.install-1password`, so the CLI is installed even
   when nothing calls it.
 
-`ci/deploy/ansible-deploy.yml` is shipped but adopted by no consumer: a real
-deploy job carries site-specific `--limit` and `--tags` the template does not
-model. `ci/templates/docker-dind.yml` is likewise shipped without
-`ci/build/docker-build.yml` extending it — that would force the new file into
-every consumer's include block and break the app template's rendered tenant
+`ci/templates/docker-dind.yml` is shipped without `ci/build/docker-build.yml`
+extending it — that would force the new file into every consumer's include block and break the app template's rendered tenant
 pipeline until it is re-tagged. `tests/test_pin_parity.py` holds their pins
 equal instead.
 

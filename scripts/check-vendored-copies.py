@@ -243,12 +243,8 @@ def lib_blob(lib_root: Path, relpath: str, ref: str | None) -> bytes | None:
     return path.read_bytes() if path.is_file() else None
 
 
-def load_offer(lib_root: Path, ref: str | None) -> set[str] | None:
-    """The library's offer list at `ref`, None when a resolving ref predates it.
-
-    With no ref the compare target is the working tree, where absence means a
-    broken checkout and raises. A malformed file is an error at any ref.
-    """
+def load_offer(lib_root: Path, ref: str | None) -> set[str]:
+    """The library's offer list at `ref`; absent or malformed raises."""
     if ref is None and _symlink_component(lib_root, OFFER_RELPATH) is not None:
         raise ValueError(
             f"{OFFER_RELPATH} is a symlink in the library working tree — the offer "
@@ -256,22 +252,10 @@ def load_offer(lib_root: Path, ref: str | None) -> set[str] | None:
         )
     raw = lib_blob(lib_root, OFFER_RELPATH, ref)
     if raw is None:
-        if ref is None:
-            raise ValueError(
-                f"{OFFER_RELPATH} is missing from the library working tree — a tree "
-                "that ships this engine ships the offer list beside it; the "
-                "membership arm must not silently skip"
-            )
-        # A resolving ref without the offer list is history only if the engine
-        # at that ref predates it too. An engine that names the file without
-        # shipping it is a broken release, and skipping would certify unoffered paths.
-        engine = lib_blob(lib_root, "scripts/check-vendored-copies.py", ref)
-        if engine is not None and OFFER_RELPATH.encode() in engine:
-            raise ValueError(
-                f"{ref} ships an engine that reads {OFFER_RELPATH} but not the file "
-                "itself — a broken release; the membership arm must not silently skip"
-            )
-        return None
+        raise ValueError(
+            f"{OFFER_RELPATH} is missing from the library at "
+            f"{ref or 'the working tree'} — the membership arm must not silently skip"
+        )
     # Same loader as the manifest: a duplicate `vendorable:` key would
     # silently discard the first section's offers under last-key-wins.
     doc = yaml.load(raw, Loader=_UniqueKeyLoader)
@@ -382,54 +366,6 @@ def _lib_side_symlink_problem(
     return False
 
 
-def parse_scans(values: list[str]) -> list[tuple[str, str]]:
-    """`CONSUMER_DIR=LIB_PREFIX` pairs for the unregistered-twin scan."""
-    scans: list[tuple[str, str]] = []
-    for raw in values or []:
-        consumer_dir, sep, lib_prefix = raw.partition("=")
-        if not sep or not consumer_dir.strip() or not lib_prefix.strip():
-            raise ValueError(f"--scan takes CONSUMER_DIR=LIB_PREFIX, got {raw!r}")
-        scans.append((
-            _validate_relpath(consumer_dir.strip().rstrip("/"), "scan"),
-            _validate_relpath(lib_prefix.strip().rstrip("/"), "scan"),
-        ))
-    return scans
-
-
-def unregistered_twins(
-    repo_root: Path,
-    scans: list[tuple[str, str]],
-    vendored: list[Entry],
-    forked: list[Entry],
-    offered: set[str],
-) -> list[str]:
-    """Files under a scanned tree whose library twin is offered but unregistered.
-
-    The per-path arms judge only what the manifest declares. A declared scan dir
-    that does not exist is an operator error, never a silent skip.
-    """
-    registered = {entry.consumer for entry in vendored + forked}
-    problems: list[str] = []
-    for consumer_dir, lib_prefix in scans:
-        tree = repo_root / consumer_dir
-        if not tree.is_dir():
-            raise ValueError(
-                f"--scan names {consumer_dir!r}, which is not a directory in "
-                f"{repo_root} — fix the path; the scan must not silently skip"
-            )
-        for path in sorted(p for p in tree.rglob("*") if p.is_file()):
-            relpath = path.relative_to(tree).as_posix()
-            consumer = path.relative_to(repo_root).as_posix()
-            if f"{lib_prefix}/{relpath}" not in offered or consumer in registered:
-                continue
-            problems.append(
-                f"{consumer}: {lib_prefix}/{relpath} is offered by the library but "
-                "this copy is in no manifest entry — register it as vendored or "
-                "forked, or rename it so it is not mistaken for a copy"
-            )
-    return problems
-
-
 def code_lines(blob: bytes, markers: tuple) -> list[str] | None:
     """`blob`'s lines with blank and whole-line comment lines dropped.
 
@@ -468,16 +404,15 @@ def check(
     vendored: list[Entry],
     forked: list[Entry],
     ref: str | None,
-    offered: set[str] | None,
+    offered: set[str],
 ) -> list[str]:
     problems: list[str] = []
-    if offered is not None:
-        for entry in vendored + forked:
-            if entry.lib not in offered:
-                problems.append(
-                    f"{entry.consumer}: {entry.lib} is not in the library's {OFFER_RELPATH} — "
-                    "vendoring an unoffered file depends on a library internal no release "
-                    "contract covers; ask the library to offer it, or drop the copy"
+    for entry in vendored + forked:
+        if entry.lib not in offered:
+            problems.append(
+                f"{entry.consumer}: {entry.lib} is not in the library's {OFFER_RELPATH} — "
+                "vendoring an unoffered file depends on a library internal no release "
+                "contract covers; ask the library to offer it, or drop the copy"
                 )
 
     for entry in vendored:
@@ -580,18 +515,12 @@ def main(argv: list[str] | None = None) -> int:
         help="exit 2 unless --ref resolves, so the comparison is against the pinned "
              "release and not whatever the library working tree happens to hold",
     )
-    parser.add_argument(
-        "--scan", action="append", default=[], metavar="CONSUMER_DIR=LIB_PREFIX",
-        help="report files under CONSUMER_DIR whose offered library twin at "
-             "LIB_PREFIX/<relpath> no manifest entry registers; repeatable",
-    )
     parser.add_argument("--list", action="store_true", help="print the manifest's paths and exit")
     args = parser.parse_args(argv)
 
     repo_root = args.repo_root.resolve()
     manifest = args.manifest or (repo_root / MANIFEST_RELPATH)
     try:
-        scans = parse_scans(args.scan)
         vendored, forked = load_manifest(manifest)
     except (OSError, ValueError, yaml.YAMLError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -635,25 +564,9 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, yaml.YAMLError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
-    if offered is None:
-        print(
-            f"note: {OFFER_RELPATH} does not exist at the library ref under test — "
-            "skipping the offer-membership arm (that release predates the offer list).",
-            file=sys.stderr,
-        )
-        if scans:
-            print(
-                "note: --scan needs the offer list to know which files are twins — "
-                "the unregistered-twin scan is skipped at this ref too.",
-                file=sys.stderr,
-            )
 
     try:
         problems = check(repo_root, lib_root, vendored, forked, ref, offered)
-        if scans and offered is not None:
-            problems += unregistered_twins(
-                repo_root, scans, vendored, forked, offered
-            )
     except (ValueError, OSError) as exc:
         # A failing git repository or unreadable file is an operator error —
         # never a traceback, never a silent pass.
@@ -664,13 +577,10 @@ def main(argv: list[str] | None = None) -> int:
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
         return 1
-    scanned = (
-        f", {len(scans)} tree(s) scanned for unregistered twins" if scans else ""
-    )
     verdict = f"OK at {ref}" if ref else "REF UNVERIFIED (library working tree, not a release)"
     print(
         f"{verdict} — {len(vendored)} vendored copy/copies identical, "
-        f"{len(forked)} declared fork(s) still reconciled{scanned}"
+        f"{len(forked)} declared fork(s) still reconciled"
     )
     return 0
 

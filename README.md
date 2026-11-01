@@ -8,7 +8,7 @@ a pinned tag.
 
 ## Current release
 
-**v0.23.0.** Every pin example on this page and in `docs/` is written as
+**v0.24.0.** Every pin example on this page and in `docs/` is written as
 `<CURRENT_TAG>`; substitute the release you are adopting, so a release bump
 touches the few copy-paste snippets that must be runnable rather than a dozen
 stale examples. This line is the authority for the literal; the runnable
@@ -51,8 +51,8 @@ ci/            GitLab CI templates (include:project + spec:inputs)
                copy, vendored not included)
   maintenance/ version-check (read-only report) + version-bump-bot (one bump MR,
                never auto-merged)
-  deploy/      the deploy toolchain: deploy-base, kubectl-setup,
-               cluster-verify-base and ansible-deploy
+  deploy/      the deploy toolchain: deploy-base, kubectl-setup and
+               cluster-verify-base
   github/      ci.example.yml + build-image.example.yml (Actions reference
                copies, vendored not included)
   templates/   shared fragments: dep-cache, install-1password,
@@ -71,13 +71,10 @@ lint/          shared config files (yamllint, gitleaks + GitLab ruleset, ruff,
 scripts/       the gates + generators CI jobs run: version tracking, deploy/
                molecule coverage, Flux + Prometheus checks, doc links, the
                release automation — see docs/SCRIPTS.md
-kubernetes/reapers/
-               stdlib programs mounted into a consumer's CronJob beside its app
-               script
 kubernetes/ddns/
                the Cloudflare dynamic-DNS CronJob program a consumer mounts
 docker/        published per release: the two molecule test/CI images for the
-               collection + ansible-deploy (the pre-baked deploy job image)
+               collection
 examples/      copy-and-edit config files for the helper scripts
 cli/           weisssrv-new-project — the copier wrapper that renders the
                cluster template (new-cluster) and the app template (new-app)

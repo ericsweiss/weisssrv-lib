@@ -147,7 +147,6 @@ def _run(
     local_reload_command: str = "",
     local_cert: bool = True,
     args: tuple[str, ...] = (),
-    env_extra: dict[str, str] | None = None,
     seed_renewal: str | None = None,
     seed_targets: str | None = None,
     targets: tuple[dict, ...] = (TARGET,),
@@ -172,7 +171,6 @@ def _run(
         **os.environ,
         "PATH": "%s:%s" % (bin_dir, os.environ["PATH"]),
         "CERT_STUB_STDIN": str(sent),
-        **(env_extra or {}),
     }
     proc = subprocess.run(
         ["bash", str(script), *args], capture_output=True, text=True, check=False, env=env
@@ -212,13 +210,8 @@ def test_a_failed_local_reload_fails_the_renewal_bit(tmp_path) -> None:
     assert run.targets[TARGET_GAUGE % LOCAL_HOST] == 0
 
 
-@pytest.mark.parametrize(
-    "args,env_extra",
-    [(("--check",), None), ((), {"HOMELAB_CERT_CHECK": "1"})],
-    ids=["flag", "env"],
-)
-def test_check_mode_probes_without_pushing(tmp_path, args, env_extra) -> None:
-    run = _run(tmp_path, args=args, env_extra=env_extra)
+def test_check_mode_probes_without_pushing(tmp_path) -> None:
+    run = _run(tmp_path, args=("--check",))
     assert run.rc == 0, run.proc.stderr
     assert BUNDLE_DELIM not in run.sent, "check mode must not send the cert bundle"
     assert run.renewal == {}, "check mode must not write cert_renewal.prom"

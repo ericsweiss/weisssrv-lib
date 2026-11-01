@@ -3,7 +3,7 @@
 # be a LIST and `port` non-null: the template iterates a scalar per character and
 # renders a null port as `-dport None`, which pve-firewall refuses to compile.
 
-- name: Assert the sg-dns admin-port entries carry a port and a list of sources
+- name: Assert the sg-dns and sg-metrics port entries carry a port and a list of sources
   ansible.builtin.assert:
     that:
       - item.port is defined
@@ -14,35 +14,15 @@
       - item.sources is not mapping
       - item.sources | length > 0
     fail_msg: >-
-      proxmox_firewall_dns_admin_ports entry {{ item }} is malformed: every
-      entry needs a `port` with a value and a non-empty `sources` LIST naming
-      IPSets (e.g. `- {port: 3000, sources: [admin_ts, admin_lan]}`)
-      — a bare scalar is iterated per character by the template, and an empty
-      `port` renders as `-dport None`.
+      A proxmox_firewall_dns_admin_ports or proxmox_firewall_metrics_scrape_ports
+      entry {{ item }} is malformed: every entry needs a `port` with a value and
+      a non-empty `sources` LIST naming IPSets (e.g. `- {port: 3000, sources:
+      [admin_ts, admin_lan]}`) — a bare scalar is iterated per character by the
+      template, and an empty `port` renders as `-dport None`.
     quiet: true
-  loop: "{{ proxmox_firewall_dns_admin_ports | default([]) }}"
-  loop_control:
-    label: "{{ item.port | default('?') }}"
-
-- name: Assert the sg-metrics scrape-port entries carry a port and a list of sources
-  ansible.builtin.assert:
-    that:
-      - item.port is defined
-      - item.port is not none
-      - item.sources is defined
-      - item.sources is sequence
-      - item.sources is not string
-      - item.sources is not mapping
-      - item.sources | length > 0
-    fail_msg: >-
-      proxmox_firewall_metrics_scrape_ports entry {{ item }} is malformed:
-      every entry needs a `port` with a value and a non-empty `sources` LIST
-      naming IPSets (e.g. `- {port: 32400, sources: [k3s_nodes],
-      comment: plex}`) — a bare scalar is iterated per character by the
-      template, and an empty `port` renders as `-dport None`. sg-metrics is
-      applied on EVERY node, so the scrapers are named rather than defaulted.
-    quiet: true
-  loop: "{{ proxmox_firewall_metrics_scrape_ports | default([]) }}"
+  loop: >-
+    {{ (proxmox_firewall_dns_admin_ports | default([]))
+       + (proxmox_firewall_metrics_scrape_ports | default([])) }}
   loop_control:
     label: "{{ item.port | default('?') }}"
 

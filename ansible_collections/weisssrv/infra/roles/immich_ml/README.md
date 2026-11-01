@@ -59,7 +59,7 @@ restart is expected.
 |---|---|---|
 | `immich_ml_version` | Immich release tag; defaults to the inventory-wide `immich_version` | **required** |
 | `immich_ml_image` | Full image ref; override whole for a non-Intel variant | `…/immich-machine-learning:<version>-openvino` |
-| `immich_ml_skip_install` | Render-only: skip the GPU guard, Docker install and service management (alias: `skip_immich_ml_deploy`) | `false` |
+| `immich_ml_skip_install` | Render-only: skip the GPU guard, Docker install and service management | `false` |
 | `immich_ml_compose_dir` | Compose project dir | `/opt/immich-ml/compose` |
 | `immich_ml_listen_port` | Published port (container listens on 3003) | `3003` |
 | `immich_ml_bind` | Publish address for that port; pin it to the address the Immich guest reaches for defence in depth | `0.0.0.0` |
@@ -69,14 +69,6 @@ restart is expected.
 | `immich_ml_device_dir` | Device dir handed to the container | `/dev/dri` |
 | `immich_ml_video_gid`, `immich_ml_render_gid` | `group_add` fallbacks, overwritten by the discovered GIDs | `44` / `104` |
 | `immich_ml_health_retries`, `immich_ml_health_delay` | `/ping` wait budget | `30` × `10s` |
-
-## Molecule
-
-`molecule/default` is a render/contract scenario: `immich_ml_skip_install: true`
-skips the GPU guard, the Docker install and service management, so the compose
-file (the `-openvino` tag derived from the release pin, the device mapping,
-port, timezone and `group_add` GIDs) and the systemd unit are rendered and
-asserted without a container runtime or a GPU.
 
 ## Related
 

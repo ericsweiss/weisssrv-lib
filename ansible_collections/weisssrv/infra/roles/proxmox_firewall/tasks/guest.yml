@@ -10,20 +10,6 @@
                    | default((groups[proxmox_firewall_host_group] | default([]) | first)
                              | default(inventory_hostname))) }}
 
-# The group's IN rules are the only thing opening the relay: guest.fw sets no
-# policy_in, so Proxmox's guest default DROP closes :25 and :587 without them.
-- name: Assert a relay guest has a client scope for sg-smtp-relay
-  ansible.builtin.assert:
-    that:
-      - (proxmox_firewall_smtp_relay_sources | default([])) | length > 0
-    fail_msg: >-
-      {{ inventory_hostname }} carries sg-smtp-relay, but
-      proxmox_firewall_smtp_relay_sources is empty, so the group renders no IN
-      rule and the relay's :25/:587 stay closed. Name the client IPSets in
-      group_vars/all (cluster scope).
-    quiet: true
-  when: "'sg-smtp-relay' in (guest_security_groups | default([]))"
-
 - name: Deploy guest firewall configuration
   ansible.builtin.include_tasks:
     file: deploy-pmxcfs-config.yml

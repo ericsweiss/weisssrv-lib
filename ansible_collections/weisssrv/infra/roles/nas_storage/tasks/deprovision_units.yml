@@ -128,24 +128,13 @@
         label: "{{ item }}"
       when: item not in nas_storage_deprovision_managed
 
-    - name: Stop and disable the component timers
+    - name: Stop and disable the component timers and services
       ansible.builtin.systemd:
         name: "{{ item }}"
         enabled: false
         state: stopped
         daemon_reload: true
-      loop: "{{ nas_storage_deprovision_timers | default([]) }}"
-      when:
-        - ('/etc/systemd/system/' ~ item) in nas_storage_deprovision_managed
-        - not ansible_check_mode
-
-    - name: Stop and disable the component services
-      ansible.builtin.systemd:
-        name: "{{ item }}"
-        enabled: false
-        state: stopped
-        daemon_reload: true
-      loop: "{{ nas_storage_deprovision_services | default([]) }}"
+      loop: "{{ (nas_storage_deprovision_timers | default([])) + (nas_storage_deprovision_services | default([])) }}"
       when:
         - ('/etc/systemd/system/' ~ item) in nas_storage_deprovision_managed
         - not ansible_check_mode

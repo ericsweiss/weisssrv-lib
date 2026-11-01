@@ -118,21 +118,26 @@ def _date_stub(capture: Path) -> str:
     ) % (sys.executable, str(capture))
 
 
-def _run(tmp_path: Path, status: str) -> dict:
-    """Run the collector against a stub zpool and return the parsed .prom."""
+def _run(tmp_path: Path, status: str | None = None, stub: str | None = None) -> dict:
+    """Run the collector against a stub zpool and return the parsed .prom.
+
+    `status` feeds the standard list/status stub; `stub` is a raw zpool body;
+    with neither, no zpool is on PATH."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    status_file = tmp_path / "status.txt"
-    status_file.write_text(status)
-    stub = bin_dir / "zpool"
-    stub.write_text(
-        "#!%s\n"
-        'case "$1" in\n'
-        '  list) case "$2" in -Hpo) printf "1024\\t2048\\n" ;; *) printf "tank\\n" ;; esac ;;\n'
-        '  status) cat %s ;;\n'
-        "esac\n" % (SH, status_file)
-    )
-    stub.chmod(0o755)
+    if status is not None:
+        status_file = tmp_path / "status.txt"
+        status_file.write_text(status)
+        stub = (
+            'case "$1" in\n'
+            '  list) case "$2" in -Hpo) printf "1024\\t2048\\n" ;; *) printf "tank\\n" ;; esac ;;\n'
+            '  status) cat %s ;;\n'
+            "esac\n" % status_file
+        )
+    if stub is not None:
+        path = bin_dir / "zpool"
+        path.write_text("#!%s\n%s" % (SH, stub))
+        path.chmod(0o755)
     date_stub = bin_dir / "date"
     date_stub.write_text(_date_stub(tmp_path / "date-d-arg.txt"))
     date_stub.chmod(0o755)
@@ -154,11 +159,6 @@ def _run(tmp_path: Path, status: str) -> dict:
         name, _, value = line.rpartition(" ")
         metrics[name] = value
     return metrics
-
-
-def test_the_collector_is_executable_shell() -> None:
-    assert SCRIPT.exists()
-    subprocess.run([SH, "-n", str(SCRIPT)], check=True)
 
 
 def test_a_leaf_only_error_is_reported(tmp_path: Path) -> None:
@@ -196,6 +196,7 @@ def test_the_other_pool_series_still_render(tmp_path: Path) -> None:
     assert metrics['zfs_pool_status_allocated_bytes{pool="tank"}'] == "1024"
     assert metrics['zfs_pool_status_size_bytes{pool="tank"}'] == "2048"
     assert "zfs_pool_status_collector_last_success_seconds" in metrics
+    assert metrics["zfs_pool_status_collector_success"] == "1"
 
 
 @pytest.mark.parametrize(
@@ -214,48 +215,17 @@ def test_the_max_selection_stays_in_the_script(fragment: str) -> None:
     assert fragment in SCRIPT.read_text()
 
 
-def _run_bare(tmp_path: Path, stub: str | None) -> dict:
-    """Run the collector with an optional stub zpool body on PATH."""
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    if stub is not None:
-        path = bin_dir / "zpool"
-        path.write_text("#!%s\n%s" % (SH, stub))
-        path.chmod(0o755)
-    out_dir = tmp_path / "textfile"
-    proc = subprocess.run(
-        [SH, str(SCRIPT), str(out_dir)],
-        capture_output=True,
-        text=True,
-        env={"PATH": "%s:%s" % (bin_dir, "/usr/bin:/bin:/usr/sbin:/sbin")},
-        check=False,
-    )
-    assert proc.returncode == 0, proc.stderr
-    metrics = {}
-    for line in (out_dir / "zfs_pool_status.prom").read_text().splitlines():
-        if line.startswith("#") or not line.strip():
-            continue
-        name, _, value = line.rpartition(" ")
-        metrics[name] = value
-    return metrics
-
-
-def test_a_measured_run_reports_success(tmp_path: Path) -> None:
-    metrics = _run(tmp_path, RAIDZ2_STATUS)
-    assert metrics["zfs_pool_status_collector_success"] == "1"
-
-
 @pytest.mark.skipif(shutil.which("zpool") is not None, reason="host has real ZFS")
 def test_a_host_without_zpool_reports_no_measurement(tmp_path: Path) -> None:
     """Without the success gauge, "no ZFS here" and "the pools vanished" are the
     same fresh sentinel with no per-pool series."""
-    metrics = _run_bare(tmp_path, None)
+    metrics = _run(tmp_path)
     assert metrics["zfs_pool_status_collector_success"] == "0"
     assert "zfs_pool_status_collector_last_success_seconds" in metrics
 
 
 def test_a_host_whose_pools_all_vanished_reports_no_measurement(tmp_path: Path) -> None:
-    metrics = _run_bare(tmp_path, 'exit 0\n')
+    metrics = _run(tmp_path, stub='exit 0\n')
     assert metrics["zfs_pool_status_collector_success"] == "0"
     assert not [k for k in metrics if k.startswith("zfs_pool_status_health_code")]
 

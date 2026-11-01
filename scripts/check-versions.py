@@ -21,7 +21,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from io import BytesIO
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
@@ -385,18 +384,16 @@ def _run_check_partner_pins(base_ref: str) -> None:
 
 # --- HTTP helpers ---
 
-def _urlopen_with_retry_full(req, timeout: int = REQUEST_TIMEOUT) -> tuple[str, bytes]:
-    """urlopen with a bounded retry; returns (content_type, body).
+def _urlopen_with_retry(req, timeout: int = REQUEST_TIMEOUT) -> bytes:
+    """urlopen with a bounded retry; returns the body.
 
-    Retries URLError, socket.timeout and HTTP 5xx; 4xx re-raises at once. The
-    content type lets a caller tell a real payload from an HTML error page.
+    Retries URLError, socket.timeout and HTTP 5xx; 4xx re-raises at once.
     """
     last_exc: Exception
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                content_type = resp.headers.get("Content-Type", "")
-                return content_type, resp.read()
+                return resp.read()
         except urllib.error.HTTPError as e:
             # 4xx (incl. 403 rate-limit) is not transient — don't retry.
             if e.code < 500:
@@ -410,16 +407,6 @@ def _urlopen_with_retry_full(req, timeout: int = REQUEST_TIMEOUT) -> tuple[str, 
         if attempt < RETRY_ATTEMPTS:
             time.sleep(RETRY_BACKOFF * attempt)
     raise last_exc
-
-
-def _urlopen_with_retry(req, timeout: int = REQUEST_TIMEOUT) -> bytes:
-    """urlopen with a bounded retry on transient failures; return the body.
-
-    Thin wrapper over _urlopen_with_retry_full for callers that only need the
-    response body. See that function for retry semantics.
-    """
-    _content_type, body = _urlopen_with_retry_full(req, timeout=timeout)
-    return body
 
 
 def _make_request(url: str, headers: Optional[dict] = None) -> dict | list | str:
@@ -457,58 +444,6 @@ def github_api(path: str) -> dict | list:
     if GITHUB_TOKEN:
         headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
     return _make_request(f"{GITHUB_API}{path}", headers)
-
-
-def fetch_apt_packages(base_url: str) -> str:
-    """Fetch the apt Packages file, falling back to Packages.gz.
-
-    Raises RuntimeError when neither can be fetched.
-    """
-    req_headers = {"User-Agent": "weisssrv-lib-version-check/1.0"}
-
-    def _is_valid_packages_response(content_type: str, content: str) -> bool:
-        """Check if response is a valid Packages file (not an HTML error page)."""
-        # A Packages file is text/plain or untyped; an error page is text/html.
-        if "text/html" in content_type.lower():
-            return False
-        if content.strip().startswith("<!DOCTYPE") or content.strip().startswith("<html"):
-            return False
-        if "Package:" not in content:
-            return False
-        return True
-
-    # Uncompressed first, through the bounded retry helper; it returns the
-    # Content-Type for the HTML-vs-payload sniff below.
-    try:
-        req = urllib.request.Request(base_url, headers=req_headers)
-        content_type, raw = _urlopen_with_retry_full(req, timeout=REQUEST_TIMEOUT)
-        content = raw.decode("utf-8")
-        if content.strip() and _is_valid_packages_response(content_type, content):
-            return content
-    except (urllib.error.HTTPError, urllib.error.URLError, socket.timeout, UnicodeDecodeError):
-        pass
-
-    gz_url = f"{base_url}.gz"
-    req = urllib.request.Request(gz_url, headers=req_headers)
-
-    try:
-        content_type, compressed_data = _urlopen_with_retry_full(req, timeout=REQUEST_TIMEOUT)
-        if "text/html" in content_type.lower():
-            raise RuntimeError(f"Received HTML error page instead of Packages.gz from {gz_url}")
-
-        with gzip.GzipFile(fileobj=BytesIO(compressed_data)) as gz:
-            content = gz.read().decode("utf-8")
-            if not content.strip() or "Package:" not in content:
-                raise RuntimeError(f"Invalid or empty Packages file from {gz_url}")
-            return content
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"Failed to fetch {base_url} or {gz_url}: HTTP {e.code}") from e
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"Connection error fetching apt Packages: {e.reason}") from e
-    except socket.timeout as e:
-        raise RuntimeError(f"Timeout fetching apt Packages from {gz_url}") from e
-    except gzip.BadGzipFile as e:
-        raise RuntimeError(f"Invalid gzip data from {gz_url}") from e
 
 
 # --- Cache helpers ---
@@ -765,23 +700,22 @@ def _collect_apt_versions(text: str, package: str) -> list[str]:
 
 
 def _fetch_packages_index(url: str) -> str:
-    """Text of one Debian Packages index, gunzipped when the payload is gzip.
+    """Text of one Debian Packages index; a body with no stanza tries `<url>.gz`.
 
-    The payload is sniffed for gzip magic, not the URL suffix, because mirrors
-    redirect. A response that is not a Packages file falls back to `<url>.gz`.
+    Gzip is sniffed from the payload, not the URL suffix, because mirrors redirect.
     """
-    req = urllib.request.Request(url, headers={"User-Agent": "weisssrv-lib-version-check/1.0"})
-    raw = _urlopen_with_retry(req, timeout=30)
-    text = (
-        gzip.decompress(raw).decode("utf-8", errors="replace")
-        if raw[:2] == b"\x1f\x8b"
-        else raw.decode("utf-8", errors="replace")
-    )
-    if "Package:" in text:
-        return text
-    if url.endswith(".gz"):
-        raise RuntimeError(f"no Packages stanzas in {url}")
-    return fetch_apt_packages(url)
+    candidates = [url] if url.endswith(".gz") else [url, f"{url}.gz"]
+    for candidate in candidates:
+        req = urllib.request.Request(
+            candidate, headers={"User-Agent": "weisssrv-lib-version-check/1.0"}
+        )
+        raw = _urlopen_with_retry(req, timeout=30)
+        if raw[:2] == b"\x1f\x8b":
+            raw = gzip.decompress(raw)
+        text = raw.decode("utf-8", errors="replace")
+        if "Package:" in text:
+            return text
+    raise RuntimeError(f"no Packages stanzas in {' or '.join(candidates)}")
 
 
 def fetch_apt_repo_version(svc: dict) -> str:

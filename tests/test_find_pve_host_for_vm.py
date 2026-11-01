@@ -112,106 +112,35 @@ def test_an_unparseable_ha_status_line_falls_through_instead_of_being_echoed(run
     assert proc.stdout.strip() == "pve-opt-02"
 
 
-def test_the_ha_manager_branch_applies_the_default_prefix(run):
-    """The ha-manager branch rewrites a bare node name with the default prefix."""
-    proc = run("154", *HOSTS, HA_STATUS="service vm:154 (opt-01, started)\n")
+NODES = ("node-a", "node-b")
+BARE = ("alpha", "beta")
+
+
+@pytest.mark.parametrize(
+    ("hosts", "env", "expected"),
+    [
+        # ha-manager and pvesh report a bare node; the prefix restores the SSH target.
+        (HOSTS, {"HA_STATUS": "service vm:154 (opt-01, started)\n"}, "pve-opt-01"),
+        (NODES, {"HA_STATUS": "service vm:154 (b, started)\n", "PVE_NODE_PREFIX": "node-"}, "node-b"),
+        (NODES, {"HA_STATUS": "service vm:154 (node-b, started)\n", "PVE_NODE_PREFIX": "node-"}, "node-b"),
+        (BARE, {"HA_STATUS": "service vm:154 (beta, started)\n", "PVE_NODE_PREFIX": ""}, "beta"),
+        (HOSTS, {"PVESH_JSON": '[{"vmid": 999, "node": "opt-02"}, {"vmid": 154, "node": "opt-01"}]'}, "pve-opt-01"),
+        (HOSTS, {"PVESH_JSON": '[{"vmid": 154, "node": "pve-opt-01"}]'}, "pve-opt-01"),
+        (NODES, {"PVESH_JSON": '[{"vmid": 154, "node": "b"}]', "PVE_NODE_PREFIX": "node-"}, "node-b"),
+        (BARE, {"PVESH_JSON": '[{"vmid": 154, "node": "beta"}]', "PVE_NODE_PREFIX": ""}, "beta"),
+        # The per-host scan returns the caller's own SSH target, so it is never prefixed.
+        (NODES, {"QM_HOSTS": "node-b", "PVE_NODE_PREFIX": "pve-"}, "node-b"),
+    ],
+    ids=[
+        "ha-default", "ha-configured", "ha-no-double", "ha-empty",
+        "pvesh-default", "pvesh-no-double", "pvesh-configured", "pvesh-empty",
+        "scan-exempt",
+    ],
+)
+def test_the_node_prefix(run, hosts, env, expected):
+    proc = run("154", *hosts, up=" ".join(hosts), **env)
     assert proc.returncode == 0
-    assert proc.stdout.strip() == "pve-opt-01"
-
-
-def test_the_ha_manager_branch_normalizes_a_configured_prefix_too(run):
-    proc = run(
-        "154",
-        "node-a",
-        "node-b",
-        up="node-a node-b",
-        HA_STATUS="service vm:154 (b, started)\n",
-        PVE_NODE_PREFIX="node-",
-    )
-    assert proc.returncode == 0
-    assert proc.stdout.strip() == "node-b"
-
-
-def test_the_ha_manager_branch_does_not_double_the_prefix(run):
-    """An already-prefixed node under an explicit prefix stays as it is."""
-    proc = run(
-        "154",
-        "node-a",
-        "node-b",
-        up="node-a node-b",
-        HA_STATUS="service vm:154 (node-b, started)\n",
-        PVE_NODE_PREFIX="node-",
-    )
-    assert proc.returncode == 0
-    assert proc.stdout.strip() == "node-b"
-
-
-def test_an_empty_prefix_leaves_the_ha_manager_node_verbatim(run):
-    proc = run(
-        "154",
-        "alpha",
-        "beta",
-        up="alpha beta",
-        HA_STATUS="service vm:154 (beta, started)\n",
-        PVE_NODE_PREFIX="",
-    )
-    assert proc.returncode == 0
-    assert proc.stdout.strip() == "beta"
-
-
-def test_the_per_host_scan_is_exempt_from_the_prefix_rewrite(run):
-    """Step 4 returns the caller's OWN SSH target, so prefixing it would corrupt
-    a name that is already correct."""
-    proc = run(
-        "154",
-        "node-a",
-        "node-b",
-        up="node-a node-b",
-        QM_HOSTS="node-b",
-        PVE_NODE_PREFIX="pve-",
-    )
-    assert proc.returncode == 0
-    assert proc.stdout.strip() == "node-b"
-
-
-def test_cluster_resources_covers_a_non_ha_vm(run):
-    proc = run("154", *HOSTS, PVESH_JSON='[{"vmid": 999, "node": "opt-02"}, {"vmid": 154, "node": "opt-01"}]')
-    assert proc.returncode == 0
-    # `pvesh` returns the bare node name; the default prefix restores the SSH target.
-    assert proc.stdout.strip() == "pve-opt-01"
-
-
-def test_cluster_resources_does_not_double_the_prefix(run):
-    proc = run("154", *HOSTS, PVESH_JSON='[{"vmid": 154, "node": "pve-opt-01"}]')
-    assert proc.returncode == 0
-    assert proc.stdout.strip() == "pve-opt-01"
-
-
-def test_node_prefix_is_configurable(run):
-    """A site whose nodes are not named pve-* got an unresolvable hostname back."""
-    proc = run(
-        "154",
-        "node-a",
-        "node-b",
-        up="node-a node-b",
-        PVESH_JSON='[{"vmid": 154, "node": "b"}]',
-        PVE_NODE_PREFIX="node-",
-    )
-    assert proc.returncode == 0
-    assert proc.stdout.strip() == "node-b"
-
-
-def test_an_empty_node_prefix_returns_the_node_name_verbatim(run):
-    proc = run(
-        "154",
-        "alpha",
-        "beta",
-        up="alpha beta",
-        PVESH_JSON='[{"vmid": 154, "node": "beta"}]',
-        PVE_NODE_PREFIX="",
-    )
-    assert proc.returncode == 0
-    assert proc.stdout.strip() == "beta"
+    assert proc.stdout.strip() == expected
 
 
 def test_per_host_qm_scan_is_the_last_resort(run):

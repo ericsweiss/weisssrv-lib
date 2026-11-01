@@ -83,9 +83,6 @@ into the secret store the exporters read.
 | `proxmox_firewall_node_dir` | `/etc/pve/nodes` | pmxcfs per-node dir |
 | `proxmox_firewall_staging_dir` | `/var/lib/pve-firewall-ansible` | Off-pmxcfs render staging |
 | `proxmox_firewall_skip_pveum` | `false` | Skip pveum / `pve-firewall` service tasks (containerised test runs) |
-| `proxmox_firewall_compile_error_patterns` | `error`, `unable to`, `skip line`, `no such `, `invalid `, `unknown ` | Substrings in `pve-firewall compile` stderr that mean a parse error. Matched case-insensitively, because the command can exit 0 on one |
-| `proxmox_firewall_compile_fail_on_line_errors` | `true` | Also treat a `(line N)` complaint in that stderr as a parse error, whatever its wording |
-| `proxmox_firewall_compile_failed` | derived from the two above | The shared predicate both compile checks use. Derived, not an input |
 
 Per-host inventory keys the templates read: `firewall_ipsets`,
 `firewall_alias`, `firewall_alias_comment`, `guest_security_groups`,

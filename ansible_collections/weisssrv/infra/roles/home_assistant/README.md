@@ -46,9 +46,6 @@ not restart it.
 | `home_assistant_ssh_connect_timeout` | `ConnectTimeout` for every call | no (`10`) |
 | `home_assistant_config_path` | Config dir on HAOS | no (`/config`) |
 | `home_assistant_extra_config` | Extra YAML appended verbatim to `configuration.yaml` | no (`""`) |
-| `home_assistant_enable_prometheus`, `home_assistant_enable_default_config` | Emit the `prometheus:` / `default_config:` block | no (`true`) |
-| `home_assistant_tts_platforms` | TTS platforms; empty omits the `tts:` block | no (`[google_translate]`) |
-| `home_assistant_includes` | `<key>: !include <file>` map; empty omits them | no (`automation`/`script`/`scene`) |
 | `home_assistant_staging_dir` | Pin the staging dir; empty uses a private per-run tempdir | no (`""`) |
 | `home_assistant_render_only` | Render and stop — no ssh/scp/check | no (`false`) |
 
@@ -111,17 +108,9 @@ be reviewable.
 
 `configuration.yaml.j2` renders the `http:` block (X-Forwarded-For + trusted
 proxies, optional TLS), the `openid:` SSO block, `prometheus:`,
-`default_config:`, `tts:` and the `automation`/`script`/`scene` includes. The
-last four are opinionated defaults. Each omits its block when disabled or
-emptied:
-
-- `home_assistant_enable_prometheus`
-- `home_assistant_enable_default_config`
-- `home_assistant_tts_platforms`
-- `home_assistant_includes`
-
-`home_assistant_extra_config` can only append. `ha core check` fails the deploy
-when an `!include` target does not exist on the host.
+`default_config:`, `tts:` and the `automation`/`script`/`scene` includes.
+`ha core check` fails the deploy when an `!include` target does not exist on
+the host.
 
 Anything else belongs in `home_assistant_extra_config` or in HA's own UI
 storage. SMTP notifications are a UI config entry, kept in HAOS `.storage` and
@@ -154,24 +143,3 @@ anyway: it is what a rebuilt instance imports.
 The SSH add-on must be installed and listening (port 22222 by convention) with
 the deploying user's public key authorized. Integrations, automations and
 backups are managed in HA's UI, not here.
-
-## Layout
-
-```
-roles/home_assistant/
-├── defaults/main.yml       consumer API + documented defaults
-├── vars/main.yml           internal shared ssh option set
-├── meta/main.yml           galaxy metadata
-├── tasks/main.yml          assert -> render -> compare -> deploy/rescue
-├── templates/
-│   ├── configuration.yaml.j2
-│   └── secrets.yaml.j2
-├── molecule/default/       render contract + deploy/rollback via local shims
-└── README.md
-```
-
-## Testing
-
-Converges render-only, then drives deploy, no-op, rollback and first-deploy
-cleanup through local `ssh`/`scp`/`ha` shims against a fake `/config`. Run it
-with the standard scenario invocation in the collection README § Testing.

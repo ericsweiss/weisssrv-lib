@@ -36,24 +36,15 @@ CASES = {
         # A target that was not pinned, a host that is not a target, and the role off.
         "Fail when the re-seed left targets unpinned": 3,
     },
-    "adguard_sync/default": {
-        "Validate every entry in adguard_sync_replicas carries a URL": 1,
-    },
     "alloy_host/default": {
         "Assert Loki push credentials are present": 1,
     },
     "apt_signed_repo/default": {
-        # The wrong fingerprint, then the bundled second key.
-        "Verify downloaded signing key fingerprint": 2,
-        "Verify existing signing keyring fingerprint": 1,
+        # The wrong fingerprint, the bundled second key, the drifted keyring.
+        "Verify signing key fingerprint": 3,
         "Assert a component set was requested": 1,
         "Fail when the deb822 sources file is absent": 1,
         "Assert the sources file carries a Components line to rewrite": 1,
-    },
-    "base/default": {
-        "Assert every kernel cmdline argument is a single bare token": 1,
-        # Verify-driven: the systemd-boot command line.
-        "Assert the host takes its kernel command line from GRUB": 1,
     },
     "compose_app/default": {
         # The broken candidate, then the partial sites-enabled merge.
@@ -115,10 +106,9 @@ CASES = {
         "Assert create-fixed storage properties have not drifted": 2,
     },
     "proxmox_firewall/default": {
-        # A mapping `sources`, then an entry with no sources key.
-        "Assert the sg-dns admin-port entries carry a port and a list of sources": 2,
-        # A scalar `sources`, then a valueless `port`.
-        "Assert the sg-metrics scrape-port entries carry a port and a list of sources": 2,
+        # sg-dns: a mapping `sources`, an entry with no sources key; sg-metrics:
+        # a scalar `sources`, a valueless `port`.
+        "Assert the sg-dns and sg-metrics port entries carry a port and a list of sources": 4,
         # A scalar list, two empty lists, a null and an empty-string element,
         # a punctuated name and a name under the ipset grammar's minimum.
         "Assert the client-scope source lists are non-empty lists of set names": 7,
@@ -140,8 +130,6 @@ CASES = {
         # The role's own publish task, driven against a pve-firewall stub that
         # prints a parse error and exits 0; no run_once on it.
         "Validate the compiled ruleset after publishing": 1,
-        # Converge-driven; guest.yml carries no run_once.
-        "Assert a relay guest has a client scope for sg-smtp-relay": 1,
     },
     "proxmox_ha/default": {
         # run_once on the assert itself; main.yml includes rules.yml under it.
@@ -185,10 +173,6 @@ CASES = {
     },
     "tailscale/default": {
         "Fail when a Tailscale join is required but TAILSCALE_AUTH_KEY is unset": 1,
-    },
-    "vfio_passthrough/default": {
-        "Assert the kernel-cmdline method is implemented": 1,
-        "Assert the managed-file marker is usable": 1,
     },
     "zvol_mount/default": {
         "Assert a blank-looking disk carries no partition table either": 1,

@@ -71,18 +71,18 @@ def _load_all(path: Path) -> list:
         raise OperatorError(f"{path}: unparseable YAML: {exc}") from exc
 
 
-def kubelet_threshold(k3s_vars: Path, var: str = KUBELET_ARGS_VAR) -> int:
+def kubelet_threshold(k3s_vars: Path) -> int:
     """The image-gc-high-threshold percentage the kubelet is started with."""
     docs = _load_all(k3s_vars)
     doc = docs[0] if docs and isinstance(docs[0], dict) else {}
-    args = doc.get(var)
+    args = doc.get(KUBELET_ARGS_VAR)
     if not args or not isinstance(args, list):
-        raise OperatorError(f"{k3s_vars}: no {var} entries")
+        raise OperatorError(f"{k3s_vars}: no {KUBELET_ARGS_VAR} entries")
     for arg in args:
         match = _KUBELET_ARG.match(str(arg).strip())
         if match:
             return int(match.group(1))
-    raise OperatorError(f"{k3s_vars}: {var} sets no image-gc-high-threshold")
+    raise OperatorError(f"{k3s_vars}: {KUBELET_ARGS_VAR} sets no image-gc-high-threshold")
 
 
 def rule_files(paths: list[Path]) -> list[Path]:
@@ -282,29 +282,25 @@ def prose_thresholds(files: list[Path], minimum: int) -> list[int]:
 
 def check(
     root: Path,
-    k3s_vars: Path = K3S_VARS,
     rules: tuple[Path, ...] = (RULES,),
-    alertmanager: Path = ALERTMANAGER,
-    alert: str = ALERT,
     offset: int = 0,
     cap: int | None = None,
-    kubelet_var: str = KUBELET_ARGS_VAR,
     min_prose: int = MIN_PROSE_MENTIONS,
     unthresholded: frozenset[str] = frozenset(),
 ) -> list[str]:
-    watermark = kubelet_threshold(root / k3s_vars, kubelet_var)
+    watermark = kubelet_threshold(root / K3S_VARS)
     expected = watermark + offset if cap is None else min(watermark + offset, cap)
     index = alert_index(rule_files([root / p for p in rules]))
-    if alert not in index:
-        raise OperatorError(f"no {alert} alert in {', '.join(map(str, rules))}")
+    if ALERT not in index:
+        raise OperatorError(f"no {ALERT} alert in {', '.join(map(str, rules))}")
     problems = []
-    homes = sorted({r.path for r in index[alert]})
-    thresholds = [expr_threshold(r.path, alert, r.expr) for r in index[alert]]
+    homes = sorted({r.path for r in index[ALERT]})
+    thresholds = [expr_threshold(r.path, ALERT, r.expr) for r in index[ALERT]]
     for value in sorted(set(thresholds)):
         if value != expected:
             problems.append(
-                f"{alert} fires above {value:g}% but the kubelet prunes from "
-                f"{watermark}% ({k3s_vars}), so the alert should fire above {expected}%: "
+                f"{ALERT} fires above {value:g}% but the kubelet prunes from "
+                f"{watermark}% ({K3S_VARS}), so the alert should fire above {expected}%: "
                 "it would fire while image GC still works, or stay silent while GC "
                 f"cannot reach its low watermark. Update the expr in {homes[0]}."
             )
@@ -312,27 +308,27 @@ def check(
         if value != watermark:
             problems.append(
                 f"{', '.join(map(str, homes))} names {value}% as the "
-                f"image-gc-high-threshold, but {k3s_vars} sets {watermark}%."
+                f"image-gc-high-threshold, but {K3S_VARS} sets {watermark}%."
             )
-    for source, targets in inhibitors(root / alertmanager, alert, index):
+    for source, targets in inhibitors(root / ALERTMANAGER, ALERT, index):
         if source.name in unthresholded:
             continue
         try:
             muting = expr_threshold(source.path, source.name, source.expr)
         except OperatorError as exc:
             raise OperatorError(
-                f"{source.path}: {source.name} inhibits {alert} in {alertmanager} but its "
-                f"expr has no trailing `> <number>` comparison, so whether it mutes {alert} "
+                f"{source.path}: {source.name} inhibits {ALERT} in {ALERTMANAGER} but its "
+                f"expr has no trailing `> <number>` comparison, so whether it mutes {ALERT} "
                 f"for good is unknown: rewrite it, or pass --unthresholded-inhibitor {source.name}"
             ) from exc
-        lowest = min(expr_threshold(t.path, alert, t.expr) for t in targets)
+        lowest = min(expr_threshold(t.path, ALERT, t.expr) for t in targets)
         if muting <= lowest:
             problems.append(
-                f"{source.name} fires above {muting:g}% and inhibits {alert} at "
-                f"{lowest:g}%, so {alert} can never notify: the inhibitor is "
+                f"{source.name} fires above {muting:g}% and inhibits {ALERT} at "
+                f"{lowest:g}%, so {ALERT} can never notify: the inhibitor is "
                 f"already firing whenever it is. Raise {source.name}'s threshold, "
-                f"lower image-gc-high-threshold in {k3s_vars}, or drop the "
-                f"pair in {alertmanager}."
+                f"lower image-gc-high-threshold in {K3S_VARS}, or drop the "
+                f"pair in {ALERTMANAGER}."
             )
     return problems
 
@@ -342,8 +338,6 @@ def main(argv=None):
         description="The image-GC alert must track the kubelet image-gc high watermark.",
     )
     parser.add_argument("--repo-root", default=REPO, type=Path)
-    parser.add_argument("--k3s-vars", default=K3S_VARS, type=Path, help="vars file with the kubelet args")
-    parser.add_argument("--kubelet-args-var", default=KUBELET_ARGS_VAR)
     parser.add_argument(
         "--rules",
         action="append",
@@ -351,8 +345,6 @@ def main(argv=None):
         default=None,
         help=f"rule file or directory to search; repeatable (default {RULES})",
     )
-    parser.add_argument("--alertmanager-config", default=ALERTMANAGER, type=Path)
-    parser.add_argument("--alert", default=ALERT)
     parser.add_argument(
         "--alert-offset", type=int, default=0,
         help="points the alert threshold sits above the watermark",
@@ -370,13 +362,9 @@ def main(argv=None):
     try:
         problems = check(
             args.repo_root,
-            k3s_vars=args.k3s_vars,
             rules=tuple(args.rules or [RULES]),
-            alertmanager=args.alertmanager_config,
-            alert=args.alert,
             offset=args.alert_offset,
             cap=args.alert_cap,
-            kubelet_var=args.kubelet_args_var,
             min_prose=args.min_prose_mentions,
             unthresholded=frozenset(args.unthresholded_inhibitor),
         )
@@ -385,13 +373,13 @@ def main(argv=None):
         return 2
     if problems:
         print(
-            f"ERROR: {args.alert} has drifted from the kubelet image-gc high watermark:",
+            f"ERROR: {ALERT} has drifted from the kubelet image-gc high watermark:",
             file=sys.stderr,
         )
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
         return 1
-    print(f"{args.alert} tracks the kubelet image-gc-high-threshold in {args.k3s_vars}.")
+    print(f"{ALERT} tracks the kubelet image-gc-high-threshold in {K3S_VARS}.")
     return 0
 
 

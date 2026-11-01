@@ -345,28 +345,6 @@ def _load_extracted(path: Path, what: str) -> dict:
     return doc
 
 
-def _known_alertnames(rules_doc: dict) -> set[str]:
-    return {
-        r["alert"]
-        for g in rules_doc.get("groups") or []
-        for r in g.get("rules") or []
-        if "alert" in r
-    }
-
-
-def _alert_severities(rules_doc: dict) -> dict[str, set[str]]:
-    """alertname -> every severity label the corpus declares for it."""
-    out: dict[str, set[str]] = {}
-    for group in rules_doc.get("groups") or []:
-        for rule in group.get("rules") or []:
-            name = rule.get("alert")
-            if not name:
-                continue
-            severity = ((rule.get("labels") or {}).get("severity"))
-            out.setdefault(str(name), set()).add(str(severity) if severity else "")
-    return out
-
-
 def _alert_rules(rules_doc: dict) -> dict[str, list[dict]]:
     """alertname -> every rule in the corpus that declares it."""
     out: dict[str, list[dict]] = {}
@@ -375,6 +353,18 @@ def _alert_rules(rules_doc: dict) -> dict[str, list[dict]]:
             if isinstance(rule, dict) and rule.get("alert"):
                 out.setdefault(str(rule["alert"]), []).append(rule)
     return out
+
+
+def _known_alertnames(rules_doc: dict) -> set[str]:
+    return set(_alert_rules(rules_doc))
+
+
+def _alert_severities(rules_doc: dict) -> dict[str, set[str]]:
+    """alertname -> every severity label the corpus declares for it."""
+    return {
+        name: {str((rule.get("labels") or {}).get("severity") or "") for rule in rules}
+        for name, rules in _alert_rules(rules_doc).items()
+    }
 
 
 def _escalation_candidates(name: str, suffixes, markers) -> list[str]:
@@ -511,14 +501,10 @@ def check_escalation_inhibits(am_doc: dict, rules_doc: dict, config: Config) -> 
 
 def _alert_exprs(rules_doc: dict) -> dict[str, list[str]]:
     """alertname -> every expr the corpus declares for it, whitespace collapsed."""
-    out: dict[str, list[str]] = {}
-    for group in rules_doc.get("groups") or []:
-        for rule in group.get("rules") or []:
-            name = rule.get("alert")
-            if not name:
-                continue
-            out.setdefault(str(name), []).append(" ".join(str(rule.get("expr") or "").split()))
-    return out
+    return {
+        name: [" ".join(str(rule.get("expr") or "").split()) for rule in rules]
+        for name, rules in _alert_rules(rules_doc).items()
+    }
 
 
 def _expr_selector_values(expr: str, label: str) -> set[str]:
@@ -606,41 +592,27 @@ def check_inhibits(am_doc: dict, known: set[str], upstream: set[str]) -> list[st
                     f"rule {i}: equal:[{label}] is redundant — both matcher sets already "
                     f'pin it to "{shared[0]}", so the pair dedups nothing'
                 )
-        # Every alertname a matcher pins must resolve, to one of ours or to a
-        # declared upstream alert. Checked per alternation member so a stale
-        # name cannot hide behind a surviving sibling.
+        # Every pinned or exempted alertname must resolve, per alternation member,
+        # so a stale name cannot hide behind a surviving sibling.
         defined = known | upstream
-        for side, (names, unvalidatable) in (
-            ("source", _exact_alertnames(src)),
-            ("target", _exact_alertnames(tgt)),
+        for resolver, message in (
+            (_exact_alertnames,
+             "alertname(s) {dead} match no extracted rule and are not in "
+             "upstream_alerts — renamed, deleted, or a typo? An unmatched name in an "
+             "alternation is an inert matcher, not an error at runtime."),
+            (_negated_alertnames,
+             "exempts alertname(s) {dead}, which match no extracted rule and are not "
+             "in upstream_alerts — renamed, deleted, or a typo? The exemption spares "
+             "nothing."),
         ):
-            if unvalidatable:
-                problems.append(f"rule {i}: {side} {unvalidatable}")
-                continue
-            dead = [n for n in names if n not in defined]
-            if dead:
-                problems.append(
-                    f"rule {i}: {side} alertname(s) {dead} match no extracted rule and "
-                    f"are not in upstream_alerts — renamed, deleted, or a typo? "
-                    f"An unmatched name in an alternation is an inert matcher, "
-                    f"not an error at runtime."
-                )
-        # A negated matcher is an exemption list, so a name that resolves to
-        # nothing exempts nothing and the alert it meant to spare stays silenced.
-        for side, (names, unvalidatable) in (
-            ("source", _negated_alertnames(src)),
-            ("target", _negated_alertnames(tgt)),
-        ):
-            if unvalidatable:
-                problems.append(f"rule {i}: {side} {unvalidatable}")
-                continue
-            dead = [n for n in names if n not in defined]
-            if dead:
-                problems.append(
-                    f"rule {i}: {side} exempts alertname(s) {dead}, which match no "
-                    f"extracted rule and are not in upstream_alerts — renamed, "
-                    f"deleted, or a typo? The exemption spares nothing."
-                )
+            for side, parsed in (("source", src), ("target", tgt)):
+                names, unvalidatable = resolver(parsed)
+                if unvalidatable:
+                    problems.append(f"rule {i}: {side} {unvalidatable}")
+                    continue
+                dead = [n for n in names if n not in defined]
+                if dead:
+                    problems.append(f"rule {i}: {side} " + message.format(dead=dead))
     return problems
 
 
@@ -735,12 +707,8 @@ def check_inhibit_target_scope(am_doc: dict, rules_doc: dict) -> list[str]:
     A source that excludes series with a negative selector can never cover them,
     so a target admitting them silences objects nothing is watching.
     """
-    exprs = {
-        alert["alert"]: str(alert.get("expr", ""))
-        for group in rules_doc.get("groups") or []
-        for alert in group.get("rules") or []
-        if isinstance(alert, dict) and alert.get("alert")
-    }
+    # A name declared twice is judged by its last expr.
+    exprs = {name: declared[-1] for name, declared in _alert_exprs(rules_doc).items()}
     problems = []
     for index, rule in enumerate(am_doc.get("inhibit_rules") or []):
         discard: list[str] = []

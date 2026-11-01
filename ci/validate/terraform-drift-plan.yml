@@ -16,12 +16,10 @@ spec:
         apk 1Password installer.
     tags:
       type: array
-      default: ["infrastructure"]
+      default: []
       description: >-
-        Runner tag(s). The 1Password installer runs `apk add`, so the runner
-        must allow root. The shared non-root tenant runner cannot run this job.
-        A consumer without a runner carrying these tags passes its own;
-        otherwise the job stays pending and GitLab fails it as stuck.
+        Runner tag(s). The 1Password installer runs `apk add`, so a consumer
+        passes the tag of a runner that allows root.
     module_dir:
       description: >-
         Module directory the plan runs in, repo-root relative

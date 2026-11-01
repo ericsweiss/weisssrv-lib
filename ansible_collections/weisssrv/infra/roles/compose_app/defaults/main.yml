@@ -13,9 +13,6 @@ compose_app_description: "Docker Compose stack"
 compose_app_working_directory: /opt/compose
 # Empty list => the unit omits the RequiresMountsFor line AND its comment.
 compose_app_requires_mounts_for: []
-compose_app_requires_mounts_comment: []
-compose_app_reconcile_comment: []
-compose_app_remain_after_exit: "yes"
 
 # Backup-metrics helper library (tasks/backup_lib.yml)
 compose_app_backup_lib_dest: /usr/local/lib/compose-app-backup-lib.sh

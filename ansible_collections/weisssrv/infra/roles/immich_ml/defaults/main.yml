@@ -6,8 +6,8 @@
 # role's pattern. No secrets.
 
 # Render-only escape hatch: gates the GPU guard, the Docker install and all
-# service management. Aliases the pre-collection name.
-immich_ml_skip_install: "{{ skip_immich_ml_deploy | default(false) }}"
+# service management.
+immich_ml_skip_install: false
 
 # Compose project layout. The model cache (multi-GB, downloaded on first run)
 # is a named docker volume in the guest's root filesystem — re-downloadable

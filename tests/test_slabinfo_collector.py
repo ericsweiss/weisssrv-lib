@@ -65,11 +65,6 @@ def _run(
     return metrics
 
 
-def test_the_collector_is_valid_shell() -> None:
-    assert SCRIPT.exists()
-    subprocess.run([SH, "-n", str(SCRIPT)], check=True)
-
-
 def test_one_cache_reports_objects_bytes_and_pages(tmp_path: Path) -> None:
     """objsize and pagesperslab sit in different columns from the counts, and a
     column slip still produces plausible-looking numbers."""

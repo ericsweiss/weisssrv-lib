@@ -7,6 +7,12 @@
   become: true
   gather_facts: true
   vars:
+    # Valid client scopes for the driven guard includes; group_vars carries no
+    # value for these two, and each case overrides only the input under test.
+    proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
+    proxmox_firewall_k3s_ingress_int_sources: [admin_ts, admin_lan]
+    firewall_rejected: []
+    firewall_accepted: []
     cluster_fw: /tmp/pve-firewall-test/firewall/cluster.fw
     host_fw: /tmp/pve-firewall-test/nodes/proxmox-firewall-test/host.fw
     # vmid 100 matches the docker platform's host_vars in molecule.yml.
@@ -137,13 +143,9 @@
           A role-owned security group lost or widened a rule — check the
           [group …] blocks in templates/cluster.fw.j2.
 
-    # The two hand-authored port lists share one schema, and `sources` must be a
-    # list: a scalar has a length, so a length-only guard passes it and the
-    # template iterates it per character into rules naming nonexistent IPSets.
-
-    # Every block below drives one malformed shape, with the other three
-    # variables set valid in the same `vars:`, so a rescue can only mean the
-    # shape under test was rejected. verify.yml carries no roles:.
+    # Each block below drives one malformed shape through the role's own guard
+    # files; every other input stays valid, so a rescue can only mean the shape
+    # under test was rejected. verify.yml carries no roles:.
 
     # The driven includes run task files outside the role, so the role's own
     # vars/ is not in scope: load it rather than restate the reserved names.
@@ -151,20 +153,20 @@
       ansible.builtin.include_vars:
         file: ../../vars/main.yml
 
+    # The two hand-authored port lists share one schema, and `sources` must be a
+    # list: a scalar has a length, so a length-only guard passes it and the
+    # template iterates it per character into rules naming nonexistent IPSets.
     - name: Drive the port-list schema guard — a scalar `sources`
       block:
         - name: Include the schema guard with a scalar sources value
           ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
           vars:
-            proxmox_firewall_dns_admin_ports: []
             proxmox_firewall_metrics_scrape_ports:
               - {port: 3000, sources: k3s_nodes, comment: scalar not a list}
-            proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
-            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, admin_lan]
       rescue:
-        - name: Record that the scalar sources value was rejected
+        - name: Record the rejection
           ansible.builtin.set_fact:
-            firewall_scalar_sources_rejected: true
+            firewall_rejected: "{{ firewall_rejected + ['scalar_sources'] }}"
 
     - name: Drive the port-list schema guard — an entry with no sources key
       block:
@@ -173,13 +175,10 @@
           vars:
             proxmox_firewall_dns_admin_ports:
               - {port: 3000, comment: no sources key}
-            proxmox_firewall_metrics_scrape_ports: []
-            proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
-            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, admin_lan]
       rescue:
-        - name: Record that the sources-less entry was rejected
+        - name: Record the rejection
           ansible.builtin.set_fact:
-            firewall_missing_sources_rejected: true
+            firewall_rejected: "{{ firewall_rejected + ['missing_sources'] }}"
 
     # `port:` with the value omitted on the next line is `defined` and null, so
     # a presence-only test passes it and the template renders `-dport None`.
@@ -188,15 +187,12 @@
         - name: Include the schema guard with a null port
           ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
           vars:
-            proxmox_firewall_dns_admin_ports: []
             proxmox_firewall_metrics_scrape_ports:
               - {port: null, sources: [k3s_nodes], comment: value omitted}
-            proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
-            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, admin_lan]
       rescue:
-        - name: Record that the valueless port was rejected
+        - name: Record the rejection
           ansible.builtin.set_fact:
-            firewall_null_port_rejected: true
+            firewall_rejected: "{{ firewall_rejected + ['null_port'] }}"
 
     # A mapping is a sequence and is not a string, so the list test admitted it;
     # the template then iterates its KEYS, which happens to render — the assert
@@ -208,13 +204,10 @@
           vars:
             proxmox_firewall_dns_admin_ports:
               - {port: 3000, sources: {admin_ts: null}}
-            proxmox_firewall_metrics_scrape_ports: []
-            proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
-            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, admin_lan]
       rescue:
-        - name: Record that the mapping sources value was rejected
+        - name: Record the rejection
           ansible.builtin.set_fact:
-            firewall_mapping_sources_rejected: true
+            firewall_rejected: "{{ firewall_rejected + ['mapping_sources'] }}"
 
     # The client-scope lists are the seam a segmented site hand-edits, and the
     # singular/plural slip renders one rule per CHARACTER of the name.
@@ -223,14 +216,11 @@
         - name: Include the schema guard with a scalar client-scope value
           ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
           vars:
-            proxmox_firewall_dns_admin_ports: []
-            proxmox_firewall_metrics_scrape_ports: []
             proxmox_firewall_dns_client_sources: dns_clients
-            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, lan_clients]
       rescue:
-        - name: Record that the scalar client-scope value was rejected
+        - name: Record the rejection
           ansible.builtin.set_fact:
-            firewall_scalar_client_scope_rejected: true
+            firewall_rejected: "{{ firewall_rejected + ['scalar_client_scope'] }}"
 
     # An empty list renders a syntactically perfect cluster.fw with the surface
     # it scopes closed — DNS for every VLAN, or the whole internal ingress.
@@ -239,14 +229,22 @@
         - name: Include the schema guard with an empty DNS client list
           ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
           vars:
-            proxmox_firewall_dns_admin_ports: []
-            proxmox_firewall_metrics_scrape_ports: []
             proxmox_firewall_dns_client_sources: []
-            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, lan_clients]
       rescue:
-        - name: Record that the empty DNS client list was rejected
+        - name: Record the rejection
           ansible.builtin.set_fact:
-            firewall_empty_dns_scope_rejected: true
+            firewall_rejected: "{{ firewall_rejected + ['empty_dns_scope'] }}"
+
+    - name: Drive the client-scope schema guard — an empty ingress client list
+      block:
+        - name: Include the schema guard with an empty ingress client list
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            proxmox_firewall_k3s_ingress_int_sources: []
+      rescue:
+        - name: Record the rejection
+          ansible.builtin.set_fact:
+            firewall_rejected: "{{ firewall_rejected + ['empty_ingress_scope'] }}"
 
     # sg-smtp-relay fails closed: an empty scope is a legal "no rule at all",
     # while a scalar still renders one rule per CHARACTER of the name.
@@ -255,60 +253,34 @@
         - name: Include the schema guard with an empty smtp-relay scope
           ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
           vars:
-            proxmox_firewall_dns_admin_ports: []
-            proxmox_firewall_metrics_scrape_ports: []
-            proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
-            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, lan_clients]
             proxmox_firewall_smtp_relay_sources: []
 
-        - name: Record that the empty smtp-relay scope was accepted
+        - name: Record the acceptance
           ansible.builtin.set_fact:
-            firewall_empty_smtp_relay_scope_accepted: true
+            firewall_accepted: "{{ firewall_accepted + ['empty_smtp_relay_scope'] }}"
 
     - name: Drive the client-scope schema guard — a scalar smtp-relay scope
       block:
         - name: Include the schema guard with a scalar smtp-relay scope
           ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
           vars:
-            proxmox_firewall_dns_admin_ports: []
-            proxmox_firewall_metrics_scrape_ports: []
-            proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
-            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, lan_clients]
             proxmox_firewall_smtp_relay_sources: core-cluster
       rescue:
-        - name: Record that the scalar smtp-relay scope was rejected
+        - name: Record the rejection
           ansible.builtin.set_fact:
-            firewall_scalar_smtp_relay_scope_rejected: true
+            firewall_rejected: "{{ firewall_rejected + ['scalar_smtp_relay_scope'] }}"
 
     - name: Drive the port-schema guard — a relay egress entry with no port
       block:
         - name: Include the schema guard with a portless relay egress entry
           ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
           vars:
-            proxmox_firewall_dns_admin_ports: []
-            proxmox_firewall_metrics_scrape_ports: []
-            proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
-            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, lan_clients]
             proxmox_firewall_smtp_relay_extra_egress_ports:
               - {proto: tcp}
       rescue:
-        - name: Record that the portless relay egress entry was rejected
+        - name: Record the rejection
           ansible.builtin.set_fact:
-            firewall_portless_relay_egress_rejected: true
-
-    - name: Drive the client-scope schema guard — an empty ingress client list
-      block:
-        - name: Include the schema guard with an empty ingress client list
-          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
-          vars:
-            proxmox_firewall_dns_admin_ports: []
-            proxmox_firewall_metrics_scrape_ports: []
-            proxmox_firewall_dns_client_sources: [admin_ts, dns_clients]
-            proxmox_firewall_k3s_ingress_int_sources: []
-      rescue:
-        - name: Record that the empty ingress client list was rejected
-          ansible.builtin.set_fact:
-            firewall_empty_ingress_scope_rejected: true
+            firewall_rejected: "{{ firewall_rejected + ['portless_relay_egress'] }}"
 
     # The container tests above say nothing about what is in the list, and the
     # template interpolates each element into `+dc/{{ src }}`. A valueless entry
@@ -318,14 +290,11 @@
         - name: Include the schema guard with a null element in the list
           ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
           vars:
-            proxmox_firewall_dns_admin_ports: []
-            proxmox_firewall_metrics_scrape_ports: []
             proxmox_firewall_dns_client_sources: [null]
-            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, lan_clients]
       rescue:
-        - name: Record that the null element was rejected
+        - name: Record the rejection
           ansible.builtin.set_fact:
-            firewall_null_client_element_rejected: true
+            firewall_rejected: "{{ firewall_rejected + ['null_client_element'] }}"
 
     # An empty string renders a bare `+dc/` with no set name, which pve-firewall
     # refuses to compile — and it sits NEXT TO a valid entry, so the list is a
@@ -335,14 +304,11 @@
         - name: Include the schema guard with an empty-string element
           ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
           vars:
-            proxmox_firewall_dns_admin_ports: []
-            proxmox_firewall_metrics_scrape_ports: []
             proxmox_firewall_dns_client_sources: ["", admin_ts]
-            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, lan_clients]
       rescue:
-        - name: Record that the empty-string element was rejected
+        - name: Record the rejection
           ansible.builtin.set_fact:
-            firewall_empty_client_element_rejected: true
+            firewall_rejected: "{{ firewall_rejected + ['empty_client_element'] }}"
 
     # `/` is a non-whitespace character, so a whitespace-only test admits it —
     # and `+dc/admin/ts` is not an IPSet reference pve-firewall can resolve, by
@@ -352,14 +318,11 @@
         - name: Include the schema guard with a `/` in a set name
           ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
           vars:
-            proxmox_firewall_dns_admin_ports: []
-            proxmox_firewall_metrics_scrape_ports: []
             proxmox_firewall_dns_client_sources: [admin/ts]
-            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, lan_clients]
       rescue:
-        - name: Record that the punctuated set name was rejected
+        - name: Record the rejection
           ansible.builtin.set_fact:
-            firewall_punctuated_set_name_rejected: true
+            firewall_rejected: "{{ firewall_rejected + ['punctuated_set_name'] }}"
 
     # pve-firewall's ipset grammar is a leading LETTER then 1-63 more, i.e. a
     # minimum of two characters: a single-character name and a digit-leading one
@@ -369,14 +332,11 @@
         - name: Include the schema guard with a one-character set name
           ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
           vars:
-            proxmox_firewall_dns_admin_ports: []
-            proxmox_firewall_metrics_scrape_ports: []
             proxmox_firewall_dns_client_sources: [admin_ts, a]
-            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, lan_clients]
       rescue:
-        - name: Record that the too-short set name was rejected
+        - name: Record the rejection
           ansible.builtin.set_fact:
-            firewall_short_set_name_rejected: true
+            firewall_rejected: "{{ firewall_rejected + ['short_set_name'] }}"
 
     # A site group named like one the template renders itself puts two
     # `[group <name>]` sections in cluster.fw, and pve-firewall keeps one.
@@ -385,17 +345,13 @@
         - name: Include the schema guard with a colliding group name
           ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
           vars:
-            proxmox_firewall_dns_admin_ports: []
-            proxmox_firewall_metrics_scrape_ports: []
-            proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
-            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, admin_lan]
             proxmox_firewall_security_groups:
               - name: sg-metrics
                 rules: ["IN ACCEPT -p tcp -dport 9999 -log nolog"]
       rescue:
-        - name: Record that the colliding group name was rejected
+        - name: Record the rejection
           ansible.builtin.set_fact:
-            firewall_colliding_group_name_rejected: true
+            firewall_rejected: "{{ firewall_rejected + ['colliding_group_name'] }}"
 
     # pve-firewall's group grammar caps the name at 18 characters, so a longer
     # one is refused after the role has written cluster.fw.
@@ -404,17 +360,13 @@
         - name: Include the schema guard with an over-long group name
           ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
           vars:
-            proxmox_firewall_dns_admin_ports: []
-            proxmox_firewall_metrics_scrape_ports: []
-            proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
-            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, admin_lan]
             proxmox_firewall_security_groups:
               - name: sg-application-group-too-long
                 rules: ["IN ACCEPT -p tcp -dport 9999 -log nolog"]
       rescue:
-        - name: Record that the over-long group name was rejected
+        - name: Record the rejection
           ansible.builtin.set_fact:
-            firewall_long_group_name_rejected: true
+            firewall_rejected: "{{ firewall_rejected + ['long_group_name'] }}"
 
     # pve-firewall's grammar opens on a letter, so a leading digit is refused
     # once the file is written, with nothing before that to show it.
@@ -423,36 +375,28 @@
         - name: Include the schema guard with a leading-digit group name
           ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
           vars:
-            proxmox_firewall_dns_admin_ports: []
-            proxmox_firewall_metrics_scrape_ports: []
-            proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
-            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, admin_lan]
             proxmox_firewall_security_groups:
               - name: 9sg-example
                 rules: ["IN ACCEPT -p tcp -dport 9999 -log nolog"]
       rescue:
-        - name: Record that the leading-digit group name was rejected
+        - name: Record the rejection
           ansible.builtin.set_fact:
-            firewall_digit_group_name_rejected: true
+            firewall_rejected: "{{ firewall_rejected + ['digit_group_name'] }}"
 
     - name: Drive the group-name guard — two groups sharing one name
       block:
         - name: Include the schema guard with a duplicated group name
           ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
           vars:
-            proxmox_firewall_dns_admin_ports: []
-            proxmox_firewall_metrics_scrape_ports: []
-            proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
-            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, admin_lan]
             proxmox_firewall_security_groups:
               - name: sg-example-dup
                 rules: ["IN ACCEPT -p tcp -dport 9998 -log nolog"]
               - name: sg-example-dup
                 rules: ["IN ACCEPT -p tcp -dport 9999 -log nolog"]
       rescue:
-        - name: Record that the duplicated group name was rejected
+        - name: Record the rejection
           ansible.builtin.set_fact:
-            firewall_duplicate_group_name_rejected: true
+            firewall_rejected: "{{ firewall_rejected + ['duplicate_group_name'] }}"
 
     # host.fw renders each extra entry as `GROUP <name>`, so a mapping there
     # renders a group reference no node resolves.
@@ -461,66 +405,77 @@
         - name: Include the schema guard with a mapping in the extra groups
           ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
           vars:
-            proxmox_firewall_dns_admin_ports: []
-            proxmox_firewall_metrics_scrape_ports: []
-            proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
-            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, admin_lan]
             proxmox_firewall_host_extra_groups:
               - name: sg-example-web
       rescue:
-        - name: Record that the mapping extra group was rejected
+        - name: Record the rejection
           ansible.builtin.set_fact:
-            firewall_mapping_extra_group_rejected: true
+            firewall_rejected: "{{ firewall_rejected + ['mapping_extra_group'] }}"
 
-    - name: Assert the group-name guards fail closed
+    - name: Drive the IPSet special-entry guard — an entry with no ip
+      block:
+        - name: Include the schema guard with an ip-less special entry
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            firewall_ipset_special_entries:
+              k3s_nodes:
+                - comment: no ip key
+      rescue:
+        - name: Record the rejection
+          ansible.builtin.set_fact:
+            firewall_rejected: "{{ firewall_rejected + ['ipset_missing_ip'] }}"
+
+    - name: Drive the host-egress port guard — an entry with no proto
+      block:
+        - name: Include the schema guard with a proto-less egress port
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            proxmox_firewall_host_egress_extra_ports:
+              - {port: 2222, comment: no proto key}
+      rescue:
+        - name: Record the rejection
+          ansible.builtin.set_fact:
+            firewall_rejected: "{{ firewall_rejected + ['egress_missing_proto'] }}"
+
+    # cluster.fw renders from the play's first host, so an input the delegate
+    # sees differently would be overwritten with this play's value. The guard
+    # must reject that and stay quiet when the scopes agree.
+    - name: Drive the cluster-scope guard — an input the delegate sees differently
+      block:
+        - name: Include the cluster-scope guard with a play-scoped override
+          ansible.builtin.include_tasks: ../../tasks/assert_cluster_scope.yml
+          vars:
+            _proxmox_firewall_delegate: dns-01
+            proxmox_firewall_metrics_scrape_ports: []
+      rescue:
+        - name: Record the rejection
+          ansible.builtin.set_fact:
+            firewall_rejected: "{{ firewall_rejected + ['cluster_scope'] }}"
+
+    - name: Include the cluster-scope guard with scopes that agree
+      ansible.builtin.include_tasks: ../../tasks/assert_cluster_scope.yml
+      vars:
+        _proxmox_firewall_delegate: dns-01
+
+    - name: Assert every driven guard fails closed
       ansible.builtin.assert:
         that:
-          - firewall_colliding_group_name_rejected | default(false)
-          - firewall_long_group_name_rejected | default(false)
-          - firewall_digit_group_name_rejected | default(false)
-          - firewall_duplicate_group_name_rejected | default(false)
-          - firewall_mapping_extra_group_rejected | default(false)
+          - >-
+            firewall_rejected ==
+            ['scalar_sources', 'missing_sources', 'null_port', 'mapping_sources',
+             'scalar_client_scope', 'empty_dns_scope', 'empty_ingress_scope',
+             'scalar_smtp_relay_scope', 'portless_relay_egress',
+             'null_client_element', 'empty_client_element', 'punctuated_set_name',
+             'short_set_name', 'colliding_group_name', 'long_group_name',
+             'digit_group_name', 'duplicate_group_name', 'mapping_extra_group',
+             'ipset_missing_ip', 'egress_missing_proto', 'cluster_scope']
+          - firewall_accepted == ['empty_smtp_relay_scope']
         fail_msg: >-
-          The group-name guard accepted a name the template renders itself, a
-          duplicate, a name outside pve-firewall's grammar (too long, or opening
-          on a digit), or an extra-group entry that is not a name. The first two
-          render two `[group <name>]` sections and pve-firewall keeps one rule
-          set of the two, silently closing either the site's app ports or a
-          built-in allow.
-        success_msg: >-
-          group-name guards fail closed on a reserved name, a duplicate, an
-          ungrammatical name and a non-name extra-group entry
-
-    - name: Assert the hand-authored list guards fail closed on every shape
-      ansible.builtin.assert:
-        that:
-          - firewall_scalar_sources_rejected | default(false)
-          - firewall_missing_sources_rejected | default(false)
-          - firewall_null_port_rejected | default(false)
-          - firewall_mapping_sources_rejected | default(false)
-          - firewall_scalar_client_scope_rejected | default(false)
-          - firewall_empty_dns_scope_rejected | default(false)
-          - firewall_empty_ingress_scope_rejected | default(false)
-          - firewall_empty_smtp_relay_scope_accepted | default(false)
-          - firewall_scalar_smtp_relay_scope_rejected | default(false)
-          - firewall_portless_relay_egress_rejected | default(false)
-          - firewall_null_client_element_rejected | default(false)
-          - firewall_empty_client_element_rejected | default(false)
-          - firewall_punctuated_set_name_rejected | default(false)
-          - firewall_short_set_name_rejected | default(false)
-        fail_msg: >-
-          A hand-authored list guard accepted a scalar or mapping `sources`, an
-          entry with no `sources` key, a `port:` with no value, an empty DNS or
-          ingress client scope, or an ELEMENT that is null, empty, punctuated or
-          outside pve-firewall's ipset grammar — each writes a cluster.fw that
-          either refuses to compile or silently closes a whole service surface,
-          after the role has already written it. An empty smtp-relay scope is
-          the one legal emptiness and must be accepted.
-        success_msg: >-
-          hand-authored list guards fail closed on scalar/mapping/missing
-          sources, on a valueless port, on an empty DNS or ingress client scope,
-          and on a null, empty or ungrammatical set name inside one, while the
-          fail-closed smtp-relay scope may be empty
+          A guard accepted a shape it must reject, or rejected the empty
+          smtp-relay scope, the one legal emptiness. Each accepted shape writes
+          a cluster.fw or host.fw that either refuses to compile or silently
+          closes a service surface. Rejected: {{ firewall_rejected }}.
+          Accepted: {{ firewall_accepted }}.
 
     # Per-application groups come from proxmox_firewall_security_groups, with a
     # stand-in site list in molecule.yml. One entry's `rules` is an expression
@@ -910,42 +865,6 @@
           info` LAST — anything after the DROP, or a DROP without the
           allowlist above it, cuts the node off.
 
-    # The nftables implementation switch, which the default render asserts is
-    # absent. The option selects proxmox-firewall over pve-firewall, so a render
-    # that drops it leaves the node on iptables with no sign of it.
-    - name: Render host.fw with the nftables implementation selected
-      vars:
-        firewall_role_templates: "{{ playbook_dir | dirname | dirname }}/templates"
-        proxmox_firewall_nftables: true
-        proxmox_firewall_log_level_in: nolog
-        proxmox_role: compute
-        proxmox_firewall_storage_role_name: nas
-      ansible.builtin.template:
-        src: "{{ firewall_role_templates }}/host.fw.j2"
-        dest: /tmp/host.fw.nftables
-        mode: "0644"
-
-    - name: Read the nftables host.fw render
-      ansible.builtin.slurp:
-        src: /tmp/host.fw.nftables
-      register: host_fw_nftables
-
-    - name: Assert the nftables option renders inside [OPTIONS]
-      vars:
-        nftables_text: "{{ host_fw_nftables.content | b64decode }}"
-        option_lines: >-
-          {{ (nftables_text.split('[RULES]') | first).splitlines()
-             | map('trim') | select() | reject('match', '^#') | list }}
-      ansible.builtin.assert:
-        that:
-          - "'nftables: 1' in option_lines"
-          - "'[OPTIONS]' in option_lines"
-          - "'enable: 1' in option_lines"
-        fail_msg: >-
-          host.fw must carry `nftables: 1` in [OPTIONS] when
-          proxmox_firewall_nftables is true, alongside the options it always
-          renders — the node otherwise stays on the iptables implementation.
-
     # The site-port seam and the cleartext migration range, both off by default.
     - name: Render cluster.fw with the migration range and site egress ports open
       vars:
@@ -1008,78 +927,6 @@
           An IPSet entry without `comment` must render as the bare address —
           got {{ k3s_lines }}.
 
-    - name: Drive the IPSet special-entry guard — an entry with no ip
-      block:
-        - name: Include the schema guard with an ip-less special entry
-          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
-          vars:
-            proxmox_firewall_dns_admin_ports: []
-            proxmox_firewall_metrics_scrape_ports: []
-            proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
-            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, admin_lan]
-            firewall_ipset_special_entries:
-              k3s_nodes:
-                - comment: no ip key
-      rescue:
-        - name: Record that the ip-less special entry was rejected
-          ansible.builtin.set_fact:
-            firewall_ipset_missing_ip_rejected: true
-
-    - name: Drive the host-egress port guard — an entry with no proto
-      block:
-        - name: Include the schema guard with a proto-less egress port
-          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
-          vars:
-            proxmox_firewall_dns_admin_ports: []
-            proxmox_firewall_metrics_scrape_ports: []
-            proxmox_firewall_dns_client_sources: [admin_ts, admin_lan]
-            proxmox_firewall_k3s_ingress_int_sources: [admin_ts, admin_lan]
-            proxmox_firewall_host_egress_extra_ports:
-              - {port: 2222, comment: no proto key}
-      rescue:
-        - name: Record that the proto-less egress port was rejected
-          ansible.builtin.set_fact:
-            firewall_egress_missing_proto_rejected: true
-
-    - name: Assert the IPSet and egress-port guards fail closed
-      ansible.builtin.assert:
-        that:
-          - firewall_ipset_missing_ip_rejected | default(false)
-          - firewall_egress_missing_proto_rejected | default(false)
-        fail_msg: >-
-          The schema guard accepted an IPSet special entry with no `ip` (which
-          renders `None` into a cluster IPSet) or an egress port with no
-          `proto` (which renders `-p None`).
-
-    # cluster.fw renders from the play's first host, so an input the delegate
-    # sees differently would be overwritten with this play's value. The guard
-    # must reject that and stay quiet when the scopes agree.
-    - name: Drive the cluster-scope guard — an input the delegate sees differently
-      block:
-        - name: Include the cluster-scope guard with a play-scoped override
-          ansible.builtin.include_tasks: ../../tasks/assert_cluster_scope.yml
-          vars:
-            _proxmox_firewall_delegate: dns-01
-            proxmox_firewall_metrics_scrape_ports: []
-      rescue:
-        - name: Record that the play-scoped override was rejected
-          ansible.builtin.set_fact:
-            firewall_cluster_scope_rejected: true
-
-    - name: Include the cluster-scope guard with scopes that agree
-      ansible.builtin.include_tasks: ../../tasks/assert_cluster_scope.yml
-      vars:
-        _proxmox_firewall_delegate: dns-01
-
-    - name: Assert the cluster-scope guard fails closed
-      ansible.builtin.assert:
-        that:
-          - firewall_cluster_scope_rejected | default(false)
-        fail_msg: >-
-          assert_cluster_scope.yml accepted a cluster-scope input that differs
-          from the delegate's scope — a guest play would then overwrite
-          cluster.fw with its own role defaults.
-
     # proxmox_firewall_enabled false must deploy nothing: the third converge
     # play redirected the config dirs, so their absence proves the guest .fw and
     # the pmxcfs directory tasks all honour the flag.
@@ -1122,21 +969,6 @@
           An empty proxmox_firewall_smtp_relay_sources rendered an IN rule in
           sg-smtp-relay, or dropped the group's egress allowlist — the default
           must open :25 and :587 to nobody until the site names its client sets.
-
-    - name: Read the relay-scope guard result
-      ansible.builtin.slurp:
-        src: /tmp/molecule-results/fw-relay-scope.json
-      register: fw_relay_scope
-
-    - name: Assert a relay guest with no client scope fails the play
-      ansible.builtin.assert:
-        that:
-          - (fw_relay_scope.content | b64decode | from_json).guard_fired
-        fail_msg: >-
-          A guest carrying sg-smtp-relay converged with an empty
-          proxmox_firewall_smtp_relay_sources, so the relay's :25 and :587
-          close with nothing reporting it.
-        success_msg: "a relay guest with no client scope fails the play"
 
     # The sixth converge play carried a relay guest with no client scope: the
     # cluster-scope guard must fail the run before cluster.fw is published.

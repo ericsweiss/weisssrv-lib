@@ -3,6 +3,7 @@
 
 import io
 import json
+import subprocess
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -43,7 +44,7 @@ class _FakeOpen:
         return self.files[name].getvalue()
 
 
-def _run_main(stdout, *, env, stderr="", returncode=0, argv=None):
+def _run_main(stdout, *, env, stderr="", returncode=0):
     """Run version_check_ci.main() with subprocess/open/post mocked.
 
     Returns (exit_code, fake_open, posted_bodies).
@@ -56,10 +57,10 @@ def _run_main(stdout, *, env, stderr="", returncode=0, argv=None):
          patch("builtins.open", fake_open), \
          patch.object(version_check_ci.os, "makedirs") as fake_makedirs, \
          patch.object(version_check_ci, "upsert_mr_comment",
-                      side_effect=lambda body, token_env=None: posted.append(body)), \
+                      side_effect=posted.append), \
          patch.dict(version_check_ci.os.environ, env, clear=True):
         try:
-            version_check_ci.main(argv or [])
+            version_check_ci.main()
             code = 0
         except SystemExit as e:
             code = e.code if e.code is not None else 0
@@ -88,44 +89,30 @@ def _payload(services, summary_overrides=None):
     return json.dumps({"summary": summary, "services": services})
 
 
-class TestExitCodes(unittest.TestCase):
-    """Exit code reconciliation from the parsed --json summary."""
+_CLEAN = {"name": "Foo", "current_version": "1.0", "latest_version": "1.0",
+          "update_available": False}
+_UPDATE = {"name": "Up", "current_version": "1.0", "latest_version": "1.1",
+           "update_available": True}
+_ERROR = {"name": "Bad", "current_version": "2.0", "latest_version": None,
+          "update_available": False, "error": "boom"}
 
-    def test_all_up_to_date_exits_zero(self):
-        payload = _payload([
-            {"name": "Foo", "current_version": "1.0", "latest_version": "1.0",
-             "update_available": False},
-        ])
-        # check-versions.py would have returned 0 too; main() reconciles.
-        code, _, _ = _run_main(payload, env={}, returncode=0)
-        self.assertEqual(code, 0)
 
-    def test_updates_available_exits_one(self):
-        payload = _payload([
-            {"name": "Foo", "current_version": "1.0", "latest_version": "1.1",
-             "update_available": True},
-        ])
-        code, _, _ = _run_main(payload, env={}, returncode=1)
-        self.assertEqual(code, 1)
-
-    def test_errors_exit_two(self):
-        payload = _payload([
-            {"name": "Foo", "current_version": "1.0", "latest_version": None,
-             "update_available": False, "error": "boom"},
-        ])
-        code, _, _ = _run_main(payload, env={}, returncode=2)
-        self.assertEqual(code, 2)
-
-    def test_errors_take_precedence_over_updates(self):
-        """When both updates and errors are present, errors win → exit 2."""
-        payload = _payload([
-            {"name": "Up", "current_version": "1.0", "latest_version": "1.1",
-             "update_available": True},
-            {"name": "Bad", "current_version": "2.0", "latest_version": None,
-             "update_available": False, "error": "boom"},
-        ])
-        code, _, _ = _run_main(payload, env={}, returncode=1)
-        self.assertEqual(code, 2)
+# The exit code comes from the parsed --json summary, errors win, and a checker
+# exit outside 0/1/2 reads as 2: version-check.yml's soft_fail_exit_codes rely on it.
+@pytest.mark.parametrize(
+    "services, returncode, expected",
+    [
+        ([_CLEAN], 0, 0),
+        ([_UPDATE], 1, 1),
+        ([_ERROR], 2, 2),
+        ([_UPDATE, _ERROR], 1, 2),
+        ([_CLEAN], 3, 2),
+    ],
+    ids=["clean", "updates", "errors", "errors-over-updates", "out-of-contract"],
+)
+def test_exit_code(services, returncode, expected):
+    code, _, _ = _run_main(_payload(services), env={}, returncode=returncode)
+    assert code == expected
 
 
 class TestParseFailureStub(unittest.TestCase):
@@ -177,57 +164,28 @@ class TestParseFailureStub(unittest.TestCase):
         )
 
 
-class TestOutputFlag(unittest.TestCase):
-    """--output redirects the report artifact; the default is unchanged."""
+class TestReportPath(unittest.TestCase):
+    """$REPORT_PATH places the artifact; the default is the template's."""
 
     PAYLOAD = _payload([
         {"name": "Foo", "current_version": "1.0", "latest_version": "1.0",
          "update_available": False},
     ])
 
-    def test_default_is_version_report_json(self):
-        """The CWD-relative default is the artifact path consumers' CI
-        collects — it must not change when the flag is absent."""
-        self.assertEqual(version_check_ci.DEFAULT_OUTPUT, "version-report.json")
+    def test_default_is_version_report_json_with_no_directory(self):
         _, fake_open, _ = _run_main(self.PAYLOAD, env={}, returncode=0)
         self.assertEqual(list(fake_open.files), ["version-report.json"])
-
-    def test_default_needs_no_directory(self):
-        """A bare filename has no parent — don't call makedirs("")."""
-        _, fake_open, _ = _run_main(self.PAYLOAD, env={}, returncode=0)
         fake_open.makedirs.assert_not_called()
 
-    def test_output_flag_redirects_valid_report(self):
+    def test_report_path_redirects_the_report_and_creates_its_directory(self):
         _, fake_open, _ = _run_main(
-            self.PAYLOAD, env={}, returncode=0, argv=["--output", "out/custom.json"]
+            self.PAYLOAD, env={"REPORT_PATH": "out/custom.json"}, returncode=0
         )
         self.assertEqual(list(fake_open.files), ["out/custom.json"])
         self.assertEqual(
-            json.loads(fake_open.contents("out/custom.json")),
-            json.loads(self.PAYLOAD),
+            json.loads(fake_open.contents("out/custom.json")), json.loads(self.PAYLOAD)
         )
-        # The artifacts subdir is created, so the first run doesn't
-        # FileNotFoundError on a path CI has not pre-made.
         fake_open.makedirs.assert_called_once_with("out", exist_ok=True)
-
-    def test_output_flag_redirects_parse_failure_stub(self):
-        """The stub written on the parse-failure branch honours --output too
-        (both writes are threaded, not just the happy path)."""
-        code, fake_open, _ = _run_main(
-            "not json", env={}, stderr="boom", returncode=0,
-            argv=["--output", "custom.json"],
-        )
-        self.assertEqual(code, 2)
-        self.assertEqual(list(fake_open.files), ["custom.json"])
-        artifact = json.loads(fake_open.contents("custom.json"))
-        self.assertIn("not parseable", artifact["error"])
-
-    def test_unknown_flag_is_rejected(self):
-        """argparse rejects an unknown flag instead of silently ignoring it."""
-        with patch.dict(version_check_ci.os.environ, {}, clear=True):
-            with self.assertRaises(SystemExit) as cm:
-                version_check_ci.main(["--bogus"])
-        self.assertEqual(cm.exception.code, 2)
 
 
 class TestMrComment(unittest.TestCase):
@@ -320,25 +278,17 @@ class TestMrComment(unittest.TestCase):
         self.assertIn("boom", posted[0])
 
 
-class TestSubprocessFailureModes(unittest.TestCase):
-    """Timeout / exec failure of the underlying check-versions.py call."""
-
-    def test_timeout_exits_two(self):
-        import subprocess
-        with patch.object(version_check_ci.subprocess, "run",
-                          side_effect=subprocess.TimeoutExpired(cmd="x", timeout=300)), \
-             patch.dict(version_check_ci.os.environ, {}, clear=True):
-            with self.assertRaises(SystemExit) as cm:
-                version_check_ci.main([])
-        self.assertEqual(cm.exception.code, 2)
-
-    def test_oserror_exits_two(self):
-        with patch.object(version_check_ci.subprocess, "run",
-                          side_effect=OSError("no such file")), \
-             patch.dict(version_check_ci.os.environ, {}, clear=True):
-            with self.assertRaises(SystemExit) as cm:
-                version_check_ci.main([])
-        self.assertEqual(cm.exception.code, 2)
+@pytest.mark.parametrize(
+    "error",
+    [subprocess.TimeoutExpired(cmd="x", timeout=300), OSError("no such file")],
+    ids=["timeout", "oserror"],
+)
+def test_a_checker_that_cannot_run_exits_two(error):
+    with patch.object(version_check_ci.subprocess, "run", side_effect=error), \
+         patch.dict(version_check_ci.os.environ, {}, clear=True):
+        with pytest.raises(SystemExit) as exc:
+            version_check_ci.main()
+    assert exc.value.code == 2
 
 
 MR_CREDS = {
@@ -375,18 +325,6 @@ class TestUpsertMrComment(unittest.TestCase):
              patch.dict(version_check_ci.os.environ, {}, clear=True):
             version_check_ci.upsert_mr_comment("hi")
         mock_urlopen.assert_not_called()
-
-    def test_honours_a_custom_token_env(self):
-        env = {k: v for k, v in MR_CREDS.items() if k != "GITLAB_API_TOKEN"}
-        env["BOT_TOKEN"] = "other"
-        with patch.object(version_check_ci, "urlopen",
-                          side_effect=[BOT, _response(b"[]"), _response(b"")]) as mock_urlopen, \
-             patch.dict(version_check_ci.os.environ, env, clear=True):
-            version_check_ci.upsert_mr_comment("hello", "BOT_TOKEN")
-        self.assertEqual(mock_urlopen.call_count, 3)
-        self.assertEqual(
-            mock_urlopen.call_args_list[2][0][0].headers.get("Private-token"), "other"
-        )
 
     def test_posts_when_no_marked_note_exists(self):
         with patch.object(version_check_ci, "urlopen",
@@ -472,18 +410,6 @@ class TestSummaryCounterGuard(unittest.TestCase):
         self.assertEqual(version_check_ci._count(None), 0)
 
 
-class TestCheckerExitCodeContract(unittest.TestCase):
-    """A CHECK_VERSIONS_CMD exit outside 0/1/2 is reported, not swallowed."""
-
-    def test_out_of_contract_returncode_exits_two(self):
-        payload = _payload([
-            {"name": "Foo", "current_version": "1.0", "latest_version": "1.0",
-             "update_available": False},
-        ])
-        code, _, _ = _run_main(payload, env={}, returncode=3)
-        self.assertEqual(code, 2)
-
-
 class TestMrCommentIsInertMarkdown(unittest.TestCase):
     """Upstream error text reaches a note posted as the token owner."""
 
@@ -508,23 +434,20 @@ class TestMrCommentIsInertMarkdown(unittest.TestCase):
         self.assertIn(" /merge", body)
 
 
-class TestServicesGuard(unittest.TestCase):
-    """_services() normalizes the external `services` payload so a malformed
-    shape (null, non-list, or non-dict entries) can't crash the iterations that
-    build the log output and MR comment, bypassing the stub-artifact contract."""
-
-    def test_absent_or_null_services_returns_empty(self):
-        self.assertEqual(version_check_ci._services({}), [])
-        self.assertEqual(version_check_ci._services({"services": None}), [])
-
-    def test_non_list_services_returns_empty(self):
-        self.assertEqual(version_check_ci._services({"services": {"a": 1}}), [])
-
-    def test_filters_non_dict_entries(self):
-        data = {"services": [{"name": "a"}, "x", 3, None, {"name": "b"}]}
-        self.assertEqual(
-            version_check_ci._services(data), [{"name": "a"}, {"name": "b"}]
-        )
+@pytest.mark.parametrize(
+    "data, expected",
+    [
+        ({}, []),
+        ({"services": None}, []),
+        ({"services": {"a": 1}}, []),
+        ({"services": [{"name": "a"}, "x", 3, None, {"name": "b"}]},
+         [{"name": "a"}, {"name": "b"}]),
+    ],
+    ids=["absent", "null", "non-list", "non-dict-entries"],
+)
+def test_services_guard(data, expected):
+    """A malformed `services` shape must not crash the log or MR-comment loops."""
+    assert version_check_ci._services(data) == expected
 
 
 if __name__ == "__main__":

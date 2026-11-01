@@ -29,18 +29,6 @@ home_assistant_ssl_enabled: false
 home_assistant_ssl_certificate: /ssl/fullchain.pem
 home_assistant_ssl_key: /ssl/privkey.pem
 
-# Opinionated configuration.yaml blocks, each omitted when emptied or disabled.
-# home_assistant_extra_config can only append, so these are the seams for
-# removing a block.
-home_assistant_enable_prometheus: true
-home_assistant_enable_default_config: true
-home_assistant_tts_platforms:
-  - google_translate
-home_assistant_includes:
-  automation: automations.yaml
-  script: scripts.yaml
-  scene: scenes.yaml
-
 # Appended verbatim to configuration.yaml. The escape hatch for HA config the
 # role does not model; keep it small and YAML-valid at column 0.
 home_assistant_extra_config: ""

@@ -137,106 +137,64 @@ def _json(pve_up, pve_total, api, ready, total, flux, zfs, alerts=0) -> str:
     return res.stdout.strip()
 
 
-class TestClassifyRegular:
-    def test_all_green_is_ok(self):
-        assert _regular(6, "true", 9, 9, 19, 19, 100, 50, 0, 0) == "OK"
+GREEN = (6, "true", 9, 9, 19, 19, 100, 50, 0, 0)
 
-    def test_flux_not_ready_degrades(self):
-        assert _regular(6, "true", 9, 9, 19, 19, 100, 50, 1, 0) == "PARTIAL"
 
-    def test_zfs_degraded_degrades(self):
-        assert _regular(6, "true", 9, 9, 19, 19, 100, 50, 0, 1) == "PARTIAL"
+@pytest.mark.parametrize("args, kwargs, verdict", [
+    (GREEN, {}, "OK"),
+    # probe_flux_not_ready folds spec.suspend in, so a frozen cluster degrades too.
+    ((6, "true", 9, 9, 19, 19, 100, 50, 1, 0), {}, "PARTIAL"),
+    ((6, "true", 9, 9, 19, 19, 100, 50, 0, 1), {}, "PARTIAL"),
+    ((5, "true", 9, 9, 18, 19, 94, 50, 0, 0), {}, "PARTIAL"),
+    ((0, "true", 9, 9, 3, 19, 15, 50, 0, 0), {}, "FAILED"),
+    ((6, "true", 0, 9, 19, 19, 100, 50, 0, 0), {}, "FAILED"),
+    # A collector-side kubeconfig problem (probe defaults 0/0) never reads OK.
+    ((6, "false", 0, 0, 19, 19, 100, 50, 0, 0), {}, "PARTIAL"),
+    ((6, "true", 9, 9, 9, 19, 47, 50, 0, 0), {}, "FAILED"),
+    # Guests count toward HOSTS_TOTAL; 3 of 22 down stays above the floor.
+    ((6, "true", 9, 9, 19, 22, 86, 50, 0, 0), {}, "PARTIAL"),
+    # A missing specialised collector leaves a whole block out of the artifact.
+    (GREEN, {"sections_ok": 21, "sections_total": 22}, "PARTIAL"),
+    (GREEN, {"sections_ok": 22, "sections_total": 22}, "OK"),
+    # collect-state.sh coalesces an unaskable Alertmanager to 1, not 0.
+    (GREEN, {"alerts": 1}, "PARTIAL"),
+    (GREEN, {"alerts": 99}, "PARTIAL"),
+], ids=[
+    "all-green-is-ok", "flux-not-ready-or-suspended-degrades", "zfs-degraded-degrades",
+    "one-host-down-degrades", "no-pve-host-is-failed", "api-ok-zero-ready-is-failed",
+    "kubectl-unreachable-is-partial", "coverage-below-floor-is-failed",
+    "some-guests-down-degrades", "failed-specialised-section-degrades",
+    "all-sections-collected-stays-ok", "firing-or-unknown-alert-degrades",
+    "alerts-never-fail",
+])
+def test_classify_regular(args, kwargs, verdict):
+    assert _regular(*args, **kwargs) == verdict
 
-    def test_one_host_down_degrades(self):
-        assert _regular(5, "true", 9, 9, 18, 19, 94, 50, 0, 0) == "PARTIAL"
 
-    def test_no_pve_host_is_failed(self):
-        assert _regular(0, "true", 9, 9, 3, 19, 15, 50, 0, 0) == "FAILED"
+JSON_GREEN = (6, 6, "true", 9, 9, 0, 0)
 
-    def test_api_ok_zero_ready_is_failed(self):
-        # API answered and reported zero Ready nodes: catastrophic.
-        assert _regular(6, "true", 0, 9, 19, 19, 100, 50, 0, 0) == "FAILED"
 
-    def test_kubectl_unreachable_is_partial_not_failed(self):
-        # Collector-side kubeconfig problem (probe defaults 0/0) must degrade,
-        # not read as a catastrophic cluster failure — and never promote to OK.
-        assert _regular(6, "false", 0, 0, 19, 19, 100, 50, 0, 0) == "PARTIAL"
-
-    def test_coverage_below_floor_is_failed(self):
-        assert _regular(6, "true", 9, 9, 9, 19, 47, 50, 0, 0) == "FAILED"
-
-    def test_some_guests_down_degrades_not_failed(self):
-        # Guests count toward HOSTS_TOTAL; 3 of 22 unreachable stays above the
-        # coverage floor with core infra up, so the verdict is PARTIAL.
-        assert _regular(6, "true", 9, 9, 19, 22, 86, 50, 0, 0) == "PARTIAL"
-
-    def test_failed_specialised_section_degrades(self):
-        # Every host SSH succeeded but one specialised collector (Proxmox /
-        # DNS / mail / k3s) did not: the artifact is missing a whole block
-        # (ZFS health, firewall, HA state) and must not read OK.
-        assert _regular(6, "true", 9, 9, 19, 19, 100, 50, 0, 0, sections_ok=21, sections_total=22) == "PARTIAL"
-
-    def test_all_sections_collected_stays_ok(self):
-        assert _regular(6, "true", 9, 9, 19, 19, 100, 50, 0, 0, sections_ok=22, sections_total=22) == "OK"
-
-    def test_firing_alert_degrades(self):
-        # A firing non-Watchdog alert must degrade the verdict.
-        assert _regular(6, "true", 9, 9, 19, 19, 100, 50, 0, 0, alerts=1) == "PARTIAL"
-
-    def test_firing_alerts_never_cause_failed(self):
-        # Alert noise degrades but must never suppress the artifact.
-        assert _regular(6, "true", 9, 9, 19, 19, 100, 50, 0, 0, alerts=99) == "PARTIAL"
-
-    def test_unknown_alerts_demote(self):
-        # collect-state.sh coalesces an unaskable Alertmanager to 1, not 0, so
-        # "could not ask" arrives here as the degrading value.
-        assert _regular(6, "true", 9, 9, 19, 19, 100, 50, 0, 0, alerts=1) == "PARTIAL"
-        assert _regular(6, "true", 9, 9, 19, 19, 100, 50, 0, 0, alerts=0) == "OK"
-
-    def test_suspended_flux_counts_as_not_ready(self):
-        # probe_flux_not_ready folds spec.suspend into its count, so a frozen
-        # cluster arrives here as flux_not_ready>0 and degrades.
-        assert _regular(6, "true", 9, 9, 19, 19, 100, 50, 1, 0) == "PARTIAL"
+@pytest.mark.parametrize("args, kwargs, verdict", [
+    (JSON_GREEN, {}, "healthy"),
+    ((6, 6, "true", 9, 9, 1, 0), {}, "degraded"),
+    ((6, 6, "true", 9, 9, 0, 1), {}, "degraded"),
+    ((5, 6, "true", 9, 9, 0, 0), {}, "degraded"),
+    ((0, 6, "true", 9, 9, 0, 0), {}, "catastrophic"),
+    ((6, 6, "true", 0, 9, 0, 0), {}, "catastrophic"),
+    ((6, 6, "false", 0, 0, 0, 0), {}, "degraded"),
+    (JSON_GREEN, {"alerts": 1}, "degraded"),
+    (JSON_GREEN, {"alerts": 99}, "degraded"),
+], ids=[
+    "all-green-is-healthy", "flux-not-ready-degrades", "zfs-degraded-degrades",
+    "one-host-down-degrades", "no-pve-host-is-catastrophic",
+    "api-ok-zero-ready-is-catastrophic", "kubectl-unreachable-is-degraded",
+    "firing-or-unknown-alert-degrades", "alerts-never-catastrophic",
+])
+def test_classify_json(args, kwargs, verdict):
+    assert _json(*args, **kwargs) == verdict
 
 
 class TestClassifyJson:
-    def test_all_green_is_healthy(self):
-        assert _json(6, 6, "true", 9, 9, 0, 0) == "healthy"
-
-    def test_flux_not_ready_degrades(self):
-        assert _json(6, 6, "true", 9, 9, 1, 0) == "degraded"
-
-    def test_zfs_degraded_degrades(self):
-        assert _json(6, 6, "true", 9, 9, 0, 1) == "degraded"
-
-    def test_one_host_down_degrades(self):
-        assert _json(5, 6, "true", 9, 9, 0, 0) == "degraded"
-
-    def test_no_pve_host_is_catastrophic(self):
-        assert _json(0, 6, "true", 9, 9, 0, 0) == "catastrophic"
-
-    def test_api_ok_zero_ready_is_catastrophic(self):
-        assert _json(6, 6, "true", 0, 9, 0, 0) == "catastrophic"
-
-    def test_kubectl_unreachable_is_degraded(self):
-        # API unreachable (collector-side): degraded, not catastrophic.
-        assert _json(6, 6, "false", 0, 0, 0, 0) == "degraded"
-
-    def test_firing_alert_degrades(self):
-        # The signal regular mode already gates on: --json must not answer
-        # healthy while a non-Watchdog alert fires.
-        assert _json(6, 6, "true", 9, 9, 0, 0, alerts=1) == "degraded"
-
-    def test_firing_alerts_never_catastrophic(self):
-        # Alert noise degrades; it never claims the cluster is down.
-        assert _json(6, 6, "true", 9, 9, 0, 0, alerts=99) == "degraded"
-
-    def test_unknown_alerts_demote(self):
-        # collect-state.sh coalesces an unaskable Alertmanager to 1, not 0, so
-        # "could not ask" arrives here as the degrading value.
-        assert _json(6, 6, "true", 9, 9, 0, 0, alerts=1) == "degraded"
-        assert _json(6, 6, "true", 9, 9, 0, 0, alerts=0) == "healthy"
-
     @pytest.mark.parametrize("position", ["flux", "zfs"])
     def test_an_unaskable_probe_coerced_through_coerce_int_never_reads_healthy(
         self, position

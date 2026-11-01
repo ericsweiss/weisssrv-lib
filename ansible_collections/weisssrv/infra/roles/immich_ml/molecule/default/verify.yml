@@ -60,8 +60,6 @@
           - (immich_ml_unit.content | b64decode) is search('WorkingDirectory=/opt/immich-ml/compose')
           - (immich_ml_unit.content | b64decode) is search('ExecStart=/usr/bin/docker compose up -d --remove-orphans')
           - (immich_ml_unit.content | b64decode) is search('ExecStop=/usr/bin/docker compose down')
-          # No attached volumes on this guest — the unit must NOT carry
-          # RequiresMountsFor (that is the immich guest unit's mount guard).
           - (immich_ml_unit.content | b64decode) is not search('RequiresMountsFor')
         fail_msg: "immich-ml-compose.service missing expected docker-compose lifecycle wiring"
         success_msg: "immich-ml-compose.service owns the compose lifecycle (no volume coupling)"

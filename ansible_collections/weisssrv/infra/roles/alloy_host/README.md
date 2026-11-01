@@ -21,11 +21,8 @@ Both write to the same Loki backend; labels distinguish the source.
 | `alloy_host_version` | apt package version to pin (`alloy=<version>`), then `dpkg`-held so an `apt upgrade` cannot move it | yes |
 | `alloy_host_loki_url` | Loki push endpoint | yes |
 | `alloy_host_loki_user`, `alloy_host_loki_password` | basic-auth credentials; asserted non-empty when the endpoint is `https://` (an authenticating proxy) | for https |
-| `alloy_host_wal_enabled` | on-disk WAL for `loki.write`. Alloy >= 1.21.0 accepts the `wal` block only at `--stability.level=experimental`, so while this is true the role adds that flag to `CUSTOM_ARGS` itself | no (`true`) |
-| `alloy_host_wal_max_segment_age` | WAL segment cut interval — bounds replay lag and disk use | no (`1h`) |
+| `alloy_host_wal_max_segment_age` | segment cut interval of the `loki.write` on-disk WAL, which is always on; bounds replay lag and disk use | no (`1h`) |
 | `alloy_host_journal_max_age` | how far back a restarted Alloy re-reads the journal | no (`3h`) |
-| `alloy_host_http_port` | Alloy HTTP listen port, used by the post-deploy `/-/ready` probe | no (`12345`) |
-| `alloy_host_extra_args` | Extra Alloy CLI arguments appended to `CUSTOM_ARGS`; where a `--server.http.listen-addr` matching the port above goes. With the WAL on, a `--stability.level` entry must be exactly `--stability.level=experimental` (asserted at deploy time; site copies of it are dropped in favour of the role's, so the flag is emitted once). With the WAL off any level passes through. One argument per entry: asserted free of `"` and whitespace and not ending in `\` — the args are joined into a double-quoted shell assignment | no (`[]`) |
 
 Point `alloy_host_loki_url` at an authenticated ingress hostname; a plaintext
 in-cluster endpoint (a NodePort, say) is a legitimate outage fallback and skips
@@ -63,16 +60,6 @@ pair with Loki's out-of-order accept window (`ingester.max_chunk_age / 2`).
 Re-read entries older than that window are pushed and then rejected
 `too_far_behind` and lost, in short restart-shaped bursts. Keep the two in
 lockstep: raise both or neither.
-
-**Scope of the `alloy_host_extra_args` guard.** `/etc/default/alloy` is read by
-systemd as an `EnvironmentFile`. systemd parses the quoting itself and never
-runs a shell, so `$(...)` and backticks are inert bytes there. Only a double
-quote or a trailing backslash can terminate the `CUSTOM_ARGS` value early and
-turn the rest into extra arguments, so the assert rejects those two. It also
-rejects whitespace: the unit expands `$CUSTOM_ARGS` into words, so an entry holding a
-space would smuggle a second argument (a `--stability.level`, say) past the
-per-entry checks. Each entry is therefore exactly one argument. Widening the
-guard into a general shell filter would reject legitimate arguments.
 
 ## Files
 

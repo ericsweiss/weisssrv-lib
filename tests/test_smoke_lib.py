@@ -186,11 +186,10 @@ def test_a_needle_is_literal_not_a_pattern(shell):
     """A `.` in a needle must not match the character that happens to be there:
     a regex needle turns a wrong body into a PASS."""
     proc, _ = shell(
-        'smoke_url_contains http://h/ "v1.2"; echo literal=$?\n'
-        'smoke_url_contains http://h/ "v1.2"; echo again=$?',
+        'smoke_url_contains http://h/ "v1.2"; echo rc=$?',
         CURL_BODY="version v1x2",
     )
-    assert proc.stdout.split() == ["literal=1", "again=1"]
+    assert proc.stdout.strip() == "rc=1"
 
 
 def test_a_matching_needle_passes(shell):
@@ -242,10 +241,9 @@ def test_ssh_is_bounded_and_non_interactive(shell, tmp_path):
     proc, trace = shell(
         'smoke_ssh_contains h "cmd" "abc"; echo rc=$?',
         SSH_OUT="abc",
-        SMOKE_LIB_SSH_MAX_TIME=12,
     )
     assert proc.stdout.strip() == "rc=0"
-    assert trace == ["timeout 12", "ssh %s h cmd" % SSH_OPTS]
+    assert trace == ["timeout 30", "ssh %s h cmd" % SSH_OPTS]
 
 
 def test_ssh_without_a_timeout_binary_warns_once_and_still_probes(shell, tmp_path):

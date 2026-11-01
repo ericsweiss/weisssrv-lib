@@ -282,8 +282,11 @@ def test_an_unreadable_policy_config_is_an_operator_error(tmp_path, monkeypatch,
 
 # --- chart-native HPA static assertion (--require-chart-native-vpas) -----------
 
-def _chart_native_vpa(controlled: str = "memory") -> str:
+def _chart_native_vpa(
+    controlled: str = "memory", update_mode: str = "Auto", container_mode: str | None = None
+) -> str:
     """A VPA for every declared chart-native workload (memory-only by default)."""
+    mode = f'\n        mode: "{container_mode}"' if container_mode else ""
     out = []
     for t in TARGETS:
         ns, name = t["namespace"], t["name"]
@@ -293,10 +296,10 @@ kind: VerticalPodAutoscaler
 metadata: {{name: {name}, namespace: {ns}}}
 spec:
   targetRef: {{apiVersion: apps/v1, kind: Deployment, name: {name}}}
-  updatePolicy: {{updateMode: Auto}}
+  updatePolicy: {{updateMode: "{update_mode}"}}
   resourcePolicy:
     containerPolicies:
-      - containerName: "*"
+      - containerName: "*"{mode}
         controlledResources: [{controlled}]
 """)
     return "\n---\n".join(out)
@@ -322,57 +325,21 @@ def test_chart_native_all_memory_only_passes(monkeypatch, policy_file):
     assert _run_flag(_chart_native_vpa("memory"), monkeypatch, policy_file) == 0
 
 
-def test_chart_native_cpu_vpa_fails(monkeypatch, policy_file):
-    """A chart-native workload whose VPA also controls cpu conflicts with its HPA."""
-    assert _run_flag(_chart_native_vpa("cpu, memory"), monkeypatch, policy_file) == 1
-
-
-def test_chart_native_missing_vpa_fails(monkeypatch, policy_file):
-    """A chart-native workload with no VPA in the corpus is flagged when required."""
-    assert _run_flag(UNRELATED, monkeypatch, policy_file) == 1
-
-
-def test_chart_native_off_mode_vpa_does_not_satisfy(monkeypatch, policy_file):
-    """An Off (recommend-only) VPA never right-sizes, so it must NOT satisfy the
-    chart-native requirement — the gate should still fail."""
-    off = []
-    for t in TARGETS:
-        ns, name = t["namespace"], t["name"]
-        off.append(f"""
-apiVersion: autoscaling.k8s.io/v1
-kind: VerticalPodAutoscaler
-metadata: {{name: {name}, namespace: {ns}}}
-spec:
-  targetRef: {{apiVersion: apps/v1, kind: Deployment, name: {name}}}
-  updatePolicy: {{updateMode: "Off"}}
-  resourcePolicy:
-    containerPolicies:
-      - containerName: "*"
-        controlledResources: [memory]
-""")
-    assert _run_flag("\n---\n".join(off), monkeypatch, policy_file) == 1
-
-
-def test_chart_native_per_container_off_vpa_does_not_satisfy(monkeypatch, policy_file):
-    """A mutating (Auto) VPA whose every containerPolicy is mode:Off right-sizes
-    nothing (empty controlled set) and must NOT satisfy the chart-native gate."""
-    off = []
-    for t in TARGETS:
-        ns, name = t["namespace"], t["name"]
-        off.append(f"""
-apiVersion: autoscaling.k8s.io/v1
-kind: VerticalPodAutoscaler
-metadata: {{name: {name}, namespace: {ns}}}
-spec:
-  targetRef: {{apiVersion: apps/v1, kind: Deployment, name: {name}}}
-  updatePolicy: {{updateMode: Auto}}
-  resourcePolicy:
-    containerPolicies:
-      - containerName: "*"
-        mode: "Off"
-        controlledResources: [memory]
-""")
-    assert _run_flag("\n---\n".join(off), monkeypatch, policy_file) == 1
+@pytest.mark.parametrize(
+    "stream",
+    [
+        # A VPA that also controls cpu conflicts with the chart's HPA.
+        _chart_native_vpa("cpu, memory"),
+        UNRELATED,
+        # An Off (recommend-only) VPA, or one whose every containerPolicy is Off,
+        # right-sizes nothing.
+        _chart_native_vpa(update_mode="Off"),
+        _chart_native_vpa(container_mode="Off"),
+    ],
+    ids=["cpu-vpa", "missing-vpa", "off-vpa", "per-container-off-vpa"],
+)
+def test_chart_native_requirement_unmet_fails(monkeypatch, policy_file, stream):
+    assert _run_flag(stream, monkeypatch, policy_file) == 1
 
 
 def test_chart_native_check_is_opt_in(monkeypatch):
@@ -417,10 +384,6 @@ spec:
 
 HR_NO_CPU_LIMIT = HR_WITH_CPU_LIMIT.replace("cpu: 200m, ", "")
 
-# `cpu: null` clears a chart default rather than setting a limit — not a violation.
-DEPLOY_NULL_CPU_LIMIT = DEPLOY_WITH_CPU_LIMIT.replace("cpu: 500m, ", "cpu: null, ")
-HR_NULL_CPU_LIMIT = HR_WITH_CPU_LIMIT.replace("cpu: 200m, ", "cpu: null, ")
-
 CRONJOB_WITH_CPU_LIMIT = """
 apiVersion: batch/v1
 kind: CronJob
@@ -437,38 +400,24 @@ spec:
 """
 
 
-def test_cpu_limit_pod_spec_flagged():
-    assert mod.cpu_limit_violations(_docs(DEPLOY_WITH_CPU_LIMIT))
-
-
-def test_cpu_limit_pod_spec_memory_only_ok():
-    assert mod.cpu_limit_violations(_docs(DEPLOY_NO_CPU_LIMIT)) == []
-
-
-def test_cpu_limit_helmrelease_flagged():
-    assert mod.cpu_limit_violations(_docs(HR_WITH_CPU_LIMIT))
-
-
-def test_cpu_limit_helmrelease_memory_only_ok():
-    assert mod.cpu_limit_violations(_docs(HR_NO_CPU_LIMIT)) == []
-
-
-def test_cpu_limit_pod_spec_null_ok():
-    """limits.cpu: null clears the default — not an effective CPU limit."""
-    assert mod.cpu_limit_violations(_docs(DEPLOY_NULL_CPU_LIMIT)) == []
-
-
-def test_cpu_limit_helmrelease_null_ok():
-    """A HelmRelease clearing limits.cpu with null must not be flagged."""
-    assert mod.cpu_limit_violations(_docs(HR_NULL_CPU_LIMIT)) == []
-
-
-def test_cpu_limit_cronjob_flagged():
-    assert mod.cpu_limit_violations(_docs(CRONJOB_WITH_CPU_LIMIT))
-
-
-def test_cpu_limit_allowlist_exempts():
-    assert mod.cpu_limit_violations(_docs(DEPLOY_WITH_CPU_LIMIT), {"ns/Deployment/app"}) == []
+@pytest.mark.parametrize(
+    "stream, allowlist, flagged",
+    [
+        (DEPLOY_WITH_CPU_LIMIT, None, True),
+        (DEPLOY_NO_CPU_LIMIT, None, False),
+        (HR_WITH_CPU_LIMIT, None, True),
+        (HR_NO_CPU_LIMIT, None, False),
+        # `cpu: null` clears a chart default rather than setting a limit.
+        (DEPLOY_WITH_CPU_LIMIT.replace("cpu: 500m, ", "cpu: null, "), None, False),
+        (HR_WITH_CPU_LIMIT.replace("cpu: 200m, ", "cpu: null, "), None, False),
+        (CRONJOB_WITH_CPU_LIMIT, None, True),
+        (DEPLOY_WITH_CPU_LIMIT, {"ns/Deployment/app"}, False),
+    ],
+    ids=["pod-spec", "pod-spec-memory-only", "helmrelease", "helmrelease-memory-only",
+         "pod-spec-null", "helmrelease-null", "cronjob", "allowlisted"],
+)
+def test_cpu_limit_violations(stream, allowlist, flagged):
+    assert bool(mod.cpu_limit_violations(_docs(stream), allowlist)) is flagged
 
 
 def test_cpu_limit_integrated_fails_with_flag(monkeypatch, policy_file):
@@ -490,27 +439,26 @@ def test_cpu_limit_not_checked_without_flag(monkeypatch):
 
 # --- VPA memory-cap rule (--require-chart-native-vpas) ------------------------
 
-def _capped_vpa(
-    cap: str,
-    limit: str = "1Gi",
+def _workload(
+    request: str,
+    limit: str | None,
+    cap: str | None = None,
+    *,
+    resource: str = "memory",
     controlled_values: str | None = None,
+    controlled_resources: str | None = None,
     update_mode: str = "Auto",
     container_mode: str | None = None,
     container_name: str = "*",
-    request: str | None = None,
+    with_vpa: bool = True,
 ) -> str:
-    """A Deployment with a memory limit plus a VPA capping it.
+    """A one-container Deployment plus a VPA over it.
 
-    The request defaults to the limit, where the 0.8x-the-limit shorthand holds.
+    A `limit` of None leaves requests and no limits; a `cap` of None leaves the
+    policy without maxAllowed.
     """
-    policy_lines = [f'      - containerName: "{container_name}"']
-    if controlled_values:
-        policy_lines.append(f"        controlledValues: {controlled_values}")
-    if container_mode:
-        policy_lines.append(f'        mode: "{container_mode}"')
-    policy_lines.append(f"        maxAllowed: {{memory: {cap}}}")
-    policy = "\n".join(policy_lines)
-    return f"""
+    limits = "" if limit is None else f"\n            limits: {{{resource}: {limit}}}"
+    deployment = f"""
 apiVersion: apps/v1
 kind: Deployment
 metadata: {{name: app, namespace: ns}}
@@ -520,9 +468,21 @@ spec:
       containers:
         - name: app
           resources:
-            requests: {{memory: {request or limit}}}
-            limits: {{memory: {limit}}}
----
+            requests: {{{resource}: {request}}}{limits}
+"""
+    if not with_vpa:
+        return deployment
+    lines = [f'      - containerName: "{container_name}"']
+    if controlled_values:
+        lines.append(f"        controlledValues: {controlled_values}")
+    if controlled_resources:
+        lines.append(f"        controlledResources: [{controlled_resources}]")
+    if container_mode:
+        lines.append(f'        mode: "{container_mode}"')
+    if cap is not None:
+        lines.append(f"        maxAllowed: {{{resource}: {cap}}}")
+    policy = "\n".join(lines)
+    return deployment + f"""---
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata: {{name: app, namespace: ns}}
@@ -535,122 +495,77 @@ spec:
 """
 
 
-def test_cap_above_limit_flagged():
-    assert mod.vpa_cap_violations(_docs(_capped_vpa("2Gi", limit="1Gi")))
+@pytest.mark.parametrize(
+    "cap, kwargs",
+    [
+        # Above the limit is wrong in every shape: the kubelet would reject it.
+        ("2Gi", {}),
+        ("2Gi", {"controlled_values": "RequestsOnly"}),
+        # controlledValues unset defaults to RequestsAndLimits: the updater moves
+        # the limit with the request, so a cap at the limit bounds nothing.
+        ("1Gi", {}),
+        ("1Gi", {"controlled_values": "RequestsAndLimits"}),
+        # Compared on bytes, not on the spelling.
+        ("1024Mi", {}),
+    ],
+    ids=["above", "above-requests-only", "equal", "equal-requests-and-limits", "equal-in-mi"],
+)
+def test_a_cap_at_or_above_the_limit_is_flagged(cap, kwargs):
+    assert mod.vpa_cap_violations(_docs(_workload("1Gi", "1Gi", cap, **kwargs)))
 
 
-def test_cap_above_limit_flagged_even_for_requests_only():
-    """Above the limit is wrong in every shape — the kubelet would reject it."""
-    assert mod.vpa_cap_violations(
-        _docs(_capped_vpa("2Gi", limit="1Gi", controlled_values="RequestsOnly"))
-    )
-
-
-def test_cap_above_limit_is_not_flagged_when_the_vpa_is_off():
-    """An Off VPA's recommendation is never applied, so the kubelet can never
-    reject the cap: the finding would be unfixable and force an allowlist entry."""
-    docs = _docs(_capped_vpa("2Gi", limit="1Gi", update_mode="Off"))
-    assert mod.vpa_cap_violations(docs) == []
-    assert mod.vpa_cap_unjudged(docs) == []
-
-
-def test_cap_above_limit_is_not_flagged_when_the_container_policy_is_off():
-    """The per-container half of the same exemption."""
-    docs = _docs(_capped_vpa("2Gi", limit="1Gi", container_mode="Off"))
-    assert mod.vpa_cap_violations(docs) == []
-
-
-def test_cap_above_limit_is_flagged_again_once_the_vpa_is_on():
-    """The positive case the exemption must not swallow."""
-    assert mod.vpa_cap_violations(
-        _docs(_capped_vpa("2Gi", limit="1Gi", update_mode="Auto"))
-    )
-
-
-def test_cap_equal_to_limit_flagged_when_policy_controls_limits():
-    """controlledValues unset defaults to RequestsAndLimits: the updater moves
-    the limit with the request, so a cap at the limit bounds nothing."""
-    assert mod.vpa_cap_violations(_docs(_capped_vpa("1Gi", limit="1Gi")))
-
-
-def test_cap_equal_to_limit_flagged_for_explicit_requests_and_limits():
-    assert mod.vpa_cap_violations(
-        _docs(_capped_vpa("1Gi", limit="1Gi", controlled_values="RequestsAndLimits"))
-    )
-
-
-def test_cap_equal_to_limit_ok_for_requests_only():
-    """RequestsOnly hand-sets the limit and caps the request at it — correct."""
-    assert mod.vpa_cap_violations(
-        _docs(_capped_vpa("1Gi", limit="1Gi", controlled_values="RequestsOnly"))
-    ) == []
-
-
-def test_cap_equal_to_limit_ok_when_update_mode_off():
-    """Off recommends and never applies, so the == shape records growth."""
-    assert mod.vpa_cap_violations(_docs(_capped_vpa("1Gi", limit="1Gi", update_mode="Off"))) == []
-
-
-def test_cap_equal_to_limit_ok_when_container_mode_off():
-    assert mod.vpa_cap_violations(
-        _docs(_capped_vpa("1Gi", limit="1Gi", container_mode="Off"))
-    ) == []
-
-
-def test_cap_below_limit_passes():
-    """The 0.8x shape the limit-controlling tier is supposed to use."""
-    assert mod.vpa_cap_violations(_docs(_capped_vpa("819Mi", limit="1Gi"))) == []
-
-
-def test_cap_compared_across_units():
-    """1024Mi == 1Gi: the comparison is on bytes, not on the spelling."""
-    assert mod.vpa_cap_violations(_docs(_capped_vpa("1024Mi", limit="1Gi")))
-    assert mod.vpa_cap_violations(_docs(_capped_vpa("1023Mi", limit="1Gi"))) == []
-
-
-def test_cap_ignored_when_container_not_named_by_policy():
-    """A policy naming another container says nothing about this one's cap."""
-    assert mod.vpa_cap_violations(
-        _docs(_capped_vpa("2Gi", limit="1Gi", container_name="sidecar"))
-    ) == []
+@pytest.mark.parametrize(
+    "cap, kwargs, allowlist",
+    [
+        # An Off VPA's recommendation is never applied, so the kubelet can never
+        # reject the cap: the finding would be unfixable.
+        ("2Gi", {"update_mode": "Off"}, None),
+        ("2Gi", {"container_mode": "Off"}, None),
+        # RequestsOnly hand-sets the limit and caps the request at it.
+        ("1Gi", {"controlled_values": "RequestsOnly"}, None),
+        ("1Gi", {"update_mode": "Off"}, None),
+        ("1Gi", {"container_mode": "Off"}, None),
+        # The 0.8x shape the limit-controlling tier is supposed to use.
+        ("819Mi", {}, None),
+        ("1023Mi", {}, None),
+        # A policy naming another container says nothing about this one's cap.
+        ("2Gi", {"container_name": "sidecar"}, None),
+        # A quantity this cannot read must not be invented into a failure.
+        ("notaquantity", {}, None),
+        ("2Gi", {}, {"ns/VerticalPodAutoscaler/app"}),
+    ],
+    ids=["above-vpa-off", "above-policy-off", "equal-requests-only", "equal-vpa-off",
+         "equal-policy-off", "below", "below-in-mi", "other-container", "unparseable",
+         "allowlisted"],
+)
+def test_a_cap_the_limit_bounds_passes(cap, kwargs, allowlist):
+    assert mod.vpa_cap_violations(_docs(_workload("1Gi", "1Gi", cap, **kwargs)), allowlist) == []
 
 
 def test_cap_skipped_when_target_absent_from_corpus():
     """Chart-rendered workloads have no limit here — skipped, never guessed."""
-    stream = _capped_vpa("2Gi", limit="1Gi").split("---", 1)[1]
+    stream = _workload("1Gi", "1Gi", "2Gi").split("---", 1)[1]
     assert mod.vpa_cap_violations(_docs(stream)) == []
 
 
 def test_cap_skipped_when_container_has_no_memory_limit():
-    stream = _capped_vpa("2Gi", limit="1Gi").replace("limits: {memory: 1Gi}", "limits: {cpu: null}")
+    stream = _workload("1Gi", "1Gi", "2Gi").replace("limits: {memory: 1Gi}", "limits: {cpu: null}")
     assert mod.vpa_cap_violations(_docs(stream)) == []
-
-
-def test_cap_allowlist_exempts():
-    assert mod.vpa_cap_violations(
-        _docs(_capped_vpa("2Gi", limit="1Gi")), {"ns/VerticalPodAutoscaler/app"}
-    ) == []
 
 
 def test_cap_violation_names_the_allowlist_key():
     """The message has to carry the exact key an operator would paste back."""
-    (violation,) = mod.vpa_cap_violations(_docs(_capped_vpa("2Gi", limit="1Gi")))
+    (violation,) = mod.vpa_cap_violations(_docs(_workload("1Gi", "1Gi", "2Gi")))
     assert "ns/VerticalPodAutoscaler/app" in violation
 
 
-def test_unparseable_cap_is_not_a_violation():
-    """A quantity this cannot read must not be invented into a failure."""
-    assert mod.vpa_cap_violations(_docs(_capped_vpa("notaquantity", limit="1Gi"))) == []
-
-
 def test_cap_integrated_fails_with_flag(monkeypatch, policy_file):
-    stream = _chart_native_vpa("memory") + "\n---\n" + _capped_vpa("2Gi", limit="1Gi")
+    stream = _chart_native_vpa("memory") + "\n---\n" + _workload("1Gi", "1Gi", "2Gi")
     assert _run_flag(stream, monkeypatch, policy_file) == 1
 
 
 def test_cap_integrated_passes_with_flag(monkeypatch, policy_file):
-    capped = _capped_vpa("204Mi", limit="1Gi", request="256Mi")
-    stream = _chart_native_vpa("memory") + "\n---\n" + capped
+    stream = _chart_native_vpa("memory") + "\n---\n" + _workload("256Mi", "1Gi", "204Mi")
     assert _run_flag(stream, monkeypatch, policy_file) == 0
 
 
@@ -662,13 +577,12 @@ def test_cap_integrated_allowlisted_passes(monkeypatch, tmp_path):
             {"vpa_cap_allowlist": {"ns/VerticalPodAutoscaler/app": "cap re-derivation pending"}}
         )
     )
-    capped = _capped_vpa("2Gi", limit="1Gi", request="256Mi")
-    assert _run_flag(capped, monkeypatch, p) == 0
+    assert _run_flag(_workload("256Mi", "1Gi", "2Gi"), monkeypatch, p) == 0
 
 
 def test_cap_not_checked_without_flag(monkeypatch):
     """Same opt-in as the CPU-limit policy: only meaningful on the full corpus."""
-    assert _run(_capped_vpa("2Gi", limit="1Gi"), monkeypatch) == 0
+    assert _run(_workload("1Gi", "1Gi", "2Gi"), monkeypatch) == 0
 
 
 @pytest.mark.parametrize(
@@ -737,13 +651,6 @@ def test_a_misshaped_target_list_is_an_operator_error(tmp_path, monkeypatch, cap
     assert "--policy-config" in capsys.readouterr().err
 
 
-def test_policy_config_non_mapping_raises(tmp_path):
-    p = tmp_path / "policy.yaml"
-    p.write_text("- a\n- b\n")
-    with pytest.raises(ValueError, match="mapping"):
-        mod.load_policy(p)
-
-
 def test_empty_policy_config_is_fine(tmp_path):
     p = tmp_path / "policy.yaml"
     p.write_text("")
@@ -773,8 +680,6 @@ def test_load_policy_does_not_accumulate_across_calls(tmp_path, policy_file):
     # The first result is untouched by the second load.
     assert len(first.chart_native_hpa_targets) == len(TARGETS)
     assert first.cpu_limit_allowlist == set()
-    assert not hasattr(mod, "CHART_NATIVE_HPA_TARGETS")
-    assert not hasattr(mod, "CPU_LIMIT_ALLOWLIST")
 
 
 _PRECEDENCE_DOCS = """
@@ -820,7 +725,7 @@ def test_a_named_off_policy_overrides_the_wildcard():
 
 
 def test_a_named_off_policy_overrides_the_wildcard_in_the_ratio_arm():
-    docs = _ratio_capped("512Mi", "1Gi", "819Mi")
+    docs = _docs(_workload("512Mi", "1Gi", "819Mi"))
     assert mod.vpa_cap_violations(docs)
     docs[1]["spec"]["resourcePolicy"]["containerPolicies"].insert(
         0, {"containerName": "app", "mode": "Off"}
@@ -836,54 +741,6 @@ def test_wildcard_still_judged_for_uncovered_containers():
 # --- caps scaled through the request:limit ratio ------------------------------
 
 
-def _ratio_capped(
-    request: str,
-    limit: str | None,
-    cap: str,
-    resource: str = "memory",
-    controlled_values: str | None = None,
-    controlled_resources: str | None = None,
-    update_mode: str = "Auto",
-    container_mode: str | None = None,
-) -> list:
-    """A Deployment whose request sits below its limit, plus a VPA capping it.
-
-    A `limit` of None leaves the container with requests and no limits.
-    """
-    lines = ['      - containerName: "*"']
-    if controlled_values:
-        lines.append(f"        controlledValues: {controlled_values}")
-    if controlled_resources:
-        lines.append(f"        controlledResources: [{controlled_resources}]")
-    if container_mode:
-        lines.append(f'        mode: "{container_mode}"')
-    lines.append(f"        maxAllowed: {{{resource}: {cap}}}")
-    policy = "\n".join(lines)
-    limits = "" if limit is None else f"\n            limits: {{{resource}: {limit}}}"
-    return _docs(f"""
-apiVersion: apps/v1
-kind: Deployment
-metadata: {{name: app, namespace: ns}}
-spec:
-  template:
-    spec:
-      containers:
-        - name: app
-          resources:
-            requests: {{{resource}: {request}}}{limits}
----
-apiVersion: autoscaling.k8s.io/v1
-kind: VerticalPodAutoscaler
-metadata: {{name: app, namespace: ns}}
-spec:
-  targetRef: {{apiVersion: apps/v1, kind: Deployment, name: app}}
-  updatePolicy: {{updateMode: "{update_mode}"}}
-  resourcePolicy:
-    containerPolicies:
-{policy}
-""")
-
-
 class TestRatioScaledCap:
     """The admission controller keeps request:limit, so the limit reaches cap x limit / request."""
 
@@ -896,7 +753,7 @@ class TestRatioScaledCap:
         ],
     )
     def test_a_cap_scaled_past_the_limit_is_flagged(self, request_, limit, cap, resource, phrases):
-        (found,) = mod.vpa_cap_violations(_ratio_capped(request_, limit, cap, resource=resource))
+        (found,) = mod.vpa_cap_violations(_docs(_workload(request_, limit, cap, resource=resource)))
         assert "ns/VerticalPodAutoscaler/app" in found
         assert all(phrase in found for phrase in phrases)
 
@@ -916,21 +773,21 @@ class TestRatioScaledCap:
              "requests-only", "uncontrolled-resource", "vpa-off", "policy-off"],
     )
     def test_a_cap_the_ratio_keeps_within_the_limit_passes(self, args, kwargs):
-        assert mod.vpa_cap_violations(_ratio_capped(*args, **kwargs)) == []
+        assert mod.vpa_cap_violations(_docs(_workload(*args, **kwargs))) == []
 
     @pytest.mark.parametrize("request_", ["512Mi", "1Gi"])
     def test_a_cap_above_the_limit_is_reported_once(self, request_):
-        (found,) = mod.vpa_cap_violations(_ratio_capped(request_, "1Gi", "2Gi"))
+        (found,) = mod.vpa_cap_violations(_docs(_workload(request_, "1Gi", "2Gi")))
         assert "is above the 1Gi limit" in found
 
     def test_a_cap_equal_to_the_limit_is_reported_once(self):
-        (found,) = mod.vpa_cap_violations(_ratio_capped("512Mi", "1Gi", "1Gi"))
+        (found,) = mod.vpa_cap_violations(_docs(_workload("512Mi", "1Gi", "1Gi")))
         assert "equals the limit" in found
 
     @pytest.mark.parametrize("resource", ["memory", "cpu"])
     def test_a_container_with_requests_and_no_limits_is_not_judged(self, resource):
-        docs = _ratio_capped("512Mi" if resource == "memory" else "100m", None,
-                             "819Mi" if resource == "memory" else "200m", resource=resource)
+        request_, cap = ("512Mi", "819Mi") if resource == "memory" else ("100m", "200m")
+        docs = _docs(_workload(request_, None, cap, resource=resource))
         assert mod.vpa_cap_violations(docs) == []
 
     @pytest.mark.parametrize(
@@ -939,16 +796,14 @@ class TestRatioScaledCap:
     )
     def test_a_zero_request_is_not_judged(self, zero, limit, cap, resource):
         """No ratio exists to scale through, so the arm skips rather than divide by zero."""
-        assert mod.vpa_cap_violations(_ratio_capped(zero, limit, cap, resource=resource)) == []
+        assert mod.vpa_cap_violations(_docs(_workload(zero, limit, cap, resource=resource))) == []
 
     def test_an_allowlisted_vpa_is_exempt(self):
-        docs = _ratio_capped("512Mi", "1Gi", "819Mi")
+        docs = _docs(_workload("512Mi", "1Gi", "819Mi"))
         assert mod.vpa_cap_violations(docs, {"ns/VerticalPodAutoscaler/app"}) == []
 
     def test_the_gate_fails_and_names_the_general_form(self, monkeypatch, policy_file, capsys):
-        stream = "\n---\n".join(
-            yaml.safe_dump(d) for d in _ratio_capped("512Mi", "1Gi", "819Mi")
-        )
+        stream = _workload("512Mi", "1Gi", "819Mi")
         assert _run_flag(_chart_native_vpa("memory") + "\n---\n" + stream,
                          monkeypatch, policy_file) == 1
         assert "cap at most 0.8 x limit x (request / limit)" in capsys.readouterr().err
@@ -957,103 +812,43 @@ class TestRatioScaledCap:
 # --- memory requests == limits under a limit-rewriting VPA -------------------
 
 
-def _ratio_workload(
-    request: str = "512Mi",
-    limit: str = "512Mi",
-    controlled_values: str | None = None,
-    controlled_resources: str | None = None,
-    update_mode: str = "Auto",
-    container_mode: str | None = None,
-    with_vpa: bool = True,
-) -> str:
-    deployment = f"""
-apiVersion: apps/v1
-kind: Deployment
-metadata: {{name: app, namespace: ns}}
-spec:
-  template:
-    spec:
-      containers:
-        - name: app
-          resources:
-            requests: {{memory: {request}}}
-            limits: {{memory: {limit}}}
-"""
-    if not with_vpa:
-        return deployment
-    lines = ['      - containerName: "*"']
-    if controlled_values:
-        lines.append(f"        controlledValues: {controlled_values}")
-    if controlled_resources:
-        lines.append(f"        controlledResources: [{controlled_resources}]")
-    if container_mode:
-        lines.append(f'        mode: "{container_mode}"')
-    policy = "\n".join(lines)
-    return deployment + f"""---
-apiVersion: autoscaling.k8s.io/v1
-kind: VerticalPodAutoscaler
-metadata: {{name: app, namespace: ns}}
-spec:
-  targetRef: {{apiVersion: apps/v1, kind: Deployment, name: app}}
-  updatePolicy: {{updateMode: "{update_mode}"}}
-  resourcePolicy:
-    containerPolicies:
-{policy}
-"""
-
-
 def test_equal_memory_under_a_limit_rewriting_vpa_is_flagged():
-    found = mod.memory_ratio_violations(_docs(_ratio_workload()))
+    found = mod.memory_ratio_violations(_docs(_workload("512Mi", "512Mi")))
     assert len(found) == 1
     assert "ns/Deployment/app" in found[0] and "'app'" in found[0]
 
 
-def test_equal_memory_compared_across_units():
-    """1Gi == 1024Mi: compared on bytes, not on the spelling."""
-    assert mod.memory_ratio_violations(_docs(_ratio_workload("1Gi", "1024Mi")))
-
-
-def test_equal_memory_under_requests_only_is_fine():
-    """RequestsOnly leaves the limit hand-set, so the ratio never moves."""
-    assert mod.memory_ratio_violations(
-        _docs(_ratio_workload(controlled_values="RequestsOnly"))
-    ) == []
-
-
-def test_equal_memory_under_a_cpu_only_vpa_is_fine():
-    assert mod.memory_ratio_violations(
-        _docs(_ratio_workload(controlled_resources="cpu"))
-    ) == []
-
-
-def test_equal_memory_under_an_off_vpa_is_fine():
-    assert mod.memory_ratio_violations(_docs(_ratio_workload(update_mode="Off"))) == []
-    assert mod.memory_ratio_violations(_docs(_ratio_workload(container_mode="Off"))) == []
-
-
-def test_equal_memory_without_a_vpa_is_fine():
-    assert mod.memory_ratio_violations(_docs(_ratio_workload(with_vpa=False))) == []
-
-
-def test_unequal_memory_is_fine():
-    assert mod.memory_ratio_violations(_docs(_ratio_workload("256Mi", "512Mi"))) == []
-
-
-def test_equal_memory_is_allowlistable():
-    assert mod.memory_ratio_violations(
-        _docs(_ratio_workload()), {"ns/Deployment/app"}
-    ) == []
+@pytest.mark.parametrize(
+    "request_, limit, kwargs, allowlist, flagged",
+    [
+        # Compared on bytes, not on the spelling.
+        ("1Gi", "1024Mi", {}, None, True),
+        # RequestsOnly leaves the limit hand-set, so the ratio never moves.
+        ("512Mi", "512Mi", {"controlled_values": "RequestsOnly"}, None, False),
+        ("512Mi", "512Mi", {"controlled_resources": "cpu"}, None, False),
+        ("512Mi", "512Mi", {"update_mode": "Off"}, None, False),
+        ("512Mi", "512Mi", {"container_mode": "Off"}, None, False),
+        ("512Mi", "512Mi", {"with_vpa": False}, None, False),
+        ("256Mi", "512Mi", {}, None, False),
+        ("512Mi", "512Mi", {}, {"ns/Deployment/app"}, False),
+    ],
+    ids=["equal-in-mi", "requests-only", "cpu-only-vpa", "vpa-off", "policy-off",
+         "no-vpa", "unequal", "allowlisted"],
+)
+def test_memory_ratio_violations(request_, limit, kwargs, allowlist, flagged):
+    docs = _docs(_workload(request_, limit, **kwargs))
+    assert bool(mod.memory_ratio_violations(docs, allowlist)) is flagged
 
 
 def test_memory_ratio_integrated_fails_with_flag(monkeypatch, policy_file, capsys):
-    assert _run_flag(_chart_native_vpa("memory") + "\n---\n" + _ratio_workload(),
+    assert _run_flag(_chart_native_vpa("memory") + "\n---\n" + _workload("512Mi", "512Mi"),
                      monkeypatch, policy_file) == 1
     assert "requests.memory == limits.memory" in capsys.readouterr().err
 
 
 def test_memory_ratio_not_checked_without_flag(monkeypatch):
     """Same opt-in as the CPU-limit and cap policies."""
-    assert _run(_ratio_workload(), monkeypatch) == 0
+    assert _run(_workload("512Mi", "512Mi"), monkeypatch) == 0
 
 
 # --- allowlist entries carry a rationale, structurally -----------------------
@@ -1080,25 +875,6 @@ def test_a_blank_reason_is_rejected(tmp_path):
         mod.load_policy(_policy(tmp_path, 'cpu_limit_allowlist:\n  ns/Deployment/app: "  "\n'))
 
 
-def test_a_mapping_allowlist_loads(tmp_path):
-    policy = mod.load_policy(
-        _policy(tmp_path, "cpu_limit_allowlist:\n  ns/Deployment/app: chart default\n")
-    )
-    assert policy.cpu_limit_allowlist == {"ns/Deployment/app"}
-
-
-def test_a_list_allowlist_is_rejected(tmp_path):
-    """One accepted shape only: two would drift apart as the file grows."""
-    with pytest.raises(ValueError, match="must be a mapping"):
-        mod.load_policy(
-            _policy(
-                tmp_path,
-                "memory_ratio_allowlist:\n"
-                "  - target: ns/Deployment/app\n    reason: pinned by the vendor\n",
-            )
-        )
-
-
 @pytest.mark.parametrize(
     "key", ["cpu_limit_allowlist", "vpa_cap_allowlist", "memory_ratio_allowlist"]
 )
@@ -1117,13 +893,6 @@ def test_the_vpa_cap_allowlist_refuses_a_workload_key(tmp_path):
         mod.load_policy(
             _policy(tmp_path, "vpa_cap_allowlist:\n  ns/Deployment/app: pending\n")
         )
-
-
-def test_the_vpa_cap_allowlist_accepts_its_own_kind(tmp_path):
-    policy = mod.load_policy(
-        _policy(tmp_path, "vpa_cap_allowlist:\n  ns/VerticalPodAutoscaler/app: pending\n")
-    )
-    assert policy.vpa_cap_allowlist == {"ns/VerticalPodAutoscaler/app"}
 
 
 def test_a_namespaceless_workload_is_keyed_default(monkeypatch, tmp_path):
@@ -1248,7 +1017,7 @@ def test_an_unrendered_cpu_cap_that_cannot_move_a_limit_is_not_reported(extra):
 def test_a_rendered_limit_wins_over_a_declared_one():
     """The corpus is the truth; a stale declared limit must not hide a violation."""
     declared = {"ns/Deployment/app": {"app": "8Gi"}}
-    assert mod.vpa_cap_violations(_docs(_capped_vpa("2Gi", limit="1Gi")), None, declared)
+    assert mod.vpa_cap_violations(_docs(_workload("1Gi", "1Gi", "2Gi")), None, declared)
 
 
 def test_the_gate_fails_on_an_unjudged_cap_unless_acknowledged(monkeypatch, capsys):

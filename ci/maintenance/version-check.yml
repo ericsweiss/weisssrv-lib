@@ -12,8 +12,10 @@ spec:
       default: python:3.14
     tags:
       type: array
-      default: ["infrastructure"]
-      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+      default: []
+      description: >-
+        Runner tag(s); a consumer passes its privileged tag for a job that needs
+        root or Docker-in-Docker.
     setup_command:
       default: 'true'
       description: >-
@@ -30,17 +32,6 @@ spec:
     report_path:
       default: "version-report.json"
       description: "Artifact the check writes; published on every outcome."
-    github_token:
-      default: ""
-      description: >-
-        OPTIONAL GitHub token for the checkers' API auth. Anonymous release
-        lookups rate-limit at 60/hr. Empty by default: nothing is exported and
-        the inherited GH_API_TOKEN / GITHUB_TOKEN reach the checker untouched.
-        Pass a variable REFERENCE such as `"$MY_RELEASE_LOOKUP_TOKEN"`, not a
-        literal token. It lands in a job variable unexpanded, so masking still
-        applies, and the script exports it under BOTH names the stock checker
-        reads, overriding any inherited value. On an MR the code under review
-        can read it, so scope it to public-read.
     default_branch:
       default: "main"
       description: >-
@@ -86,18 +77,7 @@ spec:
       - scheduler_failure
   variables:
     REPORT_PATH: "$[[ inputs.report_path ]]"
-    VERSION_CHECK_GITHUB_TOKEN: "$[[ inputs.github_token ]]"
   script:
-    # The github_token input: both names the stock checker reads are exported
-    # ahead of the consumer commands, and only when the job variable carries a
-    # value, so an empty resolution blanks nothing.
-    - |
-      if [ -n "$VERSION_CHECK_GITHUB_TOKEN" ]; then
-        export GH_API_TOKEN="$VERSION_CHECK_GITHUB_TOKEN"
-        export GITHUB_TOKEN="$VERSION_CHECK_GITHUB_TOKEN"
-      else
-        echo "version-check: github_token resolved empty; GitHub lookups use whatever the job inherited (or run anonymous at 60/hr)"
-      fi
     # Block scalars so a multi-line command works and no shell metacharacter in
     # the value can collide with YAML flow syntax.
     - |

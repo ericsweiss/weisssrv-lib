@@ -3,25 +3,9 @@
 ## Consume by tag, never by branch
 
 Every consumer declares a **release tag** once, in its pipeline's `spec:`
-header, and every pin reads it:
-
-```yaml
-spec:
-  inputs:
-    lib_ref:
-      default: <CURRENT_TAG>
----
-include:
-  - project: eric/weisssrv-lib
-    ref: $[[ inputs.lib_ref ]]
-    file: /ci/lint/yaml-lint.yml
-```
-
-`<CURRENT_TAG>` is the placeholder convention used in every example across this
-repo's docs. The literal current release is named once, in the
-[README](../README.md#current-release) — substitute it when you copy a snippet.
-Why the header rather than a variable, and what holds the other surfaces to it,
-is [The library pin](INCLUDE-CONTRACT.md#the-library-pin).
+header, and every pin reads it. [README § Using it](../README.md#using-it) shows
+the shape, and [The library pin](INCLUDE-CONTRACT.md#the-library-pin) says why
+the header holds it.
 
 A floating `main` (or `~latest`) ref would auto-propagate a library change into
 every consumer's pipeline **with no review** — a supply-chain and
@@ -65,15 +49,12 @@ commit, the scripts against `tests/`.
 
 The pairs that need an explicit act are the published images, because they live
 in a registry rather than in git. The release pipeline's `publish-image-tags`
-job runs after `semantic-release`. It retags the `molecule-ci`, `molecule-test`
-and `ansible-deploy` images this pipeline built to `:vX.Y.Z`.
+job runs after `semantic-release`. It retags the `molecule-ci` and `molecule-test`
+images this pipeline built to `:vX.Y.Z`.
 
 - The two molecule images are exercised by the pipeline that cuts the tag. A
   consumer that pins `ref: vX.Y.Z` can pin `…/molecule-test:vX.Y.Z` and know
   the two ran against each other.
-- `ansible-deploy` is retagged for pin alignment only. No job in this pipeline
-  runs it. `tests/test_ansible_deploy_image.py` holds its `ansible==` pin equal
-  to the `ansible_version` default in `ci/deploy/deploy-base.yml`.
 - The job retags the image built from this commit, else `:latest`. Only an
   absent tag falls through to the next source. Any other pull failure fails
   the job rather than publishing a stale image.
@@ -258,14 +239,10 @@ The procedure:
 Before merging the MR that will cut a tag:
 
 - [ ] `galaxy.yml` `version:`, `cli/pyproject.toml` `version:` and the
-      **Current release** line in `README.md` all move TOGETHER to the version
-      the commit subjects will produce. `tests/test_ansible_collection.py`
-      holds all three equal to each other and, via `TestReleaseLineage`, holds
-      `galaxy.yml` and `cli/pyproject.toml` equal to the tag the commit
-      subjects will produce; `tests/test_release_version.py` holds the README
-      line equal to `cli/pyproject.toml`. So the trio reds both when the three
-      diverge from each other and when they name a version the commits do not
-      produce.
+      **Current release** line in `README.md` move together to the version the
+      commit subjects will produce. `tests/test_ansible_collection.py` and
+      `tests/test_release_version.py` hold them equal to each other and to the
+      computed tag.
 - [ ] That **Current release** line is the ONLY literal tag in the root README,
       `docs/` and the collection README — every pin example there is written as
       `<CURRENT_TAG>`. Sweep for regressions:
@@ -338,11 +315,7 @@ binaries).
 
 ## Terraform modules
 
-Module sources pin the same tags, via the `?ref=` query on a `git::` source:
-
-```hcl
-source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/cloudflare-zone?ref=<CURRENT_TAG>"
-```
+Module sources pin the same tags, via the `?ref=` query on a `git::` source.
 
 Semver for a module follows the template rules, with one addition: **a change to
 a resource address is MAJOR**, even when every input keeps its name and meaning.
@@ -366,14 +339,7 @@ consuming root module, which is what pins exact provider builds and hashes.
 
 ## Ansible collection
 
-`requirements.yml` pins the same tags, on a git source:
-
-```yaml
-collections:
-  - name: git+https://git.ericsweiss.com/eric/weisssrv-lib.git#/ansible_collections/weisssrv/infra
-    type: git
-    version: <CURRENT_TAG>
-```
+`requirements.yml` pins the same tags, on a git source.
 
 A role's variables are its inputs, so the template rules apply verbatim: a
 renamed role, a renamed or removed role variable, and a changed default that

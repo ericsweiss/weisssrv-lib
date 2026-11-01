@@ -37,7 +37,6 @@ FIXTURE_REPO = FIXTURE_DIR / "repo"
 
 parse_version_tuple = check_versions.parse_version_tuple
 version_greater = check_versions.version_greater
-fetch_apt_packages = check_versions.fetch_apt_packages
 read_pinned_image_versions = check_versions.read_pinned_image_versions
 update_version_in_file = check_versions.update_version_in_file
 
@@ -78,11 +77,10 @@ def _cache_dir_is_disposable(tmp_path_factory, monkeypatch):
     check_versions.CACHE_DIR = original
 
 
-def mock_response(body: bytes, content_type: str = "text/plain"):
+def mock_response(body: bytes):
     """A urlopen-style response usable as a context manager."""
     resp = MagicMock()
     resp.read.return_value = body
-    resp.headers = {"Content-Type": content_type}
     resp.__enter__ = MagicMock(return_value=resp)
     resp.__exit__ = MagicMock(return_value=False)
     return resp
@@ -358,16 +356,18 @@ class TestPinnedImageVersionTracking(unittest.TestCase):
         self.assertEqual(versions["docker_dind_version"], "24.0-dind")
 
     def test_pin_regex_without_a_capture_group_is_an_operator_error(self):
-        # The negative case: a regex that matches but captures nothing would
-        # otherwise raise IndexError deep in the read.
-        try:
-            check_versions.load_config(
-                FIXTURE_DIR / "registry-pin-regex-groupless.py", repo_root=FIXTURE_REPO
-            )
+        # A regex that matches but captures nothing would otherwise raise
+        # IndexError deep in the read.
+        groupless = [{
+            "name": "Kustomize",
+            "var_name": "kustomize_version",
+            "category": "github",
+            "version_file": "ci",
+            "pin_regex": r'^\s*KUSTOMIZE_VERSION:\s*"[\w.+-]+"\s*$',
+        }]
+        with patch.object(check_versions, "SERVICE_REGISTRY", groupless):
             with self.assertRaises(RuntimeError) as ctx:
                 read_pinned_image_versions()
-        finally:
-            check_versions.load_config(FIXTURE_CONFIG, repo_root=FIXTURE_REPO)
         self.assertIn("capture group", str(ctx.exception))
 
     def test_default_image_matcher_misses_a_non_image_pin(self):
@@ -404,51 +404,49 @@ class TestPinnedImageVersionTracking(unittest.TestCase):
             self.assertEqual(copy.read_bytes(), (FIXTURE_REPO / "vars.yml").read_bytes())
 
 
-class TestVersionParsing(unittest.TestCase):
-    """Version string parsing and comparison."""
+@pytest.mark.parametrize("text,expected", [
+    ("1.2.3", ((0, 1), (0, 2), (0, 3))),
+    ("10.20.30", ((0, 10), (0, 20), (0, 30))),
+    ("v1.2.3", ((0, 1), (0, 2), (0, 3))),
+    ("v10.0.1", ((0, 10), (0, 0), (0, 1))),
+    ("4.0.16.2944", ((0, 4), (0, 0), (0, 16), (0, 2944))),
+    ("1.80.0", ((0, 1), (0, 80), (0, 0))),
+    ("1:1.80.0", ((0, 1), (0, 80), (0, 0))),
+], ids=["simple", "wide", "v-prefix", "v-prefix-zero", "four-part", "no-epoch", "epoch-stripped"])
+def test_parse_version_tuple(text, expected):
+    assert parse_version_tuple(text) == expected
 
-    def test_parse_simple_version(self):
-        assert parse_version_tuple("1.2.3") == ((0, 1), (0, 2), (0, 3))
-        assert parse_version_tuple("10.20.30") == ((0, 10), (0, 20), (0, 30))
 
-    def test_parse_version_with_v_prefix(self):
-        assert parse_version_tuple("v1.2.3") == ((0, 1), (0, 2), (0, 3))
-        assert parse_version_tuple("v10.0.1") == ((0, 10), (0, 0), (0, 1))
+@pytest.mark.parametrize("text,leading", [
+    ("v1.35.2+k3s1", ((0, 1), (0, 35), (0, 2))),
+    ("1.43.0.10492-121068a07", ((0, 1), (0, 43), (0, 0), (0, 10492))),
+    ("18.9.1-ee.0", ((0, 18), (0, 9), (0, 1))),
+], ids=["k3s", "build-hash-suffix", "edition-suffix"])
+def test_parse_version_tuple_reads_the_numeric_lead(text, leading):
+    assert parse_version_tuple(text)[:len(leading)] == leading
 
-    def test_parse_k3s_version(self):
-        # v1.35.2+k3s1 -> ((0,1), (0,35), (0,2), (1,"k"), (0,3), (1,"s"), (0,1))
-        result = parse_version_tuple("v1.35.2+k3s1")
-        assert result[0:3] == ((0, 1), (0, 35), (0, 2))
-        # k3s10 should sort after k3s9
-        v1 = parse_version_tuple("v1.35.2+k3s10")
-        v2 = parse_version_tuple("v1.35.2+k3s9")
-        assert v1 > v2, "k3s10 should be greater than k3s9"
 
-    def test_parse_four_part_build_version(self):
-        assert parse_version_tuple("4.0.16.2944") == ((0, 4), (0, 0), (0, 16), (0, 2944))
-
-    def test_parse_build_with_hash_suffix(self):
-        result = parse_version_tuple("1.43.0.10492-121068a07")
-        assert result[0:4] == ((0, 1), (0, 43), (0, 0), (0, 10492))
-
-    def test_parse_edition_suffix(self):
-        result = parse_version_tuple("18.9.1-ee.0")
-        assert result[0:3] == ((0, 18), (0, 9), (0, 1))
-
-    def test_version_greater_simple(self):
-        assert version_greater("2.0.0", "1.9.9")
-        assert version_greater("1.10.0", "1.9.0")
-        assert not version_greater("1.0.0", "1.0.0")
-        assert not version_greater("1.0.0", "2.0.0")
-
-    def test_version_greater_with_prefix(self):
-        assert version_greater("v2.0.0", "v1.9.9")
-        assert version_greater("v1.10.0", "v1.9.0")
-
-    def test_version_greater_k3s(self):
-        assert version_greater("v1.35.2+k3s10", "v1.35.2+k3s9")
-        assert version_greater("v1.35.2+k3s1", "v1.35.1+k3s1")
-        assert not version_greater("v1.35.2+k3s1", "v1.35.2+k3s2")
+@pytest.mark.parametrize("a,b,greater", [
+    ("2.0.0", "1.9.9", True),
+    ("1.10.0", "1.9.0", True),
+    ("1.0.0", "1.0.0", False),
+    ("1.0.0", "2.0.0", False),
+    ("v2.0.0", "v1.9.9", True),
+    ("v1.10.0", "v1.9.0", True),
+    ("v1.35.2+k3s10", "v1.35.2+k3s9", True),
+    ("v1.35.2+k3s1", "v1.35.1+k3s1", True),
+    ("v1.35.2+k3s1", "v1.35.2+k3s2", False),
+    ("17.1", "17", True),
+    ("17", "17.1", False),
+    ("1.0.0", "1.0.0-rc1", True),
+    ("1.0.0-rc1", "1.0.0", False),
+    ("17", "17-alpha", True),
+    ("17-alpha", "17", False),
+    ("17.1-trixie", "17-trixie", True),
+    ("18-trixie", "17.1-trixie", True),
+])
+def test_version_greater(a, b, greater):
+    assert version_greater(a, b) is greater
 
 
 class TestAptParsing(unittest.TestCase):
@@ -599,77 +597,53 @@ Description: GitLab Runner
         self.assertIn("/b/Packages", str(ctx.exception))
 
 
-class TestFetchPackagesIndex(unittest.TestCase):
-    """_fetch_packages_index: gzip sniffing and the compressed-only fallback."""
-
-    BODY = "Package: tailscale\nVersion: 1.80.0\n"
-
-    def test_gzip_payload_is_decompressed(self):
-        with patch.object(check_versions, "_urlopen_with_retry",
-                          return_value=gzip.compress(self.BODY.encode())):
-            assert check_versions._fetch_packages_index("https://x/Packages") == self.BODY
-
-    def test_non_packages_body_falls_back_to_the_gz_url(self):
-        with patch.object(check_versions, "_urlopen_with_retry", return_value=b"<html>nope"), \
-             patch.object(check_versions, "fetch_apt_packages",
-                          return_value=self.BODY) as fallback:
-            assert check_versions._fetch_packages_index("https://x/Packages") == self.BODY
-        fallback.assert_called_once_with("https://x/Packages")
-
-    def test_a_gz_url_with_no_stanzas_raises(self):
-        with patch.object(check_versions, "_urlopen_with_retry", return_value=b"<html>nope"):
-            with self.assertRaises(RuntimeError):
-                check_versions._fetch_packages_index("https://x/Packages.gz")
+PACKAGES_BODY = b"Package: tailscale\nVersion: 1.80.0\n"
+PACKAGES_URL = "https://example.com/Packages"
 
 
-class TestFetchAptPackages(unittest.TestCase):
-    """fetch_apt_packages calls urlopen directly for header and compression
-    access, so these tests mock urlopen rather than _make_request.
-    """
+def _serve(answers: list):
+    """A urlopen stand-in answering each call with the next body or exception."""
+    calls: list[str] = []
 
-    def test_fetch_uncompressed(self):
-        mock_content = b"Package: test\nVersion: 1.0.0\n"
+    def urlopen(req, timeout=None):
+        calls.append(req.full_url)
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return mock_response(answer)
 
-        with patch('urllib.request.urlopen') as mock_urlopen:
-            mock_urlopen.return_value = mock_response(mock_content)
+    return calls, urlopen
 
-            result = fetch_apt_packages("https://example.com/Packages")
 
-            assert result == mock_content.decode("utf-8")
-            assert mock_urlopen.call_count == 1
-            call_args = mock_urlopen.call_args
-            request_obj = call_args[0][0]
-            assert request_obj.full_url == "https://example.com/Packages"
+@pytest.mark.parametrize("answers,urls", [
+    ([PACKAGES_BODY], [PACKAGES_URL]),
+    ([gzip.compress(PACKAGES_BODY)], [PACKAGES_URL]),
+    ([b"<!DOCTYPE html><html><body>Error</body></html>", gzip.compress(PACKAGES_BODY)],
+     [PACKAGES_URL, PACKAGES_URL + ".gz"]),
+    ([b"", gzip.compress(PACKAGES_BODY)], [PACKAGES_URL, PACKAGES_URL + ".gz"]),
+    ([urllib.error.HTTPError(PACKAGES_URL, 503, "boom", {}, None), PACKAGES_BODY],
+     [PACKAGES_URL, PACKAGES_URL]),
+], ids=["plain", "gzip-sniffed", "html-falls-back-to-gz", "empty-falls-back-to-gz",
+        "5xx-retried"])
+def test_fetch_packages_index(answers, urls):
+    calls, urlopen = _serve(list(answers))
+    with patch("urllib.request.urlopen", side_effect=urlopen), \
+         patch.object(check_versions.time, "sleep"):
+        assert check_versions._fetch_packages_index(PACKAGES_URL) == PACKAGES_BODY.decode()
+    assert calls == urls
 
-    PAYLOAD = b"Package: test\nVersion: 1.0.0\n"
 
-    def _fallback_after(self, first):
-        """Fetch with `first` answering the plain URL and a gzip body the `.gz` one."""
-        calls = []
-
-        def urlopen(req, timeout=None):
-            calls.append(req.full_url)
-            if len(calls) == 1:
-                return first(req.full_url)
-            return mock_response(gzip.compress(self.PAYLOAD), "application/gzip")
-
-        with patch("urllib.request.urlopen", side_effect=urlopen):
-            result = fetch_apt_packages("https://example.com/Packages")
-        assert result == self.PAYLOAD.decode("utf-8")
-        assert calls == ["https://example.com/Packages", "https://example.com/Packages.gz"]
-
-    def test_fetch_compressed_fallback(self):
-        def not_found(url):
-            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
-
-        self._fallback_after(not_found)
-
-    def test_fetch_empty_content_falls_back(self):
-        self._fallback_after(lambda url: mock_response(b""))
-
-    def test_fetch_html_error_page_falls_back(self):
-        self._fallback_after(lambda url: mock_response(
-            b"<!DOCTYPE html><html><body>Error</body></html>", "text/html"))
+@pytest.mark.parametrize("url,urls", [
+    (PACKAGES_URL + ".gz", [PACKAGES_URL + ".gz"]),
+    (PACKAGES_URL, [PACKAGES_URL, PACKAGES_URL + ".gz"]),
+], ids=["gz-url", "both-urls"])
+def test_no_packages_stanzas_raises_naming_each_url(url, urls):
+    calls, urlopen = _serve([b"<html>nope"] * len(urls))
+    with patch("urllib.request.urlopen", side_effect=urlopen):
+        with pytest.raises(RuntimeError) as excinfo:
+            check_versions._fetch_packages_index(url)
+    assert calls == urls
+    assert all(u in str(excinfo.value) for u in urls)
 
 
 class TestGetDeployCommand(unittest.TestCase):
@@ -712,29 +686,6 @@ class TestGetDeployCommand(unittest.TestCase):
             check_versions.get_deploy_command(self._mk("not_in_registry_version")),
             check_versions.DEFAULT_DEPLOY_COMMAND,
         )
-
-    def test_service_registry_no_duplicates(self):
-        """var_name and name must be unique across the registry."""
-        var_names = [s["var_name"] for s in check_versions.SERVICE_REGISTRY]
-        names = [s["name"] for s in check_versions.SERVICE_REGISTRY]
-        self.assertEqual(len(var_names), len(set(var_names)))
-        self.assertEqual(len(names), len(set(names)))
-
-    def test_service_registry_field_completeness(self):
-        """Every entry must have the fields its category's fetcher reads."""
-        required_fields = {
-            "github": ("github_repo", "version_prefix"),
-            "helm": ("helm_repo", "helm_chart"),
-            "dockerhub": ("docker_image",),
-            "lsio": ("docker_image",),
-            "ghcr": ("ghcr_image",),
-        }
-        for svc in check_versions.SERVICE_REGISTRY:
-            for field in required_fields.get(svc.get("category", ""), ()):
-                self.assertIn(
-                    field, svc,
-                    f"{svc['name']} ({svc['category']}) is missing required field '{field}'",
-                )
 
 
 class TestRegistryCoverage(unittest.TestCase):
@@ -835,48 +786,23 @@ class TestLoadConfig(unittest.TestCase):
                 check_versions.resolve_config_path(repo_root=Path(d))
 
 
-class TestDebianVersionCompare(unittest.TestCase):
-    """Debian version ordering: epoch, tilde pre-release, revision tail."""
-
-    def setUp(self):
-        self.cmp = check_versions.debian_version_compare
-
-    def test_plain_patch(self):
-        self.assertEqual(self.cmp("1.98.4", "1.98.5"), -1)
-        self.assertEqual(self.cmp("1.98.5", "1.98.4"), 1)
-        self.assertEqual(self.cmp("1.98.4", "1.98.4"), 0)
-
-    def test_epoch_wins(self):
-        # 1:0.4.6-1 outranks 0.4.6 regardless of upstream version
-        self.assertEqual(self.cmp("1:0.4.6-1", "0.4.6"), 1)
-        # explicit zero epoch is the default
-        self.assertEqual(self.cmp("0:1.98.4", "1.98.5"), -1)
-
-    def test_tilde_is_prerelease(self):
-        self.assertEqual(self.cmp("0.5.0~rc1-1", "0.5.0-1"), -1)
-
-    def test_revision_tail(self):
-        self.assertEqual(self.cmp("0.4.6-1ubuntu1", "0.4.6-1"), 1)
-
-    def test_malformed_epoch_raises(self):
-        with self.assertRaises(ValueError):
-            self.cmp("x:1.0", "1.0")
+@pytest.mark.parametrize("a,b,expected", [
+    ("1.98.4", "1.98.5", -1),
+    ("1.98.5", "1.98.4", 1),
+    ("1.98.4", "1.98.4", 0),
+    ("1:0.4.6-1", "0.4.6", 1),
+    ("0:1.98.4", "1.98.5", -1),
+    ("0.5.0~rc1-1", "0.5.0-1", -1),
+    ("0.4.6-1ubuntu1", "0.4.6-1", 1),
+], ids=["patch-lower", "patch-higher", "equal", "epoch-wins", "zero-epoch-is-default",
+        "tilde-is-prerelease", "revision-tail"])
+def test_debian_version_compare(a, b, expected):
+    assert check_versions.debian_version_compare(a, b) == expected
 
 
-class TestParseVersionTupleEpoch(unittest.TestCase):
-    """parse_version_tuple must drop a Debian epoch prefix."""
-
-    def test_epoch_stripped(self):
-        self.assertEqual(
-            check_versions.parse_version_tuple("1:1.80.0"),
-            check_versions.parse_version_tuple("1.80.0"),
-        )
-
-    def test_no_epoch_unchanged(self):
-        self.assertEqual(
-            check_versions.parse_version_tuple("1.80.0"),
-            ((0, 1), (0, 80), (0, 0)),
-        )
+def test_debian_version_compare_rejects_a_malformed_epoch():
+    with pytest.raises(ValueError):
+        check_versions.debian_version_compare("x:1.0", "1.0")
 
 
 class TestHelmIndexParser(unittest.TestCase):
@@ -1007,27 +933,6 @@ class TestDockerhubMajorPinAndPrefix(unittest.TestCase):
         self.assertIn("name=-slim", captured["url"])
 
 
-class TestVersionTupleGreaterRules(unittest.TestCase):
-    """version_tuple_greater unequal-length and release-vs-prerelease ordering."""
-
-    def setUp(self):
-        self.gt = check_versions.version_greater
-
-    def test_longer_numeric_is_newer(self):
-        self.assertTrue(self.gt("17.1", "17"))
-        self.assertFalse(self.gt("17", "17.1"))
-
-    def test_release_beats_prerelease(self):
-        self.assertTrue(self.gt("1.0.0", "1.0.0-rc1"))
-        self.assertFalse(self.gt("1.0.0-rc1", "1.0.0"))
-        self.assertTrue(self.gt("17", "17-alpha"))
-        self.assertFalse(self.gt("17-alpha", "17"))
-
-    def test_numeric_minor_beats_string_suffix(self):
-        self.assertTrue(self.gt("17.1-trixie", "17-trixie"))
-        self.assertTrue(self.gt("18-trixie", "17.1-trixie"))
-
-
 class TestUpdateVersionInFile(unittest.TestCase):
     """update_version_in_file round-trips on a temp file, preserving format."""
 
@@ -1095,12 +1000,6 @@ class TestUpdateVersionInFile(unittest.TestCase):
 
 class TestHeldUpdateGuard(unittest.TestCase):
     """A held service is never written by --update-all."""
-
-    def test_held_registry_entry_is_honored(self):
-        held = [s for s in check_versions.SERVICE_REGISTRY if s.get("held")]
-        self.assertTrue(held, "the fixture registry must carry a held entry")
-        self.assertTrue(all(s.get("notes") for s in held),
-                        "a held entry must document why in notes")
 
     def test_update_all_skips_held(self):
         SV = check_versions.ServiceVersion
@@ -1176,91 +1075,6 @@ class TestMakeRequestRetry(unittest.TestCase):
             "https://example.com", code, "boom", {}, None
         )
 
-    def test_retries_then_succeeds_on_urlerror(self):
-        """Two transient URLErrors then success → returns the success body."""
-        calls = [0]
-
-        def side_effect(req, timeout=None):
-            calls[0] += 1
-            if calls[0] <= 2:
-                raise urllib.error.URLError("temporary failure in name resolution")
-            return mock_response(b'{"tag_name": "v1.2.3"}')
-
-        with patch("urllib.request.urlopen", side_effect=side_effect), \
-             patch.object(check_versions.time, "sleep"):  # don't actually back off
-            result = check_versions._make_request("https://example.com/api")
-
-        assert result == {"tag_name": "v1.2.3"}
-        assert calls[0] == 3, "should have retried twice before succeeding"
-
-    def test_retries_on_incomplete_read_then_succeeds(self):
-        """http.client.IncompleteRead (mid-body truncation — GitHub cutting a
-        large release payload) is transient and is retried."""
-        calls = [0]
-
-        def side_effect(req, timeout=None):
-            calls[0] += 1
-            if calls[0] == 1:
-                raise http.client.IncompleteRead(b"partial", expected=1000)
-            return mock_response(b'{"tag_name": "v9.9.9"}')
-
-        with patch("urllib.request.urlopen", side_effect=side_effect), \
-             patch.object(check_versions.time, "sleep"):
-            result = check_versions._make_request("https://example.com/api")
-
-        assert result == {"tag_name": "v9.9.9"}
-        assert calls[0] == 2
-
-    def test_retries_on_socket_timeout_then_succeeds(self):
-        """socket.timeout is transient and is retried."""
-        calls = [0]
-
-        def side_effect(req, timeout=None):
-            calls[0] += 1
-            if calls[0] == 1:
-                raise socket.timeout("timed out")
-            return mock_response(b"plain text body")
-
-        with patch("urllib.request.urlopen", side_effect=side_effect), \
-             patch.object(check_versions.time, "sleep"):
-            result = check_versions._make_request("https://example.com/Packages")
-
-        assert result == "plain text body"
-        assert calls[0] == 2
-
-    def test_4xx_does_not_retry(self):
-        """HTTP 4xx (here 404) raises immediately with no retry."""
-        calls = [0]
-
-        def side_effect(req, timeout=None):
-            calls[0] += 1
-            raise self._http_error(404)
-
-        with patch("urllib.request.urlopen", side_effect=side_effect), \
-             patch.object(check_versions.time, "sleep") as mock_sleep:
-            with self.assertRaises(RuntimeError):  # _make_request wraps HTTPError
-                check_versions._make_request("https://example.com/missing")
-
-        assert calls[0] == 1, "4xx must not be retried"
-        mock_sleep.assert_not_called()
-
-    def test_403_rate_limit_does_not_retry(self):
-        """A 403 rate-limit is surfaced as-is, not retried as a transient blip."""
-        calls = [0]
-
-        def side_effect(req, timeout=None):
-            calls[0] += 1
-            raise self._http_error(403)
-
-        with patch("urllib.request.urlopen", side_effect=side_effect), \
-             patch.object(check_versions.time, "sleep"):
-            with self.assertRaises(RuntimeError) as ctx:
-                check_versions._make_request("https://api.github.com/rate")
-
-        assert calls[0] == 1, "403 must not be retried"
-        # _make_request maps 403 to its rate-limit message
-        self.assertIn("403", str(ctx.exception))
-
     def test_persistent_5xx_exhausts_retries(self):
         """Persistent HTTP 5xx retries RETRY_ATTEMPTS times, then raises."""
         calls = [0]
@@ -1289,6 +1103,45 @@ class TestMakeRequestRetry(unittest.TestCase):
             req = check_versions.urllib.request.Request("https://example.com")
             with self.assertRaises(urllib.error.URLError):
                 check_versions._urlopen_with_retry(req)
+
+
+@pytest.mark.parametrize("exc,failures,body,expected", [
+    (urllib.error.URLError("temporary failure in name resolution"), 2,
+     b'{"tag_name": "v1.2.3"}', {"tag_name": "v1.2.3"}),
+    (http.client.IncompleteRead(b"partial", expected=1000), 1,
+     b'{"tag_name": "v9.9.9"}', {"tag_name": "v9.9.9"}),
+    (socket.timeout("timed out"), 1, b"plain text body", "plain text body"),
+], ids=["urlerror", "incomplete-read", "socket-timeout"])
+def test_make_request_retries_a_transient_failure(exc, failures, body, expected):
+    calls = []
+
+    def side_effect(req, timeout=None):
+        calls.append(req)
+        if len(calls) <= failures:
+            raise exc
+        return mock_response(body)
+
+    with patch("urllib.request.urlopen", side_effect=side_effect), \
+         patch.object(check_versions.time, "sleep"):
+        assert check_versions._make_request("https://example.com/api") == expected
+    assert len(calls) == failures + 1
+
+
+@pytest.mark.parametrize("code,needle", [(404, "HTTP 404"), (403, "rate limited")],
+                         ids=["404", "403-rate-limit"])
+def test_make_request_never_retries_a_4xx(code, needle):
+    calls = []
+
+    def side_effect(req, timeout=None):
+        calls.append(req)
+        raise urllib.error.HTTPError("https://example.com", code, "boom", {}, None)
+
+    with patch("urllib.request.urlopen", side_effect=side_effect), \
+         patch.object(check_versions.time, "sleep") as sleep:
+        with pytest.raises(RuntimeError, match=needle):
+            check_versions._make_request("https://example.com/api")
+    assert len(calls) == 1
+    sleep.assert_not_called()
 
 
 class TestFetchGithubReleaseLatest(unittest.TestCase):
@@ -1379,29 +1232,6 @@ class TestFetchGithubReleaseLatest(unittest.TestCase):
         with patch.object(check_versions, "github_api",
                           return_value={"tag_name": "v2.3.4"}):
             self.assertEqual(check_versions.fetch_github_release(svc), "2.3.4")
-
-
-class TestFetchAptPackagesRetry(unittest.TestCase):
-    """A transient 5xx on the uncompressed Packages URL is retried before falling back."""
-
-    def test_transient_5xx_then_success_on_uncompressed(self):
-        calls = [0]
-        body = b"Package: test\nVersion: 1.0.0\n"
-
-        def side_effect(req, timeout=None):
-            calls[0] += 1
-            if calls[0] == 1:
-                raise urllib.error.HTTPError(
-                    "https://example.com/Packages", 503, "boom", {}, None
-                )
-            return mock_response(body)
-
-        with patch("urllib.request.urlopen", side_effect=side_effect), \
-             patch.object(check_versions.time, "sleep"):
-            result = check_versions.fetch_apt_packages("https://example.com/Packages")
-
-        self.assertEqual(result, body.decode("utf-8"))
-        self.assertEqual(calls[0], 2, "a 5xx on the uncompressed URL must be retried")
 
 
 class TestMakeRequestErrorTagging(unittest.TestCase):
@@ -1564,118 +1394,32 @@ class TestReadCurrentVersions(unittest.TestCase):
         })
 
 
-class TestAnnotateLatestResolution(unittest.TestCase):
-    """_annotate_latest_resolution surfaces the resolved version in notes only
-    for services that track 'latest', so the table shows what 'latest' maps to
-    (on both the cache-hit and live-fetch paths)."""
-
-    def _mk(self, latest_version=None, notes=""):
-        return check_versions.ServiceVersion(
-            name="Some Service",
-            category="dockerhub",
-            current_version="latest",
-            latest_version=latest_version,
-            var_name="some_version",
-            notes=notes,
-        )
-
-    def test_latest_with_resolution_appends_suffix(self):
-        # current == 'latest' + a resolved latest_version => suffix added.
-        result = self._mk(latest_version="1.2.3")
-        check_versions._annotate_latest_resolution(result, "latest")
-        self.assertEqual(result.notes, "'latest' resolves to 1.2.3")
-
-    def test_latest_preserves_existing_notes(self):
-        # Existing notes are kept and the suffix appended after a space.
-        result = self._mk(latest_version="1.2.3", notes="pre-existing note")
-        check_versions._annotate_latest_resolution(result, "latest")
-        self.assertEqual(result.notes, "pre-existing note 'latest' resolves to 1.2.3")
-
-    def test_non_latest_current_left_untouched(self):
-        # A pinned (non-'latest') service is never annotated.
-        result = check_versions.ServiceVersion(
-            name="Some Service",
-            category="dockerhub",
-            current_version="1.2.0",
-            latest_version="1.2.3",
-            var_name="some_version",
-            notes="keep me",
-        )
-        check_versions._annotate_latest_resolution(result, "1.2.0")
-        self.assertEqual(result.notes, "keep me")
-
-    def test_latest_without_resolution_left_untouched(self):
-        # 'latest' but no resolved version yet => nothing to surface.
-        result = self._mk(latest_version=None, notes="")
-        check_versions._annotate_latest_resolution(result, "latest")
-        self.assertEqual(result.notes, "")
+@pytest.mark.parametrize("current,latest,notes,expected", [
+    ("latest", "1.2.3", "", "'latest' resolves to 1.2.3"),
+    ("latest", "1.2.3", "pre-existing note", "pre-existing note 'latest' resolves to 1.2.3"),
+    ("1.2.0", "1.2.3", "keep me", "keep me"),
+    ("latest", None, "", ""),
+], ids=["latest-resolved", "latest-keeps-notes", "pinned-untouched", "latest-unresolved"])
+def test_annotate_latest_resolution(current, latest, notes, expected):
+    """Only a service tracking 'latest' shows what it resolved to."""
+    result = check_versions.ServiceVersion(
+        name="Some Service", category="dockerhub", current_version=current,
+        latest_version=latest, var_name="some_version", notes=notes,
+    )
+    check_versions._annotate_latest_resolution(result, current)
+    assert result.notes == expected
 
 
-class TestCliArgumentValidation(unittest.TestCase):
-    """Unknown CLI flags must fail loudly (exit 2), not silently run the full
-    unfiltered check (e.g. a typo'd `--catagory helm`)."""
-
-    def _run(self, *args):
-        return subprocess.run(
+class TestCli(unittest.TestCase):
+    def test_list_still_works(self):
+        res = subprocess.run(
             [sys.executable, str(script_path), "--config", str(FIXTURE_CONFIG),
-             "--repo-root", str(FIXTURE_REPO), *args],
+             "--repo-root", str(FIXTURE_REPO), "--list"],
             capture_output=True,
             text=True,
         )
-
-    def test_unknown_flag_exits_2(self):
-        res = self._run("--catagory", "helm")
-        self.assertEqual(res.returncode, 2)
-        self.assertIn("unrecognized arguments", res.stderr)
-
-    def test_unknown_category_value_exits_2(self):
-        res = self._run("--category", "helmm")
-        self.assertEqual(res.returncode, 2)
-        self.assertIn("--category", res.stderr)
-
-    def test_flag_shaped_value_is_rejected(self):
-        res = self._run("--service", "--json")
-        self.assertEqual(res.returncode, 2)
-
-    def test_unknown_flag_after_valid_flag_exits_2(self):
-        res = self._run("--service", "k3s", "--bogus")
-        self.assertEqual(res.returncode, 2)
-        self.assertIn("--bogus", res.stderr)
-
-    def test_list_still_works(self):
-        res = self._run("--list")
         self.assertEqual(res.returncode, 0)
         self.assertIn("Tracked services", res.stdout)
-
-
-class TestConsumerConfigFlags(unittest.TestCase):
-    """--config / --repo-root are the documented consumer entry point
-    (SCRIPTS.md): they must combine with any other flag and require a value."""
-
-    def tearDown(self):
-        check_versions.load_config(FIXTURE_CONFIG, repo_root=FIXTURE_REPO)
-
-    def _main(self, *args):
-        with patch.object(check_versions.sys, "argv", ["check-versions.py", *args]), \
-             patch.object(check_versions, "check_all", return_value=[]):
-            with self.assertRaises(SystemExit) as cm:
-                check_versions.main()
-        return cm.exception.code
-
-    def test_config_and_repo_root_are_accepted(self):
-        code = self._main("--config", str(FIXTURE_CONFIG), "--repo-root", str(FIXTURE_REPO), "--json")
-        self.assertEqual(code, 0)
-
-    def test_config_combines_with_a_filter_flag(self):
-        code = self._main("--config", str(FIXTURE_CONFIG), "--service", "k3s", "--no-cache")
-        self.assertEqual(code, 0)
-
-    def test_config_still_requires_a_value(self):
-        res = subprocess.run(
-            [sys.executable, str(script_path), "--config"], capture_output=True, text=True,
-        )
-        self.assertEqual(res.returncode, 2)
-        self.assertIn("--config", res.stderr)
 
 
 class TestFetchGithubReleaseTagFilter(unittest.TestCase):

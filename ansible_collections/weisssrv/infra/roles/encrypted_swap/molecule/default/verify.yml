@@ -25,12 +25,6 @@
       register: systemd_cryptsetup_installed
       failed_when: systemd_cryptsetup_installed.changed
 
-    - name: Assert the obsolete live-switch script is absent
-      ansible.builtin.stat:
-        path: /usr/local/sbin/encrypted-swap-switch.sh
-      register: encrypted_swap_obsolete_switch
-      failed_when: encrypted_swap_obsolete_switch.stat.exists
-
     - name: Read /etc/crypttab
       ansible.builtin.slurp:
         src: /etc/crypttab

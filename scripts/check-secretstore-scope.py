@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Assert every ClusterSecretStore is namespace-scoped and covers its consumers.
 
-Reads the rendered corpus on stdin, outside stores via --external-store;
-exits 0 clean, 1 finding, 2 error. Contract: weisssrv-lib docs/SCRIPTS.md.
+Reads the rendered corpus on stdin; exits 0 clean, 1 finding, 2 error. Contract: weisssrv-lib docs/SCRIPTS.md.
 """
 from __future__ import annotations
 
@@ -80,19 +79,9 @@ def _condition_is_universal(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Every ClusterSecretStore is namespace-scoped and covers its consumers.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "--external-store",
-        action="append",
-        default=[],
-        metavar="NAME",
-        help="ClusterSecretStore defined outside this corpus; referencing it is not a violation",
-    )
-    args = parser.parse_args(argv)
-    external = set(args.external_store)
+    argparse.ArgumentParser(
+        description="Every ClusterSecretStore is namespace-scoped and covers its consumers."
+    ).parse_args(argv)
 
     docs = load_corpus()
 
@@ -207,8 +196,7 @@ def main(argv: list[str] | None = None) -> int:
     unknown: set[str] = set()
     for store, namespace, description in consumers:
         if store not in stores:
-            if store not in external:
-                unknown.add(store)
+            unknown.add(store)
             continue
         conditions = stores[store] or []
         if not conditions:
@@ -234,8 +222,7 @@ def main(argv: list[str] | None = None) -> int:
             f"  ClusterSecretStore {store}: referenced but not defined in this corpus, "
             f"so its scope cannot be checked — and at runtime an ExternalSecret pointing "
             f"at a store that does not resolve never syncs, leaving a stale Secret. Add "
-            f"the store's manifest to the linted tree, or declare it with "
-            f"--external-store {store} if it is genuinely managed elsewhere."
+            f"the store's manifest to the linted tree."
         )
 
     if bad_patterns:
@@ -266,17 +253,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    referenced = {store for store, _ns, _description in consumers}
-    unused = sorted(name for name in external if name not in referenced)
-    if unused:
-        print(
-            f"(--external-store declared but not referenced by this corpus: "
-            f"{', '.join(unused)})"
-        )
-    external_note = f", {len(external)} declared external" if external else ""
     print(
         f"ClusterSecretStore scoping OK ({len(stores)} cluster stores, "
-        f"{len(consumers)} namespace consumers checked{external_note})"
+        f"{len(consumers)} namespace consumers checked)"
     )
     return 0
 

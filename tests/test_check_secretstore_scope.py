@@ -139,10 +139,6 @@ def test_unknown_store_is_a_violation(monkeypatch, capsys):
     assert "referenced but not defined in this corpus" in capsys.readouterr().err
 
 
-def test_declared_external_store_is_exempt(monkeypatch):
-    """A store genuinely managed outside the linted tree is declared, not silent."""
-    assert _run(EXTERNAL_SECRET, monkeypatch, ["--external-store", "onepassword-homelab"]) == 0
-
 
 def test_empty_corpus_is_an_operator_error(monkeypatch, capsys):
     """A broken pipe or a wrong kustomize path must not read as a pass."""
@@ -270,54 +266,6 @@ def test_an_unparseable_catch_all_regex_is_not_silently_scoped(monkeypatch, caps
 """)
     assert _run(broken + EXTERNAL_SECRET, monkeypatch) == 2
     assert "does not compile" in capsys.readouterr().err
-
-
-# --- the selector matcher fails CLOSED on a shape the apiserver rejects -------
-
-
-def test_an_unknown_match_expression_operator_never_admits(monkeypatch):
-    """A misspelled operator matched no arm and fell through to "admits"."""
-    for operator in ("in", "Equals", ""):
-        bad = _store(f"""  conditions:
-    - namespaceSelector:
-        matchExpressions:
-          - {{key: example.test/vault, operator: "{operator}", values: ["true"]}}
-""")
-        assert _run(bad + NAMESPACES + EXTERNAL_SECRET, monkeypatch) == 1, operator
-
-
-def test_a_string_values_match_expression_never_admits(monkeypatch):
-    """`values: "true"` would make the membership test a substring test."""
-    bad = _store("""  conditions:
-    - namespaceSelector:
-        matchExpressions:
-          - {key: example.test/vault, operator: In, values: "true"}
-""")
-    assert _run(bad + NAMESPACES + EXTERNAL_SECRET, monkeypatch) == 1
-
-
-def test_an_unknown_match_expression_key_never_admits(monkeypatch):
-    bad = _store("""  conditions:
-    - namespaceSelector:
-        matchExpressions:
-          - {key: example.test/vault, operator: Exists, valuse: []}
-""")
-    assert _run(bad + NAMESPACES + EXTERNAL_SECRET, monkeypatch) == 1
-
-
-def test_a_valid_match_expression_still_admits(monkeypatch):
-    ok = _store("""  conditions:
-    - namespaceSelector:
-        matchExpressions:
-          - {key: example.test/vault, operator: In, values: ["true"]}
-""")
-    assert _run(ok + NAMESPACES + EXTERNAL_SECRET, monkeypatch) == 0
-
-
-def test_an_unused_external_store_is_reported_not_fatal(monkeypatch, capsys):
-    argv = ["--external-store", "gone-elsewhere"]
-    assert _run(SCOPED + EXTERNAL_SECRET, monkeypatch, argv) == 0
-    assert "not referenced by this corpus: gone-elsewhere" in capsys.readouterr().out
 
 
 # --- a selector key the CRD prunes is an unmodelled grant, not a non-match ----

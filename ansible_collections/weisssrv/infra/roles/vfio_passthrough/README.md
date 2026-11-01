@@ -48,9 +48,6 @@ but boot-time binding keeps the host drivers off the card cleanly.
 | `vfio_passthrough_force_load` | `true` | Write `/etc/modules-load.d/vfio-pci.conf` to force-load vfio-pci at boot (belt-and-suspenders fallback to the cmdline `vfio-pci.ids=`). |
 | `vfio_passthrough_cmdline_params` | `[intel_iommu=on, iommu=pt]` | IOMMU cmdline params appended via the GRUB drop-in. The role *also* appends `vfio-pci.ids=<vfio_passthrough_pci_ids>` (from the template) for the earliest bind — don't add an `ids=` here. |
 | `vfio_passthrough_manage_absent` | `true` | Lets the disabled arm remove the three VFIO drop-ins. Set `false` to leave every drop-in alone. |
-| `vfio_passthrough_managed_marker` | `managed by weisssrv.infra.vfio_passthrough` | Role-owned literal the three templates emit. It identifies a role-written drop-in, so a file without it is reported and kept. |
-| `vfio_passthrough_legacy_markers` | the stable prefix of `ansible_managed` | Extra ownership markers the disabled arm accepts, so a drop-in carrying only a bare `ansible_managed` header is still removable. An empty entry is ignored. The disabled arm asserts that at least one marker is non-empty. |
-| `vfio_passthrough_cmdline_method` | `grub` | How the kernel cmdline is written. `grub` (a `/etc/default/grub.d` drop-in) is the only method implemented; a preflight refuses a host that carries `/etc/kernel/cmdline`. |
 | `vfio_passthrough_skip_boot_update` | `false` | Molecule/check-mode: render the files, skip `update-grub`/`update-initramfs`. |
 
 ## Assumptions & scope
@@ -59,14 +56,13 @@ but boot-time binding keeps the host drivers off the card cleanly.
   the host must boot through GRUB (an LVM root, or proxmox-boot-tool in GRUB
   mode, where the handler also refreshes the ESP copies). A host that keeps its
   cmdline in `/etc/kernel/cmdline` (systemd-boot) is refused by a preflight
-  rather than silently staging parameters the kernel never reads; implementing
-  it means a second `vfio_passthrough_cmdline_method`.
+  rather than silently staging parameters the kernel never reads.
 - With the gate off the role removes `/etc/default/grub.d/vfio-iommu.cfg`,
   `/etc/modprobe.d/vfio.conf` and `/etc/modules-load.d/vfio-pci.conf`, but only
-  where the file carries `vfio_passthrough_managed_marker` or one of
-  `vfio_passthrough_legacy_markers`. A host that configured VFIO by hand keeps
-  its files and the run reports each one it left alone. Removal rebuilds the
-  boot artefacts.
+  where the file carries the role's own `managed by
+  weisssrv.infra.vfio_passthrough` line. A host that configured VFIO by hand
+  keeps its files and the run reports each one it left alone. Removal rebuilds
+  the boot artefacts.
 - The role **never** reboots and **never** does a live driver unbind — capturing
   the GPU is done cleanly on the next boot. Applies in a maintenance window.
 

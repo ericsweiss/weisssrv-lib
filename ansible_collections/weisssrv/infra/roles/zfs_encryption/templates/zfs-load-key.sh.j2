@@ -124,91 +124,62 @@ if [[ -z "$PASSPHRASE" ]]; then
     exit 3
 fi
 {% else %}
+# lookup_id <connect-path> <what> <not-found-msg>: sets LOOKUP_ID to the first
+# listed id. Runs in the main shell, so the EXIT trap still owns every temp file.
+# An empty 200 list exits 3, so a typo does not look like an outage.
+lookup_id() {
+    local path="$1" what="$2" not_found="$3" http body
+    local deadline=$(( $(date +%s) + FETCH_TIMEOUT ))
+    LOOKUP_ID=""
+    while [[ -z "$LOOKUP_ID" ]]; do
+        if [[ $(date +%s) -ge $deadline ]]; then
+            log "timed out resolving $what against $CONNECT_URL"
+            exit 2
+        fi
+
+        tmp=$(mktemp -p /dev/shm)
+        http=$(connect_get "$path" "$tmp")
+        body=$(cat "$tmp")
+        cleanup_tmp
+
+        case "$http" in
+            200)
+                LOOKUP_ID=$(printf '%s' "$body" | jq -r '.[0].id // empty')
+                if [[ -z "$LOOKUP_ID" ]]; then
+                    log "Connect returned 200 but $not_found"
+                    exit 3
+                fi
+                ;;
+            401|403)
+                log "Connect rejected token resolving $what (HTTP $http); refusing to retry"
+                exit 7
+                ;;
+            *)
+                log "Connect HTTP $http resolving $what; will retry"
+                retry_sleep
+                ;;
+        esac
+    done
+}
+
 # Resolve VAULT_REF to a UUID unless it already has the 26-char 1P UUID shape:
 # only GET /v1/vaults?filter=name eq accepts a name.
 if [[ "$VAULT_REF" =~ ^[a-z0-9]{26}$ ]]; then
     VAULT="$VAULT_REF"
 else
     encoded_vault=$(jq -rn --arg v "$VAULT_REF" '$v | @uri')
-    VAULT_PATH="/v1/vaults?filter=name%20eq%20%22${encoded_vault}%22"
-
-    deadline=$(( $(date +%s) + FETCH_TIMEOUT ))
-    VAULT=""
-    while [[ -z "$VAULT" ]]; do
-        if [[ $(date +%s) -ge $deadline ]]; then
-            log "timed out resolving vault UUID for '$VAULT_REF' against $CONNECT_URL"
-            exit 2
-        fi
-
-        tmp=$(mktemp -p /dev/shm)
-        http=$(connect_get "$VAULT_PATH" "$tmp")
-        body=$(cat "$tmp")
-        cleanup_tmp
-
-        case "$http" in
-            200)
-                VAULT=$(printf '%s' "$body" | jq -r '.[0].id // empty')
-                if [[ -z "$VAULT" ]]; then
-                    log "Connect returned 200 but no vault named '$VAULT_REF' visible to this token"
-                    exit 3
-                fi
-                ;;
-            401|403)
-                log "Connect rejected token resolving vault (HTTP $http); refusing to retry"
-                exit 7
-                ;;
-            *)
-                log "Connect HTTP $http resolving vault; will retry"
-                ;;
-        esac
-
-        if [[ -z "$VAULT" ]]; then
-            retry_sleep
-        fi
-    done
-    unset body
+    lookup_id "/v1/vaults?filter=name%20eq%20%22${encoded_vault}%22" \
+        "vault UUID for '$VAULT_REF'" \
+        "no vault named '$VAULT_REF' visible to this token"
+    VAULT=$LOOKUP_ID
 fi
 
 # Connect's item endpoint takes an ID, so resolve the item title to one first.
 encoded=$(jq -rn --arg t "$ITEM_TITLE" '$t | @uri')
-LIST_PATH="/v1/vaults/${VAULT}/items?filter=title%20eq%20%22${encoded}%22"
-
-deadline=$(( $(date +%s) + FETCH_TIMEOUT ))
-ITEM_ID=""
-while [[ -z "$ITEM_ID" ]]; do
-    if [[ $(date +%s) -ge $deadline ]]; then
-        log "timed out resolving item id for '$ITEM_TITLE' against $CONNECT_URL"
-        exit 2
-    fi
-
-    tmp=$(mktemp -p /dev/shm)
-    http=$(connect_get "$LIST_PATH" "$tmp")
-    body=$(cat "$tmp")
-    cleanup_tmp
-
-    case "$http" in
-        200)
-            ITEM_ID=$(printf '%s' "$body" | jq -r '.[0].id // empty')
-            # 200 + empty list = the title is not in the vault. Exit 3 rather
-            # than looping to exit 2, so a typo doesn't look like an outage.
-            if [[ -z "$ITEM_ID" ]]; then
-                log "Connect returned 200 but no item titled '$ITEM_TITLE' in vault '$VAULT_REF'"
-                exit 3
-            fi
-            ;;
-        401|403)
-            log "Connect rejected token (HTTP $http); refusing to retry"
-            exit 7
-            ;;
-        *)
-            log "Connect HTTP $http resolving item; will retry"
-            ;;
-    esac
-
-    if [[ -z "$ITEM_ID" ]]; then
-        retry_sleep
-    fi
-done
+lookup_id "/v1/vaults/${VAULT}/items?filter=title%20eq%20%22${encoded}%22" \
+    "item id for '$ITEM_TITLE'" \
+    "no item titled '$ITEM_TITLE' in vault '$VAULT_REF'"
+ITEM_ID=$LOOKUP_ID
 
 # Fetch the item. Same deadline/retry loop as the lookup above, so a transient
 # non-200 (including curl's transport code 000) burns the full FETCH_TIMEOUT

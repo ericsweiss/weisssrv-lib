@@ -27,10 +27,6 @@ provisioner:
         restic_offsite_enabled: true
         # LOCAL file repo — no rclone/B2 contacted.
         restic_offsite_repo: /tmp/restic-molecule-repo
-        # bind mode: mount --bind the seeded snapshot subtree at
-        # BIND_ROOT/<name>, so backed-up paths match cmd_restore's --include
-        # prefixes and the restore round-trip is testable.
-        restic_offsite_bind_mode: bind
         restic_offsite_zvol_sources: []
         restic_offsite_cache_dir: /tmp/restic-molecule-cache
         restic_offsite_bind_root: /tmp/restic-molecule-bind

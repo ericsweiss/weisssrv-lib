@@ -173,8 +173,6 @@ CASES = [
      (), 2, "sets no image-gc-high-threshold"),
     ("renamed-args-var", {"k3s_vars": K3S_VARS.replace("k3s_kubelet_args", "kubelet_extra_args")},
      (), 2, "no k3s_kubelet_args entries"),
-    ("args-var-flag", {"k3s_vars": K3S_VARS.replace("k3s_kubelet_args", "kubelet_extra_args")},
-     ("--kubelet-args-var", "kubelet_extra_args"), 0, None),
     ("no-alert", {"rules": RULES.replace("alert: KubeletImageGC", "alert: SomethingElse")}, (), 2,
      "no KubeletImageGCIneffective alert"),
     ("no-comparison", {"rules": RULES.replace('/ node_filesystem_size_bytes{mountpoint="/"}) > 70',

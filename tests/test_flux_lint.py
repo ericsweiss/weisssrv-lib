@@ -16,7 +16,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "flux-lint.sh"
-RENDER_SCRIPT = REPO / "scripts" / "flux-render.sh"
+RENDER_SCRIPT = REPO / "scripts" / "flux-env.sh"
 SKIPPED_SCRIPT = REPO / "scripts" / "kubeconform-skipped.py"
 CHILD_SCRIPT = REPO / "scripts" / "flux-child-kustomizations.py"
 
@@ -128,6 +128,8 @@ def build_tree(tmp_path: Path) -> Path:
     _write(cluster / "flux-system" / "gotk-components.yaml", NAMESPACE)
     _write(tmp_path / "kubernetes" / "infrastructure" / "sources"
            / "versions-configmap.yaml", CONFIGMAP)
+    _write(tmp_path / "kubernetes" / "infrastructure" / "sources"
+           / "cluster-config.yaml", "data:\n  cluster_domain: example.com\n")
     renders = tmp_path / "renders"
     _write(renders / "kubernetes_apps.yaml", NAMESPACE)
     _write(renders / "kubernetes_clusters_demo.yaml", NAMESPACE)

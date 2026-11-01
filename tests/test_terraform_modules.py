@@ -74,10 +74,6 @@ def test_the_collector_only_counts_real_modules(tmp_path):
     assert [p.name for p in module_dirs(tmp_path)] == ["real"]
 
 
-def has_readme(module: Path) -> bool:
-    return (module / "README.md").is_file()
-
-
 def module_tests(module: Path) -> list:
     """Every terraform test file the module ships."""
     return sorted(module.glob("tests/*.tftest.hcl")) + sorted(
@@ -102,22 +98,6 @@ def test_module_tests_cover_a_failure_case(module: Path):
         "%s asserts no `expect_failures`, so no validation is proven to fire"
         % module.name
     )
-
-
-def test_the_readme_gate_fails_on_a_module_without_one(tmp_path):
-    """The gate is proven to catch, not just to pass today."""
-    module = tmp_path / "new-module"
-    module.mkdir()
-    (module / "main.tf").write_text("")
-    assert module_dirs(tmp_path) == [module]
-    assert not has_readme(module)
-
-
-def test_the_tests_gate_fails_on_a_module_without_any(tmp_path):
-    module = tmp_path / "new-module"
-    module.mkdir()
-    (module / "main.tf").write_text("")
-    assert module_tests(module) == []
 
 
 def validation_regexes(path: Path) -> Counter:

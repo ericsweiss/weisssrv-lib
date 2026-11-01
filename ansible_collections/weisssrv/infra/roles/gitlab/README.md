@@ -48,8 +48,8 @@ writes into both when they are present.
 | `gitlab_additional_disks` | Extra block devices to mount first (aliases `vm_additional_disks`) | no (`[]`) |
 | `gitlab_registry_enabled` / `_registry_external_url` / `_registry_data_dir` | Container Registry | no (`false`) |
 | `gitlab_pages_enabled` / `_pages_external_url` | GitLab Pages | no (`false`) |
-| `gitlab_smtp_enabled`, `gitlab_smtp_address`, `gitlab_smtp_port`, `gitlab_smtp_user`, `gitlab_smtp_password`, `gitlab_smtp_domain`, `gitlab_smtp_authentication`, `gitlab_smtp_enable_starttls_auto`, `gitlab_email_display_name` | SMTP relay and the From display name | no (`false`) |
-| `gitlab_email_from` / `_display_name` / `_reply_to` | Notification identities; empty omits the line | no (`""`) |
+| `gitlab_smtp_enabled`, `gitlab_smtp_address`, `gitlab_smtp_port`, `gitlab_smtp_user`, `gitlab_smtp_password`, `gitlab_smtp_domain`, `gitlab_smtp_authentication`, `gitlab_smtp_enable_starttls_auto` | SMTP relay | no (`false`) |
+| `gitlab_email_from`, `gitlab_email_display_name`, `gitlab_email_reply_to` | Notification identities and the From display name; empty omits the line | no (`""`; display name `GitLab`) |
 | `gitlab_saml_enabled` + `_idp_sso_url` / `_idp_cert_fingerprint` | SAML SSO | no (`false`) |
 | `gitlab_saml_label`, `gitlab_saml_icon_url`, `gitlab_saml_groups_attribute` | Sign-in button and claim mapping | no |
 | `gitlab_saml_required_groups`, `gitlab_saml_admin_groups`, `gitlab_saml_external_groups` | Group-based access control | no (`[]`) |
@@ -264,17 +264,3 @@ value containing `#{...}` would be evaluated at reconfigure time, and `ruby -c`
 cannot catch that because the result is syntactically valid. The macro therefore
 escapes every `#` as `\#` after `to_json`, which is a plain `#` inside a Ruby
 double-quoted string. Arrays go through the same macro.
-
-## Testing
-
-Run the scenario as described in the collection README § Testing.
-
-The scenario runs with `gitlab_skip_install: true` against a mocked GitLab tree,
-so it covers rendering and the backup/firewall/SSH logic without the Omnibus
-package. It sets `gitlab_web_ide_settings_enabled: false`, because the settings
-pass needs a live instance.
-
-It also drives both arms of the real-IP trust guard: an empty
-`gitlab_nginx_real_ip_trusted_addresses` must fail the role, and the same empty
-list must pass once `gitlab_nginx_trust_no_proxy` is set. Those deliberate
-failures are declared in `molecule/default/expected-junit-failures.txt`.

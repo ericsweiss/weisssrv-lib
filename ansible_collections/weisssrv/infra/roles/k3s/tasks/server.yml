@@ -19,19 +19,6 @@
     success_msg: "Required k3s variables are present"
   tags: [validation, always]
 
-# verbosity, not just the tag: a tag selects a task, it does not gate one, so
-# without this the dump prints on every node of every deploy.
-- name: Debug - Show k3s server configuration variables
-  ansible.builtin.debug:
-    verbosity: 1
-    msg:
-      - "Host: {{ inventory_hostname }}"
-      - "k3s_role: {{ k3s_role }}"
-      - "k3s_is_first_server: {{ k3s_is_first_server | default(false) }}"
-      - "k3s_api_vip: {{ k3s_api_vip }}"
-      - "Config will be written to: /etc/rancher/k3s/config.yaml"
-  tags: [debug]
-
 # CRITICAL: rebuild guard. A wiped first server still pinned as
 # k3s_is_first_server would bootstrap a NEW etcd cluster against the surviving
 # quorum. No local etcd data plus a live API VIP renders the join stanza
@@ -297,14 +284,6 @@
   changed_when: >-
     ('tainted' in (k3s_taint_result.stdout | default('')))
     or ('modified' in (k3s_taint_result.stdout | default('')))
-
-# k3s ships metrics-server as static manifests, so a HelmChartConfig never reaches
-# it. Any stale override in the manifests dir is removed.
-- name: Remove a stale metrics-server override
-  ansible.builtin.file:
-    path: /var/lib/rancher/k3s/server/manifests/metrics-server-config.yaml
-    state: absent
-  when: k3s_is_first_server | default(false)
 
 # Servers hold their etcd snapshots on local disk only; this copies the newest
 # one off-node. Opt-in, and needs the companion NFS export plus

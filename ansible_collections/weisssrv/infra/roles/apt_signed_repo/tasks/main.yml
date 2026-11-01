@@ -8,24 +8,20 @@
     path: "{{ apt_signed_repo_keyring_path | dirname }}"
     state: directory
     mode: "0755"
-  when: apt_signed_repo_when
 
 # The verify/dearmor steps call gpg. Callers that provision gnupg elsewhere
-# leave this off. Ensured on every run, not gated on key-absence: the
-# existing-keyring re-verification below also needs gpg.
+# leave this off. Not gated on key absence: the fingerprint check also runs
+# against an installed keyring.
 - name: Ensure gnupg is installed
   ansible.builtin.apt:
     name: gnupg
     state: present
-  when:
-    - apt_signed_repo_when
-    - apt_signed_repo_install_gnupg
+  when: apt_signed_repo_install_gnupg
 
 - name: Check whether the signing keyring already exists
   ansible.builtin.stat:
     path: "{{ apt_signed_repo_keyring_path }}"
   register: apt_signed_repo_keyring
-  when: apt_signed_repo_when
 
 # Root-only staging area. Verify and dearmor are separate SSH invocations, so
 # the key must sit somewhere no other local user can substitute it in between.
@@ -36,9 +32,7 @@
     owner: root
     group: root
     mode: "0700"
-  when:
-    - apt_signed_repo_when
-    - not (apt_signed_repo_keyring.stat.exists | default(false))
+  when: not (apt_signed_repo_keyring.stat.exists | default(false))
 
 - name: Download signing key
   ansible.builtin.get_url:
@@ -51,9 +45,7 @@
     force: true
     # get_url's 10s default expires mid-handshake against a vendor key server.
     timeout: 60
-  when:
-    - apt_signed_repo_when
-    - not (apt_signed_repo_keyring.stat.exists | default(false))
+  when: not (apt_signed_repo_keyring.stat.exists | default(false))
   # A stalled handshake is retried instead of failing the play. The fingerprint
   # check below still gates what apt trusts.
   register: apt_signed_repo_key_download
@@ -61,40 +53,25 @@
   retries: 3
   delay: 5
 
-- name: Verify downloaded signing key fingerprint (primary key must match exactly)
+# Verifies the download when the keyring is absent, the installed keyring
+# otherwise. More than one public key fails closed: dearmor imports every key in
+# the file, so an appended key would bypass the fingerprint pin.
+- name: Verify signing key fingerprint (primary key must match exactly)
+  vars:
+    apt_signed_repo_verify_path: >-
+      {{ apt_signed_repo_keyring_path if (apt_signed_repo_keyring.stat.exists | default(false))
+      else apt_signed_repo_tmp_key }}
   ansible.builtin.shell: |
     # set -e makes a bare failing test below abort the script.
     set -eo pipefail
-    primary_fpr=$(gpg --show-keys --with-colons {{ apt_signed_repo_tmp_key | quote }} 2>/dev/null \
+    primary_fpr=$(gpg --show-keys --with-colons {{ apt_signed_repo_verify_path | quote }} 2>/dev/null \
         | awk -F: '/^pub/{p=1; next} p && /^fpr/{print $10; exit}')
-    # More than one public key fails closed: dearmor imports every key in the
-    # file, so an appended key would bypass the fingerprint pin.
-    pub_count=$(gpg --show-keys --with-colons {{ apt_signed_repo_tmp_key | quote }} 2>/dev/null | grep -c '^pub')
+    pub_count=$(gpg --show-keys --with-colons {{ apt_signed_repo_verify_path | quote }} 2>/dev/null | grep -c '^pub')
     [ "$pub_count" = "1" ]
     [ "$primary_fpr" = {{ apt_signed_repo_fingerprint | quote }} ]
   args:
     executable: /bin/bash
   changed_when: false
-  when:
-    - apt_signed_repo_when
-    - not (apt_signed_repo_keyring.stat.exists | default(false))
-
-# The download/verify/dearmor path is skipped once the keyring exists, so the
-# same primary-fpr + pub_count==1 guard re-runs against the binary keyring.
-- name: Verify existing signing keyring fingerprint (primary key must match exactly)
-  ansible.builtin.shell: |
-    set -eo pipefail
-    primary_fpr=$(gpg --show-keys --with-colons {{ apt_signed_repo_keyring_path | quote }} 2>/dev/null \
-        | awk -F: '/^pub/{p=1; next} p && /^fpr/{print $10; exit}')
-    pub_count=$(gpg --show-keys --with-colons {{ apt_signed_repo_keyring_path | quote }} 2>/dev/null | grep -c '^pub')
-    [ "$pub_count" = "1" ]
-    [ "$primary_fpr" = {{ apt_signed_repo_fingerprint | quote }} ]
-  args:
-    executable: /bin/bash
-  changed_when: false
-  when:
-    - apt_signed_repo_when
-    - apt_signed_repo_keyring.stat.exists | default(false)
 
 # Dearmor to binary .gpg for signed-by. The creates guard keeps this a no-op
 # once the keyring exists.
@@ -104,9 +81,7 @@
     < {{ apt_signed_repo_tmp_key | quote }}
   args:
     creates: "{{ apt_signed_repo_keyring_path }}"
-  when:
-    - apt_signed_repo_when
-    - not (apt_signed_repo_keyring.stat.exists | default(false))
+  when: not (apt_signed_repo_keyring.stat.exists | default(false))
 
 # Re-stat after the dearmor: under --check the shell above reports changed but
 # writes nothing, and the permission task below must not fail on a missing
@@ -115,26 +90,20 @@
   ansible.builtin.stat:
     path: "{{ apt_signed_repo_keyring_path }}"
   register: apt_signed_repo_keyring_final
-  when: apt_signed_repo_when
 
-# Runs whether or not the keyring already existed, so a legacy 0600 keyring is
-# corrected.
+# gpg --dearmor's output mode depends on the umask, and apt reports
+# "unverifiable signature" on a keyring it cannot read. Runs on every keyring.
 - name: Set permissions on signing keyring
   ansible.builtin.file:
     path: "{{ apt_signed_repo_keyring_path }}"
-    mode: "{{ apt_signed_repo_keyring_mode }}"
-  when:
-    - apt_signed_repo_when
-    - apt_signed_repo_keyring_mode | length > 0
-    - apt_signed_repo_keyring_final.stat.exists | default(false)
+    mode: "0644"
+  when: apt_signed_repo_keyring_final.stat.exists | default(false)
 
 - name: Clean up the key staging directory
   ansible.builtin.file:
     path: "{{ apt_signed_repo_stage_dir }}"
     state: absent
-  when:
-    - apt_signed_repo_when
-    - not (apt_signed_repo_keyring.stat.exists | default(false))
+  when: not (apt_signed_repo_keyring.stat.exists | default(false))
 
 - name: Add APT repository
   ansible.builtin.apt_repository:
@@ -142,4 +111,3 @@
     filename: "{{ apt_signed_repo_filename }}"
     state: present
     update_cache: "{{ apt_signed_repo_update_cache }}"
-  when: apt_signed_repo_when

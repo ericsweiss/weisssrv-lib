@@ -168,22 +168,52 @@
 
 # Textfile collectors (Proxmox hosts only)
 # One block so the proxmox-group gate lives in a single place; each collector
-# keeps its own script + textfile_collector include.
+# keeps its own textfile_collector include.
 - name: Deploy the Proxmox-host textfile collectors
   when: node_exporter_host_proxmox | bool
+  vars:
+    # The textfile collectors behind an on/off seam, with every file each one
+    # deploys. A disabled collector has its timer stopped and these files removed.
+    _node_exporter_host_seamed_collectors:
+      - name: corosync-health-collector
+        enabled: "{{ node_exporter_host_corosync_collector | bool }}"
+        paths:
+          - /etc/systemd/system/corosync-health-collector.timer
+          - /etc/systemd/system/corosync-health-collector.service
+          - /usr/local/sbin/corosync-health-collector.sh
+          - "{{ node_exporter_host_textfile_dir }}/corosync_health.prom"
+      - name: zpool-status-collector
+        enabled: "{{ node_exporter_host_zpool_collector | bool }}"
+        paths:
+          - /etc/systemd/system/zpool-status-collector.timer
+          - /etc/systemd/system/zpool-status-collector.service
+          - /usr/local/sbin/zpool-status-collector.sh
+          - "{{ node_exporter_host_textfile_dir }}/zfs_pool_status.prom"
+      - name: slabinfo-collector
+        enabled: "{{ node_exporter_host_slabinfo_collector | bool }}"
+        paths:
+          - /etc/systemd/system/slabinfo-collector.timer
+          - /etc/systemd/system/slabinfo-collector.service
+          - /usr/local/sbin/slabinfo-collector.sh
+          - /etc/default/slabinfo-collector
+          - "{{ node_exporter_host_textfile_dir }}/node_slabinfo.prom"
+
+    _node_exporter_host_enabled_collectors: >-
+      {{ ['smartmon-collector']
+         + _node_exporter_host_seamed_collectors | selectattr('enabled') | map(attribute='name') | list }}
   block:
-    # Corosync + pmxcfs health: catches a corosync that is alive (host-up stays
-    # green) but pinned at 99% CPU with a frozen manager_status. Three metrics,
-    # so rules can fire on either condition and on collector meta-failure.
-    - name: Install corosync health collector script
+    - name: Install the collector scripts
       ansible.builtin.copy:
-        src: corosync-health-collector.sh
-        dest: /usr/local/sbin/corosync-health-collector.sh
+        src: "{{ item }}.sh"
+        dest: "/usr/local/sbin/{{ item }}.sh"
         owner: root
         group: root
         mode: "0755"
-      when: node_exporter_host_corosync_collector | bool
+      loop: "{{ _node_exporter_host_enabled_collectors }}"
 
+    # Corosync + pmxcfs health: catches a corosync that is alive (host-up stays
+    # green) but pinned at 99% CPU with a frozen manager_status. Three metrics,
+    # so rules can fire on either condition and on collector meta-failure.
     - name: Deploy corosync health collector unit + timer
       ansible.builtin.include_role:
         name: weisssrv.infra.textfile_collector
@@ -200,15 +230,6 @@
     # zpool status: a pool accumulating vdev checksum errors stays ONLINE, so
     # health-based monitoring (zfs_exporter, SMART) never fires. Exports
     # per-pool error counters + scrub age fleet-wide.
-    - name: Install zpool status collector script
-      ansible.builtin.copy:
-        src: zpool-status-collector.sh
-        dest: /usr/local/sbin/zpool-status-collector.sh
-        owner: root
-        group: root
-        mode: "0755"
-      when: node_exporter_host_zpool_collector | bool
-
     - name: Deploy zpool status collector unit + timer
       ansible.builtin.include_role:
         name: weisssrv.infra.textfile_collector
@@ -223,17 +244,6 @@
           - zfs-import.target
         textfile_collector_timeout_start_sec: 30s
 
-    # Per-cache slab usage: node_memory_Slab_bytes only carries the total, so a
-    # leak in one cache is invisible until the host runs out of memory.
-    - name: Install slabinfo collector script
-      ansible.builtin.copy:
-        src: slabinfo-collector.sh
-        dest: /usr/local/sbin/slabinfo-collector.sh
-        owner: root
-        group: root
-        mode: "0755"
-      when: node_exporter_host_slabinfo_collector | bool
-
     # The allowlist travels in a defaults file, not the ExecStart line: the
     # shared collector unit passes the textfile dir and nothing else. A
     # template, since ansible_managed resolves only inside that module.
@@ -246,6 +256,8 @@
         mode: "0644"
       when: node_exporter_host_slabinfo_collector | bool
 
+    # Per-cache slab usage: node_memory_Slab_bytes only carries the total, so a
+    # leak in one cache is invisible until the host runs out of memory.
     - name: Deploy slabinfo collector unit + timer
       ansible.builtin.include_role:
         name: weisssrv.infra.textfile_collector
@@ -268,14 +280,6 @@
     # SMART health: smartd emails on attribute failures but exports nothing to
     # Prometheus. Standby-aware (`smartctl -n standby`), so it never wakes
     # drives or aborts long self-tests.
-    - name: Install smartmon collector script
-      ansible.builtin.copy:
-        src: smartmon-collector.sh
-        dest: /usr/local/sbin/smartmon-collector.sh
-        owner: root
-        group: root
-        mode: "0755"
-
     - name: Deploy smartmon collector unit + timer
       ansible.builtin.include_role:
         name: weisssrv.infra.textfile_collector
@@ -295,131 +299,49 @@
     # whole play with "Could not find the requested service ...".
     - name: Enable + start the collector timers
       ansible.builtin.systemd:
-        name: "{{ item }}"
+        name: "{{ item }}.timer"
         enabled: true
         state: started
         daemon_reload: true
-      loop: >-
-        {{ ['smartmon-collector.timer']
-           + (['corosync-health-collector.timer']
-              if node_exporter_host_corosync_collector | bool else [])
-           + (['zpool-status-collector.timer']
-              if node_exporter_host_zpool_collector | bool else [])
-           + (['slabinfo-collector.timer']
-              if node_exporter_host_slabinfo_collector | bool else []) }}
+      loop: "{{ _node_exporter_host_enabled_collectors }}"
       when: not ansible_check_mode
 
-    # A host switched off ZFS must not keep the previously deployed timer
-    # running or serve its stale zpool metrics.
-    - name: Reconcile the zpool collector away when disabled
-      when: not node_exporter_host_zpool_collector | bool
-      block:
-        - name: Check whether the zpool collector timer unit is still on disk
-          ansible.builtin.stat:
-            path: /etc/systemd/system/zpool-status-collector.timer
-          register: node_exporter_host_zpool_leftover_timer
+    # A disabled collector must not keep a previously deployed timer running or
+    # serve stale metrics: an unclustered host would keep publishing the mtime-0
+    # series PmxcfsStale fires on.
+    - name: Check whether each disabled collector's timer unit is still on disk
+      ansible.builtin.stat:
+        path: "/etc/systemd/system/{{ item.name }}.timer"
+      loop: "{{ _node_exporter_host_seamed_collectors }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: not item.enabled | bool
+      register: node_exporter_host_leftover_timers
 
-        # Gated on the unit file, so a D-Bus error or a typo'd unit name fails
-        # the play instead of the files vanishing under a running timer.
-        - name: Stop + disable the zpool collector timer
-          ansible.builtin.systemd:
-            name: zpool-status-collector.timer
-            enabled: false
-            state: stopped
-          when:
-            - node_exporter_host_zpool_leftover_timer.stat.exists
-            - not ansible_check_mode
+    # Gated on the unit file, so a D-Bus error or a typo'd unit name fails
+    # the play instead of the files vanishing under a running timer.
+    - name: Stop + disable each disabled collector's timer
+      ansible.builtin.systemd:
+        name: "{{ item.item.name }}.timer"
+        enabled: false
+        state: stopped
+      loop: "{{ node_exporter_host_leftover_timers.results | selectattr('stat', 'defined') | selectattr('stat.exists') }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: not ansible_check_mode
 
-        - name: Remove the zpool collector unit, timer, script and metrics
-          ansible.builtin.file:
-            path: "{{ item }}"
-            state: absent
-          loop:
-            - /etc/systemd/system/zpool-status-collector.timer
-            - /etc/systemd/system/zpool-status-collector.service
-            - /usr/local/sbin/zpool-status-collector.sh
-            - "{{ node_exporter_host_textfile_dir }}/zfs_pool_status.prom"
+    - name: Remove each disabled collector's unit, timer, script and metrics
+      ansible.builtin.file:
+        path: "{{ item.1 }}"
+        state: absent
+      loop: "{{ _node_exporter_host_seamed_collectors | rejectattr('enabled') | subelements('paths') }}"
+      loop_control:
+        label: "{{ item.1 }}"
 
-        # systemd keeps a removed unit loaded until it is told to forget it.
-        - name: Reload systemd after removing the zpool collector units
-          ansible.builtin.systemd:
-            daemon_reload: true
-          when:
-            - node_exporter_host_zpool_leftover_timer.stat.exists
-            - not ansible_check_mode
-
-    # Same for a host that is not clustered: an armed timer would keep
-    # publishing the mtime-0 series PmxcfsStale fires on.
-    - name: Reconcile the corosync collector away when disabled
-      when: not node_exporter_host_corosync_collector | bool
-      block:
-        - name: Check whether the corosync collector timer unit is still on disk
-          ansible.builtin.stat:
-            path: /etc/systemd/system/corosync-health-collector.timer
-          register: node_exporter_host_corosync_leftover_timer
-
-        # Gated on the unit file, so a D-Bus error or a typo'd unit name fails
-        # the play instead of the files vanishing under a running timer.
-        - name: Stop + disable the corosync collector timer
-          ansible.builtin.systemd:
-            name: corosync-health-collector.timer
-            enabled: false
-            state: stopped
-          when:
-            - node_exporter_host_corosync_leftover_timer.stat.exists
-            - not ansible_check_mode
-
-        - name: Remove the corosync collector unit, timer, script and metrics
-          ansible.builtin.file:
-            path: "{{ item }}"
-            state: absent
-          loop:
-            - /etc/systemd/system/corosync-health-collector.timer
-            - /etc/systemd/system/corosync-health-collector.service
-            - /usr/local/sbin/corosync-health-collector.sh
-            - "{{ node_exporter_host_textfile_dir }}/corosync_health.prom"
-
-        # systemd keeps a removed unit loaded until it is told to forget it.
-        - name: Reload systemd after removing the corosync collector units
-          ansible.builtin.systemd:
-            daemon_reload: true
-          when:
-            - node_exporter_host_corosync_leftover_timer.stat.exists
-            - not ansible_check_mode
-
-    # A host that no longer needs the per-cache series must not keep the timer
-    # running or serve its stale slab metrics.
-    - name: Reconcile the slabinfo collector away when disabled
-      when: not node_exporter_host_slabinfo_collector | bool
-      block:
-        - name: Check whether the slabinfo collector timer unit is still on disk
-          ansible.builtin.stat:
-            path: /etc/systemd/system/slabinfo-collector.timer
-          register: node_exporter_host_slabinfo_leftover_timer
-
-        - name: Stop + disable the slabinfo collector timer
-          ansible.builtin.systemd:
-            name: slabinfo-collector.timer
-            enabled: false
-            state: stopped
-          when:
-            - node_exporter_host_slabinfo_leftover_timer.stat.exists
-            - not ansible_check_mode
-
-        - name: Remove the slabinfo collector unit, timer, script and metrics
-          ansible.builtin.file:
-            path: "{{ item }}"
-            state: absent
-          loop:
-            - /etc/systemd/system/slabinfo-collector.timer
-            - /etc/systemd/system/slabinfo-collector.service
-            - /usr/local/sbin/slabinfo-collector.sh
-            - /etc/default/slabinfo-collector
-            - "{{ node_exporter_host_textfile_dir }}/node_slabinfo.prom"
-
-        - name: Reload systemd after removing the slabinfo collector units
-          ansible.builtin.systemd:
-            daemon_reload: true
-          when:
-            - node_exporter_host_slabinfo_leftover_timer.stat.exists
-            - not ansible_check_mode
+    # systemd keeps a removed unit loaded until it is told to forget it.
+    - name: Reload systemd after removing collector units
+      ansible.builtin.systemd:
+        daemon_reload: true
+      when:
+        - node_exporter_host_leftover_timers.results | selectattr('stat', 'defined') | selectattr('stat.exists') | length > 0
+        - not ansible_check_mode

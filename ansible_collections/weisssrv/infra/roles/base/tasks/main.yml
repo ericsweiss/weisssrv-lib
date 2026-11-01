@@ -235,13 +235,6 @@
   when: not (base_skip_dns_config | default(false))
   tags: [dns, networking, base]
 
-- name: Configure extra kernel command-line parameters
-  ansible.builtin.include_tasks:
-    file: kernel-cmdline.yml
-    apply:
-      tags: [kernel, boot, base]
-  tags: [kernel, boot, base]
-
 - name: Include fail2ban tasks
   ansible.builtin.include_tasks:
     file: fail2ban.yml

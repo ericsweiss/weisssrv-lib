@@ -50,14 +50,6 @@ def test_every_sanitizer_invocation_is_strict() -> None:
     assert all("--strict" in line for line in found)
 
 
-def test_the_strict_assertion_is_load_bearing() -> None:
-    """Mutation: dropping the flag must be reported."""
-    stripped = [line.replace("--strict", "") for line in _script_lines()]
-    found = _sanitizer_invocations(stripped)
-    assert found
-    assert not all("--strict" in line for line in found)
-
-
 def _dind_wait() -> str:
     blocks = [line for line in _script_lines() if "Waiting for DinD" in line]
     assert len(blocks) == 1

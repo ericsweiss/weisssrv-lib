@@ -15,7 +15,6 @@ from script_loader import SCRIPTS, load_path
 
 REPO = Path(__file__).resolve().parent.parent
 TEMPLATE = REPO / "ci" / "validate" / "cluster-drift-plan.yml"
-TERRAFORM_TWIN = REPO / "ci" / "validate" / "terraform-drift-plan.yml"
 
 ci_yaml = load_path(SCRIPTS / "ci_yaml.py")
 
@@ -89,11 +88,3 @@ def test_gates_is_required():
     """A defaulted gate list would ship a detector that inspects nothing."""
     inputs, _body = _spec_and_body()
     assert "default" not in inputs["gates"]
-
-
-def test_the_terraform_twin_still_allows_its_own_drift_code():
-    """The two detectors differ by tool, not by exit-code discipline."""
-    head = yaml.safe_load(TERRAFORM_TWIN.read_text().split("\n---\n", 1)[0])
-    assert head["spec"]["inputs"]["job_name"]["default"] == "terraform-drift-plan"
-    body = TERRAFORM_TWIN.read_text().split("\n---\n", 1)[1]
-    assert "exit_codes: [2]" in body

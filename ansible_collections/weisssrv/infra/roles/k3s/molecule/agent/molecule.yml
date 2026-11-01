@@ -1,14 +1,4 @@
 ---
-dependency:
-  name: galaxy
-  options:
-    # See molecule-shared/base.yml: read the collection's single source of
-    # truth (requirements.yml) via a path relative to molecule's CWD, the role
-    # directory.
-    role-file: ../../requirements.yml
-    requirements-file: ../../requirements.yml
-driver:
-  name: docker
 platforms:
   - name: k3s-agent-test
     image: ${MOLECULE_TEST_IMAGE:-registry.git.ericsweiss.com/eric/weisssrv-lib/molecule-test:latest}
@@ -29,23 +19,8 @@ platforms:
     networks:
       - name: k3s-agent-test-net
 provisioner:
-  name: ansible
-  env:
-    ANSIBLE_ROLES_PATH: ../../..
-    ANSIBLE_COLLECTIONS_PATH: ../../../../../../..:~/.ansible/collections:/usr/share/ansible/collections
-  config_options:
-    defaults:
-      callbacks_enabled: profile_tasks, timer
-      stdout_callback: ansible.builtin.default
-      result_format: yaml
-    # Self-contained so the scenario runs without -c: mirror the base's [connection]
-    # pipelining — one docker exec per task instead of put-file + exec.
-    connection:
-      pipelining: true
   playbooks:
     prepare: prepare.yml
-    converge: converge.yml
-    verify: verify.yml
   inventory:
     group_vars:
       all:
@@ -78,18 +53,3 @@ provisioner:
         # Site-level value for an unrelated repo. verify.yml still expects the
         # full component set, which proves the GPU path pins its own.
         apt_signed_repo_components: main
-verifier:
-  name: ansible
-scenario:
-  test_sequence:
-    - dependency
-    - cleanup
-    - destroy
-    - syntax
-    - create
-    - prepare
-    - converge
-    - idempotence
-    - verify
-    - cleanup
-    - destroy

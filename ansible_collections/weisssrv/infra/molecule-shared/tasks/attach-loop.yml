@@ -1,0 +1,45 @@
+---
+# Loop devices are kernel-global but their /dev nodes are per-container, so the
+# script mknods the node itself and retries when a parallel job wins the number.
+- name: Attach loopback devices (dynamic allocation, mknod recovery, race-safe)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    # Keep these comments apostrophe-free: ansible split_args tokenizes the
+    # shell free-form value, so a stray single quote fails at parse time.
+
+    # losetup can report a device "lost" because /dev/loopN has no udev
+    # here, so trust only the loop-index digits and recreate the node.
+    loop_num() { n=${1##*loop}; printf '%s' "${n%%[!0-9]*}"; }
+    node_for() {
+      n=$(loop_num "$1"); [ -n "$n" ] || return 1
+      d="/dev/loop$n"
+      rm -f "$d" 2>/dev/null || true
+      mknod "$d" b 7 "$n" 2>/dev/null || true
+      [ -b "$d" ] || return 1   # mknod failed: do not hand back an invalid node
+      printf '%s' "$d"
+    }
+    # Reuse an existing attachment (idempotent re-run); its node may be gone too.
+    existing=$(losetup -j {{ item }} 2>/dev/null | cut -d: -f1 | head -1 || true)
+    if [ -n "$existing" ]; then
+      d=$(node_for "$existing") && { printf '%s' "$d"; exit 0; }
+    fi
+    # Fresh allocation: get a free number, materialize its node, attach --
+    # retry when a concurrent molecule job wins the number between our probe
+    # and our attach (loops are shared host-wide).
+    for _ in $(seq 1 10); do
+      raw=$(losetup -f 2>/dev/null || true)
+      [ -n "$raw" ] || { sleep 1; continue; }
+      d=$(node_for "$raw") || { sleep 1; continue; }
+      if losetup "$d" {{ item }} 2>/dev/null; then
+        printf '%s' "$d"
+        exit 0
+      fi
+      sleep 1
+    done
+    echo "could not attach a loop device for {{ item }} after 10 attempts" >&2
+    exit 1
+  args:
+    executable: /bin/bash
+  loop: "{{ molecule_loop_images }}"
+  register: molecule_loop_devices
+  changed_when: false

@@ -79,7 +79,7 @@ def _role_names(play: dict) -> list[str]:
     return names
 
 
-def target_groups(site_yml: Path, role: str = ROLE) -> tuple[list[str], list[str]]:
+def target_groups(site_yml: Path) -> tuple[list[str], list[str]]:
     """The play's included and `!`-excluded tokens, groups or hosts, in written order.
 
     An excluded host never runs the role, so it ships no journald and gets no
@@ -93,12 +93,12 @@ def target_groups(site_yml: Path, role: str = ROLE) -> tuple[list[str], list[str
         raise OperatorError(f"{site_yml} unreadable: {exc}") from exc
     if not isinstance(plays, list):
         raise OperatorError(f"{site_yml}: not a list of plays")
-    matches = [p for p in plays if isinstance(p, dict) and role in _role_names(p)]
+    matches = [p for p in plays if isinstance(p, dict) and ROLE in _role_names(p)]
     if len(matches) != 1:
-        raise OperatorError(f"{site_yml}: expected exactly one {role} play, found {len(matches)}")
+        raise OperatorError(f"{site_yml}: expected exactly one {ROLE} play, found {len(matches)}")
     expression = matches[0].get("hosts")
     if not expression:
-        raise OperatorError(f"{site_yml}: the {role} play has no hosts: pattern")
+        raise OperatorError(f"{site_yml}: the {ROLE} play has no hosts: pattern")
     parts = expression if isinstance(expression, list) else [expression]
     tokens = [t for part in parts for t in str(part).split(":") if t]
     return (
@@ -107,16 +107,14 @@ def target_groups(site_yml: Path, role: str = ROLE) -> tuple[list[str], list[str
     )
 
 
-def role_hosts(
-    root: Path, site_yml: str = SITE_YML, hosts_yml: str = HOSTS_YML, role: str = ROLE
-) -> list[str]:
+def role_hosts(root: Path) -> list[str]:
     """The play's host set, in the order the playbook and inventory produce it."""
     try:
-        inventory = inventory_tree.load_inventory(root / hosts_yml)
+        inventory = inventory_tree.load_inventory(root / HOSTS_YML)
         index = inventory_tree.group_index(inventory)
     except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
-        raise OperatorError(f"{hosts_yml} unreadable: {exc}") from exc
-    groups, excludes = target_groups(root / site_yml, role)
+        raise OperatorError(f"{HOSTS_YML} unreadable: {exc}") from exc
+    groups, excludes = target_groups(root / SITE_YML)
     declared = inventory_tree.declared_groups(inventory)
     known_hosts = set(inventory_tree.all_hosts(inventory))
 
@@ -153,18 +151,12 @@ def role_hosts(
         excluded.update(hosts or ())
     ordered = [host for host in ordered if host not in excluded]
     if not ordered:
-        raise OperatorError(f"the {role} play resolved to no hosts")
+        raise OperatorError(f"the {ROLE} play resolved to no hosts")
     return ordered
 
 
-def render(
-    hosts: list[str],
-    runbook: str,
-    role: str = ROLE,
-    site_yml: str = SITE_YML,
-    sync: str = SYNC,
-) -> str:
-    body = [HEADER.format(role=role, site_yml=site_yml, sync=sync, runbook=runbook)]
+def render(hosts: list[str], runbook: str) -> str:
+    body = [HEADER.format(role=ROLE, site_yml=SITE_YML, sync=SYNC, runbook=runbook)]
     for host in hosts:
         body.append(
             f'      - alert: HostLogShippingStale\n'
@@ -174,7 +166,7 @@ def render(
             f"host: {host}, instance: {host} }}\n"
             f"        annotations:\n"
             f'          summary: "No journald logs from {{{{ $labels.host }}}} in 45m '
-            f'({role} shipping stopped)"\n'
+            f'({ROLE} shipping stopped)"\n'
             f'          description: "{DESCRIPTION}"\n'
             f'          runbook_url: "${{cluster_runbook_base_url}}/{runbook}"\n'
         )
@@ -189,11 +181,6 @@ def main(argv=None) -> int:
         required=True,
         help="runbook path and anchor appended to ${cluster_runbook_base_url}/",
     )
-    parser.add_argument("--output", default=OUTPUT, help="rule file, relative to the repo root")
-    parser.add_argument("--site-yml", default=SITE_YML, help="playbook holding the role's play")
-    parser.add_argument("--hosts-yml", default=HOSTS_YML, help="inventory hosts file")
-    parser.add_argument("--role", default=ROLE, help="the log-shipping role's short name")
-    parser.add_argument("--sync-command", default=SYNC, help="command the header and errors name")
     parser.add_argument("--check", action="store_true", help="fail if the file is stale")
     parser.add_argument(
         "--count",
@@ -204,7 +191,7 @@ def main(argv=None) -> int:
     root = Path(args.repo_root)
 
     try:
-        hosts = role_hosts(root, args.site_yml, args.hosts_yml, args.role)
+        hosts = role_hosts(root)
     except OperatorError as exc:
         print(f"generate-host-log-staleness: {exc}", file=sys.stderr)
         return 2
@@ -213,32 +200,32 @@ def main(argv=None) -> int:
         print(len(hosts) + 1)
         return 0
 
-    wanted = render(hosts, args.runbook, args.role, args.site_yml, args.sync_command)
-    target = root / args.output
+    wanted = render(hosts, args.runbook)
+    target = root / OUTPUT
     try:
         current = target.read_text(encoding="utf-8") if target.exists() else ""
     except (OSError, UnicodeDecodeError) as exc:
-        print(f"generate-host-log-staleness: {args.output} unreadable: {exc}", file=sys.stderr)
+        print(f"generate-host-log-staleness: {OUTPUT} unreadable: {exc}", file=sys.stderr)
         return 2
     if args.check:
         # The write path replaces the whole file, header included, so a
         # hand-edited header is drift too.
         if current != wanted:
             print(
-                f"{args.output} is stale ({len(hosts)} {args.role} hosts in the inventory): "
-                f"run `{args.sync_command}`",
+                f"{OUTPUT} is stale ({len(hosts)} {ROLE} hosts in the inventory): "
+                f"run `{SYNC}`",
                 file=sys.stderr,
             )
             return 1
-        print(f"{args.output} is in step with the inventory ({len(hosts)} hosts).")
+        print(f"{OUTPUT} is in step with the inventory ({len(hosts)} hosts).")
         return 0
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(wanted, encoding="utf-8")
     except OSError as exc:
-        print(f"generate-host-log-staleness: cannot write {args.output}: {exc}", file=sys.stderr)
+        print(f"generate-host-log-staleness: cannot write {OUTPUT}: {exc}", file=sys.stderr)
         return 2
-    print(f"Wrote {args.output} ({len(hosts)} hosts).")
+    print(f"Wrote {OUTPUT} ({len(hosts)} hosts).")
     return 0
 
 

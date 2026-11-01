@@ -33,7 +33,8 @@
     set -o errexit -o nounset -o pipefail
     # Check cluster-wide — VMs may be HA-migrated to a different node.
     resources_json="$(pvesh get /cluster/resources --type vm --output-format json)"
-    python3 -c "import sys,json; vmids=[r['vmid'] for r in json.loads(sys.argv[1])]; sys.exit(0 if {{ proxmox_vm_id | int }} in vmids else 1)" "$resources_json"
+    # Prints the current node of the VM; exit 1 means it does not exist.
+    python3 -c "import sys,json; nodes=[r.get('node') or '' for r in json.loads(sys.argv[1]) if r['vmid'] == {{ proxmox_vm_id | int }}]; print(nodes[0] if nodes else ''); sys.exit(0 if nodes else 1)" "$resources_json"
   args:
     executable: /bin/bash
   register: proxmox_vm_exists
@@ -62,25 +63,13 @@
 # An existing VM may have HA-migrated off the inventory proxmox_host, so
 # reconcile tasks must run on its actual node. A not-yet-created VM falls back
 # to proxmox_host, where the create path places it.
-- name: Look up the existing VM's current node
-  delegate_to: "{{ proxmox_host }}"
-  become: true
-  ansible.builtin.command:
-    cmd: pvesh get /cluster/resources --type vm --output-format json
-  register: proxmox_vm_cluster_resources
-  changed_when: false
-  check_mode: false
-  when: proxmox_vm_exists.rc == 0
-
 - name: Resolve the node to delegate VM reconcile tasks to
   ansible.builtin.set_fact:
     # An existing VM resolves to its CURRENT node with no proxmox_host
     # fallback, so a lookup returning nothing fails the assert below instead of
     # reconciling against the wrong node.
     proxmox_vm_reconcile_host: >-
-      {{ (proxmox_vm_cluster_resources.stdout | from_json
-          | selectattr('vmid', 'equalto', proxmox_vm_id | int)
-          | map(attribute='node') | first | default(''))
+      {{ proxmox_vm_exists.stdout | trim
          if proxmox_vm_exists.rc == 0 else proxmox_host }}
 
 - name: Fail loud if an existing VM's current node could not be resolved
@@ -455,11 +444,6 @@
     # Don't qm config a VM that was never created on a skip-create run.
     - proxmox_vm_exists.rc == 0 or not (proxmox_vm_skip_create | default(false))
 
-- name: Record the NIC firewall reconcile result
-  ansible.builtin.set_fact:
-    proxmox_vm_net0_firewall: "{{ proxmox_vm_guest_nic_firewall_result }}"
-  when: proxmox_vm_guest_nic_firewall_result is defined
-
 # Reconcile the ballooning floor when proxmox_vm_balloon changes. `qm set
 # --balloon` takes effect live on a guest with the balloon driver. Without the
 # variable the role leaves `balloon` unmanaged.
@@ -618,11 +602,6 @@
   when:
     - not ansible_check_mode
     - proxmox_vm_exists.rc == 0
-
-- name: Record the startup reconcile result
-  ansible.builtin.set_fact:
-    proxmox_vm_startup_reconcile: "{{ proxmox_vm_guest_startup_result }}"
-  when: proxmox_vm_guest_startup_result is defined
 
 # Each disk pins an explicit, unique scsi_slot. Attaching by list position would
 # remap a live data-bearing zvol onto the wrong device if the list is ever

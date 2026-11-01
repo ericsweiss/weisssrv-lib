@@ -56,6 +56,13 @@ def test_the_release_job_waits_on_every_earlier_stage():
     assert "semantic-release" not in _ci(LIB_CI)
 
 
+def test_the_molecule_matrix_is_included():
+    """molecule-tests is only a shell around the matrix the two includes define."""
+    _include("/.gitlab/ci/molecule-jobs.gitlab-ci.yml")
+    _include("/ci/internal/molecule-matrix.gitlab-ci.yml")
+    assert _ci(LIB_CI)["molecule-tests"]["extends"] == ".molecule-test-job"
+
+
 # --- publish-image-tags, run against a stub docker -------------------------
 
 STUB = """#!/bin/sh
@@ -109,44 +116,18 @@ def _retag(tmp_path: Path, *, release: dict, present=(), errors=()):
 
 
 RELEASED = {"released": True, "tag": "v1.2.0", "previous_tag": "v1.1.0", "notes": "x"}
-FIRST = {"released": True, "tag": "v0.1.0", "previous_tag": None, "notes": "x"}
-ALL_IMAGES = ("molecule-ci", "molecule-test", "ansible-deploy")
+ALL_IMAGES = ("molecule-ci", "molecule-test")
 
 
-class TestPublishImageTags:
-    def test_no_release_is_a_no_op(self, tmp_path):
-        res, log = _retag(tmp_path, release={"released": False, "tag": None})
-        assert res.returncode == 0, res.stderr
-        assert "push" not in log
-
-    def test_the_pipeline_build_is_preferred(self, tmp_path):
-        present = [f"{IMAGE}/{i}:{SHA}" for i in ALL_IMAGES] + [f"{IMAGE}/{i}:latest" for i in ALL_IMAGES]
-        res, log = _retag(tmp_path, release=RELEASED, present=present)
-        assert res.returncode == 0, res.stderr
-        assert f"tag {IMAGE}/molecule-ci:{SHA} {IMAGE}/molecule-ci:v1.2.0" in log
-
-    def test_an_absent_build_falls_back_to_latest(self, tmp_path):
-        present = [f"{IMAGE}/{i}:latest" for i in ALL_IMAGES]
-        res, log = _retag(tmp_path, release=RELEASED, present=present)
-        assert res.returncode == 0, res.stderr
-        assert f"tag {IMAGE}/ansible-deploy:latest {IMAGE}/ansible-deploy:v1.2.0" in log
-
-    def test_a_failed_pull_never_falls_back(self, tmp_path):
-        """A registry error on the pipeline's own build must not publish :latest."""
-        present = [f"{IMAGE}/{i}:latest" for i in ALL_IMAGES]
-        res, log = _retag(tmp_path, release=RELEASED, present=present,
-                          errors=[f"{IMAGE}/molecule-ci:{SHA}"])
-        assert res.returncode == 1
-        assert "unauthorized" in res.stderr
-        assert "push" not in log
-
-    def test_a_missing_image_after_the_first_release_fails(self, tmp_path):
-        res, log = _retag(tmp_path, release=RELEASED)
-        assert res.returncode == 1
-        assert "no registry.example/lib/molecule-ci image to retag" in res.stderr
-
-    def test_the_first_release_may_lack_images(self, tmp_path):
-        res, log = _retag(tmp_path, release=FIRST)
-        assert res.returncode == 0, res.stderr
-        assert res.stdout.count("WARNING: no") == len(ALL_IMAGES)
-
+@pytest.mark.parametrize("errors, needle", [
+    ([f"{IMAGE}/molecule-ci:{SHA}"], "unauthorized"),
+    ([], "no registry.example/lib/molecule-ci image to retag"),
+], ids=["a_failed_pull_never_falls_back", "a_missing_image_after_the_first_release_fails"])
+def test_publish_image_tags_fails_closed(tmp_path, errors, needle):
+    """A registry error on the pipeline's own build must not publish :latest, and
+    a release after the first must find an image to retag."""
+    present = [f"{IMAGE}/{i}:latest" for i in ALL_IMAGES] if errors else []
+    res, log = _retag(tmp_path, release=RELEASED, present=present, errors=errors)
+    assert res.returncode == 1
+    assert needle in res.stderr
+    assert "push" not in log

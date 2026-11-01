@@ -77,9 +77,6 @@ require_mounted_landing_zone <prefix> <path> <nfs_enabled> <prom_file>
 | `compose_app_description` | `Docker Compose stack` | Unit `Description=`. |
 | `compose_app_working_directory` | `/opt/compose` | Unit `WorkingDirectory=` (where the compose project lives). |
 | `compose_app_requires_mounts_for` | `[]` | List for `RequiresMountsFor=`; **empty omits the line and its comment**. |
-| `compose_app_requires_mounts_comment` | `[]` | Comment lines rendered above `RequiresMountsFor=`. |
-| `compose_app_reconcile_comment` | `[]` | Comment lines rendered above `ExecStart=`. |
-| `compose_app_remain_after_exit` | `"yes"` | Unit `RemainAfterExit=`. |
 | `compose_app_backup_lib_dest` | `/usr/local/lib/compose-app-backup-lib.sh` | Where the sourceable metrics library is installed. |
 | `compose_app_backup_size_help_object` | `dump` | Noun in the size-gauge HELP line. |
 | `compose_app_nginx_cert_dir` | `/etc/nginx/ssl` | TLS material directory. |
@@ -96,14 +93,6 @@ require_mounted_landing_zone <prefix> <path> <nfs_enabled> <prom_file>
 A site that terminates TLS for a wildcard hostname should set
 `compose_app_nginx_self_signed_subj` / `_san` to that name, e.g.
 `/CN=app.example.com` and `DNS:*.example.com`.
-
-## Molecule
-
-`molecule/default` is a contract scenario. Under `compose_app_skip_install:
-true` it renders the compose unit and the backup-metrics library and runs the
-host-nginx flow. It then installs nginx and repeats the flow with validation
-on. `converge.yml` and `verify.yml` list each case, and
-`expected-junit-failures.txt` declares the deliberate failures.
 
 ## Related
 

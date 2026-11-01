@@ -45,7 +45,6 @@ loki.write "default" {
     }
 {% endif %}
   }
-{% if alloy_host_wal_enabled %}
 
   // Buffers journald to disk during a Loki/ingress outage and replays on
   // recovery. Written under Alloy's --storage.path (packaged default
@@ -54,5 +53,4 @@ loki.write "default" {
     enabled         = true
     max_segment_age = {{ alloy_host_wal_max_segment_age | to_json }}
   }
-{% endif %}
 }

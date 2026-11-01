@@ -31,26 +31,6 @@ proxmox_firewall_staging_dir: /var/lib/pve-firewall-ansible
 # a container without the real Proxmox CLI.
 proxmox_firewall_skip_pveum: false
 
-# pve-firewall can exit 0 on a parse error, so the compile check tests stderr
-# too. Patterns match case-insensitively, and a `(line N)` complaint is a parse
-# error whatever its wording. Healthy hosts emit notices, so never match all.
-proxmox_firewall_compile_error_patterns:
-  - error
-  - unable to
-  - skip line
-  - "no such "
-  - "invalid "
-  - "unknown "
-proxmox_firewall_compile_fail_on_line_errors: true
-# Shared predicate for both compile checks; each registers proxmox_firewall_compile.
-proxmox_firewall_compile_failed: >-
-  {{ (proxmox_firewall_compile.rc | default(0)) != 0
-     or (proxmox_firewall_compile_error_patterns
-         | select('in', proxmox_firewall_compile.stderr | default('') | lower)
-         | list | length) > 0
-     or ((proxmox_firewall_compile_fail_on_line_errors | bool)
-         and (proxmox_firewall_compile.stderr | default('')) is search('\(line [0-9]+\)')) }}
-
 # Inventory group holding the Proxmox nodes.
 proxmox_firewall_host_group: proxmox
 

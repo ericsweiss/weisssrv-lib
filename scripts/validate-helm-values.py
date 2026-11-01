@@ -414,10 +414,6 @@ def main(argv: list[str] | None = None) -> int:
         "--sources-dir", default=DEFAULT_SOURCES_DIR,
         help="HelmRepository dir the chart repo is resolved from, relative to --repo-root",
     )
-    parser.add_argument(
-        "--crd-catalog-ref", default=DEFAULT_CRD_CATALOG_REF,
-        help="datreeio/CRDs-catalog ref kubeconform reads schemas from",
-    )
     args = parser.parse_args(argv)
 
     if shutil.which("helm") is None:
@@ -486,8 +482,7 @@ def main(argv: list[str] | None = None) -> int:
     failed = 0
     for rel in releases:
         if not validate_release(rel, versions, args.repo_root, args.kubeconform, kube_version,
-                                policy.cpu_limit_allowlist, policy.vpa_cap_allowlist,
-                                args.crd_catalog_ref):
+                                policy.cpu_limit_allowlist, policy.vpa_cap_allowlist):
             failed += 1
     if failed:
         print(f"\n{failed} release(s) failed helm-values validation")

@@ -47,7 +47,7 @@ a host nginx that terminates TLS and proxies to the loopback-bound web port.
 | `nextcloud_trusted_domains` | Hostnames Nextcloud answers on; derives from the external and internal hosts | no (derived) |
 | `nextcloud_overwrite_protocol`, `nextcloud_overwrite_cli_url` | `overwriteprotocol` and `overwrite.cli.url`, so generated links match the terminating proxy | no (`https`, the external host) |
 | `nextcloud_nginx_real_ip_trusted_addresses` | Proxy sources whose `X-Forwarded-For` nginx trusts | no (`[]`) |
-| `nextcloud_nginx_enabled`, `nextcloud_nginx_cert_dir`, `nextcloud_nginx_ssl_certificate`, `nextcloud_nginx_ssl_certificate_key`, `nextcloud_nginx_server_names` | Host TLS front end | no |
+| `nextcloud_nginx_cert_dir`, `nextcloud_nginx_ssl_certificate`, `nextcloud_nginx_ssl_certificate_key`, `nextcloud_nginx_server_names` | Host TLS front end | no |
 | `nextcloud_nginx_hsts_enabled` / `_nginx_hsts_value` | HSTS header from the terminating proxy | no (`true`, `max-age=31536000; includeSubDomains`) |
 | `nextcloud_http_bind_address`, `nextcloud_http_bind_port`, `nextcloud_exporter_port` | Published ports | no (`127.0.0.1:8080`, `9205`) |
 | `nextcloud_exporter_bind_address` | Interface the app exporter publishes on (unauthenticated — narrow it, or scope it at the firewall) | no (`0.0.0.0`) |
@@ -64,12 +64,12 @@ a host nginx that terminates TLS and proxies to the loopback-bound web port.
 | `nextcloud_smtp_enabled` | Resolved mail gate, true when a relay host is set | no (derived) |
 | `nextcloud_smtp_port`, `nextcloud_smtp_secure`, `nextcloud_mail_from_address`, `nextcloud_mail_domain` | Outgoing mail details | when SMTP |
 | `nextcloud_smtp_user`, `nextcloud_smtp_password` | SASL credentials for a submission relay on 587 with `_smtp_secure: tls`. Both set turns `mail_smtpauth` on. Both empty keeps the network-trusted posture and turns auth off | no (`""`) |
-| `nextcloud_backup_enabled`, `nextcloud_backup_keep_days`, `nextcloud_backup_oncalendar` | Nightly dump timer | no (`true`, `3`, `02:30`) |
+| `nextcloud_backup_keep_days`, `nextcloud_backup_oncalendar` | Nightly dump timer | no (`3`, `02:30`) |
 | `nextcloud_backup_metrics_dir` | Where the wrapper writes `nextcloud_backup.prom`; aliases `node_exporter_host_textfile_dir` | no |
 | `nextcloud_backup_lib_path` | Where `compose_app`'s `write_prom_metrics` helper lands | no |
 | `nextcloud_backup_nfs_enabled`, `nextcloud_backup_nfs_server`, `nextcloud_backup_nfs_export`, `nextcloud_backup_mountpoint`, `nextcloud_backup_nfs_options` | NFS-backed backup landing | server+export when enabled |
 | `nextcloud_backup_dir` | Resolved landing dir: the mountpoint when NFS-backed, else `<app_dir>/backups` | no (derived) |
-| `nextcloud_skip_install` | Render-only mode (alias: `skip_nextcloud_deploy`) | no (`false`) |
+| `nextcloud_skip_install` | Render-only mode | no (`false`) |
 | `nextcloud_install_wait_retries`, `nextcloud_install_wait_delay` | Readiness wait before `occ` runs — covers first install **and** the post-version-bump migration | no (`60`, `10s`) |
 
 The readiness gate requires `needsDbUpgrade: false` and `maintenance: false`,
@@ -172,10 +172,3 @@ systemd unit (`RequiresMountsFor`) and the wrapper (`mountpoint -q`) fail closed
 if that export is not mounted. The default mount options require **kernel TLS**
 (`xprtsec=tls`), which is why the server must be named by **hostname** — a
 wildcard certificate has no IP SAN — and the guest needs the `nfs_tls` role.
-
-## Testing
-
-`molecule/default` runs with `nextcloud_skip_install: true`: no Docker daemon,
-no `occ`. It asserts the rendered compose file, `.env` permissions, systemd
-units, nginx site and backup wrapper, and runs the wrapper end to end against a
-mocked `docker` on both the success and failure paths.

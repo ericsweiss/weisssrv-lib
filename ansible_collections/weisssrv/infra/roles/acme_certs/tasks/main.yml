@@ -304,8 +304,6 @@
       loop_control:
         label: "{{ item.host }} ({{ item.ip }})"
 
-# Install into acme_certs_local_cert_dir when acme.sh holds a cert that never
-# got installed there (manual issuance, rebuilt host).
 - name: Check if certificates exist in acme.sh
   ansible.builtin.stat:
     path: "/root/.acme.sh/{{ acme_certs_domain }}_ecc/fullchain.cer"
@@ -317,23 +315,6 @@
     path: "{{ acme_certs_local_cert_dir }}/fullchain.pem"
   register: acme_certs_local_cert_exists
   when: acme_certs_enabled | bool
-
-- name: Install certificates to local directory (if acme.sh has certs but local dir is empty)
-  ansible.builtin.command:
-    # --ecc: the cert is issued ec-256 and stored under <domain>_ecc/, which the
-    # stat-check above and the issuance instructions below also assume.
-    cmd: >
-      /root/.acme.sh/acme.sh --install-cert -d "{{ acme_certs_domain }}" --ecc
-      --cert-file {{ acme_certs_local_cert_dir }}/cert.pem
-      --key-file {{ acme_certs_local_cert_dir }}/privkey.pem
-      --fullchain-file {{ acme_certs_local_cert_dir }}/fullchain.pem
-      --reloadcmd "/usr/local/sbin/homelab-cert-reload.sh"
-  when:
-    - acme_certs_enabled | bool
-    - acme_certs_cert_exists.stat.exists | default(false)
-    - not (acme_certs_local_cert_exists.stat.exists | default(false))
-  register: acme_certs_install_result
-  changed_when: true
 
 # A cert that arrived by another route would renew with no Le_ReloadCmd and
 # never distribute. Presence is the test, not the exact command: acme.sh
@@ -354,8 +335,12 @@
     - acme_certs_enabled | bool
     - acme_certs_cert_exists.stat.exists | default(false)
 
-- name: Re-install the certificate to restore the acme.sh reload command
+# Installs a cert acme.sh holds but the local dir lacks (manual issuance, rebuilt
+# host), and restores a missing reload command.
+- name: Install the certificate with the distribution reload command
   ansible.builtin.command:
+    # --ecc: the cert is issued ec-256 and stored under <domain>_ecc/, which the
+    # stat-check above and the issuance instructions below also assume.
     cmd: >
       /root/.acme.sh/acme.sh --install-cert -d "{{ acme_certs_domain }}" --ecc
       --cert-file {{ acme_certs_local_cert_dir }}/cert.pem
@@ -365,9 +350,10 @@
   when:
     - acme_certs_enabled | bool
     - acme_certs_cert_exists.stat.exists | default(false)
-    - not (acme_certs_install_result.changed | default(false))
-    - (acme_certs_reloadcmd_check.stdout | default('') | trim) == 'missing'
-  register: acme_certs_reloadcmd_repair
+    - >-
+      not (acme_certs_local_cert_exists.stat.exists | default(false))
+      or (acme_certs_reloadcmd_check.stdout | default('') | trim) == 'missing'
+  register: acme_certs_install_result
   changed_when: true
 
 - name: Set proper ownership on installed certificates
@@ -382,8 +368,7 @@
     - { name: "cert.pem", mode: "0644" }
   when:
     - acme_certs_enabled | bool
-    - (acme_certs_install_result.changed | default(false))
-      or (acme_certs_reloadcmd_repair.changed | default(false))
+    - acme_certs_install_result.changed | default(false)
 
 - name: Display acme.sh setup instructions (only if no certs exist yet)
   ansible.builtin.debug:
@@ -419,25 +404,18 @@
 
 # Proactive distribution on every run; the script decides per target whether
 # anything needs pushing.
-- name: Check if local certificates exist for distribution
-  ansible.builtin.stat:
-    path: "{{ acme_certs_local_cert_dir }}/fullchain.pem"
-  register: acme_certs_local_certs_for_dist
-  when: acme_certs_enabled | bool
-
 - name: Distribute certificates to remote hosts
   ansible.builtin.command:
     cmd: /usr/local/sbin/homelab-cert-reload.sh
   when:
     - acme_certs_enabled | bool
-    - acme_certs_local_certs_for_dist.stat.exists | default(false)
+    - acme_certs_local_cert_exists.stat.exists | default(false)
     - acme_certs_distribution_targets is defined
     - acme_certs_distribution_targets | length > 0
     - not ansible_check_mode
     - not (acme_certs_skip_distribution | default(false))
-    # Either --install-cert task above already ran this script via --reloadcmd.
+    # The --install-cert above already ran this script via --reloadcmd.
     - not (acme_certs_install_result.changed | default(false))
-    - not (acme_certs_reloadcmd_repair.changed | default(false))
   register: acme_certs_distribution_result
   # "OK:" is a real push, "unchanged:" a skip; rc 2 means at least one target
   # failed (see the script's exit codes).
