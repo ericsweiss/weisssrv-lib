@@ -12,11 +12,10 @@ spec:
         a non-Debian base (Alpine, UBI) fails there.
     tags:
       type: array
-      default: ["infrastructure"]
       description: >-
-        Runner tag(s). MUST resolve to a PRIVILEGED runner — DinD needs
-        --privileged, which the shared non-privileged tenant runner cannot
-        provide. A consumer without one registers their own and retags here.
+        Runner tag(s), required. DinD needs `--privileged`, so a consumer passes
+        the tag of a privileged runner; the family's shared tag-less runner is
+        not one.
     dind_service:
       default: "docker:27.5.1-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce"
       description: >-
@@ -34,8 +33,8 @@ spec:
         not exceed the pod interface MTU (1420 on flannel over WireGuard or
         VXLAN); the 1500 default black-holes large TLS frames and shows up as
         connection resets on fetches from the job's containers. `--mtu` covers
-        the default bridge, the default-network-opt the user-defined networks
-        molecule and compose create.
+        the default bridge; `--default-network-opt` covers the user-defined
+        networks molecule and compose create.
     docker_cli_version:
       default: "27.5.1"
       description: Static docker CLI version (sha256-pinned per arch below).
@@ -173,8 +172,8 @@ spec:
 "$[[ inputs.job_name ]]":
   # Pushes an image later jobs may consume; do not interrupt.
   interruptible: false
-  # Infra-class retries only - a broken Dockerfile must fail fast; the in-script
-  # build_and_push retry covers transient dep pulls.
+  # Infra-class retries only. build_and_push retries any failed build or push
+  # itself, up to three attempts.
   retry:
     max: 2
     when:
@@ -290,9 +289,9 @@ spec:
             echo "docker build/push of ${ref} failed after ${max} attempts"; return 1
           fi
           echo "build/push attempt $((attempt-1)) failed; retrying (${attempt}/${max})..."
-          # 10-29s backoff, jittered per job+attempt from the PID so parallel
-          # image builds do not re-collide. Plain POSIX arithmetic: the `image`
-          # input may be a dash-only base.
+          # 10-29s backoff, jittered per job and attempt from the PID so
+          # parallel image builds do not re-collide. POSIX arithmetic, so a
+          # dash-only `image` runs it.
           sleep $(( 10 + ($$ + attempt * 7) % 20 ))
         done
         # :latest only on the default branch — MR pipelines use SHA tags so they

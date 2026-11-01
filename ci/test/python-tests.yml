@@ -5,11 +5,16 @@ spec:
     stage:
       default: test
     image:
-      default: python:3.14-slim
+      default: python:3.14
+      description: >-
+        Job image. The full image ships git, so the default needs no apt
+        install and runs on a non-root runner.
     tags:
       type: array
-      default: ["infrastructure"]
-      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+      default: []
+      description: >-
+        Runner tag(s). Empty runs the job on a tag-less runner, which the
+        defaults allow. A non-empty `apt_packages` needs a root runner's tag.
     test_dir:
       default: "scripts/"
       description: Directory pytest runs against (test_*.py live next to code).
@@ -18,13 +23,11 @@ spec:
     pyyaml_version:
       default: "6.0.3"
     apt_packages:
-      default: "git jq"
+      default: ""
       description: >-
-        Extra apt packages installed before the run (git is needed by tests that
-        build throwaway git repos; jq by tests that parse JSON). Installing them
-        needs ROOT — on the shared non-privileged tenant runner apt-get fails on
-        the lock, so a tenant passes "" and uses an image that already ships
-        what its tests need (e.g. the full `python:3.14`, which has git).
+        Extra apt packages installed before the run. Installing them needs a
+        root runner, so a non-empty value needs a root `tags` entry. On a
+        non-root runner, fetch jq and other static tools with setup_command.
     pip_packages:
       default: ""
       description: >-
@@ -38,8 +41,7 @@ spec:
         Single shell command run in before_script AFTER the apt install and
         BEFORE the pip install (default no-op), so it may use anything
         `apt_packages` provides. For setup the package inputs cannot express —
-        e.g. cloning a sibling repo that a cross-repo contract test asserts
-        against, which needs the default `git`, or
+        e.g. cloning a sibling repo with the image's git, or
         `python3 scripts/ci-fetch-tools.py jq amtool`, which drops verified
         static binaries into `$CI_PROJECT_DIR/.bin` (already on PATH here).
     default_branch:
@@ -117,11 +119,12 @@ spec:
     - mkdir -p "$CI_PROJECT_DIR/.bin" && export PATH="$CI_PROJECT_DIR/.bin:$(python -m site --user-base)/bin:$PATH"
     - |
       if [ -n "$APT_PACKAGES" ]; then
+        [ "$(id -u)" = 0 ] || { echo "ERROR: apt_packages needs a root runner: pass its tag in tags, or pass apt_packages: \"\"" >&2; exit 1; }
+        apt-get update -qq || { echo "ERROR: apt-get update failed" >&2; exit 1; }
         # shellcheck disable=SC2086  # intentional word-split of the package list
-        apt-get update -qq && apt-get install -y -qq --no-install-recommends $APT_PACKAGES
+        apt-get install -y -qq --no-install-recommends $APT_PACKAGES || { echo "ERROR: apt-get install of $APT_PACKAGES failed" >&2; exit 1; }
       fi
-    # After the apt install, so setup_command can use the apt_packages tools
-    # (`git jq` by default).
+    # After the apt install, so setup_command can use the apt_packages tools.
     - $[[ inputs.setup_command ]]
     # `--user` + `python -m pytest`: the shared NON-ROOT runner cannot write
     # system site-packages, and ~/.local/bin is off PATH on python:*-slim.

@@ -8,8 +8,9 @@ spec:
       default: python:3.14
     tags:
       type: array
-      default: ["infrastructure"]
-      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+      default: []
+      description: >-
+        Runner tag(s). Empty runs the job on a tag-less runner.
     script_path:
       default: "scripts/check-doc-links.py"
       description: >-
@@ -24,6 +25,14 @@ spec:
         outside `docs/` therefore needs no `roots` — but it does need to widen
         `changes:` to match, or the job never fires on those files. See
         docs/SCRIPTS.md.
+    check_paths:
+      type: boolean
+      default: false
+      description: >-
+        `true` exports CHECK_DOC_LINKS_PATHS=1, the backticked repo-path pass.
+        `false` leaves the variable as the pipeline sets it, so a consumer
+        with a global CHECK_DOC_LINKS_PATHS keeps that value. See
+        docs/SCRIPTS.md § check-doc-links.py.
     default_branch:
       default: "main"
       description: >-
@@ -70,7 +79,9 @@ spec:
       - scheduler_failure
   script:
     # roots is word-split on purpose: it may name several directories.
-    - python3 "$[[ inputs.script_path ]]" $[[ inputs.roots ]]
+    - |
+      if [ "$[[ inputs.check_paths ]]" = "true" ]; then export CHECK_DOC_LINKS_PATHS=1; fi
+      python3 "$[[ inputs.script_path ]]" $[[ inputs.roots ]]
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never

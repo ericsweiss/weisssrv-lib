@@ -11,13 +11,11 @@ spec:
       description: Pipeline stage both jobs run in.
     tags:
       type: array
-      default: ["infrastructure"]
+      default: []
       description: >-
-        Runner tag(s) for the PLAN job only — the trigger is a bridge (no
-        runner) and the child's jobs take their tags from `jobs_include`. The
-        plan job is non-root safe, so `[]` (shared runner) also works; the
-        privileged tag is the default because that runner is where the child's
-        DinD jobs must land.
+        Runner tag(s) for the plan job only. The trigger is a bridge with no
+        runner, and the child's jobs take their tags from `jobs_include`. The
+        plan job is non-root safe, so it runs on a tag-less runner.
     image:
       default: python:3.14
       description: >-

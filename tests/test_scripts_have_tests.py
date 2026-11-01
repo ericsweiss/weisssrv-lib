@@ -29,10 +29,11 @@ def collect(root: Path) -> List[Path]:
     return found
 
 
-# Executable code ships from scripts/ and from the CronJob program under
+# Executable code ships from scripts/ and from the CronJob programs under
 # kubernetes/ a consumer mounts into its cluster.
+REAPERS = REPO / "kubernetes" / "reapers"
 DDNS = REPO / "kubernetes" / "ddns"
-SHIPPED_ROOTS = ((SCRIPTS, SCRIPTS), (DDNS, DDNS))
+SHIPPED_ROOTS = ((SCRIPTS, SCRIPTS), (REAPERS, REAPERS), (DDNS, DDNS))
 SHIPPED = [path for root, _ in SHIPPED_ROOTS for path in collect(root)]
 
 # Role `files/` scripts run on a real host (as root, in several cases), so they
@@ -114,9 +115,10 @@ def test_there_are_scripts_to_check():
     assert len(SHIPPED) > 20
 
 
-def test_there_is_a_cronjob_program_to_check():
-    """Guard the guard: the CronJob program root ships code and must be walked."""
-    assert len(collect(DDNS)) >= 1
+@pytest.mark.parametrize("root", [REAPERS, DDNS], ids=["reapers", "ddns"])
+def test_there_are_cronjob_programs_to_check(root: Path):
+    """Guard the guard: each CronJob program root ships code and must be walked."""
+    assert len(collect(root)) >= 1
 
 
 def test_no_two_scripts_share_a_suite():

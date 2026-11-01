@@ -119,8 +119,50 @@ CASES = [
     ("pre-stage", _job("  stage: .pre\n"), ["lint"], None, 0, []),
     # `.base` creates no job, but something must still have been inspected.
     ("hidden-template", '.base:\n  stage: nowhere\n  script: ["true"]\n', ["lint"], None, 0, []),
-    ("extends-is-unchecked", _job("  extends: .base\n"), ["lint"], None, 0, []),
-    ("pages-is-no-test-job", 'pages:\n  script: ["true"]\n', ["lint"], None, 0, []),
+    ("extends-outside-the-file-is-unchecked", _job("  extends: .base\n"), ["lint"], None, 0,
+     ["not contract-checked: ci/lint/gate.yml: job 'run-gate' extends '.base', which does "
+      "not resolve in this file, so its stage is not checked"]),
+    ("extends-reads-the-template-stage",
+     '.base:\n  stage: nowhere\n' + _job("  extends: .base\n"), ["lint"], None, 1,
+     ["resolves to stage 'nowhere'"]),
+    ("extends-through-two-templates",
+     '.root:\n  stage: nowhere\n.mid:\n  extends: .root\n' + _job("  extends: .mid\n"),
+     ["lint"], None, 1, ["resolves to stage 'nowhere'"]),
+    ("the-last-extends-entry-wins",
+     '.a:\n  stage: lint\n.b:\n  stage: nowhere\n' + _job("  extends: [.a, .b]\n"),
+     ["lint"], None, 1, ["resolves to stage 'nowhere'"]),
+    ("the-last-extends-entry-wins-reversed",
+     '.a:\n  stage: lint\n.b:\n  stage: nowhere\n' + _job("  extends: [.b, .a]\n"),
+     ["lint"], None, 0, []),
+    ("the-job-stage-beats-extends",
+     '.base:\n  stage: nowhere\n' + _job("  extends: .base\n  stage: lint\n"),
+     ["lint"], None, 0, []),
+    ("a-stageless-chain-is-test",
+     '.base:\n  image: alpine\n' + _job("  extends: .base\n"), ["lint"], None, 1,
+     ["resolves to stage 'test'"]),
+    ("an-extends-cycle-is-unchecked",
+     '.a:\n  extends: .b\n.b:\n  extends: .a\n' + _job("  extends: .a\n"), ["lint"], None, 0,
+     ["job 'run-gate' extends '.a', which loops back on itself, so its stage is not checked"]),
+    # An input that names a fragment `.hidden` makes a template, never a job.
+    ("an-input-named-hidden-fragment-is-no-job",
+     'spec:\n  inputs:\n    job_name:\n      default: .fragment\n---\n'
+     '"$[[ inputs.job_name ]]":\n  extends: .elsewhere\n  script: ["true"]\n'
+     '"$[[ inputs.job_name ]]-bare":\n  script: ["true"]\n',
+     ["lint"], None, 0, ["1 included file(s) checked"]),
+    ("pages-is-a-test-job-too", 'pages:\n  script: ["true"]\n', ["lint"], None, 1,
+     ["job 'pages' resolves to stage 'test'"]),
+    ("undeclared-reference",
+     _job("  stage: lint\n  variables:\n    X: $[[ inputs.missing ]]\n",
+          "spec:\n  inputs:\n    stage:\n      default: lint\n"),
+     ["lint"], None, 1, ["references input 'missing'"]),
+    ("undeclared-reference-in-a-job-name",
+     'spec:\n  inputs:\n    stage:\n      default: lint\n---\n'
+     '"$[[ inputs.job_name ]]":\n  stage: lint\n  script: ["true"]\n',
+     ["lint"], None, 1, ["references input 'job_name'"]),
+    ("declared-reference-with-a-function",
+     _job('  stage: lint\n  variables:\n    X: "$[[ inputs.stage | expand_vars ]]"\n',
+          "spec:\n  inputs:\n    stage:\n      default: lint\n"),
+     ["lint"], None, 0, []),
 ]
 
 
@@ -138,6 +180,18 @@ def test_include_contract(world, capsys, template, stages, inputs, rc, needles):
         assert needle in (err if rc else out)
 
 
+def test_an_input_named_hidden_fragment_prints_no_note(world, capsys):
+    lib, consumer = world
+    (lib / "ci" / "lint" / "gate.yml").write_text(
+        'spec:\n  inputs:\n    job_name:\n      default: .fragment\n---\n'
+        '"$[[ inputs.job_name ]]":\n  extends: .elsewhere\n  script: ["true"]\n',
+        encoding="utf-8",
+    )
+    pipeline(consumer).write_text(consumer_pipeline(["lint"]), encoding="utf-8")
+    assert run(world) == 0
+    assert "not contract-checked" not in capsys.readouterr().out
+
+
 def test_a_local_include_is_checked_too(world):
     _lib, consumer = world
     write(consumer, "ci/local.yml", 'own-job:\n  stage: deploy\n  script: ["true"]\n')
@@ -151,6 +205,30 @@ def test_a_local_include_is_checked_too(world):
         """,
     )
     assert run(world) == 0
+
+
+class TestProjectScope:
+    def test_another_project_is_listed_not_checked(self, world, capsys):
+        _lib, consumer = world
+        text = pipeline(consumer).read_text()
+        pipeline(consumer).write_text(
+            text + "  - project: other/templates\n    file: /absent.yml\n", encoding="utf-8"
+        )
+        assert run(world, "--project", "Group/Weisssrv-Lib") == 0
+        assert "includes another project" in capsys.readouterr().out
+
+    def test_only_another_project_inspects_nothing(self, world, capsys):
+        assert run(world, "--project", "other/templates") == 2
+        assert "inspected nothing" in capsys.readouterr().err
+
+    def test_without_the_flag_every_project_is_the_library(self, world, capsys):
+        _lib, consumer = world
+        text = pipeline(consumer).read_text()
+        pipeline(consumer).write_text(
+            text + "  - project: other/templates\n    file: /absent.yml\n", encoding="utf-8"
+        )
+        assert run(world) == 2
+        assert "absent.yml is not in" in capsys.readouterr().err
 
 
 class TestUnreadableIncludes:
@@ -240,3 +318,9 @@ class TestInvocation:
         )
         assert proc.returncode == 2
         assert "ci_yaml.py must sit next to this script" in proc.stderr
+
+
+def test_the_keyword_list_is_the_one_ci_yaml_owns():
+    """A second copy of GitLab's keywords would drift from the one jobs() reads."""
+    ci_yaml = sys.modules[mod.jobs.__module__]
+    assert mod.RESERVED_KEYS is ci_yaml.RESERVED_KEYS

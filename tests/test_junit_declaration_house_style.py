@@ -113,6 +113,9 @@ CASES = {
         # a punctuated name and a name under the ipset grammar's minimum.
         "Assert the client-scope source lists are non-empty lists of set names": 7,
         "Assert the smtp-relay client scope is a list of set names": 1,
+        # A scalar k3s list, a blank, a null and a bare-colon element, a scalar
+        # WireGuard list and a WireGuard address with an out-of-range octet.
+        "Assert the public VIP lists are lists of addresses": 6,
         # The relay egress entry with no port, then the host egress entry with
         # no proto: one guard covers both inputs.
         "Assert the extra egress ports carry a port and a protocol": 2,

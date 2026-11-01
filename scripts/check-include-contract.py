@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""Hold a consumer pipeline to the input contract of the library files it includes.
-
-Flags an undeclared `inputs:` key, an omitted default-less (REQUIRED) input, and a
-job whose resolved `stage:` the pipeline does not declare. Contract: docs/SCRIPTS.md.
-"""
+"""Hold a consumer pipeline to the input contract of the library files it includes:
+an undeclared `inputs:` key, an omitted REQUIRED input, an undeclared `$[[ inputs.* ]]`
+reference, and a job stage, `extends:` included, the pipeline lacks. Contract: docs/SCRIPTS.md."""
 from __future__ import annotations
 
 import argparse
@@ -24,7 +22,7 @@ except ImportError:
     raise SystemExit(2) from None
 
 try:
-    from ci_yaml import CILoader, jobs, parse_ci  # noqa: E402
+    from ci_yaml import RESERVED_KEYS, CILoader, jobs, parse_ci  # noqa: E402
 except ImportError:
     print(
         "ERROR: ci_yaml.py must sit next to this script — vendor both "
@@ -45,9 +43,15 @@ _ALWAYS_STAGES = (".pre", ".post")
 # custom `stages:` list is most likely to have dropped.
 _IMPLICIT_STAGE = "test"
 
-# `pages` is a job GitLab stages on its own, so a `pages` key with no `stage:`
-# must not be read as an implicit-`test` job.
-_NOT_SCANNED_AS_A_JOB = ("pages",)
+
+class _Unresolved:
+    """An `extends:` chain that leaves the file at `parent` or loops back to it:
+    no stage is read here."""
+
+    def __init__(self, parent: object, loops: bool = False) -> None:
+        self.parent = parent
+        self.loops = loops
+
 
 # Include keys naming a file outside both checkouts: the contract cannot be read.
 UNREADABLE_INCLUDE_KEYS = ("remote", "component", "template")
@@ -150,30 +154,79 @@ def _input_problems(rel: str, inputs: Dict[str, dict], passed: dict) -> List[str
     return problems
 
 
+def _referenced_inputs(node: object) -> set:
+    """Every input name a `$[[ inputs.* ]]` reference in keys or values names."""
+    if isinstance(node, str):
+        return set(_INPUT_REF.findall(node))
+    if isinstance(node, dict):
+        return set().union(*(_referenced_inputs(k) | _referenced_inputs(v) for k, v in node.items()))
+    if isinstance(node, list):
+        return set().union(*(_referenced_inputs(item) for item in node))
+    return set()
+
+
+def _reference_problems(rel: str, job_docs: List[dict], inputs: Dict[str, dict]) -> List[str]:
+    """GitLab refuses a pipeline whose include interpolates an input it does not declare."""
+    return [
+        f"{rel} references input {name!r}, which its spec:inputs does not declare"
+        for name in sorted(set().union(*map(_referenced_inputs, job_docs)) - set(inputs))
+    ]
+
+
+def _stage_of(body: dict, templates: Dict[str, dict], inputs: Dict[str, dict], passed: dict,
+              seen: frozenset = frozenset()) -> object:
+    """The raw stage a job ends up with, None when nothing in its chain sets one.
+
+    A later `extends:` entry overrides an earlier one, as GitLab merges them.
+    """
+    if "stage" in body:
+        return body["stage"]
+    parents = body.get("extends")
+    parents = [parents] if isinstance(parents, str) else parents
+    for parent in reversed(parents if isinstance(parents, list) else []):
+        name = resolve(parent, inputs, passed)
+        if name not in templates or name in seen:
+            return _Unresolved(name, loops=name in seen)
+        stage = _stage_of(templates[name], templates, inputs, passed, seen | {name})
+        if stage is not None:
+            return stage
+    return None
+
+
 def _stage_problems(
     rel: str, job_docs: List[dict], inputs: Dict[str, dict], passed: dict, stages: set
-) -> List[str]:
+) -> Tuple[List[str], List[str]]:
+    """(stage violations, jobs whose `extends:` chain leaves the file unchecked)."""
     problems: List[str] = []
+    unchecked: List[str] = []
+    # Every non-keyword mapping, hidden ones included, is a template `extends:` may name.
+    templates = {
+        resolve(name, inputs, passed): body
+        for doc in job_docs for name, body in doc.items()
+        if isinstance(body, dict) and name not in RESERVED_KEYS
+    }
     for doc in job_docs:
         for name, body in jobs(doc).items():
-            if name in _NOT_SCANNED_AS_A_JOB:
+            job = resolve(name, inputs, passed) or name
+            # A name an input resolves to `.hidden` is a template GitLab never schedules.
+            if str(job).startswith("."):
                 continue
-            if "stage" in body:
-                stage = resolve(body["stage"], inputs, passed)
-            elif "extends" in body:
-                # The stage comes from the extended job, possibly in another
-                # file; resolving that chain is out of scope.
+            raw = _stage_of(body, templates, inputs, passed)
+            if isinstance(raw, _Unresolved):
+                why = "loops back on itself" if raw.loops else "does not resolve in this file"
+                unchecked.append(
+                    f"{rel}: job {job!r} extends {str(raw.parent)!r}, which {why}, "
+                    "so its stage is not checked"
+                )
                 continue
-            else:
-                stage = _IMPLICIT_STAGE
+            stage = _IMPLICIT_STAGE if raw is None else resolve(raw, inputs, passed)
             if stage is None or stage in stages:
                 continue
-            job = resolve(name, inputs, passed) or name
             problems.append(
                 f"{rel}: job {job!r} resolves to stage {str(stage)!r}, which the "
                 "pipeline does not declare"
             )
-    return problems
+    return problems, unchecked
 
 
 def _included_files(
@@ -197,9 +250,12 @@ def _included_files(
 
 
 def check_pipeline(
-    pipeline: Path, repo_root: Path, lib_root: Path | None
+    pipeline: Path, repo_root: Path, lib_root: Path | None, project: str | None = None
 ) -> Tuple[List[str], List[str], int]:
-    """(contract failures, includes not contract-checked, includes checked)."""
+    """(contract failures, includes not contract-checked, includes checked).
+
+    With `project`, a `project:` include of any other project is not checked.
+    """
     doc = parse_ci(_read(pipeline), loader=CILoader)
     stages = declared_stages(doc)
     problems: List[str] = []
@@ -210,6 +266,10 @@ def check_pipeline(
             unreadable.append(
                 f"{pipeline.name}: {entry!r} names a file outside both checkouts"
             )
+            continue
+        # GitLab project paths are case-insensitive.
+        if project and "project" in entry and str(entry["project"]).lower() != project.lower():
+            unreadable.append(f"{pipeline.name}: {entry!r} includes another project")
             continue
         base, relpaths = _included_files(entry, repo_root, lib_root)
         if base is None:
@@ -222,7 +282,10 @@ def check_pipeline(
                 raise OperatorError(f"{rel} is not in {base}")
             inputs, job_docs = declared_inputs(_load_docs(source))
             problems += _input_problems(rel, inputs, passed)
-            problems += _stage_problems(rel, job_docs, inputs, passed, stages)
+            problems += _reference_problems(rel, job_docs, inputs)
+            found, unchecked = _stage_problems(rel, job_docs, inputs, passed, stages)
+            problems += found
+            unreadable += unchecked
             checked += 1
     return problems, unreadable, checked
 
@@ -258,6 +321,11 @@ def main(argv: List[str] | None = None) -> int:
         help="library checkout the `project:` includes resolve in "
              "(default: $WEISSSRV_LIB_PATH)",
     )
+    parser.add_argument(
+        "--project",
+        help="the library's project path; a `project:` include of any other project "
+             "is listed as not contract-checked (default: every one is the library)",
+    )
     args = parser.parse_args(argv)
 
     problems: List[str] = []
@@ -269,7 +337,9 @@ def main(argv: List[str] | None = None) -> int:
             pipeline = args.repo_root / name
             if not pipeline.is_file():
                 raise OperatorError(f"{pipeline} is not a file")
-            found, skipped, count = check_pipeline(pipeline, args.repo_root, lib_root)
+            found, skipped, count = check_pipeline(
+                pipeline, args.repo_root, lib_root, args.project
+            )
             problems += found
             unreadable += skipped
             checked += count

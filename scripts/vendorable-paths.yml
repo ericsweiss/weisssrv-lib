@@ -26,8 +26,9 @@ vendorable:
   - examples/netpol-except.example.yaml
   - examples/render-gates.example.conf
   - examples/unifi-settings.example.json
-  # A program mounted into a CronJob
+  # Programs mounted into a CronJob beside their app script
   - kubernetes/ddns/cloudflare-ddns.py
+  - kubernetes/reapers/kube_reaper.py
   # Lint profiles — most consumers FORK these (per-repo allowlists/sections)
   - lint/editorconfig
   - lint/gitattributes

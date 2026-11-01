@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Assert every ESO-managed credential has a rotation path written down.
 
-Each `remoteRef.key` and each ExternalSecret must be named in a `--doc` file or
-declared manual with a reason. Inputs and exit codes: docs/SCRIPTS.md.
+Each key and ExternalSecret is named in a `--doc` file or its `--section`s, or declared
+manual; a `dataFrom.find` read must be declared manual. Inputs: docs/SCRIPTS.md.
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def _remote_keys(node: object) -> List[str]:
     """Every vault item title the document reads, at any nesting depth."""
     found: List[str] = []
     if isinstance(node, dict):
-        for field in ("remoteRef", "extract", "find"):
+        for field in ("remoteRef", "extract"):
             ref = node.get(field)
             if isinstance(ref, dict) and ref.get("key"):
                 found.append(str(ref["key"]))
@@ -59,16 +59,27 @@ def _remote_keys(node: object) -> List[str]:
     return found
 
 
+def _finds(node: object) -> bool:
+    """Whether the document reads vault items by `dataFrom.find`, a pattern no
+    rotation entry can name item by item."""
+    if isinstance(node, dict):
+        if isinstance(node.get("find"), dict):
+            return True
+        return any(_finds(value) for value in node.values())
+    if isinstance(node, list):
+        return any(_finds(item) for item in node)
+    return False
+
+
 def external_secrets(
     root: Path, manifest_dirs: List[str], reports: List[str] | None = None
-) -> Tuple[Dict[str, str], Dict[str, str]]:
-    """Return ({ns/name: file}, {remoteRef key: file}) for the manifest trees.
+) -> Tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
+    """({ns/name: file}, {remoteRef key: file}, {ns/name: file} reading by `find`).
 
-    Anything that would silently drop an ExternalSecret from coverage — an
-    unparseable file, a namespace-less ExternalSecret — is appended to `reports`.
-    """
+    A namespace-less ExternalSecret goes to `reports`; an unreadable file raises."""
     names: Dict[str, str] = {}
     keys: Dict[str, str] = {}
+    finds: Dict[str, str] = {}
     for manifest_dir in manifest_dirs:
         tree = root / manifest_dir
         if not tree.is_dir():
@@ -79,26 +90,27 @@ def external_secrets(
         for path in sorted({p for glob in MANIFEST_GLOBS for p in tree.rglob(glob)}):
             rel = path.relative_to(root).as_posix()
             try:
-                docs = list(yaml.safe_load_all(path.read_text(encoding="utf-8")))
+                # The handle, not the text: PyYAML names the file in its error mark.
+                with path.open(encoding="utf-8") as handle:
+                    docs = list(yaml.safe_load_all(handle))
             except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
-                if reports is not None:
-                    reports.append(
-                        f"{rel} unparseable, its objects were not checked: {exc}"
-                    )
-                continue
+                raise OperatorError(f"{rel} unreadable, so its objects cannot be checked: {exc}") from exc
             for doc in docs:
                 if not isinstance(doc, dict) or doc.get("kind") not in SECRET_KINDS:
                     continue
                 meta = doc.get("metadata") or {}
+                name = None
                 if doc.get("kind") == "ClusterExternalSecret":
                     # Cluster-scoped: no namespace, and the name operators
                     # rotate is the per-namespace externalSecretName it fans out.
                     spec = doc.get("spec") or {}
-                    names.setdefault(
-                        str(spec.get("externalSecretName") or meta.get("name")), rel
-                    )
+                    name = str(spec.get("externalSecretName") or meta.get("name"))
                 elif meta.get("namespace"):
-                    names.setdefault(f"{meta['namespace']}/{meta.get('name')}", rel)
+                    name = f"{meta['namespace']}/{meta.get('name')}"
+                if name is not None:
+                    names.setdefault(name, rel)
+                    if _finds(doc):
+                        finds.setdefault(name, rel)
                 elif reports is not None:
                     # A namespace-less copy, as a Kustomize component ships,
                     # would key once instead of once per including namespace, so
@@ -111,7 +123,33 @@ def external_secrets(
                     )
                 for key in _remote_keys(doc):
                     keys.setdefault(key, rel)
-    return names, keys
+    return names, keys, finds
+
+
+def section_text(text: str, headings: List[str], where: str) -> str:
+    """The bodies of the named `#` or `##` sections, each running to the next
+    `#` or `##` heading outside a code fence; OperatorError when one is absent."""
+    bodies: Dict[str, List[str]] = {}
+    current = None
+    fenced = False
+    for line in text.splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        heading = None if fenced else re.match(r"#{1,2}\s+(.*?)\s*#*\s*$", line)
+        if heading:
+            current = heading.group(1) if heading.group(1) in headings else None
+            if current is not None:
+                bodies.setdefault(current, [])
+            continue
+        if current is not None:
+            bodies[current].append(line)
+    missing = [h for h in headings if h not in bodies]
+    if missing:
+        raise OperatorError(
+            f"{where} has no `{'` / `'.join(missing)}` section (a # or ## heading), "
+            "so the gate cannot tell where a credential is documented"
+        )
+    return "\n".join(line for h in headings for line in bodies[h])
 
 
 def documents(name: str, text: str) -> bool:
@@ -129,10 +167,11 @@ def check(
     manifest_dirs: List[str],
     docs: List[str],
     declared_manual: Dict[str, str],
+    sections: List[str] | None = None,
 ) -> Tuple[List[str], int, int]:
     """(problems, vault keys seen, ExternalSecrets seen)."""
     reports: List[str] = []
-    names, keys = external_secrets(root, manifest_dirs, reports)
+    names, keys, finds = external_secrets(root, manifest_dirs, reports)
     if not names and not keys:
         raise OperatorError(
             "no ExternalSecret or ClusterExternalSecret found under "
@@ -143,10 +182,13 @@ def check(
     for doc in docs:
         doc_path = root / doc
         try:
-            text += doc_path.read_text(encoding="utf-8") + "\n"
+            body = doc_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
             raise OperatorError(f"{doc} could not be read: {exc}") from exc
+        text += (section_text(body, sections, doc) if sections else body) + "\n"
     doc_list = " / ".join(docs)
+    if sections:
+        doc_list += " under " + " / ".join(f"`{h}`" for h in sections)
 
     problems = list(reports)
     for key, rel in sorted(keys.items()):
@@ -154,6 +196,13 @@ def check(
             problems.append(
                 f"{rel}: remoteRef.key {key!r} is named nowhere in {doc_list} — "
                 "the vault item has no documented rotation"
+            )
+    for name, rel in sorted(finds.items()):
+        if name not in declared_manual:
+            problems.append(
+                f"{rel}: ExternalSecret {name} reads vault items by dataFrom.find, "
+                "a pattern no rotation entry can name — read them by key, or pass "
+                "--declared-manual NAME=REASON for it"
             )
     for name, rel in sorted(names.items()):
         if documents(name, text) or name in declared_manual:
@@ -182,8 +231,13 @@ def main(argv: List[str] | None = None) -> int:
         help="manifest tree to walk, repeatable (default: kubernetes)",
     )
     parser.add_argument(
-        "--doc", action="append", default=None, required=True,
+        "--doc", action="append", required=True,
         help="rotation document the names must appear in, repeatable",
+    )
+    parser.add_argument(
+        "--section", action="append", default=[], metavar="HEADING",
+        help="match only inside this `#` or `##` section of every --doc, repeatable; "
+             "a doc without it exits 2",
     )
     parser.add_argument(
         "--declared-manual", action="append", default=[], metavar="NAME=REASON",
@@ -198,6 +252,7 @@ def main(argv: List[str] | None = None) -> int:
             args.manifest_dir or ["kubernetes"],
             args.doc,
             declared_manual,
+            args.section,
         )
     except OperatorError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

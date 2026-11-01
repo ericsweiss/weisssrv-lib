@@ -8,8 +8,9 @@ spec:
       default: python:3.14-slim
     tags:
       type: array
-      default: ["infrastructure"]
-      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+      default: []
+      description: >-
+        Runner tag(s). Empty runs the job on a tag-less runner.
     script_path:
       default: "scripts/check-runbook-anchors.py"
       description: >-
@@ -44,7 +45,8 @@ spec:
       description: >-
         Path list for the MR / default-branch `changes:` rules. A doc rename
         breaks an anchor without touching a rule file, so the docs tree belongs
-        here; a path missing here means no run on that edit.
+        here. A consumer that overrides `rules_dir`, `docs_dir` or `script_path`
+        passes a matching list; a path missing here means no run on that edit.
     job_memory_limit:
       default: "512Mi"
       description: >-

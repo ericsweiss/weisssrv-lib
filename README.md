@@ -73,6 +73,8 @@ scripts/       the gates + generators CI jobs run: version tracking, deploy/
                release automation — see docs/SCRIPTS.md
 kubernetes/ddns/
                the Cloudflare dynamic-DNS CronJob program a consumer mounts
+kubernetes/reapers/
+               kube_reaper.py, the shared half of a pod-reaper CronJob program
 docker/        published per release: the two molecule test/CI images for the
                collection
 examples/      copy-and-edit config files for the helper scripts
@@ -99,7 +101,6 @@ include:
     ref: $[[ inputs.lib_ref ]]
     file: /ci/lint/yaml-lint.yml
     inputs:
-      tags: []                     # tag-less shared runner (tenant default)
       config: "-c lint/yamllint-relaxed.yml"
       targets: "."
 ```
@@ -120,18 +121,19 @@ jobs run — and the config file each reads its site data from — are in
 
 ### Three consumer profiles
 
-Every template's input defaults target the first profile; the other two are
-reached by passing inputs, never by forking a job.
+Every template's input defaults target the first profile, except `tags`. Every
+template defaults `tags` to `[]`, so no job pre-selects a runner. The other
+profiles are reached by passing inputs, never by forking a job.
 
-- **weisssrv** (privileged `infrastructure` runner, root): the defaults *are*
-  weisssrv's values — runner tag `infrastructure`, its tool pins, `flux-lint`
-  `substitute: true`. Adopting a template with defaults reproduces what
-  weisssrv already ran; the per-template parity note in the include contract
-  records where that is not literally true and what to pass instead.
+- **weisssrv** (privileged `infrastructure` runner, root): the defaults are
+  weisssrv's values, such as its tool pins and `flux-lint` `substitute: true`.
+  weisssrv passes `tags: [infrastructure]` on the jobs that need root or
+  Docker-in-Docker. The per-template parity note in the include contract
+  records where a default is not weisssrv's value and what it passes instead.
 - **tenant repos** (shared non-privileged `k8s-deploy` runner, non-root, UID
-  1000): pass `tags: []` and the non-root-safe input set (`substitute: false`,
-  literal image pins, empty `apt_packages`). `docker-build` needs a privileged
-  runner and is therefore weisssrv-only unless the tenant registers its own.
+  1000): pass the non-root-safe input set: `substitute: false`, literal image
+  pins and empty `apt_packages`. `docker-build` needs a privileged runner and
+  is therefore weisssrv-only unless the tenant registers its own.
 - **a generated cluster** (weisssrv-cluster-template's output): a *new*
   platform repo, so it consumes the widest surface — CI includes, the Ansible
   collection, and the Terraform modules it opts into — but it is
@@ -140,7 +142,7 @@ reached by passing inputs, never by forking a job.
   gotk files, and every pin (includes, `requirements.yml`, module sources)
   comes from a single copier answer, `lib_ref`, rather than hand-edited
   literals. The generated repo runs on whichever runner its own instance
-  provides, so it passes `tags` explicitly rather than inheriting weisssrv's.
+  provides, so it passes its own privileged tag where a job needs root.
 
 ## Terraform modules
 
@@ -252,8 +254,7 @@ in a consumer — `ci/validate/flux-lint.yml`, the two consumer-only lint gates
 (`ci/lint/runbook-anchors.yml`, `ci/lint/terraform-tflint.yml`), the two drift
 detectors (`ci/validate/terraform-drift-plan.yml`,
 `ci/validate/cluster-drift-plan.yml`), the `ci/templates/` fragments,
-`ci/maintenance/version-bump-bot.yml`, and `ci/deploy/*` (the cluster
-template pins `deploy-base` and `kubectl-setup`). The reason for each is in
+`ci/maintenance/version-bump-bot.yml`, and `ci/deploy/*`. The reason for each is in
 [docs/INCLUDE-CONTRACT.md](docs/INCLUDE-CONTRACT.md). Merging to `main` runs
 `ci/release/semantic-release.yml`, which cuts the tag consumers pin.
 

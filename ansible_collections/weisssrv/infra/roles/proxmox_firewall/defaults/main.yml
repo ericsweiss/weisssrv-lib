@@ -9,9 +9,9 @@ proxmox_firewall_enabled: true
 # rate-limits its own logging, so it is safe to leave on during an incident.
 proxmox_firewall_log_level_in: nolog
 
-# Select the nftables firewall implementation (the proxmox-firewall package) on
-# this host instead of the iptables pve-firewall. PVE 9, and omitted from
-# host.fw when false, so a node keeps whichever implementation it runs today.
+# Select the nftables firewall implementation, the proxmox-firewall package, on
+# this PVE 9 host. False omits the option from host.fw, so the node runs the
+# default iptables pve-firewall, a hand-switched node included.
 proxmox_firewall_nftables: false
 
 # Host-originated egress filtering (default-deny OUT on the node itself, NOT
@@ -51,6 +51,10 @@ proxmox_firewall_extra_aliases: []
 # Load-balancer VIPs the WAN WireGuard endpoint is scoped to
 # (sg-k3s-ingress-pub). Empty = no WAN WireGuard rule at all.
 proxmox_firewall_wan_wireguard_vips: []
+
+# Public ingress VIPs sg-k3s-ingress-pub scopes :443/:80 to with `-dest`.
+# Empty = both ports open on every address of a guest carrying the group.
+proxmox_firewall_k3s_public_vips: []
 
 # Admin surfaces of the DNS appliances, rendered into sg-dns. Entry schema
 # {port, sources[], comment?}, asserted in tasks/assert_port_lists.yml. The

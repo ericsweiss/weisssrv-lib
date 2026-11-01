@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Assert every tenant wiring file carries the confinement it is supposed to.
-Each omitted piece fails OPEN: PSS labels, caps, SA and RoleBindings, stores and
-their vault, landing namespace, prune guards and the db Orphan policy. Exit 0/1/2.
-"""
+"""Assert every tenant wiring file carries its confinement; each omitted piece fails
+OPEN: PSS labels, caps, SA and RoleBindings, stores and their vault, landing and
+platform-owned namespaces, prune guards and the db Orphan policy. Exit 0/1/2."""
 from __future__ import annotations
 
 import argparse
@@ -20,6 +19,7 @@ try:
         OperatorError,
         api_group,
         condition_admits,
+        load_docs,
     )
     from tenant_common import (  # noqa: E402  (resolved from this script's own directory)
         AGGREGATOR,
@@ -51,6 +51,13 @@ FLUX_KUSTOMIZE_GROUP = "kustomize.toolkit.fluxcd.io"
 # The providers whose vault reach this gate can read. Any other provider on a
 # tenant store is a finding, as its reach cannot be proven to stop at the tenant.
 VAULT_PROVIDERS = ("onepassword", "onepasswordSDK")
+# Providers that read only what the tenant's own token reaches, so the token's
+# namespace is the whole check.
+TOKEN_PROVIDERS = ("gitlab",)
+STORE_PROVIDERS = (*VAULT_PROVIDERS, *TOKEN_PROVIDERS)
+# The apiserver creates these, so no manifest declares them and a tenant never owns one.
+BUILTIN_NAMESPACES = frozenset({"default", "kube-system", "kube-public", "kube-node-lease"})
+PLATFORM_TREE = "kubernetes"
 REQUIRED_DEPENDENCY = "infrastructure-configs"
 SOURCE_KIND = "GitRepository"
 REQUIRED_ROLES = ("admin", "tenant-crd-editor")
@@ -130,31 +137,33 @@ def subjects(tenants_dir: Path, listed: set[str]) -> list[Path]:
     return sorted(applied | set(tenant_files(tenants_dir)))
 
 
-def _secret_ref_namespaces(node: object) -> list[str]:
-    """Every `namespace` set on a `*SecretRef` mapping anywhere under the provider."""
+def _secret_ref_namespaces(node: object, inside: bool = False) -> list[str]:
+    """Every `namespace` set at or below a key ending in `secretRef`, any case, under the provider."""
     found: list[str] = []
     if isinstance(node, dict):
+        if inside and node.get("namespace") is not None:
+            found.append(str(node["namespace"]))
         for key, value in node.items():
-            if str(key).endswith("SecretRef") and isinstance(value, dict) \
-                    and value.get("namespace") is not None:
-                found.append(str(value["namespace"]))
-            found += _secret_ref_namespaces(value)
+            found += _secret_ref_namespaces(
+                value, inside or str(key).lower().endswith("secretref")
+            )
     elif isinstance(node, list):
         for item in node:
-            found += _secret_ref_namespaces(item)
+            found += _secret_ref_namespaces(item, inside)
     return found
 
 
 def _provider_problems(store: dict, rel: str, name: str, tenants: set[str],
                        namespaces: list[str]) -> list[str]:
-    """A tenant store reads one vault, the tenant's own, with a token from its namespace."""
+    """A tenant store reads with a token from its own namespace and, for a vault
+    provider, one vault, the tenant's own."""
     provider = as_mapping(as_mapping(store.get("spec")).get("provider"))
     kinds = sorted(str(k) for k in provider)
-    if len(kinds) != 1 or kinds[0] not in VAULT_PROVIDERS:
+    if len(kinds) != 1 or kinds[0] not in STORE_PROVIDERS:
         shown = ", ".join(kinds) or "none"
         return [
             f"{rel}: {STORE_KIND} {name} uses provider {shown}, not exactly one of "
-            f"{', '.join(VAULT_PROVIDERS)} — its reach cannot be checked to stop at "
+            f"{', '.join(STORE_PROVIDERS)} — its reach cannot be checked to stop at "
             "the tenant's own vault"
         ]
     kind = kinds[0]
@@ -164,6 +173,8 @@ def _provider_problems(store: dict, rel: str, name: str, tenants: set[str],
         "a tenant namespace — the tenant borrows another namespace's token"
         for ns in sorted(set(_secret_ref_namespaces(config)) - set(namespaces))
     ]
+    if kind in TOKEN_PROVIDERS:
+        return problems
     if kind == "onepasswordSDK":
         vault = config.get("vault")
         listed = [str(vault)] if isinstance(vault, str) and vault else []
@@ -403,10 +414,55 @@ def _placement_problems(docs: list, rel: str, namespaces: list[str]) -> list[str
     return problems
 
 
+def platform_namespaces(root: Path, tenants_dir: Path) -> tuple[dict[str, str], list[str]]:
+    """{name: file} for each Namespace the cluster tree declares outside the tenants
+    directory, plus the built-ins, and a finding per file that does not parse.
+    OperatorError when the tree is absent or a file is unreadable."""
+    found = {name: "the apiserver" for name in BUILTIN_NAMESPACES}
+    problems = []
+    tree = root / PLATFORM_TREE
+    if not tree.is_dir():
+        raise OperatorError(
+            f"{tree} is not a directory, so no platform Namespace is inspected for "
+            "collisions — pass the cluster repo root as --repo-root"
+        )
+    files = (p for p in sorted(tree.rglob("*")) if p.suffix in (".yaml", ".yml") and p.is_file())
+    for path in files:
+        if path.resolve().is_relative_to(tenants_dir.resolve()):
+            continue
+        where = path.relative_to(root).as_posix()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise OperatorError(f"{where}: unreadable: {exc}") from exc
+        try:
+            docs = load_docs(text)
+        except OperatorError:
+            problems.append(
+                f"{where}: does not parse, so a tenant could claim a namespace it declares"
+            )
+            continue
+        for doc in of_kind(docs, "Namespace"):
+            name = metadata(doc).get("name")
+            if isinstance(name, str) and api_group(doc) == "":
+                found.setdefault(name, where)
+    return found, problems
+
+
+def _collision_problems(namespaces: list[str], rel: str, platform: dict[str, str]) -> list[str]:
+    """A tenant Namespace the platform already declares hands the tenant that namespace."""
+    return [
+        f"{rel}: namespace {ns} is already declared by {platform[ns]} — the tenant "
+        "would take over a platform namespace and everything running in it"
+        for ns in namespaces if ns in platform
+    ]
+
+
 def check_file(path: Path, rel: str, listed: set[str] | None,
                root: Path | None = None,
                storage_classes: tuple[str, ...] = (),
-               tenants_dir: Path | None = None) -> list[str]:
+               tenants_dir: Path | None = None,
+               platform: dict[str, str] | None = None) -> list[str]:
     """One wiring file's findings; `listed` None checks it with no aggregator."""
     # A wiring file that does not parse is a finding here, not an empty inspection.
     try:
@@ -446,6 +502,7 @@ def check_file(path: Path, rel: str, listed: set[str] | None,
                     f"{rel}: namespace {metadata(doc).get('name')} has no {label} label"
                 )
 
+    problems += _collision_problems(namespaces, rel, platform or {})
     problems += _caps_problems(docs, rel, storage_quota_keys(storage_classes))
     problems += _prune_guard_problems(docs, rel)
     problems += _placement_problems(docs, rel, namespaces)
@@ -684,11 +741,11 @@ def check_directory(targets: Targets, storage_classes: tuple[str, ...] = (),
     tenants_dir = targets.tenants_dir
     if listed is None:
         listed = listed_resources(tenants_dir)
-    problems = []
+    platform, problems = platform_namespaces(targets.root, tenants_dir)
     for path in paths if paths is not None else subjects(tenants_dir, listed):
         problems += check_file(
             path, targets.label(path), listed, root=targets.root,
-            storage_classes=storage_classes, tenants_dir=tenants_dir,
+            storage_classes=storage_classes, tenants_dir=tenants_dir, platform=platform,
         )
     where = targets.label(tenants_dir / AGGREGATOR)
     for resource in sorted(listed - SHARED):
@@ -705,10 +762,12 @@ def check_directory(targets: Targets, storage_classes: tuple[str, ...] = (),
 
 def check_files(targets: Targets, storage_classes: tuple[str, ...] = ()) -> list[str]:
     """Standalone wiring files: no aggregator listing, no cluster-tree path arm."""
+    builtins = {name: "the apiserver" for name in BUILTIN_NAMESPACES}
     problems = []
     for path in targets.files:
         problems += check_file(
-            path, targets.label(path), None, root=None, storage_classes=storage_classes
+            path, targets.label(path), None, root=None, storage_classes=storage_classes,
+            platform=builtins,
         )
     return problems
 

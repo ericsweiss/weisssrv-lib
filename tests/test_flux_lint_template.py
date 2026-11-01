@@ -110,6 +110,24 @@ class TestArmScopedInputs:
         # the download: the `else` half takes kubeconform and kustomize only.
         assert "flux" not in before.split("else", 1)[1]
 
+    def test_the_tenant_arm_downloads_into_a_private_directory(self):
+        """A fixed /tmp/<name> can be pre-seeded or raced by another process."""
+        tenant_arm = _before_script().split("else", 1)[1]
+        assert 'DL_DIR="$(mktemp -d)"' in tenant_arm
+        assert "/tmp/" not in tenant_arm
+
+    def test_the_substitute_arm_stops_on_a_non_root_runner_before_apt(self):
+        """`tags` defaults to [], so a tag-less non-root runner can pick the
+        job up; it must fail with the fix named, not as an apt permission error."""
+        root_arm = _before_script().split("else", 1)[0]
+        guard = next(line.strip() for line in root_arm.splitlines() if "id -u" in line)
+        assert root_arm.index(guard) < root_arm.index("apt-get")
+        if os.geteuid() == 0:
+            pytest.skip("the guard passes as root")
+        proc = subprocess.run(["bash", "-c", guard], capture_output=True, text=True)
+        assert proc.returncode == 1
+        assert "substitute: true needs a root runner" in proc.stderr
+
 
 class TestTheWiringActuallyRuns:
     """Text assertions cannot tell a correct argv from a plausible one."""

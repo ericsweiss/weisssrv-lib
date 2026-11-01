@@ -20,6 +20,18 @@ _proxmox_firewall_builtin_groups:
 # digits, `-` or `_`, 2 to 18 characters total.
 _proxmox_firewall_group_name_re: '^[A-Za-z][A-Za-z0-9_-]{1,17}\Z'
 
+# One literal IPv4 or IPv6 address, with an optional prefix length, for a
+# `-dest` VIP. Octets stay within 0-255; IPv6 takes eight groups, or fewer
+# with a single `::`. Aliases and IPSets are not addresses and fail.
+_proxmox_firewall_address_re: "(?i)^(\
+  ((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])[.]){3}\
+  (25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(/(3[0-2]|[12]?[0-9]))?\
+  |(([0-9a-f]{1,4}:){7}[0-9a-f]{1,4}\
+  |(?!:*([0-9a-f]{1,4}:+){7}[0-9a-f])\
+  ([0-9a-f]{1,4}(:[0-9a-f]{1,4})*)?::([0-9a-f]{1,4}(:[0-9a-f]{1,4})*)?)\
+  (/(12[0-8]|1[01][0-9]|[1-9]?[0-9]))?\
+  )\\Z"
+
 # pve-firewall can exit 0 on a parse error, so the compile check tests stderr
 # too, case-insensitively; a `(line N)` complaint fails whatever its wording.
 # Healthy hosts emit notices, so never match all. Both compile tasks use this.

@@ -39,7 +39,7 @@ except ImportError:
 
 OBSERVABILITY_NS = "observability"
 DEFAULT_TREE = "kubernetes/flux"
-WORKLOAD_KINDS = ("Deployment", "StatefulSet", "DaemonSet")
+WORKLOAD_KINDS = ("Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "CronJob", "Pod")
 ENDPOINT_KEYS = {"PodMonitor": "podMetricsEndpoints", "ServiceMonitor": "endpoints"}
 
 # kustomize's own documents are build inputs, not resources, and share a kind
@@ -224,19 +224,18 @@ def selected_workloads(documents: list[dict], pods: dict) -> list[Workload]:
         if document.get("kind") not in WORKLOAD_KINDS:
             continue
         subject = describe(document)
-        spec = mapping(document.get("spec"), subject, "spec")
-        template = mapping(spec.get("template"), subject, "spec.template")
+        prefix, template = pod_template(document, subject)
         labels = mapping(
-            mapping(template.get("metadata"), subject, "spec.template.metadata").get("labels"),
+            mapping(template.get("metadata"), subject, f"{prefix}metadata").get("labels"),
             subject,
-            "spec.template.metadata.labels",
+            f"{prefix}metadata.labels",
         )
         if not selector_matches(pods, labels, subject):
             continue
-        pod = mapping(template.get("spec"), subject, "spec.template.spec")
+        pod = mapping(template.get("spec"), subject, f"{prefix}spec")
         names: dict[str, int] = {}
         numbers: set[int] = set()
-        for container in serving_containers(pod, subject):
+        for container in serving_containers(pod, subject, f"{prefix}spec"):
             for port in entries(container.get("ports"), subject, "a container's ports"):
                 number = port.get("containerPort")
                 # Prometheus scrapes over TCP, so a UDP or SCTP port serves nothing.
@@ -249,6 +248,21 @@ def selected_workloads(documents: list[dict], pods: dict) -> list[Workload]:
     return selected
 
 
+def pod_template(document: dict, subject: str) -> tuple[str, dict]:
+    """The pod a workload runs, as a `metadata` and `spec` mapping, with the field
+    path that prefixes both in a message; a Pod is its own, under no prefix."""
+    kind = document.get("kind")
+    if kind == "Pod":
+        return "", document
+    spec = mapping(document.get("spec"), subject, "spec")
+    path = "spec"
+    if kind == "CronJob":
+        job = mapping(spec.get("jobTemplate"), subject, "spec.jobTemplate")
+        spec = mapping(job.get("spec"), subject, "spec.jobTemplate.spec")
+        path = "spec.jobTemplate.spec"
+    return f"{path}.template.", mapping(spec.get("template"), subject, f"{path}.template")
+
+
 def entries(value: object, subject: str, field: str) -> list[dict]:
     """A list the gate walks entry by entry; a non-mapping entry cannot be checked."""
     if value is None:
@@ -258,13 +272,13 @@ def entries(value: object, subject: str, field: str) -> list[dict]:
     return value
 
 
-def serving_containers(pod: dict, subject: str) -> list[dict]:
+def serving_containers(pod: dict, subject: str, field: str) -> list[dict]:
     """The containers that serve for the pod's lifetime, native sidecars included."""
     sidecars = [
-        c for c in entries(pod.get("initContainers"), subject, "spec.template.spec.initContainers")
+        c for c in entries(pod.get("initContainers"), subject, f"{field}.initContainers")
         if c.get("restartPolicy") == "Always"
     ]
-    return entries(pod.get("containers"), subject, "spec.template.spec.containers") + sidecars
+    return entries(pod.get("containers"), subject, f"{field}.containers") + sidecars
 
 
 def spellings(number: int, names: dict[str, int]) -> set[int | str]:
@@ -558,9 +572,10 @@ def scrape_allow(documents: list[dict]) -> str | None:
     for document in documents:
         if document.get("kind") != "NetworkPolicy":
             continue
-        spec = mapping(document.get("spec"), describe(document), "spec")
-        for rule in spec.get("ingress") or []:
-            for peer in rule.get("from") or []:
+        subject = describe(document)
+        spec = mapping(document.get("spec"), subject, "spec")
+        for rule in entries(spec.get("ingress"), subject, "spec.ingress"):
+            for peer in entries(rule.get("from"), subject, "an ingress rule's from"):
                 namespaces = peer.get("namespaceSelector")
                 # Absent or `{}` names no namespace; any other shape is judged.
                 if namespaces is None or (isinstance(namespaces, dict) and not namespaces):

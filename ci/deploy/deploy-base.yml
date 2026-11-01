@@ -7,15 +7,13 @@ spec:
       default: "python:3.14-slim"
       description: >-
         Job image. Debian-based with pip, because the fragment apt-installs and
-        pip-installs ansible. The published `ansible-deploy` image ships those
-        pre-baked; a digest-bearing name pins the supply chain.
+        pip-installs ansible. A digest-bearing name pins the supply chain.
     tags:
       type: array
-      default: ["infrastructure"]
       description: >-
-        Runner tag(s). A deploy needs the privileged runner: an untagged job
-        lands on the shared non-root runner, where the apt install and the SSH
-        reach to the hosts both fail.
+        Runner tag(s), required. A deploy installs packages with apt and reaches
+        the hosts over SSH, so a consumer passes the tag of a root runner with
+        that reach.
     secrets_source:
       default: "1password"
       options: ["1password", "env"]

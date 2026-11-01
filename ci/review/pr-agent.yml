@@ -11,8 +11,9 @@ spec:
       description: Digest-pinned pr-agent image.
     tags:
       type: array
-      default: ["infrastructure"]
-      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+      default: []
+      description: >-
+        Runner tag(s). Empty runs the job on a tag-less runner.
     needs:
       type: array
       default: []

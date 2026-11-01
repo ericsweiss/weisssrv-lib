@@ -306,6 +306,19 @@ SDK_STORE = STORE.replace(
     "          key: token\n",
 )
 
+GITLAB_STORE = STORE.replace(
+    ONEPASSWORD,
+    "    gitlab:\n"
+    "      url: https://gitlab.example.com\n"
+    "      projectID: \"7\"\n"
+    "      auth:\n"
+    "        SecretRef:\n"
+    "          accessToken:\n"
+    "            name: gitlab-api-token\n"
+    "            namespace: demo-app\n"
+    "            key: token\n",
+)
+
 
 def write(root: Path, rel: str, body: str) -> None:
     path = root / rel
@@ -413,6 +426,7 @@ def test_a_complete_tenant_file_passes(repo: Path, capsys) -> None:
             (), id="tenant-label-names-the-vault",
         ),
         pytest.param(TENANT + SDK_STORE.replace("VAULT", "demo-app"), (), id="sdk-store"),
+        pytest.param(TENANT + GITLAB_STORE, (), id="gitlab-store-with-the-tenant-token"),
     ],
 )
 def test_a_confined_variant_passes(repo: Path, body: str, classes: tuple[str, ...]) -> None:
@@ -574,6 +588,11 @@ def _cases():
              "has no spec.conditions"),
             ("condition-mixed", CONDITIONS, "    - namespaces: [demo-app]\n    - demo-app",
              "spec.conditions entry that is not a mapping"),
+            ("condition-null", CONDITIONS, "    - null", "has no spec.conditions"),
+            ("condition-null-mixed", CONDITIONS, f"{CONDITIONS}\n    - null",
+             "spec.conditions entry that is not a mapping"),
+            ("condition-namespaces-null", CONDITIONS, "    - namespaces: null",
+             "do not admit the tenant namespace"),
             ("subject-string",
              "  - kind: ServiceAccount\n    name: demo-app-flux\n    namespace: flux-system\n",
              "  - demo-app-flux\n", "no RoleBinding grants admin"),
@@ -637,6 +656,8 @@ def test_a_mutation_is_a_finding(repo: Path, body: str, expected: str) -> None:
         ),
         pytest.param(TENANT + STORE.replace("namespace: demo-app", "namespace: external-secrets"),
                      "credentials from namespace external-secrets", id="token-ref"),
+        pytest.param(TENANT + GITLAB_STORE.replace("namespace: demo-app", "namespace: gitlab"),
+                     "credentials from namespace gitlab", id="gitlab-token-ref"),
         pytest.param(TENANT + STORE.replace("        demo-app: 1\n", "        Homelab: 1\n"),
                      "not the tenant's own vault alone (demo-app)", id="vault-platform"),
         pytest.param(TENANT + EXTRA_NAMESPACE + STORE,
@@ -873,3 +894,76 @@ class TestTargets:
 
     def test_an_operator_error_exits_2(self, repo: Path) -> None:
         assert gate.main([*TENANT_LOCAL, "--repo-root", str(repo), "--tenants-dir", "nope"]) == 2
+
+
+PLATFORM_NAMESPACE = "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: metallb-system\n"
+
+
+@pytest.mark.parametrize(
+    ("name", "platform_file", "expected"),
+    [
+        ("metallb-system", "kubernetes/infrastructure/metallb/namespace.yaml",
+         "namespace metallb-system is already declared by "
+         "kubernetes/infrastructure/metallb/namespace.yaml"),
+        ("kube-system", None, "namespace kube-system is already declared by the apiserver"),
+    ],
+    ids=["platform-manifest", "built-in"],
+)
+def test_a_tenant_namespace_the_platform_declares_fails(
+    repo: Path, name: str, platform_file: str | None, expected: str
+) -> None:
+    if platform_file:
+        write(repo, platform_file, "---\n" + PLATFORM_NAMESPACE)
+    body = TENANT.replace("name: demo-app\n  annotations", f"name: {name}\n  annotations", 1)
+    problems = wire(repo, body)
+    assert any(expected in p for p in problems), problems
+    assert run(repo) == 1
+
+
+@pytest.mark.parametrize(
+    ("rel", "body"),
+    [
+        (f"{TENANTS_DIR}/README.yaml", PLATFORM_NAMESPACE.replace("metallb-system", "demo-app")),
+        ("kubernetes/apps/broken.yaml", "key: [unclosed\n"),
+        ("kubernetes/apps/lookalike.yaml",
+         PLATFORM_NAMESPACE.replace("v1", "example.com/v1").replace("metallb-system", "demo-app")),
+    ],
+    ids=["inside-the-tenants-tree", "unparseable-platform-file", "namespace-kind-of-another-group"],
+)
+def test_only_a_platform_namespace_manifest_collides(repo: Path, rel: str, body: str) -> None:
+    write(repo, rel, body)
+    assert not any("already declared" in p for p in check(repo))
+
+
+def test_an_unparseable_platform_file_is_a_finding(repo: Path) -> None:
+    write(repo, "kubernetes/apps/broken.yaml", "key: [unclosed\n")
+    assert ("kubernetes/apps/broken.yaml: does not parse, so a tenant could claim a "
+            "namespace it declares") in check(repo)
+    assert run(repo) == 1
+
+
+def test_a_missing_platform_tree_exits_2(tmp_path: Path, capsys) -> None:
+    write(tmp_path, f"tenants/{gate.AGGREGATOR}", AGGREGATOR)
+    write(tmp_path, "tenants/tenant-crd-editor.yaml", "kind: ClusterRole\n")
+    write(tmp_path, "tenants/demo-app.yaml", TENANT)
+    argv = [*TENANT_LOCAL, "--repo-root", str(tmp_path), "--tenants-dir", "tenants"]
+    assert gate.main(argv) == 2
+    assert "kubernetes is not a directory" in capsys.readouterr().err
+
+
+def test_a_standalone_file_cannot_claim_a_built_in_namespace(repo: Path) -> None:
+    path = repo / TENANTS_DIR / "demo-app.yaml"
+    path.write_text(TENANT.replace("name: demo-app\n  annotations", "name: kube-system\n  annotations", 1))
+    problems = gate.check_files(gate.Targets(repo, files=[path]))
+    assert any("namespace kube-system is already declared by the apiserver" in p
+               for p in problems), problems
+
+
+def test_an_unreadable_platform_file_inspects_nothing(repo: Path, capsys) -> None:
+    path = repo / "kubernetes/apps/binary.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xff\xfe\x00")
+    assert run(repo) == 2
+    err = capsys.readouterr().err
+    assert "kubernetes/apps/binary.yaml: unreadable" in err
+    assert "does not parse" not in err

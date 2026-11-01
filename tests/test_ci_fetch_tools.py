@@ -101,8 +101,8 @@ class TestTheShippedTable:
     def test_the_table_is_not_empty(self):
         """Vacuity guard: an empty table would pass every case below."""
         assert set(gate.TOOLS) >= {
-            "amtool", "jq", "kubeconform", "kustomize", "promtool", "shellcheck",
-            "terraform",
+            "amtool", "flux", "jq", "kubeconform", "kustomize", "promtool",
+            "shellcheck", "task", "terraform",
         }
 
     @pytest.mark.parametrize("name", sorted(gate.TOOLS))
@@ -114,6 +114,13 @@ class TestTheShippedTable:
         assert tool.kind in {gate.RAW, "zip", *gate.ARCHIVE_MODES}
         assert bool(tool.member) == (tool.kind != gate.RAW)
         assert tool.member.format(version=tool.version) or tool.kind == gate.RAW
+
+    @pytest.mark.parametrize(
+        "name", sorted(n for n, t in gate.TOOLS.items() if t.kind != gate.RAW)
+    )
+    def test_each_tool_installs_under_its_command_name(self, name):
+        """The key names the installed file, so go-task installs as `task`."""
+        assert gate.TOOLS[name].member.rsplit("/", 1)[-1] == name
 
 
 def _raw_asset(path: Path) -> Path:

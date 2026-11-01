@@ -60,11 +60,33 @@ class TestLoadVersions:
 @pytest.mark.parametrize("versions,expected", [
     ({"k3s_version": "v1.36.2+k3s1"}, "1.36.2"),
     ({"k3s_version": "1.36.2"}, "1.36.2"),
-    ({}, vhv.KUBE_VERSION_FALLBACK),
-    ({"k3s_version": "garbage"}, vhv.KUBE_VERSION_FALLBACK),
-], ids=["v-prefix-k3s-suffix", "plain-semver", "absent", "unparseable"])
+], ids=["v-prefix-k3s-suffix", "plain-semver"])
 def test_derive_kube_version(versions, expected):
     assert vhv.derive_kube_version(versions) == expected
+
+
+@pytest.mark.parametrize("versions", [{}, {"k3s_version": "garbage"}], ids=["absent", "unparseable"])
+def test_an_unusable_k3s_version_is_an_error(versions):
+    with pytest.raises(SystemExit, match="k3s_version"):
+        vhv.derive_kube_version(versions)
+
+
+@pytest.mark.parametrize(
+    ("spec", "meta", "expected"),
+    [
+        ({"releaseName": "fixed", "targetNamespace": "ns"}, {"name": "app"}, "fixed"),
+        ({"targetNamespace": "ns"}, {"name": "app"}, "ns-app"),
+        ({}, {"name": "app"}, "app"),
+        ({}, {}, "registry-name"),
+        ({"targetNamespace": "n" * 30}, {"name": "a" * 30},
+         "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnn-aaaaaaaaa-d565fe94a777"),
+    ],
+    ids=["release-name-wins", "target-namespace-prefix", "plain-name", "registry-fallback",
+         "shortened-past-53"],
+)
+def test_the_release_name_is_the_one_flux_installs(spec, meta, expected):
+    name = vhv.flux_release_name(spec, meta, "registry-name")
+    assert name == expected and len(name) <= 53
 
 
 # --- extract_helmrelease_from_text() ---------------------------------------
@@ -256,6 +278,12 @@ spec:
         assert len(found) == 1
         assert found[0]["metadata"]["namespace"] == "ns"
 
+    def test_an_unreadable_sibling_is_reported_not_skipped(self, tmp_path):
+        (tmp_path / "release.yaml").write_text(HR_BODY)
+        (tmp_path / "vpa.yaml").write_text("a: [unclosed\n")
+        with pytest.raises(vhv.UnreadableSibling, match="vpa.yaml"):
+            vhv.release_vpas(str(tmp_path / "release.yaml"), "ns", {})
+
 
 class TestValidateReleaseSuccessPath:
     """The post-render policy arms, driven through validate_release itself."""
@@ -307,6 +335,13 @@ spec:
         rel = _release(tmp_path, HR_BODY)
         assert vhv.validate_release(rel, {}, str(tmp_path), False, "1.30.0") is False
         assert "caps memory at or above" in capsys.readouterr().out
+
+    def test_an_unreadable_sibling_fails_the_release(self, tmp_path, monkeypatch, capsys):
+        self._render(monkeypatch, "memory: 128Mi")
+        (tmp_path / "vpa.yaml").write_bytes(b"kind: \xff\xfe\n")
+        rel = _release(tmp_path, HR_BODY)
+        assert vhv.validate_release(rel, {}, str(tmp_path), False, "1.30.0") is False
+        assert "beside the release is unreadable" in capsys.readouterr().out
 
     def test_a_vpa_capping_below_the_rendered_limit_passes(self, tmp_path, monkeypatch):
         self._render(monkeypatch, "memory: 1Gi")
@@ -444,6 +479,30 @@ class TestMain:
         self._stub_helm(repo, monkeypatch, repo_add_rc=1)
         assert vhv.main(self._argv(repo)) == 1
         assert "failed to add/update Helm repo" in capsys.readouterr().out
+
+    def test_kubeconform_without_a_catalog_ref_exits_2(self, tmp_path, monkeypatch, capsys):
+        repo = self._repo(tmp_path)
+        self._stub_helm(repo, monkeypatch)
+        monkeypatch.delenv("CRD_CATALOG_REF", raising=False)
+        assert vhv.main([*self._argv(repo), "--kubeconform"]) == 2
+        assert "CRD_CATALOG_REF" in capsys.readouterr().out
+
+    def test_the_catalog_ref_reaches_kubeconform(self, tmp_path, monkeypatch):
+        repo = self._repo(tmp_path)
+        self._stub_helm(repo, monkeypatch)
+        monkeypatch.setenv("CRD_CATALOG_REF", "abc123")
+        seen = []
+        monkeypatch.setattr(vhv, "validate_release", lambda *a, **k: seen.append(a) or True)
+        assert vhv.main([*self._argv(repo), "--kubeconform"]) == 0
+        assert seen[0][-1] == "abc123"
+
+    def test_the_repo_update_names_only_the_release_repos(self, tmp_path, monkeypatch):
+        repo = self._repo(tmp_path)
+        self._stub_helm(repo, monkeypatch)
+        stub, seen = vhv._run_tool, []
+        monkeypatch.setattr(vhv, "_run_tool", lambda cmd, *a, **k: seen.append(cmd) or stub(cmd, *a, **k))
+        assert vhv.main(self._argv(repo)) == 0
+        assert ["helm", "repo", "update", "app"] in seen
 
     def test_one_failing_release_is_counted(self, tmp_path, monkeypatch, capsys):
         repo = self._repo(tmp_path)

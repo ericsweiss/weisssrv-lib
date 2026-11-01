@@ -16,8 +16,7 @@ spec:
         Cached directories. Must match the two variables below if either is
         overridden on the consuming job.
 ---
-# Shared pip + ansible-galaxy cache fragment, keyed on the consumer's pin
-# files. Usage: docs/INCLUDE-CONTRACT.md.
+# Shared pip + ansible-galaxy cache fragment. Usage: docs/INCLUDE-CONTRACT.md.
 .dep-cache:
   variables:
     PIP_CACHE_DIR: "${CI_PROJECT_DIR}/.cache/pip"

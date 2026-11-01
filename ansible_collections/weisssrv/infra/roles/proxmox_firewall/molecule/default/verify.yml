@@ -78,6 +78,7 @@
         sg_metrics: "{{ cluster_fw_sections.get('group sg-metrics', '') }}"
         sg_ingress_int: "{{ cluster_fw_sections.get('group sg-k3s-ingress-int', '') }}"
         sg_ingress_pub: "{{ cluster_fw_sections.get('group sg-k3s-ingress-pub', '') }}"
+        sg_k3s_core: "{{ cluster_fw_sections.get('group sg-k3s-core', '') }}"
         sg_pve_cluster: "{{ cluster_fw_sections.get('group sg-pve-cluster', '') }}"
         sg_smtp_relay: "{{ cluster_fw_sections.get('group sg-smtp-relay', '') }}"
       ansible.builtin.assert:
@@ -135,10 +136,16 @@
           # The cleartext live-migration range is not pre-authorised while the
           # cluster runs the secure channel.
           - "'-dport 60000:60050' not in sg_pve_cluster"
-          # The WAN WireGuard rule is -dest-scoped to the VIP, so the node's own
-          # :51820/udp (flannel) is never opened to the WAN.
-          - "'IN ACCEPT -dest 192.168.0.99 -p udp -dport 51820 -log nolog' in sg_ingress_pub"
-          - "'IN ACCEPT -p udp -dport 51820 -log nolog' not in sg_ingress_pub"
+          # Every public rule is -dest-scoped to its VIP, so the node's own
+          # :51820/udp (flannel) and its other addresses stay off the WAN.
+          - >-
+            sg_ingress_pub | regex_findall('^IN ACCEPT .*$', multiline=True) ==
+            ['IN ACCEPT -dest 192.168.0.98 -p tcp -dport 443 -log nolog',
+             'IN ACCEPT -dest 192.168.0.98 -p tcp -dport 80 -log nolog',
+             'IN ACCEPT -dest 192.168.0.99 -p udp -dport 51820 -log nolog']
+          # k3s multiplexes its supervisor on :6443; :9345 is RKE2's.
+          - "'-dport 6443' in sg_k3s_core"
+          - "'-dport 9345' not in sg_k3s_core"
         fail_msg: >-
           A role-owned security group lost or widened a rule — check the
           [group …] blocks in templates/cluster.fw.j2.
@@ -194,9 +201,8 @@
           ansible.builtin.set_fact:
             firewall_rejected: "{{ firewall_rejected + ['null_port'] }}"
 
-    # A mapping is a sequence and is not a string, so the list test admitted it;
-    # the template then iterates its KEYS, which happens to render — the assert
-    # must reject what it advertises.
+    # A mapping passes a sequence-and-not-string test, and the template then
+    # iterates its KEYS, which renders; the assert must reject it by type.
     - name: Drive the port-list schema guard — a mapping `sources`
       block:
         - name: Include the schema guard with a mapping sources value
@@ -437,6 +443,74 @@
           ansible.builtin.set_fact:
             firewall_rejected: "{{ firewall_rejected + ['egress_missing_proto'] }}"
 
+    # A blank or null VIP element renders a `-dest` pve-firewall refuses, and a
+    # scalar list renders one rule per character.
+    - name: Drive the public VIP guard — a scalar public VIP list
+      block:
+        - name: Include the schema guard with a scalar public VIP value
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            proxmox_firewall_k3s_public_vips: 192.0.2.10
+      rescue:
+        - name: Record the rejection
+          ansible.builtin.set_fact:
+            firewall_rejected: "{{ firewall_rejected + ['scalar_public_vips'] }}"
+
+    - name: Drive the public VIP guard — a blank public VIP
+      block:
+        - name: Include the schema guard with a blank public VIP element
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            proxmox_firewall_k3s_public_vips: ['192.0.2.10', '']
+      rescue:
+        - name: Record the rejection
+          ansible.builtin.set_fact:
+            firewall_rejected: "{{ firewall_rejected + ['blank_public_vip'] }}"
+
+    - name: Drive the public VIP guard — a null public VIP
+      block:
+        - name: Include the schema guard with a null public VIP element
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            proxmox_firewall_k3s_public_vips: ['192.0.2.10', null]
+      rescue:
+        - name: Record the rejection
+          ansible.builtin.set_fact:
+            firewall_rejected: "{{ firewall_rejected + ['null_public_vip'] }}"
+
+    - name: Drive the public VIP guard — a scalar WireGuard VIP list
+      block:
+        - name: Include the schema guard with a scalar WireGuard VIP value
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            proxmox_firewall_wan_wireguard_vips: 192.0.2.20
+      rescue:
+        - name: Record the rejection
+          ansible.builtin.set_fact:
+            firewall_rejected: "{{ firewall_rejected + ['scalar_wireguard_vips'] }}"
+
+    - name: Drive the public VIP guard — a bare colon public VIP
+      block:
+        - name: Include the schema guard with a bare colon public VIP element
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            proxmox_firewall_k3s_public_vips: [':']
+      rescue:
+        - name: Record the rejection
+          ansible.builtin.set_fact:
+            firewall_rejected: "{{ firewall_rejected + ['colon_public_vip'] }}"
+
+    - name: Drive the public VIP guard — an out-of-range WireGuard VIP
+      block:
+        - name: Include the schema guard with an out-of-range WireGuard VIP octet
+          ansible.builtin.include_tasks: ../../tasks/assert_port_lists.yml
+          vars:
+            proxmox_firewall_wan_wireguard_vips: ['999.1.1.1']
+      rescue:
+        - name: Record the rejection
+          ansible.builtin.set_fact:
+            firewall_rejected: "{{ firewall_rejected + ['octet_wireguard_vip'] }}"
+
     # cluster.fw renders from the play's first host, so an input the delegate
     # sees differently would be overwritten with this play's value. The guard
     # must reject that and stay quiet when the scopes agree.
@@ -468,7 +542,9 @@
              'null_client_element', 'empty_client_element', 'punctuated_set_name',
              'short_set_name', 'colliding_group_name', 'long_group_name',
              'digit_group_name', 'duplicate_group_name', 'mapping_extra_group',
-             'ipset_missing_ip', 'egress_missing_proto', 'cluster_scope']
+             'ipset_missing_ip', 'egress_missing_proto', 'scalar_public_vips',
+             'blank_public_vip', 'null_public_vip', 'scalar_wireguard_vips',
+             'colon_public_vip', 'octet_wireguard_vip', 'cluster_scope']
           - firewall_accepted == ['empty_smtp_relay_scope']
         fail_msg: >-
           A guard accepted a shape it must reject, or rejected the empty
@@ -748,10 +824,9 @@
           - dns01_guest_fw_stat.stat.exists
         fail_msg: >-
           /tmp/pve-firewall-test/firewall/150.fw missing — dns-01's
-          guest firewall didn't render. If the molecule platform's
-          vmid was bumped to 150, the docker-platform render would
-          have overwritten dns-01's file path. Check
-          molecule.yml host_vars.proxmox-firewall-test.vmid.
+          guest firewall didn't render. The platform's own vmid in
+          molecule.yml host_vars.proxmox-firewall-test must not be 150,
+          or its render takes dns-01's file path.
 
     - name: Read dns-01's 150.fw
       ansible.builtin.slurp:
@@ -764,11 +839,8 @@
           - "'Guest: proxmox-firewall-test' in (guest_fw_content.content | b64decode)"
           - "'Guest: dns-01' in (dns01_guest_fw_content.content | b64decode)"
         fail_msg: >-
-          Per-vmid files don't carry the matching inventory_hostname
-          comment line — most likely the molecule platform reused a
-          vmid from another platform entry and the renders
-          collided. 100.fw should mention proxmox-firewall-test;
-          150.fw should mention dns-01.
+          100.fw must name proxmox-firewall-test and 150.fw must name
+          dns-01. Two molecule.yml hosts sharing a vmid render into one file.
 
     # Coverage for the guest_firewall_policy_out egress-DROP branch: smtp-relay
     # (151) sets it in molecule.yml and must render the default-deny policy;
@@ -818,7 +890,7 @@
           _proxmox_firewall_cluster_done was not visible to the second play —
           the cross-play run-once guard would re-deploy cluster.fw on
           every including play. Check the delegate_facts set_fact on
-          groups['proxmox'][0] in tasks/main.yml.
+          the cluster-task delegate in tasks/main.yml.
 
     # Production runs with egress filtering on, and the default-off case above
     # only asserts the lines are absent. Render the enabled branch and assert the
@@ -927,9 +999,8 @@
           An IPSet entry without `comment` must render as the bare address —
           got {{ k3s_lines }}.
 
-    # proxmox_firewall_enabled false must deploy nothing: the third converge
-    # play redirected the config dirs, so their absence proves the guest .fw and
-    # the pmxcfs directory tasks all honour the flag.
+    # The second converge play re-included guest 152 with an empty group list,
+    # so its .fw must be gone.
     - name: Stat the drained guest's .fw
       ansible.builtin.stat:
         path: /tmp/pve-firewall-test/firewall/152.fw
@@ -993,6 +1064,9 @@
           and the guard only reports it plays later.
         success_msg: "the relay guard fires before cluster.fw is published"
 
+    # proxmox_firewall_enabled false must deploy nothing: the third converge
+    # play redirected the config dirs, so their absence proves the guest .fw and
+    # the pmxcfs directory tasks all honour the flag.
     - name: Stat the disabled render's config tree
       ansible.builtin.stat:
         path: /tmp/pve-firewall-disabled

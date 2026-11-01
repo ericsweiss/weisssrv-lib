@@ -171,7 +171,9 @@ proxmox_ha_replication_jobs:
 ha-manager status          # HA state of every resource
 ha-manager rules list      # current node-affinity rules
 ha-manager config          # the resource index this role parses
-ha-manager migrate ct:150 <node>
+# Drain a node before a reboot; HA moves its guests and fails them back after.
+ha-manager crm-command node-maintenance enable <node>
+ha-manager crm-command node-maintenance disable <node>
 pvesr status               # replication job health
 pvesh get /cluster/replication  # the job index this role parses
 ```

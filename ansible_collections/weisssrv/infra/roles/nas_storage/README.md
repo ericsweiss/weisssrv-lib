@@ -607,7 +607,6 @@ nas_storage_archive_backup_sources:
 |---|---|
 | `tasks/assert_zfs_classification.yml` | Up-front guard: every export bind source and boot-ordered union is classified ZFS-backed or not, split out so it is testable from fabricated inventory |
 | `tasks/zfs.yml` | Dataset properties, scrub timers |
-| `tasks/zfs_arc.yml` | ARC cap: the modprobe.d file plus the optional `update-initramfs` |
 | `tasks/nfs.yml` | Exports, bind mounts, guards, nfsd ordering drop-in |
 | `tasks/samba.yml` | Shares, `nas` user, password handling |
 | `tasks/media_group.yml` | The shared media group, included by both the NFS and Samba paths |

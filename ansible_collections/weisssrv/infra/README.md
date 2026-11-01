@@ -154,9 +154,9 @@ Two consequences of that naming worth knowing before editing inventory:
   `cert_distribution_targets.prom`) because live alerts, promtool tests and
   dashboards consume those exact strings. Renaming one is an observability
   change, not a tidy-up.
-- **Some roles de-provision on `enabled: false`.** `nas_storage`'s archive
-  replication and `zfs_encryption`'s mount-anchor unit are removed when their
-  inputs go empty, rather than being left inert. Emptying the input is a
+- **Some roles de-provision what an input turns off.** `nas_storage` removes
+  the units of a component whose `_enabled` flag is false, and `zfs_encryption`
+  removes its mount unit on a host with no encrypted pools. Turning one off is a
   live-host change on the next run.
 
 ### Inventory-wide names the roles alias

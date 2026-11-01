@@ -7,7 +7,8 @@ flag** — never from constants inside the script.
 
 Everything on this page is part of the semver contract in
 [VERSIONING.md](VERSIONING.md): a renamed flag, a changed config key, or a
-changed default is a MAJOR bump for scripts, exactly as for a CI template input.
+changed default is a breaking change for scripts, exactly as for a CI template
+input.
 
 Example configs for every script live in [`../examples/`](../examples/).
 
@@ -37,7 +38,7 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`check-helmrelease-crd-safety.py`](#check-helmrelease-crd-safetypy-pyyaml) | a CRD-owning HelmRelease that would delete its CRDs on uninstall | `helmrelease-crd-safety.example.yaml` | neutral |
 | [`check-hpa-vpa-invariant.py`](#check-hpa-vpa-invariantpy-pyyaml) | HPA/VPA overlap, CPU limits, VPA caps, 1:1 memory ratios, a request above its own limit | `autoscaling-policy.example.yaml` | neutral |
 | [`check-image-gc-threshold.py`](#check-image-gc-thresholdpy-pyyaml) | image-GC alert threshold, prose and inhibitor order against the kubelet watermark | `--rules`, `--alert-offset`, `--alert-cap` | neutral |
-| [`check-include-contract.py`](#check-include-contractpy-pyyaml) | an undeclared `inputs:` key, an omitted REQUIRED input, a job stage the pipeline does not declare | flags | gitlab-only |
+| [`check-include-contract.py`](#check-include-contractpy-pyyaml) | an undeclared `inputs:` key, an omitted REQUIRED input, an undeclared `$[[ inputs.* ]]` reference, a job stage the pipeline does not declare | flags | gitlab-only |
 | [`check-ingressroute-backends.py`](#check-ingressroute-backendspy-pyyaml) | a route backend or scrape port that resolves to no Service in the corpus | stdin | neutral |
 | [`check-internal-route-allowlist.py`](#check-internal-route-allowlistpy-pyyaml-via-gate_common) | an internal-domain Traefik route with no source allowlist middleware | flags | neutral |
 | [`check-issuer-refs.py`](#check-issuer-refspy-pyyaml) | a cert-manager issuer reference that resolves to nothing the corpus ships | `--allow-external` | neutral |
@@ -604,15 +605,20 @@ validate-helm-values.py [--kubeconform] [--repo-root DIR] [--releases FILE]
   does. When neither resolves, the run fails naming both fixes. A file under
   `--sources-dir` that will not parse as YAML fails the run naming that file,
   rather than vanishing from the resolution map.
-- **`$CRD_CATALOG_REF`** (default `main`) sets the `datreeio/CRDs-catalog` ref
-  kubeconform reads schemas from, so the family pins one sha in one place.
+- **`$CRD_CATALOG_REF`** sets the `datreeio/CRDs-catalog` ref kubeconform
+  reads schemas from. It has no default: `--kubeconform` without it exits 2, so
+  a local run validates against the same pinned sha as CI.
 - **Example:** [`helm-values-releases.example.yaml`](../examples/helm-values-releases.example.yaml).
 - **Kube version:** derived from the ConfigMap's `k3s_version` and passed to
-  both `helm --kube-version` and `kubeconform -kubernetes-version`. Unlike
-  `flux-env.sh k8s-version`, a missing or unparseable key falls back to
-  `KUBE_VERSION_FALLBACK` (`1.36.0`) rather than failing, so a malformed pin
-  cannot take out `flux:lint` — the rendered chart is then judged against a
-  version nobody chose, which is the trade this hook accepts.
+  both `helm --kube-version` and `kubeconform -kubernetes-version`. A missing or
+  unparseable key fails the run, as `flux-env.sh k8s-version` does.
+- **Release identity:** the render takes the name Flux installs the release
+  under: `releaseName`, else `[<targetNamespace>-]<name>`, shortened with a hash
+  to Helm's 53-character limit as Flux does.
+- A manifest beside the release that will not read fails that release, because
+  its VerticalPodAutoscalers are unknown.
+- `helm repo update` names only the releases' repos, so an operator's other
+  repos are not refreshed.
 
 ### `check-kubectl-version-pin.py`
 
@@ -910,8 +916,8 @@ dependencies. Exit 1 when the directory holds no Kustomization. `--paths` exits
 
 The workloads in one namespace that reference a named Secret, read off
 `kubectl get deployment,statefulset,daemonset -o json` on stdin: one TSV row per
-consumer — `<kind>/<name>`, `kustomize` or `other`, and the workload's
-`matchLabels` as a selector. A rotated Secret is picked up by deleting the pods
+consumer — `<kind>/<name>`, `kustomize` or `other`, and the workload's whole
+selector in kubectl `-l` syntax, `matchExpressions` included. A rotated Secret is picked up by deleting the pods
 a row names; the manager column says which workloads a restart ANNOTATION would
 not survive, because kustomize-controller reverts it on the next reconcile.
 
@@ -926,8 +932,9 @@ kubectl -n <ns> get deployment,statefulset,daemonset -o json \
   old Secret.
 - **Exit codes:** 0 with the rows (none is a clean empty result), 2 on a
   payload that is not the JSON kubectl emits, carries no `.items`, or holds a
-  consumer with no `matchLabels` — a pod delete cannot be scoped to that one,
-  so it is named rather than silently omitted.
+  consumer with no selector or a `matchExpressions` term kubectl cannot take.
+  A pod delete cannot be scoped to that one, so it is named rather than
+  silently omitted.
 
 ### `run-render-gates.sh`
 
@@ -1355,6 +1362,8 @@ scripts/check-scrape-wiring.py [--prometheus-pod-label KEY=VALUE ...]
   that Service's `targetPort` (or its `port`) to the container port, by name or
   by number. A PodMonitor's `port` / `portNumber` / `targetPort` resolves
   straight against `containerPorts`, with no Service hop.
+- A workload is a Deployment, StatefulSet, DaemonSet, ReplicaSet, Job, CronJob
+  or bare Pod. A CronJob's pods come from its `jobTemplate`.
 - **Every selected workload is its own target.** `targetPort: metrics` resolves
   per pod, so pods behind one Service may serve the same Service port at
   different numbers, each from pods carrying different labels. Every number
@@ -1482,8 +1491,9 @@ scripts/check-scrape-wiring.py [--prometheus-pod-label KEY=VALUE ...]
   monitor with no endpoints, a selector matching every pod or one carrying a
   term beyond `matchLabels`, a hand-written endpoints object whose addresses or
   ports are a scalar that is no substitution, an ambiguous namespace grouping, a
-  scope that cannot be verified, and a policy that admits the observability
-  namespace while no monitor scrapes its namespace.
+  scope that cannot be verified, a policy whose `ingress` or `from` is not a
+  list of mappings, and a policy that admits the observability namespace while
+  no monitor scrapes its namespace.
 
 ### `check-kustomization.py` (PyYAML)
 
@@ -1511,19 +1521,20 @@ scripts/check-kustomization.py [DIRECTORY] [--walk] [--min-kustomizations N]
   and kubeconform both pass it. An emptied or mistyped `resources:` list
   renders nothing, and a Flux Kustomization with `prune: true` then deletes
   every object this repo applied.
-- Listed paths are read from every content key: `resources`, `bases`,
-  `components`, `generators`, `patches`, `patchesStrategicMerge`,
-  `patchesJson6902`, `replacements`, `configMapGenerator`, `secretGenerator`,
-  `helmCharts` and `openapi`.
+- Listed paths are read from every key that names a file: `resources`,
+  `bases`, `components`, `crds`, `transformers`, `generators`,
+  `configurations`, `patches`, `patchesStrategicMerge`, `patchesJson6902`,
+  `replacements`, `configMapGenerator`, `secretGenerator`, `helmCharts` and
+  `openapi`.
 - The render rule counts `resources`, `bases`, `components`, `generators`,
   `configMapGenerator`, `secretGenerator` and `helmCharts` as content. A
   `kind: Component` only reshapes its parent's render, so it may contribute
-  through any transformer key instead.
+  through any transformer key, `crds` or `configurations` instead.
 - `*.yaml`, `*.yml` and `*.json` files are manifests. kustomize renders JSON
   resources, and a configMapGenerator reads dashboards from JSON siblings.
 - A remote base is fetched by kustomize, so it is not looked for on disk. An
-  entry with a scheme, a `host/org/repo//path` shape, a `.git` component or a
-  `?ref=` query is skipped. A listed directory covers the manifests beneath it.
+  entry with a scheme, a `github.com/` or `git@` prefix, a `host/org/repo//path`
+  shape, a `.git` component or a `?ref=` query is skipped. A listed directory covers the manifests beneath it.
 - **Exit codes:** 0 clean, 1 on a violation, 2 on an operator error. That covers
   a missing directory, a root with no `kustomization.yaml`, too few
   kustomizations under `--walk`, an unreadable exemption file, and a
@@ -2130,7 +2141,8 @@ on zero or several.
 Fails a tenant wiring file that lacks any piece of the confinement it should
 carry. Each missing piece fails open: PSS labels, the quota and limit caps, the
 service account and RoleBindings, the secret stores and their vault, the
-landing namespace, the prune guards and the database Orphan policy.
+landing and platform-owned namespaces, the prune guards and the database Orphan
+policy.
 
 ```
 scripts/check-tenant-wiring.py [PATHS...] [--repo-root .]
@@ -2142,7 +2154,13 @@ scripts/check-tenant-wiring.py [PATHS...] [--repo-root .]
 - Single-file mode skips the aggregator-listing arm and the cluster-tree
   `spec.path` arm.
 - **The vault arm.** A 1Password store reads exactly one vault, named after a
-  tenant Namespace or its `fluxcd.io/tenant` label.
+  tenant Namespace or its `fluxcd.io/tenant` label. A `gitlab` store reads only
+  what the tenant's own token reaches, so its namespace is the whole check. Any
+  other provider is a finding.
+- **Platform namespaces.** A tenant Namespace that the cluster tree under
+  `kubernetes/` declares outside the tenants directory is a finding, and so is
+  `default`, `kube-system`, `kube-public` or `kube-node-lease`. The tenant would
+  take over that namespace and everything running in it.
 - **`--tenant-storage-class`** says `tenant-local`, the one class a tenant
   claim may name, enforces no claim size. The quota must then cap
   `persistentvolumeclaims` and
@@ -2177,7 +2195,7 @@ scripts/check-tenant-traefik-isolation.py [PATHS...] [--repo-root .]
 ### `check-secret-rotation-coverage.py` (PyYAML)
 
 Fails an ESO-managed credential that no document says how to rotate. Both the
-vault item titles (`remoteRef.key`, `extract`, `find`) and the ExternalSecrets
+vault item titles (`remoteRef.key`, `extract`) and the ExternalSecrets
 themselves are checked, so a write-capable token cannot ship with no rotation
 path.
 
@@ -2186,7 +2204,13 @@ scripts/check-secret-rotation-coverage.py --doc docs/CREDENTIALS.md
 ```
 
 - `--doc` (required, repeatable), `--repo-root`, `--manifest-dir` (repeatable,
-  default `kubernetes`).
+  default `kubernetes`), `--section HEADING` (repeatable).
+- `--section` matches only inside the named `#` or `##` section of every
+  `--doc`, each running to the next `#` or `##` heading outside a code fence.
+  A `--doc` that lacks a named section is an operator error.
+- An ExternalSecret that reads vault items by `dataFrom.find` is a finding
+  unless `--declared-manual` names it: no rotation entry can name a pattern
+  item by item.
 - A `ClusterExternalSecret` is keyed by the `spec.externalSecretName` it fans
   out, which is the name an operator rotates; a namespaced ExternalSecret is
   keyed `namespace/name`. A namespace-less ExternalSecret is reported, because
@@ -2196,7 +2220,8 @@ scripts/check-secret-rotation-coverage.py --doc docs/CREDENTIALS.md
 - `--declared-manual NAME=REASON` exempts a secret rotated outside the document.
   A reason is mandatory, and an entry no ExternalSecret declares is a finding.
 - **Exit codes:** 0 clean, 1 on a finding, 2 on an operator error — a missing
-  manifest directory, an unreadable document, or no ExternalSecret found.
+  manifest directory, an unreadable or unparseable manifest, an unreadable
+  document, a missing `--section`, or no ExternalSecret found.
 
 ## Docs and Taskfile gates
 
@@ -2742,8 +2767,8 @@ renamed into place once it is complete. Stdlib only; needs network egress.
 ci-fetch-tools.py [--dir DIR] [--list] [--force] TOOL...
 ```
 
-Tools: `amtool`, `jq`, `kubeconform`, `kustomize`, `promtool`, `shellcheck`,
-`terraform`. Each prints one line on success, `jq 1.8.2 -> /path/.bin/jq`.
+Tools: `amtool`, `flux`, `jq`, `kubeconform`, `kustomize`, `promtool`,
+`shellcheck`, `task`, `terraform`. Each prints one line on success, `jq 1.8.2 -> /path/.bin/jq`.
 
 - **`DIR` defaults to `$CI_PROJECT_DIR/.bin`**, else `./.bin`, and is created if
   missing. **The caller adds `DIR` to `PATH`**: the script installs binaries and
@@ -2969,17 +2994,20 @@ scripts/check-role-default-flips.py --from <installed tag> --to <new tag>
   `main.yaml` or the files under `defaults/main/`. It reports each bool,
   number, string, list or mapping default that the `--from` ref ships and that
   changed. A mapping change names the changed keys, and a dropped key reports as
-  removed. A key new on the `--to` side is out of scope.
+  removed. A role the `--to` ref still ships with no defaults reports every
+  key as removed. A key new on the `--to` side is out of scope.
 - A flip the inventory declares nowhere fails with exit 1, unless `--allow`
   names it.
 - The inventory is read by structure: `vars:` mappings and inline host
   mappings in any root inventory file, plus `group_vars` and `host_vars` files
   or directories in `.yml` or `.yaml`.
 - The hosts a role reaches come from the plays under `--playbooks`, including
-  roles pulled in through another role's `meta/main.yml` dependencies. A flip
+  roles another role pulls in through its `meta/main.yml` dependencies or a
+  static `include_role` or `import_role` in its task files. A flip
   declared for only some of those hosts is listed with the hosts it misses and
   fails with exit 1. `--allow-partial` reports it without failing.
-- `--lib` defaults to `$WEISSSRV_LIB_PATH`, then `../weisssrv-lib`.
+- `--lib` defaults to `$WEISSSRV_LIB_PATH`, then `.weisssrv-lib`, then
+  `../weisssrv-lib`.
 - **Exit codes:** 0 clean, 1 on an undeclared flip, 2 for no collection, an
   unknown ref, an unreadable defaults file, an inventory with no variables, or
   a group cycle.
@@ -3060,17 +3088,21 @@ scripts/check-include-contract.py --lib-path ../weisssrv-lib
 ```
 
 - `--ci-file` (repeatable, default `.gitlab-ci.yml`), `--repo-root`,
-  `--lib-path` (default `$WEISSSRV_LIB_PATH`).
-- **Three findings.** An `inputs:` key the included file's `spec.inputs` does
+  `--lib-path` (default `$WEISSSRV_LIB_PATH`), `--project`.
+- `--project` names the library's project path. A `project:` include of any
+  other project is then printed as "not contract-checked". Without it, every
+  `project:` include is read as the library.
+- **Four findings.** An `inputs:` key the included file's `spec.inputs` does
   not declare. A declared input with no `default:` that the include passes
   nothing for, which GitLab treats as REQUIRED and rejects the pipeline over. A
-  job whose `stage:` resolves to a stage the pipeline's `stages:` list does not
-  hold.
+  `$[[ inputs.* ]]` reference in the included file that its `spec.inputs` does
+  not declare. A job whose `stage:` resolves to a stage the pipeline's
+  `stages:` list does not hold.
 - Stages come from the pipeline's own `stages:`, else GitLab's
-  `build, test, deploy`, always plus `.pre` and `.post`. A job with no `stage:`
-  resolves to `test`; a job with `extends:` is left unchecked, since its stage
-  may live in another file. A `.hidden` key creates no job, and `pages` is
-  staged by GitLab itself.
+  `build, test, deploy`, always plus `.pre` and `.post`. A job's stage is its
+  own `stage:`, else the first one its `extends:` chain sets, the last parent
+  winning as GitLab merges them, else `test`. A chain that leaves the included
+  file is left unchecked. A `.hidden` key creates no job.
 - `$[[ inputs.* ]]` in a job name or a `stage:` resolves against what the
   include passes first, then the included file's own default.
 - `local:` and `project:` includes are both read. A `remote:`, `component:` or
@@ -3153,14 +3185,16 @@ scripts/unifi-settings-drift.py [--config FILE]
 ### `collect-state-lib.sh`
 
 The pure-logic half of a cluster-state collector. The collector itself stays
-consumer-owned, because its section list is site data; what is shared is the
-redaction guard, the output emitters and the verdict ladder.
+consumer-owned, because its section list is site data. What is shared is the
+redaction guard, the output emitters, the section helpers, the event and alert
+policy and the verdict ladder.
 
 - **Redaction:** `REDACT_PATTERNS` is a sed-program array and `redact_file
   <in> <out>` applies it, then collapses whole PEM private-key blocks in a
   second awk pass. POSIX character classes throughout, so it behaves the same
-  on BSD and GNU sed. A consumer adds its own patterns by appending to the
-  array after sourcing.
+  on BSD and GNU sed. A key-value pattern also matches a JSON-quoted key, and a
+  quoted value is redacted whole. A consumer adds its own patterns by appending
+  to the array after sourcing.
 - **Emitters:** `cs_capped <cap> <fallback>` prints at most `cap` stdin lines
   (`0` uncapped), the fallback when stdin was empty, and an explicit truncation
   marker when the cap clipped; it consumes the whole stream so the producer
@@ -3172,11 +3206,32 @@ redaction guard, the output emitters and the verdict ladder.
   fallback — `1` for a verdict input, so an unaskable query degrades instead of
   reading as a clean zero, and `null` for JSON output, so a consumer can tell
   "none" from "could not ask". **A probe must never return 0 for "unknown".**
-- **`warning_events_filter <cutoff>`** counts Warning events at or after an
-  RFC3339 cutoff from `kubectl get events -o json` on stdin, and echoes
-  `unknown` when jq could not parse the input. The counting rule is
-  `WARNING_EVENTS_JQ`, a readable constant rather than a line inside a remote
-  body; a consumer narrows it there.
+- **Section helpers**, each reading stdin:
+  `cs_head_tail <head> <tail> <fallback>` prints both ends of a listing with an
+  omission marker between. `cs_journal_error_sources` counts the 15 commonest
+  sources in `journalctl -o json`, by container name first.
+  `cs_smart_ata_attrs` prints the failure-predicting `smartctl -A` raw values.
+  `cs_zpool_leaf_paths`, `cs_pool_map` and `cs_disk_pool <device> <map-rc>`
+  map a whole disk to its pool from `zpool status -P`. An unresolved leaf makes
+  `cs_pool_map` return 1, and `cs_disk_pool` then prints `unknown`, never `-`.
+  `cs_snapshot_report` summarises each dataset's snapshots and flags
+  `zfs-auto-snap` ones that `auto-snapshot=false` never prunes.
+- **`cs_tailscale_status`** prints the first peers, or names a failed `sudo` or
+  `tailscale` call, which never reads as "no peers". **`cs_retry_ssh
+  <command...>`** runs an ssh command once more when it exits 255, so one
+  network hiccup does not read as an unreachable host. Never wrap a piped body
+  in it.
+- **`warning_events_filter <cutoff> [exclude]`** counts Warning events at or
+  after an RFC3339 cutoff from `kubectl get events -o json` on stdin, and echoes
+  `unknown` when jq could not parse the input or the filter. The counting rule
+  is `WARNING_EVENTS_JQ`. `exclude` is a jq filter over one event, `false` by
+  default; an event it maps to true never counts.
+- **`firing_alerts_counts <tenant namespaces>`** reads `amtool alert query -o
+  json` and echoes `<platform> <tenant>` firing counts, or `unknown`.
+  `Watchdog`, `InfoInhibitor` and `severity=none` alerts never count, and an
+  alert in a space-joined tenant namespace counts apart. **`alerts_render`**
+  prints one line per alert, firing first, and returns non-zero when jq could
+  not parse the input.
 - **Verdicts:** `classify_regular` / `regular_failing_predicates` (the console
   OK / PARTIAL / FAILED ladder, the second naming which predicates failed) and
   `classify_json` (healthy / degraded / catastrophic). The two read the same
@@ -3186,8 +3241,9 @@ redaction guard, the output emitters and the verdict ladder.
   `-` argument drops that section, and `metrics` needs `backup`.
 - **`firewall_guest_fw_list`** reads candidate `/etc/pve/firewall/*.fw` paths
   on stdin and prints the per-guest ones sorted, without `cluster.fw`.
-- Function-only and safe to source under `set -e`. Requires `jq` only for
-  `warning_events_filter`.
+- Function-only and safe to source under `set -e`. `warning_events_filter`,
+  `firing_alerts_counts` and `alerts_render` need `jq`;
+  `cs_journal_error_sources` needs `python3`, and `cs_pool_map` needs `lsblk`.
 
 ### `find-pve-host-for-vm.sh`
 
@@ -3266,6 +3322,7 @@ scripts/supervised-apply-guard.sh unifi:apply "the UniFi network" "$@"
 | Path | What it is |
 |---|---|
 | `kubernetes/ddns/cloudflare-ddns.py` | a Cloudflare dynamic-DNS CronJob program. See [`cloudflare-ddns.py`](#cloudflare-ddnspy) |
+| `kubernetes/reapers/kube_reaper.py` | the shared half of a pod-reaper CronJob program: kube-apiserver client, paging and `list_items`, creation and terminal ages, uid-preconditioned pod and Secret deletes, `delete_with_logging` (DELETED, GONE, FAILED), `live_pod_refs`, `require_positive`, `rotate`, `Outcome` and the `run_reaper` entry point. Stdlib only. It is mounted beside the app script so `import kube_reaper` resolves from the same directory |
 | `tests/copier_render.py` | copier render harness for a template repo's own suite: `copy_source`, `copier_argv`, `render`, `cli_main`, `check_registered_copies`. Every per-repo value is a parameter; pass `check_registered_copies(..., ref=...)` the consumer's own `WEISSSRV_LIB_REF` so the engine compares against the pinned release instead of the library working tree |
 | `lint/gitattributes` | the line-ending policy, vendored as a consumer's `.gitattributes` |
 

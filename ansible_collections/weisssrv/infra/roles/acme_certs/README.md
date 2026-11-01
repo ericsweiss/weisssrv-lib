@@ -55,19 +55,23 @@ the role is a no-op.
 
 ```yaml
 acme_certs_distribution_targets:
-  - host: dns-02                  # inventory hostname (also the delegate)
-    ip: 10.0.0.160                # address the push connects to
-    host_key: "ssh-ed25519 AAAA..."   # REQUIRED — see host-key pinning
-    cert_dir: /opt/AdGuardHome/certs
-    owner: root
-    group: adguard
-    cert_mode: "0644"
-    key_mode: "0640"
-    restart_service: AdGuardHome  # REQUIRED — or restart_command: <verbatim command>
+  - host: dns-02                  # REQUIRED: inventory hostname, also the delegate
+    ip: 10.0.0.160                # REQUIRED: address the push connects to
+    host_key: "ssh-ed25519 AAAA..."   # REQUIRED: see host-key pinning
+    cert_dir: /opt/AdGuardHome/certs  # REQUIRED
+    owner: root                   # REQUIRED
+    group: adguard                # REQUIRED
+    cert_mode: "0644"             # REQUIRED
+    key_mode: "0640"              # REQUIRED
+    restart_service: AdGuardHome  # REQUIRED, or restart_command: <verbatim command>
     ssh_user: <user>              # defaults to acme_certs_ssh_user
     ssh_port: 22
     ssh_no_sudo: false            # true = appliance, legacy scp push
 ```
+
+The role asserts `host_key` and the reload at entry. The other required keys
+have no default: an entry missing one fails when the receiver or the push
+script renders.
 
 `restart_command` runs verbatim on the target and must invoke `sudo` itself
 where it needs root: the push cannot prepend `sudo`, because a compound shell
@@ -172,6 +176,17 @@ reason: not a distribution target, an `ssh_no_sudo` target, a failed probe, a
 drop while seeding, or no pubkey. The report fails the play unless
 `acme_certs_reseed_fail_on_miss` is `false`. A host with
 `acme_certs_enabled: false` re-pins nothing and reports that the same way.
+
+A play that acts on the result reads two facts the entry point sets on the
+authority host when `acme_certs_enabled` is true:
+
+| Fact | Value |
+|---|---|
+| `acme_certs_reseed_missed_reasons` | map of each requested host left unpinned to its reason; empty when every one was pinned |
+| `acme_certs_reseed_report` | the same map rendered as the one line the report prints |
+
+The full role leaves `acme_certs_unseeded_reasons` instead: every target it
+could not seed, mapped to why.
 
 ## Manual issuance
 
@@ -280,8 +295,9 @@ ssh -i <ssh_key_path> <ssh_user>@<target> </dev/null
 
 ## Security
 
-- local private key `0600`; the distributed key's mode is each target's
-  `key_mode` (`0600` unless a non-root service must read it), cert `0644`
+- local private key `0600`; the distributed key and cert take each target's
+  `key_mode` and `cert_mode`, which have no default. Use `0600` for the key
+  unless a non-root service must read it.
 - the distribution key is locked to the forced-command receiver on sudo targets
   — no shell, no arbitrary sudo
 - the receiver validates every bundle (parse, expiry, key-matches-cert, SAN,

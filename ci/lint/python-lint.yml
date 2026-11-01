@@ -11,10 +11,9 @@ spec:
       description: Base image (must have pip).
     tags:
       type: array
-      default: ["infrastructure"]
+      default: []
       description: >-
-        Runner tag(s). The default targets a privileged runner tagged
-        `infrastructure`; pass `[]` for the shared tag-less tenant runner.
+        Runner tag(s). Empty runs the job on a tag-less runner.
     ruff_version:
       default: "0.17.3"
       description: ruff pip pin.

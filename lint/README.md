@@ -90,7 +90,11 @@ back to the template default `-d relaxed`, which is yamllint's own shipped
 profile rather than this file.
 
 `ruff.toml` selects `E4,E7,E9,F,W,B`; the rationale for that selection lives in
-the file's own header.
+the file itself.
+
+The comments in `ruff.toml` and `yamllint-relaxed.yml` name no path that only
+this library has, so every consumer vendors them byte-identically rather than
+forking them for a header. `tests/test_lint_profiles.py` checks that.
 
 ## Local gate hooks
 

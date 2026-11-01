@@ -6,7 +6,12 @@ resolving a Service hop, a PodMonitor endpoint or a port spelling turns red.
 from __future__ import annotations
 
 import io
+import json
+import os
 import pathlib
+import re
+import subprocess
+import sys
 import textwrap
 
 import pytest
@@ -94,6 +99,14 @@ def policy(port: object = 9100, ports_key: str = "ports") -> str:
         "              kubernetes.io/metadata.name: observability\n"
         + rule
     )
+
+
+@pytest.fixture(autouse=True)
+def _fresh_notes():
+    """Each test starts and ends with no unmodelled-shape notes."""
+    gate.UNMODELLED.clear()
+    yield
+    gate.UNMODELLED.clear()
 
 
 def tree(tmp_path, *documents: str):
@@ -261,8 +274,8 @@ def test_a_service_the_monitor_does_not_select_is_not_judged(tmp_path):
 def test_a_label_only_one_selected_workload_carries_does_not_admit_the_scrape(
     tmp_path, capsys
 ):
-    """The admitted pod labels are the intersection: last-wins greens a tree
-    where one selected workload's pods are not admitted."""
+    """Every selected workload's pods must be admitted, so a label only one of
+    them carries does not admit the scrape."""
     primary = DEPLOYMENT.replace(
         "        app.kubernetes.io/name: app",
         "        app.kubernetes.io/name: app\n        component: primary",
@@ -284,6 +297,7 @@ class TestPodMonitor:
     """The kind the gate advertises; `spec.endpoints` alone would pass it blind."""
 
     def test_a_pod_monitor_port_that_is_admitted_passes(self, tmp_path):
+        """A PodMonitor resolves straight against containerPorts: no Service hop."""
         argv = tree(tmp_path, DEPLOYMENT, POD_MONITOR, policy())
         assert gate.main(argv) == 0
 
@@ -291,11 +305,6 @@ class TestPodMonitor:
         argv = tree(tmp_path, DEPLOYMENT, POD_MONITOR, policy(9101))
         assert gate.main(argv) == 1
         assert "on port 9100" in capsys.readouterr().err
-
-    def test_a_pod_monitor_needs_no_service(self, tmp_path):
-        """A PodMonitor resolves straight against containerPorts: no Service hop."""
-        argv = tree(tmp_path, DEPLOYMENT, POD_MONITOR, policy())
-        assert gate.main(argv) == 0
 
     def test_a_pod_monitor_port_no_container_declares_is_a_violation(self, tmp_path, capsys):
         monitor = POD_MONITOR.replace("port: metrics", "port: telemetry")
@@ -462,10 +471,8 @@ class TestSelectorMatches:
         ],
     )
     def test_an_unevaluable_selector_matches_nothing_and_notes(self, selector):
-        gate.UNMODELLED.clear()
         assert gate.selector_matches(selector, self.LABELS, "subject") is False
         assert any(n.startswith("subject: its selector") for n in gate.UNMODELLED)
-        gate.UNMODELLED.clear()
 
 
 class TestAPeerNarrowingTheScrapeNamespace:
@@ -778,11 +785,9 @@ class TestScrapeAllowDetection:
 
     @pytest.mark.parametrize("selector", ["[]", '""'])
     def test_a_malformed_selector_is_not_a_scrape_allow_and_notes(self, selector):
-        gate.UNMODELLED.clear()
         documents = _documents(_peer_namespace_selector(selector))
         assert gate.scrape_allow(documents) is None
         assert any("is not a mapping" in n for n in gate.UNMODELLED)
-        gate.UNMODELLED.clear()
 
 
 @pytest.mark.parametrize("selector", ["[]", '""'])
@@ -917,16 +922,17 @@ class TestNamespaceFromTree:
 
     def test_the_two_namespace_options_are_mutually_exclusive(self, tmp_path):
         argv = tree(tmp_path, NAMESPACE, DEPLOYMENT, SERVICE, SCOPED_MONITOR, policy())
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit) as caught:
             gate.main([*argv, "--namespace-from-tree", "--namespace", "app"])
+        assert caught.value.code == 2
 
 
-# --- shapes a vacuous pass turned on -----------------------------------------
+# --- shapes that must not pass vacuously ---------------------------------------
 
 
 def test_a_selectorless_service_is_not_credited(tmp_path, capsys):
-    """Manual endpoints: the Service points at no workload here, and an empty
-    selector widened to the monitor's labels, certifying a policy against none."""
+    """Manual endpoints: the Service points at no workload here, so an empty
+    selector must not stand for the monitor's labels and certify a policy against none."""
     manual = SERVICE.replace("  selector:\n    app.kubernetes.io/name: app\n", "")
     argv = tree(tmp_path, DEPLOYMENT, manual, SERVICE_MONITOR, policy())
     assert gate.main(argv) == 1
@@ -997,27 +1003,21 @@ def test_the_same_port_name_at_one_number_is_fine(tmp_path):
 def test_each_namespace_is_judged_against_its_own_policies(tmp_path, capsys):
     """A two-namespace tree: the policy in `a` must not admit the scrape in `b`."""
 
-    def namespaced(document: str, namespace: str) -> str:
-        return document.replace("metadata:\n", f"metadata:\n  namespace: {namespace}\n", 1)
-
     argv = tree(
         tmp_path,
-        *(namespaced(d, "a") for d in (DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy())),
-        *(namespaced(d, "b") for d in (DEPLOYMENT, SERVICE, SERVICE_MONITOR)),
+        *(_namespaced(d, "a") for d in (DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy())),
+        *(_namespaced(d, "b") for d in (DEPLOYMENT, SERVICE, SERVICE_MONITOR)),
     )
     assert gate.main(argv) == 1
     assert "no NetworkPolicy admits namespace observability" in capsys.readouterr().err
 
 
 def test_both_namespaces_wired_passes_and_counts_every_monitor(tmp_path, capsys):
-    def namespaced(document: str, namespace: str) -> str:
-        return document.replace("metadata:\n", f"metadata:\n  namespace: {namespace}\n", 1)
-
     documents = (DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy())
     argv = tree(
         tmp_path,
-        *(namespaced(d, "a") for d in documents),
-        *(namespaced(d, "b") for d in documents),
+        *(_namespaced(d, "a") for d in documents),
+        *(_namespaced(d, "b") for d in documents),
     )
     assert gate.main(argv) == 0
     assert "2 monitor(s)" in capsys.readouterr().out
@@ -1040,13 +1040,10 @@ def test_one_stated_namespace_reaches_the_documents_naming_none(tmp_path):
 def test_an_unassignable_document_in_a_multi_namespace_tree_is_refused(
     tmp_path, capsys
 ):
-    def namespaced(document: str, namespace: str) -> str:
-        return document.replace("metadata:\n", f"metadata:\n  namespace: {namespace}\n", 1)
-
     argv = tree(
         tmp_path,
-        *(namespaced(d, "a") for d in (DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy())),
-        *(namespaced(d, "b") for d in (DEPLOYMENT, SERVICE, SERVICE_MONITOR)),
+        *(_namespaced(d, "a") for d in (DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy())),
+        *(_namespaced(d, "b") for d in (DEPLOYMENT, SERVICE, SERVICE_MONITOR)),
         policy(),
     )
     assert gate.main(argv) == 2
@@ -1166,7 +1163,7 @@ ports:
     port: 9100
     protocol: TCP
 endpoints:
-  - addresses: ["10.0.10.153"]
+  - addresses: ["192.0.2.10"]
 """
 
 SELECTORLESS = SERVICE.replace("  selector:\n    app.kubernetes.io/name: app\n", "")
@@ -1184,7 +1181,7 @@ class TestHandWrittenEndpoints:
     def test_an_endpoints_object_counts_too(self, tmp_path):
         endpoints = (
             "apiVersion: v1\nkind: Endpoints\nmetadata:\n  name: app\n"
-            "subsets:\n  - addresses: [{ip: 10.0.10.153}]\n"
+            "subsets:\n  - addresses: [{ip: 192.0.2.10}]\n"
             "    ports: [{name: metrics, port: 9100}]\n"
         )
         argv = tree(tmp_path, DEPLOYMENT, SELECTORLESS, SERVICE_MONITOR, endpoints)
@@ -1192,7 +1189,7 @@ class TestHandWrittenEndpoints:
 
     def test_a_slice_with_no_address_is_no_target(self, tmp_path, capsys):
         """The object exists, so only its contents tell the scrape from nothing."""
-        empty = ENDPOINT_SLICE.replace('endpoints:\n  - addresses: ["10.0.10.153"]\n', "")
+        empty = ENDPOINT_SLICE.replace('endpoints:\n  - addresses: ["192.0.2.10"]\n', "")
         argv = tree(tmp_path, DEPLOYMENT, SELECTORLESS, SERVICE_MONITOR, empty)
         assert gate.main(argv) == 1
         assert "hold no address on 'metrics'" in capsys.readouterr().err
@@ -1218,7 +1215,7 @@ class TestHandWrittenEndpoints:
         """One subset holds the addresses, another the port: neither serves."""
         endpoints = (
             "apiVersion: v1\nkind: Endpoints\nmetadata:\n  name: app\n"
-            "subsets:\n  - addresses: [{ip: 10.0.10.153}]\n    ports: []\n"
+            "subsets:\n  - addresses: [{ip: 192.0.2.10}]\n    ports: []\n"
             "  - addresses: []\n    ports: [{name: metrics, port: 9100}]\n"
         )
         argv = tree(tmp_path, DEPLOYMENT, SELECTORLESS, SERVICE_MONITOR, endpoints)
@@ -1228,7 +1225,7 @@ class TestHandWrittenEndpoints:
     def test_addresses_a_substitution_fills_in_are_credited(self, tmp_path):
         """A `${...}` placeholder is a scalar here: its addresses are unknowable."""
         deferred = ENDPOINT_SLICE.replace(
-            'endpoints:\n  - addresses: ["10.0.10.153"]\n',
+            'endpoints:\n  - addresses: ["192.0.2.10"]\n',
             "endpoints: ${cluster_exporter_addresses}\n",
         )
         argv = tree(tmp_path, DEPLOYMENT, SELECTORLESS, SERVICE_MONITOR, deferred)
@@ -1247,7 +1244,7 @@ class TestHandWrittenEndpoints:
         """Substitution leaves `none-...` a scalar still, so only a scalar that IS
         the placeholder is credited."""
         partial = ENDPOINT_SLICE.replace(
-            'endpoints:\n  - addresses: ["10.0.10.153"]\n',
+            'endpoints:\n  - addresses: ["192.0.2.10"]\n',
             "endpoints: none-${cluster_exporter_addresses}\n",
         )
         argv = tree(tmp_path, DEPLOYMENT, SELECTORLESS, SERVICE_MONITOR, partial)
@@ -1258,7 +1255,7 @@ class TestHandWrittenEndpoints:
         """Only a `${...}` placeholder legally stands where a list belongs; any
         other scalar is a shape nothing can read."""
         broken = ENDPOINT_SLICE.replace(
-            'endpoints:\n  - addresses: ["10.0.10.153"]\n', "endpoints: none\n"
+            'endpoints:\n  - addresses: ["192.0.2.10"]\n', "endpoints: none\n"
         )
         argv = tree(tmp_path, DEPLOYMENT, SELECTORLESS, SERVICE_MONITOR, broken)
         assert gate.main(argv) == 2
@@ -1410,10 +1407,10 @@ class TestRenderedCorpus:
 
     def test_the_corpus_and_the_namespace_options_are_mutually_exclusive(self, tmp_path):
         stream = corpus(tmp_path, *corpus_documents(_namespaced(policy(), "app")))
-        with pytest.raises(SystemExit):
-            gate.main(["--corpus", stream, "--namespace", "app"])
-        with pytest.raises(SystemExit):
-            gate.main(["--corpus", stream, "--namespace-from-tree"])
+        for option in (["--namespace", "app"], ["--namespace-from-tree"]):
+            with pytest.raises(SystemExit) as caught:
+                gate.main(["--corpus", stream, *option])
+            assert caught.value.code == 2
 
     def test_an_unreadable_corpus_is_an_operator_error(self, tmp_path, capsys):
         assert gate.main(["--corpus", str(tmp_path / "gone.yaml")]) == 2
@@ -1442,7 +1439,7 @@ class TestPodsAChartRenders:
         hand-written endpoints carry no address: that is broken wiring, not
         a chart's."""
         empty_slice = ENDPOINT_SLICE.replace(
-            'endpoints:\n  - addresses: ["10.0.10.153"]\n', "endpoints: []\n"
+            'endpoints:\n  - addresses: ["192.0.2.10"]\n', "endpoints: []\n"
         )
         stream = self._corpus(
             tmp_path, _namespaced(SELECTORLESS, "app"), _namespaced(empty_slice, "app")
@@ -1585,6 +1582,13 @@ def test_a_malformed_ingress_rule_or_peer_is_an_operator_error(tmp_path, capsys,
     assert "is not a list of mappings" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("ingress", ["  ingress:\n    - allow\n", "  ingress: allow\n"])
+def test_a_malformed_rule_with_no_monitor_is_an_operator_error(tmp_path, capsys, ingress):
+    body = policy().split("  ingress:\n")[0] + ingress
+    assert gate.main(tree(tmp_path, DEPLOYMENT, SERVICE, body)) == 2
+    assert "is not a list of mappings" in capsys.readouterr().err
+
+
 def test_an_absent_policy_types_still_reads_the_ingress_rules(tmp_path):
     inferred = policy().replace("  policyTypes: [Ingress]\n", "")
     argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, inferred)
@@ -1596,6 +1600,165 @@ def test_declared_scraper_labels_do_not_leak_between_runs(tmp_path):
     assert gate.main([*argv, "--prometheus-pod-label", "app=prometheus"]) == 0
     assert gate.main(argv) == 0
     assert gate.SCRAPER_LABELS == {}
+
+
+def _as_kind(kind: str) -> str:
+    """The fixture Deployment rewritten as `kind`, its pod template where that kind keeps it."""
+    doc = yaml.safe_load(DEPLOYMENT)
+    template = doc["spec"]["template"]
+    if kind == "Pod":
+        doc = {"apiVersion": "v1", "kind": kind,
+               "metadata": {**doc["metadata"], **template["metadata"]}, "spec": template["spec"]}
+    elif kind == "CronJob":
+        doc = {**doc, "kind": kind, "spec": {"jobTemplate": {"spec": {"template": template}}}}
+    else:
+        doc["kind"] = kind
+    return yaml.safe_dump(doc, sort_keys=False)
+
+
+@pytest.mark.parametrize("kind", ["StatefulSet", "DaemonSet", "ReplicaSet", "Job", "CronJob", "Pod"])
+def test_every_workload_kind_is_read_like_a_deployment(tmp_path, kind):
+    workload = _as_kind(kind)
+    assert yaml.safe_load(workload)["kind"] == kind
+    assert gate.main(tree(tmp_path, workload, SERVICE, SERVICE_MONITOR, policy())) == 0
+    drifted = workload.replace("containerPort: 9100", "containerPort: 9200")
+    assert gate.main(tree(tmp_path, drifted, SERVICE, SERVICE_MONITOR, policy())) == 1
+
+
+@pytest.mark.parametrize(
+    ("kind", "field"),
+    [
+        ("Deployment", "spec.template.metadata"),
+        ("CronJob", "spec.jobTemplate.spec.template.metadata"),
+        ("Pod", "metadata"),
+    ],
+)
+def test_a_malformed_pod_metadata_names_the_kinds_own_field(tmp_path, capsys, kind, field):
+    doc = yaml.safe_load(_as_kind(kind))
+    if kind == "Pod":
+        doc["metadata"] = ["app"]
+    elif kind == "CronJob":
+        doc["spec"]["jobTemplate"]["spec"]["template"]["metadata"] = ["app"]
+    else:
+        doc["spec"]["template"]["metadata"] = ["app"]
+    argv = tree(tmp_path, yaml.safe_dump(doc), SERVICE, SERVICE_MONITOR, policy())
+    assert gate.main(argv) == 2
+    # A Pod's malformed metadata also hides its name.
+    subject = f"{kind} <unnamed>" if kind == "Pod" else f"{kind} app"
+    assert f"{subject}: {field} is not a mapping" in capsys.readouterr().err
+
+
+def test_a_json_network_policy_beside_yaml_is_read(tmp_path):
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR)
+    (tmp_path / "netpol.json").write_text(json.dumps(yaml.safe_load(policy())))
+    assert gate.main(argv) == 0
+
+
+def test_missing_pyyaml_exits_two(tmp_path):
+    stub = tmp_path / "stub"
+    stub.mkdir()
+    (stub / "yaml.py").write_text("raise ImportError('no yaml here')\n")
+    done = subprocess.run(
+        [sys.executable, str(gate.__file__), str(tmp_path)],
+        capture_output=True, text=True, env={**os.environ, "PYTHONPATH": str(stub)},
+    )
+    assert done.returncode == 2
+    assert "PyYAML required" in done.stderr
+
+
+def test_a_non_utf8_manifest_exits_two_without_a_traceback(tmp_path, capsys):
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy())
+    (tmp_path / "broken.yaml").write_bytes(b"kind: \xff\xfeConfigMap\n")
+    assert gate.main(argv) == 2
+    err = capsys.readouterr().err
+    assert "unreadable" in err and "Traceback" not in err
+
+
+def test_an_unparseable_manifest_names_the_file_not_a_string(tmp_path, capsys):
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy())
+    (tmp_path / "broken.yaml").write_text("key: [unclosed\n")
+    assert gate.main(argv) == 2
+    err = capsys.readouterr().err
+    assert "broken.yaml" in err
+    assert "Traceback" not in err and "<unicode string>" not in err
+
+
+def test_a_null_target_port_defaults_to_the_port(tmp_path):
+    service = SERVICE.replace("targetPort: metrics", "targetPort: null")
+    assert gate.main(tree(tmp_path, DEPLOYMENT, service, SERVICE_MONITOR, policy())) == 0
+
+
+def test_an_empty_policy_types_list_still_credits_the_scrape(tmp_path):
+    empty = policy().replace("policyTypes: [Ingress]", "policyTypes: []")
+    assert gate.main(tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, empty)) == 0
+
+
+@pytest.mark.parametrize(
+    ("peer", "shape"),
+    [
+        ("        - namespaceSelector:\n            matchLabels:\n"
+         "              kubernetes.io/metadata.name: observability\n"
+         "            matchExpressions:\n              - {key: team, operator: In, values: [a]}\n",
+         "namespaceSelector.matchExpressions"),
+        ("        - namespaceSelector:\n            matchLabels:\n              team: obs\n",
+         "labels other than"),
+        ("        - ipBlock:\n            cidr: 10.42.0.0/16\n", "ipBlock"),
+        ("        - namespaceSelector: {}\n          podSelector:\n            matchLabels:\n"
+         "              app: prometheus\n", "empty namespaceSelector"),
+    ],
+    ids=["match-expressions-beside-the-name", "another-label", "ip-block", "empty-ns-with-pods"],
+)
+def test_an_unmodelled_peer_fails_naming_its_shape(tmp_path, capsys, peer, shape):
+    rule = ("        - namespaceSelector:\n            matchLabels:\n"
+            "              kubernetes.io/metadata.name: observability\n")
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy().replace(rule, peer))
+    assert gate.main(argv) == 1
+    err = capsys.readouterr().err
+    assert shape in err
+    assert re.search(r"(does not|cannot) (model|resolve)", err), err
+
+
+@pytest.mark.parametrize("scope", ["{any: true}", "{unknown: x}"])
+def test_a_monitor_namespace_selector_the_tree_cannot_scope_exits_two(tmp_path, capsys, scope):
+    monitor = SERVICE_MONITOR + f"  namespaceSelector: {scope}\n"
+    assert gate.main(tree(tmp_path, DEPLOYMENT, SERVICE, monitor, policy())) == 2
+    assert "namespaceSelector" in capsys.readouterr().err
+
+
+def test_a_regular_file_as_the_directory_exits_two(tmp_path, capsys):
+    target = tmp_path / "manifests.yaml"
+    target.write_text(DEPLOYMENT)
+    assert gate.main([str(target)]) == 2
+    assert "is not a directory" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("other", ["a-peers.yaml", "z-peers.yaml"])
+def test_a_second_service_with_the_same_labels_does_not_decide_by_file_order(tmp_path, other):
+    argv = tree(tmp_path, DEPLOYMENT, SERVICE, SERVICE_MONITOR, policy())
+    twin = SERVICE.replace("name: app\n  labels", "name: app-peers\n  labels")
+    (tmp_path / other).write_text(twin.replace("targetPort: metrics", "targetPort: 9300"))
+    assert gate.main(argv) != 0
+    (tmp_path / other).write_text(twin)
+    assert gate.main(argv) == 0
+
+
+def test_an_unnamed_container_port_scraped_by_number_passes(tmp_path):
+    unnamed = DEPLOYMENT.replace("            - name: metrics\n              containerPort",
+                                 "            - containerPort")
+    service = SERVICE.replace("targetPort: metrics", "targetPort: 9100")
+    assert gate.main(tree(tmp_path, unnamed, service, SERVICE_MONITOR, policy())) == 0
+
+
+def test_service_labels_wider_than_its_pod_selector_still_resolve(tmp_path):
+    wide = SERVICE.replace("  labels:\n", "  labels:\n    team: obs\n", 1)
+    assert gate.main(tree(tmp_path, DEPLOYMENT, wide, SERVICE_MONITOR, policy())) == 0
+    drifted = wide.replace("targetPort: metrics", "targetPort: 9300")
+    assert gate.main(tree(tmp_path, DEPLOYMENT, drifted, SERVICE_MONITOR, policy())) == 1
+
+
+def test_a_monitor_port_the_service_does_not_declare_is_a_violation(tmp_path):
+    monitor = SERVICE_MONITOR.replace("    - port: metrics", "    - port: web")
+    assert gate.main(tree(tmp_path, DEPLOYMENT, SERVICE, monitor, policy())) == 1
 
 
 if __name__ == "__main__":

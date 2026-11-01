@@ -59,7 +59,7 @@ def _site_play(roles, hosts: str = "all") -> str:
 
 
 def _main_args(monkeypatch, tmp_path, old: dict, new: dict, playbook: str | None = None,
-               deps: dict | None = None) -> list[str]:
+               deps: dict | None = None, shipped: set | None = None) -> list[str]:
     """Patch the lib side and lay out a fixture inventory and playbooks: main()'s argv."""
     inv = _inventory(tmp_path, **{"group_vars__all.yml": "unrelated_var: 1\n"})
     books = _playbooks(tmp_path, **{"site.yml": playbook or _site_play(set(old) | set(new))})
@@ -68,13 +68,17 @@ def _main_args(monkeypatch, tmp_path, old: dict, new: dict, playbook: str | None
         gate, "role_defaults", lambda lib, ref, collection=None: {"old": old, "new": new}[ref]
     )
     monkeypatch.setattr(gate, "role_dependencies", lambda lib, ref, collection=None: deps or {})
+    shipped = set(new) if shipped is None else shipped
+    monkeypatch.setattr(gate, "role_names", lambda lib, ref, collection=None: shipped)
     return ["--from", "old", "--to", "new", "--inventory", str(inv), "--playbooks", str(books)]
 
 
 def _run(monkeypatch, capsys, tmp_path, old: dict, new: dict, *extra: str,
-         playbook: str | None = None, deps: dict | None = None) -> tuple[int, str]:
+         playbook: str | None = None, deps: dict | None = None,
+         shipped: set | None = None) -> tuple[int, str]:
     """Drive main() over two in-memory default sets and fixture inventory and playbooks."""
-    rc = gate.main([*_main_args(monkeypatch, tmp_path, old, new, playbook, deps), *extra])
+    rc = gate.main([*_main_args(monkeypatch, tmp_path, old, new, playbook, deps, shipped),
+                    *extra])
     return rc, capsys.readouterr().err
 
 
@@ -346,9 +350,10 @@ def _meta(lib: Path, body: str) -> None:
          "ships no role defaults"),
         (lambda lib: _meta(lib, "dependencies:\n  beta: {}\n"), "HEAD", "role_dependencies",
          "not a list"),
+        (None, "v9", "role_dependencies", "git grep"),
     ],
     ids=["unknown-ref", "unparseable-defaults", "defaults-not-mapping", "no-role-defaults",
-         "meta-dependencies-not-list"],
+         "meta-dependencies-not-list", "unknown-ref-dependencies"],
 )
 def test_an_unusable_lib_ref_is_vacuous(lib: Path, change, ref, read, message) -> None:
     if change:
@@ -687,6 +692,17 @@ def test_a_declared_removed_default_passes_the_gate(monkeypatch, capsys, tmp_pat
     assert rc == 0, err
 
 
+@pytest.mark.parametrize(("shipped", "expected"), [({"alpha"}, 1), (set(), 0)],
+                         ids=["role-still-shipped", "role-gone"])
+def test_main_flips_every_key_of_a_shipped_role_whose_defaults_are_gone(
+    monkeypatch, capsys, tmp_path, shipped: set, expected: int
+) -> None:
+    rc, err = _run(monkeypatch, capsys, tmp_path, {"alpha": {"alpha_on": True}}, {},
+                   playbook=_site_play({"alpha"}), shipped=shipped)
+    assert rc == expected, err
+    assert ("alpha_on is removed from the role defaults" in err) is bool(expected)
+
+
 def test_a_removed_default_read_from_a_real_checkout_is_a_flip(lib: Path) -> None:
     _defaults(lib, "alpha", "alpha_port: 2\n")
     _git(lib, "commit", "-qam", "drop alpha_on")
@@ -697,8 +713,8 @@ def test_a_removed_default_read_from_a_real_checkout_is_a_flip(lib: Path) -> Non
 @pytest.mark.parametrize(
     ("collection", "env", "argv", "message"),
     [
-        (False, None, ["--lib", "{tmp}"], "carries no"),
-        (False, "{tmp}", [], "carries no"),
+        (False, None, ["--lib", "{tmp}"], "collection in"),
+        (False, "{tmp}", [], "collection in"),
         (True, None, ["--lib", "{tmp}"], "could not run"),
     ],
     ids=["lib-without-collection", "env-lib-without-collection", "no-git-on-path"],
@@ -714,3 +730,122 @@ def test_an_unusable_lib_path_exits_two(
     argv = [arg.format(tmp=tmp_path) for arg in argv]
     assert gate.main(["--from", "v1", "--to", "v2", *argv]) == 2
     assert message in capsys.readouterr().err
+
+
+def test_no_role_include_anywhere_is_no_dependency(lib: Path) -> None:
+    assert gate.role_dependencies(lib, "v2") == {}
+
+
+def test_role_dependencies_reads_include_role_in_role_tasks(lib: Path) -> None:
+    tasks = lib / gate.COLLECTION / "roles" / "alpha" / "tasks" / "main.yml"
+    tasks.parent.mkdir(parents=True)
+    tasks.write_text(
+        "- block:\n"
+        "    - ansible.builtin.include_role:\n        name: weisssrv.infra.beta\n"
+        "- import_role:\n    name: gamma\n"
+        "- include_role:\n    name: '{{ dynamic }}'\n"
+        "- block: []\n  rescue:\n    - include_role:\n        name: epsilon\n"
+        "  always:\n    - import_role:\n        name: zeta\n",
+        encoding="utf-8",
+    )
+    handlers = tasks.parent.parent / "handlers" / "main.yml"
+    handlers.parent.mkdir(parents=True)
+    handlers.write_text("- include_role:\n    name: delta\n", encoding="utf-8")
+    _git(lib, "add", "-A")
+    _git(lib, "commit", "-qm", "include")
+    assert gate.role_dependencies(lib, "HEAD") == {
+        "alpha": {"beta", "gamma", "epsilon", "zeta"}
+    }
+
+
+def test_a_deleted_defaults_file_under_a_surviving_role_flips_every_key(lib: Path) -> None:
+    _git(lib, "rm", "-q", f"{gate.COLLECTION}/roles/alpha/defaults/main.yml")
+    (lib / gate.COLLECTION / "roles" / "alpha" / "tasks").mkdir(parents=True)
+    (lib / gate.COLLECTION / "roles" / "alpha" / "tasks" / "main.yml").write_text("---\n")
+    _git(lib, "add", "-A")
+    _git(lib, "commit", "-qm", "drop alpha defaults")
+    flips = gate.flipped_defaults(
+        gate.role_defaults(lib, "v2"), gate.role_defaults(lib, "HEAD"),
+        gate.role_names(lib, "HEAD"),
+    )
+    assert flips == [
+        ("alpha", "alpha_on", True, gate.REMOVED),
+        ("alpha", "alpha_port", 2, gate.REMOVED),
+    ]
+
+
+def test_a_role_gone_entirely_reports_no_flips(lib: Path) -> None:
+    _git(lib, "rm", "-rq", f"{gate.COLLECTION}/roles/alpha")
+    _git(lib, "commit", "-qm", "drop alpha")
+    assert gate.flipped_defaults(
+        gate.role_defaults(lib, "v2"), gate.role_defaults(lib, "HEAD"),
+        gate.role_names(lib, "HEAD"),
+    ) == []
+
+
+def test_the_lib_sync_checkout_wins_over_the_sibling(monkeypatch, tmp_path) -> None:
+    repo = tmp_path / "repo"
+    for path in (repo / ".weisssrv-lib", tmp_path / "weisssrv-lib"):
+        (path / gate.COLLECTION).mkdir(parents=True)
+    monkeypatch.delenv("WEISSSRV_LIB_PATH", raising=False)
+    monkeypatch.setattr(gate, "REPO", repo)
+    assert gate.lib_root() == repo / ".weisssrv-lib"
+
+
+def test_the_sibling_checkout_serves_without_lib_sync(monkeypatch, tmp_path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (tmp_path / "weisssrv-lib" / gate.COLLECTION).mkdir(parents=True)
+    monkeypatch.delenv("WEISSSRV_LIB_PATH", raising=False)
+    monkeypatch.setattr(gate, "REPO", repo)
+    assert gate.lib_root() == tmp_path / "weisssrv-lib"
+
+
+def test_the_env_checkout_wins_over_lib_sync(monkeypatch, tmp_path) -> None:
+    repo = tmp_path / "repo"
+    for path in (repo / ".weisssrv-lib", tmp_path / "named"):
+        (path / gate.COLLECTION).mkdir(parents=True)
+    monkeypatch.setenv("WEISSSRV_LIB_PATH", str(tmp_path / "named"))
+    monkeypatch.setattr(gate, "REPO", repo)
+    assert gate.lib_root() == tmp_path / "named"
+
+
+def test_task_files_that_include_each_other_end_the_walk(tmp_path) -> None:
+    targets, _ = _targets(
+        tmp_path,
+        **{
+            "site.yml": "- hosts: k3s\n  tasks:\n    - ansible.builtin.include_tasks: tasks/a.yml\n",
+            "tasks__a.yml": "- ansible.builtin.import_tasks: b.yml\n"
+                            "- ansible.builtin.include_role:\n    name: weisssrv.infra.alpha\n",
+            "tasks__b.yml": "- ansible.builtin.include_tasks: a.yml\n",
+        },
+    )
+    assert targets == {"alpha": {"node-one"}}
+
+
+def test_a_task_file_included_inside_a_rescue_block_is_walked(tmp_path) -> None:
+    targets, _ = _targets(
+        tmp_path,
+        **{
+            "site.yml": """\
+                - hosts: k3s
+                  tasks:
+                    - block: []
+                      rescue:
+                        - ansible.builtin.include_tasks: tasks/inner.yml
+                """,
+            "tasks__inner.yml": "- ansible.builtin.include_role:\n    name: weisssrv.infra.alpha\n",
+        },
+    )
+    assert targets == {"alpha": {"node-one"}}
+
+
+def test_the_play_walk_and_the_dependency_reader_find_the_same_role_includes(tmp_path) -> None:
+    tasks = [
+        {"ansible.builtin.include_role": {"name": "alpha"}, "vars": {"alpha_x": 1}},
+        {"block": [{"import_role": {"name": "beta"}}],
+         "always": [{"block": [{"include_role": {"name": "gamma"}}]}]},
+    ]
+    walked = gate._Walk().tasks(tasks, tmp_path, ())
+    assert sorted(gate._included_roles(tasks)) == sorted(walked) == ["alpha", "beta", "gamma"]
+    assert walked["alpha"] == {"alpha_x"}

@@ -146,6 +146,12 @@ class TestFetchToolsPinParity:
         assert template_input_default(FLUX_LINT, f"{tool}_version") == pinned.version
         assert template_input_default(FLUX_LINT, f"{tool}_sha256") == pinned.sha256
 
+    def test_the_flux_lint_flux_default_matches(self):
+        """The fetched flux and the strict parser's default are one release."""
+        pinned = _fetch_tools()["flux"]
+        assert template_input_default(FLUX_LINT, "flux_version") == pinned.version
+        assert template_input_default(FLUX_LINT, "flux_sha256") == pinned.sha256
+
     @pytest.mark.parametrize("tool", ["kustomize", "kubeconform", "shellcheck"])
     def test_the_github_example_env_matches(self, tool):
         pinned = _fetch_tools()[tool]
@@ -168,7 +174,7 @@ class TestFetchToolsPinParity:
 
     def test_the_table_carries_every_tool_named_above(self):
         """A renamed key would make every case above vacuous."""
-        assert {"kustomize", "kubeconform", "shellcheck", "terraform"} <= set(
+        assert {"flux", "kustomize", "kubeconform", "shellcheck", "terraform"} <= set(
             _fetch_tools()
         )
 

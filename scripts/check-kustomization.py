@@ -32,7 +32,7 @@ RESOURCE_KEYS = (
 CONTENT_KEYS = RESOURCE_KEYS + (
     "patches", "patchesStrategicMerge", "patchesJson6902", "replacements",
     "transformers", "images", "labels", "commonLabels", "commonAnnotations",
-    "replicas", "openapi",
+    "replicas", "openapi", "crds", "configurations",
 )
 
 
@@ -42,7 +42,7 @@ class GateError(Exception):
 
 def is_local(name: str) -> bool:
     """A remote base is fetched by kustomize, so it is not a path on disk."""
-    if name.startswith(("git::", "git@", "ssh://")) or "://" in name:
+    if name.startswith(("git::", "git@", "ssh://", "github.com/")) or "://" in name:
         return False
     if "?" in name:  # ?ref=, ?timeout=, ?submodules=
         return False

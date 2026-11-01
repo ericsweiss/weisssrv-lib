@@ -386,10 +386,9 @@
         state: directory
         mode: "0755"
 
-    # CRITICAL: the asserts above prove the expression, not the wiring. This
-    # publishes through the role's own task against a stub that prints a
-    # line-numbered parse error and exits 0, so failed_when has to catch it.
-    # Tagged so the idempotence replay does not re-fire the guard.
+    # Proves the wiring: the role's own publish task against a stub that prints
+    # a parse error and exits 0, so failed_when has to catch it. Tagged so the
+    # idempotence replay does not re-fire the guard.
     - name: Compile gate — a parse error that exits 0 must fail the publish
       tags: [molecule-idempotence-notest]
       block:

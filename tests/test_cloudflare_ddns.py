@@ -500,3 +500,9 @@ def test_api_request_logs_an_http_error_body_and_returns_none(ddns, monkeypatch,
     err = capsys.readouterr().err
     assert "HTTP 403 Forbidden on GET " + url in err
     assert "Invalid access token" in err
+
+
+@pytest.mark.parametrize("entry", ["gt", ("git",), ("git", True, "x"), None])
+def test_records_are_valid_rejects_an_entry_that_is_not_a_pair(ddns, capsys, entry):
+    assert ddns.records_are_valid((entry,)) is False
+    assert "is not a (name, proxied) pair" in capsys.readouterr().err

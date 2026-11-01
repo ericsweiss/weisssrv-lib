@@ -16,8 +16,8 @@ spec:
       type: array
       default: []
       description: >-
-        Runner tag(s); a consumer passes its privileged tag for a job that needs
-        root or Docker-in-Docker.
+        Runner tag(s). Empty runs the job on a tag-less runner.
+        A `setup_command` that installs with apt needs root.
     script_path:
       default: "scripts/version-bump-mr.py"
       description: >-
@@ -34,8 +34,10 @@ spec:
     check_command:
       description: >-
         REQUIRED. Shell command that rewrites the repo's version pins in place
-        (e.g. `task maintenance:update-all-versions`). Anything it leaves
-        untracked is ignored; only tracked changes under `paths` are committed.
+        (e.g. `task -x maintenance:update-all-versions`: plain go-task exits 201
+        on any failure, and `-x` passes the checker's own exit code through).
+        Anything it leaves untracked is ignored; only tracked changes under
+        `paths` are committed.
         A checker that signals "updates found" with a non-zero rc names that rc
         in `check_soft_fail_exit_codes`; every other non-zero status fails the
         job. A checker that can ship partial results maps its own outcomes:
@@ -49,7 +51,8 @@ spec:
         job, so a broken checker cannot look like an empty run. The codes apply
         to the WHOLE command, so a multi-step `check_command` must remap its own
         error codes off this list (e.g. `|| exit 2`) or a real failure reads as
-        "updates found".
+        "updates found". `"0"` names no soft code, for a checker that exits 0
+        whether or not it found updates.
     paths:
       default: "."
       description: Space-separated paths the bot stages and diffs.

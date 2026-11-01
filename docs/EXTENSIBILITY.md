@@ -42,19 +42,25 @@ Two rules govern every seam:
 ### Known gaps in the CI secrets seam
 
 `secrets_source: env` reads `$SSH_PRIVATE_KEY` and `$KUBECONFIG_B64` from
-masked CI variables. A third backend supplies those two variables from its own `before_script`, or
-replaces the include, as the cluster template's `secret_read()` and
-`secret_runner()` macros do. Two couplings stay the consumer's to handle:
+masked CI variables. A third backend supplies those two variables from its own
+`before_script`, or replaces the include, as the cluster template's
+`secret_read()` and `secret_runner()` macros do. These couplings stay the
+consumer's to handle:
 
 - `LOKI_PUSH_USER` / `LOKI_PUSH_PASSWORD` are `op://` strings only `op run`
-  resolves, so `env` mode overrides them on the job.
+  resolves, so `env` mode overrides them on the job. `deploy-base` still
+  requires `op_vault` in `env` mode, and any placeholder satisfies it.
 - `deploy-base` extends `.install-1password`, so the CLI is installed even
   when nothing calls it.
+- `cluster-verify-base` and `terraform-drift-plan` take no `secrets_source`.
+  Their `before_script` always runs `.install-1password` or
+  `.install-1password-alpine`, and a `!reference` cannot be gated on an input.
+  A consumer on another backend still includes `install-1password.yml`, or
+  replaces those two includes with its own jobs.
 
-`ci/templates/docker-dind.yml` is shipped without `ci/build/docker-build.yml`
-extending it — that would force the new file into every consumer's include block and break the app template's rendered tenant
-pipeline until it is re-tagged. `tests/test_pin_parity.py` holds their pins
-equal instead.
+`ci/build/docker-build.yml` carries its own copy of the DinD service rather
+than extending `ci/templates/docker-dind.yml`, so a consumer includes one file.
+`tests/test_pin_parity.py` holds their pins equal.
 
 ## Backend-specific by design
 
@@ -167,7 +173,11 @@ mapping.
 |---|---|---|
 | `metallb_internal_vip` | `internal_vip` | Yes — the same LAN-only ingress VIP. A rename is an app-template MAJOR, because every existing tenant must then edit `.copier-answers.yml`. |
 | `git_backend` (`gitlab_selfhosted`, `github`) | `ci_shape` (`gitlab_selfhosted`, `github`, `none`) | No — deliberately distinct. `git_backend` is the forge the cluster repo lives on; `ci_shape` is the pipeline the tenant repo renders, and `none` renders no pipeline at all. |
-| `secrets_backend` (`onepassword`) | `secrets_backend` (`onepassword`, `gitlab`, `none`) | Same name, different scope. The cluster answer covers host tooling and in-cluster secrets; the tenant answer covers in-cluster only. The cluster template's tenants README shows a 1Password ClusterSecretStore only, so the operator side of the tenant `gitlab` backend has no worked example yet. |
+| `secrets_backend` (`onepassword`) | `secrets_backend` (`onepassword`, `gitlab`, `none`) | Same name, different scope. The cluster answer covers host tooling and in-cluster secrets; the tenant answer covers in-cluster only. |
+
+Known gap: the cluster template's tenants README shows a 1Password
+ClusterSecretStore only. The operator side of the tenant `gitlab` secrets
+backend has no worked example.
 
 ## Contract for adding an alternative
 

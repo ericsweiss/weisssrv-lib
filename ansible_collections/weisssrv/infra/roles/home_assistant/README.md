@@ -56,7 +56,8 @@ putting them in inventory. Set the variables directly to bypass that.
 
 `home_assistant_ssl_enabled` is `false` by default on purpose: HA fails to bind
 8123 when `configuration.yaml` names a cert file that is not on the appliance
-yet. Turn it on once the cert has been distributed to `/ssl`.
+yet. Turn it on once the cert has been distributed to `/ssl`. Like the rest of
+the `http:` block, it reaches an instance on first boot only.
 
 ### Worked example
 
@@ -122,14 +123,15 @@ through `to_json` so a value containing `:` or `[` stays valid YAML.
 Both templates must stay **byte-stable** across runs — the idempotency check is
 a checksum comparison, so a timestamp in the render would defeat it.
 
-### `trusted_proxies` governs first boot only
+### The `http:` block governs first boot only
 
-`home_assistant_trusted_proxies` is rendered into the `http:` block because a
-fresh instance imports it, and it is asserted at role entry. It is **not** the
-live control on an instance that has already migrated `http` to its storage
-backend: from then on Home Assistant answers from `/config/.storage/http` and
-ignores the YAML list, so a narrower list here does not stop a LAN host
-forging `X-Forwarded-For`.
+The rendered `http:` block holds `use_x_forwarded_for`, `trusted_proxies` from
+`home_assistant_trusted_proxies`, and the `ssl_certificate` and `ssl_key`
+paths. A fresh instance imports it, and `home_assistant_trusted_proxies` is
+asserted at role entry. It is **not** the live control on an instance that has
+already migrated `http` to its storage backend. From then on Home Assistant
+answers from `/config/.storage/http` and ignores the YAML, so a narrower list
+here does not stop a LAN host forging `X-Forwarded-For`.
 
 The effective list is live UI state, not something this role writes — editing
 `.storage` from Ansible would race Home Assistant's own writer. Change it on
@@ -137,6 +139,10 @@ HAOS (over the SSH add-on this role already uses, or `qm guest exec` on the
 hypervisor when the add-on is unreachable) and restart Home Assistant, then
 re-check from a host that should not be trusted. Keep the rendered list correct
 anyway: it is what a rebuilt instance imports.
+
+Password login is the fallback when SSO is unavailable. The `openid:` block is
+read from YAML on every start, so `home_assistant_oidc_block_login: false` and a
+redeploy bring back Home Assistant's own login.
 
 ## Prerequisites on HAOS
 

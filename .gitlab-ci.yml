@@ -76,14 +76,11 @@ include:
       schedule_when: "never"
       changes:
         - "docker/molecule-test/**/*"
-  # MR-targeted molecule child pipeline. Every other input already matches this
-  # repo. The PLAN job is non-root safe, so it runs on the shared runner.
+  # MR-targeted molecule child pipeline. Every input default matches this repo:
+  # the plan job is non-root safe and the child's jobs carry their own tags.
   - local: /ci/internal/molecule-matrix.gitlab-ci.yml
-    inputs:
-      tags: []
   - local: /ci/lint/ansible-lint.yml
     inputs:
-      tags: []
       job_memory_limit: "1Gi"
       job_memory_request: "256Mi"
       config: "-c .ansible-lint"
@@ -122,7 +119,6 @@ include:
         - ".gitlab-ci.yml"
   - local: /ci/lint/yaml-lint.yml
     inputs:
-      tags: []
       job_memory_limit: "1Gi"
       job_memory_request: "256Mi"
       image: python:3.14-slim
@@ -145,7 +141,6 @@ include:
         - ".pre-commit-config.yaml"
   - local: /ci/lint/shellcheck.yml
     inputs:
-      tags: []
       job_memory_limit: "1Gi"
       job_memory_request: "256Mi"
       direct_globs: "scripts/*.sh"
@@ -159,7 +154,6 @@ include:
         - ".gitlab-ci.yml"
   - local: /ci/lint/python-lint.yml
     inputs:
-      tags: []
       image: python:3.14-slim
       config: "--config lint/ruff.toml"
       # examples/ carries a runnable *.example.py that tests/test_examples.py
@@ -176,7 +170,6 @@ include:
   # changes: the template default already matches the checker's roots.
   - local: /ci/lint/docs-link-check.yml
     inputs:
-      tags: []
       job_memory_limit: "1Gi"
       job_memory_request: "256Mi"
       image: python:3.14
@@ -185,11 +178,9 @@ include:
   # No config file here, so PyYAML is not installed.
   - local: /ci/lint/comment-length.yml
     inputs:
-      tags: []
       pyyaml_version: ""
   - local: /ci/test/python-tests.yml
     inputs:
-      tags: []
       job_memory_limit: "2Gi"
       job_memory_request: "512Mi"
       # The FULL python image (not -slim) ships git — needed by the
@@ -247,7 +238,6 @@ include:
   # legacy nodes. allow_failure keeps its default, so findings block the merge.
   - local: /ci/security/secret-detection.yml
     inputs:
-      tags: []
       job_memory_limit: "1Gi"
       job_memory_request: "256Mi"
       cpu_selector: "esweiss.com/cpu=modern"
@@ -256,7 +246,6 @@ include:
   # `terraform test` exercises the validation blocks (mock_provider, no creds).
   - local: /ci/validate/terraform.yml
     inputs:
-      tags: []
       validate_stage: lint
       fmt_dir: "terraform/"
       module_glob: "terraform/modules/*/"
@@ -264,12 +253,11 @@ include:
       changes:
         - "terraform/**/*"
         - ".gitlab-ci.yml"
-  # AI code review; everything but the runner tag and `needs` is the template
-  # default. secrets_source stays `env`: the shared runner is non-root and
-  # cannot apt-install the op CLI, so both secrets come from masked CI variables.
+  # AI code review; everything but `needs` is the template default. The default
+  # secrets_source `env` suits the shared runner: it is non-root and cannot
+  # apt-install the op CLI, so both secrets come from masked CI variables.
   - local: /ci/review/pr-agent.yml
     inputs:
-      tags: []
       needs:
         - job: yaml-lint
           optional: true

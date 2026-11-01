@@ -62,14 +62,15 @@ into the secret store the exporters read.
 | `proxmox_firewall_storage_role_name` | `nas` | The `proxmox_role` value whose nodes inherit `sg-nfs-server` and `sg-smb-server` in host.fw |
 | `proxmox_firewall_host_extra_groups` | `[]` | Extra `GROUP <name>` references appended to this node's host.fw, after the built-ins |
 | `proxmox_firewall_dns_admin_ports` | `:443` + `:3000`, admin sets only | Resolver admin surfaces in `sg-dns` (`{port, sources[], comment?}`, asserted) |
-| `proxmox_firewall_dns_client_sources` | `[admin_ts, admin_lan]` | IPSets allowed to resolve (`:53` tcp+udp in `sg-dns`) — point at a wider client set once `admin_lan` shrinks to the management subnet |
+| `proxmox_firewall_dns_client_sources` | `[admin_ts, admin_lan]` | IPSets allowed to resolve (`:53` tcp+udp in `sg-dns`) — point it at a wider client set when `admin_lan` holds only the management subnet |
 | `proxmox_firewall_k3s_ingress_int_sources` | `[admin_ts, admin_lan]` | IPSets allowed at the internal Traefik ingress (`:80`/`:443` in `sg-k3s-ingress-int`) — same split |
 | `proxmox_firewall_metrics_scrape_ports` | `[]` | Application scrape targets appended to `sg-metrics` (same `{port, sources[], comment?}` schema, asserted) |
 | `proxmox_firewall_host_egress_extra_ports` | `[]` | Site services the nodes reach, appended to `sg-host-egress` (`{port, proto, comment?}`, asserted) |
 | `proxmox_firewall_smtp_relay_sources` | `[]` | IPSets allowed at the relay's `:25` and `:587` (`sg-smtp-relay`). Empty renders no rule, so the relay stays unreachable until the site names its client sets. The role fails at cluster scope, before `cluster.fw` is written, when an inventory guest carries the group and this is empty |
 | `proxmox_firewall_smtp_relay_extra_egress_ports` | `[]` | Extra egress ports the relay guest reaches, appended to `sg-smtp-relay` (`{port, proto, comment?}`) |
 | `proxmox_firewall_insecure_migration_ports` | `false` | Open the cleartext live-migration range (60000-60050) |
-| `proxmox_firewall_wan_wireguard_vips` | `[]` | VIPs the WAN WireGuard `-dest` rule is scoped to; empty = no such rule |
+| `proxmox_firewall_wan_wireguard_vips` | `[]` | VIPs the WAN WireGuard `-dest` rule is scoped to, as literal addresses or CIDRs; empty = no such rule |
+| `proxmox_firewall_k3s_public_vips` | `[]` | Public ingress VIPs the `sg-k3s-ingress-pub` `:443`/`:80` rules are scoped to with `-dest`, as literal addresses or CIDRs; empty = both ports open on every address of the guest. A non-empty list leaves `proxmox_firewall_k3s_ingress_int_sources` as the only way to reach `:443`/`:80` on the internal ingress VIP and the node addresses, so make that list complete first |
 | `proxmox_firewall_extra_aliases` | `[]` | `[ALIASES]` entries that are not inventory hosts (`{name, cidr, comment?}`) |
 | `proxmox_firewall_cluster_rules` | `[]` | Extra raw lines under cluster.fw `[RULES]` |
 | `proxmox_firewall_host_rules` | `[]` | Extra raw lines under host.fw `[RULES]`, rendered **before** the security groups and the egress DROP — first-match-wins, so they outrank every group rule |
@@ -101,6 +102,7 @@ answered, so one node being down does not fail the whole deploy. When nothing
 answered the role fails there, naming the group: a delegate that failed the
 probe would die UNREACHABLE on the first write into pmxcfs. Set
 `proxmox_firewall_delegate_host` to pin a node instead.
+
 Every host derives the delegate from the probe runner's fact, so the `run_once`
 delegation and the per-host `hostvars` reads agree even in guest-only plays.
 
@@ -113,12 +115,13 @@ and the second `cluster.fw` render out of every later play.
 
 Guest plays include this role too, and `cluster.fw` is rendered from the play's
 first host, not from the Proxmox delegate. Every cluster-scope input must
-therefore be defined at a scope every including play sees (`group_vars/all`),
-never in the Proxmox group's vars: `proxmox_firewall_security_groups`,
+therefore be defined in `group_vars/all`, a scope every including play sees.
+It never goes in the Proxmox group's vars. The cluster-scope inputs are
+`proxmox_firewall_security_groups`,
 `_extra_aliases`, `_admin_lan_cidrs`, `_admin_ts_cidrs`, `_smb_client_cidrs`,
 `_dns_admin_ports`, `_dns_client_sources`, `_k3s_ingress_int_sources`,
 `_metrics_scrape_ports`, `_host_egress_extra_ports`, `_smtp_relay_sources`,
-`_smtp_relay_extra_egress_ports`, `_wan_wireguard_vips`,
+`_smtp_relay_extra_egress_ports`, `_wan_wireguard_vips`, `_k3s_public_vips`,
 `_insecure_migration_ports` and `_cluster_rules`. The `sg-host-egress` group
 itself lives in cluster.fw; only the flag that references it is per host. The
 role asserts this against the delegate's own scope and fails loudly, naming the
@@ -200,10 +203,9 @@ a credentialed surface, and a relay's log sink is site data:
   `proxmox_firewall_dns_client_sources` and
   `proxmox_firewall_k3s_ingress_int_sources`. Both default to
   `[admin_ts, admin_lan]`, so a site that leaves them alone serves both
-  surfaces to the admin sets. On a segmented network they are what lets
-  `admin_lan` shrink to the management subnet without taking DNS or the apps
-  down with it: declare the client subnets as their own IPSets and name them
-  here.
+  surfaces to the admin sets. On a segmented network `admin_lan` holds only the
+  management subnet. Declare the client subnets as their own IPSets and name
+  them here, so DNS and the apps stay reachable from those subnets.
 
   ```yaml
   firewall_ipset_special_entries:
@@ -221,10 +223,9 @@ a credentialed surface, and a relay's log sink is site data:
   Each name renders one `+dc/<name>` rule per port, in list order. The resolver
   *admin* surfaces stay on `proxmox_firewall_dns_admin_ports` — widening the
   client scope must not widen the credentialed API with it. Every name must be
-  a set the site actually declares: a `+dc/` naming an undeclared IPSet makes
-  pve-firewall refuse the whole datacenter ruleset after the role has already
-  written the file. The role's compile gate reports it; see
-  [Writing into pmxcfs](#writing-into-pmxcfs).
+  a set the site actually declares. pve-firewall refuses the whole datacenter
+  ruleset when a `+dc/` names an undeclared IPSet, and the compile gate in
+  [Writing into pmxcfs](#writing-into-pmxcfs) fails the play.
 - All four hand-authored lists share one schema, asserted at role entry. On the
   port lists `port` is required and `sources` must be a non-empty **list**; the
   two client-scope lists must themselves be non-empty lists. A bare scalar

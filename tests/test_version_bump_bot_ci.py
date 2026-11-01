@@ -106,7 +106,7 @@ def test_contract_section_does_not_recommend_masking() -> None:
     """The contract a consumer reads agrees with the template's rc semantics."""
     section = _contract_section()
     assert "check_soft_fail_exit_codes" in section
-    assert "Do not wrap it in `|| true`" in section
+    assert "Never wrap `check_command` in `|| true`" in section
     assert 'check_command: "\u2026 || true"' not in section
 
 
@@ -150,6 +150,35 @@ def test_an_and_or_rc_capture_would_mask_a_failing_step() -> None:
 
 def test_extra_soft_fail_codes_are_honoured() -> None:
     assert _run_checker("exit 2", soft_fail="1 2") == 0
+
+
+def test_a_zero_list_names_no_soft_code() -> None:
+    """`"0"` is how a checker that remaps its own codes opts out of the list."""
+    assert _run_checker("exit 0", soft_fail="0") == 0
+    assert _run_checker("exit 1", soft_fail="0") == 1
+    spec, _ = _documents(TEMPLATE.read_text())
+    description = spec["spec"]["inputs"]["check_soft_fail_exit_codes"]["description"]
+    assert '`"0"` names no soft code' in description
+
+
+def test_check_command_description_names_task_x() -> None:
+    """Plain go-task exits 201 on any failure, which no soft-fail list matches."""
+    spec, _ = _documents(TEMPLATE.read_text())
+    description = spec["spec"]["inputs"]["check_command"]["description"]
+    assert "task -x" in description and "201" in description
+
+
+# The inputs the family's version-bump-bot includes pass, the reference cluster's
+# and the cluster template's together. Dropping one breaks pipeline creation there.
+FAMILY_INPUTS = {
+    "artifact_paths", "check_command", "check_soft_fail_exit_codes", "gate",
+    "paths", "report_path", "run_branch", "setup_command", "tags", "title",
+}
+
+
+def test_the_inputs_the_family_passes_are_declared() -> None:
+    spec, _ = _documents(TEMPLATE.read_text())
+    assert FAMILY_INPUTS - set(spec["spec"]["inputs"]) == set()
 
 
 def test_soft_fail_codes_apply_to_the_whole_command() -> None:

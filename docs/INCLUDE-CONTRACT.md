@@ -105,11 +105,10 @@ forge-coupled is in [SCRIPTS.md](SCRIPTS.md#forge-coupling).
 
 ## Conventions shared by every template
 
-- **`tags` (array)** — runner tag(s). Default `["infrastructure"]` (weisssrv's
-  privileged runner). Tenants and generated clusters pass `tags: []` for a
-  shared tag-less runner. `terraform-drift-plan`, `semantic-release`,
-  `version-check` and `version-bump-bot` default to `[]`; a consumer passes its
-  privileged tag where a job needs root or Docker-in-Docker.
+- **`tags` (array)** — runner tag(s). Every template defaults to `[]`, so a
+  library job never pre-selects a runner. A consumer passes the tag of its
+  privileged runner for a job that needs root or Docker-in-Docker; weisssrv
+  passes `infrastructure`.
 - **`changes` (array)** — the path list used in the merge-request and
   post-merge rules. Every default is a literal, self-contained list stated in
   the template; there is no anchor in any consumer that it must match.
@@ -274,10 +273,11 @@ review.
 
 **Two runner classes.** The lint/test/security/review jobs are TAG-LESS and
 non-root safe (`pip install --user`, `python -m`, no apt, no `/usr/local/bin`
-writes) and land on the shared runner. The image builds, the molecule matrix and
-the release retag need privileged Docker-in-Docker and are tagged
-`infrastructure`, which is a PROJECT runner: it must be enabled for the project
-(Settings > CI/CD > Runners) or every tagged job sits pending.
+writes) and land on the shared runner, the molecule plan job included. The
+image builds, the molecule child jobs and the release retag need privileged
+Docker-in-Docker and pass the `infrastructure` tag. That is a PROJECT runner: it
+must be enabled for the project (Settings > CI/CD > Runners) or every tagged job
+sits pending.
 
 The tag-less fan-out is shaped by `needs:` chains in `.gitlab-ci.yml`, because
 the pipeline creates more tag-less jobs than the shared runner's namespace
@@ -324,7 +324,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `job_name` | `yaml-lint` |  |
 | `stage` | `lint` |  |
 | `image` | `python:3.14-slim` |  |
-| `tags` | `["infrastructure"]` |  |
+| `tags` | `[]` |  |
 | `yamllint_version` | `1.38.0` |  |
 | `config` | `-d relaxed` | the FULL argument, e.g. `-c lint/yamllint-relaxed.yml` |
 | `require_config` | `true` | fail when `config` is left at the default while the repo ships a profile |
@@ -345,7 +345,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
   is yamllint's own profile, so leaving `config` at the default while the repo
   ships one lints under the wrong rules and still reports green. `require_config:
   false` opts out, for a repo whose profile serves only other tools.
-- **Tenant:** `inputs: { tags: [], config: "-c lint/yamllint-relaxed.yml", targets: "." }`.
+- **Tenant:** `inputs: { config: "-c lint/yamllint-relaxed.yml", targets: "." }`.
 
 ## ci/lint/shellcheck.yml
 
@@ -359,17 +359,17 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `job_name` | `shellcheck` |  |
 | `stage` | `lint` |  |
 | `image` | `koalaman/shellcheck-alpine:v0.11.0` |  |
-| `tags` | `["infrastructure"]` |  |
+| `tags` | `[]` |  |
 | `severity` | `warning` |  |
 | `exclude` | `SC1091,SC2034` |  |
-| `direct_globs` | `scripts/*.sh ansible/*.sh` |  |
-| `find_dir` | `ansible/roles` | empty or absent skips both find loops |
+| `direct_globs` | `scripts/*.sh` |  |
+| `find_dir` | `""` | empty or absent skips both find loops |
 | `default_branch` | `main` |  |
-| `changes` | `["scripts/**/*", "ansible/*.sh", "ansible/roles/**/*.sh", "ansible/roles/**/*.sh.j2"]` |  |
+| `changes` | `["scripts/**/*"]` | a consumer that widens `direct_globs` or sets `find_dir` passes a matching list |
 
 - **Parity:** the neutralizer logic (raw-wrapped vs plain templates, the
-  rc-accumulating list-file loop) is extracted verbatim; defaults reproduce
-  weisssrv's globs and find dir.
+  rc-accumulating list-file loop) is extracted verbatim. weisssrv passes its
+  own `direct_globs`, an empty `find_dir` and a matching `changes` list.
 - **A `find_dir` that is empty OR absent skips both find loops with a note**, so
   a consumer that simply does not have that tree still passes.
 - **All three blocks run, then the job decides.** A failure in the direct-glob
@@ -380,7 +380,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
   `{# … #}` comments are stripped (a comment-range delete would eat bash
   `${#arr[@]}`), so keep the out-of-raw header comments of such a template to
   single lines.
-- **Tenant:** `inputs: { tags: [], direct_globs: "scripts/*.sh", find_dir: "" }`.
+- **Tenant:** no inputs; the defaults lint `scripts/*.sh`.
 
 ## ci/lint/docs-link-check.yml
 
@@ -393,9 +393,10 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `job_name` | `lint-docs-links` | the name every consumer already passes |
 | `stage` | `lint` |  |
 | `image` | `python:3.14` | must ship git: the checker enumerates tracked Markdown and fails loud without it, so a slim image cannot silently shrink the scan |
-| `tags` | `["infrastructure"]` |  |
+| `tags` | `[]` |  |
 | `script_path` | `scripts/check-doc-links.py` |  |
 | `roots` | `""` | empty = the checker's own default scope |
+| `check_paths` | `false` | `true` exports `CHECK_DOC_LINKS_PATHS=1`, the backticked repo-path pass; `false` keeps whatever the pipeline sets |
 | `default_branch` | `main` |  |
 | `changes` | `["**/*.md", "scripts/check-doc-links.py"]` |  |
 
@@ -411,7 +412,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
   network, no dependencies). Re-vendor it at each tag bump. A consumer that
   gates its vendored copies fails on a drifted one (see "A vendored script is a
   pin too" below), so a skipped re-vendor is loud rather than silent.
-- **Tenant:** `inputs: { tags: [] }` (after vendoring the script).
+- **Tenant:** no inputs, after vendoring the script.
 
 ## ci/lint/runbook-anchors.yml
 
@@ -423,13 +424,13 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `job_name` | `runbook-anchors` |  |
 | `stage` | `lint` |  |
 | `image` | `python:3.14-slim` | stdlib only, so no pip step |
-| `tags` | `["infrastructure"]` |  |
+| `tags` | `[]` |  |
 | `script_path` | `scripts/check-runbook-anchors.py` | the consumer's vendored copy |
 | `rules_dir` | `kubernetes/infrastructure/observability` | the whole tree is walked |
 | `docs_dir` | `docs` |  |
 | `base_placeholder` | `${cluster_runbook_base_url}/` | the Flux substitution prefix an in-repo `runbook_url` must carry |
 | `default_branch` | `main` |  |
-| `changes` | observability tree, `docs/**/*.md`, the checker | a doc rename breaks an anchor without touching a rule file |
+| `changes` | observability tree, `docs/**/*.md`, the checker | a doc rename breaks an anchor without touching a rule file; a consumer that overrides `rules_dir`, `docs_dir` or `script_path` passes a matching list |
 
 - **The `changes` default includes the docs tree on purpose.** An anchor dies
   when a heading is renamed, and that edit touches no rule file. A consumer that
@@ -443,7 +444,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
   reporting a clean tree.
 - Tenants vendor the stdlib-only checker from
   `scripts/check-runbook-anchors.py`. Re-vendor it at each tag bump.
-- **Tenant:** `inputs: { tags: [] }` (after vendoring the script).
+- **Tenant:** no inputs, after vendoring the script.
 
 ## ci/lint/comment-length.yml
 
@@ -456,7 +457,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `job_name` | `comment-length` |  |
 | `stage` | `lint` |  |
 | `image` | `python:3.14-slim` | needs pip only when `pyyaml_version` is set |
-| `tags` | `["infrastructure"]` |  |
+| `tags` | `[]` |  |
 | `script_path` | `scripts/check-comment-length.py` | the consumer's vendored copy |
 | `paths` | `"."` | space-separated; the whole tree by default |
 | `config` | `""` | e.g. `--config .comment-length.yml` |
@@ -482,7 +483,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
   Move such a block out of the heredoc, or exclude that file. A `.py.jinja`
   source is parsed with its jinja tags neutralized, so its docstrings are
   checked; one that still does not parse is a warning, not a failure.
-- **Tenant:** `inputs: { tags: [] }` (after vendoring the script).
+- **Tenant:** no inputs, after vendoring the script.
 
 ## ci/lint/python-lint.yml
 
@@ -498,7 +499,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `job_name` | `python-lint` |  |
 | `stage` | `lint` |  |
 | `image` | `python:3.14-slim` |  |
-| `tags` | `["infrastructure"]` |  |
+| `tags` | `[]` |  |
 | `ruff_version` | `0.17.3` |  |
 | `config` | `""` | empty = ruff's own discovery; pass the FULL argument, e.g. `--config lint/ruff.toml` |
 | `targets` | `.` |  |
@@ -509,7 +510,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 - **Selection:** `E4,E7,E9,F,W,B` from the shared profile in
   [`lint/ruff.toml`](../lint/ruff.toml), which documents why. `format_check`
   exists for a consumer that adopts `ruff format`.
-- **Tenant:** `inputs: { tags: [], targets: "src tests" }` (after vendoring
+- **Tenant:** `inputs: { targets: "src tests" }` (after vendoring
   `lint/ruff.toml`, or with a `ruff.toml` / `[tool.ruff]` of its own).
 
 ## ci/lint/ansible-lint.yml
@@ -526,7 +527,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `job_name` | `ansible-lint` |  |
 | `stage` | `lint` |  |
 | `image` | `python:3.14-slim` |  |
-| `tags` | `["infrastructure"]` |  |
+| `tags` | `[]` |  |
 | `ansible_lint_version` | `26.10.1` | keep in step with `docker/molecule-ci/requirements.txt` so lint and molecule agree |
 | `pip_extra` | `black==26.3.1` | held below the broken 26.5.x mypyc wheels; routed through a job variable, so a `<`/`>`/`|` ceiling is safe |
 | `config` | `""` | empty = ansible-lint's own discovery; pass the FULL argument, e.g. `-c .ansible-lint` |
@@ -546,7 +547,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
   is word-split but never re-scanned for redirection operators, so the variable
   form takes `<`, `>` and `|` safely. `python-tests` routes `pip_packages` /
   `apt_packages` the same way; pass ceilings freely in either.
-- **Tenant:** `inputs: { tags: [], targets: "ansible/" }` (with its own
+- **Tenant:** `inputs: { targets: "ansible/" }` (with its own
   `.ansible-lint`, or an empty `config` for defaults).
 
 ## ci/lint/terraform-tflint.yml
@@ -562,7 +563,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `job_name` | `terraform-tflint` |  |
 | `stage` | `lint` |  |
 | `image` | pinned `ghcr.io/terraform-linters/tflint` digest | the job overrides the entrypoint |
-| `tags` | `["infrastructure"]` |  |
+| `tags` | `[]` |  |
 | `work_dir` | `terraform` | a directory this repo does not have FAILS the job |
 | `config` | `""` | path relative to `work_dir`, passed as `--config=`; empty lets tflint discover `.tflint.hcl` |
 | `tflint_args` | `--recursive --minimum-failure-severity=error` | word-split |
@@ -603,7 +604,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `job_name` | `flux-lint` |  |
 | `stage` | `lint` |  |
 | `image` | `python:3.14-slim` | **must ship bash** (`set -o pipefail`, `${!var+x}`), and apt on the root path |
-| `tags` | `["infrastructure"]` |  |
+| `tags` | `[]` | a root runner with `substitute: true`; weisssrv passes `infrastructure` |
 | `substitute` | `true` | `true` = the cluster path, `false` = the tenant path |
 | `kubeconform_version` | `0.8.0` |  |
 | `kubeconform_sha256` | the sha for `kubeconform_version` | moves with it |
@@ -664,8 +665,8 @@ the heaviest scenarios run 8-11 minutes per attempt.
   `k8s_version` explicitly. **Simple mode still defaults**: the tenant branch
   uses `${K8S_VERSION_INPUT:-1.36.0}`, so a tenant that omits `k8s_version`
   validates against 1.36.0 rather than failing. `scripts/validate-helm-values.py`
-  keeps the same `1.36.0` fallback for the `extra_validation` hook — see its
-  section in [SCRIPTS.md](SCRIPTS.md).
+  fails on the same absent or unparseable key in the `extra_validation` hook;
+  see its section in [SCRIPTS.md](SCRIPTS.md).
 - **`export-versions` rejects reserved key names.** A ConfigMap key that would
   clobber the calling job's own shell variable (`PATH`, `HOME`, `CLUSTER_DIR`,
   `FAILED`, `RENDER_ALL`, `K8S_VER`, `VARS`, `FLUX_ENVSUBST_VARS`, or anything
@@ -693,7 +694,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
   weisssrv and run with `$RENDER_ALL` / `$FAILED` in scope.
   `flux-lint.sh`, `flux-env.sh` and `kubeconform-skipped.py` are shipped
   here AND vendored in weisssrv.
-- **Tenant:** `inputs: { tags: [], substitute: false, kubeconform_version:
+- **Tenant:** `inputs: { substitute: false, kubeconform_version:
   "0.8.0", kubeconform_sha256: "…", kustomize_version: "5.8.2",
   kustomize_sha256: "…", k8s_version: "1.36.0" }` (its own newer pins).
 
@@ -711,16 +712,15 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `fmt_stage` | `lint` |  |
 | `validate_stage` | `validate` | a pipeline with no validate stage passes `lint` |
 | `image` | `hashicorp/terraform:1.16.5`, digest-pinned |  |
-| `tags` | `["infrastructure"]` |  |
+| `tags` | `[]` |  |
 | `fmt_dir` | `terraform/` |  |
 | `module_glob` | `terraform/*/` |  |
-| `test` | `false` | off so a consumer with no `*.tftest.hcl` keeps the pre-`test` behaviour |
+| `test` | `false` | off, so a consumer with no `*.tftest.hcl` runs validate only |
 | `default_branch` | `main` |  |
 | `changes` | `["terraform/**/*"]` |  |
 
 - **Parity:** defaults reproduce both jobs' script and rules verbatim.
-  `default_branch` is applied to BOTH jobs' post-merge rule. `test` defaults
-  **off** so a consumer with no `*.tftest.hcl` keeps the pre-`test` behavior.
+  `default_branch` is applied to BOTH jobs' post-merge rule.
 - **`test: true` runs `terraform test` in every module that ships test files**
   (`tests/*.tftest.hcl` or `*.tftest.hcl`), on top of validate. This is the only
   way the module's variable `validation` blocks and resource `precondition`s
@@ -755,7 +755,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `job_name` | `terraform-drift-plan` |  |
 | `stage` | `validate` |  |
 | `image` | `hashicorp/terraform:1.16.5@sha256:…` | digest-pinned on the same release as `ci/validate/terraform.yml`, so the plan runs the Terraform the gate parsed |
-| `tags` | `[]` | the 1Password installer runs `apk add`, so a consumer passes the tag of a runner that allows root |
+| `tags` | `[]` | the 1Password installer runs `apk add`, so a consumer passes the tag of a runner that allows root; weisssrv passes `infrastructure` |
 | `module_dir` | **required** | the root module to plan |
 | `state_name` | **required** | the HTTP backend state this module owns |
 | `state_base` | the project's terraform state API base | the three `TF_HTTP_*ADDRESS` values are derived from it |
@@ -763,7 +763,6 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `changes` | `["terraform/**/*"]` |  |
 | `default_branch` | `main` |  |
 | `secrets_guard` | `"true"` | the expression that must be non-empty for the job to be created. The default always creates it, so a missing credential reds the job. Falsy means no job, not a failed job, so pass `"$OP_SERVICE_ACCOUNT_TOKEN"` only where a fork-safe skip matters more than the detector. Drift itself surfaces as an allowed failure (exit code 2), which GitLab does not notify on: enable pipeline-failure notifications on the schedule, or set `allow_failure: false` on the job where drift should page |
-| `post_merge_guard` | `"true"` | an expression ANDed into the post-merge rule only; the schedule runs whatever it holds. Pass `"$OP_SERVICE_ACCOUNT_TOKEN"` to skip the post-merge plan where the vault is out of reach, while the schedule still reds on a lost credential. It sits inside a single-quoted `rules:if`, so it must contain no single quote |
 
 - **Include it once per module**, each with its own `job_name`, `module_dir` and
   `state_name`. It requires `.terraform-http-backend` and
@@ -815,7 +814,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | Input | Default | Notes |
 |---|---|---|
 | `stage` | `security` |  |
-| `tags` | `["infrastructure"]` | set on the override job |
+| `tags` | `[]` | set on the override job |
 | `cpu_selector` | **required** | REQUIRED. A node label is site data, so the template ships no default |
 | `default_branch` | `main` |  |
 
@@ -858,7 +857,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `job_name` | `build-image` |  |
 | `stage` | `build` |  |
 | `image` | `python:3.14` |  |
-| `tags` | `["infrastructure"]` | **must be a privileged runner** |
+| `tags` | `[]` | **must be a privileged runner**; weisssrv passes `infrastructure` |
 | `dind_service` | `docker:27.5.1-dind`, digest-pinned | digest-pinned, with an explicit `alias: docker` |
 | `dind_mtu` | `1420` | MTU of the daemon's bridges, passed as both `--mtu` and `--default-network-opt=bridge=com.docker.network.driver.mtu`; must not exceed the job pod's interface MTU (1420 on flannel over WireGuard or VXLAN). `--mtu` alone covers only the default bridge, so a user-defined network (molecule, compose) would stay at 1500 and black-hole large TLS frames |
 | `docker_cli_version` | `27.5.1` |  |
@@ -971,7 +970,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `job_name` | `python-tests` |  |
 | `stage` | `test` |  |
 | `image` | `python:3.14-slim` |  |
-| `tags` | `["infrastructure"]` |  |
+| `tags` | `[]` | a root runner while `apt_packages` is set; weisssrv passes `infrastructure` |
 | `test_dir` | `scripts/` |  |
 | `pytest_version` | `9.1.1` |  |
 | `pyyaml_version` | `6.0.3` |  |
@@ -1006,7 +1005,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
   cache carries the assets as well as the binaries. Do not cache `.bin/` with a
   fetcher that lacks that check. No-op without a runner cache backend, and a
   no-op in substance for the default `setup_command: true`.
-- **Tenant:** `inputs: { tags: [], apt_packages: "", image: python:3.14,
+- **Tenant:** `inputs: { apt_packages: "", image: python:3.14,
   test_dir: "tests" }`. `apt_packages` is the one root-only default in the
   library: installing them needs write access to the apt lock, which the shared
   non-privileged runner does not have, so a tenant clears it and picks an image
@@ -1027,7 +1026,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `job_name` | `pr-agent-review` |  |
 | `stage` | `ai-review` |  |
 | `image` | `pragent/pr-agent:0.48.0`, digest-pinned | multi-arch index digest |
-| `tags` | `["infrastructure"]` |  |
+| `tags` | `[]` |  |
 | `needs` | `[]` |  |
 | `model` | `gpt-5.6` |  |
 | `reasoning_effort` | `high` |  |
@@ -1085,7 +1084,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
   the default `gitlab_token: "$GITLAB__PERSONAL_ACCESS_TOKEN"` inherits
   whatever the consumer put in that CI variable.
 - **This library:** defaults (env mode, `$OPENAI__KEY` gate).
-- **Tenant (BYO keys):** `inputs: { tags: [], commands: "review", timeout: "30m",
+- **Tenant (BYO keys):** `inputs: { commands: "review", timeout: "30m",
   openai_key: "$AI_REVIEW_OPENAI_KEY", gitlab_token: "$GITLAB_REVIEW_TOKEN",
   gate: "$AI_REVIEW_OPENAI_KEY && $GITLAB_REVIEW_TOKEN" }`.
 
@@ -1237,8 +1236,8 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `tags` | `[]` |  |
 | `script_path` | `scripts/version-bump-mr.py` |  |
 | `setup_command` | `true` |  |
-| `check_command` | **required** | the command that rewrites the pins; exits 0, or a code named in `check_soft_fail_exit_codes` |
-| `check_soft_fail_exit_codes` | `1` | space-separated exit codes from `check_command` that mean "updates found" and let the bot continue; every other non-zero status fails the job, so a broken checker cannot look like an empty run. The codes apply to the whole command, so a composite `check_command` must keep its own error codes off this list |
+| `check_command` | **required** | the command that rewrites the pins; exits 0, or a code named in `check_soft_fail_exit_codes`. A go-task command takes `-x`, so the checker's own exit code reaches the bot instead of task's 201 |
+| `check_soft_fail_exit_codes` | `1` | space-separated exit codes from `check_command` that mean "updates found" and let the bot continue; every other non-zero status fails the job, so a broken checker cannot look like an empty run. The codes apply to the whole command, so a composite `check_command` must keep its own error codes off this list. `"0"` names no soft code, for a checker that exits 0 whether or not it found updates |
 | `paths` | `.` |  |
 | `branch` | `bot/version-bumps` |  |
 | `target_branch` | `main` |  |
@@ -1266,11 +1265,8 @@ the heaviest scenarios run 8-11 minutes per attempt.
   `tests/test_version_bump_bot_ci.py` asserts both on every rule. Untracked
   files are ignored, so a check command that drops a report artifact does not
   pollute the commit — point `report_path` at it instead.
-- **`check_command` signals "updates found" by exit code.** Exit 0, or any code
-  listed in `check_soft_fail_exit_codes` (default `1`), lets the bot continue;
-  every other non-zero status fails the job. Do not wrap it in `|| true`: that
-  hides a broken checker as an empty run, and the MR manager then closes the
-  standing bot MR.
+- **Never wrap `check_command` in `|| true`.** That hides a broken checker as
+  an empty run, and the MR manager then closes the standing bot MR.
 - **Not self-applied.** `check_command` has no generic value — it is the
   consumer's own version-check run against the consumer's own tracked-version
   config — and this library tracks no upstream versions, so its pipeline does
@@ -1365,7 +1361,7 @@ definition, and parameterising them would trade duplication for indirection.
 |---|---|---|
 | `fragment_name` | `.deploy-base` |  |
 | `image` | `python:3.14-slim` | must ship pip: the fragment pip-installs ansible |
-| `tags` | `["infrastructure"]` |  |
+| `tags` | `[]` | a root runner; weisssrv passes `infrastructure` |
 | `secrets_source` | `1password` | `1password` reads the SSH key with `op read`; `env` takes it from `$SSH_PRIVATE_KEY` |
 | `op_vault` | **required** | no default: a vault name is site data |
 | `ansible_version` | `14.5.0` |  |
@@ -1428,7 +1424,7 @@ definition, and parameterising them would trade duplication for indirection.
 | Input | Default | Notes |
 |---|---|---|
 | `fragment_name` | `.cluster-verify-base` |  |
-| `tags` | `["infrastructure"]` | root-capable runner; no LAN or SSH reach needed |
+| `tags` | `[]` | root-capable runner; no LAN or SSH reach needed; weisssrv passes `infrastructure` |
 | `image` | `python:3.14-slim` | Debian-based: the 1Password install is apt-based |
 
 ## GitHub workflow examples (ci/github/, ci/release/)

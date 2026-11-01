@@ -11,8 +11,9 @@ spec:
       description: Base image (must have pip).
     tags:
       type: array
-      default: ["infrastructure"]
-      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+      default: []
+      description: >-
+        Runner tag(s). Empty runs the job on a tag-less runner.
     yamllint_version:
       default: "1.38.0"
       description: >-

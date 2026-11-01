@@ -172,6 +172,11 @@ def records_are_valid(records):
         _error("RECORDS is empty — refusing a run that would manage no DNS at all")
         return False
     for entry in records:
+        # Shape first: a two-character string unpacks as (name, proxied) and
+        # would send a one-letter name to the API.
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            _error(f"record entry {entry!r} is not a (name, proxied) pair")
+            return False
         name, proxied = entry
         if not isinstance(name, str) or not name.strip():
             _error(f"record entry {entry!r} has no record name — "

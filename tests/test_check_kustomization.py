@@ -239,6 +239,7 @@ def test_a_remote_reference_is_classified_as_remote():
         "https://example.invalid/base.yaml",
         "git@example.invalid:org/repo.git",
         "github.com/org/repo//overlays/prod",
+        "github.com/org/repo/overlays/prod",
         "ssh://git@example.invalid/org/repo",
         "org/repo.git/overlays",
         "./base?ref=v1",
@@ -335,6 +336,8 @@ TRANSFORMER_KEY_CASES = {
     "commonAnnotations": ("commonAnnotations:\n  owner: demo\n", {}),
     "replicas": ("replicas:\n  - name: demo\n    count: 2\n", {}),
     "openapi": ("openapi:\n  path: schema.json\n", {"schema.json": "{}\n"}),
+    "crds": ("crds:\n  - crd.json\n", {"crd.json": "{}\n"}),
+    "configurations": ("configurations:\n  - c.yaml\n", {"c.yaml": "nameReference: []\n"}),
 }
 
 

@@ -9,8 +9,9 @@ spec:
       description: Base image (must have pip and python3).
     tags:
       type: array
-      default: ["infrastructure"]
-      description: Runner tag(s); pass `[]` for the tag-less tenant runner.
+      default: []
+      description: >-
+        Runner tag(s). Empty runs the job on a tag-less runner.
     script_path:
       default: "scripts/check-comment-length.py"
       description: >-

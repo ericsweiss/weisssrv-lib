@@ -16,8 +16,7 @@ spec:
       type: array
       default: []
       description: >-
-        Runner tag(s); a consumer passes its privileged tag for a job that needs
-        root or Docker-in-Docker.
+        Runner tag(s). Empty runs the job on a tag-less runner.
     script_path:
       default: "scripts/semantic-release.py"
       description: >-
