@@ -42,7 +42,7 @@ DEFAULT_TREE = "kubernetes/flux"
 WORKLOAD_KINDS = ("Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "CronJob", "Pod")
 # A chart renders its pods outside the corpus, so only these kinds say a
 # namespace's workloads are written by hand; a CronJob beside a chart does not.
-LONG_RUNNING_KINDS = ("Deployment", "StatefulSet", "DaemonSet")
+LONG_RUNNING_KINDS = ("Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Pod")
 ENDPOINT_KEYS = {"PodMonitor": "podMetricsEndpoints", "ServiceMonitor": "endpoints"}
 
 # kustomize's own documents are build inputs, not resources, and share a kind
