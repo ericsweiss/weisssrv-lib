@@ -399,6 +399,16 @@ class TestGitlabHealthCode:
         assert seen == []
         assert "cannot resolve the GitLab hostnames" in err
 
+    def test_a_configured_override_is_probed_when_the_other_cannot_be_resolved(self, tmp_path):
+        code, seen, err = _gitlab_code(
+            tmp_path, {"http://internal/-/readiness": "200"},
+            env=f"export CLUSTER_CONFIG={tmp_path / 'absent.yaml'}\n"
+                "export GITLAB_HEALTH_INTERNAL=http://internal\n",
+        )
+        assert code == "200"
+        assert seen == ["http://internal/-/readiness"]
+        assert "cannot resolve the GitLab hostnames" in err
+
 
 # gitlab_health_verdict: the code -> verdict mapping a collector feeds to
 # coerce_int. "unknown" is the collector's position, so it must not read as a

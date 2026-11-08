@@ -94,27 +94,29 @@ helmreleases_hard_failed() {
 # domain> first and git.<external domain> only on a connection failure;
 # GITLAB_HEALTH_INTERNAL / GITLAB_HEALTH_EXTERNAL override the URLs.
 gitlab_health_code() {
-  local path="${1:-/-/health}" code domains lib_dir int_dom ext_dom
+  local path="${1:-/-/health}" code="" domains lib_dir int_dom ext_dom
   local internal="${GITLAB_HEALTH_INTERNAL:-}"
   local external="${GITLAB_HEALTH_EXTERNAL:-}"
   if [ -z "$internal" ] || [ -z "$external" ]; then
     # Domains come from cluster-config.yaml, the single source, not a literal.
+    # An override that is set is probed even when the other cannot be resolved.
     lib_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-    if ! domains=$("$lib_dir/cluster-config-value.sh" \
+    if domains=$("$lib_dir/cluster-config-value.sh" \
         cluster_internal_domain cluster_external_domain 2>&1); then
+      read -r int_dom ext_dom <<<"$domains"
+      internal="${internal:-https://git.${int_dom}}"
+      external="${external:-https://git.${ext_dom}}"
+    else
       echo "cannot resolve the GitLab hostnames: $domains" >&2
-      echo "000"
-      return 0
     fi
-    read -r int_dom ext_dom <<<"$domains"
-    internal="${internal:-https://git.${int_dom}}"
-    external="${external:-https://git.${ext_dom}}"
   fi
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${internal}${path}" 2>/dev/null || true)
-  if [ -z "$code" ] || [ "$code" = "000" ]; then
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${external}${path}" 2>/dev/null || true)
+  if [ -n "$internal" ]; then
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -- "${internal}${path}" 2>/dev/null || true)
   fi
-  echo "$code"
+  if { [ -z "$code" ] || [ "$code" = "000" ]; } && [ -n "$external" ]; then
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -- "${external}${path}" 2>/dev/null || true)
+  fi
+  echo "${code:-000}"
 }
 
 # gitlab_health_verdict <code>: 1 healthy, 0 unhealthy, "unknown" when the code
