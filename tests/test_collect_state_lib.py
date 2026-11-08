@@ -168,20 +168,21 @@ class TestRedactBenign:
 # classifiers. The helpers below name each positional argument of
 # classify_regular and classify_json.
 
-def _regular(pve, api, ready, total, hosts_ok, hosts_total, pct, floor, flux, zfs, sections_ok=1, sections_total=1, alerts=0) -> str:
+def _regular(pve, api, ready, total, hosts_ok, hosts_total, pct, floor, flux, zfs,
+             gitlab=1, sections_ok=1, sections_total=1, alerts=0) -> str:
     res = _run(
         f"classify_regular {pve} {api} {ready} {total} {hosts_ok} "
-        f"{hosts_total} {pct} {floor} {flux} {zfs} "
+        f"{hosts_total} {pct} {floor} {flux} {zfs} {gitlab} "
         f"{sections_ok} {sections_total} {alerts}"
     )
     assert res.returncode == 0, res.stderr
     return res.stdout.strip()
 
 
-def _json(pve_up, pve_total, api, ready, total, flux, zfs, alerts=0) -> str:
+def _json(pve_up, pve_total, api, ready, total, flux, zfs, gitlab=1, alerts=0) -> str:
     res = _run(
         f"classify_json {pve_up} {pve_total} {api} {ready} {total} "
-        f"{flux} {zfs} {alerts}"
+        f"{flux} {zfs} {gitlab} {alerts}"
     )
     assert res.returncode == 0, res.stderr
     return res.stdout.strip()
@@ -209,13 +210,17 @@ GREEN = (6, "true", 9, 9, 19, 19, 100, 50, 0, 0)
     # collect-state.sh coalesces an unaskable Alertmanager to 1, not 0.
     (GREEN, {"alerts": 1}, "PARTIAL"),
     (GREEN, {"alerts": 99}, "PARTIAL"),
+    # GitLab down degrades but never fails; a cluster without GitLab passes 1.
+    (GREEN, {"gitlab": 0}, "PARTIAL"),
+    ((0, "true", 9, 9, 3, 19, 15, 50, 0, 0), {"gitlab": 0}, "FAILED"),
 ], ids=[
     "all-green-is-ok", "flux-not-ready-or-suspended-degrades", "zfs-degraded-degrades",
     "one-host-down-degrades", "no-pve-host-is-failed", "api-ok-zero-ready-is-failed",
     "kubectl-unreachable-is-partial", "coverage-below-floor-is-failed",
     "some-guests-down-degrades", "failed-specialised-section-degrades",
     "all-sections-collected-stays-ok", "firing-or-unknown-alert-degrades",
-    "alerts-never-fail",
+    "alerts-never-fail", "gitlab-unhealthy-degrades",
+    "gitlab-unhealthy-with-no-pve-host-is-failed",
 ])
 def test_classify_regular(args, kwargs, verdict):
     assert _regular(*args, **kwargs) == verdict
@@ -234,11 +239,14 @@ JSON_GREEN = (6, 6, "true", 9, 9, 0, 0)
     ((6, 6, "false", 0, 0, 0, 0), {}, "degraded"),
     (JSON_GREEN, {"alerts": 1}, "degraded"),
     (JSON_GREEN, {"alerts": 99}, "degraded"),
+    (JSON_GREEN, {"gitlab": 0}, "degraded"),
+    ((0, 6, "true", 9, 9, 0, 0), {"gitlab": 0}, "catastrophic"),
 ], ids=[
     "all-green-is-healthy", "flux-not-ready-degrades", "zfs-degraded-degrades",
     "one-host-down-degrades", "no-pve-host-is-catastrophic",
     "api-ok-zero-ready-is-catastrophic", "kubectl-unreachable-is-degraded",
     "firing-or-unknown-alert-degrades", "alerts-never-catastrophic",
+    "gitlab-unhealthy-degrades", "gitlab-unhealthy-with-no-pve-host-is-catastrophic",
 ])
 def test_classify_json(args, kwargs, verdict):
     assert _json(*args, **kwargs) == verdict
@@ -257,7 +265,7 @@ class TestClassifyJson:
         flux = 'flux_arg="$(coerce_int unknown 1)"' if position == "flux" else 'flux_arg=0'
         zfs = 'zfs_arg="$(coerce_int unknown 1)"' if position == "zfs" else 'zfs_arg=0'
         res = _run(
-            f'{flux}; {zfs}; classify_json 6 6 true 9 9 "$flux_arg" "$zfs_arg" 0'
+            f'{flux}; {zfs}; classify_json 6 6 true 9 9 "$flux_arg" "$zfs_arg" 1 0'
         )
         assert res.returncode == 0, res.stderr
         assert res.stdout.strip() == "degraded"
@@ -271,42 +279,45 @@ class TestClassifierParity:
     PARITY = {"OK": "healthy", "PARTIAL": "degraded", "FAILED": "catastrophic"}
 
     @pytest.mark.parametrize(
-        "pve,api,ready,total,flux,zfs,alerts",
+        "pve,api,ready,total,flux,zfs,gitlab,alerts",
         [
-            (6, "true", 9, 9, 0, 0, 0),   # green
-            (6, "true", 9, 9, 1, 0, 0),   # flux stuck
-            (6, "true", 9, 9, 0, 2, 0),   # zfs degraded
-            (5, "true", 9, 9, 0, 0, 0),   # one pve host down
-            (6, "true", 8, 9, 0, 0, 0),   # one k3s node not ready
-            (6, "false", 0, 0, 0, 0, 0),  # kubectl unreachable
-            (0, "true", 0, 0, 0, 0, 0),   # nothing reachable
-            (6, "true", 0, 9, 0, 0, 0),   # api ok, zero nodes ready
-            (6, "true", 9, 9, 0, 0, 3),   # alerts firing
+            (6, "true", 9, 9, 0, 0, 1, 0),   # green
+            (6, "true", 9, 9, 1, 0, 1, 0),   # flux stuck
+            (6, "true", 9, 9, 0, 2, 1, 0),   # zfs degraded
+            (6, "true", 9, 9, 0, 0, 0, 0),   # gitlab down
+            (5, "true", 9, 9, 0, 0, 1, 0),   # one pve host down
+            (6, "true", 8, 9, 0, 0, 1, 0),   # one k3s node not ready
+            (6, "false", 0, 0, 0, 0, 1, 0),  # kubectl unreachable
+            (0, "true", 0, 0, 0, 0, 1, 0),   # nothing reachable
+            (6, "true", 0, 9, 0, 0, 1, 0),   # api ok, zero nodes ready
+            (6, "true", 9, 9, 0, 0, 1, 3),   # alerts firing
         ],
     )
     def test_same_signals_map_to_paired_verdicts(self, pve, api, ready, total,
-                                                 flux, zfs, alerts):
+                                                 flux, zfs, gitlab, alerts):
         # Full host coverage so the regular-only coverage gate is neutral;
         # hosts_ok tracks pve reachability for the one-host-down case.
         hosts_total = 19
         hosts_ok = hosts_total if pve == 6 else (0 if pve == 0 else 18)
         pct = hosts_ok * 100 // hosts_total
-        reg = _regular(pve, api, ready, total, hosts_ok, hosts_total, pct, 50, flux, zfs, alerts=alerts)
-        js = _json(pve, 6, api, ready, total, flux, zfs, alerts=alerts)
+        reg = _regular(pve, api, ready, total, hosts_ok, hosts_total, pct, 50, flux, zfs,
+                       gitlab, alerts=alerts)
+        js = _json(pve, 6, api, ready, total, flux, zfs, gitlab, alerts=alerts)
         assert self.PARITY[reg] == js, (
             f"verdict mismatch: regular={reg} json={js} for "
             f"pve={pve} api={api} ready={ready}/{total} flux={flux} "
-            f"zfs={zfs} alerts={alerts}"
+            f"zfs={zfs} gitlab={gitlab} alerts={alerts}"
         )
 
 
 # regular_failing_predicates: the PARTIAL/FAILED verdict must name its cause
 # Same arguments as classify_regular; empty output means every OK predicate holds.
 
-def _failing(pve, api, ready, total, hosts_ok, hosts_total, pct, floor, flux, zfs, sections_ok=1, sections_total=1, alerts=0) -> str:
+def _failing(pve, api, ready, total, hosts_ok, hosts_total, pct, floor, flux, zfs,
+             gitlab=1, sections_ok=1, sections_total=1, alerts=0) -> str:
     res = _run(
         f"regular_failing_predicates {pve} {api} {ready} {total} {hosts_ok} "
-        f"{hosts_total} {pct} {floor} {flux} {zfs} "
+        f"{hosts_total} {pct} {floor} {flux} {zfs} {gitlab} "
         f"{sections_ok} {sections_total} {alerts}"
     )
     assert res.returncode == 0, res.stderr
@@ -316,7 +327,7 @@ def _failing(pve, api, ready, total, hosts_ok, hosts_total, pct, floor, flux, zf
 class TestRegularFailingPredicates:
     ALL_GREEN = dict(pve=6, api="true", ready=9, total=9, hosts_ok=19,
                      hosts_total=19, pct=100, floor=50, flux=0, zfs=0,
-                     sections_ok=5, sections_total=5, alerts=0)
+                     gitlab=1, sections_ok=5, sections_total=5, alerts=0)
 
     def test_all_green_names_nothing(self):
         assert _failing(**self.ALL_GREEN) == ""
@@ -327,6 +338,7 @@ class TestRegularFailingPredicates:
             ({"alerts": 4}, "alerts_firing=4"),
             ({"flux": 2}, "flux_not_ready=2"),
             ({"zfs": 1}, "zfs_degraded=1"),
+            ({"gitlab": 0}, "gitlab=unhealthy"),
             ({"hosts_ok": 18}, "hosts=18/19"),
             ({"sections_ok": 3}, "sections=3/5"),
             ({"ready": 8}, "k3s_nodes=8/9"),
@@ -340,10 +352,10 @@ class TestRegularFailingPredicates:
         assert _failing(**args) == expected
 
     def test_every_failing_signal_is_listed(self):
-        out = _failing(pve=0, api="false", ready=0, total=0, hosts_ok=3, hosts_total=19, pct=15, floor=50, flux=2, zfs=1, sections_ok=3, sections_total=5, alerts=4)
+        out = _failing(pve=0, api="false", ready=0, total=0, hosts_ok=3, hosts_total=19, pct=15, floor=50, flux=2, zfs=1, gitlab=0, sections_ok=3, sections_total=5, alerts=4)
         for token in ("pve_reachable=0", "coverage=15%<50%", "hosts=3/19",
                       "sections=3/5", "k3s_api=unreachable", "k3s_nodes=0/0",
-                      "flux_not_ready=2", "zfs_degraded=1",
+                      "flux_not_ready=2", "zfs_degraded=1", "gitlab=unhealthy",
                       "alerts_firing=4"):
             assert token in out, f"{token} missing from {out!r}"
 
@@ -354,6 +366,7 @@ class TestRegularFailingPredicates:
             {"alerts": 4},
             {"flux": 2},
             {"zfs": 1},
+            {"gitlab": 0},
             {"hosts_ok": 18},
             {"sections_ok": 3},
             {"ready": 8},

@@ -2,6 +2,9 @@
 # ansible-lint, black and yamllint are held equal to the ci/lint template
 # defaults by tests/test_lint_version_parity.py. ansible-core is outside it.
 ansible==14.5.0
+# ansible accepts any patch release of its core line; the deploy-base default
+# and this pin hold the one the roles are tested on (test_lint_version_parity).
+ansible-core==2.21.5
 ansible-lint==26.10.1
 # A transitive dep of ansible-lint's jinja rule, held below 26.5.x, whose
 # wheels ship a broken mypyc extension that makes ansible-lint fail to load.

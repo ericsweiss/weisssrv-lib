@@ -270,5 +270,32 @@ def test_every_role_suite_actually_exercises_its_script(script: Path):
     )
 
 
+
+# Sourced or imported, never run: these keep their shebang for editors and
+# shellcheck and stay non-executable. Every other shebang script is a program.
+LIBRARIES = frozenset({
+    "ci-run-check.sh", "collect-state-lib.sh", "deploy-verify-lib.sh",
+    "shell-lib.sh", "smoke-lib.sh", "ci_playbook_invocations.py", "ci_yaml.py",
+    "gate_common.py", "inventory_tree.py", "tenant_common.py",
+})
+
+
+def test_a_script_is_executable_exactly_when_it_is_a_program_with_a_shebang():
+    scripts = sorted([*SCRIPTS.glob("*.py"), *SCRIPTS.glob("*.sh")])
+    names = {path.name for path in scripts}
+    assert LIBRARIES <= names, sorted(LIBRARIES - names)
+    wrong = []
+    for path in scripts:
+        shebang = path.read_bytes()[:2] == b"#!"
+        executable = os.access(path, os.X_OK)
+        if path.name in LIBRARIES:
+            if executable:
+                wrong.append(f"{path.name}: a library, so not executable")
+        elif shebang and not executable:
+            wrong.append(f"{path.name}: has a shebang but is not executable")
+        elif executable and not shebang:
+            wrong.append(f"{path.name}: is executable but has no shebang")
+    assert not wrong, wrong
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

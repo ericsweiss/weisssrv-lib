@@ -136,7 +136,7 @@ does not `include:` them. What has to be portable is what they *call*:
   is the reference Actions workflow, vendored rather than included.
 - **The gate set has an Actions counterpart too**:
   [`ci/github/ci.example.yml`](../ci/github/ci.example.yml) (yamllint,
-  kustomize + kubeconform, shellcheck, doc links, secret scan) and
+  `flux-lint.sh` simple mode, shellcheck, doc links, secret scan) and
   [`ci/github/build-image.example.yml`](../ci/github/build-image.example.yml).
   Same discipline: vendored byte-identically and re-vendored on a bump. The copy
   relationship lives in each consumer's `scripts/vendored-manifest.yml` (these

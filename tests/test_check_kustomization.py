@@ -41,6 +41,30 @@ def test_a_listed_manifest_that_does_not_exist_is_a_violation(tmp_path, capsys):
     assert "names paths that do not exist" in capsys.readouterr().err
 
 
+def test_a_flux_bootstrap_directory_may_name_its_gotk_files_before_they_exist(tmp_path):
+    write(tmp_path, "kustomization.yaml",
+          "resources:\n  - gotk-components.yaml\n  - ./gotk-sync.yaml\n  - cm.yaml\n")
+    write(tmp_path, "cm.yaml", CONFIGMAP)
+    assert gate.main([str(tmp_path)]) == 0
+
+
+def test_a_bootstrap_directory_still_fails_any_other_missing_path(tmp_path, capsys):
+    write(tmp_path, "kustomization.yaml",
+          "resources:\n  - gotk-components.yaml\n  - gotk-sync.yaml\n  - gone.yaml\n")
+    assert gate.main([str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    assert "gone.yaml" in err and "gotk-" not in err
+
+
+def test_a_lone_missing_gotk_file_is_a_violation(tmp_path, capsys):
+    """Only a kustomization naming both files is a bootstrap directory."""
+    write(tmp_path, "kustomization.yaml",
+          "resources:\n  - gotk-components.yaml\n  - cm.yaml\n")
+    write(tmp_path, "cm.yaml", CONFIGMAP)
+    assert gate.main([str(tmp_path)]) == 1
+    assert "gotk-components.yaml" in capsys.readouterr().err
+
+
 def test_a_manifest_present_but_unlisted_is_a_violation(tmp_path, capsys):
     write(tmp_path, "kustomization.yaml", "resources:\n  - cm.yaml\n")
     write(tmp_path, "cm.yaml", CONFIGMAP)

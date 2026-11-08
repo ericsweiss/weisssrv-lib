@@ -139,7 +139,8 @@ vendorable:
   # own redaction patterns and verdict signals.
   - scripts/collect-state-lib.sh
   # Sourced by a consumer's own deploy-verify.sh, which stays consumer-owned
-  # (its probe list is site data). Only the readiness classifiers are shared.
+  # (its probe list is site data). gitlab_health_code runs the sibling
+  # cluster-config-value.sh from this file's directory.
   - scripts/deploy-verify-lib.sh
   - scripts/extract-prometheus-config.py
   - scripts/find-pve-host-for-vm.sh
