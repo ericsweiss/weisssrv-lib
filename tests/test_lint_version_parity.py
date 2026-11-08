@@ -39,6 +39,22 @@ def lib_include_input(local: str, name: str) -> str:
     raise AssertionError(f"{LIB_CI} does not include {local}")
 
 
+class TestAnsibleCoreParity:
+    """One ansible-core across the molecule image, deploy-base and the lib pipeline."""
+
+    DEPLOY_BASE = REPO / "ci" / "deploy" / "deploy-base.yml"
+
+    def test_deploy_base_default_matches_the_molecule_image(self):
+        assert f"ansible-core=={template_input_default(self.DEPLOY_BASE, 'ansible_core_version')}" == image_pin("ansible-core")
+
+    def test_ansible_default_matches_the_molecule_image(self):
+        assert f"ansible=={template_input_default(self.DEPLOY_BASE, 'ansible_version')}" == image_pin("ansible")
+
+    def test_collection_checks_pin_matches_the_molecule_image(self):
+        pinned = yaml.safe_load(LIB_CI.read_text())["collection-checks"]["variables"]["ANSIBLE_CORE_VERSION"]
+        assert f"ansible-core=={pinned}" == image_pin("ansible-core")
+
+
 class TestAnsibleLintParity:
     def test_version_matches_the_molecule_image(self):
         assert f"ansible-lint=={template_input_default(ANSIBLE_LINT_TEMPLATE, 'ansible_lint_version')}" == image_pin("ansible-lint")

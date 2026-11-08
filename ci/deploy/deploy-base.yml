@@ -33,6 +33,12 @@ spec:
     ansible_version:
       default: "14.5.0"
       description: ansible pip pin installed into the job.
+    ansible_core_version:
+      default: "2.21.5"
+      description: >-
+        ansible-core pip pin installed beside ansible. The ansible package
+        accepts any patch release of its core line, so this holds the one the
+        roles are tested on; docker/molecule-ci/requirements.txt carries the same.
     apt_packages:
       default: "git"
       description: >-
@@ -95,7 +101,7 @@ spec:
         # shellcheck disable=SC2086  # intentional word-split of the package list
         apt-get install -y --no-install-recommends $APT_PACKAGES
       fi
-    - pip install --quiet "ansible==$[[ inputs.ansible_version ]]"
+    - pip install --quiet "ansible==$[[ inputs.ansible_version ]]" "ansible-core==$[[ inputs.ansible_core_version ]]"
     - |
       set -eo pipefail
       # A world-writable checkout makes Ansible ignore ansible.cfg outright, so

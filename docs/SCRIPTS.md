@@ -43,7 +43,7 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`check-internal-route-allowlist.py`](#check-internal-route-allowlistpy-pyyaml-via-gate_common) | an internal-domain Traefik route with no source allowlist middleware | flags | neutral |
 | [`check-issuer-refs.py`](#check-issuer-refspy-pyyaml) | a cert-manager issuer reference that resolves to nothing the corpus ships | `--allow-external` | neutral |
 | [`check-kubectl-version-pin.py`](#check-kubectl-version-pinpy) | a CI kubectl pin within ±1 minor of the cluster | env | neutral |
-| [`check-kustomization.py`](#check-kustomizationpy-pyyaml) | a manifest no kustomization.yaml lists, a missing or empty listed path other than the two files `flux bootstrap` writes, and a kustomization that renders nothing | `--exempt` | neutral |
+| [`check-kustomization.py`](#check-kustomizationpy-pyyaml) | a manifest no kustomization.yaml lists, a listed path that is missing (the two files `flux bootstrap` writes may be absent) or empty, and a kustomization that renders nothing | `--exempt` | neutral |
 | [`check-lib-pins.py`](#check-lib-pinspy-pyyaml) | every library pin reads the one declared release tag | `lib-ref-sites.example.yml` | gitlab-only |
 | [`check-live-cpu-limits.py`](#check-live-cpu-limitspy-pyyaml-via-gate_common) | a live container running with a CPU limit, and live/template memory-limit drift | none | neutral |
 | [`check-molecule-matrix-coverage.sh`](#check-molecule-matrix-coveragesh-pyyaml) | molecule scenarios and matrix entries agree, both directions | env | gitlab-only |

@@ -1365,6 +1365,7 @@ definition, and parameterising them would trade duplication for indirection.
 | `secrets_source` | `1password` | `1password` reads the SSH key with `op read`; `env` takes it from `$SSH_PRIVATE_KEY` |
 | `op_vault` | **required** | no default: a vault name is site data |
 | `ansible_version` | `14.5.0` |  |
+| `ansible_core_version` | `2.21.5` | the ansible package accepts any patch release of its core line; pinned to the one the roles are tested on |
 | `apt_packages` | `git` | needed when the collection installs from a `git+` URL; reaches the shell as `APT_PACKAGES` |
 | `ansible_dir` | `ansible` |  |
 | `hosts_env` | `scripts/hosts.env` |  |
