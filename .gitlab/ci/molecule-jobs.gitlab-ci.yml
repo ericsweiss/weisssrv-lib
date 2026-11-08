@@ -41,10 +41,10 @@
   # lives in the variables block and the dotenv digest pin overrides it.
   image: $MOLECULE_CI_IMAGE
   services:
-    # Digest-pinned (multi-arch index) on the same 27.5.1 line as
+    # Digest-pinned (multi-arch index) on the same 29.9.2 line as
     # ci/build/docker-build.yml; this daemon runs privileged. --insecure-registry
     # reaches the plaintext in-cluster pull-through cache — docs/INCLUDE-CONTRACT.md.
-    - name: docker:27.5.1-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce
+    - name: docker:29.9.2-dind@sha256:9e79b879b177fbd72c34376a3dd3d91747da5db49e1f560f76aea59561471977
       # Explicit: the runner derives an alias from the image name, and a
       # digest-pinned name must still answer at the `docker` host DOCKER_HOST uses.
       alias: docker

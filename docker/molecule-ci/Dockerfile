@@ -8,11 +8,11 @@ FROM python:3.14@sha256:b9767f56a1cc620aa72d38cc3557d26412e38a4597c92953476136b7
 # held equal to ci/build/docker-build.yml's defaults by tests/test_pin_parity.py.
 RUN ARCH=$(dpkg --print-architecture) \
     && case "$ARCH" in \
-         amd64) DOCKER_ARCH=x86_64; DOCKER_SHA256=4f798b3ee1e0140eab5bf30b0edc4e84f4cdb53255a429dc3bbae9524845d640;; \
-         arm64) DOCKER_ARCH=aarch64; DOCKER_SHA256=e6b53725a73763ab3f988c73f8772eaed429754c1a579db5ff11f21990fd1817;; \
+         amd64) DOCKER_ARCH=x86_64; DOCKER_SHA256=9ac225999fd5e863f7694c728ef23d480616b1e5639328fa309befd4243d69eb;; \
+         arm64) DOCKER_ARCH=aarch64; DOCKER_SHA256=873b3e0207857c3b2f28392fb922f3ea6efe37620c16d4d4aaf2fef409c90b73;; \
          *) echo "unsupported: $ARCH"; exit 1;; \
        esac \
-    && curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-27.5.1.tgz" -o /tmp/docker.tgz \
+    && curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-29.9.2.tgz" -o /tmp/docker.tgz \
     && echo "${DOCKER_SHA256}  /tmp/docker.tgz" | sha256sum -c - \
     && tar xz --strip-components=1 -C /usr/local/bin -f /tmp/docker.tgz docker/docker \
     && rm /tmp/docker.tgz \

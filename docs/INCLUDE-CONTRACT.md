@@ -858,9 +858,9 @@ the heaviest scenarios run 8-11 minutes per attempt.
 | `stage` | `build` |  |
 | `image` | `python:3.14` |  |
 | `tags` | `[]` | **must be a privileged runner**; weisssrv passes `infrastructure` |
-| `dind_service` | `docker:27.5.1-dind`, digest-pinned | digest-pinned, with an explicit `alias: docker` |
+| `dind_service` | `docker:29.9.2-dind`, digest-pinned | digest-pinned, with an explicit `alias: docker` |
 | `dind_mtu` | `1420` | MTU of the daemon's bridges, passed as both `--mtu` and `--default-network-opt=bridge=com.docker.network.driver.mtu`; must not exceed the job pod's interface MTU (1420 on flannel over WireGuard or VXLAN). `--mtu` alone covers only the default bridge, so a user-defined network (molecule, compose) would stay at 1500 and black-hole large TLS frames |
-| `docker_cli_version` | `27.5.1` |  |
+| `docker_cli_version` | `29.9.2` |  |
 | `docker_cli_sha256_amd64` | the sha for `docker_cli_version` | moves with it |
 | `docker_cli_sha256_arm64` | the sha for `docker_cli_version` | moves with it |
 | `buildx_version` | `v0.35.0` |  |
@@ -1438,9 +1438,10 @@ canonical-copy header naming its source.
   Actions counterpart of `ci/release/semantic-release.yml`, running the same
   vendored `scripts/semantic-release.py` with `--platform github`.
 - **ci/github/ci.example.yml** → `ci.yml`. The gate set, job by job:
-  `yaml-lint`, `flux-lint` (`kustomize build` + kubeconform, carrying the same
-  empty-render and non-zero-Skipped guards as `ci/validate/flux-lint.yml`'s
-  simple mode), `manifest-gates` (`check-netpol-except-parity.py`,
+  `yaml-lint`, `flux-lint` (the vendored `scripts/flux-lint.sh --mode simple`,
+  the program `ci/validate/flux-lint.yml`'s simple mode runs: `kustomize build`,
+  the `cluster_*` substitution scan and kubeconform with the empty-render and
+  non-zero-Skipped guards), `manifest-gates` (`check-netpol-except-parity.py`,
   `check-scrape-wiring.py` — with `--namespace-from-tree`, because a
   byte-identical file cannot carry a tenant's namespace and a monitor scoped
   with `matchNames` is refused without one — and `check-kustomization.py`, each

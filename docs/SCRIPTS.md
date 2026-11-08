@@ -43,7 +43,7 @@ Example configs for every script live in [`../examples/`](../examples/).
 | [`check-internal-route-allowlist.py`](#check-internal-route-allowlistpy-pyyaml-via-gate_common) | an internal-domain Traefik route with no source allowlist middleware | flags | neutral |
 | [`check-issuer-refs.py`](#check-issuer-refspy-pyyaml) | a cert-manager issuer reference that resolves to nothing the corpus ships | `--allow-external` | neutral |
 | [`check-kubectl-version-pin.py`](#check-kubectl-version-pinpy) | a CI kubectl pin within ±1 minor of the cluster | env | neutral |
-| [`check-kustomization.py`](#check-kustomizationpy-pyyaml) | a manifest no kustomization.yaml lists, a missing or empty listed path, and a kustomization that renders nothing | `--exempt` | neutral |
+| [`check-kustomization.py`](#check-kustomizationpy-pyyaml) | a manifest no kustomization.yaml lists, a missing or empty listed path other than the two files `flux bootstrap` writes, and a kustomization that renders nothing | `--exempt` | neutral |
 | [`check-lib-pins.py`](#check-lib-pinspy-pyyaml) | every library pin reads the one declared release tag | `lib-ref-sites.example.yml` | gitlab-only |
 | [`check-live-cpu-limits.py`](#check-live-cpu-limitspy-pyyaml-via-gate_common) | a live container running with a CPU limit, and live/template memory-limit drift | none | neutral |
 | [`check-molecule-matrix-coverage.sh`](#check-molecule-matrix-coveragesh-pyyaml) | molecule scenarios and matrix entries agree, both directions | env | gitlab-only |
@@ -73,7 +73,7 @@ Example configs for every script live in [`../examples/`](../examples/).
 | `ci_yaml.py` | importable loader for a CI file using GitLab's `!` tags | n/a | gitlab-only |
 | `cluster-config-value.sh` | prints values from the cluster-config ConfigMap | env | neutral |
 | `collect-state-lib.sh` | sourceable redaction, section-emitter and cluster-verdict helpers | n/a | neutral |
-| `deploy-verify-lib.sh` | sourceable node, pod and HelmRelease readiness classifiers for a deploy-verify driver | n/a | neutral |
+| `deploy-verify-lib.sh` | sourceable node, pod and HelmRelease readiness classifiers and the GitLab health probe for a deploy-verify driver | n/a | neutral |
 | [`extract-prometheus-config.py`](#extract-prometheus-configpy-lint-prometheus-configsh-pyyaml) | extracts rules and Alertmanager config for promtool/amtool | flags | neutral |
 | `find-pve-host-for-vm.sh` | prints which Proxmox host runs a VMID | env | neutral |
 | `find-reachable-host.sh` | prints the first reachable SSH target from its args | args | neutral |
@@ -1530,6 +1530,10 @@ scripts/check-kustomization.py [DIRECTORY] [--walk] [--min-kustomizations N]
   `configMapGenerator`, `secretGenerator` and `helmCharts` as content. A
   `kind: Component` only reshapes its parent's render, so it may contribute
   through any transformer key, `crds` or `configurations` instead.
+- A kustomization whose `resources` name both `gotk-components.yaml` and
+  `gotk-sync.yaml` is a Flux bootstrap directory. `flux bootstrap` writes those
+  two files, so they may be absent. A kustomization naming only one of them
+  still fails when it is missing.
 - `*.yaml`, `*.yml` and `*.json` files are manifests. kustomize renders JSON
   resources, and a configMapGenerator reads dashboards from JSON siblings.
 - A remote base is fetched by kustomize, so it is not looked for on disk. An
@@ -3173,7 +3177,7 @@ scripts/unifi-settings-drift.py [--config FILE]
 | `shell-lib.sh` | function-only, safe to source under `set -e`. `timeout_cmd <secs> <cmd…>` bounds a command. With neither `timeout` nor `gtimeout` on `PATH` it warns once per shell on stderr that probes run unbounded. `ssh_probe <target> <cmd>` is a bounded, non-interactive ssh |
 | `smoke-lib.sh` | the probe half of a per-guest smoke script. The script stays consumer-owned, because its endpoint list is site data. `http_status <url>` prints a HEAD request's status, or `000` when nothing answered, and always returns 0 so an errexit caller reaches the classifier. `check_http_ok` takes 2xx and 3xx. `check_registry_ok` also takes 401, because a registry answering without credentials is up. `check_http_below_500` takes anything below 500. `check_tcp_port <host> <port>` is a bounded `nc` probe. `smoke_url_contains` and `smoke_ssh_contains` test a literal needle; `smoke_ssh_matches` takes an ERE. All three return 0 on a match, 1 on none and 2 when the fetch failed. Their ssh is non-interactive and bounded at 30s, and every fetch at 10s. `smoke_check <label> <cmd…>` and `smoke_optional <label> <reason> <cmd…>` keep the `SMOKE_PASS` / `SMOKE_FAIL` ledger, and `smoke_summary` prints it and is the script's exit status |
 | `ci-run-check.sh` | function-only driver a consolidated gate job sources. `run_check <name> <cmd…>` runs one check in a `set -eo pipefail` subshell, so a helper failing mid-body fails the check. errexit is off only around that subshell and is restored to the state the caller had, so a failure records itself in `overall` / `failed` and the next check still runs. Each check gets a collapsible log section when `GITLAB_CI` is set and a plain `== name` heading elsewhere. `run_check_summary [label]` names every failure and returns the job's status |
-| `deploy-verify-lib.sh` | function-only readiness classifiers a consumer's `deploy-verify.sh` sources; each reads kubectl output on stdin and needs `jq` or `awk`. `count_not_ready` prints how many list items are not Ready, or 999 when jq fails. `not_ready_ns_names` and `helmreleases_not_ready_names` print the not-Ready items, and `helmreleases_hard_failed` the HelmReleases with a terminal failure reason or a non-zero failure count; all three return non-zero on a jq failure, so an unknown list never reads as empty. `steady_state <count>` prints `true` only at exactly 0. `nodes_not_ready_count`, `pods_not_running_or_completed`, `pods_non_transient` and `pods_running_unready` read `--no-headers` rows |
+| `deploy-verify-lib.sh` | function-only readiness classifiers a consumer's `deploy-verify.sh` sources; each reads kubectl output on stdin and needs `jq` or `awk`. `count_not_ready` prints how many list items are not Ready, or 999 when jq fails. `not_ready_ns_names` and `helmreleases_not_ready_names` print the not-Ready items, and `helmreleases_hard_failed` the HelmReleases with a terminal failure reason or a non-zero failure count; all three return non-zero on a jq failure, so an unknown list never reads as empty. `steady_state <count>` prints `true` only at exactly 0. `nodes_not_ready_count`, `pods_not_running_or_completed`, `pods_non_transient` and `pods_running_unready` read `--no-headers` rows. `gitlab_health_code <path>` probes `https://git.<cluster_internal_domain><path>` and falls back to the external domain only on a connection failure, printing the HTTP code; it resolves both domains through the sibling `cluster-config-value.sh`, `GITLAB_HEALTH_INTERNAL` and `GITLAB_HEALTH_EXTERNAL` override the URLs, and it needs `curl`. `gitlab_health_verdict <code>` prints `1` for 200, `unknown` for 401, 403 and 404, because the health paths are `monitoring_whitelist`-gated, and `0` otherwise |
 | `find-reachable-host.sh` | prints the first reachable SSH target from its args, exit 1 if none |
 | `resolve-tool.sh` | prints how to invoke a Python dev tool (`PATH` → `python3 -m <module>` → validated pyenv glob) |
 | `cluster-config-value.sh` | prints one or more `data:` values from the cluster-config ConfigMap, space-separated; fails on an absent key rather than printing nothing. `$CLUSTER_CONFIG` overrides the path |
@@ -3236,6 +3240,11 @@ policy and the verdict ladder.
   OK / PARTIAL / FAILED ladder, the second naming which predicates failed) and
   `classify_json` (healthy / degraded / catastrophic). The two read the same
   signals, so a signal added to one is added to the other.
+- **`gitlab_ok`** is the eleventh of the fourteen `classify_regular` arguments
+  and the eighth of `classify_json`'s nine: 1 healthy, 0 unhealthy. Unhealthy
+  degrades the verdict and never fails it. A cluster without GitLab passes 1,
+  and so does a collector that `gitlab_health_verdict` calls `unknown`, via
+  `coerce_int "$verdict" 1`.
 - **`compose_active_sections <health_url> <nginx_cert> <backup_timer>
   <backup_prom>`** prints the comma-joined active sections in output order. A
   `-` argument drops that section, and `metrics` needs `backup`.

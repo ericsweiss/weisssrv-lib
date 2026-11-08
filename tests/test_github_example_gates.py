@@ -106,6 +106,12 @@ class TestPythonLintFloor:
         assert result.returncode == 0, result.stderr
 
 
+def _vendor_flux_lint(tmp_path: Path) -> None:
+    """The step runs the tenant's vendored copy of scripts/flux-lint.sh."""
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    shutil.copy(REPO / "scripts" / "flux-lint.sh", tmp_path / "scripts" / "flux-lint.sh")
+
+
 class TestFluxLintEmptyRender:
     """An emptied `resources:` list renders nothing and Flux prunes the lot."""
 
@@ -113,6 +119,7 @@ class TestFluxLintEmptyRender:
 
     def _result(self, tmp_path, rendered: str, summary: str = SKIP_FREE_SUMMARY,
                 allowed_skips: str = "0"):
+        _vendor_flux_lint(tmp_path)
         bin_dir = _stub_bin(
             tmp_path, "kustomize", "kubeconform", kustomize_output=rendered,
             kubeconform_summary=summary,
@@ -155,7 +162,7 @@ class TestFluxLintEmptyRender:
             summary="Summary: 2 resources found - Valid: 1, Skipped: 1",
         )
         assert result.returncode != 0
-        assert "ALLOWED_SKIPS must be a non-negative integer, got 'two'" in result.stdout
+        assert "allowed_skips must be a non-negative integer, got 'two'" in result.stdout
 
     def test_fails_on_a_negative_allowed_skips(self, tmp_path):
         result = self._result(
@@ -163,7 +170,7 @@ class TestFluxLintEmptyRender:
             summary="Summary: 2 resources found - Valid: 1, Skipped: 1",
         )
         assert result.returncode != 0
-        assert "ALLOWED_SKIPS must be a non-negative integer, got '-1'" in result.stdout
+        assert "allowed_skips must be a non-negative integer, got '-1'" in result.stdout
 
     def test_passes_a_zero_ceiling_against_zero_skips(self, tmp_path):
         """The shipped fallback is `0`, which the validation accepts."""
@@ -188,6 +195,7 @@ class TestFluxLintEmptyRender:
         assert result.returncode == 0, result.stderr
 
     def test_announces_an_unset_k8s_version(self, tmp_path):
+        _vendor_flux_lint(tmp_path)
         bin_dir = _stub_bin(
             tmp_path, "kustomize", "kubeconform", kustomize_output="kind: ConfigMap\n"
         )
@@ -210,6 +218,7 @@ class TestFluxLintEmptyRender:
     def test_renders_the_manifest_root(self, tmp_path):
         """flux-lint and manifest-gates read one tree, so a tenant that moves
         MANIFEST_ROOT moves both."""
+        _vendor_flux_lint(tmp_path)
         bin_dir = _stub_bin(tmp_path, "kubeconform")
         kustomize = bin_dir / "kustomize"
         kustomize.write_text(
@@ -230,6 +239,37 @@ class TestFluxLintEmptyRender:
             MANIFEST_ROOT="deploy/tree",
         )
         assert result.returncode == 0, result.stderr
+
+    @pytest.mark.parametrize("rendered", [
+        "kind: ConfigMap\ndata:\n  host: ${cluster_domain}\n",
+        "kind: ConfigMap\ndata:\n  shell: $${conf%/*}\n",
+    ])
+    def test_passes_a_cluster_key_or_an_escaped_literal(self, tmp_path, rendered):
+        result = self._result(tmp_path, rendered)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_fails_a_substitution_key_outside_cluster_config(self, tmp_path):
+        result = self._result(tmp_path, "kind: ConfigMap\ndata:\n  v: ${APP_TAG}\n")
+        assert result.returncode != 0
+        assert "outside cluster-config's cluster_* set" in result.stdout
+        assert "APP_TAG" in result.stdout
+
+    def test_fails_a_malformed_substitution(self, tmp_path):
+        result = self._result(tmp_path, "kind: ConfigMap\ndata:\n  v: ${1}\n")
+        assert result.returncode != 0
+        assert "mishandles" in result.stdout
+
+    def test_fails_when_flux_lint_is_not_vendored(self, tmp_path):
+        bin_dir = _stub_bin(tmp_path, "kustomize", "kubeconform",
+                            kustomize_output="kind: ConfigMap\n")
+        result = _bash(
+            _run_script(*self.SCRIPT), tmp_path, bin_dir,
+            K8S_VERSION="1.36.0", K8S_VERSION_OVERRIDE="1.36.0", ALLOWED_SKIPS="0",
+            CRD_CATALOG_REF=_workflow_env("CRD_CATALOG_REF"),
+            MANIFEST_ROOT=_workflow_env("MANIFEST_ROOT"),
+        )
+        assert result.returncode != 0
+        assert "scripts/flux-lint.sh not found" in result.stdout
 
     def test_the_fallback_root_is_the_gates_default(self):
         assert _workflow_env("MANIFEST_ROOT") == "kubernetes/flux"

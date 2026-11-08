@@ -71,7 +71,7 @@ def run_step(tmp_path: Path, cli_sha: str) -> subprocess.CompletedProcess:
         "HOME": str(tmp_path / "home"),
         # mktemp honours TMPDIR, keeping the step's downloads out of the real /tmp.
         "TMPDIR": str(tmp_path),
-        "DOCKER_CLI_VERSION": "27.5.1",
+        "DOCKER_CLI_VERSION": "29.9.2",
         "DOCKER_CLI_SHA256_AMD64": cli_sha,
         "DOCKER_CLI_SHA256_ARM64": cli_sha,
         "BUILDX_VERSION": "v0.35.0",
