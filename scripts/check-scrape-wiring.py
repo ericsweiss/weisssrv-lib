@@ -40,6 +40,9 @@ except ImportError:
 OBSERVABILITY_NS = "observability"
 DEFAULT_TREE = "kubernetes/flux"
 WORKLOAD_KINDS = ("Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "CronJob", "Pod")
+# A chart renders its pods outside the corpus, so only these kinds say a
+# namespace's workloads are written by hand; a CronJob beside a chart does not.
+LONG_RUNNING_KINDS = ("Deployment", "StatefulSet", "DaemonSet")
 ENDPOINT_KEYS = {"PodMonitor": "podMetricsEndpoints", "ServiceMonitor": "endpoints"}
 
 # kustomize's own documents are build inputs, not resources, and share a kind
@@ -887,7 +890,7 @@ def check_monitor(
                 # an object it does carry for the monitor is judged as written.
                 if (
                     corpus
-                    and not any(d.get("kind") in WORKLOAD_KINDS for d in members)
+                    and not any(d.get("kind") in LONG_RUNNING_KINDS for d in members)
                     and not chosen
                 ):
                     unrendered += 1

@@ -1434,6 +1434,18 @@ class TestPodsAChartRenders:
         assert gate.main(["--corpus", self._corpus(tmp_path)]) == 0
         assert "1 endpoint(s) scrape pods a chart renders" in capsys.readouterr().out
 
+    def test_a_cronjob_beside_the_chart_keeps_the_skip(self, tmp_path, capsys):
+        """A namespace's CronJob renders no long-running pods, so it says
+        nothing about the chart's workloads the monitor selects."""
+        cronjob = (
+            "apiVersion: batch/v1\nkind: CronJob\nmetadata:\n  name: dump\n"
+            "spec:\n  schedule: '0 2 * * *'\n  jobTemplate:\n    spec:\n"
+            "      template:\n        spec:\n          containers:\n"
+            "            - name: dump\n              image: busybox\n"
+        )
+        assert gate.main(["--corpus", self._corpus(tmp_path, _namespaced(cronjob, "app"))]) == 0
+        assert "1 endpoint(s) scrape pods a chart renders" in capsys.readouterr().out
+
     def test_a_service_the_namespace_carries_is_judged_as_written(self, tmp_path, capsys):
         """No workload, but a selectorless Service for the monitor whose
         hand-written endpoints carry no address: that is broken wiring, not
