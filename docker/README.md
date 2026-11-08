@@ -50,7 +50,7 @@ pins (docs/VERSIONING.md).
 spec:
   inputs:
     lib_ref:
-      default: v0.24.0
+      default: v0.24.1
 ---
 include:
   - project: eric/weisssrv-lib
