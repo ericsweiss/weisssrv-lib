@@ -2181,7 +2181,8 @@ scripts/check-tenant-wiring.py [PATHS...] [--repo-root .]
   `latest` is a finding, since an older profile is weaker.
 - **Scope.** Cluster-scoped, a tenant file declares only Namespaces, its
   `ClusterSecretStore` and bindings of `tenant-traefik-hostnames` and
-  `tenant-certificates`. In `flux-system` it places only Kustomizations,
+  `tenant-certificates`. Each binding is named `<policy>-<namespace>` and
+  carries the Deny spec on that one tenant namespace. In `flux-system` it places only Kustomizations,
   GitRepositories, ServiceAccounts, Roles, RoleBindings and its
   `tenant-routing-<namespace>` ConfigMap. Anything else there, a ClusterRole or
   a CRD among them, is a finding naming the kind and name.

@@ -37,6 +37,7 @@ try:
         metadata,
         of_kind,
         resolve_targets,
+        routing_binding_spec,
     )
 except ImportError as exc:  # pragma: no cover - environment guard
     print(
@@ -453,11 +454,19 @@ def _scope_problems(docs: list, rel: str, namespaces: list[str]) -> list[str]:
         kind, group = str(doc.get("kind") or "?"), api_group(doc)
         name = metadata(doc).get("name") or "?"
         if _cluster_scoped(doc):
-            allowed = (kind, group) in TENANT_CLUSTER_KINDS and (
-                kind != "ValidatingAdmissionPolicyBinding"
-                or as_mapping(doc.get("spec")).get("policyName") in GRANT_POLICIES
-            )
-            if not allowed:
+            allowed = (kind, group) in TENANT_CLUSTER_KINDS
+            policy = as_mapping(doc.get("spec")).get("policyName")
+            if allowed and kind == "ValidatingAdmissionPolicyBinding" and policy in GRANT_POLICIES:
+                # Named and shaped for one of this file's namespaces, so it reaches no other.
+                if not any(name == f"{policy}-{ns}" and doc.get("spec") == routing_binding_spec(ns, policy)
+                           for ns in namespaces):
+                    problems.append(
+                        f"{rel}: ValidatingAdmissionPolicyBinding {name} of {policy} is not "
+                        f"{policy}-<namespace> with the Deny spec on one tenant namespace "
+                        f"of this file — it could bind {policy} beyond the tenant"
+                    )
+                continue
+            if not allowed or kind == "ValidatingAdmissionPolicyBinding":
                 problems.append(
                     f"{rel}: cluster-scoped {kind} {name} is platform scope — a tenant "
                     f"file declares only Namespace, {STORE_KIND} and bindings of "

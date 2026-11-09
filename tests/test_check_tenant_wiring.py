@@ -1216,6 +1216,34 @@ def test_an_object_outside_the_tenant_scope_is_the_only_finding(
     assert run(repo) == 1
 
 
+def test_the_grant_bindings_named_and_shaped_for_the_tenant_pass(repo: Path) -> None:
+    assert wire(repo, TENANT + ROUTING) == []
+
+
+CERT_SELECTOR = "kubernetes.io/metadata.name: demo-app\n"
+assert ROUTING.endswith(CERT_SELECTOR)
+
+
+@pytest.mark.parametrize(
+    ("body", "binding"),
+    [
+        pytest.param(ROUTING.replace("name: tenant-certificates-demo-app", "name: demo-app-extra"),
+                     "demo-app-extra of tenant-certificates", id="renamed"),
+        pytest.param(ROUTING.removesuffix(CERT_SELECTOR)
+                     + "kubernetes.io/metadata.name: kube-system\n",
+                     "tenant-certificates-demo-app of tenant-certificates",
+                     id="selects-another-namespace"),
+        pytest.param(ROUTING.replace("validationActions: [Deny]", "validationActions: [Warn]", 1),
+                     "tenant-traefik-hostnames-demo-app of tenant-traefik-hostnames",
+                     id="warn-only"),
+    ],
+)
+def test_a_grant_binding_off_the_contract_fails(repo: Path, body: str, binding: str) -> None:
+    problems = wire(repo, TENANT + body)
+    assert any(f"ValidatingAdmissionPolicyBinding {binding} is not" in p for p in problems), problems
+    assert run(repo) == 1
+
+
 CREDENTIAL_NAMESPACE = "                namespace: demo-app\n"
 
 
