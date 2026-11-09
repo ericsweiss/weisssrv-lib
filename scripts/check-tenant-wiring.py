@@ -854,7 +854,7 @@ def _rolebinding_problems(docs: list, rel: str, account: str,
             )
         ]
         expected = {"apiGroup": RBAC_GROUP, "kind": "ClusterRole", "name": role}
-        bound = [b for b in named if b.get("roleRef") == expected]
+        bound = [b for b in named if api_group(b) == RBAC_GROUP and b.get("roleRef") == expected]
         if not bound:
             problems.append(
                 f"{rel}: no RoleBinding grants {role} to {FLUX_NAMESPACE}/{account}"

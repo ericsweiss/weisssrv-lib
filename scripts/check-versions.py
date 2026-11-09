@@ -365,7 +365,7 @@ def _checksum_still_matches(entry: dict) -> bool:
     spec.loader.exec_module(module)
     try:
         return not module.violations([entry], module.yaml.safe_load(VARS_FILE.read_text()))
-    except module.ConfigError:
+    except (module.ConfigError, module.yaml.YAMLError, OSError, ValueError):
         return False
 
 

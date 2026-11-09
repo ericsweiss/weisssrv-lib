@@ -1004,6 +1004,17 @@ def test_a_binding_to_anything_but_the_rbac_cluster_role_fails(
     ], problems
 
 
+def test_a_binding_shaped_resource_outside_the_rbac_group_grants_nothing(repo: Path) -> None:
+    block = "apiVersion: rbac.authorization.k8s.io/v1\nkind: RoleBinding\nmetadata:\n  name: demo-app-flux-admin\n"
+    assert TENANT.count(block) == 1
+    problems = wire(repo, TENANT.replace(block, block.replace("rbac.authorization.k8s.io/v1", "example.io/v1")))
+    assert problems == [
+        f"{TENANTS_DIR}/demo-app.yaml [demo-app]: the admin RoleBinding for flux-system/demo-app-flux "
+        "does not reference ClusterRole admin in rbac.authorization.k8s.io — a "
+        "tenant-local Role of that name grants whatever the tenant writes into it"
+    ], problems
+
+
 OTHER_TENANT = TENANT.replace("demo-app", "other-app")
 
 
