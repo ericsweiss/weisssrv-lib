@@ -189,8 +189,10 @@ current pin are both unchanged.
 - **`--check-partner-pins BASE_REF`** reads the vars file at `BASE_REF` with
   `git show` and fails when an entry's `var_name` moved while one of its
   `coupled_vars` did not. A coupled pin or a partner missing from the head vars
-  file is reported too. Exit 0 clean, 1 on a stale partner, 2 when the base ref
-  cannot be read. Run it as an MR gate beside `--check-coverage`.
+  file is reported too. An unmoved `checksum_var` passes when the artefact at
+  the new version still hashes to it (the `check-version-checksums.py` rule).
+  Exit 0 clean, 1 on a stale partner, 2 when the base ref cannot be read. Run
+  it as an MR gate beside `--check-coverage`.
 - **Two partner pins the script writes itself**, unlike `coupled_vars`:
   `revision_var` is rewritten to `<new version>-r1` whenever the base version
   moves, and `sha_var`
@@ -786,7 +788,9 @@ schema validated through `--skipped-script`, and builds the cluster root.
   — `${conf%/*}` is a variable to it — so a form only it sees would otherwise
   pass and leave the Kustomization BuildFailed in-cluster, reconciling nothing.
   The cheap `${`-shape pre-scan stays ahead of `--strict` because that one names
-  the offending line. `$${` is Flux's escape and is masked out of every scan.
+  the offending line. It fails a `${` whose next character cannot start a name
+  and a `${` still open at the line end. `$${` is Flux's escape and is masked
+  out of every scan.
 - **Nothing passes on nothing.** A stage whose render is empty FAILS (kubeconform
   exits 0 on an empty stream, and the cluster-side prune then deletes every
   object that stage applied), and so does a cluster directory in which no
@@ -2158,13 +2162,25 @@ scripts/check-tenant-wiring.py [PATHS...] [--repo-root .]
 - Single-file mode skips the aggregator-listing arm and the cluster-tree
   `spec.path` arm.
 - **The vault arm.** A 1Password store reads exactly one vault, named after a
-  tenant Namespace or its `fluxcd.io/tenant` label. A `gitlab` store reads only
+  Namespace the same wiring file declares. The `fluxcd.io/tenant` label names
+  the tenant and grants no vault. Every credential `secretRef` names its
+  namespace, which is a tenant namespace. A `gitlab` store reads only
   what the tenant's own token reaches, so its namespace is the whole check. Any
   other provider is a finding.
 - **Platform namespaces.** A tenant Namespace that the cluster tree under
   `kubernetes/` declares outside the tenants directory is a finding, and so is
   `default`, `kube-system`, `kube-public` or `kube-node-lease`. The tenant would
-  take over that namespace and everything running in it.
+  take over that namespace and everything running in it. A namespace two tenant
+  files declare is a finding naming both, as each binds `admin` in it.
+- **RoleBindings.** The `admin` and `tenant-crd-editor` bindings carry a roleRef
+  of exactly that ClusterRole in `rbac.authorization.k8s.io`. A Role of the same
+  name grants whatever the tenant writes into it.
+- **RBAC in `flux-system`.** A Role there may only read this file's own
+  Kustomizations or GitRepositories: each rule names one of those groups and
+  resources, the file's object names and `get`, `list` or `watch` alone. A
+  RoleBinding there binds such a Role from the file to ServiceAccounts the file
+  declares. Any other Role or RoleBinding there, and any ClusterRoleBinding, is
+  a finding.
 - **`--tenant-storage-class`** says `tenant-local`, the one class a tenant
   claim may name, enforces no claim size. The quota must then cap
   `persistentvolumeclaims` and
