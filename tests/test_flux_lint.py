@@ -202,6 +202,19 @@ class TestSubstitutionFloors:
         assert "reference keys not in versions-configmap" in proc.stdout
         assert "- nope" in proc.stdout
 
+    def test_an_unclosed_reference_is_named_by_the_prescan(self, tree):
+        """`${cluster_domain` opens with a valid name but never closes, and
+        Flux's strict substitution fails the reconcile on it."""
+        proc = run(tree, render=NAMESPACE.replace("demo", "x${cluster_domain"))
+        assert proc.returncode == 1
+        assert "envsubst mishandles" in proc.stdout
+        assert "x${cluster_domain" in proc.stdout
+
+    def test_an_escaped_unclosed_reference_passes(self, tree):
+        """`$${` is masked before the scan, so an open literal is no reference."""
+        proc = run(tree, render=NAMESPACE.replace("demo", "x$${nope"))
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+
     def test_an_escaped_reference_is_exempt_from_every_scan(self, tree):
         """A Grafana panel variable survives as `$${var}` and is not a key."""
         proc = run(tree, render=NAMESPACE.replace("demo", "x$${nope}"))
@@ -278,6 +291,22 @@ class TestSimpleMode:
     def test_a_cluster_config_key_passes(self, tree):
         _write(tree / "renders" / "kubernetes_apps.yaml",
                NAMESPACE.replace("demo", "x.${cluster_internal_domain}"))
+        proc = self._run(tree)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    def test_an_unclosed_cluster_config_reference_fails(self, tree):
+        """The `cluster_` prefix clears the key scan, so only the prescan sees it."""
+        _write(tree / "renders" / "kubernetes_apps.yaml",
+               NAMESPACE.replace("demo", "x.${cluster_internal_domain"))
+        proc = self._run(tree)
+        assert proc.returncode == 1
+        assert "envsubst mishandles" in proc.stdout
+
+    def test_closed_references_in_a_block_value_pass(self, tree):
+        """A multi-line value whose every line closes its references is clean."""
+        _write(tree / "renders" / "kubernetes_apps.yaml",
+               NAMESPACE + "  annotations:\n    note: |\n      a ${cluster_domain}\n"
+               "      b $${open\n")
         proc = self._run(tree)
         assert proc.returncode == 0, proc.stdout + proc.stderr
 

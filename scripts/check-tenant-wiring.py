@@ -61,6 +61,7 @@ PLATFORM_TREE = "kubernetes"
 REQUIRED_DEPENDENCY = "infrastructure-configs"
 SOURCE_KIND = "GitRepository"
 REQUIRED_ROLES = ("admin", "tenant-crd-editor")
+RBAC_GROUP = "rbac.authorization.k8s.io"
 # A tenant pins its own image versions, so only cluster identity is required.
 REQUIRED_SUBSTITUTE_SOURCES = ("cluster-config",)
 ALLOWED_SUBSTITUTE_SOURCES = (*REQUIRED_SUBSTITUTE_SOURCES, "cluster-versions")
@@ -153,10 +154,9 @@ def _secret_ref_namespaces(node: object, inside: bool = False) -> list[str]:
     return found
 
 
-def _provider_problems(store: dict, rel: str, name: str, tenants: set[str],
-                       namespaces: list[str]) -> list[str]:
+def _provider_problems(store: dict, rel: str, name: str, namespaces: list[str]) -> list[str]:
     """A tenant store reads with a token from its own namespace and, for a vault
-    provider, one vault, the tenant's own."""
+    provider, one vault named after a tenant namespace."""
     provider = as_mapping(as_mapping(store.get("spec")).get("provider"))
     kinds = sorted(str(k) for k in provider)
     if len(kinds) != 1 or kinds[0] not in STORE_PROVIDERS:
@@ -186,9 +186,9 @@ def _provider_problems(store: dict, rel: str, name: str, tenants: set[str],
             f"{rel}: {STORE_KIND} {name} names no 1Password vault — the store "
             "cannot be checked to read only the tenant's own vault"
         ]
-    if len(listed) == 1 and listed[0] in tenants:
+    if len(listed) == 1 and listed[0] in namespaces:
         return problems
-    own = ", ".join(sorted(tenants)) or "none declared"
+    own = ", ".join(sorted(namespaces)) or "none declared"
     return problems + [
         f"{rel}: {STORE_KIND} {name} reads vault(s) {', '.join(listed)}, not the "
         f"tenant's own vault alone ({own}) — every item in another vault is "
@@ -199,16 +199,9 @@ def _provider_problems(store: dict, rel: str, name: str, tenants: set[str],
 def _store_problems(docs: list, rel: str, namespaces: list[str], labels: dict) -> list[str]:
     """A tenant-owned ClusterSecretStore is scoped to the tenant namespaces alone."""
     problems = []
-    # A tenant goes by its Namespaces' names and their tenant label.
-    tenants = {
-        str(n)
-        for d in of_kind(docs, "Namespace")
-        for n in (metadata(d).get("name"), as_mapping(metadata(d).get("labels")).get(TENANT_LABEL))
-        if n
-    }
     for store in of_kind(docs, STORE_KIND):
         name = metadata(store).get("name") or "?"
-        problems += _provider_problems(store, rel, name, tenants, namespaces)
+        problems += _provider_problems(store, rel, name, namespaces)
         raw = as_mapping(store.get("spec")).get("conditions")
         conditions = [c for c in as_list(raw) if isinstance(c, dict)]
         if not conditions:
@@ -456,6 +449,29 @@ def _collision_problems(namespaces: list[str], rel: str, platform: dict[str, str
         "would take over a platform namespace and everything running in it"
         for ns in namespaces if ns in platform
     ]
+
+
+def _duplicate_problems(paths: list[Path], targets: Targets) -> list[str]:
+    """A namespace declared by two tenant files binds admin there to both tenants."""
+    owner: dict[str, str] = {}
+    problems = []
+    for path in paths:
+        rel = targets.label(path)
+        try:
+            docs = load_mappings(path, rel)
+        except OperatorError:
+            continue  # check_file reports the parse failure
+        for doc in of_kind(docs, "Namespace"):
+            ns = metadata(doc).get("name")
+            if not ns:
+                continue
+            first = owner.setdefault(str(ns), rel)
+            if first != rel:
+                problems.append(
+                    f"{rel}: namespace {ns} is also declared by {first} — both "
+                    "tenants' service accounts would hold admin in it"
+                )
+    return problems
 
 
 def check_file(path: Path, rel: str, listed: set[str] | None,
@@ -711,7 +727,7 @@ def _rolebinding_problems(docs: list, rel: str, account: str,
                           namespace: str | None) -> list[str]:
     problems = []
     for role in REQUIRED_ROLES:
-        bound = [
+        named = [
             b
             for b in of_kind(docs, "RoleBinding")
             if as_mapping(b.get("roleRef")).get("name") == role
@@ -722,9 +738,15 @@ def _rolebinding_problems(docs: list, rel: str, account: str,
                 for s in as_list(b.get("subjects"))
             )
         ]
+        expected = {"apiGroup": RBAC_GROUP, "kind": "ClusterRole", "name": role}
+        bound = [b for b in named if b.get("roleRef") == expected]
         if not bound:
             problems.append(
                 f"{rel}: no RoleBinding grants {role} to {FLUX_NAMESPACE}/{account}"
+                if not named else
+                f"{rel}: the {role} RoleBinding for {FLUX_NAMESPACE}/{account} does not "
+                f"reference ClusterRole {role} in {RBAC_GROUP} — a tenant-local Role "
+                "of that name grants whatever the tenant writes into it"
             )
             continue
         if namespace and all(metadata(b).get("namespace") != namespace for b in bound):
@@ -742,11 +764,14 @@ def check_directory(targets: Targets, storage_classes: tuple[str, ...] = (),
     if listed is None:
         listed = listed_resources(tenants_dir)
     platform, problems = platform_namespaces(targets.root, tenants_dir)
-    for path in paths if paths is not None else subjects(tenants_dir, listed):
+    if paths is None:
+        paths = subjects(tenants_dir, listed)
+    for path in paths:
         problems += check_file(
             path, targets.label(path), listed, root=targets.root,
             storage_classes=storage_classes, tenants_dir=tenants_dir, platform=platform,
         )
+    problems += _duplicate_problems(paths, targets)
     where = targets.label(tenants_dir / AGGREGATOR)
     for resource in sorted(listed - SHARED):
         target = tenants_dir / resource
@@ -769,7 +794,7 @@ def check_files(targets: Targets, storage_classes: tuple[str, ...] = ()) -> list
             path, targets.label(path), None, root=None, storage_classes=storage_classes,
             platform=builtins,
         )
-    return problems
+    return problems + _duplicate_problems(targets.files, targets)
 
 
 def main(argv=None) -> int:

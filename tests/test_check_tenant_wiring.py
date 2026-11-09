@@ -421,9 +421,15 @@ def test_a_complete_tenant_file_passes(repo: Path, capsys) -> None:
             (), id="unrelated-configmap-and-binding-need-no-guard",
         ),
         pytest.param(
-            TENANT.replace("fluxcd.io/tenant: demo-app", "fluxcd.io/tenant: demo")
-            + STORE.replace("        demo-app: 1\n", "        demo: 1\n"),
-            (), id="tenant-label-names-the-vault",
+            TENANT + EXTRA_NAMESPACE
+            + STORE.replace("        - demo-app\n", "        - demo-app\n        - demo-app-jobs\n")
+            .replace("        demo-app: 1\n", "        demo-app-jobs: 1\n"),
+            (), id="vault-named-after-the-second-namespace",
+        ),
+        pytest.param(
+            TENANT + "---\napiVersion: rbac.authorization.k8s.io/v1\nkind: Role\n"
+            "metadata:\n  name: admin\n  namespace: demo-app\nrules: []\n",
+            (), id="local-role-named-admin-beside-the-cluster-role-binding",
         ),
         pytest.param(TENANT + SDK_STORE.replace("VAULT", "demo-app"), (), id="sdk-store"),
         pytest.param(TENANT + GITLAB_STORE, (), id="gitlab-store-with-the-tenant-token"),
@@ -957,6 +963,80 @@ def test_a_standalone_file_cannot_claim_a_built_in_namespace(repo: Path) -> None
     problems = gate.check_files(gate.Targets(repo, files=[path]))
     assert any("namespace kube-system is already declared by the apiserver" in p
                for p in problems), problems
+
+
+BORROWED_LABEL = TENANT.replace("fluxcd.io/tenant: demo-app", "fluxcd.io/tenant: victim")
+
+
+def test_a_label_cannot_borrow_another_tenants_vault(repo: Path) -> None:
+    """The label is the tenant's identity, never a vault grant."""
+    problems = wire(repo, BORROWED_LABEL + STORE.replace("        demo-app: 1\n", "        victim: 1\n"))
+    assert len(problems) == 1, problems
+    assert "reads vault(s) victim, not the tenant's own vault alone (demo-app)" in problems[0]
+    assert run(repo) == 1
+
+
+def test_a_label_unlike_the_namespace_still_passes(repo: Path) -> None:
+    assert wire(repo, BORROWED_LABEL + STORE) == []
+
+
+@pytest.mark.parametrize(
+    ("role", "ref"),
+    [
+        ("admin", "  kind: Role\n  name: admin\n  apiGroup: rbac.authorization.k8s.io\n"),
+        ("admin", "  kind: ClusterRole\n  name: admin\n  apiGroup: example.com\n"),
+        ("admin", "  kind: ClusterRole\n  name: admin\n"),
+        ("tenant-crd-editor",
+         "  kind: Role\n  name: tenant-crd-editor\n  apiGroup: rbac.authorization.k8s.io\n"),
+    ],
+    ids=["admin-role", "admin-other-group", "admin-no-group", "crd-editor-role"],
+)
+def test_a_binding_to_anything_but_the_rbac_cluster_role_fails(
+    repo: Path, role: str, ref: str
+) -> None:
+    expected = f"  kind: ClusterRole\n  name: {role}\n  apiGroup: rbac.authorization.k8s.io\n"
+    assert TENANT.count(expected) == 1
+    problems = wire(repo, TENANT.replace(expected, ref))
+    assert problems == [
+        f"{TENANTS_DIR}/demo-app.yaml [demo-app]: the {role} RoleBinding for flux-system/demo-app-flux "
+        f"does not reference ClusterRole {role} in rbac.authorization.k8s.io — a "
+        "tenant-local Role of that name grants whatever the tenant writes into it"
+    ], problems
+
+
+OTHER_TENANT = TENANT.replace("demo-app", "other-app")
+
+
+def _second_tenant(repo: Path, body: str) -> None:
+    write(repo, f"{TENANTS_DIR}/other-app.yaml", body)
+    write(repo, f"{TENANTS_DIR}/{gate.AGGREGATOR}", AGGREGATOR + "  - other-app.yaml\n")
+
+
+def test_two_tenant_files_with_distinct_namespaces_pass(repo: Path) -> None:
+    _second_tenant(repo, OTHER_TENANT)
+    assert check(repo) == []
+
+
+def test_a_namespace_two_tenant_files_declare_names_both(repo: Path) -> None:
+    _second_tenant(repo, OTHER_TENANT + EXTRA_NAMESPACE.replace("demo-app-jobs", "demo-app")
+                   .replace("fluxcd.io/tenant: demo-app", "fluxcd.io/tenant: other-app"))
+    problems = check(repo)
+    assert problems == [
+        f"{TENANTS_DIR}/other-app.yaml: namespace demo-app is also declared by "
+        f"{TENANTS_DIR}/demo-app.yaml — both tenants' service accounts would hold admin in it"
+    ], problems
+    assert run(repo) == 1
+
+
+def test_standalone_files_sharing_a_namespace_fail(repo: Path) -> None:
+    first, second = repo / "first.yaml", repo / "second.yaml"
+    first.write_text(TENANT)
+    second.write_text(TENANT)
+    problems = gate.check_files(gate.Targets(repo, files=[first, second]))
+    assert problems == [
+        "second.yaml: namespace demo-app is also declared by first.yaml — both "
+        "tenants' service accounts would hold admin in it"
+    ], problems
 
 
 def test_an_unreadable_platform_file_inspects_nothing(repo: Path, capsys) -> None:

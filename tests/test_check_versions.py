@@ -2119,6 +2119,23 @@ class TestStalePartnerPins(unittest.TestCase):
         self.assertEqual(len(stale), 1)
         self.assertIn("coupled_tool_checksum", stale[0])
 
+    CHECKSUMMED = [{
+        "name": "Coupled Tool",
+        "var_name": "coupled_tool_version",
+        "category": "github",
+        "coupled_vars": ["coupled_tool_checksum"],
+        "checksum_var": "coupled_tool_checksum",
+        "checksum_url": "https://example.test/{version}/install.sh",
+    }]
+
+    def test_an_unmoved_checksum_that_still_hashes_the_artefact_is_not_stale(self):
+        check_versions.SERVICE_REGISTRY = self.CHECKSUMMED
+        head = self.BASE.replace('"1.0.0"', '"1.1.0"')
+        self.assertEqual(check_versions.stale_partner_pins(self.BASE, head, lambda entry: True), [])
+        stale = check_versions.stale_partner_pins(self.BASE, head, lambda entry: False)
+        self.assertEqual(len(stale), 1)
+        self.assertIn("coupled_tool_checksum", stale[0])
+
     def test_a_coupled_pin_whose_partner_is_missing_is_reported(self):
         head = self.BASE.replace('coupled_tool_checksum: "aaa"\n', "")
         stale = check_versions.stale_partner_pins(self.BASE, head)
