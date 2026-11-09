@@ -2175,12 +2175,21 @@ scripts/check-tenant-wiring.py [PATHS...] [--repo-root .]
 - **RoleBindings.** The `admin` and `tenant-crd-editor` bindings carry a roleRef
   of exactly that ClusterRole in `rbac.authorization.k8s.io`. A Role of the same
   name grants whatever the tenant writes into it.
+- **Pod Security.** Each tenant Namespace sets
+  `pod-security.kubernetes.io/enforce: baseline` and `warn` and `audit` at
+  `restricted`, the tenant contract's levels. A `-version` label other than
+  `latest` is a finding, since an older profile is weaker.
+- **Scope.** Cluster-scoped, a tenant file declares only Namespaces, its
+  `ClusterSecretStore` and bindings of `tenant-traefik-hostnames` and
+  `tenant-certificates`. In `flux-system` it places only Kustomizations,
+  GitRepositories, ServiceAccounts, Roles, RoleBindings and its
+  `tenant-routing-<namespace>` ConfigMap. Anything else there, a ClusterRole or
+  a CRD among them, is a finding naming the kind and name.
 - **RBAC in `flux-system`.** A Role there may only read this file's own
   Kustomizations or GitRepositories: each rule names one of those groups and
   resources, the file's object names and `get`, `list` or `watch` alone. A
   RoleBinding there binds such a Role from the file to ServiceAccounts the file
-  declares. Any other Role or RoleBinding there, and any ClusterRoleBinding, is
-  a finding.
+  declares. Any other Role or RoleBinding there is a finding.
 - **`--tenant-storage-class`** says `tenant-local`, the one class a tenant
   claim may name, enforces no claim size. The quota must then cap
   `persistentvolumeclaims` and

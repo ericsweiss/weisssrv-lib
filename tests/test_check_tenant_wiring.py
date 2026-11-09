@@ -396,8 +396,6 @@ def test_a_complete_tenant_file_passes(repo: Path, capsys) -> None:
                            "        cpu: 50m\n" + EPHEMERAL_LIMITS["defaultRequest"]),
             (), id="cpu-default-request",
         ),
-        pytest.param(TENANT + LOOKALIKE.replace("example.com/v1", "rbac.authorization.k8s.io/v1"),
-                     (), id="real-cluster-role"),
         pytest.param(TENANT + STORE, (), id="store-scoped-to-the-tenant"),
         pytest.param(TENANT + CONFINED_SECOND, (), id="confined-db-kustomization"),
         pytest.param(TENANT + EXTRA_NAMESPACE + JOBS_CONFIGMAP, (), id="second-namespace"),
@@ -414,11 +412,9 @@ def test_a_complete_tenant_file_passes(repo: Path, capsys) -> None:
         ),
         pytest.param(TENANT + ROUTING, (), id="cluster-scoped-grant-bindings"),
         pytest.param(
-            TENANT + ROUTING.replace(GUARD, "")
-            .replace("tenant-routing-demo-app", "demo-app-settings")
-            .replace("policyName: tenant-traefik-hostnames", "policyName: demo-app-other")
-            .replace("policyName: tenant-certificates", "policyName: demo-app-another"),
-            (), id="unrelated-configmap-and-binding-need-no-guard",
+            TENANT + "---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: demo-app-settings\n"
+            "  namespace: demo-app\ndata: {}\n",
+            (), id="unrelated-configmap-needs-no-guard",
         ),
         pytest.param(
             TENANT + EXTRA_NAMESPACE
@@ -1102,6 +1098,10 @@ def test_a_read_only_flux_system_role_and_binding_pass(repo: Path) -> None:
     assert wire(repo, TENANT + READER) == []
 
 
+def test_the_whole_legitimate_wiring_is_in_scope(repo: Path) -> None:
+    assert wire(repo, TENANT + STORE + ROUTING + READER) == []
+
+
 @pytest.mark.parametrize(
     ("body", "expected"),
     [
@@ -1129,11 +1129,86 @@ def test_a_read_only_flux_system_role_and_binding_pass(repo: Path) -> None:
                      "kind: ClusterRoleBinding\nmetadata:\n  name: demo-app-root\n"
                      "subjects: []\nroleRef:\n  kind: ClusterRole\n  name: cluster-admin\n"
                      "  apiGroup: rbac.authorization.k8s.io\n",
-                     f"{TENANTS_DIR}/demo-app.yaml: ClusterRoleBinding demo-app-root grants "
-                     "across every namespace", id="cluster-role-binding"),
+                     f"{TENANTS_DIR}/demo-app.yaml: cluster-scoped ClusterRoleBinding "
+                     "demo-app-root is platform scope", id="cluster-role-binding"),
     ],
 )
 def test_flux_system_rbac_beyond_reading_its_own_objects_fails(
+    repo: Path, body: str, expected: str
+) -> None:
+    problems = wire(repo, TENANT + body)
+    assert len(problems) == 1 and expected in problems[0], problems
+    assert run(repo) == 1
+
+
+PSS = "pod-security.kubernetes.io/"
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        pytest.param(TENANT.replace(f"{PSS}enforce: baseline", f"{PSS}enforce: privileged"),
+                     f"namespace demo-app sets {PSS}enforce: privileged, not baseline",
+                     id="privileged-enforce"),
+        pytest.param(TENANT.replace(f"{PSS}enforce: baseline", f"{PSS}enforce: restricted"),
+                     f"namespace demo-app sets {PSS}enforce: restricted, not baseline",
+                     id="enforce-off-contract"),
+        pytest.param(TENANT.replace(f"{PSS}audit: restricted", f"{PSS}audit: privileged"),
+                     f"namespace demo-app sets {PSS}audit: privileged, not restricted",
+                     id="privileged-audit"),
+        pytest.param(drop(TENANT, f"{PSS}warn:"), f"namespace demo-app has no {PSS}warn label",
+                     id="absent-warn"),
+        pytest.param(TENANT.replace(f"    {PSS}audit: restricted\n",
+                                    f"    {PSS}audit: restricted\n    {PSS}enforce-version: v1.24\n"),
+                     f"namespace demo-app sets {PSS}enforce-version: v1.24, not latest",
+                     id="pinned-old-version"),
+    ],
+)
+def test_pod_security_off_the_contract_is_the_only_finding(
+    repo: Path, body: str, expected: str
+) -> None:
+    problems = wire(repo, body)
+    assert len(problems) == 1 and expected in problems[0], problems
+
+
+def test_pod_security_version_latest_passes(repo: Path) -> None:
+    body = TENANT.replace(f"    {PSS}audit: restricted\n",
+                          f"    {PSS}audit: restricted\n    {PSS}enforce-version: latest\n")
+    assert wire(repo, body) == []
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        pytest.param("---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: demo-app-token\n"
+                     "  namespace: flux-system\n",
+                     "Secret demo-app-token in flux-system is platform scope", id="secret"),
+        pytest.param("---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: demo-app\n"
+                     "  namespace: flux-system\n",
+                     "Deployment demo-app in flux-system is platform scope", id="deployment"),
+        pytest.param("---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cluster-config\n"
+                     "  namespace: flux-system\n",
+                     "ConfigMap cluster-config in flux-system is platform scope",
+                     id="configmap-not-the-grant"),
+        pytest.param("---\napiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\n"
+                     "metadata:\n  name: widgets.example.com\n",
+                     "cluster-scoped CustomResourceDefinition widgets.example.com is platform "
+                     "scope", id="crd"),
+        pytest.param(LOOKALIKE.replace("example.com/v1", "rbac.authorization.k8s.io/v1"),
+                     "cluster-scoped ClusterRole demo-app-lookalike is platform scope",
+                     id="cluster-role"),
+        pytest.param("---\napiVersion: admissionregistration.k8s.io/v1\n"
+                     "kind: MutatingWebhookConfiguration\nmetadata:\n  name: demo-app-hook\n"
+                     "  namespace: demo-app\n",
+                     "cluster-scoped MutatingWebhookConfiguration demo-app-hook is platform "
+                     "scope", id="webhook-with-a-namespace"),
+        pytest.param(ROUTING.split("\n---\n")[0] + "\n---\n" + ROUTING.split("\n---\n")[2]
+                     .replace("policyName: tenant-certificates", "policyName: demo-app-other"),
+                     "cluster-scoped ValidatingAdmissionPolicyBinding tenant-certificates-demo-app "
+                     "is platform scope", id="binding-of-another-policy"),
+    ],
+)
+def test_an_object_outside_the_tenant_scope_is_the_only_finding(
     repo: Path, body: str, expected: str
 ) -> None:
     problems = wire(repo, TENANT + body)
