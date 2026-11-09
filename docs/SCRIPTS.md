@@ -2163,7 +2163,8 @@ scripts/check-tenant-wiring.py [PATHS...] [--repo-root .]
   `spec.path` arm.
 - **The vault arm.** A 1Password store reads exactly one vault, named after a
   Namespace the same wiring file declares. The `fluxcd.io/tenant` label names
-  the tenant and grants no vault. A `gitlab` store reads only
+  the tenant and grants no vault. Every credential `secretRef` names its
+  namespace, which is a tenant namespace. A `gitlab` store reads only
   what the tenant's own token reaches, so its namespace is the whole check. Any
   other provider is a finding.
 - **Platform namespaces.** A tenant Namespace that the cluster tree under
@@ -2174,6 +2175,12 @@ scripts/check-tenant-wiring.py [PATHS...] [--repo-root .]
 - **RoleBindings.** The `admin` and `tenant-crd-editor` bindings carry a roleRef
   of exactly that ClusterRole in `rbac.authorization.k8s.io`. A Role of the same
   name grants whatever the tenant writes into it.
+- **RBAC in `flux-system`.** A Role there may only read this file's own
+  Kustomizations or GitRepositories: each rule names one of those groups and
+  resources, the file's object names and `get`, `list` or `watch` alone. A
+  RoleBinding there binds such a Role from the file to ServiceAccounts the file
+  declares. Any other Role or RoleBinding there, and any ClusterRoleBinding, is
+  a finding.
 - **`--tenant-storage-class`** says `tenant-local`, the one class a tenant
   claim may name, enforces no claim size. The quota must then cap
   `persistentvolumeclaims` and

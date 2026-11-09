@@ -62,6 +62,12 @@ REQUIRED_DEPENDENCY = "infrastructure-configs"
 SOURCE_KIND = "GitRepository"
 REQUIRED_ROLES = ("admin", "tenant-crd-editor")
 RBAC_GROUP = "rbac.authorization.k8s.io"
+# What a tenant may read in flux-system, by API group: (resource, kind) of its own objects.
+READABLE_FLUX_OBJECTS = {
+    FLUX_KUSTOMIZE_GROUP: ("kustomizations", "Kustomization"),
+    "source.toolkit.fluxcd.io": ("gitrepositories", SOURCE_KIND),
+}
+READ_VERBS = frozenset({"get", "list", "watch"})
 # A tenant pins its own image versions, so only cluster identity is required.
 REQUIRED_SUBSTITUTE_SOURCES = ("cluster-config",)
 ALLOWED_SUBSTITUTE_SOURCES = (*REQUIRED_SUBSTITUTE_SOURCES, "cluster-versions")
@@ -138,12 +144,15 @@ def subjects(tenants_dir: Path, listed: set[str]) -> list[Path]:
     return sorted(applied | set(tenant_files(tenants_dir)))
 
 
-def _secret_ref_namespaces(node: object, inside: bool = False) -> list[str]:
-    """Every `namespace` set at or below a key ending in `secretRef`, any case, under the provider."""
-    found: list[str] = []
+def _secret_ref_namespaces(node: object, inside: bool = False) -> list[str | None]:
+    """The `namespace` of each reference at or below a key ending in `secretRef`, any
+    case, under the provider; None for a reference that names a Secret and no namespace."""
+    found: list[str | None] = []
     if isinstance(node, dict):
         if inside and node.get("namespace") is not None:
             found.append(str(node["namespace"]))
+        elif inside and "name" in node:
+            found.append(None)
         for key, value in node.items():
             found += _secret_ref_namespaces(
                 value, inside or str(key).lower().endswith("secretref")
@@ -168,11 +177,18 @@ def _provider_problems(store: dict, rel: str, name: str, namespaces: list[str]) 
         ]
     kind = kinds[0]
     config = as_mapping(provider.get(kind))
+    refs = _secret_ref_namespaces(config)
     problems = [
         f"{rel}: {STORE_KIND} {name} reads its credentials from namespace {ns}, not "
         "a tenant namespace — the tenant borrows another namespace's token"
-        for ns in sorted(set(_secret_ref_namespaces(config)) - set(namespaces))
+        for ns in sorted({r for r in refs if r is not None} - set(namespaces))
     ]
+    if None in refs:
+        problems.append(
+            f"{rel}: {STORE_KIND} {name} names no namespace on its credential secretRef "
+            "— a cluster-scoped store must read its token from the tenant namespace "
+            "explicitly"
+        )
     if kind in TOKEN_PROVIDERS:
         return problems
     if kind == "onepasswordSDK":
@@ -407,6 +423,104 @@ def _placement_problems(docs: list, rel: str, namespaces: list[str]) -> list[str
     return problems
 
 
+def _strings(value: object) -> list[str] | None:
+    """A non-empty list of non-empty strings, else None."""
+    if isinstance(value, list) and value and all(isinstance(v, str) and v for v in value):
+        return value
+    return None
+
+
+def _rule_problem(rule: object, declared: dict[str, set[str]]) -> str | None:
+    """Why a flux-system Role rule grants more than reading this file's own Flux objects."""
+    rule = as_mapping(rule)
+    groups = rule.get("apiGroups")
+    resources = _strings(rule.get("resources"))
+    names, verbs = _strings(rule.get("resourceNames")), _strings(rule.get("verbs"))
+    # The core group is the empty string, so the one apiGroup may be "".
+    if set(rule) != {"apiGroups", "resources", "resourceNames", "verbs"} or not (
+        isinstance(groups, list) and len(groups) == 1 and isinstance(groups[0], str)
+        and resources and names and verbs
+    ):
+        return ("is not one apiGroup with non-empty string lists of resources, "
+                "resourceNames and verbs")
+    group = groups[0]
+    if group not in READABLE_FLUX_OBJECTS or set(resources) != {READABLE_FLUX_OBJECTS[group][0]}:
+        return f"reaches {group or 'core'} {', '.join(resources)}, not this tenant's own Flux objects"
+    if not set(verbs) <= READ_VERBS:
+        return f"grants {', '.join(sorted(set(verbs) - READ_VERBS))}, not read alone"
+    foreign = sorted(set(names) - declared[group])
+    if foreign:
+        return f"names {', '.join(foreign)}, which this file does not declare"
+    return None
+
+
+def _flux_system_rbac_problems(docs: list, rel: str, namespaces: list[str]) -> list[str]:
+    """In flux-system a tenant reads its own Flux objects and nothing else: each Role
+    reads this file's Kustomizations or GitRepositories, and each RoleBinding binds
+    such a Role to a ServiceAccount this file declares. A ClusterRoleBinding is never one."""
+    rbac = [d for d in docs if api_group(d) == RBAC_GROUP]
+    problems = [
+        f"{rel}: ClusterRoleBinding {metadata(d).get('name') or '?'} grants across every "
+        "namespace — a tenant binds roles in its own namespaces alone"
+        for d in of_kind(rbac, "ClusterRoleBinding")
+    ]
+    declared = {
+        group: {
+            str(metadata(d).get("name"))
+            for d in of_kind(docs, kind)
+            if api_group(d) == group and metadata(d).get("namespace") == FLUX_NAMESPACE
+        }
+        for group, (_, kind) in READABLE_FLUX_OBJECTS.items()
+    }
+    # An unsafe Role is reported once, on itself; its binding still needs this file's Role.
+    roles = set()
+    for role in of_kind(rbac, "Role"):
+        if metadata(role).get("namespace") != FLUX_NAMESPACE:
+            continue
+        name = metadata(role).get("name") or "?"
+        roles.add(name)
+        rules = role.get("rules")
+        why = (
+            [w for r in rules if (w := _rule_problem(r, declared))]
+            if isinstance(rules, list) and rules else ["has no rules list"]
+        )
+        problems += [
+            f"{rel}: Role {FLUX_NAMESPACE}/{name} {w} — a tenant may only read its "
+            f"own Flux objects in {FLUX_NAMESPACE}"
+            for w in why
+        ]
+    accounts = {
+        (str(metadata(d).get("name")), str(metadata(d).get("namespace")))
+        for d in of_kind(docs, "ServiceAccount")
+        if metadata(d).get("namespace") in {*namespaces, FLUX_NAMESPACE}
+    }
+    for binding in of_kind(rbac, "RoleBinding"):
+        if metadata(binding).get("namespace") != FLUX_NAMESPACE:
+            continue
+        name = metadata(binding).get("name") or "?"
+        ref = as_mapping(binding.get("roleRef"))
+        expected = {"apiGroup": RBAC_GROUP, "kind": "Role", "name": ref.get("name")}
+        if ref != expected or ref.get("name") not in roles:
+            problems.append(
+                f"{rel}: RoleBinding {FLUX_NAMESPACE}/{name} binds {ref.get('kind') or '?'} "
+                f"{ref.get('name') or '?'}, not a Role this file declares in "
+                f"{FLUX_NAMESPACE} — it would grant the tenant more of {FLUX_NAMESPACE}"
+            )
+        subjects = as_list(binding.get("subjects"))
+        strangers = [
+            s for s in subjects
+            if as_mapping(s).get("kind") != "ServiceAccount"
+            or (str(as_mapping(s).get("name")), str(as_mapping(s).get("namespace")))
+            not in accounts
+        ]
+        if strangers or not subjects:
+            problems.append(
+                f"{rel}: RoleBinding {FLUX_NAMESPACE}/{name} binds a subject other than a "
+                "ServiceAccount this file declares — the grant would reach past the tenant"
+            )
+    return problems
+
+
 def platform_namespaces(root: Path, tenants_dir: Path) -> tuple[dict[str, str], list[str]]:
     """{name: file} for each Namespace the cluster tree declares outside the tenants
     directory, plus the built-ins, and a finding per file that does not parse.
@@ -522,6 +636,7 @@ def check_file(path: Path, rel: str, listed: set[str] | None,
     problems += _caps_problems(docs, rel, storage_quota_keys(storage_classes))
     problems += _prune_guard_problems(docs, rel)
     problems += _placement_problems(docs, rel, namespaces)
+    problems += _flux_system_rbac_problems(docs, rel, namespaces)
     problems += _store_problems(docs, rel, namespaces, labels)
 
     kustomizations = _flux_kustomizations(docs)

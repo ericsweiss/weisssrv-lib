@@ -1039,6 +1039,116 @@ def test_standalone_files_sharing_a_namespace_fail(repo: Path) -> None:
     ], problems
 
 
+READER = textwrap.dedent(
+    """\
+    ---
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: demo-app-reader
+      namespace: demo-app
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: demo-app-reader
+      namespace: flux-system
+    rules:
+      - apiGroups: ["kustomize.toolkit.fluxcd.io"]
+        resources: ["kustomizations"]
+        resourceNames: ["demo-app"]
+        verbs: ["get", "list", "watch"]
+      - apiGroups: ["source.toolkit.fluxcd.io"]
+        resources: ["gitrepositories"]
+        resourceNames: ["demo-app"]
+        verbs: ["get", "list", "watch"]
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: demo-app-reader
+      namespace: flux-system
+    subjects:
+      - kind: ServiceAccount
+        name: demo-app-reader
+        namespace: demo-app
+    roleRef:
+      kind: Role
+      name: demo-app-reader
+      apiGroup: rbac.authorization.k8s.io
+    """
+)
+ROLE_REF = "  kind: Role\n  name: demo-app-reader\n  apiGroup: rbac.authorization.k8s.io\n"
+KUSTOMIZE_RULE = (
+    '  - apiGroups: ["kustomize.toolkit.fluxcd.io"]\n    resources: ["kustomizations"]\n'
+    '    resourceNames: ["demo-app"]\n    verbs: ["get", "list", "watch"]\n'
+)
+READER_ROLE = f"{TENANTS_DIR}/demo-app.yaml: Role flux-system/demo-app-reader"
+READER_BINDING = f"{TENANTS_DIR}/demo-app.yaml: RoleBinding flux-system/demo-app-reader"
+
+
+def test_a_read_only_flux_system_role_and_binding_pass(repo: Path) -> None:
+    assert wire(repo, TENANT + READER) == []
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        pytest.param(READER.replace(ROLE_REF, ROLE_REF.replace("Role", "ClusterRole", 1)
+                                    .replace("demo-app-reader", "cluster-admin")),
+                     f"{READER_BINDING} binds ClusterRole cluster-admin, not a Role this file declares",
+                     id="binding-to-cluster-admin"),
+        pytest.param(READER.replace(KUSTOMIZE_RULE, '  - apiGroups: [""]\n    resources: '
+                                    '["secrets"]\n    resourceNames: ["demo-app"]\n'
+                                    '    verbs: ["get"]\n'),
+                     f"{READER_ROLE} reaches core secrets, not this tenant's own Flux objects",
+                     id="secret-reading-role"),
+        pytest.param(READER.replace('verbs: ["get", "list", "watch"]', 'verbs: ["get", "patch"]', 1),
+                     f"{READER_ROLE} grants patch, not read alone", id="patch-verb"),
+        pytest.param(READER.replace('resourceNames: ["demo-app"]', 'resourceNames: ["other"]', 1),
+                     f"{READER_ROLE} names other, which this file does not declare",
+                     id="foreign-resource-name"),
+        pytest.param(READER.replace('    resourceNames: ["demo-app"]\n', "", 1),
+                     f"{READER_ROLE} is not one apiGroup", id="unnamed-resources"),
+        pytest.param(READER.replace("  - kind: ServiceAccount\n    name: demo-app-reader\n",
+                                    "  - kind: Group\n    name: demo-app-reader\n"),
+                     f"{READER_BINDING} binds a subject other than a ServiceAccount this file",
+                     id="group-subject"),
+        pytest.param(READER + "---\napiVersion: rbac.authorization.k8s.io/v1\n"
+                     "kind: ClusterRoleBinding\nmetadata:\n  name: demo-app-root\n"
+                     "subjects: []\nroleRef:\n  kind: ClusterRole\n  name: cluster-admin\n"
+                     "  apiGroup: rbac.authorization.k8s.io\n",
+                     f"{TENANTS_DIR}/demo-app.yaml: ClusterRoleBinding demo-app-root grants "
+                     "across every namespace", id="cluster-role-binding"),
+    ],
+)
+def test_flux_system_rbac_beyond_reading_its_own_objects_fails(
+    repo: Path, body: str, expected: str
+) -> None:
+    problems = wire(repo, TENANT + body)
+    assert len(problems) == 1 and expected in problems[0], problems
+    assert run(repo) == 1
+
+
+CREDENTIAL_NAMESPACE = "                namespace: demo-app\n"
+
+
+@pytest.mark.parametrize(
+    "store",
+    [STORE, SDK_STORE.replace("VAULT", "demo-app"), GITLAB_STORE],
+    ids=["onepassword", "onepassword-sdk", "gitlab"],
+)
+def test_a_credential_ref_without_a_namespace_fails(repo: Path, store: str) -> None:
+    lines = store.splitlines(keepends=True)
+    kept = [line for line in lines if line.strip() != "namespace: demo-app"
+            or line.startswith("        - ")]
+    assert len(kept) == len(lines) - 1, "the fixture names one credential namespace"
+    problems = wire(repo, TENANT + "".join(kept))
+    assert len(problems) == 1, problems
+    assert ("names no namespace on its credential secretRef — a cluster-scoped store "
+            "must read its token from the tenant namespace explicitly") in problems[0]
+
+
 def test_an_unreadable_platform_file_inspects_nothing(repo: Path, capsys) -> None:
     path = repo / "kubernetes/apps/binary.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
