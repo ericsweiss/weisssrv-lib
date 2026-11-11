@@ -17,7 +17,7 @@ variable "networks" {
     what makes a single forgotten `vlan` visible, since one untagged network is
     otherwise indistinguishable from the built-in.
 
-    `dhcp.dns_servers` drives `dhcp_server.dns_enabled`: a non-empty list turns
+    `dhcp.dns_servers` drives `dhcp_server.dns.enabled`: a non-empty list turns
     the DHCP DNS option on, an empty list leaves clients on the gateway's own
     resolver. An empty list is the only way to express "no DHCP DNS": provider
     issue 429 means an explicit `[]` written to the controller never converges,
@@ -259,8 +259,9 @@ variable "zones" {
     variable at this module's Terraform floor.
 
     Membership is a FULL REPLACEMENT on every apply — the provider always sends
-    the whole `network_ids` list — and it is the only way to set a network's
-    zone in v0.55.0 (`unifi_network` has no `firewall_zone_id`; provider issue 417).
+    the whole `network_ids` list — and it is the only place this module sets a
+    network's zone: `unifi_network.firewall_zone_id` competes with the zone's
+    own list for the same controller field, so the module leaves it unset.
     Whether the controller also removes that network from `Internal` is
     controller behaviour the provider neither performs nor detects: probe it
     with `data.unifi_firewall_zone` after the first apply (README).
@@ -292,10 +293,8 @@ variable "builtin_zone_names" {
     name `policies[*].source.zone` / `.destination.zone` uses -> the zone's
     display name on the controller.
 
-    They are read through `data.unifi_firewall_zone`, which is the only
-    supported path in v0.55.0: importing a built-in zone by name is not in the
-    pinned release (provider PR 401), and managing one would fight the
-    controller over its membership list.
+    They are read through `data.unifi_firewall_zone` and never managed: a
+    managed built-in would fight the controller over its membership list.
 
     Display names are controller- and locale-dependent (`Internal`, `External`,
     `Gateway`, `Hotspot`, `Vpn`, `Dmz` on a UniFi OS 10.x console). Confirm them
@@ -315,7 +314,7 @@ variable "policies" {
     Zone-based firewall policies. `name` is the state address, so it must be
     unique and renaming one replaces the policy.
 
-    ORDER IS NOT MANAGED. `unifi_firewall_policy.index` is read-only in v0.55.0
+    ORDER IS NOT MANAGED. `unifi_firewall_policy.index` is read-only
     and the controller appends each new policy to the end of its zone-pair, so
     a rule that has to precede another is a UI step (README "What this module
     cannot manage"). The zone-per-network model keeps that from mattering: the
@@ -479,9 +478,8 @@ variable "wlans" {
     attribute is never written, so the CONSOLE owns it and a band enabled in
     the UI survives every apply. Set to a list it is terraform-owned and
     re-asserted on every apply, reverting a UI change. `6g` is allowed in that
-    list, but including it fails WLAN creation at the pinned provider
-    (ubiquiti-community/terraform-provider-unifi issue 406), so a 6 GHz SSID
-    leaves `bands` unset and is toggled in the UI.
+    list but untested here against the provider's fix for issue 406, so a 6 GHz
+    SSID leaves `bands` unset and is toggled in the UI.
 
     `wpa3 = true` is WPA2/WPA3 transition mode with PMF optional. `false` is
     plain WPA2 with PMF disabled — what ESP32/Kasa-class gear needs.

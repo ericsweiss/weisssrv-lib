@@ -15,7 +15,7 @@ The tag below is an example: use the tag your repo pins (docs/VERSIONING.md).
 
 ```hcl
 module "network" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.27.0"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.28.0"
 
   networks = {
     # `subnet` is GATEWAY form: the host part is the gateway address.
@@ -130,8 +130,8 @@ Two input names deliberately do not match the provider attribute they drive:
   toggle is "connect high-performance clients to 5 GHz only"; the input says
   what it *permits*, and defaults `false` so an unset WLAN keeps the
   controller's own posture. Set it `true` on an IoT SSID.
-- **`site_settings.upnp`** drives `usg.upnp_enabled` *and*
-  `usg.upnp_nat_pmp_enabled`: leaving NAT-PMP on while UPnP is off still lets a
+- **`site_settings.upnp`** drives `usg.upnp.enabled` *and*
+  `usg.upnp.nat_pmp_enabled`: leaving NAT-PMP on while UPnP is off still lets a
   LAN host punch its own hole.
 
 `wlans[*].bands` chooses an OWNER for the band set rather than a value.
@@ -179,7 +179,8 @@ policies reference, in the one namespace policies resolve against), `wlan_ids`.
 
 ## What this module cannot manage
 
-The provider's own limits at v0.55.0. Everything here is a UI step or a runbook
+The provider's limits at v0.65.0 and what this module leaves to the console by
+design. Everything here is a UI step or a runbook
 step in the consuming repo — none of it is drift this module will report.
 Issue and PR numbers refer to the
 [ubiquiti-community/terraform-provider-unifi](https://github.com/ubiquiti-community/terraform-provider-unifi/issues)
@@ -188,16 +189,16 @@ tracker.
 | Not managed | Why |
 |---|---|
 | **Policy ORDER** | `unifi_firewall_policy.index` is read-only; the controller appends every new policy to the end of its zone-pair and the Integration API exposes no reorder (provider issue 407). The zone-per-network model is what makes that safe: entries are allowances against a default deny, not a first-match list. |
-| **mDNS reflection** | `unifi_network.multicast_dns` is ignored by UniFi OS gateways, which always store `false`. The module leaves it unset rather than planning a lie; enable the reflector per network in the UI. |
-| **Devices, ports, native/tagged VLAN per port** | `unifi_device` cannot create anything (adoption only), and its `port_override` block is unsafe at 0.55.0: zero blocks wipes live overrides (provider issue 438), a `op_mode: switch` port strips fields from every port on the device (provider issue 430), and unset Optional+Computed attributes fail the apply (provider issue 431). Port layout is a documented physical map, not code. |
-| **6 GHz, in code** | Including `6g` in a band set this module WRITES fails WLAN creation (provider issue 406). Enable it in the console and leave `wlans[*].bands` unset — the module then writes no band set, so the console's stays (Inputs, above). |
-| **Per-SSID band steering** | `bandsteering_mode` is a device attribute, not a WLAN one (provider issue 388). `allow_2ghz_high_perf` is the closest per-SSID control. |
-| **A network's zone from the network side** | `unifi_network` has no `firewall_zone_id` (provider issue 417); zone membership is set only from `zones`. |
-| **Built-in zones as resources** | v0.55.0 cannot import one by name (provider PR 401 is not in the pinned release), and managing one would fight the controller for membership. They are read through `data.unifi_firewall_zone`. |
-| **WLAN AP-group membership** | The controller assigns the default AP group on every WLAN write and reads it back. The module never sets `ap_group_ids` and `ignore_changes`es it, along with `minrate_setting_preference`. Set AP groups and minimum data rates in the console. |
+| **mDNS reflection** | `unifi_network.multicast_dns` is read back from the controller and the site reflector is `unifi_setting.mdns`; the module sets neither, so the console owns the reflector. Enable it per network in the UI. |
+| **Devices, ports, native/tagged VLAN per port** | `unifi_device` adopts only (it cannot create a device) and `unifi_device_port` manages a single switch port. The module manages neither: port layout is a documented physical map in the consuming repo, not code. |
+| **6 GHz, in code** | `6g` in a band set this module WRITES is untested here against the provider's fix for issue 406. Enable it in the console and leave `wlans[*].bands` unset — the module then writes no band set, so the console's stays (Inputs, above). |
+| **Per-SSID band steering** | `bandsteering_mode` lives on `unifi_device`; the WLAN attribute of that name is deprecated (provider issue 388). `allow_2ghz_high_perf` is the closest per-SSID control. |
+| **A network's zone from the network side** | `unifi_network.firewall_zone_id` competes with `unifi_firewall_zone.networks` for the same controller field; zone membership is set only from `zones`. |
+| **Built-in zones as resources** | Importable by name (`name=Internal`), but managing one would fight the controller for membership. They are read through `data.unifi_firewall_zone`. |
+| **WLAN AP-group membership** | The controller assigns the default AP group on every WLAN write and reads it back. The module never sets `ap_group` and `ignore_changes`es it, along with `minrate_setting_preference`. Set AP groups and minimum data rates in the console. |
 | **Virtual-network overrides on the default network** | The controller rejects them (`api.err.VirtualNetworkOverrideUnsupportedForDefaultNetwork`), so a client whose `network` is the `default` key is written as a bare fixed-IP reservation with no override. Clients on any other network still steer. |
 | **An empty DHCP DNS list** | Written as `[]` the controller never converges it (provider issue 429), so an empty `dhcp.dns_servers` sends null and leaves clients on the gateway's own resolver. |
-| **`unifi_port_forward.enabled`** | Deprecated in provider 0.55.0 with no replacement, so the module leaves it unset. A forward exists while its `port_forwards` entry does. |
+| **`unifi_port_forward.enabled`** | Deprecated in the provider and taken from the controller when unset, so the module leaves it alone. A forward exists while its `port_forwards` entry does. |
 | **Day-2 IPS mode** | `lifecycle { ignore_changes = [ips] }` on `unifi_setting.site` makes the whole `ips` block create-time intent: an imported site never receives it, and changing `site_settings.ips_mode` plans nothing. Set it in the console ("Apply is supervised"). |
 
 Two behaviours to verify on the controller rather than assume:
@@ -333,10 +334,13 @@ until the plan reads "No changes". Never apply the create plan.
 
 ## Provider pin
 
-`~> 0.55.0`, pinned to the minor as [../README.md](../README.md) describes. The
-provider is a rewrite of `paultyng/unifi`. Its 0.52 → 0.55 schema moves made
-firewall-policy `index` read-only, added `unifi_network.purpose`, and changed
-endpoint match lists to Computed.
+`~> 0.65.0`, pinned to the minor as [../README.md](../README.md) describes. The
+provider is a rewrite of `paultyng/unifi`, and its pre-1.0 minors move schemas:
+0.60 nests every prefixed attribute group (`wpa3`, `dhcp_server.dns`,
+`usg.upnp`, `mgmt.auto_upgrade`), and 0.64 reads an unset attribute from the
+controller instead of planning a static default. A minor bump therefore lands
+here and in each consumer's `.terraform.lock.hcl` together, with a live plan
+that reads "No changes" before either merges.
 
 ## Tests
 
@@ -351,7 +355,7 @@ The `required_version` floor is the test harness's: [../README.md](../README.md)
 `tests/validation.tftest.hcl` covers every variable validation and every
 cross-map precondition, plus the derived attributes that have no other
 guard: `matching_target` and `port_matching_type` on **both** endpoints, the
-ALLOW-only `create_allow_respond`, `dhcp_server.dns_enabled` and the DHCP
+ALLOW-only `create_allow_respond`, `dhcp_server.dns.enabled` and the DHCP
 start/stop pair, the pinned `setting_preference`, zone `network_ids`
 membership, `l2_isolation`, the `no2ghz_oui`
 inversion, the WPA3/PMF pairing, the conditional `igmp_snooping` block and the

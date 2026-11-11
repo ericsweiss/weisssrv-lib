@@ -34,7 +34,7 @@ needs an image at or above it; the image does not set the floor.
 ## Pre-1.0 providers are pinned to the minor
 
 A pre-1.0 provider can break shapes in a minor release, so those are pinned with
-all three components (`~> 0.55.0`). `~> 0.55` would float every 0.x minor —
+all three components (`~> 0.65.0`). `~> 0.65` would float every 0.x minor —
 `~>` only pins everything left of the last component. The caller's lockfile pins
 the exact build; treat a minor bump as its own change and re-read the release
 notes for schema moves.

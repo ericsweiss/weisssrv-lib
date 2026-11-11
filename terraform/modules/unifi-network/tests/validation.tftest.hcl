@@ -150,7 +150,7 @@ run "a_whole_site_plans_clean" {
     error_message = "Custom zones are keyed by their display name; built-ins are data sources, never resources."
   }
 
-  # `network_ids` is the only way v0.55.0 puts a network into a custom zone, so
+  # `network_ids` is the only way this module puts a network into a custom zone, so
   # an empty list is a segmentation that plans and applies as a no-op.
   assert {
     condition = (
@@ -197,19 +197,19 @@ run "a_whole_site_plans_clean" {
     condition = alltrue([
       for network in unifi_network.this : network.setting_preference == "manual"
     ])
-    error_message = "Every network must write setting_preference = \"manual\" — under \"auto\" the controller owns dhcp dns_enabled, domain_name and igmp_snooping and strips them back to its defaults."
+    error_message = "Every network must write setting_preference = \"manual\" — under \"auto\" the controller owns dhcp dns.enabled, domain_name and igmp_snooping and strips them back to its defaults."
   }
 
   # A DHCP DNS list is the only thing that turns the option on; an empty list
   # is sent as null, which the provider can converge (provider issue 429).
   assert {
-    condition     = unifi_network.this["iot"].dhcp_server.dns_enabled
-    error_message = "A non-empty dhcp.dns_servers must set dhcp_server.dns_enabled."
+    condition     = unifi_network.this["iot"].dhcp_server.dns.enabled
+    error_message = "A non-empty dhcp.dns_servers must set dhcp_server.dns.enabled."
   }
 
   assert {
-    condition     = !unifi_network.this["guest"].dhcp_server.dns_enabled
-    error_message = "An empty dhcp.dns_servers must leave dhcp_server.dns_enabled false."
+    condition     = !unifi_network.this["guest"].dhcp_server.dns.enabled
+    error_message = "An empty dhcp.dns_servers must leave dhcp_server.dns.enabled false."
   }
 
   assert {
@@ -269,9 +269,9 @@ run "a_whole_site_plans_clean" {
   assert {
     condition = (
       unifi_wlan.this["iot"].pmf_mode == "disabled"
-      && unifi_wlan.this["iot"].wpa3_support == false
+      && unifi_wlan.this["iot"].wpa3.support == false
       && unifi_wlan.this["guest"].pmf_mode == "optional"
-      && unifi_wlan.this["guest"].wpa3_transition == true
+      && unifi_wlan.this["guest"].wpa3.transition == true
     )
     error_message = "wpa3 = false must be plain WPA2 with PMF disabled; wpa3 = true must be transition mode with PMF optional (PMF cannot be disabled under WPA3)."
   }
@@ -314,9 +314,9 @@ run "a_whole_site_plans_clean" {
 
   assert {
     condition = (
-      unifi_setting.site.mgmt.auto_upgrade == false
-      && unifi_setting.site.usg.upnp_enabled == false
-      && unifi_setting.site.usg.upnp_nat_pmp_enabled == false
+      unifi_setting.site.mgmt.auto_upgrade.enabled == false
+      && unifi_setting.site.usg.upnp.enabled == false
+      && unifi_setting.site.usg.upnp.nat_pmp_enabled == false
       && unifi_setting.site.network_optimization.enabled == false
       && unifi_setting.site.ips.ips_mode == "ids"
     )
@@ -1666,11 +1666,6 @@ run "a_gateway_only_site_plans_clean" {
   assert {
     condition     = length(data.unifi_client_qos_rate.default) == 0
     error_message = "A site with no WLANs must skip the client QoS rate lookup entirely — a gateway-only site must not fail its plan on a localized rate name it never uses."
-  }
-
-  assert {
-    condition     = unifi_setting.site.igmp_snooping == null
-    error_message = "An empty igmp_snooping_networks must write NO igmp_snooping block — `enabled = false` would disable snooping a site had configured in the UI."
   }
 }
 

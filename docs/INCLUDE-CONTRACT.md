@@ -1544,8 +1544,8 @@ Behaviour to know before adopting:
   fail the plan. A renumber is therefore one edit across the subnet, its pool and
   its reservations.
 - **`unifi-network` manages objects, never devices.** Policy ORDER, mDNS
-  reflection, per-port VLANs and 6 GHz are provider gaps at `~> 0.55.0`, not
-  drift the module reports; the zone-per-network model is what makes unordered
+  reflection, per-port VLANs and 6 GHz are left to the console, not drift the
+  module reports; the zone-per-network model is what makes unordered
   policies safe (allowances against a default inter-zone deny). Its README's
   "What this module cannot manage" table is the list, and the apply is
   supervised — this is the gateway's own segmentation.
