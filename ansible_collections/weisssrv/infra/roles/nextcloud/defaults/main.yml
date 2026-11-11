@@ -9,7 +9,11 @@ nextcloud_postgres_version: ""
 # Aliases the conventional inventory-wide `redis_version` pin.
 nextcloud_redis_version: "{{ redis_version | default('') }}"
 nextcloud_exporter_version: ""
-nextcloud_image: "nextcloud:{{ nextcloud_version }}-apache"
+# Index digest of the nextcloud tag. Upstream rebuilds a tag in place for PHP
+# security releases; a digest makes that rebuild a visible, deployable change.
+nextcloud_image_digest: ""
+nextcloud_image: >-
+  nextcloud:{{ nextcloud_version }}-apache{{ ('@' ~ nextcloud_image_digest) if nextcloud_image_digest else '' }}
 nextcloud_postgres_image: "postgres:{{ nextcloud_postgres_version }}"
 nextcloud_redis_image: "redis:{{ nextcloud_redis_version }}"
 nextcloud_exporter_image: "ghcr.io/xperimental/nextcloud-exporter:{{ nextcloud_exporter_version }}"

@@ -1025,7 +1025,7 @@ the heaviest scenarios run 8-11 minutes per attempt.
 |---|---|---|
 | `job_name` | `pr-agent-review` |  |
 | `stage` | `ai-review` |  |
-| `image` | `pragent/pr-agent:0.48.0`, digest-pinned | multi-arch index digest |
+| `image` | `pragent/pr-agent:0.50.0`, digest-pinned | multi-arch index digest |
 | `tags` | `[]` |  |
 | `needs` | `[]` |  |
 | `model` | `gpt-5.6` |  |

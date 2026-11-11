@@ -16,8 +16,10 @@ compose scaffolding is `weisssrv.infra.compose_app`.
    `database` (Immich's release-pinned Postgres image with the vector
    extensions) and `redis` (Valkey). The app binds loopback only; native
    Prometheus metrics are published on `immich_api_metrics_port` /
-   `immich_microservices_metrics_port`, and an opt-in `postgres-exporter`
-   sidecar adds database-level metrics. Lifecycle: `immich-compose.service`.
+   `immich_microservices_metrics_port` through `immich-metrics-shim`, a socat
+   sidecar in the server's network namespace (Immich 3.4 binds the metrics
+   servers to localhost inside the container), and an opt-in
+   `postgres-exporter` sidecar adds database-level metrics. Lifecycle: `immich-compose.service`.
 4. **System config** (`immich-config.json`) — the `IMMICH_CONFIG_FILE`
    declaring OIDC, `machineLearning.urls` and `backup.database.enabled: false`.
    With this file present, the admin UI settings become read-only.
@@ -58,6 +60,7 @@ without `no_log` and name the missing variable when they fail.
 | `immich_compose_subnet` / `immich_compose_gateway` | Fixed compose bridge (the gateway is `IMMICH_TRUSTED_PROXIES`) | `172.28.0.0/16`, `172.28.0.1` |
 | `immich_db_username` / `immich_db_database_name` | Postgres superuser + database | `postgres`, `immich` |
 | `immich_telemetry_include`, `immich_api_metrics_port`, `immich_microservices_metrics_port` | Native Prometheus telemetry | `all`, `8081`, `8082` |
+| `immich_metrics_shim_enabled`, `immich_socat_version`, `immich_metrics_shim_image` | socat sidecar that republishes the localhost-bound metrics servers on the published ports; drop it once Immich binds them itself | `true`, `1.8.1.3`, derived |
 | `immich_postgres_exporter_enabled` | Add the `postgres-exporter` sidecar (DB-level metrics) | `false` |
 | `immich_postgres_exporter_version` / `_digest` / `_image` | Its image pin; the image derives from the version + optional digest, or override it outright | `""`, `""`, `quay.io/prometheuscommunity/postgres-exporter:<version>` |
 | `immich_postgres_exporter_port` | Host port for the exporter (unauthenticated) | `9187` |

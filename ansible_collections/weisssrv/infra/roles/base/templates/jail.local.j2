@@ -41,6 +41,8 @@ maxretry = {{ base_fail2ban_sshd_maxretry }}
 bantime = {{ base_fail2ban_sshd_bantime }}
 findtime = {{ base_fail2ban_sshd_findtime }}
 backend = systemd
+# OpenSSH 10 logs each connection's auth lines from sshd-session, not sshd.
+journalmatch = _SYSTEMD_UNIT=ssh.service + _COMM=sshd + _COMM=sshd-session
 mode = aggressive
 
 {% if base_fail2ban_pveproxy_enabled %}
