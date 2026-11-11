@@ -69,9 +69,9 @@ data "unifi_client_qos_rate" "default" {
   name = var.qos_rate_name
 }
 
-# Built-in zones are READ, never managed: v0.55.0 cannot import one by name, and
-# a managed built-in would fight the controller over `network_ids`, which the
-# provider replaces wholesale on every apply (README).
+# Built-in zones are READ, never managed: a managed built-in would fight the
+# controller over `network_ids`, which the provider replaces wholesale on every
+# apply (README).
 data "unifi_firewall_zone" "builtin" {
   for_each = local.builtin_zones_used
 
@@ -94,19 +94,21 @@ resource "unifi_network" "this" {
   # multicast_dns stays unset: README "mDNS reflection".
 
   # "manual": under the provider default "auto" the controller owns
-  # dhcp_server.dns_enabled, domain_name and igmp_snooping and resets them on
+  # dhcp_server.dns.enabled, domain_name and igmp_snooping and resets them on
   # every write (README "Apply is supervised").
   setting_preference = "manual"
 
   dhcp_server = each.value.dhcp == null ? null : {
-    enabled     = each.value.dhcp.enabled
-    start       = each.value.dhcp.start
-    stop        = each.value.dhcp.stop
-    dns_enabled = length(each.value.dhcp.dns_servers) > 0
+    enabled = each.value.dhcp.enabled
+    start   = each.value.dhcp.start
+    stop    = each.value.dhcp.stop
     # null, not []: the provider reads "no DHCP DNS servers" back as null, so an
     # explicit empty list never converges (upstream #429).
-    dns_servers = length(each.value.dhcp.dns_servers) > 0 ? each.value.dhcp.dns_servers : null
-    leasetime   = each.value.dhcp.leasetime
+    dns = {
+      enabled = length(each.value.dhcp.dns_servers) > 0
+      servers = length(each.value.dhcp.dns_servers) > 0 ? each.value.dhcp.dns_servers : null
+    }
+    leasetime = each.value.dhcp.leasetime
   }
 
   lifecycle {
@@ -274,9 +276,11 @@ resource "unifi_wlan" "this" {
 
   # WPA3 is a modifier on wpapsk, not a `security` value, and PMF may not be
   # disabled while it is on.
-  wpa3_support    = each.value.wpa3
-  wpa3_transition = each.value.wpa3
-  pmf_mode        = each.value.wpa3 ? "optional" : "disabled"
+  wpa3 = {
+    support    = each.value.wpa3
+    transition = each.value.wpa3
+  }
+  pmf_mode = each.value.wpa3 ? "optional" : "disabled"
 
   # Optional+Computed: a null writes nothing and the console owns the band set;
   # a list is terraform-owned and re-asserted on every apply (README).
@@ -294,7 +298,7 @@ resource "unifi_wlan" "this" {
     # either ends the apply in "inconsistent result" or reverts an operator's
     # setting (README "What this module cannot manage").
     ignore_changes = [
-      ap_group_ids,
+      ap_group,
       minrate_setting_preference,
     ]
 
@@ -380,7 +384,7 @@ resource "unifi_port_forward" "this" {
 # they are Optional+Computed — plan-review the first apply (README).
 resource "unifi_setting" "site" {
   mgmt = {
-    auto_upgrade = var.site_settings.auto_upgrade
+    auto_upgrade = { enabled = var.site_settings.auto_upgrade }
   }
 
   network_optimization = {
@@ -389,8 +393,10 @@ resource "unifi_setting" "site" {
 
   # UPnP lives on the usg block, not on a settings resource of its own.
   usg = {
-    upnp_enabled         = var.site_settings.upnp
-    upnp_nat_pmp_enabled = var.site_settings.upnp
+    upnp = {
+      enabled         = var.site_settings.upnp
+      nat_pmp_enabled = var.site_settings.upnp
+    }
   }
 
   # An empty list writes NO block, so adopting this module never turns off
