@@ -676,7 +676,7 @@
       port = 22,{{ gitlab_ssh_port }}
       filter = sshd[mode=aggressive]
       backend = systemd
-      journalmatch = _SYSTEMD_UNIT={{ gitlab_ssh_service_name }}.service + _COMM=sshd
+      journalmatch = _SYSTEMD_UNIT={{ gitlab_ssh_service_name }}.service + _COMM=sshd + _COMM=sshd-session
       maxretry = 5
       findtime = 10m
       bantime = 1h

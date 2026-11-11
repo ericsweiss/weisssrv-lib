@@ -36,6 +36,22 @@ services:
     mem_limit: {{ immich_server_mem_limit }}
 {% endif %}
     restart: always
+{% if immich_metrics_shim_enabled and immich_telemetry_include | length > 0 %}
+
+  # Republishes the metrics servers, which Immich binds to localhost inside the
+  # container, on the server's published ports (shares its network namespace).
+  immich-metrics-shim:
+    image: {{ immich_metrics_shim_image }}
+    network_mode: "service:immich-server"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        socat TCP4-LISTEN:{{ immich_api_metrics_port }},fork,reuseaddr TCP6:[::1]:{{ immich_api_metrics_port }} &
+        exec socat TCP4-LISTEN:{{ immich_microservices_metrics_port }},fork,reuseaddr TCP6:[::1]:{{ immich_microservices_metrics_port }}
+    depends_on:
+      - immich-server
+    restart: always
+{% endif %}
 
   # CPU ML. immich-server tries machineLearning.urls in order, so when the site
   # puts a dedicated inference endpoint first this service is the failover —

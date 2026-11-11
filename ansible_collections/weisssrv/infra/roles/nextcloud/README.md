@@ -33,6 +33,7 @@ a host nginx that terminates TLS and proxies to the loopback-bound web port.
 | Variable | Meaning | Required |
 |---|---|---|
 | `nextcloud_version`, `nextcloud_postgres_version`, `nextcloud_redis_version`, `nextcloud_exporter_version` | Image pins (`nextcloud_redis_version` aliases `redis_version`) | yes |
+| `nextcloud_image_digest` | Index digest appended to the nextcloud tag, so an upstream in-place rebuild of the tag (PHP security releases) is a visible change | no (empty = tag only) |
 | `nextcloud_image`, `nextcloud_postgres_image`, `nextcloud_redis_image`, `nextcloud_exporter_image`, `nextcloud_postgres_exporter_image` | Full image refs, derived from the pins above; override one outright for a fork | no (derived) |
 | `nextcloud_external_host` / `nextcloud_internal_host` | User-facing names; default to `cloud.<external_domain>` / `cloud.<internal_domain>` | at least one |
 | `nextcloud_external_domain` / `nextcloud_internal_domain` | Alias the inventory-wide `external_domain` / `internal_domain` | no (`""`) |

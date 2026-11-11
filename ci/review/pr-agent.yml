@@ -7,7 +7,7 @@ spec:
     image:
       # Digest-pinned because the job handles a GitLab PAT and a model API key,
       # on the multi-arch INDEX digest so the pin stays portable.
-      default: pragent/pr-agent:0.48.0@sha256:12d8c67f11d034ed046085ed09f14fdb25ababc29acb66c071d1c3d511d4fee2
+      default: pragent/pr-agent:0.50.0@sha256:8978ae8f025883159ccc6f5bec51e6553347c77d14dbc5ca4bf3bb4a8726eb43
       description: Digest-pinned pr-agent image.
     tags:
       type: array

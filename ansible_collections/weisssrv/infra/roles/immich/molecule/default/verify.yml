@@ -25,6 +25,9 @@
           # Quoted whole: the ': ' inside the pattern would otherwise make YAML
           # parse the list entry as a mapping (a truthy no-op, not a test).
           - "(immich_compose.content | b64decode) is search('IMMICH_CONFIG_FILE: /config/immich-config.json')"
+          - (immich_compose.content | b64decode) is search('immich-metrics-shim:')
+          - (immich_compose.content | b64decode) is search('alpine/socat:1\\.8\\.1\\.3')
+          - "(immich_compose.content | b64decode) is search('network_mode: \"service:immich-server\"')"
           - "(immich_compose.content | b64decode) is search('IMMICH_TELEMETRY_INCLUDE: all')"
           - "(immich_compose.content | b64decode) is search('IMMICH_TRUSTED_PROXIES: 172\\\\.28\\\\.0\\\\.1')"
           - (immich_compose.content | b64decode) is search('127\\.0\\.0\\.1:2283:2283')
