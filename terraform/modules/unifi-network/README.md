@@ -302,12 +302,15 @@ Everything below already exists on a controller that has ever been configured;
 import it rather than letting Terraform create a duplicate.
 
 ```bash
-# The built-in Default network — the only resource with name= import support.
+# Networks and WLANs import by name; the by-id form reads nothing for them.
 terraform import 'module.network.unifi_network.this["default"]' name=Default
+terraform import 'module.network.unifi_network.this["iot"]' name=IoT
+terraform import 'module.network.unifi_wlan.this["home"]' name=Home
 
-# Everything else with an id: <id>, or <site>:<id>.
-terraform import 'module.network.unifi_wlan.this["home"]' 5dc28e5e9106d105bdc87217
-terraform import 'module.network.unifi_firewall_zone.this["iot"]' default:5f3e9b2c4ee8cb0f1f4a1234
+# Zones import as <site>:<id>; policies and port forwards as the bare <id>.
+terraform import 'module.network.unifi_firewall_zone.this["iot"]' default:bf505ec5-e948-4803-8ec6-8a50fe03b6d4
+terraform import 'module.network.unifi_firewall_policy.this["home-to-iot"]' 7b7b2a05-e65b-4709-91ea-42f971b63426
+terraform import 'module.network.unifi_port_forward.this["plex"]' 2ac7f25a-bc42-47d9-9d8d-3401a02d861b
 
 # Clients import by MAC, and the MAC must contain colons.
 terraform import 'module.network.unifi_client.this["hue"]' 00:17:88:7e:c7:a2
@@ -316,8 +319,17 @@ terraform import 'module.network.unifi_client.this["hue"]' 00:17:88:7e:c7:a2
 terraform import module.network.unifi_setting.site default
 ```
 
-Ids come from the controller's API (`/proxy/network/v2/api/site/default/...`)
-or the object's URL in the UI. Built-in zones are never imported.
+Ids come from the controller's API (`rest/networkconf`, `rest/portforward`,
+`rest/wlanconf` under `/proxy/network/api/s/<site>/`; `firewall/zone` and
+`firewall-policies` under `/proxy/network/v2/api/site/<site>/`) or the object's
+URL in the UI. Built-in zones are never imported.
+
+A UniFi Network major upgrade can assign every object a new id (the 24-hex
+ObjectIds became UUIDs with Network 11). A plan then fails with `Unexpected
+Identity Change` on networks, port forwards and WLANs and plans every zone and
+policy as a create. The controller is intact and the state is stale: `terraform
+state rm` each resource the plan names and import it again with the forms above
+until the plan reads "No changes". Never apply the create plan.
 
 ## Provider pin
 
