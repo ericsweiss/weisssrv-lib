@@ -94,8 +94,9 @@ spec:
     # code does not carry, so it is read from the plan text and exits 2 too.
     - |
       set +e
-      terraform plan -input=false -no-color -lock-timeout=120s -detailed-exitcode | tee plan.log
-      rc=${PIPESTATUS[0]}
+      terraform plan -input=false -no-color -lock-timeout=120s -detailed-exitcode > plan.log 2>&1
+      rc=$?
+      cat plan.log
       if [ "$rc" -eq 0 ] && grep -q 'Check block assertion failed' plan.log; then rc=2; fi
       exit "$rc"
   # Drift (exit 2) is the advisory yellow. A broken detector exits 1 and stays

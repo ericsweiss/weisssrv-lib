@@ -83,3 +83,10 @@ def test_the_plan_asks_for_a_detailed_exit_code() -> None:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_the_plan_step_is_posix_shell() -> None:
+    """The job image runs the script with sh, so bash-only words break it."""
+    text = TEMPLATE.read_text()
+    assert "PIPESTATUS" not in text
+    assert "Check block assertion failed" in text
