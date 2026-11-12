@@ -6,6 +6,17 @@
   ansible.builtin.systemd:
     daemon_reload: true
 
+# A restart is `down` then `up`, so the images are pulled first: a registry
+# failure then fails the play while the old stack is still running, instead of
+# after `down` has already removed it.
+- name: Pull compose images
+  listen: Restart compose stack
+  ansible.builtin.command:
+    cmd: docker compose pull --quiet
+    chdir: "{{ compose_app_working_directory }}"
+  changed_when: false
+  when: not (compose_app_skip_install | default(false))
+
 # `docker compose up -d` reconciles the running stack to the rendered compose,
 # .env and config. The caller's render tasks notify this same handler, so a
 # config change and a unit change coalesce into a single restart.
