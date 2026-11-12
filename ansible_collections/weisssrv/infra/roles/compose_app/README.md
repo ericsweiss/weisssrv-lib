@@ -21,6 +21,9 @@ at the right point in its own flow.
 every handler pending in the play, not only this role's. A caller must have its
 own config tasks (and the notifies they queue) complete before including it.
 
+A notified `Restart compose stack` runs `docker compose pull` first, then
+restarts the unit (`down`, then `up -d`): a registry failure fails the play
+while the old stack is still running, instead of after `down` has removed it.
 One compose systemd unit template serves every guest, with `RemainAfterExit`
 standardised to `yes` (systemd treats `yes` and `true` identically). The nginx
 `.conf` stays in the caller's role (only the **task flow** is shared) — the site
