@@ -17,6 +17,7 @@ point the script at it. Each script's config resolution is documented in
 | `alertmanager-behaviour.example.yaml` | `check-alertmanager-behaviour.py` | `scripts/alertmanager-behaviour.yaml` |
 | `render-gates.example.conf` | `run-render-gates.sh` | `scripts/render-gates.conf` |
 | `unifi-settings.example.json` | `unifi-settings-drift.py` | `scripts/unifi-settings.json` |
+| `unifi-psk.example.json` | `unifi-psk-parity.py` | `scripts/unifi-psk.json` |
 | `helmrelease-crd-safety.example.yaml` | `check-helmrelease-crd-safety.py` | `kubernetes/helmrelease-crd-safety.yaml` |
 | `comment-length.example.yml` | `check-comment-length.py` | `.comment-length.yml` |
 | `lib-ref-sites.example.yml` | `check-lib-pins.py` | `scripts/lib-ref-sites.yml` |
