@@ -17,3 +17,8 @@ output "wlan_ids" {
   description = "WLAN id per `wlans` key."
   value       = { for key, w in unifi_wlan.this : key => w.id }
 }
+
+output "switch_port_ids" {
+  description = "Resource id per `switch_ports` key (`<device_mac>/<index>`, the import id)."
+  value       = { for key, p in unifi_device_port.this : key => p.id }
+}

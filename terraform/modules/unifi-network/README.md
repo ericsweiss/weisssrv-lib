@@ -6,8 +6,8 @@ reservations, port forwards and hardened site settings — as code, against the
 
 The module is the **shape**; the VLAN/zone/policy inventory is site data the
 caller supplies (a cluster instance's `terraform/unifi` root). It manages
-objects only: no device is adopted, configured or port-overridden here — see
-"What this module cannot manage".
+objects, and switch ports one at a time through `switch_ports`; no device is
+adopted or configured here — see "What this module cannot manage".
 
 ## Consuming it
 
@@ -15,7 +15,7 @@ The tag below is an example: use the tag your repo pins (docs/VERSIONING.md).
 
 ```hcl
 module "network" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.29.1"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.30.0"
 
   networks = {
     # `subnet` is GATEWAY form: the host part is the gateway address.
@@ -124,6 +124,7 @@ write-only arguments still hold the keys they were given.
 | `clients` | map(object) | `{}` | `{mac (colon form), name, fixed_ip, network, note}`. `fixed_ip` requires `network`, must lie inside that network's SUBNET and must sit OUTSIDE its DHCP pool. Both are plan-time errors on `unifi_client`: the controller leases the pool out dynamically, so a reservation inside it races those leases. |
 | `port_forwards` | map(object) | `{}` | `{protocol, wan_interface, wan_port, ip, port, logging}`; ports are strings, so ranges and lists work — each port 1-65535, each range ascending. `wan_interface` is `wan` (default), `wan2` or `both`; any source. `logging` (default `false`) toggles the gateway's per-forward WAN hit logging. |
 | `site_settings` | object | hardened baseline | `auto_upgrade=false`, `network_optimization=false`, `upnp=false` (also NAT-PMP), `ips_mode="ids"`, `igmp_snooping_networks=[]` — the empty list leaves the site's IGMP-snooping toggle **unmanaged**, see below. `ips_mode` is create-time intent only ("Apply is supervised"). `mdns` (default unset, console-owned) scopes the site's mDNS reflector: `{enabled_for, mode, predefined_services, networks}`, see "mDNS reflection". |
+| `switch_ports` | map(object) | `{}` | One `unifi_device_port` per entry: `{device_mac, index, name, forward, native_network, tagged_vlan_mgmt, tagged_networks, excluded_networks, voice_network, …}` plus every other override field the provider exposes (`variables.tf`). Network fields take `networks` keys. Declare every field the live entry holds — see "Switch ports". |
 
 Two input names deliberately do not match the provider attribute they drive:
 
@@ -190,7 +191,7 @@ tracker.
 | Not managed | Why |
 |---|---|
 | **Policy ORDER** | `unifi_firewall_policy.index` is read-only; the controller appends every new policy to the end of its zone-pair and the Integration API exposes no reorder (provider issue 407). The zone-per-network model is what makes that safe: entries are allowances against a default deny, not a first-match list. |
-| **Devices, ports, native/tagged VLAN per port** | `unifi_device` adopts only (it cannot create a device) and `unifi_device_port` manages a single switch port. The module manages neither: port layout is a documented physical map in the consuming repo, not code. |
+| **Devices** | `unifi_device` adopts only (it cannot create a device) and the module does not declare it; a port is managed through `switch_ports` instead, which never touches the device's other ports. |
 | **6 GHz, in code** | `6g` in a band set this module WRITES is untested here against the provider's fix for issue 406. Enable it in the console and leave `wlans[*].bands` unset — the module then writes no band set, so the console's stays (Inputs, above). |
 | **Per-SSID band steering** | `bandsteering_mode` lives on `unifi_device`; the WLAN attribute of that name is deprecated (provider issue 388). `allow_2ghz_high_perf` is the closest per-SSID control. |
 | **A network's zone from the network side** | `unifi_network.firewall_zone_id` competes with `unifi_firewall_zone.networks` for the same controller field; zone membership is set only from `zones`. |
@@ -243,6 +244,31 @@ provider never refreshes that per-network flag, so the controller's effective
 set is read back from the site setting as the `mdns_network_ids` output, and
 the `mdns_reflection_scope` check warns when it differs from the declared list.
 UniFi OS gateways store the per-network flag but reflect by the site setting.
+
+## Switch ports
+
+`switch_ports` manages ports one at a time through `unifi_device_port`. The
+controller has no per-port endpoint: the provider reads the device, replaces
+that port's entry in `port_overrides` and writes the device back, carrying
+forward only the fields its schema does not expose. Two consequences:
+
+- **Declare every field the live entry holds.** An exposed field left unset is
+  dropped from the live port on the first apply — `native_network` unset means
+  the port loses its native VLAN override. Adopt a port before changing it:
+  `import { to = module.network.unifi_device_port.this["<key>"], id =
+  "<device_mac>/<index>" }` plus `terraform plan -generate-config-out=ports.tf`
+  prints the values the controller holds; copy them into `switch_ports` (ids
+  back to `networks` keys), and the adoption plan must read "N to import, 0 to
+  change" before it is applied. Flip a value only after that.
+- **Every write provisions the whole device.** A one-port change is a short
+  blip on every port of that switch; change one device per apply, with a path
+  to the controller that does not run through the port being changed.
+
+`stp_edge_state` and `tagged_networks` are managed only when set (the provider
+keeps the port's current value otherwise); `op_mode` defaults to `switch` and
+is written only when it differs. Removing an entry stops managing the port and
+leaves it as it is. Never declare a port both here and in a
+`unifi_device.port_override` block.
 
 ## Changing a client
 
@@ -372,7 +398,7 @@ The `required_version` floor is the test harness's: [../README.md](../README.md)
 `tests/validation.tftest.hcl` covers every variable validation and every
 cross-map precondition, plus the derived attributes that have no other
 guard: `matching_target` and `port_matching_type` on **both** endpoints, the
-ALLOW-only `create_allow_respond`, the write-only passphrase and its version counter, the `mdns` scope and its derived network flags, the two `check` blocks (with the computed values mocked at plan time), `dhcp_server.dns.enabled` and the DHCP
+ALLOW-only `create_allow_respond`, the write-only passphrase and its version counter, the `mdns` scope and its derived network flags, the two `check` blocks (with the computed values mocked at plan time), the `switch_ports` key resolution and shape rules, `dhcp_server.dns.enabled` and the DHCP
 start/stop pair, the pinned `setting_preference`, zone `network_ids`
 membership, `l2_isolation`, the `no2ghz_oui`
 inversion, the WPA3/PMF pairing, the conditional `igmp_snooping` block and the
