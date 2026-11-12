@@ -1,6 +1,6 @@
 terraform {
-  # The test harness's floor (mock_provider): ../README.md.
-  required_version = ">= 1.7, < 2.0"
+  # Write-only arguments (`passphrase_wo`): ../README.md.
+  required_version = ">= 1.11, < 2.0"
 
   required_providers {
     unifi = {

@@ -89,10 +89,15 @@ spec:
       # empty credential. No -u: it persists into the runner's later lines.
       set -eo pipefail
       $[[ inputs.secrets_exports ]]
-    # Plan only, never apply — surfaces drift instead of silently reverting it.
-    # -detailed-exitcode: drift exits 2 (a plain plan exits 0 on a non-empty
-    # diff), so allow_failure can render the yellow drift signal.
-    - terraform plan -input=false -no-color -lock-timeout=120s -detailed-exitcode
+    # Plan only, never apply. -detailed-exitcode: drift exits 2 so allow_failure
+    # renders the yellow drift signal; a failed `check` block is drift the exit
+    # code does not carry, so it is read from the plan text and exits 2 too.
+    - |
+      set +e
+      terraform plan -input=false -no-color -lock-timeout=120s -detailed-exitcode | tee plan.log
+      rc=${PIPESTATUS[0]}
+      if [ "$rc" -eq 0 ] && grep -q 'Check block assertion failed' plan.log; then rc=2; fi
+      exit "$rc"
   # Drift (exit 2) is the advisory yellow. A broken detector exits 1 and stays
   # red: a blanket `allow_failure: true` would mask real drift behind a
   # permanently-broken plan.

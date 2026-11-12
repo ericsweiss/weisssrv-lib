@@ -15,7 +15,7 @@ The tag below is an example: use the tag your repo pins (docs/VERSIONING.md).
 
 ```hcl
 module "network" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.28.1"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.29.0"
 
   networks = {
     # `subnet` is GATEWAY form: the host part is the gateway address.
@@ -105,9 +105,10 @@ A key that resolves to an empty string authenticates as nobody and the plan
 fails at the first data read — declare the variables `sensitive` with a
 non-emptiness validation in the root, so the failure names the missing item.
 
-The provider does persist `passphrase` in Terraform state. **Treat the state
-backend as secret material**: whoever can read the state can read every WLAN
-key.
+`passphrase` reaches the controller as the write-only `passphrase_wo`, so no
+PSK is written to Terraform state; a saved plan file still carries the `TF_VAR`
+values, so do not keep one. State versions written before the module used
+write-only arguments still hold the keys they were given.
 
 ## Inputs
 
@@ -118,11 +119,11 @@ key.
 | `zones` | map(object) | `{}` | Custom firewall zones keyed by DISPLAY NAME; `networks` lists `networks` keys, each of which may appear in at most one zone, and every member must be a `corporate` network. Membership is a full replacement on every apply. The key may not be a name reserved for a built-in — `Internal`, `External`, `Gateway`, `Hotspot`, `Vpn`, `Dmz`, or any name `builtin_zone_names` declares. |
 | `builtin_zone_names` | map(string) | `{internal="Internal", external="External", gateway="Gateway"}` | Short name → the controller's display name. Only the entries a policy endpoint actually names are read, so an unused one costs nothing; confirm the display names of the ones you use against the live controller. |
 | `policies` | list(object) | `[]` | `name` (unique — it is the resource key), `action` (`ALLOW`), `protocol` (`all`), `source`/`destination` `{zone, ips, networks, port}`, `create_allow_respond`, `logging`. `zone` resolves against `zones` **and** `builtin_zone_names`. Field rules: `variables.tf`. |
-| `wlans` | map(object) | `{}` | **sensitive**, and persisted in Terraform state (see "Consuming it"). `{ssid, network, passphrase, wpa3, l2_isolation, allow_2ghz_high_perf, hide, bands}`. `security = "wpapsk"` is fixed. `bands` decides who owns the band set — see below. Field rules: `variables.tf`. |
+| `wlans` | map(object) | `{}` | **sensitive**; the passphrase is write-only and never in state (see "Consuming it"). `{ssid, network, passphrase, passphrase_version, wpa3, l2_isolation, allow_2ghz_high_perf, hide, bands}`. `passphrase_version` (default 1) re-sends the passphrase when it moves ("Rotating a WLAN passphrase"). `security = "wpapsk"` is fixed. `bands` decides who owns the band set — see below. Field rules: `variables.tf`. |
 | `qos_rate_name` | string | `"Default"` | Client QoS rate (old "user group") every WLAN is assigned to; `unifi_wlan.user_group_id` is Required with no default. Read only when `wlans` is non-empty, so a gateway-only site never fails a plan on a rate name it does not use. |
 | `clients` | map(object) | `{}` | `{mac (colon form), name, fixed_ip, network, note}`. `fixed_ip` requires `network`, must lie inside that network's SUBNET and must sit OUTSIDE its DHCP pool. Both are plan-time errors on `unifi_client`: the controller leases the pool out dynamically, so a reservation inside it races those leases. |
 | `port_forwards` | map(object) | `{}` | `{protocol, wan_interface, wan_port, ip, port, logging}`; ports are strings, so ranges and lists work — each port 1-65535, each range ascending. `wan_interface` is `wan` (default), `wan2` or `both`; any source. `logging` (default `false`) toggles the gateway's per-forward WAN hit logging. |
-| `site_settings` | object | hardened baseline | `auto_upgrade=false`, `network_optimization=false`, `upnp=false` (also NAT-PMP), `ips_mode="ids"`, `igmp_snooping_networks=[]` — the empty list leaves the site's IGMP-snooping toggle **unmanaged**, see below. `ips_mode` is create-time intent only ("Apply is supervised"). |
+| `site_settings` | object | hardened baseline | `auto_upgrade=false`, `network_optimization=false`, `upnp=false` (also NAT-PMP), `ips_mode="ids"`, `igmp_snooping_networks=[]` — the empty list leaves the site's IGMP-snooping toggle **unmanaged**, see below. `ips_mode` is create-time intent only ("Apply is supervised"). `mdns` (default unset, console-owned) scopes the site's mDNS reflector: `{enabled_for, mode, predefined_services, networks}`, see "mDNS reflection". |
 
 Two input names deliberately do not match the provider attribute they drive:
 
@@ -189,16 +190,16 @@ tracker.
 | Not managed | Why |
 |---|---|
 | **Policy ORDER** | `unifi_firewall_policy.index` is read-only; the controller appends every new policy to the end of its zone-pair and the Integration API exposes no reorder (provider issue 407). The zone-per-network model is what makes that safe: entries are allowances against a default deny, not a first-match list. |
-| **mDNS reflection** | `unifi_network.multicast_dns` is read back from the controller and the site reflector is `unifi_setting.mdns`; the module sets neither, so the console owns the reflector. Enable it per network in the UI. |
 | **Devices, ports, native/tagged VLAN per port** | `unifi_device` adopts only (it cannot create a device) and `unifi_device_port` manages a single switch port. The module manages neither: port layout is a documented physical map in the consuming repo, not code. |
 | **6 GHz, in code** | `6g` in a band set this module WRITES is untested here against the provider's fix for issue 406. Enable it in the console and leave `wlans[*].bands` unset — the module then writes no band set, so the console's stays (Inputs, above). |
 | **Per-SSID band steering** | `bandsteering_mode` lives on `unifi_device`; the WLAN attribute of that name is deprecated (provider issue 388). `allow_2ghz_high_perf` is the closest per-SSID control. |
 | **A network's zone from the network side** | `unifi_network.firewall_zone_id` competes with `unifi_firewall_zone.networks` for the same controller field; zone membership is set only from `zones`. |
-| **Built-in zones as resources** | Importable by name (`name=Internal`), but managing one would fight the controller for membership. They are read through `data.unifi_firewall_zone`. |
+| **Built-in zones as resources** | Importable by name (`name=Internal`), but Internal is the controller's catch-all and External holds the WAN, and an update with no `network_ids` sends an empty list. They are read through `data.unifi_firewall_zone`, and the `custom_zones_left_internal` check warns when a custom zone's network is still listed in Internal. |
 | **WLAN AP-group membership** | The controller assigns the default AP group on every WLAN write and reads it back. The module never sets `ap_group` and `ignore_changes`es it, along with `minrate_setting_preference`. Set AP groups and minimum data rates in the console. |
 | **Virtual-network overrides on the default network** | The controller rejects them (`api.err.VirtualNetworkOverrideUnsupportedForDefaultNetwork`), so a client whose `network` is the `default` key is written as a bare fixed-IP reservation with no override. Clients on any other network still steer. |
 | **An empty DHCP DNS list** | Written as `[]` the controller never converges it (provider issue 429), so an empty `dhcp.dns_servers` sends null and leaves clients on the gateway's own resolver. |
 | **`unifi_port_forward.enabled`** | Deprecated in the provider and taken from the controller when unset, so the module leaves it alone. A forward exists while its `port_forwards` entry does. |
+| **A passphrase changed in the console** | Write-only values are never read back, so the plan cannot see a PSK the console changed; bumping `passphrase_version` re-sends the declared key. |
 | **Day-2 IPS mode** | `lifecycle { ignore_changes = [ips] }` on `unifi_setting.site` makes the whole `ips` block create-time intent: an imported site never receives it, and changing `site_settings.ips_mode` plans nothing. Set it in the console ("Apply is supervised"). |
 
 Two behaviours to verify on the controller rather than assume:
@@ -226,6 +227,22 @@ Two behaviours to verify on the controller rather than assume:
 - **The built-in zone display names.** `Internal` / `External` / `Gateway` are
   the defaults here; capitalisation matters and localised controllers differ. A
   wrong name fails the data read.
+
+## Rotating a WLAN passphrase
+
+The key is write-only, so a new value alone plans nothing. Change the
+secret-store value and bump that WLAN's `passphrase_version` in the same change;
+the plan shows only `passphrase_wo_version N -> N+1`, and the supervised apply
+re-provisions that one SSID, whose clients re-join with the new key.
+
+## mDNS reflection
+
+`site_settings.mdns` writes the reflector's mode on `unifi_setting.site` and,
+with `enabled_for = "some"`, each listed network's `multicast_dns` flag. The
+provider never refreshes that per-network flag, so the controller's effective
+set is read back from the site setting as the `mdns_network_ids` output, and
+the `mdns_reflection_scope` check warns when it differs from the declared list.
+UniFi OS gateways store the per-network flag but reflect by the site setting.
 
 ## Changing a client
 
@@ -355,7 +372,7 @@ The `required_version` floor is the test harness's: [../README.md](../README.md)
 `tests/validation.tftest.hcl` covers every variable validation and every
 cross-map precondition, plus the derived attributes that have no other
 guard: `matching_target` and `port_matching_type` on **both** endpoints, the
-ALLOW-only `create_allow_respond`, `dhcp_server.dns.enabled` and the DHCP
+ALLOW-only `create_allow_respond`, the write-only passphrase and its version counter, the `mdns` scope and its derived network flags, the two `check` blocks (with the computed values mocked at plan time), `dhcp_server.dns.enabled` and the DHCP
 start/stop pair, the pinned `setting_preference`, zone `network_ids`
 membership, `l2_isolation`, the `no2ghz_oui`
 inversion, the WPA3/PMF pairing, the conditional `igmp_snooping` block and the

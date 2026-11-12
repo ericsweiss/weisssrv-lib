@@ -743,7 +743,9 @@ the heaviest scenarios run 8-11 minutes per attempt.
 
 - **New capability.** One read-only `terraform plan -detailed-exitcode` per
   module, with `allow_failure: {exit_codes: [2]}` so drift is an advisory yellow
-  while a broken detector still fails red.
+  while a broken detector still fails red. A failed `check` block is drift the
+  exit code does not carry, so the job reads `Check block assertion failed` from
+  the plan text and exits 2 for it too.
 - **Not self-applied.** This repo ships module shapes, not roots: no provider
   credentials and no Terraform state, so there is nothing here to plan against.
   First rendered in a consumer.

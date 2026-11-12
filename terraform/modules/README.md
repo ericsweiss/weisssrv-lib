@@ -18,12 +18,14 @@ whichever the tests need, not by the configuration:
 | `optional()` attribute defaults and `import` blocks (every module's configuration) | 1.5 |
 | `mock_provider` and `override_data` in the tests | 1.7 |
 | Cross-variable validation in a configuration | 1.9 |
-| `override_during = plan` in the tests | 1.11 |
+| `override_during = plan` in the tests, write-only arguments in a configuration | 1.11 |
 
 A module is pinned to the highest floor it actually uses, so a consumer on an
 older Terraform is held to that module's test harness. Floors therefore differ
-between modules: `authentik-sso` is 1.11 for `override_during = plan`, the other
-three are 1.7. Raise one only when that module's own configuration or tests need
+between modules: `authentik-sso` (`override_during = plan`) and `unifi-network`
+(write-only `passphrase_wo`, and `override_during = plan` so its `check` blocks
+evaluate in tests) are 1.11, the other two are 1.7. Raise one only when that
+module's own configuration or tests need
 the feature, never to keep the four in step. Raising a floor is breaking for a
 consumer on an older Terraform.
 
@@ -41,8 +43,6 @@ notes for schema moves.
 
 ## Validation regexes are written out per validation
 
-Variable validation cannot reference `locals` below Terraform 1.9, and Terraform
-has no user-defined functions. At its 1.7 floor `unifi-network` therefore
-repeats a shared regex, such as the port-list and bare-IPv4 forms, in each
-validation that needs it. Edit every copy together. Hoisting them into `locals`
-needs a 1.9 floor, which this alone does not justify.
+Terraform has no user-defined functions, so `unifi-network` repeats a shared
+regex, such as the port-list and bare-IPv4 forms, in each validation that needs
+it; each validation stays readable on its own. Edit every copy together.
