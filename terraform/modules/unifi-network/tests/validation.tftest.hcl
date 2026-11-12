@@ -2078,3 +2078,109 @@ run "passes_when_internal_holds_only_its_own_networks" {
     error_message = "The clean case must plan with the check silent and the zone membership intact."
   }
 }
+
+# ---------------------------------------------------------------------------
+# Switch ports: network keys resolve to ids, the nested groups default to the
+# empty object the controller reads back, and the shape rules hold.
+
+run "switch_ports_resolve_network_keys" {
+  command = plan
+
+  variables {
+    switch_ports = {
+      usw-7 = {
+        device_mac        = "74:f9:2c:a6:a2:57"
+        index             = 7
+        name              = "Port 7"
+        forward           = "customize"
+        native_network    = "iot"
+        tagged_vlan_mgmt  = "custom"
+        excluded_networks = ["default"]
+        poe_mode          = "off"
+      }
+    }
+  }
+
+  assert {
+    condition = (
+      unifi_device_port.this["usw-7"].native_networkconf_id == "net-mock"
+      && contains(unifi_device_port.this["usw-7"].excluded_networkconf_ids, "net-mock")
+      && unifi_device_port.this["usw-7"].op_mode == "switch"
+      && unifi_device_port.this["usw-7"].poe_mode == "off"
+    )
+    error_message = "A switch port must resolve its network keys to ids and default op_mode to switch."
+  }
+}
+
+run "rejects_a_switch_port_with_a_dashed_mac" {
+  command = plan
+
+  variables {
+    switch_ports = { p = { device_mac = "74-f9-2c-a6-a2-57", index = 1 } }
+  }
+
+  expect_failures = [var.switch_ports]
+}
+
+run "rejects_a_switch_port_index_of_zero" {
+  command = plan
+
+  variables {
+    switch_ports = { p = { device_mac = "74:f9:2c:a6:a2:57", index = 0 } }
+  }
+
+  expect_failures = [var.switch_ports]
+}
+
+run "rejects_an_unknown_forward_mode" {
+  command = plan
+
+  variables {
+    switch_ports = { p = { device_mac = "74:f9:2c:a6:a2:57", index = 1, forward = "bogus" } }
+  }
+
+  expect_failures = [var.switch_ports]
+}
+
+run "rejects_an_unknown_tagged_vlan_mgmt" {
+  command = plan
+
+  variables {
+    switch_ports = { p = { device_mac = "74:f9:2c:a6:a2:57", index = 1, tagged_vlan_mgmt = "none" } }
+  }
+
+  expect_failures = [var.switch_ports]
+}
+
+run "rejects_excluded_networks_outside_custom_tagging" {
+  command = plan
+
+  variables {
+    switch_ports = { p = { device_mac = "74:f9:2c:a6:a2:57", index = 1, tagged_vlan_mgmt = "auto", excluded_networks = ["default"] } }
+  }
+
+  expect_failures = [var.switch_ports]
+}
+
+run "rejects_one_port_declared_twice" {
+  command = plan
+
+  variables {
+    switch_ports = {
+      a = { device_mac = "74:f9:2c:a6:a2:57", index = 1 }
+      b = { device_mac = "74:F9:2C:A6:A2:57", index = 1 }
+    }
+  }
+
+  expect_failures = [var.switch_ports]
+}
+
+run "rejects_a_switch_port_on_an_unknown_network" {
+  command = plan
+
+  variables {
+    switch_ports = { p = { device_mac = "74:f9:2c:a6:a2:57", index = 1, native_network = "lab" } }
+  }
+
+  expect_failures = [unifi_device_port.this]
+}

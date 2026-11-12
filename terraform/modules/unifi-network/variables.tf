@@ -794,3 +794,151 @@ variable "site_settings" {
     error_message = "site_settings.ips_mode must be ids, ips, ipsInline or disabled (note the camel case on ipsInline)."
   }
 }
+
+variable "switch_ports" {
+  description = <<-EOT
+    Switch and gateway ports managed one at a time (`unifi_device_port`), keyed
+    by identity string. `device_mac` (colon form) and `index` (1-based) name the
+    port; everything else is the port's override entry.
+
+    DECLARE EVERY FIELD THE LIVE ENTRY HOLDS. The provider replaces the port's
+    whole override entry on every write and carries forward only the fields its
+    schema does not expose, so an exposed field left unset here is dropped from
+    the live port on the first apply. Adopt a port by importing it
+    (`<device_mac>/<index>`) and copying the values `terraform plan
+    -generate-config-out` reads back, then flip what should change. Every write
+    re-provisions the whole device, so a port change is a short blip on every
+    port of that switch (README "Switch ports").
+
+    Network references are `networks` keys: `native_network`, `voice_network`,
+    `tagged_networks`, `excluded_networks` (with `tagged_vlan_mgmt = "custom"`)
+    and `multicast_router_networks`. The nested groups default to the empty
+    object the controller reads back for a port that has none configured.
+  EOT
+  type = map(object({
+    device_mac                = string
+    index                     = number
+    name                      = optional(string)
+    forward                   = optional(string)
+    native_network            = optional(string)
+    tagged_vlan_mgmt          = optional(string)
+    tagged_networks           = optional(list(string))
+    excluded_networks         = optional(list(string))
+    voice_network             = optional(string)
+    multicast_router_networks = optional(list(string))
+    port_profile_id           = optional(string)
+    setting_preference        = optional(string)
+    op_mode                   = optional(string, "switch")
+    poe_mode                  = optional(string)
+    speed                     = optional(number)
+    fec_mode                  = optional(string)
+    autoneg                   = optional(bool)
+    full_duplex               = optional(bool)
+    flow_control_enabled      = optional(bool)
+    isolation                 = optional(bool)
+    port_keepalive_enabled    = optional(bool)
+    stp_port_mode             = optional(bool)
+    stp_edge_state            = optional(string)
+    aggregate_members         = optional(list(number))
+    mirror_port_idx           = optional(number)
+    dot1x = optional(object({
+      ctrl         = optional(string)
+      idle_timeout = optional(string)
+    }), {})
+    egress_rate_limit = optional(object({
+      enabled = optional(bool)
+      kbps    = optional(number)
+    }), {})
+    lldpmed = optional(object({
+      enabled        = optional(bool)
+      notify_enabled = optional(bool)
+    }), {})
+    port_security = optional(object({
+      enabled     = optional(bool)
+      mac_address = optional(list(string))
+    }), {})
+    stormctrl = optional(object({
+      type = optional(string)
+      bcast = optional(object({
+        enabled = optional(bool)
+        level   = optional(number)
+        rate    = optional(number)
+      }), {})
+      mcast = optional(object({
+        enabled = optional(bool)
+        level   = optional(number)
+        rate    = optional(number)
+      }), {})
+      ucast = optional(object({
+        enabled = optional(bool)
+        level   = optional(number)
+        rate    = optional(number)
+      }), {})
+    }), {})
+    priority_queue1_level = optional(number)
+    priority_queue2_level = optional(number)
+    priority_queue3_level = optional(number)
+    priority_queue4_level = optional(number)
+  }))
+  default = {}
+
+  # Colon form only, as on clients: the import id is `<device_mac>/<index>`.
+  validation {
+    condition = alltrue([
+      for key, p in var.switch_ports : can(regex("^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$", p.device_mac))
+    ])
+    error_message = "switch_ports[*].device_mac must be a colon-separated MAC (aa:bb:cc:dd:ee:ff) — it is half of the port's import id."
+  }
+
+  validation {
+    condition     = alltrue([for key, p in var.switch_ports : p.index >= 1 && p.index == floor(p.index)])
+    error_message = "switch_ports[*].index must be a whole number of 1 or more — the controller numbers ports from 1."
+  }
+
+  # One port, one entry: two entries for one port are two resources rewriting
+  # the same override.
+  validation {
+    condition     = length(var.switch_ports) == length(distinct([for p in var.switch_ports : "${lower(p.device_mac)}/${p.index}"]))
+    error_message = "switch_ports must not name one device port twice (device_mac/index, MAC compared ignoring case)."
+  }
+
+  validation {
+    condition     = alltrue([for key, p in var.switch_ports : p.forward == null ? true : contains(["all", "native", "customize", "disabled"], p.forward)])
+    error_message = "switch_ports[*].forward must be all, native, customize or disabled."
+  }
+
+  validation {
+    condition     = alltrue([for key, p in var.switch_ports : p.tagged_vlan_mgmt == null ? true : contains(["auto", "block_all", "custom"], p.tagged_vlan_mgmt)])
+    error_message = "switch_ports[*].tagged_vlan_mgmt must be auto, block_all or custom."
+  }
+
+  # An exclusion or tag list means nothing outside the custom selection, and a
+  # port that lists one without it is a port whose tagging intent is unclear.
+  validation {
+    condition = alltrue([
+      for key, p in var.switch_ports :
+      (p.excluded_networks == null && p.tagged_networks == null) ? true : p.tagged_vlan_mgmt == "custom"
+    ])
+    error_message = "switch_ports[*].excluded_networks and .tagged_networks apply only with tagged_vlan_mgmt = custom."
+  }
+
+  validation {
+    condition     = alltrue([for key, p in var.switch_ports : p.setting_preference == null ? true : contains(["auto", "manual"], p.setting_preference)])
+    error_message = "switch_ports[*].setting_preference must be auto or manual."
+  }
+
+  validation {
+    condition     = alltrue([for key, p in var.switch_ports : contains(["switch", "mirror", "aggregate"], p.op_mode)])
+    error_message = "switch_ports[*].op_mode must be switch, mirror or aggregate."
+  }
+
+  validation {
+    condition     = alltrue([for key, p in var.switch_ports : p.poe_mode == null ? true : contains(["auto", "pasv24", "passthrough", "off"], p.poe_mode)])
+    error_message = "switch_ports[*].poe_mode must be auto, pasv24, passthrough or off."
+  }
+
+  validation {
+    condition     = alltrue([for key, p in var.switch_ports : p.stp_edge_state == null ? true : contains(["auto", "enabled", "disabled"], p.stp_edge_state)])
+    error_message = "switch_ports[*].stp_edge_state must be auto, enabled or disabled."
+  }
+}

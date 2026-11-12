@@ -1545,9 +1545,10 @@ Behaviour to know before adopting:
   inside its DHCP pool, and a subnet overlapping a `reserved_cidrs` entry each
   fail the plan. A renumber is therefore one edit across the subnet, its pool and
   its reservations.
-- **`unifi-network` manages objects, never devices.** Policy ORDER, mDNS
-  reflection, per-port VLANs and 6 GHz are left to the console, not drift the
-  module reports; the zone-per-network model is what makes unordered
+- **`unifi-network` manages objects and single ports, never devices.** Policy
+  ORDER and 6 GHz are left to the console, not drift the module reports; a port
+  declared in `switch_ports` must carry every field its live entry holds, since
+  the provider replaces the entry; the zone-per-network model is what makes unordered
   policies safe (allowances against a default inter-zone deny). Its README's
   "What this module cannot manage" table is the list, and the apply is
   supervised — this is the gateway's own segmentation.

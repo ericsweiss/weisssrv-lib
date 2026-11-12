@@ -479,3 +479,64 @@ check "custom_zones_left_internal" {
     error_message = "A network in a custom zone is still listed in the built-in Internal zone — a network belongs to one zone, so move it in the console's Zone Matrix and plan again."
   }
 }
+
+# One port at a time. The provider replaces the port's override entry and
+# carries only the fields its schema does not expose, so every exposed field
+# the live entry holds is declared in `switch_ports` (variables.tf).
+resource "unifi_device_port" "this" {
+  for_each = var.switch_ports
+
+  device_mac = each.value.device_mac
+  index      = each.value.index
+
+  name                   = each.value.name
+  forward                = each.value.forward
+  native_networkconf_id  = each.value.native_network == null ? null : lookup(local.network_ids, each.value.native_network, "")
+  tagged_vlan_mgmt       = each.value.tagged_vlan_mgmt
+  tagged_networkconf_ids = each.value.tagged_networks == null ? null : [for key in each.value.tagged_networks : lookup(local.network_ids, key, "")]
+  excluded_networkconf_ids = each.value.excluded_networks == null ? null : [
+    for key in each.value.excluded_networks : lookup(local.network_ids, key, "")
+  ]
+  voice_networkconf_id = each.value.voice_network == null ? null : lookup(local.network_ids, each.value.voice_network, "")
+  multicast_router_networkconf_ids = each.value.multicast_router_networks == null ? null : [
+    for key in each.value.multicast_router_networks : lookup(local.network_ids, key, "")
+  ]
+  port_profile_id        = each.value.port_profile_id
+  setting_preference     = each.value.setting_preference
+  op_mode                = each.value.op_mode
+  poe_mode               = each.value.poe_mode
+  speed                  = each.value.speed
+  fec_mode               = each.value.fec_mode
+  autoneg                = each.value.autoneg
+  full_duplex            = each.value.full_duplex
+  flow_control_enabled   = each.value.flow_control_enabled
+  isolation              = each.value.isolation
+  port_keepalive_enabled = each.value.port_keepalive_enabled
+  stp_port_mode          = each.value.stp_port_mode
+  stp_edge_state         = each.value.stp_edge_state
+  aggregate_members      = each.value.aggregate_members
+  mirror_port_idx        = each.value.mirror_port_idx
+  dot1x                  = each.value.dot1x
+  egress_rate_limit      = each.value.egress_rate_limit
+  lldpmed                = each.value.lldpmed
+  port_security          = each.value.port_security
+  stormctrl              = each.value.stormctrl
+  priority_queue1_level  = each.value.priority_queue1_level
+  priority_queue2_level  = each.value.priority_queue2_level
+  priority_queue3_level  = each.value.priority_queue3_level
+  priority_queue4_level  = each.value.priority_queue4_level
+
+  lifecycle {
+    precondition {
+      condition = alltrue([
+        for key in compact(concat(
+          [each.value.native_network, each.value.voice_network],
+          coalesce(each.value.tagged_networks, []),
+          coalesce(each.value.excluded_networks, []),
+          coalesce(each.value.multicast_router_networks, []),
+        )) : contains(keys(var.networks), key)
+      ])
+      error_message = "switch_ports[\"${each.key}\"] names a network key that is not in var.networks."
+    }
+  }
+}
