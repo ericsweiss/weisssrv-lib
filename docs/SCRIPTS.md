@@ -101,6 +101,7 @@ Example configs for every script live in [`../examples/`](../examples/).
 | `taskfile_tree.py` | importable flattener for a Taskfile `includes:` tree | n/a | neutral |
 | [`tenant_common.py`](#tenant_commonpy-pyyaml-not-run-directly) | shared tenancy constants, target resolution and aggregator reader for the two tenant gates | n/a | neutral |
 | [`unifi-settings-drift.py`](#unifi-settings-driftpy) | a console-owned UniFi settings section drifting from its codified expectation | `unifi-settings.example.json` | neutral |
+| [`unifi-psk-parity.py`](#unifi-psk-paritypy) | a WLAN pre-shared key on the controller that differs from the secret store (the key is write-only in Terraform, so no plan sees it) | `unifi-psk.example.json` | neutral |
 | [`validate-helm-values.py`](#validate-helm-valuespy-pyyaml-needs-helm-network) | renders each HelmRelease's chart and validates it | `helm-values-releases.example.yaml` | neutral |
 | [`version-bump-mr.py`](#version-bump-mrpy) | keeps one open bot MR in sync with the version pins | flags | gitlab-only |
 | [`version-check-ci.py`](#version-check-cipy) | CI wrapper: report artifact + refreshed MR comment | the version registry | neutral core |
@@ -3193,6 +3194,31 @@ scripts/unifi-settings-drift.py [--config FILE]
   2 on an operator error (bad or missing config, missing credentials, a failed
   read reported by exception type rather than by body).
 - **Example:** [`unifi-settings.example.json`](../examples/unifi-settings.example.json).
+
+### `unifi-psk-parity.py`
+
+Fails when a WLAN's pre-shared key on the controller differs from the secret
+store. The `unifi-network` module sends the key as the write-only `passphrase_wo`
+and never reads it back, so a key changed in the console is invisible to the
+plan; this is the only detector.
+
+```
+scripts/unifi-psk-parity.py [--config FILE]
+```
+
+- **Config** (default `unifi-psk.json` beside the script): `site` and `wlans`,
+  an object of SSID → the name of the environment variable holding that SSID's
+  key. The consumer injects the variables from its secret store; the drift-plan
+  job's `TF_VAR_wlan_passphrase_*` exports serve as they are.
+- **Env:** `UNIFI_API_URL`, `UNIFI_API_KEY`, one variable per configured SSID.
+  `UNIFI_ALLOW_INSECURE=1` turns TLS verification off and says so on stderr.
+- Reads `/rest/wlanconf`, whose body carries every key in `x_passphrase`. The
+  body is never printed; the comparison is `hmac.compare_digest`, and the only
+  output is `<SSID>: match|mismatch|absent` per configured WLAN.
+- **Exit codes:** 0 parity, 1 when any SSID mismatches or is absent from the
+  controller, 2 on an operator error (bad config, missing credentials or
+  secret, a failed read reported by exception type).
+- **Example:** [`unifi-psk.example.json`](../examples/unifi-psk.example.json).
 
 ---
 

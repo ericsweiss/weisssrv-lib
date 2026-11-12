@@ -15,8 +15,15 @@ locals {
       allow_2ghz_high_perf = w.allow_2ghz_high_perf
       hide                 = w.hide
       bands                = w.bands
+      passphrase_version   = w.passphrase_version
     }
   })
+
+  # The networks the reflector is scoped to; null leaves every network's own
+  # flag unwritten (the console keeps it).
+  mdns_networks = (
+    var.site_settings.mdns != null && try(var.site_settings.mdns.enabled_for, "") == "some"
+  ) ? var.site_settings.mdns.networks : null
 
   # Only the built-ins a policy names are read: every entry is a data read on
   # every plan, and a display name wrong on this controller fails it.
@@ -91,7 +98,9 @@ resource "unifi_network" "this" {
   internet_access = each.value.internet_access
   igmp_snooping   = each.value.igmp_snooping
 
-  # multicast_dns stays unset: README "mDNS reflection".
+  # Written only when `site_settings.mdns` scopes the reflector to `some`
+  # networks; the provider never reads this flag back (README "mDNS reflection").
+  multicast_dns = local.mdns_networks == null ? null : contains(local.mdns_networks, each.key)
 
   # "manual": under the provider default "auto" the controller owns
   # dhcp_server.dns.enabled, domain_name and igmp_snooping and resets them on
@@ -272,7 +281,9 @@ resource "unifi_wlan" "this" {
   # The data source exists whenever a WLAN does (its count, above).
   user_group_id = data.unifi_client_qos_rate.default[0].id
   network_id    = lookup(local.network_ids, each.value.network, "")
-  passphrase    = var.wlans[each.key].passphrase
+  # Write-only: never in state, sent on create and when the version moves.
+  passphrase_wo         = var.wlans[each.key].passphrase
+  passphrase_wo_version = each.value.passphrase_version
 
   # WPA3 is a modifier on wpapsk, not a `security` value, and PMF may not be
   # disabled while it is on.
@@ -415,6 +426,13 @@ resource "unifi_setting" "site" {
     ips_mode = var.site_settings.ips_mode
   }
 
+  # Unset writes NO block; `enabled_for_network_ids` is read back, never written.
+  mdns = var.site_settings.mdns == null ? null : {
+    enabled_for         = var.site_settings.mdns.enabled_for
+    mode                = var.site_settings.mdns.mode
+    predefined_services = var.site_settings.mdns.predefined_services
+  }
+
   lifecycle {
     # `ips` is create-time intent only: the controller keeps its own value and
     # re-planning the write errors "inconsistent result". Day-2 IPS mode is
@@ -427,5 +445,37 @@ resource "unifi_setting" "site" {
       ])
       error_message = "site_settings.igmp_snooping_networks names a key that is not in var.networks."
     }
+
+    precondition {
+      condition = alltrue([
+        for key in coalesce(local.mdns_networks, []) : contains(keys(var.networks), key)
+      ])
+      error_message = "site_settings.mdns.networks names a key that is not in var.networks."
+    }
+  }
+}
+
+# The controller derives the reflected set itself and the provider never
+# refreshes a network's own flag, so the read-back is the only truth.
+check "mdns_reflection_scope" {
+  assert {
+    condition = local.mdns_networks == null ? true : (
+      toset(try(unifi_setting.site.mdns.enabled_for_network_ids, []))
+      == toset([for key in local.mdns_networks : lookup(local.network_ids, key, "")])
+    )
+    error_message = "The controller reflects mDNS between a different set of networks than site_settings.mdns.networks declares — compare `terraform output mdns_network_ids` with the Multicast DNS page and fix the side that is wrong."
+  }
+}
+
+# A network put in a custom zone must leave the built-in Internal zone; the
+# provider neither performs nor detects that, so it is read back here. Evaluated
+# only on a site whose policies name `internal` (that read exists then).
+check "custom_zones_left_internal" {
+  assert {
+    condition = length(setintersection(
+      toset(flatten([for z in unifi_firewall_zone.this : z.network_ids])),
+      toset(try(data.unifi_firewall_zone.builtin["internal"].network_ids, [])),
+    )) == 0
+    error_message = "A network in a custom zone is still listed in the built-in Internal zone — a network belongs to one zone, so move it in the console's Zone Matrix and plan again."
   }
 }

@@ -1,7 +1,21 @@
 # `terraform validate` evaluates no caller values, so this file is the only
 # thing that exercises the validations, preconditions and derived attributes.
-# Every run is `command = plan`, so there is no state and no teardown.
-mock_provider "unifi" {}
+# Every run is `command = plan` with computed values mocked at plan time.
+mock_provider "unifi" {
+  override_during = plan
+
+  # One known id for every mocked network, so zone membership and the
+  # Internal-membership check are known at plan time.
+  mock_resource "unifi_network" {
+    defaults = { id = "net-mock" }
+  }
+
+  # The controller's derived reflector set, read back as the mocked network id
+  # so the mDNS scope check is known at plan time.
+  mock_resource "unifi_setting" {
+    defaults = { mdns = { enabled_for_network_ids = ["net-mock"] } }
+  }
+}
 
 variables {
   networks = {
@@ -1858,5 +1872,209 @@ run "accepts_a_fixed_ip_on_a_network_without_dhcp" {
   assert {
     condition     = unifi_client.this["probe"].fixed_ip == "10.0.50.10"
     error_message = "A network serving no DHCP has no pool, so any in-subnet reservation is fine."
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Write-only passphrases: nothing of the PSK reaches state, the version counter
+# is what re-sends it.
+
+run "wlan_passphrase_is_write_only" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for key, w in unifi_wlan.this : w.passphrase == null && w.passphrase_wo_version == 1
+    ])
+    error_message = "Every WLAN must write passphrase_wo (never `passphrase`) with passphrase_wo_version 1 by default."
+  }
+}
+
+run "passes_the_passphrase_version_through" {
+  command = plan
+
+  variables {
+    wlans = {
+      iot = {
+        ssid               = "example-iot"
+        network            = "iot"
+        passphrase         = "iot-passphrase"
+        passphrase_version = 3
+      }
+    }
+  }
+
+  assert {
+    condition     = unifi_wlan.this["iot"].passphrase_wo_version == 3
+    error_message = "wlans[*].passphrase_version must reach passphrase_wo_version unchanged — it is the rotation trigger."
+  }
+}
+
+run "rejects_a_passphrase_version_of_zero" {
+  command = plan
+
+  variables {
+    wlans = {
+      iot = {
+        ssid               = "example-iot"
+        network            = "iot"
+        passphrase         = "iot-passphrase"
+        passphrase_version = 0
+      }
+    }
+  }
+
+  expect_failures = [var.wlans]
+}
+
+run "rejects_a_fractional_passphrase_version" {
+  command = plan
+
+  variables {
+    wlans = {
+      iot = {
+        ssid               = "example-iot"
+        network            = "iot"
+        passphrase         = "iot-passphrase"
+        passphrase_version = 1.5
+      }
+    }
+  }
+
+  expect_failures = [var.wlans]
+}
+
+# ---------------------------------------------------------------------------
+# mDNS reflection scope: the site setting carries the mode, every network's
+# own flag is derived from the list, and the list has to name real networks.
+
+run "mdns_scope_writes_the_site_setting_and_each_networks_flag" {
+  command = plan
+
+  variables {
+    site_settings = {
+      igmp_snooping_networks = ["iot"]
+      mdns = {
+        enabled_for = "some"
+        networks    = ["iot"]
+      }
+    }
+  }
+
+  assert {
+    condition = (
+      unifi_setting.site.mdns.enabled_for == "some"
+      && unifi_setting.site.mdns.mode == "all"
+      && unifi_network.this["iot"].multicast_dns == true
+      && unifi_network.this["default"].multicast_dns == false
+    )
+    error_message = "mdns.enabled_for = some must write the site block and set multicast_dns true on exactly the listed networks."
+  }
+}
+
+run "mdns_all_leaves_every_networks_flag_unwritten" {
+  command = plan
+
+  variables {
+    site_settings = {
+      igmp_snooping_networks = ["iot"]
+      mdns = {
+        enabled_for = "all"
+      }
+    }
+  }
+
+  assert {
+    condition     = unifi_setting.site.mdns.enabled_for == "all"
+    error_message = "mdns.enabled_for = all must reach the site setting."
+  }
+}
+
+run "rejects_an_unknown_mdns_enabled_for" {
+  command = plan
+
+  variables {
+    site_settings = {
+      mdns = { enabled_for = "most" }
+    }
+  }
+
+  expect_failures = [var.site_settings]
+}
+
+run "rejects_an_unknown_mdns_mode" {
+  command = plan
+
+  variables {
+    site_settings = {
+      mdns = { enabled_for = "all", mode = "everything" }
+    }
+  }
+
+  expect_failures = [var.site_settings]
+}
+
+run "rejects_mdns_some_without_networks" {
+  command = plan
+
+  variables {
+    site_settings = {
+      mdns = { enabled_for = "some" }
+    }
+  }
+
+  expect_failures = [var.site_settings]
+}
+
+run "rejects_mdns_services_outside_custom_mode" {
+  command = plan
+
+  variables {
+    site_settings = {
+      mdns = { enabled_for = "all", predefined_services = ["google_chromecast"] }
+    }
+  }
+
+  expect_failures = [var.site_settings]
+}
+
+run "rejects_an_mdns_network_that_does_not_exist" {
+  command = plan
+
+  variables {
+    site_settings = {
+      mdns = { enabled_for = "some", networks = ["lab"] }
+    }
+  }
+
+  expect_failures = [unifi_setting.site]
+}
+
+# ---------------------------------------------------------------------------
+# Internal-membership check: the fixture's policies name internal (so the data
+# read exists) and every mocked network carries the id `net-mock`.
+
+run "warns_when_a_custom_zone_network_is_still_in_internal" {
+  command = plan
+
+  override_data {
+    target = data.unifi_firewall_zone.builtin["internal"]
+    values = { id = "zone-internal", network_ids = ["net-elsewhere", "net-mock"] }
+  }
+
+  expect_failures = [check.custom_zones_left_internal]
+}
+
+run "passes_when_internal_holds_only_its_own_networks" {
+  command = plan
+
+  override_data {
+    target = data.unifi_firewall_zone.builtin["internal"]
+    values = { id = "zone-internal", network_ids = ["net-elsewhere"] }
+  }
+
+  assert {
+    condition     = length(unifi_firewall_zone.this["iot"].network_ids) == 1
+    error_message = "The clean case must plan with the check silent and the zone membership intact."
   }
 }

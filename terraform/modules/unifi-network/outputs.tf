@@ -8,6 +8,11 @@ output "zone_ids" {
   value       = local.zone_ids
 }
 
+output "mdns_network_ids" {
+  description = "Network ids the controller reflects mDNS between — its own derived list, read back from the site setting (empty while `site_settings.mdns` is unset or `enabled_for` is not `some`)."
+  value       = try(unifi_setting.site.mdns.enabled_for_network_ids, [])
+}
+
 output "wlan_ids" {
   description = "WLAN id per `wlans` key."
   value       = { for key, w in unifi_wlan.this : key => w.id }

@@ -1,0 +1,7 @@
+{
+  "site": "default",
+  "wlans": {
+    "example-home": "WLAN_PSK_HOME",
+    "example-iot": "WLAN_PSK_IOT"
+  }
+}

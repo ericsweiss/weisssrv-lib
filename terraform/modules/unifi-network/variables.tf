@@ -258,13 +258,14 @@ variable "zones" {
     the resource, not here, because a variable validation cannot read another
     variable at this module's Terraform floor.
 
-    Membership is a FULL REPLACEMENT on every apply — the provider always sends
-    the whole `network_ids` list — and it is the only place this module sets a
-    network's zone: `unifi_network.firewall_zone_id` competes with the zone's
-    own list for the same controller field, so the module leaves it unset.
-    Whether the controller also removes that network from `Internal` is
-    controller behaviour the provider neither performs nor detects: probe it
-    with `data.unifi_firewall_zone` after the first apply (README).
+    Membership is a FULL REPLACEMENT on every update — the provider sends the
+    whole `network_ids` list, and an unset list goes out empty — and it is the
+    only place this module sets a network's zone: `unifi_network.firewall_zone_id`
+    competes with the zone's own list for the same controller field, so the
+    module leaves it unset. Whether the controller also removes that network
+    from `Internal` is controller behaviour the provider neither performs nor
+    detects; the `custom_zones_left_internal` check reads Internal back and
+    warns when a member is still listed there (README).
   EOT
   type = map(object({
     networks = list(string)
@@ -468,8 +469,13 @@ variable "policies" {
 variable "wlans" {
   description = <<-EOT
     WLANs keyed by identity string. The whole variable is sensitive because it
-    carries `passphrase`, which this provider stores in state; only the
-    passphrase keeps that mark inside the module, so plans still show the SSIDs.
+    carries `passphrase`; only the passphrase keeps that mark inside the module,
+    so plans still show the SSIDs. The passphrase reaches the controller as the
+    write-only `passphrase_wo`, so no PSK is ever written to Terraform state:
+    it is sent on create and whenever `passphrase_version` moves. Rotating a key
+    is therefore two edits in one change: the secret-store value and this
+    counter (README "Rotating a WLAN passphrase"). A key changed in the console
+    is invisible to the plan.
 
     Every WLAN here is WPA-PSK: `security = "wpapsk"` is fixed, because the
     module has no RADIUS inputs.
@@ -495,7 +501,9 @@ variable "wlans" {
     # Optional in the TYPE only, so a later non-PSK `security` input is an
     # additive change; the validation below still requires it.
     passphrase = optional(string)
-    wpa3       = optional(bool, true)
+    # Bumped together with the secret-store value to re-send the passphrase.
+    passphrase_version = optional(number, 1)
+    wpa3               = optional(bool, true)
     # Client isolation: guests can reach the gateway and the internet, not each
     # other.
     l2_isolation         = optional(bool, false)
@@ -516,6 +524,13 @@ variable "wlans" {
       w.passphrase == null ? false : can(regex("^[\\x20-\\x7e]{8,63}$", w.passphrase))
     ])
     error_message = "wlans[*].passphrase is required and must be 8-63 printable ASCII characters, which is the WPA-PSK rule (a smart quote or an accented letter pasted from a password manager is not one). A secret-store field that was renamed resolves to an empty string, and a sensitive value's diff hides it — the apply would silently reset the SSID's key."
+  }
+
+  validation {
+    condition = alltrue([
+      for key, w in var.wlans : w.passphrase_version >= 1 && w.passphrase_version == floor(w.passphrase_version)
+    ])
+    error_message = "wlans[*].passphrase_version must be a whole number of 1 or more — it is the counter that re-sends the passphrase, so it only ever moves up."
   }
 
   # Same rule as above: the message names the field, never a value.
@@ -726,6 +741,16 @@ variable "site_settings" {
     not written at all, so adopting this module never turns off snooping that
     was configured in the UI. Emptying the list again stops managing the toggle
     rather than disabling it — reset it in the console.
+
+    `mdns` is the site's mDNS reflector. Unset (the default) leaves it to the
+    console. Set, `enabled_for` is `all`, `some` or `none`; with `some`,
+    `networks` lists the `networks` keys reflected between, and the module
+    writes each network's `multicast_dns` flag from that list. `mode` is which
+    services are reflected (`all`, `auto`, or `custom` with
+    `predefined_services` codes). The controller's effective set is read back
+    as the `mdns_network_ids` output and checked by `mdns_reflection_scope`,
+    because the provider never refreshes a network's own flag (README "mDNS
+    reflection").
   EOT
   type = object({
     auto_upgrade           = optional(bool, false)
@@ -733,8 +758,36 @@ variable "site_settings" {
     upnp                   = optional(bool, false)
     igmp_snooping_networks = optional(list(string), [])
     ips_mode               = optional(string, "ids")
+    mdns = optional(object({
+      enabled_for         = string
+      mode                = optional(string, "all")
+      predefined_services = optional(list(string))
+      networks            = optional(list(string), [])
+    }))
   })
   default = {}
+
+  validation {
+    condition     = var.site_settings.mdns == null ? true : contains(["all", "some", "none"], var.site_settings.mdns.enabled_for)
+    error_message = "site_settings.mdns.enabled_for must be all, some or none."
+  }
+
+  validation {
+    condition     = var.site_settings.mdns == null ? true : contains(["all", "auto", "custom"], var.site_settings.mdns.mode)
+    error_message = "site_settings.mdns.mode must be all, auto or custom."
+  }
+
+  # `some` reflects between the listed networks and nothing else, so the list
+  # and the mode have to agree.
+  validation {
+    condition     = var.site_settings.mdns == null ? true : (var.site_settings.mdns.enabled_for == "some") == (length(var.site_settings.mdns.networks) > 0)
+    error_message = "site_settings.mdns.networks must be non-empty exactly when enabled_for is some — the list is what `some` reflects between."
+  }
+
+  validation {
+    condition     = var.site_settings.mdns == null ? true : (var.site_settings.mdns.predefined_services == null ? true : var.site_settings.mdns.mode == "custom")
+    error_message = "site_settings.mdns.predefined_services applies only with mode = custom."
+  }
 
   validation {
     condition     = contains(["ids", "ips", "ipsInline", "disabled"], var.site_settings.ips_mode)
