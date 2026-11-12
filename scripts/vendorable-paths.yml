@@ -185,6 +185,7 @@ vendorable:
   # `includes:` tree through it.
   - scripts/taskfile_tree.py
   - scripts/tenant_common.py
+  - scripts/unifi-psk-parity.py
   - scripts/unifi-settings-drift.py
   # validate-helm-values.py loads check-hpa-vpa-invariant.py by path and fails
   # loudly when it is missing: vendor the pair.
