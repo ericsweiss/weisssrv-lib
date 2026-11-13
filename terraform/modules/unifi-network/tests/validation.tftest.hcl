@@ -2184,3 +2184,23 @@ run "rejects_a_switch_port_on_an_unknown_network" {
 
   expect_failures = [unifi_device_port.this]
 }
+
+run "rejects_an_egress_rate_limit_without_kbps" {
+  command = plan
+
+  variables {
+    switch_ports = { p = { device_mac = "74:f9:2c:a6:a2:57", index = 1, egress_rate_limit = { enabled = false } } }
+  }
+
+  expect_failures = [var.switch_ports]
+}
+
+run "rejects_an_egress_rate_limit_under_64_kbps" {
+  command = plan
+
+  variables {
+    switch_ports = { p = { device_mac = "74:f9:2c:a6:a2:57", index = 1, egress_rate_limit = { enabled = true, kbps = 10 } } }
+  }
+
+  expect_failures = [var.switch_ports]
+}
