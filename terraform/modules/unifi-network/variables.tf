@@ -848,7 +848,7 @@ variable "switch_ports" {
     egress_rate_limit = optional(object({
       enabled = optional(bool)
       kbps    = optional(number)
-    }), {})
+    }))
     lldpmed = optional(object({
       enabled        = optional(bool)
       notify_enabled = optional(bool)
@@ -910,6 +910,13 @@ variable "switch_ports" {
   validation {
     condition     = alltrue([for key, p in var.switch_ports : p.tagged_vlan_mgmt == null ? true : contains(["auto", "block_all", "custom"], p.tagged_vlan_mgmt)])
     error_message = "switch_ports[*].tagged_vlan_mgmt must be auto, block_all or custom."
+  }
+
+  # The controller accepts a limit only with a value of 64 kbps or more, and the
+  # provider writes 0 for an undeclared kbps; an omitted block is not written.
+  validation {
+    condition     = alltrue([for key, p in var.switch_ports : p.egress_rate_limit == null ? true : (p.egress_rate_limit.kbps != null && p.egress_rate_limit.kbps >= 64)])
+    error_message = "switch_ports[*].egress_rate_limit needs kbps of 64 or more; omit the block to leave the port's limit as it is."
   }
 
   # An exclusion or tag list means nothing outside the custom selection, and a

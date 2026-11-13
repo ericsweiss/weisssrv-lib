@@ -15,7 +15,7 @@ The tag below is an example: use the tag your repo pins (docs/VERSIONING.md).
 
 ```hcl
 module "network" {
-  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.30.0"
+  source = "git::https://git.ericsweiss.com/eric/weisssrv-lib.git//terraform/modules/unifi-network?ref=v0.30.1"
 
   networks = {
     # `subnet` is GATEWAY form: the host part is the gateway address.
@@ -266,7 +266,10 @@ forward only the fields its schema does not expose. Two consequences:
 
 `stp_edge_state` and `tagged_networks` are managed only when set (the provider
 keeps the port's current value otherwise); `op_mode` defaults to `switch` and
-is written only when it differs. Removing an entry stops managing the port and
+is written only when it differs. `egress_rate_limit` is written only when
+declared, and then with `kbps` (64 or more) beside `enabled`: the controller
+rejects a device write whose limit has no value, and the provider sends `0` for
+an undeclared `kbps`. Removing an entry stops managing the port and
 leaves it as it is. Never declare a port both here and in a
 `unifi_device.port_override` block.
 
