@@ -69,13 +69,15 @@
           - "'nextcloud-postgres-exporter' in nextcloud_pgexporter_doc.services"
           - >-
             nextcloud_pgexporter_doc.services['nextcloud-postgres-exporter'].image
-            == 'quay.io/prometheuscommunity/postgres-exporter:0.19.0'
+            == 'quay.io/prometheuscommunity/postgres-exporter:v0.21.1'
           # Inherits nextcloud_exporter_bind_address, hence the same 0.0.0.0.
           - "'0.0.0.0:9187:9187' in nextcloud_pgexporter_doc.services['nextcloud-postgres-exporter'].ports"
-          # Credentials reuse the stack's .env, split across URI/USER/PASS.
+          # The URI is a flag; the credentials reuse the stack's .env.
           - >-
-            nextcloud_pgexporter_doc.services['nextcloud-postgres-exporter'].environment.DATA_SOURCE_URI
-            == 'nextcloud-db:5432/nextcloud?sslmode=disable'
+            nextcloud_pgexporter_doc.services['nextcloud-postgres-exporter'].command
+            == ['--datasource.uri=nextcloud-db:5432/nextcloud?sslmode=disable']
+          - >-
+            'DATA_SOURCE_URI' not in nextcloud_pgexporter_doc.services['nextcloud-postgres-exporter'].environment
           - >-
             nextcloud_pgexporter_doc.services['nextcloud-postgres-exporter'].environment.DATA_SOURCE_USER
             == 'nextcloud'

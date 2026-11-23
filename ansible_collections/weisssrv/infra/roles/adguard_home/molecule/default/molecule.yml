@@ -24,7 +24,7 @@ provisioner:
         # ADGUARD_HOME_VERSION, so the install comes from the archive and
         # checksums.txt staged in the image rather than from github.com.
         adguard_home_archive_cache_dir: /var/cache/adguard-home
-        adguard_home_version: 0.107.78
+        adguard_home_version: 1.0.0
         adguard_home_user: adguard
         adguard_home_group: adguard
         adguard_home_install_path: /opt/AdGuardHome

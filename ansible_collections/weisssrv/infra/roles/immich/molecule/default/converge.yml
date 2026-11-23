@@ -45,7 +45,7 @@
         mode: "0640"
       vars:
         immich_postgres_exporter_enabled: true
-        immich_postgres_exporter_version: "0.19.0"
+        immich_postgres_exporter_version: "v0.21.1"
 
     # Branch coverage for the optional image digests (empty by default).
     - name: Render the compose file with the Immich images digest-pinned  # noqa: no-relative-paths

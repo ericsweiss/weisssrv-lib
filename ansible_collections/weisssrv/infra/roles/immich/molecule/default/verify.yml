@@ -84,12 +84,14 @@
           - "'postgres-exporter' in immich_pgexporter_doc.services"
           - >-
             immich_pgexporter_doc.services['postgres-exporter'].image
-            == 'quay.io/prometheuscommunity/postgres-exporter:0.19.0'
+            == 'quay.io/prometheuscommunity/postgres-exporter:v0.21.1'
           - "'127.0.0.1:9187:9187' in immich_pgexporter_doc.services['postgres-exporter'].ports"
-          # Credentials reuse the stack's .env, split across URI/USER/PASS.
+          # The URI is a flag; the credentials reuse the stack's .env.
           - >-
-            immich_pgexporter_doc.services['postgres-exporter'].environment.DATA_SOURCE_URI
-            == 'database:5432/immich?sslmode=disable'
+            immich_pgexporter_doc.services['postgres-exporter'].command
+            == ['--datasource.uri=database:5432/immich?sslmode=disable']
+          - >-
+            'DATA_SOURCE_URI' not in immich_pgexporter_doc.services['postgres-exporter'].environment
           - >-
             immich_pgexporter_doc.services['postgres-exporter'].environment.DATA_SOURCE_USER
             == '${DB_USERNAME}'

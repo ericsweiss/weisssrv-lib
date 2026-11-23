@@ -60,7 +60,7 @@ without `no_log` and name the missing variable when they fail.
 | `immich_db_username` / `immich_db_database_name` | Postgres superuser + database | `postgres`, `immich` |
 | `immich_telemetry_include`, `immich_api_metrics_port`, `immich_microservices_metrics_port` | Native Prometheus telemetry | `all`, `8081`, `8082` |
 | `immich_postgres_exporter_enabled` | Add the `postgres-exporter` sidecar (DB-level metrics) | `false` |
-| `immich_postgres_exporter_version` / `_digest` / `_image` | Its image pin; the image derives from the version + optional digest, or override it outright | `""`, `""`, `quay.io/prometheuscommunity/postgres-exporter:<version>` |
+| `immich_postgres_exporter_version` / `_digest` / `_image` | Its image pin, 0.21.0 or newer (the URI is passed as `--datasource.uri`); the image derives from the version + optional digest, or override it outright | `""`, `""`, `quay.io/prometheuscommunity/postgres-exporter:<version>` |
 | `immich_postgres_exporter_port` | Host port for the exporter (unauthenticated) | `9187` |
 | `immich_metrics_bind` | Publish address for all three unauthenticated metrics ports; widen it to the scrape-facing address when Prometheus runs off-host | `127.0.0.1` |
 | `immich_oauth_scope`, `immich_oauth_button_text`, `immich_oauth_storage_label_claim` | OIDC presentation + claims | `openid email profile`, `Sign in with SSO`, `preferred_username` |

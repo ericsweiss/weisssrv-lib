@@ -23,7 +23,7 @@
         mode: "0644"
       vars:
         nextcloud_postgres_exporter_enabled: true
-        nextcloud_postgres_exporter_version: "0.19.0"
+        nextcloud_postgres_exporter_version: "v0.21.1"
 
     # The SSO pass against the mock occ, once per user_oidc state; verify reads
     # each case's command log. Not idempotent by design: install and enable change.
