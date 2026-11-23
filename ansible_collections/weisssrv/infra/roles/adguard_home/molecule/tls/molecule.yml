@@ -26,7 +26,7 @@ provisioner:
         # ADGUARD_HOME_VERSION: matching pins install from the archive staged
         # in the image instead of fetching github.com mid-test.
         adguard_home_archive_cache_dir: /var/cache/adguard-home
-        adguard_home_version: 0.107.78
+        adguard_home_version: 1.0.0
         adguard_home_user: adguard
         adguard_home_group: adguard
         adguard_home_install_path: /opt/AdGuardHome

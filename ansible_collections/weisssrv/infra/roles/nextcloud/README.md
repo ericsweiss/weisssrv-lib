@@ -53,7 +53,7 @@ a host nginx that terminates TLS and proxies to the loopback-bound web port.
 | `nextcloud_http_bind_address`, `nextcloud_http_bind_port`, `nextcloud_exporter_port` | Published ports | no (`127.0.0.1:8080`, `9205`) |
 | `nextcloud_exporter_bind_address` | Interface the app exporter publishes on (unauthenticated — narrow it, or scope it at the firewall) | no (`0.0.0.0`) |
 | `nextcloud_postgres_exporter_enabled` | Add a `postgres-exporter` sidecar (DB-level metrics) | no (`false`) |
-| `nextcloud_postgres_exporter_version` | Its image pin | when enabled |
+| `nextcloud_postgres_exporter_version` | Its image pin, 0.21.0 or newer (the URI is passed as `--datasource.uri`) | when enabled |
 | `nextcloud_postgres_exporter_port` | Host port for that exporter (unauthenticated — scope it at the firewall) | no (`9187`) |
 | `nextcloud_postgres_exporter_bind_address` | Interface that exporter publishes on | no (tracks `nextcloud_exporter_bind_address`) |
 | `nextcloud_php_memory_limit`, `nextcloud_php_upload_limit` | PHP tuning | no (`1024M`, `16G`) |

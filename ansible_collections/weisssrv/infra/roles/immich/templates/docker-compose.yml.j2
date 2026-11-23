@@ -82,13 +82,14 @@ services:
     restart: always
 
 {% if immich_postgres_exporter_enabled %}
-  # Opt-in database-level metrics. The credentials are the stack's own, split
-  # across URI/USER/PASS rather than a single DSN so a password with URL-unsafe
-  # characters needs no percent-encoding.
+  # Opt-in database-level metrics (exporter 0.21.0 or newer). The URI rides the
+  # --datasource.uri flag; the stack's own user and password stay in the
+  # environment, off the process list and free of percent-encoding.
   postgres-exporter:
     image: {{ immich_postgres_exporter_image }}
+    command:
+      - "--datasource.uri=database:5432/{{ immich_db_database_name }}?sslmode=disable"
     environment:
-      DATA_SOURCE_URI: "database:5432/{{ immich_db_database_name }}?sslmode=disable"
       DATA_SOURCE_USER: ${DB_USERNAME}
       DATA_SOURCE_PASS: ${DB_PASSWORD}
     ports:

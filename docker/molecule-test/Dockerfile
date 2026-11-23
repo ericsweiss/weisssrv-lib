@@ -74,7 +74,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 # AdGuard Home release tarball and its checksums.txt, staged where the
 # adguard_home role looks so DNS scenarios install from disk. The version is
 # held equal to what the scenarios pin by tests/test_pin_parity.py.
-ARG ADGUARD_HOME_VERSION=0.107.78
+ARG ADGUARD_HOME_VERSION=1.0.0
 # --retry: the one github.com fetch in the build; a single 5xx would fail it.
 RUN ARCH=$(dpkg --print-architecture) \
     && AGH_URL="https://github.com/AdguardTeam/AdGuardHome/releases/download/v${ADGUARD_HOME_VERSION}" \
